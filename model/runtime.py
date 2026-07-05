@@ -187,6 +187,7 @@ from .config import (
 )
 from .persistence import mark_dirty
 from .log_retention import cleanup_message_logs
+from .message_log_recovery import recover_sent_command_from_message_log
 from .timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .action_guard import (
     before_send as action_guard_before_send,
@@ -279,20 +280,20 @@ MODULE_SEND_GAP_MIN_SEC = {
 IDENTITY_SEND_GAP_MIN_SEC = 10.0
 SEND_QUEUE_TIMEOUT_MARGIN_SEC = 5.0
 
-P0_SEND_GAP_MIN_SEC = 20.0
-P0_SEND_GAP_MAX_SEC = 30.0
-CHAIN_SEND_GAP_MIN_SEC = 20.0
-CHAIN_SEND_GAP_MAX_SEC = 35.0
-REACTIVE_SEND_GAP_MIN_SEC = 14.0
-REACTIVE_SEND_GAP_MAX_SEC = 22.0
+P0_SEND_GAP_MIN_SEC = 12.0
+P0_SEND_GAP_MAX_SEC = 16.0
+CHAIN_SEND_GAP_MIN_SEC = 12.0
+CHAIN_SEND_GAP_MAX_SEC = 16.0
+REACTIVE_SEND_GAP_MIN_SEC = 12.0
+REACTIVE_SEND_GAP_MAX_SEC = 16.0
 URGENT_REACTIVE_SEND_GAP_MIN_SEC = 1.0
 URGENT_REACTIVE_SEND_GAP_MAX_SEC = 3.0
 EVENT_BURST_SEND_GAP_MIN_SEC = 0.55
 EVENT_BURST_SEND_GAP_MAX_SEC = 0.95
 RETRY_SEND_GAP_MIN_SEC = 1.0
 RETRY_SEND_GAP_MAX_SEC = 3.0
-NORMAL_SEND_GAP_MIN_SEC = 20.0
-NORMAL_SEND_GAP_MAX_SEC = 40.0
+NORMAL_SEND_GAP_MIN_SEC = 12.0
+NORMAL_SEND_GAP_MAX_SEC = 18.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
@@ -312,6 +313,7 @@ LOG_BOT_POLL_READ_TIMEOUT_SEC = 35
 LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 25
+GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
 WEAKNESS_BLOCK_AUDIT_INTERVAL_SEC = 5 * 60
@@ -809,9 +811,9 @@ def _identity_send_gap_ready_at(send_as_id=None, now_mono=None):
 def _build_send_not_before(priority):
     min_gap, max_gap = _get_send_gap_range(priority)
     now_mono = time.monotonic()
-    not_before = now_mono + random.uniform(min_gap, max_gap)
+    not_before = now_mono
     if _GAME_LAST_SEND_AT > 0:
-        not_before = max(not_before, _GAME_LAST_SEND_AT + min_gap)
+        not_before = max(not_before, _GAME_LAST_SEND_AT + random.uniform(min_gap, max_gap))
     return not_before
 
 
@@ -918,7 +920,9 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
                 slot_anchor = _GAME_LAST_SEND_AT
                 module_anchor = current_module_last
                 identity_anchor = current_identity_last
-                not_before = max(now_mono, _GAME_LAST_SEND_AT) + random.uniform(min_gap, max_gap)
+                not_before = now_mono
+                if not bypass_gap and _GAME_LAST_SEND_AT > 0:
+                    not_before = max(not_before, _GAME_LAST_SEND_AT + random.uniform(min_gap, max_gap))
                 if module_gap > 0 and current_module_last > 0:
                     not_before = max(not_before, current_module_last + module_gap)
                 if identity_gap > 0 and current_identity_last > 0:
@@ -2917,6 +2921,127 @@ async def _log_weakness_blocked(command, *, send_as_id):
     )
 
 
+def _finalize_game_command_sent(
+    command,
+    *,
+    msg_id,
+    sent_at,
+    send_as_id,
+    reply_to=0,
+    send_priority=SEND_PRIORITY_NORMAL,
+    track=True,
+    reply_timeout=None,
+    max_retry=None,
+    send_intent=None,
+    append_sent_log=True,
+    recovered=False,
+):
+    msg_id = int(msg_id or 0)
+    if msg_id <= 0:
+        return None
+    sent_at = float(sent_at or time.time())
+    send_intent = _compact_send_intent(send_intent)
+    if append_sent_log:
+        _append_sent_message_log(
+            msg_id,
+            command,
+            send_as_id,
+            reply_to_msg_id=int(reply_to or 0),
+            priority=send_priority,
+            track=track,
+            intent=send_intent,
+        )
+    msg = SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
+    action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
+    with use_identity(send_as_id) as identity_state:
+        identity_state["my_msg_ids"][msg_id] = sent_at
+        if track:
+            if reply_timeout is not None:
+                try:
+                    timeout = max(1, int(float(reply_timeout)))
+                except (TypeError, ValueError):
+                    timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
+            else:
+                timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
+            retry_limit = max(0, int(max_retry if max_retry is not None else RETRY_LIMIT))
+            if action_guard_is_guarded_command(command):
+                next_allowed_at = action_guard_next_allowed_at(command, send_as_id=send_as_id)
+                if next_allowed_at > sent_at:
+                    timeout = max(1, int(next_allowed_at - sent_at) + 1)
+            pending_item = {
+                "cmd": command,
+                "sent_at": sent_at,
+                "retry": 0,
+                "timeout": timeout,
+                "reply_to_msg_id": int(reply_to or 0),
+                "priority": send_priority,
+                "max_retry": retry_limit,
+            }
+            pending_item.update(send_intent)
+            identity_state["pending_tasks"][msg_id] = pending_item
+        mark_dirty()
+    note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
+    family = resolve_reply_family(command)
+    if family:
+        track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
+    _notify_game_command_sent_observers(
+        command,
+        send_as_id,
+        sent_at,
+        msg_id,
+        track=track,
+        reply_to=int(reply_to or 0),
+        priority=send_priority,
+        max_retry=max_retry,
+        **send_intent,
+    )
+    _clear_game_send_block(send_as_id, command)
+    return msg
+
+
+async def _recover_timed_out_game_send(
+    command,
+    *,
+    send_as_id,
+    send_started_at,
+    game_group_id,
+    topic_id=0,
+    reply_to=0,
+):
+    try:
+        start_ts = max(0.0, float(send_started_at or 0) - 3.0)
+    except (TypeError, ValueError, OverflowError):
+        start_ts = 0.0
+    if start_ts <= 0:
+        return None
+    try:
+        recovery_wait = min(
+            max(0.0, float(GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC or 0.0)),
+            max(0.0, float(GAME_SEND_RPC_TIMEOUT_SEC or 0.0) * 0.5),
+        )
+    except (TypeError, ValueError, OverflowError):
+        recovery_wait = 0.0
+    deadline = time.time() + recovery_wait
+    while True:
+        recovered = recover_sent_command_from_message_log(
+            command,
+            send_as_id,
+            time.time(),
+            start_ts=start_ts,
+            game_group_id=game_group_id,
+            topic_id=topic_id,
+            reply_to_msg_id=int(reply_to or 0),
+            lookback_sec=max(60, int(GAME_SEND_RPC_TIMEOUT_SEC or 25) + 30),
+            lookahead_sec=1,
+        )
+        if recovered:
+            return recovered
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        await asyncio.sleep(min(0.5, remaining))
+
+
 async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         return False
@@ -2962,6 +3087,7 @@ async def send_game_command(
     topic_id = get_game_topic_id()
     send_priority = _normalize_send_priority(command, priority=priority)
     account_id = int(get_identity_account(send_as_id) or 0)
+    send_request_started_at = 0.0
     send_intent = _normalize_send_intent(
         command,
         intent=intent,
@@ -3168,6 +3294,7 @@ async def send_game_command(
             elif topic_id > 0:
                 reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
             try:
+                send_request_started_at = time.time()
                 result = await asyncio.wait_for(
                     active_client(
                         functions.messages.SendMessageRequest(
@@ -3195,6 +3322,41 @@ async def send_game_command(
                 _record_game_send_block(send_as_id, command, "flood_wait", f"TG FloodWait {int(flood_err.seconds)}s")
                 return None
             except asyncio.TimeoutError:
+                recovered = await _recover_timed_out_game_send(
+                    command,
+                    send_as_id=send_as_id,
+                    send_started_at=send_request_started_at,
+                    game_group_id=game_group_id,
+                    topic_id=topic_id,
+                    reply_to=reply_to,
+                )
+                if recovered:
+                    msg = _finalize_game_command_sent(
+                        command,
+                        msg_id=int(recovered.get("message_id") or 0),
+                        sent_at=float(recovered.get("ts_epoch") or time.time()),
+                        send_as_id=send_as_id,
+                        reply_to=reply_to,
+                        send_priority=send_priority,
+                        track=track,
+                        reply_timeout=reply_timeout,
+                        max_retry=max_retry,
+                        send_intent=send_intent,
+                        append_sent_log=str(recovered.get("event_type") or "") != "sent",
+                        recovered=True,
+                    )
+                    if msg is not None:
+                        await send_audit_log(
+                            (
+                                f"♻️ 指令发送返回慢但已回捞到消息ID："
+                                f"{_truncate_log_text(command, limit=40)}｜msg_id={msg.id}"
+                            ),
+                            scope="identity",
+                            send_as_id=send_as_id,
+                            limit=220,
+                            priority=AUDIT_PRIORITY_LOW,
+                        )
+                        return msg
                 await send_audit_log(
                     (
                         f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
@@ -3211,61 +3373,19 @@ async def send_game_command(
             msg_id = _extract_sent_message_id(result)
             if msg_id <= 0:
                 raise ValueError("无法从发送结果中解析消息 ID")
-            _append_sent_message_log(
-                msg_id,
-                command,
-                send_as_id,
-                reply_to_msg_id=int(reply_to or 0),
-                priority=send_priority,
-                track=track,
-                intent=send_intent,
-            )
             sent_at = time.time()
-            msg = SimpleNamespace(id=msg_id, sent_at=sent_at)
-            action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
-            with use_identity(send_as_id) as identity_state:
-                identity_state["my_msg_ids"][msg_id] = sent_at
-                if track:
-                    if reply_timeout is not None:
-                        try:
-                            timeout = max(1, int(float(reply_timeout)))
-                        except (TypeError, ValueError):
-                            timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
-                    else:
-                        timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
-                    retry_limit = max(0, int(max_retry if max_retry is not None else RETRY_LIMIT))
-                    if action_guard_is_guarded_command(command):
-                        next_allowed_at = action_guard_next_allowed_at(command, send_as_id=send_as_id)
-                        if next_allowed_at > sent_at:
-                            timeout = max(1, int(next_allowed_at - sent_at) + 1)
-                    pending_item = {
-                        "cmd": command,
-                        "sent_at": sent_at,
-                        "retry": 0,
-                        "timeout": timeout,
-                        "reply_to_msg_id": int(reply_to or 0),
-                        "priority": send_priority,
-                        "max_retry": retry_limit,
-                    }
-                    pending_item.update(send_intent)
-                    identity_state["pending_tasks"][msg_id] = pending_item
-                mark_dirty()
-            note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
-            family = resolve_reply_family(command)
-            if family:
-                track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
-            _notify_game_command_sent_observers(
+            msg = _finalize_game_command_sent(
                 command,
-                send_as_id,
-                sent_at,
-                msg_id,
+                msg_id=msg_id,
+                sent_at=sent_at,
+                send_as_id=send_as_id,
+                reply_to=reply_to,
+                send_priority=send_priority,
                 track=track,
-                reply_to=int(reply_to or 0),
-                priority=send_priority,
+                reply_timeout=reply_timeout,
                 max_retry=max_retry,
-                **send_intent,
+                send_intent=send_intent,
             )
-            _clear_game_send_block(send_as_id, command)
             return msg
     except GameSendQueueTimeout:
         _close_guard_for_unsent_command(command, send_as_id, "send_queue_timeout")
@@ -3286,7 +3406,7 @@ async def send_game_command(
             send_as_id=send_as_id,
             limit=240,
         )
-        _record_game_send_block(send_as_id, command, "send_queue_timeout", f">{int(float(queue_timeout or 0))}s")
+        _record_game_send_block(send_as_id, command, "send_queue_timeout", f">{int(float(effective_queue_timeout or queue_timeout or 0))}s")
         return None
     except asyncio.TimeoutError:
         await send_audit_log(

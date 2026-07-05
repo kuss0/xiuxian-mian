@@ -49,6 +49,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             copy.deepcopy(runtime._IDENTITY_LAST_SEND_AT),
             runtime._GAME_SEND_QUEUE_SEQ,
             copy.deepcopy(runtime._GAME_SEND_QUEUE_ITEMS),
+            copy.deepcopy(runtime._GAME_SEND_BLOCK_LAST),
         )
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
@@ -64,9 +65,38 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._GAME_SEND_QUEUE_SEQ = self._queue_snapshot[3]
         runtime._GAME_SEND_QUEUE_ITEMS.clear()
         runtime._GAME_SEND_QUEUE_ITEMS.update(copy.deepcopy(self._queue_snapshot[4]))
+        runtime._GAME_SEND_BLOCK_LAST.clear()
+        runtime._GAME_SEND_BLOCK_LAST.update(copy.deepcopy(self._queue_snapshot[5]))
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
+
+    async def test_idle_global_slot_sends_without_artificial_wait(self):
+        send_as_id = 301299112
+        runtime._GAME_LAST_SEND_AT = 10.0
+        runtime._MODULE_LAST_SEND_AT.clear()
+        runtime._IDENTITY_LAST_SEND_AT.clear()
+        sleeps = []
+        clock = {"mono": 100.0}
+
+        async def fake_sleep(delay):
+            delay = float(delay or 0)
+            sleeps.append(delay)
+            clock["mono"] += delay
+
+        with (
+            patch.object(runtime.time, "monotonic", side_effect=lambda: clock["mono"]),
+            patch.object(runtime.random, "uniform", return_value=18.0),
+            patch.object(runtime.asyncio, "sleep", new=fake_sleep),
+        ):
+            async with runtime._send_slot(
+                runtime.SEND_PRIORITY_NORMAL,
+                command=".观星台",
+                send_as_id=send_as_id,
+            ):
+                self.assertEqual(100.0, clock["mono"])
+
+        self.assertEqual([], sleeps)
 
     async def test_identity_gap_applies_after_whitelisted_burst_send(self):
         send_as_id = 301299112
@@ -153,8 +183,61 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime._GAME_SEND_LOCK.locked())
         self.assertEqual(2, len(client.sent_requests))
 
+    async def test_send_rpc_timeout_recovers_message_id_from_message_log(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        client = _FakeClient(["timeout"])
+        recovered = {
+            "event_type": "message",
+            "message_id": 920002,
+            "ts_epoch": 1234.5,
+        }
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.05),
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=7310786),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "recover_sent_command_from_message_log", return_value=recovered),
+                patch.object(runtime, "mark_dirty"),
+            ):
+                stack.enter_context(patcher)
+            audit_mock = stack.enter_context(patch.object(runtime, "send_audit_log", new=AsyncMock()))
+            append_mock = stack.enter_context(patch.object(runtime, "_append_sent_message_log"))
+            guard_note_mock = stack.enter_context(patch.object(runtime, "action_guard_note_sent"))
+            note_sent_mock = stack.enter_context(patch.object(runtime, "note_game_command_sent"))
+            observer_mock = stack.enter_context(patch.object(runtime, "_notify_game_command_sent_observers"))
+
+            msg = await asyncio.wait_for(
+                runtime.send_game_command(".观星台", send_as_id=send_as_id, track=True),
+                timeout=1,
+            )
+
+        self.assertEqual(920002, msg.id)
+        self.assertTrue(msg.recovered_from_message_log)
+        append_mock.assert_called_once()
+        guard_note_mock.assert_called_once_with(".观星台", send_as_id, 920002, sent_at=1234.5)
+        note_sent_mock.assert_called_once_with(".观星台", sent_at=1234.5, priority=runtime.SEND_PRIORITY_NORMAL)
+        observer_mock.assert_called_once()
+        audit_mock.assert_awaited()
+        pending = state_module.get_identity_state(send_as_id)["pending_tasks"][920002]
+        self.assertEqual(".观星台", pending["cmd"])
+        self.assertEqual(1234.5, pending["sent_at"])
+
     async def test_send_queue_timeout_releases_action_guard_placeholder(self):
         send_as_id = 301299112
+        runtime._GAME_LAST_SEND_AT = runtime.time.monotonic()
         state_module.ensure_identity_registered(send_as_id)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["action_guard_sessions"] = {
@@ -177,6 +260,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "get_game_topic_id", return_value=0),
                 patch.object(runtime, "get_global_enabled", return_value=True),
                 patch.object(runtime, "_get_send_gap_range", return_value=(10.0, 10.0)),
+                patch.object(runtime.random, "uniform", return_value=10.0),
                 patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
                 patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
                 patch.object(runtime, "_effective_send_queue_timeout", return_value=0.01),

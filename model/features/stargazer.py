@@ -12,7 +12,7 @@ from ..config import (
     STARGAZER_STAR_DURATIONS,
 )
 from ..persistence import save_state
-from ..runtime import console_log, send_audit_log, send_game_command, track_reply_chain_message
+from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, track_reply_chain_message
 from ..state import get_current_identity_id, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -189,6 +189,14 @@ def _clear_stargazer_collect_flags():
     state["stargazer_soothe_before_collect"] = False
 
 
+async def _audit_stargazer_unsent(label, command):
+    send_block = get_last_game_send_block(command=command)
+    if str((send_block or {}).get("code") or "") == "send_timeout":
+        await send_audit_log(f"⚠️ {label}发送返回慢，等待被动回复；稍后回查。", priority="low")
+        return
+    await send_audit_log(f"❌ {label}发送失败，稍后重试。")
+
+
 def _stargazer_next_panel_time_blocks(now):
     return cd_blocks(state.get("next_stargazer_panel_time", 0), now, 0)
 
@@ -216,7 +224,7 @@ async def _send_stargazer_panel(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(sent_at, "panel", retry_delay)
         save_state()
-        await send_audit_log("❌ 观星台发送失败，稍后重试。")
+        await _audit_stargazer_unsent("观星台", CMD_STARGAZER_PANEL)
         return False
     _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
     save_state()
@@ -235,7 +243,7 @@ async def _send_stargazer_soothe(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(sent_at, "soothe", retry_delay)
         save_state()
-        await send_audit_log("❌ 安抚星辰发送失败，稍后重试。")
+        await _audit_stargazer_unsent("安抚星辰", CMD_STARGAZER_SOOTHE)
         return False
     _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
     save_state()
@@ -257,7 +265,7 @@ async def _send_stargazer_collect(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(sent_at, "collect", retry_delay)
         save_state()
-        await send_audit_log("❌ 收集精华发送失败，稍后重试。")
+        await _audit_stargazer_unsent("收集精华", CMD_STARGAZER_COLLECT)
         return False
     _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
     save_state()
@@ -277,7 +285,7 @@ async def _send_stargazer_guide(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(sent_at, "guide", retry_delay)
         save_state()
-        await send_audit_log("❌ 牵引星辰发送失败，稍后重试。")
+        await _audit_stargazer_unsent("牵引星辰", guide_command)
         return False
     _schedule_stargazer_timeout_panel_fallback(msg, sent_at)
     save_state()

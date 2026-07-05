@@ -103,3 +103,86 @@ def find_recent_message_log_command(now, *, sender_id=0, command_predicate=None,
         found = dict(entry)
         found["ts_epoch"] = entry_ts
     return found
+
+
+def sender_matches_identity(sender_id, identity_id):
+    try:
+        sender_id = int(sender_id or 0)
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if sender_id == 0 or identity_id == 0:
+        return False
+    if sender_id in {identity_id, -identity_id}:
+        return True
+    if sender_id < 0:
+        raw_sender = str(abs(sender_id))
+        raw_identity = str(abs(identity_id))
+        return raw_sender == f"100{raw_identity}"
+    return False
+
+
+def recover_sent_command_from_message_log(
+    command,
+    send_as_id,
+    now,
+    *,
+    start_ts=0,
+    game_group_id=0,
+    topic_id=0,
+    reply_to_msg_id=0,
+    lookback_sec=900,
+    lookahead_sec=30,
+    messages_dir=None,
+):
+    """Recover a sent command when Telegram accepted it but the RPC result timed out."""
+    command = str(command or "").strip()
+    if not command:
+        return None
+    try:
+        send_as_id = int(send_as_id or 0)
+        game_group_id = int(game_group_id or 0)
+        topic_id = int(topic_id or 0)
+        reply_to_msg_id = int(reply_to_msg_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if send_as_id <= 0:
+        return None
+
+    def predicate(entry):
+        if str((entry or {}).get("event_type") or "") not in {"message", "sent"}:
+            return False
+        if game_group_id and int((entry or {}).get("chat_id") or 0) != game_group_id:
+            return False
+        if str((entry or {}).get("text") or "").strip() != command:
+            return False
+        entry_reply_to = int((entry or {}).get("reply_to_msg_id") or 0)
+        if reply_to_msg_id > 0:
+            if entry_reply_to != reply_to_msg_id:
+                return False
+        elif topic_id > 0 and entry_reply_to not in {0, topic_id}:
+            return False
+        return sender_matches_identity((entry or {}).get("sender_id"), send_as_id)
+
+    found = find_recent_message_log_command(
+        now,
+        sender_id=0,
+        command_predicate=predicate,
+        start_ts=start_ts,
+        lookback_sec=lookback_sec,
+        lookahead_sec=lookahead_sec,
+        messages_dir=messages_dir,
+    )
+    if not found:
+        return None
+    try:
+        msg_id = int(found.get("message_id") or 0)
+        sent_at = float(found.get("ts_epoch") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if msg_id <= 0 or sent_at <= 0:
+        return None
+    item = dict(found)
+    item["message_id"] = msg_id
+    item["ts_epoch"] = sent_at
+    return item
