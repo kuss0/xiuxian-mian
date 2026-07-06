@@ -1170,8 +1170,8 @@ class WebAppCoreTests(unittest.TestCase):
             if endpoint == "result":
                 result_calls = len([item for item in calls if item == "result"])
                 if result_calls < 3:
-                    return 200, {"ok": True, "ready": False, "result": {"message": "鱼获结算中。"}}
-                return 200, {"ok": True, "ready": True, "result": {"score": 94, "grade": "甲等"}}
+                    return 200, {"ok": True, "result": {"ready": False, "message": "鱼获结算中。"}}
+                return 200, {"ok": True, "result": {"ready": True, "score": 94, "grade": "甲等"}}
             return 404, {"ok": False, "error": "unexpected"}
 
         result = fishing_miniapp.run_fishing_miniapp_lab_flow(
@@ -1202,7 +1202,7 @@ class WebAppCoreTests(unittest.TestCase):
             if endpoint == "finish":
                 return 200, {"ok": True, "result": {"score": 94}}
             if endpoint == "result":
-                return 200, {"ok": True, "ready": False, "result": {"message": "鱼获结算中。"}}
+                return 200, {"ok": True, "result": {"ready": False, "message": "鱼获结算中。"}}
             return 404, {"ok": False, "error": "unexpected"}
 
         result = fishing_miniapp.run_fishing_miniapp_lab_flow(

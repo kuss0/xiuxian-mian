@@ -672,9 +672,12 @@ def run_fishing_miniapp_lab_flow(
         if not result.ok:
             status = classify_fishing_miniapp_error(result.error)
             return _flow_result(False, status, error=result.error, events=events, proof=proof)
+        nested_result = result.data.get("result") if isinstance(result.data.get("result"), dict) else {}
         ready = result.data.get("ready")
+        if ready is None and nested_result:
+            ready = nested_result.get("ready")
         if ready is True:
-            result_data = result.data.get("result") if isinstance(result.data.get("result"), dict) else result.data
+            result_data = nested_result or result.data
             return _flow_result(True, "settled", data=result_data, events=events, proof=proof)
         events.append({"step": "result_wait", "ok": True, "attempt": attempt + 1, "ready": bool(ready)})
         if sleeper is not None and attempt < max(0, int(result_poll_limit or 0)) - 1:
