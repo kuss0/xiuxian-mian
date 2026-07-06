@@ -92,6 +92,7 @@ RE_TREE_PULSE_TURBIDITY = re.compile(r"(?:浊息|浊气)/紊乱[:：]\s*(\d+)\s*
 RE_TREE_PULSE_TURBIDITY_CURRENT = re.compile(r"(?:浊息|浊气)[^\n]*[（(]当前\s*(\d+)")
 RE_TREE_PULSE_DAILY = re.compile(r"今日定脉令[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_TREE_PULSE_RUSH = re.compile(r"冲脉\s*(\d+)\s*/\s*(\d+)")
+RE_TREE_PULSE_COMMAND = re.compile(r"\.定脉(?:\s+[^\s/|｜，,。]+){0,2}")
 
 
 def _parse_tree_int(text):
@@ -162,6 +163,18 @@ def _split_tree_elements(raw_value):
     return [part.strip() for part in re.split(r"[/、,，\s]+", str(raw_value or "")) if part.strip()]
 
 
+def _parse_tree_pulse_available_commands(raw_text):
+    commands = []
+    seen = set()
+    for match in RE_TREE_PULSE_COMMAND.finditer(str(raw_text or "")):
+        command = re.sub(r"\s+", " ", match.group(0).strip())
+        if not command or command in seen:
+            continue
+        seen.add(command)
+        commands.append(command)
+    return commands
+
+
 def _tree_regex_text(pattern, raw_text):
     match = pattern.search(str(raw_text or ""))
     return match.group(1).strip() if match else ""
@@ -214,6 +227,7 @@ def parse_tree_pulse_panel(text):
         "daily_limit": int(daily_match.group(2)) if daily_match else 0,
         "rush_used": int(rush_match.group(1)) if rush_match else 0,
         "rush_limit": int(rush_match.group(2)) if rush_match else 0,
+        "available_commands": _parse_tree_pulse_available_commands(raw_text),
         "blocked": "已成熟" in raw_text or "正遭劫难" in raw_text or "不可定脉" in raw_text,
     }
 
@@ -236,6 +250,7 @@ def _apply_tree_pulse_panel(parsed, now):
     state["tree_pulse_daily_limit"] = int(parsed.get("daily_limit", 0) or 0)
     state["tree_pulse_rush_used"] = int(parsed.get("rush_used", 0) or 0)
     state["tree_pulse_rush_limit"] = int(parsed.get("rush_limit", 0) or 0)
+    state["tree_pulse_available_commands"] = list(parsed.get("available_commands") or [])
     return True
 
 
@@ -307,6 +322,29 @@ def _choose_tree_pulse_command(parsed):
     turbidity = int(parsed.get("turbidity", 0) or 0)
     rush_used = int(parsed.get("rush_used", 0) or 0)
     rush_limit = int(parsed.get("rush_limit", 0) or 0)
+    available_commands = [
+        re.sub(r"\s+", " ", str(command or "").strip())
+        for command in (parsed.get("available_commands") or ())
+        if str(command or "").strip().startswith(CMD_TREE_PULSE)
+    ]
+
+    def choose_available(candidates, fallback_reason):
+        if not available_commands:
+            return "", ""
+        for candidate, reason in candidates:
+            candidate = re.sub(r"\s+", " ", str(candidate or "").strip())
+            if candidate and candidate in available_commands:
+                return candidate, reason
+        for keyword, reason in (
+            ("净浊", "面板可用净浊"),
+            ("固脉", "面板可用固脉"),
+            ("注灵", "面板可用注灵"),
+            ("冲脉", "面板可用冲脉"),
+        ):
+            for command in available_commands:
+                if keyword in command:
+                    return command, reason
+        return available_commands[0], fallback_reason
 
     if parsed.get("blocked") or progress >= 99.9:
         return "", "灵树已成熟或遭劫难"
@@ -315,13 +353,32 @@ def _choose_tree_pulse_command(parsed):
     if not main:
         return "", "未识别主脉"
     if turbidity >= TREE_PULSE_HIGH_TURBIDITY_THRESHOLD:
-        return _format_tree_pulse_command("净浊"), "浊息过高"
+        command = _format_tree_pulse_command("净浊")
+        selected, selected_reason = choose_available(((command, "浊息过高"),), "面板限制，选择可用定脉")
+        return (selected, selected_reason) if selected else (command, "浊息过高")
     if stability > 0 and stability < TREE_PULSE_LOW_STABILITY_THRESHOLD:
         element = "土" if "土" in neutral_elements else (neutral_elements[0] if neutral_elements else main)
-        return _format_tree_pulse_command("固脉", element), "脉稳偏低"
+        candidates = (
+            (_format_tree_pulse_command("固脉", element), "脉稳偏低"),
+            (_format_tree_pulse_command("固脉", aux), "脉稳偏低"),
+            (_format_tree_pulse_command("固脉", main), "脉稳偏低"),
+        )
+        selected, selected_reason = choose_available(candidates, "面板限制，选择可用定脉")
+        return (selected, selected_reason) if selected else (candidates[0][0], "脉稳偏低")
     element = main
     if element == reverse and aux:
         element = aux
+    candidates = []
+    if rush_limit <= 0 or rush_used < rush_limit:
+        candidates.append((_format_tree_pulse_command("冲脉", element), "冲脉次数可用"))
+    candidates.extend((
+        (_format_tree_pulse_command("注灵", main), "主脉注灵"),
+        (_format_tree_pulse_command("注灵", aux), "辅脉注灵"),
+        (_format_tree_pulse_command("净浊"), "面板可用净浊"),
+    ))
+    selected, selected_reason = choose_available(candidates, "面板限制，选择可用定脉")
+    if selected:
+        return selected, selected_reason
     if rush_limit <= 0 or rush_used < rush_limit:
         return _format_tree_pulse_command("冲脉", element), "冲脉次数可用"
     return _format_tree_pulse_command("注灵", main), "主脉注灵"
@@ -344,6 +401,7 @@ def _tree_pulse_snapshot_from_state():
         "daily_limit": int(state.get("tree_pulse_daily_limit", 0) or 0),
         "rush_used": int(state.get("tree_pulse_rush_used", 0) or 0),
         "rush_limit": int(state.get("tree_pulse_rush_limit", 0) or 0),
+        "available_commands": list(state.get("tree_pulse_available_commands") or []),
         "blocked": False,
     }
 

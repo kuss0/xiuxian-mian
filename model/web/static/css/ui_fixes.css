@@ -2637,6 +2637,30 @@ body {
   margin-top: 12px;
 }
 
+.miniapp-group {
+  display: grid;
+  gap: 8px;
+}
+
+.miniapp-group + .miniapp-group {
+  margin-top: 12px;
+}
+
+.miniapp-group-title,
+.miniapp-capture-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.miniapp-group-title {
+  padding: 2px 0;
+  color: #94a3b8;
+}
+
 .miniapp-item {
   justify-content: space-between;
   padding: 10px 12px;
@@ -2719,6 +2743,52 @@ body {
 
 .miniapp-error {
   color: #fca5a5;
+}
+
+.miniapp-capture-panel {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #1e293b;
+}
+
+.miniapp-capture-title strong {
+  color: #e5e7eb;
+}
+
+.miniapp-capture-title span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.miniapp-capture-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.miniapp-capture-item {
+  padding: 10px 12px;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: #020617;
+}
+
+.miniapp-capture-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.miniapp-capture-head strong {
+  color: #e5e7eb;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.miniapp-capture-head span {
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .passive-inbox-modal-card {

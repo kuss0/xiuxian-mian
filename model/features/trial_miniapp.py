@@ -170,7 +170,7 @@ def build_trial_miniapp_flow_plan():
                 key="start",
                 endpoint="start",
                 required_payload_keys=("token", "initData"),
-                note="读取试炼 challenge，包括 sequence/trapIds",
+                note="读取试炼 challenge，包括 mode 与题面字段",
             ),
             MiniAppFlowStep(
                 key="solve",
@@ -178,7 +178,7 @@ def build_trial_miniapp_flow_plan():
                 method="LOCAL",
                 required_payload_keys=("challenge",),
                 sends_init_data=False,
-                note="本地按 sequence 生成 trialProof，不触发陷阱",
+                note="本地按 mode 生成 trialProof；支持点穴、锁阵、忆阵、魔网、观星",
             ),
             MiniAppFlowStep(
                 key="finish",
@@ -219,12 +219,389 @@ def classify_trial_miniapp_error(error):
     return "failed"
 
 
+def _trial_duration_ms(challenge, *, rng):
+    try:
+        min_duration_ms = int(challenge.get("minDurationMs", TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS) or TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS)
+    except (TypeError, ValueError, OverflowError):
+        min_duration_ms = TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS
+    try:
+        max_duration_ms = int(challenge.get("maxDurationMs", TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS) or TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS)
+    except (TypeError, ValueError, OverflowError):
+        max_duration_ms = TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS
+
+    pad_low, pad_high = TRIAL_MINIAPP_DEFAULT_DURATION_PADDING_MS
+    lower = max(min_duration_ms + pad_low, 5_000)
+    upper = min(max_duration_ms, min_duration_ms + pad_high)
+    if upper < lower:
+        upper = lower
+    return int(rng.randint(lower, upper))
+
+
+def _trial_event_times(count, duration_ms, *, rng, start_ms=250):
+    count = max(0, int(count or 0))
+    duration_ms = max(1, int(duration_ms or 1))
+    if count <= 0:
+        return []
+    start_ms = max(0, min(int(start_ms or 0), max(0, duration_ms - 100)))
+    usable_ms = max(1, duration_ms - start_ms - 100)
+    step_ms = usable_ms / max(1, count)
+    times = []
+    last = 0
+    for index in range(count):
+        jitter = int(rng.randint(0, max(1, int(step_ms * 0.18))))
+        value = start_ms + int(step_ms * (index + 0.55)) + jitter
+        value = min(duration_ms, max(last + 20, value))
+        times.append(value)
+        last = value
+    return times
+
+
+def _lights_out_size(challenge):
+    try:
+        size = int(round(float(challenge.get("gridSize", challenge.get("grid_size", 4)) or 4)))
+    except (TypeError, ValueError, OverflowError):
+        size = 4
+    return min(5, max(4, size))
+
+
+def _lights_out_target_state(challenge):
+    value = challenge.get("targetState", challenge.get("target_state", 1))
+    try:
+        return 1 if int(value or 0) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 1
+
+
+def _lights_out_neighbors(index, size):
+    row, col = divmod(int(index), int(size))
+    result = [index]
+    if row > 0:
+        result.append(index - size)
+    if row < size - 1:
+        result.append(index + size)
+    if col > 0:
+        result.append(index - 1)
+    if col < size - 1:
+        result.append(index + 1)
+    return result
+
+
+def _toggle_lights_out(cells, index, size):
+    for target in _lights_out_neighbors(index, size):
+        cells[target] = 0 if int(cells[target]) else 1
+
+
+def solve_lights_out_moves(challenge):
+    challenge = dict(challenge or {})
+    size = _lights_out_size(challenge)
+    target = _lights_out_target_state(challenge)
+    raw_cells = list(challenge.get("cells") or ())
+    cells = [(1 if int(value or 0) else 0) for value in raw_cells[: size * size]]
+    if len(cells) != size * size:
+        cells = [target for _ in range(size * size)]
+
+    best_moves = None
+    best_cells = None
+    for first_row_mask in range(1 << size):
+        state = list(cells)
+        moves = []
+        for col in range(size):
+            if first_row_mask & (1 << col):
+                moves.append(col)
+                _toggle_lights_out(state, col, size)
+        for row in range(size - 1):
+            for col in range(size):
+                index = row * size + col
+                if int(state[index]) != target:
+                    press = (row + 1) * size + col
+                    moves.append(press)
+                    _toggle_lights_out(state, press, size)
+        if all(int(value) == target for value in state):
+            if best_moves is None or len(moves) < len(best_moves):
+                best_moves = list(moves)
+                best_cells = list(state)
+    if best_moves is None:
+        raise ValueError("lights-out challenge unsolved")
+    return best_moves, best_cells or [target for _ in range(size * size)]
+
+
+def _build_lights_out_proof(challenge, *, rng):
+    challenge = dict(challenge or {})
+    challenge_id = str(challenge.get("challengeId") or "").strip()
+    if not challenge_id:
+        raise ValueError("challengeId missing")
+    moves, final_cells = solve_lights_out_moves(challenge)
+    duration_ms = _trial_duration_ms(challenge, rng=rng)
+    interval = duration_ms / max(1, len(moves) + 1)
+    events = []
+    for offset, index in enumerate(moves, start=1):
+        jitter = int(rng.randint(0, max(1, int(interval * 0.16))))
+        events.append({"index": int(index), "t": min(duration_ms, int(interval * offset) + jitter)})
+    return {
+        "mode": "tianjiLightsOutV1",
+        "challengeId": challenge_id,
+        "durationMs": duration_ms,
+        "events": events,
+        "cells": final_cells,
+    }
+
+
+def _memory_pair_key(card):
+    card = dict(card or {})
+    for key in ("pair", "symbol", "name"):
+        value = str(card.get(key) or "").strip()
+        if value:
+            return value
+    card_id = str(card.get("id") or "").strip()
+    return card_id.rsplit("_", 1)[0] if "_" in card_id else card_id
+
+
+def _build_memory_proof(challenge, *, rng):
+    challenge = dict(challenge or {})
+    challenge_id = str(challenge.get("challengeId") or "").strip()
+    if not challenge_id:
+        raise ValueError("challengeId missing")
+    cards = [dict(card) for card in (challenge.get("cards") or ()) if isinstance(card, dict)]
+    pairs = {}
+    for card in cards:
+        key = _memory_pair_key(card)
+        if key:
+            pairs.setdefault(key, []).append(card)
+
+    ordered_cards = []
+    for group in pairs.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda item: int(item.get("index", 0) or 0))
+        ordered_cards.extend(group[:2])
+    if len(ordered_cards) != len(cards):
+        seen = {str(card.get("id")) for card in ordered_cards}
+        for card in cards:
+            if str(card.get("id")) not in seen:
+                ordered_cards.append(card)
+
+    try:
+        preview_ms = int(challenge.get("previewMs", challenge.get("preview_ms", 0)) or 0)
+    except (TypeError, ValueError, OverflowError):
+        preview_ms = 0
+    duration_ms = max(_trial_duration_ms(challenge, rng=rng), preview_ms + len(ordered_cards) * 260 + 500)
+    times = _trial_event_times(len(ordered_cards), duration_ms, rng=rng, start_ms=preview_ms + 180)
+    events = []
+    for index, card in enumerate(ordered_cards):
+        events.append({
+            "id": str(card.get("id") or ""),
+            "index": index,
+            "t": times[index] if index < len(times) else duration_ms,
+        })
+    return {
+        "mode": "tianjiMemoryV1",
+        "challengeId": challenge_id,
+        "durationMs": duration_ms,
+        "events": events,
+        "mismatches": 0,
+    }
+
+
+def _build_stargaze_proof(challenge, *, rng):
+    challenge = dict(challenge or {})
+    challenge_id = str(challenge.get("challengeId") or "").strip()
+    if not challenge_id:
+        raise ValueError("challengeId missing")
+    angles = {}
+    moves = 0
+    for star in (challenge.get("stars") or ()):
+        if not isinstance(star, dict):
+            continue
+        star_id = str(star.get("id") or "").strip()
+        if not star_id:
+            continue
+        target = star.get("targetAngle", star.get("target_angle", star.get("angle", 0)))
+        try:
+            target_angle = float(target or 0) % 360
+        except (TypeError, ValueError, OverflowError):
+            target_angle = 0.0
+        angles[star_id] = target_angle
+        try:
+            current_angle = float(star.get("angle", 0) or 0) % 360
+        except (TypeError, ValueError, OverflowError):
+            current_angle = 0.0
+        if abs(((current_angle - target_angle + 540) % 360) - 180) > 0.1:
+            moves += 1
+    return {
+        "mode": "tianjiStargazeV1",
+        "challengeId": challenge_id,
+        "durationMs": _trial_duration_ms(challenge, rng=rng),
+        "angles": angles,
+        "moves": moves,
+        "misses": 0,
+    }
+
+
+def _edge_crosses(a, b, c, d):
+    def orient(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    def between(p, q, r):
+        return (
+            min(p[0], r[0]) <= q[0] <= max(p[0], r[0])
+            and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
+        )
+
+    o1 = orient(a, b, c)
+    o2 = orient(a, b, d)
+    o3 = orient(c, d, a)
+    o4 = orient(c, d, b)
+    if o1 == 0 and between(a, c, b):
+        return True
+    if o2 == 0 and between(a, d, b):
+        return True
+    if o3 == 0 and between(c, a, d):
+        return True
+    if o4 == 0 and between(c, b, d):
+        return True
+    return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
+
+
+def _planarity_crossing_count(edges, positions):
+    count = 0
+    normalized = []
+    for edge in edges:
+        left = str(edge.get("from") or edge.get("source") or "").strip()
+        right = str(edge.get("to") or edge.get("target") or "").strip()
+        if left and right and left in positions and right in positions and left != right:
+            normalized.append((left, right))
+    for idx, (a, b) in enumerate(normalized):
+        for c, d in normalized[idx + 1:]:
+            if len({a, b, c, d}) < 4:
+                continue
+            if _edge_crosses(positions[a], positions[b], positions[c], positions[d]):
+                count += 1
+    return count
+
+
+def _circle_positions(node_ids, *, radius=38, center=(50, 50)):
+    import math
+
+    total = max(1, len(node_ids))
+    result = {}
+    for index, node_id in enumerate(node_ids):
+        angle = (2 * math.pi * index / total) - (math.pi / 2)
+        result[node_id] = (
+            center[0] + math.cos(angle) * radius,
+            center[1] + math.sin(angle) * radius,
+        )
+    return result
+
+
+def _build_planarity_positions(challenge, *, rng):
+    nodes = [dict(node) for node in (challenge.get("nodes") or ()) if isinstance(node, dict)]
+    edges = [dict(edge) for edge in (challenge.get("edges") or ()) if isinstance(edge, dict)]
+    node_ids = [str(node.get("id") or "").strip() for node in nodes if str(node.get("id") or "").strip()]
+    locked_ids = {str(item) for item in (challenge.get("lockedNodeIds") or challenge.get("locked_node_ids") or ())}
+    locked_ids.update(str(node.get("id")) for node in nodes if node.get("locked"))
+    initial = {}
+    for node in nodes:
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        try:
+            initial[node_id] = (float(node.get("x", 50) or 50), float(node.get("y", 50) or 50))
+        except (TypeError, ValueError, OverflowError):
+            initial[node_id] = (50.0, 50.0)
+
+    degree = {node_id: 0 for node_id in node_ids}
+    for edge in edges:
+        left = str(edge.get("from") or edge.get("source") or "").strip()
+        right = str(edge.get("to") or edge.get("target") or "").strip()
+        if left in degree:
+            degree[left] += 1
+        if right in degree:
+            degree[right] += 1
+
+    unlocked = [node_id for node_id in node_ids if node_id not in locked_ids]
+    best = dict(initial)
+    best_count = _planarity_crossing_count(edges, best)
+    if best_count == 0:
+        return best, 0
+
+    candidates = []
+    if unlocked:
+        candidates.append((None, list(unlocked)))
+        for center_id, _degree in sorted(degree.items(), key=lambda item: item[1], reverse=True)[:3]:
+            if center_id in unlocked:
+                candidates.append((center_id, [node_id for node_id in unlocked if node_id != center_id]))
+
+    for center_id, ring_ids in candidates:
+        ordered = sorted(ring_ids, key=lambda node_id: (-degree.get(node_id, 0), node_id))
+        for attempt in range(160):
+            trial_order = list(ordered)
+            if attempt:
+                rng.shuffle(trial_order)
+            candidate = dict(initial)
+            candidate.update(_circle_positions(trial_order))
+            if center_id:
+                candidate[center_id] = (50.0, 50.0)
+            count = _planarity_crossing_count(edges, candidate)
+            if count < best_count:
+                best = candidate
+                best_count = count
+                if count == 0:
+                    return best, best_count
+
+    for _attempt in range(800):
+        candidate = dict(best)
+        for node_id in unlocked:
+            candidate[node_id] = (rng.uniform(8, 92), rng.uniform(8, 92))
+        count = _planarity_crossing_count(edges, candidate)
+        if count < best_count:
+            best = candidate
+            best_count = count
+            if count == 0:
+                return best, best_count
+    return best, best_count
+
+
+def _build_planarity_proof(challenge, *, rng):
+    challenge = dict(challenge or {})
+    challenge_id = str(challenge.get("challengeId") or "").strip()
+    if not challenge_id:
+        raise ValueError("challengeId missing")
+    positions, crossing_count = _build_planarity_positions(challenge, rng=rng)
+    if crossing_count:
+        raise ValueError("planarity challenge unsolved")
+    serializable_positions = {
+        node_id: {"x": round(float(point[0]), 3), "y": round(float(point[1]), 3)}
+        for node_id, point in positions.items()
+    }
+    unlocked_count = len([
+        node for node in (challenge.get("nodes") or ())
+        if isinstance(node, dict) and not node.get("locked")
+    ])
+    return {
+        "mode": "tianjiPlanarityV1",
+        "challengeId": challenge_id,
+        "durationMs": _trial_duration_ms(challenge, rng=rng),
+        "positions": serializable_positions,
+        "moves": max(1, unlocked_count),
+        "misses": 0,
+    }
+
+
 def build_trial_proof(challenge, *, rng=None):
     rng = rng or random
     challenge = dict(challenge or {})
     challenge_id = str(challenge.get("challengeId") or "").strip()
     if not challenge_id:
         raise ValueError("challengeId missing")
+    mode = str(challenge.get("mode") or "").strip()
+    if mode == "tianjiLightsOutV1":
+        return _build_lights_out_proof(challenge, rng=rng)
+    if mode == "tianjiMemoryV1":
+        return _build_memory_proof(challenge, rng=rng)
+    if mode == "tianjiStargazeV1":
+        return _build_stargaze_proof(challenge, rng=rng)
+    if mode == "tianjiPlanarityV1":
+        return _build_planarity_proof(challenge, rng=rng)
 
     sequence = list(challenge.get("sequence") or ())
     points = list(challenge.get("points") or ())
@@ -244,25 +621,17 @@ def build_trial_proof(challenge, *, rng=None):
             "y": point.get("y", 50),
         })
 
-    try:
-        min_duration_ms = int(challenge.get("minDurationMs", TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS) or TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS)
-    except (TypeError, ValueError, OverflowError):
-        min_duration_ms = TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS
-    try:
-        max_duration_ms = int(challenge.get("maxDurationMs", TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS) or TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS)
-    except (TypeError, ValueError, OverflowError):
-        max_duration_ms = TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS
-
-    pad_low, pad_high = TRIAL_MINIAPP_DEFAULT_DURATION_PADDING_MS
-    lower = max(min_duration_ms + pad_low, 5_000)
-    upper = min(max_duration_ms, min_duration_ms + pad_high)
-    if upper < lower:
-        upper = lower
-    duration_ms = int(rng.randint(lower, upper))
+    duration_ms = _trial_duration_ms(challenge, rng=rng)
+    event_times = _trial_event_times(len(taps), duration_ms, rng=rng)
     proof = {
         "mode": str(challenge.get("mode") or "tianjiMeridianV1"),
         "challengeId": challenge_id,
         "durationMs": duration_ms,
+        "events": [
+            {"id": str(tap["id"]), "index": index, "t": event_times[index] if index < len(event_times) else duration_ms}
+            for index, tap in enumerate(taps)
+        ],
+        "moves": len(taps),
         "sequence": sequence,
         "taps": taps,
         "trapHits": trap_hits,
@@ -338,7 +707,22 @@ def run_trial_miniapp_lab_flow(
     challenge, trial = _challenge_from_start(start_result.data)
     if not challenge:
         return _flow_result(False, "not_ready", data={"trial_keys": sorted(trial)}, events=events)
-    proof = build_trial_proof(challenge, rng=rng)
+    try:
+        proof = build_trial_proof(challenge, rng=rng)
+    except Exception as exc:
+        events.append({
+            "step": "solve",
+            "ok": False,
+            "mode": sanitize_webapp_secret_text(challenge.get("mode") or "", limit=80),
+            "error": sanitize_webapp_secret_text(exc),
+        })
+        return _flow_result(
+            False,
+            "solve_failed",
+            error=exc,
+            data={"challenge_keys": sorted(str(key) for key in challenge)},
+            events=events,
+        )
     events.append({
         "step": "solve",
         "ok": True,

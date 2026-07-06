@@ -1,4 +1,6 @@
 (function () {
+  var currentMiniAppSnapshot = null;
+
   function esc(value) {
     if (typeof escapeHtml === 'function') return escapeHtml(value);
     return String(value == null ? '' : value)
@@ -50,6 +52,11 @@
     return '<span class="miniapp-badge miniapp-badge-' + esc(tone || 'neutral') + '">' + esc(text) + '</span>';
   }
 
+  function compactList(values, emptyText) {
+    var list = Array.isArray(values) ? values.filter(Boolean) : [];
+    return esc(list.length ? list.join(', ') : (emptyText || '-'));
+  }
+
   function renderAdapter(adapter, probeByKey, runByKey, planByKey) {
     var key = adapter.game_key || '';
     var probe = probeByKey[key] || null;
@@ -62,6 +69,7 @@
     var runButton = runner
       ? '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-run="' + esc(key) + '">手动执行</button>'
       : '';
+    var captureButton = '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-capture="' + esc(key) + '">协议摘要</button>';
     var stepText = steps.map(function (step) { return step.key || step.endpoint || ''; }).filter(Boolean).slice(0, 8).join(' → ');
     return ''
       + '<article class="miniapp-item">'
@@ -70,22 +78,74 @@
       + '<div class="miniapp-item-meta">'
       + badge(adapter.default_enabled ? '默认开' : '默认关', adapter.default_enabled ? 'warn' : 'ok')
       + badge(adapter.manual_only ? '手动' : '调度', adapter.manual_only ? 'ok' : 'warn')
+      + badge(adapter.ui_group_label || 'MiniApp合集', adapter.ui_group === 'sect' ? 'neutral' : 'ok')
       + (adapter.api_base_url ? badge(adapter.api_base_url, 'neutral') : '')
       + '</div>'
       + (stepText ? '<div class="miniapp-flow">' + esc(stepText) + '</div>' : '')
       + '</div>'
-      + '<div class="miniapp-item-actions">' + actionButton + runButton + '</div>'
+      + '<div class="miniapp-item-actions">' + actionButton + runButton + captureButton + '</div>'
       + '</article>';
+  }
+
+  function renderAdapterGroup(group, adapters, probeByKey, runByKey, planByKey) {
+    var groupAdapters = adapters.filter(function (adapter) {
+      return (adapter.ui_group || 'miniapp') === group.key;
+    });
+    if (!groupAdapters.length) return '';
+    return ''
+      + '<section class="miniapp-group">'
+      + '<div class="miniapp-group-title">' + esc(group.label || group.key) + '</div>'
+      + groupAdapters.map(function (adapter) {
+        return renderAdapter(adapter, probeByKey, runByKey, planByKey);
+      }).join('')
+      + '</section>';
+  }
+
+  function renderCaptureSummary(summary) {
+    var panel = document.getElementById('miniapp-capture-panel');
+    if (!panel) return;
+    if (!summary || !summary.game_key) {
+      panel.innerHTML = '<div class="miniapp-empty">暂无协议摘要</div>';
+      return;
+    }
+    var endpoints = Array.isArray(summary.endpoints) ? summary.endpoints : [];
+    var endpointHtml = endpoints.length ? endpoints.map(function (item) {
+      return ''
+        + '<article class="miniapp-capture-item">'
+        + '<div class="miniapp-capture-head"><strong>' + esc(item.method || 'POST') + ' ' + esc(item.url_path || '') + '</strong><span>' + esc(item.step_key || '') + '</span></div>'
+        + '<div class="miniapp-item-meta">'
+        + badge('样本 ' + (item.count || 0), 'neutral')
+        + badge('OK ' + (item.ok_count || 0), 'ok')
+        + (item.error_count ? badge('错误 ' + item.error_count, 'warn') : '')
+        + (item.avg_elapsed_ms ? badge(String(item.avg_elapsed_ms) + 'ms', 'neutral') : '')
+        + '</div>'
+        + '<div class="miniapp-flow">请求：' + compactList(item.request_payload_keys) + '</div>'
+        + '<div class="miniapp-flow">回包：' + compactList(item.response_keys) + '</div>'
+        + (item.latest_error ? '<div class="miniapp-flow miniapp-error">最近错误：' + esc(item.latest_error) + '</div>' : '')
+        + '</article>';
+    }).join('') : '<div class="miniapp-empty">还没有 capture 样本</div>';
+    panel.innerHTML = ''
+      + '<div class="miniapp-capture-title">'
+      + '<strong>协议摘要：' + esc(summary.game_key) + '</strong>'
+      + '<span>' + esc(summary.day || '') + '｜样本 ' + esc(summary.scanned_records || 0) + '/' + esc(summary.total_records || 0) + '</span>'
+      + '</div>'
+      + '<div class="miniapp-flow">AI 交接：' + esc((summary.ai_handoff && summary.ai_handoff.rule) || '') + '</div>'
+      + '<div class="miniapp-capture-list">' + endpointHtml + '</div>';
   }
 
   function renderMiniAppStatus(snapshot) {
     var body = document.getElementById('miniapp-modal-body');
     if (!body) return;
     var miniapp = (snapshot && snapshot.miniapp) || {};
+    currentMiniAppSnapshot = miniapp;
     var adapters = Array.isArray(miniapp.adapters) ? miniapp.adapters : [];
     var probes = Array.isArray(miniapp.entry_probe_commands) ? miniapp.entry_probe_commands : [];
     var runners = Array.isArray(miniapp.manual_run_commands) ? miniapp.manual_run_commands : [];
     var plans = miniapp.flow_plans || {};
+    var groups = Array.isArray(miniapp.ui_groups) ? miniapp.ui_groups : [
+      {key: 'miniapp', label: 'MiniApp合集'},
+      {key: 'sect', label: '宗门玩法'}
+    ];
     var probeByKey = {};
     var runByKey = {};
     probes.forEach(function (item) { probeByKey[item.game_key] = item; });
@@ -103,10 +163,11 @@
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + '</div>'
       + '<div class="miniapp-list">'
-      + (adapters.length ? adapters.map(function (adapter) {
-        return renderAdapter(adapter, probeByKey, runByKey, plans);
+      + (adapters.length ? groups.map(function (group) {
+        return renderAdapterGroup(group, adapters, probeByKey, runByKey, plans);
       }).join('') : '<div class="miniapp-empty">暂无 MiniApp registry</div>')
-      + '</div>';
+      + '</div>'
+      + '<div id="miniapp-capture-panel" class="miniapp-capture-panel"><div class="miniapp-empty">选择玩法查看协议摘要</div></div>';
   }
 
   async function refreshMiniAppStatus() {
@@ -176,6 +237,25 @@
     }
   }
 
+  async function loadCaptureSummary(gameKey, button) {
+    if (!gameKey) return;
+    if (button) button.disabled = true;
+    var panel = document.getElementById('miniapp-capture-panel');
+    if (panel) panel.innerHTML = '<div class="miniapp-empty">读取协议摘要中</div>';
+    try {
+      var response = await fetch('/api/miniapp-capture-summary?game_key=' + encodeURIComponent(gameKey) + '&limit=200', {
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
+      var data = await parseResponse(response);
+      renderCaptureSummary(data.capture || null);
+    } catch (error) {
+      if (panel) panel.innerHTML = '<div class="miniapp-empty miniapp-error">' + esc((error && error.message) || '协议摘要读取失败') + '</div>';
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   document.addEventListener('click', function (event) {
     if (event.target.closest('[data-open-miniapp]')) {
       openMiniAppModal();
@@ -197,6 +277,11 @@
     var runBtn = event.target.closest('[data-miniapp-run]');
     if (runBtn) {
       runManualMiniApp(runBtn.getAttribute('data-miniapp-run'), runBtn);
+      return;
+    }
+    var captureBtn = event.target.closest('[data-miniapp-capture]');
+    if (captureBtn) {
+      loadCaptureSummary(captureBtn.getAttribute('data-miniapp-capture'), captureBtn);
     }
   });
 

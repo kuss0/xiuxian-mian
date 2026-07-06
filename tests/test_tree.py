@@ -564,6 +564,38 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         rush_exhausted = dict(stable, rush_used=2, rush_limit=2)
         self.assertEqual((".定脉 注灵 木", "主脉注灵"), tree._choose_tree_pulse_command(rush_exhausted))
 
+    async def test_tree_pulse_strategy_respects_available_commands_from_panel(self):
+        panel = (
+            "【落云宗 · 灵眼之树】\n"
+            "⚙️ 当前玩法: 云梦灵眼定脉\n"
+            "🌲 进度: ⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜ 2.72% | 阶段 1/4\n"
+            "🧭 今日脉象: 主【火】 / 辅【土】 / 逆【木】\n"
+            "🧷 脉稳: 88/100 | ☁️ 浊息/紊乱: 39/17 | 定脉令 1/6 冲脉 0/2\n"
+            "指令: .定脉 注灵 木 / .定脉 净浊\n"
+        )
+        parsed = tree.parse_tree_pulse_panel(panel)
+
+        self.assertEqual([".定脉 注灵 木", ".定脉 净浊"], parsed["available_commands"])
+        self.assertEqual((".定脉 注灵 木", "面板可用注灵"), tree._choose_tree_pulse_command(parsed))
+
+    async def test_tree_pulse_strategy_prefers_available_cleanse_when_dirty(self):
+        parsed = {
+            "progress": 50.0,
+            "main": "火",
+            "aux": "土",
+            "reverse": "木",
+            "neutral_elements": [],
+            "stability": 88,
+            "turbidity": 65,
+            "daily_used": 1,
+            "daily_limit": 6,
+            "rush_used": 0,
+            "rush_limit": 2,
+            "available_commands": [".定脉 注灵 木", ".定脉 净浊"],
+        }
+
+        self.assertEqual((".定脉 净浊", "浊息过高"), tree._choose_tree_pulse_command(parsed))
+
     async def test_tree_pulse_full_progress_stops_actions(self):
         now = 1000.0
         identity_id = 3800619925

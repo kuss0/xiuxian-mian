@@ -244,6 +244,33 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handled)
         flow_mock.assert_not_awaited()
 
+    async def test_miniapp_entry_respects_global_pause_before_http(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 51, 0)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            with (
+                patch.object(fishing_runtime, "get_global_enabled", return_value=False),
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock()) as flow_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=600),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            flow_mock.assert_not_awaited()
+            self.assertIn("全局暂停", state_module.state["fishing_last_result"])
+            self.assertEqual(now + 600, state_module.state["next_fishing_time"])
+            audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
+            self.assertIn("全局暂停", audit_text)
+
     async def test_miniapp_entry_runs_flow_and_updates_daily_counter(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 7, 52, 0)

@@ -17,8 +17,14 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._miniapp_manual_auth = dict(stargazer._MINIAPP_MANUAL_AUTH_UNTIL)
+        stargazer._MINIAPP_MANUAL_AUTH_UNTIL.clear()
+        stargazer._MINIAPP_RUN_LOCKS.clear()
 
     def tearDown(self):
+        stargazer._MINIAPP_MANUAL_AUTH_UNTIL.clear()
+        stargazer._MINIAPP_MANUAL_AUTH_UNTIL.update(self._miniapp_manual_auth)
+        stargazer._MINIAPP_RUN_LOCKS.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -115,6 +121,7 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(identity_id):
             state_module.state["stargazer_enabled"] = True
+            stargazer.authorize_stargazer_miniapp_manual_run(identity_id, now=now)
             state_module.state["stargazer_followup_due_at"] = now - 1
             state_module.state["stargazer_queued_action"] = "guide"
             state_module.state["stargazer_last_action"] = "queue_guide"
@@ -169,6 +176,43 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(state_module.state["next_stargazer_panel_time"], now + 60)
             self.assertEqual(456, state_module.state["stargazer_last_panel_msg_id"])
             self.assertFalse(state_module.state["stargazer_collect_ready"])
+            self.assertNotIn(identity_id, stargazer._MINIAPP_MANUAL_AUTH_UNTIL)
+
+    async def test_miniapp_entry_without_manual_auth_pauses_legacy_chain_without_http(self):
+        now = 1000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        button = SimpleNamespace(
+            text="进入灵圃",
+            button=SimpleNamespace(url="https://t.me/fanrenxiuxian_bot/app?startapp=farm_SECRET999"),
+        )
+        event = SimpleNamespace(id=457, message=SimpleNamespace(buttons=[[button]]))
+
+        class Reply:
+            raw_text = ".观星台"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "queue_guide"
+            with (
+                patch.object(stargazer, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(stargazer, "run_stargazer_miniapp_production_flow", new=AsyncMock()) as flow_mock,
+            ):
+                handled = await stargazer.handle_stargazer_miniapp_entry(
+                    event,
+                    "【星宫 · 观星台】\n@lab 的引星盘已接入宗门灵圃。\n\n点击下方 进入灵圃。",
+                    now,
+                    Reply(),
+                    matched_family="stargazer_panel",
+                    result_msg_id=457,
+                )
+
+        self.assertTrue(handled)
+        flow_mock.assert_not_awaited()
+        self.assertEqual(stargazer.STARGAZER_MINIAPP_PAUSED_ACTION, state_module.state["stargazer_last_action"])
+        self.assertEqual(457, state_module.state["stargazer_last_panel_msg_id"])
+        audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
+        self.assertIn("未手动授权", audit_text)
 
     async def test_scheduler_queues_panel_when_numeric_panel_cooldown_due(self):
         now = 1000.0

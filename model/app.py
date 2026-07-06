@@ -1023,6 +1023,41 @@ async def _dispatch_stargazer_broadcast_fallbacks(event, text, now):
         await _run_for_all_identities(handle_stargazer_panel, text, now, False)
 
 
+async def _handle_trial_miniapp_broadcast_entry(text, now, event):
+    return await handle_trial_miniapp_entry(
+        event,
+        text,
+        now,
+        reply_to=None,
+        matched_family=None,
+        result_msg_id=getattr(event, "id", 0),
+        require_identity_match=True,
+    )
+
+
+async def _handle_cave_treasure_miniapp_broadcast_entry(text, now, event):
+    return await handle_cave_treasure_miniapp_entry(
+        event,
+        text,
+        now,
+        reply_to=None,
+        matched_family=None,
+        result_msg_id=getattr(event, "id", 0),
+        require_identity_match=True,
+    )
+
+
+async def _dispatch_miniapp_broadcast_fallbacks(event, text, now):
+    raw_text = str(text or "")
+    if "天机试炼台" in raw_text and _claim_runtime_event(event, scope="trial_miniapp_orphan_entry"):
+        if await _run_until_handled_for_enabled_identities(_handle_trial_miniapp_broadcast_entry, raw_text, now, event):
+            return True
+    if "洞府" in raw_text and _claim_runtime_event(event, scope="cave_treasure_miniapp_orphan_entry"):
+        if await _run_until_handled_for_enabled_identities(_handle_cave_treasure_miniapp_broadcast_entry, raw_text, now, event):
+            return True
+    return False
+
+
 async def _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="guanxing_monitor_broadcast"):
         await handle_guanxing_monitor_broadcast(text, now)
@@ -2229,6 +2264,10 @@ async def on_message(event):
 
         if await _dispatch_fishing_swallowed_reply_fallback(event, text, now, event_kind="message"):
             await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "fishing"}, event_kind="message"), now)
+            return
+
+        if await _dispatch_miniapp_broadcast_fallbacks(event, text, now):
+            await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "miniapp"}, event_kind="message"), now)
             return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)

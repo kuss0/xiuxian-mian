@@ -36,6 +36,11 @@ RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     re.IGNORECASE,
 )
 RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|rpt|stk|trial|df)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
+RE_SECRET_HEADER_ASSIGNMENT = re.compile(
+    r"\b(?P<key>authorization|proxy-authorization|cookie|set-cookie|x-telegram-bot-api-secret-token)\s*[:=]\s*(?P<value>[^\s,;]+(?:\s+[^\s,;]+)?)",
+    re.IGNORECASE,
+)
+RE_BEARER_SECRET = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{6,}", re.IGNORECASE)
 SENSITIVE_MINIAPP_EVENT_KEYWORDS = (
     "tgwebappdata",
     "initdata",
@@ -101,9 +106,17 @@ def _summarize_start_param(value):
 
 def sanitize_webapp_secret_text(text, *, limit=220):
     raw_text = str(text or "")
+    sanitized = RE_SECRET_HEADER_ASSIGNMENT.sub(
+        lambda match: f"{match.group('key')}: <redacted>",
+        raw_text,
+    )
     sanitized = RE_SENSITIVE_QUERY_ASSIGNMENT.sub(
         lambda match: f"{match.group('key')}=<redacted>",
-        raw_text,
+        sanitized,
+    )
+    sanitized = RE_BEARER_SECRET.sub(
+        "Bearer <redacted>",
+        sanitized,
     )
     sanitized = RE_MINIAPP_START_TOKEN.sub(
         lambda match: f"{match.group('kind').lower()}_<redacted>",
@@ -879,7 +892,7 @@ class MiniAppCaptureStore:
         self.records = []
 
     def append(self, record):
-        safe = record.safe_record() if hasattr(record, "safe_record") else dict(record or {})
+        safe = record.safe_record() if hasattr(record, "safe_record") else safe_miniapp_event_detail(dict(record or {}))
         if self.keep_memory:
             self.records.append(safe)
         if self.path is not None:
@@ -960,7 +973,7 @@ def _emit_miniapp_capture(capture_sink, record):
         return
     safe = record.safe_record() if hasattr(record, "safe_record") else dict(record or {})
     if hasattr(capture_sink, "append"):
-        capture_sink.append(safe)
+        capture_sink.append(record if isinstance(capture_sink, MiniAppCaptureStore) else safe)
         return
     capture_sink(safe)
 

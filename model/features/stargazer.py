@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, track_reply_chain_message
-from ..state import get_current_identity_id, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
+from ..state import get_current_identity_id, get_global_enabled, get_identity_enabled, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from ..webapp_core import MiniAppCaptureStore
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -57,6 +57,7 @@ STARGAZER_MINIAPP_ENTRY_KEYWORDS = (
 STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
 STARGAZER_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 _MINIAPP_MANUAL_AUTH_UNTIL = {}
+_MINIAPP_RUN_LOCKS = {}
 
 
 def _identity_id(value=None):
@@ -88,6 +89,17 @@ def _has_stargazer_miniapp_manual_auth(identity_id, now):
         _MINIAPP_MANUAL_AUTH_UNTIL.pop(identity_id, None)
         return False
     return True
+
+
+def _stargazer_miniapp_run_lock(identity_id):
+    import asyncio
+
+    identity_id = _identity_id(identity_id)
+    lock = _MINIAPP_RUN_LOCKS.get(identity_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _MINIAPP_RUN_LOCKS[identity_id] = lock
+    return lock
 
 
 def _has_pending_stargazer_command():
@@ -481,8 +493,6 @@ async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
 async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
     identity_id = get_current_identity_id()
     manual_auth = _has_stargazer_miniapp_manual_auth(identity_id, now)
-    if not state.get("stargazer_enabled") and not manual_auth:
-        return False
 
     launch = extract_stargazer_miniapp_launch(event, message_text=text)
     looks_like_entry = _looks_like_stargazer_miniapp_entry(text)
@@ -490,9 +500,36 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
         return False
     if not launch and not _is_stargazer_panel_reply(reply_to, matched_family=matched_family):
         return False
+    if not manual_auth and not state.get("stargazer_enabled"):
+        return False
 
     was_paused = _is_stargazer_miniapp_paused()
     _pause_stargazer_legacy_chain(now, result_msg_id=result_msg_id or getattr(event, "id", 0) or 0)
+
+    if not manual_auth:
+        if not was_paused:
+            await send_audit_log(
+                "🔭 观星台已识别 MiniApp 入口，旧文本自动链路已暂停；未手动授权，不运行 WebView/HTTP。",
+                scope="identity",
+                priority="low",
+                limit=190,
+            )
+        return True
+
+    global_enabled = get_global_enabled()
+    identity_enabled = get_identity_enabled(identity_id)
+    if not global_enabled or not identity_enabled:
+        revoke_stargazer_miniapp_manual_run(identity_id)
+        reason = "全局暂停" if not global_enabled else "身份已停用"
+        if not was_paused:
+            await send_audit_log(
+                f"🔭 观星台 MiniApp {reason}，旧文本自动链路已暂停；已跳过 WebView/HTTP 接管。",
+                scope="identity",
+                priority="low",
+                limit=190,
+            )
+        return True
+
     if manual_auth:
         revoke_stargazer_miniapp_manual_run(identity_id)
     if not launch:
@@ -505,23 +542,29 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
             )
         return True
 
+    lock = _stargazer_miniapp_run_lock(identity_id)
+    if lock.locked():
+        await send_audit_log("🔭 观星台 MiniApp 已在执行，重复入口忽略。", scope="identity", priority="low", limit=160)
+        return True
+
     star_choice = get_stargazer_star_choice()
-    if not was_paused:
-        await send_audit_log(
-            "🔭 观星台 MiniApp 接管入口，开始 WebView/HTTP 流程。",
-            scope="identity",
-            priority="low",
-            limit=180,
+    async with lock:
+        if not was_paused:
+            await send_audit_log(
+                "🔭 观星台 MiniApp 接管入口，开始 WebView/HTTP 流程。",
+                scope="identity",
+                priority="low",
+                limit=180,
+            )
+        result = await run_stargazer_miniapp_production_flow(
+            identity_id,
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            star_choice=star_choice,
+            capture_sink=_stargazer_miniapp_capture_store(now),
+            capture_source=f"stargazer_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
         )
-    result = await run_stargazer_miniapp_production_flow(
-        identity_id,
-        token=launch.get("token"),
-        webview_url=launch.get("webview_url"),
-        star_choice=star_choice,
-        capture_sink=_stargazer_miniapp_capture_store(now),
-        capture_source=f"stargazer_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
-    )
-    return await _finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
+        return await _finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
 
 
 async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None):

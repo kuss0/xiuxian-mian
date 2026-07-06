@@ -29,6 +29,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module.ensure_identity_registered(1001)
+        state_module.update_send_as_profile(1001, username="xuruode4", label="竹灵 2")
 
     def tearDown(self):
         trial_runtime._MANUAL_AUTH_UNTIL.clear()
@@ -74,6 +75,25 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
         self.assertIn("天机试炼 MiniApp 接管入口", audit_text)
         self.assertIn("天机试炼结果", audit_text)
+
+    async def test_trial_entry_respects_global_pause_before_http(self):
+        trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0)
+        with state_module.use_identity(1001):
+            with patch.object(trial_runtime, "get_global_enabled", return_value=False), \
+                    patch.object(trial_runtime, "run_trial_miniapp_production_flow", new=AsyncMock()) as flow_mock, \
+                    patch.object(trial_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+                handled = await trial_runtime.handle_trial_miniapp_entry(
+                    _trial_event(),
+                    "【天机试炼台】灵脉点穴",
+                    1_700_000_001.0,
+                    result_msg_id=5001,
+                )
+
+        self.assertTrue(handled)
+        flow_mock.assert_not_awaited()
+        self.assertNotIn(1001, trial_runtime._MANUAL_AUTH_UNTIL)
+        audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
+        self.assertIn("全局暂停", audit_text)
 
     async def test_trial_result_reports_game_materials_not_technical_fields(self):
         trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0)
@@ -127,6 +147,36 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handled)
         flow_mock.assert_not_awaited()
         self.assertNotIn(1001, trial_runtime._MANUAL_AUTH_UNTIL)
+
+    async def test_unrouted_trial_entry_requires_authorized_username_match(self):
+        trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0)
+        with state_module.use_identity(1001):
+            with patch.object(trial_runtime, "run_trial_miniapp_production_flow", new=AsyncMock()) as flow_mock:
+                handled = await trial_runtime.handle_trial_miniapp_entry(
+                    _trial_event(),
+                    "【天机试炼台】\n道友 @other，本次 初阶·魔网解线 入口已开启。",
+                    1_700_000_001.0,
+                    require_identity_match=True,
+                )
+
+        self.assertFalse(handled)
+        flow_mock.assert_not_awaited()
+        self.assertIn(1001, trial_runtime._MANUAL_AUTH_UNTIL)
+
+        flow_result = {"ok": True, "status": "settled", "data": {"settled_count": 1}}
+        with state_module.use_identity(1001):
+            with patch.object(trial_runtime, "run_trial_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                    patch.object(trial_runtime, "send_audit_log", new=AsyncMock()):
+                handled = await trial_runtime.handle_trial_miniapp_entry(
+                    _trial_event(),
+                    "【天机试炼台】\n道友 @xuruode4，本次 初阶·魔网解线 入口已开启。",
+                    1_700_000_002.0,
+                    result_msg_id=5001,
+                    require_identity_match=True,
+                )
+
+        self.assertTrue(handled)
+        flow_mock.assert_awaited_once()
 
 
 if __name__ == "__main__":

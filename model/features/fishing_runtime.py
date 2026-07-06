@@ -31,6 +31,7 @@ from ..runtime import (
 from ..webapp_core import MiniAppCaptureStore
 from ..state import (
     get_current_identity_id,
+    get_global_enabled,
     get_identity_enabled,
     get_identity_display_name,
     get_identity_ids,
@@ -1032,16 +1033,27 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
     current_username = _current_identity_username()
     if explicit_angler and current_username and explicit_angler != current_username:
         return False
+    identity_id = int(get_current_identity_id() or 0)
+    global_enabled = get_global_enabled()
+    identity_enabled = get_identity_enabled(identity_id)
+    if not global_enabled or not identity_enabled:
+        reason = "全局暂停" if not global_enabled else "身份已停用"
+        state["fishing_last_result"] = f"{reason}，MiniApp HTTP 接管已跳过"
+        state["fishing_last_error"] = ""
+        state["next_fishing_time"] = float(now + random.uniform(10 * 60, 30 * 60))
+        save_state()
+        await send_audit_log(f"🎣 灵溪垂钓 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", priority="low", limit=180)
+        return True
 
-    lock = _fishing_send_lock(get_current_identity_id())
+    lock = _fishing_send_lock(identity_id)
     if lock.locked():
         state["fishing_last_error"] = "MiniApp 钓鱼接管中，重复入口已忽略"
         mark_dirty()
         return True
     async with lock:
         max_rounds = _remaining_miniapp_chain_rounds(now)
-        _cancel_fishing_followup(get_current_identity_id())
-        _cancel_fishing_recovery(get_current_identity_id())
+        _cancel_fishing_followup(identity_id)
+        _cancel_fishing_recovery(identity_id)
         state["fishing_phase"] = "miniapp"
         state["fishing_reply_to_msg_id"] = 0
         state["fishing_reply_due_at"] = 0
@@ -1057,12 +1069,12 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
             limit=180,
         )
         result = await run_fishing_miniapp_production_flow(
-            get_current_identity_id(),
+            identity_id,
             token=launch.get("token"),
             webview_url=launch.get("webview_url"),
             max_rounds=max_rounds,
             capture_sink=_fishing_miniapp_capture_store(now),
-            capture_source=f"fishing_runtime:{get_current_identity_id()}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+            capture_source=f"fishing_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
         )
         result = dict(result or {})
         summary = _apply_fishing_miniapp_result(result, now, result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0))

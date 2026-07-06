@@ -1217,6 +1217,64 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(903, state_module.state["last_deep_retreat_summary_msg_id"])
             self.assertTrue(any("无发起记录" in str(call.args[0]) for call in audit_mock.await_args_list))
 
+    async def test_deep_retreat_orphan_summary_due_status_query_is_single_flight(self):
+        send_as_id = 8659059243
+        now = 1_700_000_452.0
+        self._prepare_identity(send_as_id, "NewRetreatSingleFlight")
+
+        async def fake_active_query(_spec, sent_now):
+            await asyncio.sleep(0.01)
+            deep_retreat.begin_deep_retreat_summary_wait(sent_now)
+            state_module.state["last_deep_retreat_summary_msg_id"] = 904
+            return True
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["last_deep_retreat_command_time"] = 0
+            state_module.state["last_deep_retreat_summary_msg_id"] = 0
+            state_module.state["next_deep_retreat_time"] = now + 1200
+
+            with (
+                patch.object(deep_retreat, "_send_active_summary_query", new=AsyncMock(side_effect=fake_active_query)) as query_mock,
+                patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await asyncio.gather(
+                    deep_retreat._calibrate_orphan_deep_retreat_summary_due(now),
+                    deep_retreat._calibrate_orphan_deep_retreat_summary_due(now + 1),
+                )
+
+            self.assertEqual([True, False], handled)
+            query_mock.assert_awaited_once()
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(904, state_module.state["last_deep_retreat_summary_msg_id"])
+
+    async def test_deep_retreat_orphan_summary_due_failed_query_does_not_spin(self):
+        send_as_id = 8659059244
+        now = 1_700_000_453.0
+        self._prepare_identity(send_as_id, "NewRetreatFailedQuery")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["last_deep_retreat_command_time"] = 0
+            state_module.state["last_deep_retreat_summary_msg_id"] = 0
+            state_module.state["next_deep_retreat_time"] = now + 1200
+
+            with (
+                patch.object(deep_retreat, "_send_active_summary_query", new=AsyncMock(return_value=False)) as query_mock,
+                patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
+            ):
+                first = await deep_retreat._calibrate_orphan_deep_retreat_summary_due(now)
+                second = await deep_retreat._calibrate_orphan_deep_retreat_summary_due(now + 1)
+
+            self.assertTrue(first)
+            self.assertFalse(second)
+            query_mock.assert_awaited_once()
+            self.assertEqual(now, state_module.state["last_deep_retreat_command_time"])
+
     async def test_deep_retreat_idle_due_does_not_orphan_query_status(self):
         send_as_id = 8659059242
         now = 1_700_000_451.0

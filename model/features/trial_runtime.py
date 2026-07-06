@@ -1,10 +1,11 @@
 import asyncio
+import html
 import re
 import time
 from pathlib import Path
 
 from ..runtime import send_audit_log
-from ..state import get_current_identity_id
+from ..state import get_current_identity_id, get_global_enabled, get_identity_enabled, get_send_as_profile
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from .trial_miniapp import extract_trial_miniapp_launch, run_trial_miniapp_production_flow
@@ -27,6 +28,7 @@ _TRIAL_GAIN_KEYS = {
     "spiritstonegain": "灵石",
 }
 _TRIAL_REWARD_CONTAINER_KEYS = {"rewards", "reward", "bonusloot", "loot", "drops", "items", "materials"}
+_MENTION_RE = re.compile(r"@([A-Za-z0-9_]{3,64})")
 
 
 def _identity_id(value=None):
@@ -67,6 +69,18 @@ def _run_lock(identity_id):
         lock = asyncio.Lock()
         _RUN_LOCKS[identity_id] = lock
     return lock
+
+
+def _entry_mentions_current_identity(text):
+    usernames = {
+        str(match.group(1) or "").strip().lower()
+        for match in _MENTION_RE.finditer(str(text or ""))
+    }
+    usernames.discard("")
+    if not usernames:
+        return False
+    profile_username = str((get_send_as_profile() or {}).get("username") or "").strip().lstrip("@").lower()
+    return bool(profile_username and profile_username in usernames)
 
 
 def _normalize_result_key(key):
@@ -191,13 +205,22 @@ def _trial_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
-async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
+async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0, require_identity_match=False):
     identity_id = _identity_id()
     if identity_id <= 0 or not _has_manual_auth(identity_id, now):
+        return False
+    if require_identity_match and not _entry_mentions_current_identity(text):
         return False
     launch = extract_trial_miniapp_launch(event, message_text=text)
     if not launch:
         return False
+    global_enabled = get_global_enabled()
+    identity_enabled = get_identity_enabled(identity_id)
+    if not global_enabled or not identity_enabled:
+        revoke_trial_miniapp_manual_run(identity_id)
+        reason = "全局暂停" if not global_enabled else "身份已停用"
+        await send_audit_log(f"🧪 天机试炼 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)
+        return True
 
     lock = _run_lock(identity_id)
     if lock.locked():
@@ -221,8 +244,9 @@ async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_fa
             capture_source=f"trial_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
         )
         summary = _format_trial_summary(result)
+        safe_summary = html.escape(summary, quote=False)
         priority = "low" if dict(result or {}).get("ok") else "normal"
-        await send_audit_log(f"🧪 天机试炼结果｜{summary}", scope="identity", priority=priority, limit=220)
+        await send_audit_log(f"🧪 天机试炼结果｜{safe_summary}", scope="identity", priority=priority, limit=220)
         return True
 
 

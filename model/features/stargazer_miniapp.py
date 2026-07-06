@@ -33,7 +33,7 @@ STARGAZER_MINIAPP_ENDPOINTS = {
 }
 STARGAZER_MINIAPP_START_PARAM_PATTERN = r"(?:farm_)?[A-Za-z0-9_-]{4,160}"
 STARGAZER_MINIAPP_BAD_STATUSES = {"星光黯淡", "元磁紊乱"}
-STARGAZER_MINIAPP_READY_STATUS = "可收集"
+STARGAZER_MINIAPP_READY_STATUSES = {"可收集", "精华已成"}
 STARGAZER_MINIAPP_ACTIONS = {"soothe", "collect", "pull"}
 STARGAZER_MINIAPP_HTTP_TIMEOUT = (5, 20)
 STARGAZER_MINIAPP_MAX_ACTION_FLOOR = 4
@@ -273,7 +273,7 @@ def parse_stargazer_farm_state(data):
             idle_slot_count += 1
         elif status in STARGAZER_MINIAPP_BAD_STATUSES:
             dim_slot_count += 1
-        elif status == STARGAZER_MINIAPP_READY_STATUS:
+        elif status in STARGAZER_MINIAPP_READY_STATUSES:
             ready_slot_count += 1
         elif remaining_sec > 0:
             busy_waits.append(remaining_sec)

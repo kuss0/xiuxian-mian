@@ -7,6 +7,13 @@ from model import ui
 
 
 class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
+    def test_miniapp_send_whitelists_are_exact(self):
+        self.assertEqual({"cave_treasure", "fishing", "stargazer", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
+        self.assertEqual({"cave_treasure", "stargazer", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
+        self.assertNotIn("world_boss", ui.MINIAPP_ENTRY_PROBE_COMMANDS)
+        self.assertNotIn("world_boss", ui.MINIAPP_MANUAL_RUN_COMMANDS)
+        self.assertNotIn("fishing", ui.MINIAPP_MANUAL_RUN_COMMANDS)
+
     async def test_probe_sends_only_whitelisted_entry_command_without_tracking(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -165,6 +172,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cave_treasure", adapters)
         self.assertFalse(adapters["cave_treasure"]["default_enabled"])
         self.assertTrue(adapters["cave_treasure"]["manual_only"])
+        self.assertEqual("miniapp", adapters["cave_treasure"]["ui_group"])
+        self.assertEqual("sect", adapters["stargazer"]["ui_group"])
         self.assertEqual(".洞府", probe_commands["cave_treasure"])
         self.assertEqual(".钓鱼", probe_commands["fishing"])
         self.assertEqual(".洞府", manual_run_commands["cave_treasure"])

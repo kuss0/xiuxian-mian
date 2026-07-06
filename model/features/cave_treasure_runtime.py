@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from ..runtime import send_audit_log
-from ..state import get_current_identity_id
+from ..state import get_current_identity_id, get_global_enabled, get_identity_enabled, get_send_as_profile
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from .cave_treasure_miniapp import extract_cave_treasure_miniapp_launch, run_cave_treasure_miniapp_production_flow
@@ -45,6 +45,7 @@ _ITEM_TEXT_RE = re.compile(
     r"(?:获得|奖励|收获|掉落|战利品|材料)?\s*(?:【(?P<bracket>[^】]+)】|(?P<plain>[\u4e00-\u9fffA-Za-z0-9_·-]{2,24}))\s*[xX×]\s*(?P<count>[\d,]+)"
 )
 _GAIN_TEXT_RE = re.compile(r"(?P<name>修为|经验|灵石|天机残痕)\s*[+＋]\s*(?P<count>[\d,]+)")
+_MENTION_RE = re.compile(r"@([A-Za-z0-9_]{3,64})")
 
 
 def _identity_id(value=None):
@@ -85,6 +86,18 @@ def _run_lock(identity_id):
         lock = asyncio.Lock()
         _RUN_LOCKS[identity_id] = lock
     return lock
+
+
+def _entry_mentions_current_identity(text):
+    usernames = {
+        str(match.group(1) or "").strip().lower()
+        for match in _MENTION_RE.finditer(str(text or ""))
+    }
+    usernames.discard("")
+    if not usernames:
+        return False
+    profile_username = str((get_send_as_profile() or {}).get("username") or "").strip().lstrip("@").lower()
+    return bool(profile_username and profile_username in usernames)
 
 
 def _normalize_key(key):
@@ -229,13 +242,22 @@ def _capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
-async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
+async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0, require_identity_match=False):
     identity_id = _identity_id()
     if identity_id <= 0 or not _has_manual_auth(identity_id, now):
+        return False
+    if require_identity_match and not _entry_mentions_current_identity(text):
         return False
     launch = extract_cave_treasure_miniapp_launch(event, message_text=text)
     if not launch:
         return False
+    global_enabled = get_global_enabled()
+    identity_enabled = get_identity_enabled(identity_id)
+    if not global_enabled or not identity_enabled:
+        revoke_cave_treasure_miniapp_manual_run(identity_id)
+        reason = "全局暂停" if not global_enabled else "身份已停用"
+        await send_audit_log(f"🕳️ 洞府寻宝 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)
+        return True
 
     lock = _run_lock(identity_id)
     if lock.locked():

@@ -89,6 +89,7 @@ from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
+from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manual_run, revoke_cave_treasure_miniapp_manual_run
@@ -273,34 +274,60 @@ MINIAPP_MANUAL_RUN_COMMANDS = {
     "stargazer": CMD_STARGAZER_PANEL,
     "trial": CMD_TIANJI_TRIAL,
 }
+MINIAPP_UI_GROUPS = {
+    "stargazer": {"key": "sect", "label": "宗门玩法"},
+    "cave_treasure": {"key": "miniapp", "label": "MiniApp合集"},
+    "fishing": {"key": "miniapp", "label": "MiniApp合集"},
+    "trial": {"key": "miniapp", "label": "MiniApp合集"},
+    "world_boss": {"key": "miniapp", "label": "MiniApp合集"},
+}
+
+
+def _miniapp_ui_group(game_key):
+    return dict(MINIAPP_UI_GROUPS.get(str(game_key or "").strip().lower()) or {"key": "miniapp", "label": "MiniApp合集"})
+
+
+def _with_miniapp_ui_group(item):
+    result = dict(item or {})
+    group = _miniapp_ui_group(result.get("game_key"))
+    result["ui_group"] = group["key"]
+    result["ui_group_label"] = group["label"]
+    return result
 
 
 def get_miniapp_status_snapshot():
     registry = miniapp_registry.build_known_miniapp_registry()
     plans = miniapp_registry.build_known_miniapp_flow_plans()
     return {
-        "adapters": registry.safe_snapshot(),
+        "adapters": [
+            _with_miniapp_ui_group(item)
+            for item in registry.safe_snapshot()
+        ],
         "flow_plans": {
             str(key): plan.safe_summary()
             for key, plan in sorted(plans.items())
         },
         "entry_probe_commands": [
-            {
+            _with_miniapp_ui_group({
                 "game_key": str(key),
                 "command": str(command),
                 "registered": key in registry.keys(),
                 "has_flow_plan": key in plans,
-            }
+            })
             for key, command in sorted(MINIAPP_ENTRY_PROBE_COMMANDS.items())
         ],
         "manual_run_commands": [
-            {
+            _with_miniapp_ui_group({
                 "game_key": str(key),
                 "command": str(command),
                 "registered": key in registry.keys(),
                 "has_flow_plan": key in plans,
-            }
+            })
             for key, command in sorted(MINIAPP_MANUAL_RUN_COMMANDS.items())
+        ],
+        "ui_groups": [
+            {"key": "miniapp", "label": "MiniApp合集"},
+            {"key": "sect", "label": "宗门玩法"},
         ],
         "policy": {
             "default_enabled": False,
@@ -6301,6 +6328,27 @@ async def handle_ui_http(reader, writer):
                         content_type="application/json; charset=utf-8",
                         extra_headers=auth_headers,
                     )
+            elif path == "/api/miniapp-capture-summary":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "GET":
+                    _write_method_not_allowed(writer)
+                else:
+                    game_key = normalize_miniapp_game_key(query.get("game_key", [""])[0])
+                    if not game_key:
+                        _write_json_bad_request(writer, "缺少或非法 game_key 参数", auth_headers)
+                    else:
+                        day = query.get("day", [""])[0]
+                        limit = query.get("limit", ["200"])[0]
+                        summary = get_miniapp_capture_summary(game_key, day=day, limit=limit)
+                        body = _make_json_payload(True, extra={"capture": summary})
+                        _write_response(
+                            writer,
+                            "HTTP/1.1 200 OK",
+                            body,
+                            content_type="application/json; charset=utf-8",
+                            extra_headers=auth_headers,
+                        )
             elif path == "/api/logs/days":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)

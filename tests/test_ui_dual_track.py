@@ -126,6 +126,10 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "setInterval" not in script
     assert "runEntryProbe" in script
     assert "runManualMiniApp" in script
+    assert "默认关闭" in script
+    assert "手动优先" in script
+    assert "自动上线" not in script
+    assert "已上线" not in script
 
 
 def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal():
