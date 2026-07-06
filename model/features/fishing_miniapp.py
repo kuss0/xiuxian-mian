@@ -496,6 +496,10 @@ def _extract_catch_from_mapping(data, *, context=""):
         if nested:
             fish = nested.get("fish") or _find_first_text(data, ("fishName", "fish_name", "name"))
             nested["fish"] = fish or nested.get("fish", "")
+            nested["grade"] = nested.get("grade") or _find_first_text(
+                data,
+                ("grade", "quality", "qualityLabel", "quality_label", "rank", "rarityLabel", "rarity_label", "rarity", "品阶"),
+            )
             nested["rewards"] = nested.get("rewards") or _extract_reward_items(data)
             nested["companion"] = bool(nested.get("companion") or data.get("companion") or "伴生" in str(data))
             return nested

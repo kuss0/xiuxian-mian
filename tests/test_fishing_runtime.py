@@ -638,6 +638,92 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("幸运符x1", harvest_texts[0])
             self.assertFalse(any("灵溪垂钓日结" in text for text in audit_texts))
 
+    async def test_miniapp_reward_only_summary_reports_materials_not_fields(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 56, 30)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "settled_count": 1,
+                "bonusLoot": [{"name": "幸运符", "qty": 1}],
+                "score": 96,
+                "session_id": 12253,
+            },
+            "events": [{"step": "round", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertIn("奖励:幸运符x1", state_module.state["fishing_last_result"])
+            self.assertNotIn("结果字段", state_module.state["fishing_last_result"])
+            self.assertNotIn("score", state_module.state["fishing_last_result"])
+            self.assertIn("幸运符", state_module.state["fishing_daily_catch_summary_json"])
+            audit_texts = [call.args[0] for call in audit_mock.await_args_list]
+            harvest_texts = [text for text in audit_texts if "MiniApp 收获" in text]
+            self.assertEqual(1, len(harvest_texts))
+            self.assertIn("幸运符x1", harvest_texts[0])
+            self.assertNotIn("score", harvest_texts[0])
+            self.assertNotIn("session", harvest_texts[0])
+
+    async def test_miniapp_technical_only_result_does_not_report_harvest_fields(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 56, 45)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "settled_count": 1,
+                "score": 96,
+                "session_id": 12253,
+                "quality_bonus": 0.27,
+            },
+            "events": [{"step": "round", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertIn("未解析到新增物资", state_module.state["fishing_last_result"])
+            self.assertNotIn("结果字段", state_module.state["fishing_last_result"])
+            audit_texts = [call.args[0] for call in audit_mock.await_args_list]
+            self.assertFalse(any("MiniApp 收获" in text for text in audit_texts))
+
     async def test_miniapp_daily_completion_sends_one_catch_summary(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 7, 57, 0)

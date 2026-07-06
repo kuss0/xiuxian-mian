@@ -420,6 +420,191 @@ def _looks_like_fishing_miniapp_entry(text):
     return "灵溪垂钓" in raw or "钓鱼" in raw
 
 
+_MINIAPP_REWARD_CONTAINER_KEYS = {
+    "rewards",
+    "reward",
+    "bonusloot",
+    "bonusitems",
+    "bonus",
+    "loot",
+    "drops",
+    "items",
+    "materials",
+}
+
+_MINIAPP_GAIN_KEYS = {
+    "expgain": "钓术经验",
+    "experiencegain": "钓术经验",
+    "lingstonegain": "灵石",
+    "lingshigain": "灵石",
+    "spiritstonegain": "灵石",
+    "stonegain": "灵石",
+}
+
+
+def _normalize_miniapp_key(key):
+    raw = re.sub(r"[^A-Za-z0-9]", "", str(key or "")).lower()
+    while raw.startswith("last"):
+        raw = raw[4:]
+    return raw
+
+
+def _miniapp_reward_from_value(value, *, fallback_name=""):
+    if isinstance(value, str):
+        name = value.strip()
+        return {"name": name, "qty": 1} if name else {}
+    if isinstance(value, (int, float)) and fallback_name:
+        qty = _parse_int(value, 0)
+        return {"name": str(fallback_name).strip(), "qty": qty} if qty > 0 else {}
+    if not isinstance(value, dict):
+        return {}
+    name = ""
+    for key in ("name", "itemName", "item_name", "title", "label"):
+        if value.get(key) not in (None, ""):
+            name = str(value.get(key) or "").strip()
+            break
+    if not name and fallback_name:
+        name = str(fallback_name).strip()
+    if not name:
+        return {}
+    qty = value.get("qty", value.get("count", value.get("quantity", value.get("amount", 1))))
+    return {"name": name, "qty": max(1, _parse_int(qty, 1))}
+
+
+def _miniapp_rewards_from_container(value):
+    rewards = []
+    if isinstance(value, list):
+        for item in value:
+            reward = _miniapp_reward_from_value(item)
+            if reward:
+                rewards.append(reward)
+        return rewards
+    if isinstance(value, dict):
+        direct = _miniapp_reward_from_value(value)
+        if direct:
+            return [direct]
+        for name, amount in value.items():
+            reward = _miniapp_reward_from_value(amount, fallback_name=name)
+            if reward:
+                rewards.append(reward)
+        return rewards
+    reward = _miniapp_reward_from_value(value)
+    return [reward] if reward else []
+
+
+def _extract_miniapp_loose_rewards(data, depth=0):
+    rewards = []
+    if depth > 4:
+        return rewards
+    if isinstance(data, list):
+        for item in data:
+            rewards.extend(_extract_miniapp_loose_rewards(item, depth + 1))
+        return rewards
+    if not isinstance(data, dict):
+        return rewards
+    for key, value in data.items():
+        normalized = _normalize_miniapp_key(key)
+        if normalized in _MINIAPP_REWARD_CONTAINER_KEYS:
+            rewards.extend(_miniapp_rewards_from_container(value))
+            continue
+        if normalized in {"fish", "catch", "catches", "rounds", "details", "detail", "session", "game"}:
+            continue
+        rewards.extend(_extract_miniapp_loose_rewards(value, depth + 1))
+    return rewards
+
+
+def _extract_miniapp_numeric_gains(data, depth=0):
+    gains = {}
+    if depth > 4:
+        return gains
+    if isinstance(data, list):
+        for item in data:
+            for name, amount in _extract_miniapp_numeric_gains(item, depth + 1).items():
+                gains[name] = gains.get(name, 0) + amount
+        return gains
+    if not isinstance(data, dict):
+        return gains
+    for key, value in data.items():
+        normalized = _normalize_miniapp_key(key)
+        label = _MINIAPP_GAIN_KEYS.get(normalized)
+        if label:
+            amount = _parse_int(value, 0)
+            if amount > 0:
+                gains[label] = gains.get(label, 0) + amount
+            continue
+        if normalized in {"proof", "fishingproof", "score", "qualitybonus", "sessionid", "ready"}:
+            continue
+        for name, amount in _extract_miniapp_numeric_gains(value, depth + 1).items():
+            gains[name] = gains.get(name, 0) + amount
+    return gains
+
+
+def _dedupe_miniapp_rewards(rewards):
+    merged = {}
+    for reward in rewards or ():
+        if not isinstance(reward, dict):
+            continue
+        name = str(reward.get("name") or "").strip()
+        if not name:
+            continue
+        merged[name] = merged.get(name, 0) + max(1, _parse_int(reward.get("qty"), 1))
+    return [{"name": name, "qty": qty} for name, qty in sorted(merged.items())]
+
+
+def _format_miniapp_reward_list(rewards, *, limit=6):
+    parts = []
+    for reward in rewards or ():
+        if not isinstance(reward, dict):
+            continue
+        name = str(reward.get("name") or "").strip()
+        if not name:
+            continue
+        parts.append(f"{name}x{max(1, _parse_int(reward.get('qty'), 1))}")
+    return "、".join(parts[:limit])
+
+
+def _miniapp_material_summary(data):
+    catches = extract_fishing_miniapp_catches(data)
+    catch_text = _format_miniapp_catch_summary(catches)
+    catch_rewards = [
+        reward
+        for catch in catches
+        if isinstance(catch, dict)
+        for reward in (catch.get("rewards") or ())
+        if isinstance(reward, dict)
+    ]
+    standalone_rewards = [] if catches else _extract_miniapp_loose_rewards(data)
+    reward_text = _format_miniapp_reward_list(_dedupe_miniapp_rewards(standalone_rewards))
+    gain_parts = [
+        f"{name}+{amount}"
+        for name, amount in sorted(_extract_miniapp_numeric_gains(data).items())
+        if int(amount or 0) > 0
+    ]
+    parts = []
+    if catch_text:
+        parts.append(catch_text)
+    if reward_text:
+        parts.append(f"奖励:{reward_text}")
+    if gain_parts:
+        parts.append("收益:" + "、".join(gain_parts[:4]))
+    has_material = bool(catches or catch_rewards or standalone_rewards)
+    return "｜".join(parts), has_material
+
+
+def _miniapp_empty_rod_text(data):
+    if not isinstance(data, dict):
+        return ""
+    for key in ("caught", "last_caught"):
+        if data.get(key) is False:
+            return "空竿｜无新增物资"
+    for key in ("rarityLabel", "rarity_label", "last_rarityLabel", "last_rarity_label"):
+        if "空竿" in str(data.get(key) or ""):
+            return "空竿｜无新增物资"
+    if isinstance(data.get("last_result"), dict):
+        return _miniapp_empty_rod_text(data.get("last_result")) or ""
+    return ""
+
+
 def _format_miniapp_result_summary(result):
     result = dict(result or {})
     status = str(result.get("status") or "unknown").strip() or "unknown"
@@ -427,11 +612,11 @@ def _format_miniapp_result_summary(result):
     settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
     round_prefix = f"{settled_count}竿｜" if settled_count > 1 else ""
     if result.get("ok"):
-        catch_text = _format_miniapp_catch_summary(extract_fishing_miniapp_catches(data))
-        if catch_text:
-            return f"MiniApp {status}｜{round_prefix}{catch_text}"
-        keys = "、".join(sorted(str(key) for key in data)[:8]) or "无明细"
-        return f"MiniApp {status}｜{round_prefix}结果字段:{keys}"
+        material_text, _has_material = _miniapp_material_summary(data)
+        if material_text:
+            return f"MiniApp {status}｜{round_prefix}{material_text}"
+        empty_text = _miniapp_empty_rod_text(data)
+        return f"MiniApp {status}｜{round_prefix}{empty_text or '未解析到新增物资'}"
     error = str(result.get("error") or "").strip()
     return f"MiniApp {status}｜{error or '未完成'}"
 
@@ -470,11 +655,11 @@ async def _send_fishing_miniapp_harvest_summary(result):
     if not result.get("ok"):
         return False
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    catch_text = _format_miniapp_catch_summary(extract_fishing_miniapp_catches(data))
-    if not catch_text:
+    material_text, has_material = _miniapp_material_summary(data)
+    if not has_material or not material_text:
         return False
     return await send_audit_log(
-        f"🎣 灵溪垂钓 MiniApp 收获｜{catch_text}",
+        f"🎣 灵溪垂钓 MiniApp 收获｜{material_text}",
         scope="identity",
         priority="low",
         limit=260,
@@ -625,7 +810,7 @@ def _normalize_fishing_daily_catch_summary(value=None):
     return summary
 
 
-def _merge_fishing_daily_catches(raw_summary, day_key, catches, *, settled_count=0):
+def _merge_fishing_daily_catches(raw_summary, day_key, catches, *, settled_count=0, extra_rewards=None):
     day_key = str(day_key or "").strip()
     summary = _normalize_fishing_daily_catch_summary(raw_summary)
     if not day_key:
@@ -648,6 +833,14 @@ def _merge_fishing_daily_catches(raw_summary, day_key, catches, *, settled_count
                 continue
             qty = max(1, _parse_int(reward.get("qty"), 1))
             summary["rewards"][name] = _parse_int(summary["rewards"].get(name), 0) + qty
+    for reward in extra_rewards or ():
+        if not isinstance(reward, dict):
+            continue
+        name = str(reward.get("name") or "").strip()
+        if not name:
+            continue
+        qty = max(1, _parse_int(reward.get("qty"), 1))
+        summary["rewards"][name] = _parse_int(summary["rewards"].get(name), 0) + qty
     return json.dumps(summary, ensure_ascii=False, sort_keys=True)
 
 
@@ -750,6 +943,7 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
             day_key,
             catches,
             settled_count=settled_count,
+            extra_rewards=[] if catches else _extract_miniapp_loose_rewards(data),
         )
         catch_counts = _miniapp_catch_counts(catches)
         if catch_counts:
