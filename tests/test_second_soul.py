@@ -11,7 +11,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import ui
-from model.config import CMD_SECOND_SOUL_CHOICE_STABLE, CMD_SECOND_SOUL_DEMON_STATUS, CMD_SECOND_SOUL_PURGE, CMD_SECOND_SOUL_STATUS
+from model.config import (
+    CMD_SECOND_SOUL_CHOICE_STABLE,
+    CMD_SECOND_SOUL_DEMON_STATUS,
+    CMD_SECOND_SOUL_PURGE,
+    CMD_SECOND_SOUL_STATUS,
+    CMD_SECOND_SOUL_TRAIN,
+)
 from model.features import second_soul
 
 
@@ -402,6 +408,86 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
             self.assertEqual(39, state_module.state["second_soul_moran_value"])
             self.assertEqual(0, state_module.state["second_soul_purge_msg_id"])
+
+    async def test_status_send_timeout_stays_pending_for_late_reply(self):
+        send_as_id = 8659059203
+        now = 9100.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "idle"
+            state_module.state["next_second_soul_time"] = now - 1
+
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+            patch.object(second_soul, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+            patch.object(second_soul.random, "uniform", return_value=1800),
+            patch.object(second_soul.time, "time", return_value=now + 2),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(second_soul, "save_state"),
+            state_module.use_identity(send_as_id),
+        ):
+            await second_soul.run_second_soul_scheduler(now)
+
+        send_mock.assert_awaited_once_with(CMD_SECOND_SOUL_STATUS, track=False, priority="chain")
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("status_pending", state_module.state["second_soul_phase"])
+            self.assertEqual(0, state_module.state["second_soul_status_msg_id"])
+            self.assertEqual(now + 2 + 1800, state_module.state["next_second_soul_time"])
+            self.assertIn("状态未知", state_module.state["second_soul_last_error"])
+        self.assertIn("状态未知", audit_mock.await_args.args[0])
+
+    async def test_train_send_timeout_stays_pending_for_late_reply(self):
+        send_as_id = 8659059204
+        now = 9200.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "ready_to_train"
+            state_module.state["next_second_soul_time"] = now - 1
+
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+            patch.object(second_soul, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+            patch.object(second_soul.random, "uniform", return_value=2100),
+            patch.object(second_soul.time, "time", return_value=now + 3),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(second_soul, "save_state"),
+            state_module.use_identity(send_as_id),
+        ):
+            await second_soul.run_second_soul_scheduler(now)
+
+        send_mock.assert_awaited_once_with(CMD_SECOND_SOUL_TRAIN, track=False, priority="chain")
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("train_pending", state_module.state["second_soul_phase"])
+            self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
+            self.assertEqual(now + 3 + 2100, state_module.state["next_second_soul_time"])
+            self.assertIn("状态未知", state_module.state["second_soul_last_error"])
+        self.assertIn("状态未知", audit_mock.await_args.args[0])
+
+    async def test_train_send_queue_timeout_returns_to_ready(self):
+        send_as_id = 8659059205
+        now = 9300.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "ready_to_train"
+            state_module.state["next_second_soul_time"] = now - 1
+
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=None)),
+            patch.object(second_soul, "classify_game_send_block", return_value={"status": "unsent", "code": "send_queue_timeout"}),
+            patch.object(second_soul.time, "time", return_value=now + 4),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+            state_module.use_identity(send_as_id),
+        ):
+            await second_soul.run_second_soul_scheduler(now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
+            self.assertEqual(now + 4 + 600, state_module.state["next_second_soul_time"])
+            self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
 
 
 if __name__ == "__main__":

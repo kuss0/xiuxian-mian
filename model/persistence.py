@@ -1009,6 +1009,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_day TEXT NOT NULL DEFAULT ''")
     if "fishing_daily_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_count INTEGER NOT NULL DEFAULT 0")
+    if "fishing_daily_catch_summary_json" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_catch_summary_json TEXT NOT NULL DEFAULT ''")
+    if "fishing_daily_summary_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_summary_day TEXT NOT NULL DEFAULT ''")
     if "fishing_basket_calibrated_day" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_basket_calibrated_day TEXT NOT NULL DEFAULT ''")
     if "fishing_auto_chum_enabled" not in runtime_columns:
@@ -1732,6 +1736,8 @@ def init_db():
             fishing_daily_limit INTEGER NOT NULL DEFAULT 20,
             fishing_daily_day TEXT NOT NULL DEFAULT '',
             fishing_daily_count INTEGER NOT NULL DEFAULT 0,
+            fishing_daily_catch_summary_json TEXT NOT NULL DEFAULT '',
+            fishing_daily_summary_day TEXT NOT NULL DEFAULT '',
             fishing_basket_calibrated_day TEXT NOT NULL DEFAULT '',
             fishing_auto_chum_enabled INTEGER NOT NULL DEFAULT 1,
             fishing_chum_name TEXT NOT NULL DEFAULT '',

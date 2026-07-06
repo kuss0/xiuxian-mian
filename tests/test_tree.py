@@ -195,6 +195,58 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(state_module.state["is_harvested"])
                 self.assertGreater(state_module.state["tree_harvest_inflight_until"], now)
 
+    async def test_harvest_send_timeout_keeps_inflight(self):
+        now = 2000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = True
+            state_module.state["is_harvested"] = False
+            state_module.state["tree_harvest_inflight_until"] = 0
+            with (
+                patch.object(tree, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    tree,
+                    "classify_game_send_block",
+                    return_value={"status": "unknown", "code": "send_timeout", "reason": ">60s"},
+                ),
+                patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(tree, "save_state"),
+            ):
+                sent = await tree._send_tree_harvest(now)
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once()
+            audit_mock.assert_awaited_once()
+            self.assertEqual(now + tree.TREE_HARVEST_INFLIGHT_SEC, state_module.state["tree_harvest_inflight_until"])
+
+    async def test_harvest_unsent_clears_inflight(self):
+        now = 2100.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = True
+            state_module.state["is_harvested"] = False
+            state_module.state["tree_harvest_inflight_until"] = 0
+            with (
+                patch.object(tree, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    tree,
+                    "classify_game_send_block",
+                    return_value={"status": "unsent", "code": "send_queue_timeout", "reason": ">60s"},
+                ),
+                patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(tree, "save_state"),
+            ):
+                sent = await tree._send_tree_harvest(now)
+
+            self.assertFalse(sent)
+            send_mock.assert_awaited_once()
+            audit_mock.assert_awaited_once()
+            self.assertEqual(0, state_module.state["tree_harvest_inflight_until"])
+
     async def test_unowned_final_branch_board_queues_only_local_unclaimed_tree_identity(self):
         now = 1000.0
         identity_ids = [3756719391, 3800619925]

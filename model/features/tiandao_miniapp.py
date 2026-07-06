@@ -11,7 +11,7 @@ from ..config import (
     TIANDAO_MINIAPP_BOT_USERNAME,
     TIANDAO_MINIAPP_VERIFY_URL,
 )
-from ..runtime import _get_identity_client
+from ..runtime import _get_identity_client_with_account, account_rpc_slot
 
 
 RE_TIANDAO_MINIAPP_TOKEN = re.compile(r"\b(?P<token>(?P<kind>rpt|stk)_[A-Z0-9]+)\b", re.IGNORECASE)
@@ -144,20 +144,21 @@ def _get_webview_init_data(webview_url):
 
 
 async def _request_webview_init_data(identity_id, token):
-    client = _get_identity_client(identity_id)
+    account_id, client = _get_identity_client_with_account(identity_id)
     if client is None:
         raise TiandaoMiniappError("身份客户端不可用")
-    bot = await client.get_entity(TIANDAO_MINIAPP_BOT_USERNAME)
-    bot_input = await client.get_input_entity(bot)
-    verify_url = f"{TIANDAO_MINIAPP_VERIFY_URL}?startapp={quote(token, safe='')}"
-    result = await client(functions.messages.RequestWebViewRequest(
-        peer=bot_input,
-        bot=bot_input,
-        platform="android",
-        from_bot_menu=False,
-        url=verify_url,
-        start_param=token,
-    ))
+    async with account_rpc_slot(account_id=account_id, client_obj=client):
+        bot = await client.get_entity(TIANDAO_MINIAPP_BOT_USERNAME)
+        bot_input = await client.get_input_entity(bot)
+        verify_url = f"{TIANDAO_MINIAPP_VERIFY_URL}?startapp={quote(token, safe='')}"
+        result = await client(functions.messages.RequestWebViewRequest(
+            peer=bot_input,
+            bot=bot_input,
+            platform="android",
+            from_bot_menu=False,
+            url=verify_url,
+            start_param=token,
+        ))
     return _get_webview_init_data(result.url)
 
 

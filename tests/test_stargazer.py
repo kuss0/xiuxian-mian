@@ -100,6 +100,74 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🔭 观星台", text)
         self.assertIn("未设置", text)
 
+    async def test_miniapp_entry_runs_miniapp_flow_and_keeps_legacy_text_chain_paused(self):
+        now = 1000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        button = SimpleNamespace(
+            text="进入灵圃",
+            button=SimpleNamespace(url="https://t.me/fanrenxiuxian_bot/app?startapp=farm_SECRET999"),
+        )
+        event = SimpleNamespace(id=456, message=SimpleNamespace(buttons=[[button]]))
+
+        class Reply:
+            raw_text = ".观星台"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_followup_due_at"] = now - 1
+            state_module.state["stargazer_queued_action"] = "guide"
+            state_module.state["stargazer_last_action"] = "queue_guide"
+            state_module.state["next_stargazer_panel_time"] = now - 1
+            state_module.state["stargazer_collect_due_at"] = now - 1
+            state_module.state["stargazer_collect_ready"] = True
+
+            with (
+                patch.object(stargazer, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock()) as queue_mock,
+                patch.object(stargazer, "run_stargazer_miniapp_production_flow", new=AsyncMock(return_value={
+                    "ok": True,
+                    "status": "wait",
+                    "data": {
+                        "farm_state": {
+                            "total_slots": 2,
+                            "declared_total_slots": 2,
+                            "idle_slot_count": 0,
+                            "dim_slot_count": 0,
+                            "ready_slot_count": 0,
+                            "max_wait": 60,
+                            "all_ready": False,
+                            "plots": [],
+                        },
+                        "action_counts": {"soothe": 1, "collect": 1, "pull": 1},
+                        "item_deltas": {"星辰精华": 2},
+                    },
+                })) as flow_mock,
+                patch.object(stargazer, "apply_storage_bag_item_deltas") as storage_mock,
+                patch.object(stargazer, "save_state"),
+            ):
+                handled = await stargazer.handle_stargazer_miniapp_entry(
+                    event,
+                    "【星宫 · 观星台】\n@lab 的引星盘已接入宗门灵圃。\n\n点击下方 进入灵圃，牵引星辰与收取星辰精华。",
+                    now,
+                    Reply(),
+                    matched_family="stargazer_panel",
+                    result_msg_id=456,
+                )
+                await stargazer.run_stargazer_scheduler(now + 10)
+
+            self.assertTrue(handled)
+            self.assertEqual(2, audit_mock.await_count)
+            flow_mock.assert_awaited_once()
+            storage_mock.assert_called_once_with(identity_id, {"星辰精华": 2})
+            queue_mock.assert_not_awaited()
+            self.assertEqual("miniapp_waiting_panel", state_module.state["stargazer_last_action"])
+            self.assertEqual("", state_module.state["stargazer_queued_action"])
+            self.assertEqual(0, state_module.state["stargazer_followup_due_at"])
+            self.assertGreater(state_module.state["next_stargazer_panel_time"], now + 60)
+            self.assertEqual(456, state_module.state["stargazer_last_panel_msg_id"])
+            self.assertFalse(state_module.state["stargazer_collect_ready"])
+
     async def test_scheduler_queues_panel_when_numeric_panel_cooldown_due(self):
         now = 1000.0
         identity_id = 3756719391

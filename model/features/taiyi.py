@@ -48,6 +48,7 @@ from ..config import (
 from ..persistence import save_state
 from ..runtime import (
     _fire_and_forget,
+    classify_game_send_block,
     console_log,
     get_bot_last_seen_at,
     mark_bot_health_suspect,
@@ -188,10 +189,33 @@ def _is_current_reply(reply_to, state_key):
     return reply_to_msg_id == expected_msg_id
 
 
+def _classify_taiyi_none_send(command):
+    return classify_game_send_block(get_current_identity_id(), command)
+
+
+def _mark_taiyi_unknown_send(command, phase, msg_key, sent_at, label):
+    _set_phase(phase, sent_at)
+    state[msg_key] = 0
+    state["taiyi_last_error"] = f"{label}发送状态未知，等待回包或日志校准"
+    _record_taiyi_event(
+        f"{label}发送状态未知",
+        kind="waiting",
+        reason="send_status_unknown",
+        command=command,
+        phase=phase,
+        decision="wait_for_reply_or_log_recovery",
+    )
+    save_state()
+
+
 async def _send_taiyi_search(now):
     msg = await send_game_command(CMD_NODE_SEARCH, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        send_block = _classify_taiyi_none_send(CMD_NODE_SEARCH)
+        if str(send_block.get("status") or "") == "unknown":
+            _mark_taiyi_unknown_send(CMD_NODE_SEARCH, "search_pending", "taiyi_node_search_msg_id", sent_at, "搜寻节点")
+            return True
         _set_phase("idle", sent_at)
         state["next_taiyi_cycle_time"] = sent_at + TAIYI_RESOURCE_RETRY_SEC
         state["taiyi_node_search_msg_id"] = 0
@@ -924,6 +948,11 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
                 state["taiyi_node_define_msg_id"] = int(getattr(msg, "id", 0) or 0)
                 save_state()
                 return
+            command = f"{CMD_NODE_DEFINE} {node_name}"
+            send_block = _classify_taiyi_none_send(command)
+            if str(send_block.get("status") or "") == "unknown":
+                _mark_taiyi_unknown_send(command, "define_pending", "taiyi_node_define_msg_id", sent_at, "定星")
+                return
             state["taiyi_pending_node_name"] = ""
             state["taiyi_node_define_msg_id"] = 0
             _set_phase("idle", sent_at)
@@ -1199,6 +1228,10 @@ async def run_taiyi_scheduler(now):
     msg = await send_game_command(cmd, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        send_block = _classify_taiyi_none_send(cmd)
+        if str(send_block.get("status") or "") == "unknown":
+            _mark_taiyi_unknown_send(cmd, "yindao_pending", "taiyi_yindao_msg_id", sent_at, "引道")
+            return
         # 发送失败：回退 idle 短退避
         _set_phase("idle", sent_at)
         state["next_taiyi_cycle_time"] = sent_at + 60  # 1min 后重试

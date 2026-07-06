@@ -16,6 +16,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / "data" / "state" / "chaogu_state.db"
 HEARTBEAT_PATH = PROJECT_ROOT / "data" / "state" / "listener_heartbeat.json"
+MESSAGES_DIR = PROJECT_ROOT / "data" / "messages"
 LISTENER_SERVICE_NAME = "xiuxian-listener.service"
 
 TIANXING_TIMELINE_ACK_TIMEOUT_SEC = 90
@@ -23,6 +24,8 @@ TIANXING_TIMELINE_SEND_TIMEOUT_SEC = 75
 TIANXING_TIMELINE_QUEUE_RETRY_MAX_SEC = 45
 TIANXING_CHANGE_ROUTE_PREPARE_MIN_SEC = 10 * 60
 TIANXING_TIME_BUFFER_SEC = 60
+HEHUAN_WARM_COMMAND = ".双修 温养"
+HEHUAN_EARLY_SEND_GRACE_SEC = 10
 
 
 def _parse_json(value: Any) -> dict[str, Any]:
@@ -59,6 +62,78 @@ def _short(value: Any, limit: int = 180) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
+def _parse_message_log_ts(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    for suffix in (" UTC+8",):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except ValueError:
+            continue
+    return 0.0
+
+
+def _recent_message_log_paths(now: float) -> list[Path]:
+    today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    yesterday = datetime.fromtimestamp(now - 24 * 3600).strftime("%Y-%m-%d")
+    return [MESSAGES_DIR / f"{day}.log" for day in dict.fromkeys((today, yesterday))]
+
+
+def _recent_script_sends(
+    *,
+    command: str,
+    sender_id: int,
+    now: float,
+    after_ts: float = 0,
+    lookback_sec: int = 2 * 3600,
+) -> list[dict[str, Any]]:
+    min_ts = max(float(after_ts or 0), float(now - max(60, lookback_sec)))
+    results: list[dict[str, Any]] = []
+    for path in _recent_message_log_paths(now):
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for line in reversed(lines):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict) or payload.get("event_type") != "sent":
+                continue
+            if str(payload.get("text") or "").strip() != command:
+                continue
+            try:
+                payload_sender = int(payload.get("sender_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                payload_sender = 0
+            if sender_id and payload_sender != sender_id:
+                continue
+            ts = _parse_message_log_ts(payload.get("ts"))
+            if ts <= 0:
+                continue
+            if ts < min_ts:
+                break
+            if ts > now + 60:
+                continue
+            results.append(
+                {
+                    "message_id": payload.get("message_id"),
+                    "ts": ts,
+                    "text": payload.get("text"),
+                    "source_module": payload.get("source_module"),
+                    "op_id": payload.get("op_id"),
+                }
+            )
+    return sorted(results, key=lambda item: float(item.get("ts") or 0), reverse=True)
+
+
 def _effective_prepare_lead(config: dict[str, Any], *, require_change_fate: bool) -> int:
     try:
         lead_sec = int(config.get("route_prepare_lead_sec", 5 * 60) or 5 * 60)
@@ -93,12 +168,50 @@ def _active_step_summary(timeline: dict[str, Any]) -> str:
     return " ".join(part for part in (action, arg, status) if part)
 
 
-def _has_valid_route_state(obs: dict[str, Any], now: float, *, route: str) -> tuple[bool, bool]:
+def _fresh_prediction(obs: dict[str, Any], now: float, *, route: str) -> bool:
     pred = str(obs.get("current_prediction") or "").strip()
     pred_until = _epoch(obs.get("current_prediction_until"))
+    if not (pred == route and pred_until > now):
+        return False
+    set_at = _epoch(obs.get("current_prediction_set_at"))
+    if set_at <= 0:
+        last_action = str(obs.get("last_action") or "").strip()
+        last_route = str(obs.get("last_route") or "").strip()
+        observed_at = _epoch(obs.get("last_observed_at"))
+        if last_action == "天机盘" or (last_action == "推命" and last_route == route):
+            set_at = observed_at
+    if set_at <= 0:
+        return False
+    consumed_route = str(obs.get("prediction_consumed_route") or "").strip()
+    consumed_at = _epoch(obs.get("prediction_consumed_at"))
+    if consumed_route == route and consumed_at >= set_at:
+        return False
+    return True
+
+
+def _fresh_change(obs: dict[str, Any], now: float, *, route: str) -> bool:
     chg = str(obs.get("current_change") or "").strip()
     chg_until = _epoch(obs.get("current_change_until"))
-    return pred == route and pred_until > now, chg == route and chg_until > now
+    if not (chg == route and chg_until > now):
+        return False
+    set_at = _epoch(obs.get("current_change_set_at"))
+    if set_at <= 0:
+        last_action = str(obs.get("last_action") or "").strip()
+        last_route = str(obs.get("last_route") or "").strip()
+        observed_at = _epoch(obs.get("last_observed_at"))
+        if last_action == "天机盘" or (last_action == "改命" and last_route == route):
+            set_at = observed_at
+    if set_at <= 0:
+        return False
+    consumed_route = str(obs.get("prediction_consumed_route") or "").strip()
+    consumed_at = _epoch(obs.get("prediction_consumed_at"))
+    if consumed_route == route and consumed_at > set_at:
+        return False
+    return True
+
+
+def _has_valid_route_state(obs: dict[str, Any], now: float, *, route: str) -> tuple[bool, bool]:
+    return _fresh_prediction(obs, now, route=route), _fresh_change(obs, now, route=route)
 
 
 def _tianxing_action_status(
@@ -120,6 +233,8 @@ def _tianxing_action_status(
     route = "探索"
     lead = _effective_prepare_lead(config, require_change_fate=True)
     pred_ok, change_ok = _has_valid_route_state(obs, now, route=route)
+    pred_active = str(obs.get("current_prediction") or "").strip() == route and _epoch(obs.get("current_prediction_until")) > now
+    change_active = str(obs.get("current_change") or "").strip() == route and _epoch(obs.get("current_change_until")) > now
     phase = str(timeline.get("phase") or "")
     active_step = _active_step_summary(timeline)
     timeline_preparing = phase in {
@@ -140,16 +255,33 @@ def _tianxing_action_status(
         reason = f"当前推命/改命探索预计会先被 {_fmt(prior_consume_at)} 的探索动作消费，后续需重算。"
     elif due_in > lead:
         level = "watch"
-        reason = f"尚未进入天星准备窗口，提前 {due_in - lead}s 后复查。"
+        stale_bits = []
+        if pred_active and not pred_ok:
+            stale_bits.append("推命证据不新鲜")
+        if change_active and not change_ok:
+            stale_bits.append("改命证据不新鲜")
+        if stale_bits and due_in <= lead + 10 * 60:
+            reason = f"{'、'.join(stale_bits)}；尚未进入天星准备窗口，提前 {due_in - lead}s 后复查。"
+        else:
+            reason = f"尚未进入天星准备窗口，提前 {due_in - lead}s 后复查。"
     elif timeline_preparing:
         level = "watch"
         reason = f"已进入准备窗口，时间线处理中：{phase or active_step}。"
     elif retry_live and retry_at <= due_at:
         level = "watch"
         reason = f"已安排准备重试：{_fmt(retry_at)}。"
+    elif action == "野外历练" and pred_ok and not change_ok and int(obs.get("tianji_value") or 0) < 3:
+        level = "at_risk"
+        reason = "天机值不足 3，已有探索推命但无探索改命；野外不得降级谨慎，应阻断并转炼制攒点。"
     else:
         level = "at_risk"
-        reason = "已进入准备窗口但未见有效推命/改命、时间线处理或准备重试。"
+        stale_bits = []
+        if pred_active and not pred_ok:
+            stale_bits.append("推命证据不新鲜")
+        if change_active and not change_ok:
+            stale_bits.append("改命证据不新鲜")
+        suffix = f"（{'、'.join(stale_bits)}）" if stale_bits else ""
+        reason = f"已进入准备窗口但未见有效推命/改命、时间线处理或准备重试。{suffix}"
     return {
         "level": level,
         "module": "tianxing",
@@ -161,14 +293,74 @@ def _tianxing_action_status(
         "prepare_lead_sec": lead,
         "prediction": str(obs.get("current_prediction") or ""),
         "prediction_until": _fmt(obs.get("current_prediction_until")),
+        "prediction_set_at": _fmt(obs.get("current_prediction_set_at")),
         "change": str(obs.get("current_change") or ""),
         "change_until": _fmt(obs.get("current_change_until")),
+        "change_set_at": _fmt(obs.get("current_change_set_at")),
         "tianji": int(obs.get("tianji_value") or 0),
         "timeline_phase": phase,
         "active_step": active_step,
         "retry_at": _fmt(retry_at),
         "reason": reason,
     }
+
+
+def _hehuan_status(
+    *,
+    label: str,
+    username: str,
+    send_as_id: int,
+    obs: dict[str, Any],
+    now: float,
+) -> dict[str, Any] | None:
+    pending_msg_id = int(obs.get("auto_pending_msg_id") or 0)
+    pending_sent_at = _epoch(obs.get("auto_pending_sent_at"))
+    pending_deadline_at = _epoch(obs.get("auto_pending_deadline_at"))
+    last_observed_at = _epoch(obs.get("last_observed_at"))
+    last_result = str(obs.get("last_result") or "").strip().lower()
+    next_time = _epoch(obs.get("next_hehuan_time"))
+    auto_next_time = _epoch(obs.get("auto_next_time"))
+
+    if pending_msg_id > 0 and pending_sent_at > 0 and pending_deadline_at > 0 and now > pending_deadline_at:
+        if last_result == "pending" or last_observed_at < pending_sent_at:
+            return {
+                "level": "at_risk",
+                "module": "hehuan",
+                "label": label,
+                "username": username,
+                "action": "双修温养",
+                "due_at": _fmt(pending_deadline_at),
+                "due_in_sec": int(pending_deadline_at - now),
+                "pending_msg_id": pending_msg_id,
+                "reason": "合欢温养 pending 已过恢复窗口，需先回放回复/编辑或按起手已消费冷却，不能重发。",
+            }
+
+    active_cooldown_until = max(next_time, auto_next_time)
+    if active_cooldown_until <= now:
+        return None
+
+    cooldown_start = max(last_observed_at, _epoch(obs.get("last_warm_success_at")), pending_sent_at)
+    recent_sends = _recent_script_sends(
+        command=HEHUAN_WARM_COMMAND,
+        sender_id=send_as_id,
+        now=now,
+        after_ts=max(0.0, cooldown_start + HEHUAN_EARLY_SEND_GRACE_SEC),
+    )
+    if recent_sends:
+        latest = recent_sends[0]
+        return {
+            "level": "at_risk",
+            "module": "hehuan",
+            "label": label,
+            "username": username,
+            "action": "双修温养",
+            "due_at": _fmt(active_cooldown_until),
+            "due_in_sec": int(active_cooldown_until - now),
+            "message_id": latest.get("message_id"),
+            "sent_at": _fmt(latest.get("ts")),
+            "reason": "合欢温养仍在冷却/等待窗口内，但发现新的脚本发送记录；疑似提前放行。",
+        }
+    return None
 
 
 def _fetch_rows(conn: sqlite3.Connection, query: str) -> list[dict[str, Any]]:
@@ -291,6 +483,31 @@ def snapshot(*, horizon_sec: int) -> dict[str, Any]:
             ORDER BY t.next_wild_training_time
             """,
         )
+        hehuan_rows = _fetch_rows(
+            conn,
+            """
+            SELECT
+                i.send_as_id,
+                i.label,
+                i.username,
+                r.hehuan_observation
+            FROM identity_module_state m
+            JOIN identities i ON i.send_as_id = m.send_as_id
+            LEFT JOIN identity_runtime_state r ON r.send_as_id = m.send_as_id
+            WHERE m.hehuan_enabled = 1
+            ORDER BY i.label
+            """,
+        )
+    for row in hehuan_rows:
+        item = _hehuan_status(
+            label=str(row.get("label") or ""),
+            username=str(row.get("username") or ""),
+            send_as_id=int(row.get("send_as_id") or 0),
+            obs=_parse_json(row.get("hehuan_observation")),
+            now=now,
+        )
+        if item:
+            checks.append(item)
     for row in rows:
         obs = _parse_json(row.get("tianxing_observation"))
         timeline = _parse_json(row.get("tianxing_timeline_state"))

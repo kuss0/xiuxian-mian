@@ -128,6 +128,26 @@ def find_recent_message_log_commands(now, *, sender_id=0, command_predicate=None
     return matches
 
 
+def find_recent_message_log_replies(now, *, reply_predicate=None, start_ts=0, lookback_sec=900, lookahead_sec=30, messages_dir=None):
+    end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
+    start_ts = float(start_ts or 0)
+    if start_ts <= 0:
+        start_ts = max(0.0, end_ts - max(1, int(lookback_sec or 1)))
+    matches = []
+    for entry, entry_ts in iter_message_log_entries_between(start_ts, end_ts, messages_dir=messages_dir):
+        if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
+            continue
+        if int((entry or {}).get("reply_to_msg_id") or 0) <= 0:
+            continue
+        if reply_predicate is not None and not reply_predicate(entry):
+            continue
+        item = dict(entry)
+        item["ts_epoch"] = entry_ts
+        matches.append(item)
+    matches.sort(key=lambda item: (float(item.get("ts_epoch") or 0), int(item.get("message_id") or 0)))
+    return matches
+
+
 def sender_matches_identity(sender_id, identity_id):
     try:
         sender_id = int(sender_id or 0)
@@ -234,3 +254,113 @@ def recover_sent_command_from_message_log(
     item["message_id"] = msg_id
     item["ts_epoch"] = sent_at
     return item
+
+
+def recover_sent_command_from_reply_log(
+    command,
+    send_as_id,
+    now,
+    *,
+    start_ts=0,
+    game_group_id=0,
+    topic_id=0,
+    lookback_sec=900,
+    lookahead_sec=30,
+    reply_predicate=None,
+    messages_dir=None,
+):
+    """Recover a command id from an already logged bot reply.
+
+    This covers Telegram cases where SendMessageRequest timed out and the local
+    sent-command row never landed, but the game bot reply exists and points to
+    the accepted command id.
+    """
+    command = str(command or "").strip()
+    if not command:
+        return None
+    try:
+        send_as_id = int(send_as_id or 0)
+        game_group_id = int(game_group_id or 0)
+        topic_id = int(topic_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if send_as_id <= 0:
+        return None
+
+    command_norm = normalize_command_text(command)
+
+    def matching_logged_command(msg_id):
+        return find_message_log_message(
+            msg_id,
+            now,
+            lookback_sec=lookback_sec,
+            lookahead_sec=lookahead_sec,
+            predicate=lambda entry: (
+                str((entry or {}).get("event_type") or "") in {"message", "sent"}
+                and normalize_command_text((entry or {}).get("text")) == command_norm
+                and sender_matches_identity((entry or {}).get("sender_id"), send_as_id)
+            ),
+            messages_dir=messages_dir,
+        )
+
+    def conflicting_logged_command(msg_id):
+        return find_message_log_message(
+            msg_id,
+            now,
+            lookback_sec=lookback_sec,
+            lookahead_sec=lookahead_sec,
+            predicate=lambda entry: (
+                str((entry or {}).get("event_type") or "") in {"message", "sent"}
+                and str((entry or {}).get("text") or "").strip().startswith(".")
+                and not (
+                    normalize_command_text((entry or {}).get("text")) == command_norm
+                    and sender_matches_identity((entry or {}).get("sender_id"), send_as_id)
+                )
+            ),
+            messages_dir=messages_dir,
+        )
+
+    def base_reply_match(entry):
+        if game_group_id and int((entry or {}).get("chat_id") or 0) != game_group_id:
+            return False
+        if topic_id > 0 and int((entry or {}).get("topic_id") or 0) not in {0, topic_id}:
+            return False
+        text = str((entry or {}).get("text") or "").strip()
+        if not text or text.startswith("."):
+            return False
+        if reply_predicate is not None and not reply_predicate(entry):
+            return False
+        return True
+
+    replies = find_recent_message_log_replies(
+        now,
+        reply_predicate=base_reply_match,
+        start_ts=start_ts,
+        lookback_sec=lookback_sec,
+        lookahead_sec=lookahead_sec,
+        messages_dir=messages_dir,
+    )
+    for reply in replies:
+        try:
+            command_msg_id = int(reply.get("reply_to_msg_id") or 0)
+            reply_ts = float(reply.get("ts_epoch") or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if command_msg_id <= 0 or reply_ts <= 0:
+            continue
+        if matching_logged_command(command_msg_id):
+            item = dict(reply)
+            item["event_type"] = "reply_to_recovered_command"
+            item["message_id"] = command_msg_id
+            item["reply_message_id"] = int(reply.get("message_id") or 0)
+            item["ts_epoch"] = reply_ts
+            return item
+        if conflicting_logged_command(command_msg_id):
+            continue
+        item = dict(reply)
+        item["event_type"] = "reply_to_missing_command"
+        item["message_id"] = command_msg_id
+        item["reply_message_id"] = int(reply.get("message_id") or 0)
+        item["ts_epoch"] = reply_ts
+        return item
+    return None

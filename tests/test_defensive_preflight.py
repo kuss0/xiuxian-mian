@@ -50,8 +50,10 @@ def test_tianxing_valid_prediction_and_change_is_healthy():
         obs={
             "current_prediction": "探索",
             "current_prediction_until": now + 3600,
+            "current_prediction_set_at": now - 120,
             "current_change": "探索",
             "current_change_until": now + 3600,
+            "current_change_set_at": now - 120,
             "tianji_value": 40,
         },
         timeline={"phase": "blocked_replan"},
@@ -61,6 +63,81 @@ def test_tianxing_valid_prediction_and_change_is_healthy():
 
     assert item["level"] == "healthy"
     assert "均有效" in item["reason"]
+
+
+def test_tianxing_stale_change_counter_is_not_healthy_inside_prepare_window():
+    now = 1_700_000_000.0
+    item = preflight._tianxing_action_status(
+        label="tutu",
+        username="tutuerduoxiao",
+        action="野外历练",
+        due_at=now + 120,
+        retry_at=0,
+        obs={
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "current_prediction_set_at": now - 120,
+            "current_change": "探索",
+            "current_change_until": now + 3600,
+            "tianji_value": 40,
+        },
+        timeline={"phase": "idle"},
+        config={"route_prepare_lead_sec": 300},
+        now=now,
+    )
+
+    assert item["level"] == "at_risk"
+    assert "改命证据不新鲜" in item["reason"]
+
+
+def test_tianxing_wild_training_tianji_short_with_prediction_is_at_risk():
+    now = 1_700_000_000.0
+    item = preflight._tianxing_action_status(
+        label="万灵 1",
+        username="xueuode5",
+        action="野外历练",
+        due_at=now + 120,
+        retry_at=0,
+        obs={
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "current_prediction_set_at": now - 120,
+            "current_change": "",
+            "current_change_until": 0,
+            "tianji_value": 0,
+        },
+        timeline={"phase": "need_tianji_for_change"},
+        config={"route_prepare_lead_sec": 300},
+        now=now,
+    )
+
+    assert item["level"] == "at_risk"
+    assert "转炼制攒点" in item["reason"]
+
+
+def test_tianxing_rift_tianji_short_with_prediction_stays_at_risk():
+    now = 1_700_000_000.0
+    item = preflight._tianxing_action_status(
+        label="万灵 1",
+        username="xueuode5",
+        action="探寻裂缝",
+        due_at=now + 120,
+        retry_at=0,
+        obs={
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "current_prediction_set_at": now - 120,
+            "current_change": "",
+            "current_change_until": 0,
+            "tianji_value": 0,
+        },
+        timeline={"phase": "need_tianji_for_change"},
+        config={"route_prepare_lead_sec": 300},
+        now=now,
+    )
+
+    assert item["level"] == "at_risk"
+    assert "未见有效推命/改命" in item["reason"]
 
 
 def test_tianxing_later_action_with_prior_consume_is_watch():
@@ -74,8 +151,10 @@ def test_tianxing_later_action_with_prior_consume_is_watch():
         obs={
             "current_prediction": "探索",
             "current_prediction_until": now + 20 * 3600,
+            "current_prediction_set_at": now - 120,
             "current_change": "探索",
             "current_change_until": now + 20 * 3600,
+            "current_change_set_at": now - 120,
             "tianji_value": 40,
         },
         timeline={"phase": "downstream_released"},
@@ -98,3 +177,50 @@ def test_listener_inactive_without_heartbeat_is_watch(tmp_path):
     assert item["level"] == "watch"
     assert item["service_state"] == "inactive"
     assert "inactive" in item["reason"]
+
+
+def test_hehuan_cooldown_with_early_send_is_at_risk():
+    now = 1_700_000_000.0
+    with patch.object(
+        preflight,
+        "_recent_script_sends",
+        return_value=[{"message_id": 9911, "ts": now - 30}],
+    ):
+        item = preflight._hehuan_status(
+            label="Wise Mole",
+            username="wisemole",
+            send_as_id=8574677796,
+            obs={
+                "last_observed_at": now - 300,
+                "last_warm_success_at": now - 300,
+                "next_hehuan_time": now + 3300,
+                "auto_next_time": now + 3300,
+                "last_result": "success",
+            },
+            now=now,
+        )
+
+    assert item["level"] == "at_risk"
+    assert item["message_id"] == 9911
+    assert "提前放行" in item["reason"]
+
+
+def test_hehuan_pending_past_deadline_is_at_risk():
+    now = 1_700_000_000.0
+    item = preflight._hehuan_status(
+        label="ice",
+        username="iceeet1",
+        send_as_id=3943539390,
+        obs={
+            "last_observed_at": now - 100,
+            "last_result": "pending",
+            "auto_pending_msg_id": 9922,
+            "auto_pending_sent_at": now - 240,
+            "auto_pending_deadline_at": now - 30,
+        },
+        now=now,
+    )
+
+    assert item["level"] == "at_risk"
+    assert item["pending_msg_id"] == 9922
+    assert "不能重发" in item["reason"]

@@ -23,7 +23,7 @@ from ..config import (
 from ..action_guard import close_action as close_action_guard_action
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import _meta_state, get_current_identity_id, get_identity_account, has_identity, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -38,6 +38,7 @@ MULAN_SEND_QUEUE_TIMEOUT_SEC = 90
 MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC = 120
 MULAN_SEND_QUEUE_RETRY_MIN_SEC = 10 * 60
 MULAN_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
+MULAN_SEND_UNKNOWN_BACKOFF_SEC = 10 * 60
 MULAN_PHASE_IDLE = "idle"
 MULAN_PHASE_COLLECT_PENDING = "collect_pending"
 MULAN_PHASE_READY_TO_JUDGE = "ready_to_judge"
@@ -707,12 +708,26 @@ async def _send_mulan_command(command, now, phase):
             state["mulan_last_error"] = ""
             save_state()
             return False
-        send_block = get_last_game_send_block(identity_id, command)
+        send_block = classify_game_send_block(identity_id, command)
         if str(send_block.get("code") or "") == "send_queue_timeout":
             state["next_mulan_time"] = float(now + random.uniform(MULAN_SEND_QUEUE_RETRY_MIN_SEC, MULAN_SEND_QUEUE_RETRY_MAX_SEC))
             state["mulan_last_command"] = command
             state["mulan_last_result"] = "发送队列拥挤，慕兰错峰重试"
             state["mulan_last_error"] = ""
+            save_state()
+            return False
+        if send_block.get("status") == "unsent":
+            state["next_mulan_time"] = float(now + RETRY_MAX_SEC)
+            state["mulan_last_command"] = command
+            state["mulan_last_result"] = "运行保护拦截，慕兰延后重试"
+            state["mulan_last_error"] = str(send_block.get("reason") or send_block.get("code") or "未发送")
+            save_state()
+            return False
+        if send_block.get("status") == "unknown":
+            state["next_mulan_time"] = float(now + MULAN_SEND_UNKNOWN_BACKOFF_SEC)
+            state["mulan_last_command"] = command
+            state["mulan_last_result"] = "发送状态未知，等待被动回复或稍后校准"
+            state["mulan_last_error"] = str(send_block.get("reason") or send_block.get("code") or "发送状态未知")
             save_state()
             return False
         state["next_mulan_time"] = float(now + RETRY_MAX_SEC)

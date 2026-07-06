@@ -3,6 +3,7 @@ import json
 import random
 import re
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 from ..config import (
@@ -27,6 +28,7 @@ from ..runtime import (
     send_game_command,
     was_last_game_send_blocked_by_global,
 )
+from ..webapp_core import MiniAppCaptureStore
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -41,6 +43,11 @@ from ..state import (
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
 from .fishing import parse_open_fish_result, plan_fishing_commands
+from .fishing_miniapp import (
+    extract_fishing_miniapp_catches,
+    extract_fishing_miniapp_launch,
+    run_fishing_miniapp_production_flow,
+)
 from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas, start_storage_bag_gift_batch
 
 
@@ -63,6 +70,7 @@ FISHING_QUEUE_DELAY_MAX_SEC = 5
 FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 65
 FISHING_TRANSFER_RETRY_DELAY_SEC = 5 * 60
 FISHING_VALUABLE_REMINDER_OFFSETS_SEC = (0, 3 * 3600, 6 * 3600)
+FISHING_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
 FISHING_COMMON_OPEN_REWARD_ITEMS = {"灵石", "灵鱼肉", "灵鱼鳞", "清灵草", "水草"}
 FISHING_VALUABLE_KEYWORDS = (
     "图纸",
@@ -88,6 +96,7 @@ _RECENT_COMMANDS = {}
 FISHING_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 FISHING_LOG_REPLAY_LOOKAHEAD_SEC = 30
 FISHING_SEND_UNKNOWN_WAIT_SEC = 90
+FISHING_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 
 
 def _parse_int(value, default=0):
@@ -395,12 +404,463 @@ def _explicit_fishing_angler(text):
     catch = fishing_behavior.parse_fishing_catch(text)
     if catch:
         return _normalize_username(catch.angler)
+    match = re.search(r"钓者[:：]\s*(?P<angler>@[A-Za-z0-9_]+)", str(text or ""))
+    if match:
+        return _normalize_username(match.group("angler"))
     return ""
 
 
 def _is_open_fish_reply_to_command(reply_to=None):
     orig_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()
     return orig_cmd.startswith(f"{CMD_FISHING_OPEN} ")
+
+
+def _looks_like_fishing_miniapp_entry(text):
+    raw = str(text or "")
+    return "灵溪垂钓" in raw or "钓鱼" in raw
+
+
+def _format_miniapp_result_summary(result):
+    result = dict(result or {})
+    status = str(result.get("status") or "unknown").strip() or "unknown"
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
+    round_prefix = f"{settled_count}竿｜" if settled_count > 1 else ""
+    if result.get("ok"):
+        catch_text = _format_miniapp_catch_summary(extract_fishing_miniapp_catches(data))
+        if catch_text:
+            return f"MiniApp {status}｜{round_prefix}{catch_text}"
+        keys = "、".join(sorted(str(key) for key in data)[:8]) or "无明细"
+        return f"MiniApp {status}｜{round_prefix}结果字段:{keys}"
+    error = str(result.get("error") or "").strip()
+    return f"MiniApp {status}｜{error or '未完成'}"
+
+
+def _format_miniapp_catch_summary(catches):
+    parts = []
+    for item in catches or ():
+        if not isinstance(item, dict):
+            continue
+        fish = str(item.get("fish") or "").strip()
+        if not fish:
+            continue
+        grade = str(item.get("grade") or "").strip()
+        weight = str(item.get("weight") or "").strip()
+        text = fish
+        extras = [part for part in (grade, weight) if part]
+        if extras:
+            text += f"（{'/'.join(extras)}）"
+        rewards = []
+        for reward in item.get("rewards") or ():
+            if not isinstance(reward, dict):
+                continue
+            name = str(reward.get("name") or "").strip()
+            if not name:
+                continue
+            qty = _parse_int(reward.get("qty"), 1)
+            rewards.append(f"{name}x{max(1, qty)}")
+        if rewards:
+            text += "｜奖励:" + "、".join(rewards[:4])
+        parts.append(text)
+    return "渔获:" + "；".join(parts[:6]) if parts else ""
+
+
+async def _send_fishing_miniapp_harvest_summary(result):
+    result = dict(result or {})
+    if not result.get("ok"):
+        return False
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    catch_text = _format_miniapp_catch_summary(extract_fishing_miniapp_catches(data))
+    if not catch_text:
+        return False
+    return await send_audit_log(
+        f"🎣 灵溪垂钓 MiniApp 收获｜{catch_text}",
+        scope="identity",
+        priority="low",
+        limit=260,
+    )
+
+
+def _miniapp_catch_counts(catches):
+    counts = {}
+    for item in catches or ():
+        if not isinstance(item, dict):
+            continue
+        fish = str(item.get("fish") or "").strip()
+        if fish:
+            counts[fish] = counts.get(fish, 0) + 1
+    return counts
+
+
+def _iter_miniapp_daily_progress_candidates(value, depth=0):
+    if depth > 4:
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_miniapp_daily_progress_candidates(item, depth + 1)
+        return
+    if not isinstance(value, dict):
+        return
+    keys = {str(key).lower() for key in value}
+    has_daily_hint = any(
+        hint in key
+        for key in keys
+        for hint in ("daily", "today", "rod", "remaining", "quota", "limit", "count")
+    )
+    if has_daily_hint:
+        yield value
+    for key, child in value.items():
+        key_text = str(key).lower()
+        if key_text in {"challenge", "proof", "fishingproof"}:
+            continue
+        if any(hint in key_text for hint in ("daily", "today", "quota", "limit", "counter", "count", "remaining", "session", "result")):
+            yield from _iter_miniapp_daily_progress_candidates(child, depth + 1)
+
+
+def _first_positive_int_from_keys(mapping, keys):
+    if not isinstance(mapping, dict):
+        return 0
+    lower_map = {str(key).lower(): value for key, value in mapping.items()}
+    for key in keys:
+        value = lower_map.get(key.lower())
+        parsed = _parse_int(value, 0)
+        if parsed > 0:
+            return parsed
+    return 0
+
+
+def _first_nonnegative_int_from_keys(mapping, keys):
+    if not isinstance(mapping, dict):
+        return -1
+    lower_map = {str(key).lower(): value for key, value in mapping.items()}
+    for key in keys:
+        if key.lower() not in lower_map:
+            continue
+        parsed = _parse_int(lower_map.get(key.lower()), -1)
+        if parsed >= 0:
+            return parsed
+    return -1
+
+
+def _extract_miniapp_daily_progress(data):
+    """Extract non-sensitive MiniApp daily rod progress when the API exposes it."""
+    limit_keys = (
+        "dailyLimit",
+        "daily_limit",
+        "dailyRodsLimit",
+        "daily_rods_limit",
+        "rodLimit",
+        "rod_limit",
+        "maxRods",
+        "max_rods",
+        "totalRods",
+        "total_rods",
+        "quota",
+        "limit",
+        "total",
+    )
+    used_keys = (
+        "dailyUsed",
+        "daily_used",
+        "dailyCount",
+        "daily_count",
+        "dailyRodsUsed",
+        "daily_rods_used",
+        "rodCount",
+        "rod_count",
+        "usedRods",
+        "used_rods",
+        "todayCount",
+        "today_count",
+        "used",
+        "count",
+    )
+    remaining_keys = (
+        "dailyRemaining",
+        "daily_remaining",
+        "remainingRods",
+        "remaining_rods",
+        "leftRods",
+        "left_rods",
+        "remaining",
+        "left",
+    )
+    progress = {"used": -1, "limit": 0, "remaining": -1}
+    for candidate in _iter_miniapp_daily_progress_candidates(data or {}):
+        limit = _first_positive_int_from_keys(candidate, limit_keys)
+        used = _first_nonnegative_int_from_keys(candidate, used_keys)
+        remaining = _first_nonnegative_int_from_keys(candidate, remaining_keys)
+        if limit > 0 and (used >= 0 or remaining >= 0):
+            progress["limit"] = limit
+            progress["used"] = used
+            progress["remaining"] = remaining
+            return progress
+    return progress
+
+
+def _normalize_fishing_daily_catch_summary(value=None):
+    raw = state.get("fishing_daily_catch_summary_json") if value is None else value
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    summary = {
+        "day": str(raw.get("day") or "").strip(),
+        "rods": _parse_int(raw.get("rods"), 0),
+        "fish": {},
+        "rewards": {},
+    }
+    for key in ("fish", "rewards"):
+        values = raw.get(key)
+        if not isinstance(values, dict):
+            continue
+        for name, amount in values.items():
+            name = str(name or "").strip()
+            count = _parse_int(amount, 0)
+            if name and count > 0:
+                summary[key][name] = count
+    return summary
+
+
+def _merge_fishing_daily_catches(raw_summary, day_key, catches, *, settled_count=0):
+    day_key = str(day_key or "").strip()
+    summary = _normalize_fishing_daily_catch_summary(raw_summary)
+    if not day_key:
+        day_key = get_day_key(time.time())
+    if summary["day"] != day_key:
+        summary = {"day": day_key, "rods": 0, "fish": {}, "rewards": {}}
+    catch_list = [item for item in (catches or ()) if isinstance(item, dict)]
+    rod_count = max(_parse_int(settled_count, 0), len(catch_list))
+    if rod_count > 0:
+        summary["rods"] = _parse_int(summary.get("rods"), 0) + rod_count
+    for catch in catch_list:
+        fish = str(catch.get("fish") or "").strip()
+        if fish:
+            summary["fish"][fish] = _parse_int(summary["fish"].get(fish), 0) + 1
+        for reward in catch.get("rewards") or ():
+            if not isinstance(reward, dict):
+                continue
+            name = str(reward.get("name") or "").strip()
+            if not name:
+                continue
+            qty = max(1, _parse_int(reward.get("qty"), 1))
+            summary["rewards"][name] = _parse_int(summary["rewards"].get(name), 0) + qty
+    return json.dumps(summary, ensure_ascii=False, sort_keys=True)
+
+
+def _format_fishing_daily_completion_summary(day_key, count, limit, raw_summary):
+    summary = _normalize_fishing_daily_catch_summary(raw_summary)
+    fish_text = _format_count_map(summary.get("fish"))
+    reward_text = _format_count_map(summary.get("rewards"))
+    rod_text = f"{_parse_int(count, 0)}/{_parse_int(limit, 0)}竿"
+    if _parse_int(summary.get("rods"), 0) > 0 and _parse_int(summary.get("rods"), 0) != _parse_int(count, 0):
+        rod_text += f"｜已解析{_parse_int(summary.get('rods'), 0)}竿"
+    parts = [f"🎣 灵溪垂钓日结｜{day_key}｜{rod_text}", f"渔获:{fish_text}"]
+    if reward_text != "无":
+        parts.append(f"奖励:{reward_text}")
+    return "｜".join(parts)
+
+
+async def _send_fishing_daily_completion_summary(now):
+    day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
+    if daily_updates:
+        _apply_updates(daily_updates)
+        mark_dirty()
+    if int(limit or 0) <= 0 or int(count or 0) < int(limit or 0):
+        return False
+    if str(state.get("fishing_daily_summary_day") or "").strip() == str(day_key or "").strip():
+        return False
+    summary = _normalize_fishing_daily_catch_summary(state.get("fishing_daily_catch_summary_json"))
+    if str(summary.get("day") or "").strip() != str(day_key or "").strip():
+        return False
+    if _parse_int(summary.get("rods"), 0) <= 0 and not summary.get("fish") and not summary.get("rewards"):
+        return False
+    message = _format_fishing_daily_completion_summary(
+        day_key,
+        count,
+        limit,
+        summary,
+    )
+    ok = await send_audit_log(message, scope="identity", priority="low", limit=260)
+    if not ok:
+        state["fishing_last_error"] = "灵溪垂钓日结播报发送失败，稍后重试"
+        mark_dirty()
+        return True
+    state["fishing_daily_summary_day"] = str(day_key or "").strip()
+    state["fishing_last_error"] = ""
+    save_state()
+    return True
+
+
+def _miniapp_failure_backoff(now):
+    return float(now + FISHING_MINIAPP_FAILURE_BACKOFF_SEC + random.uniform(0, FISHING_RECOVERY_MAX_SEC))
+
+
+def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
+    result = dict(result or {})
+    ok = bool(result.get("ok"))
+    status = str(result.get("status") or "").strip()
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    catches = extract_fishing_miniapp_catches(data)
+    updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
+    updates["fishing_phase"] = "idle"
+    updates["fishing_last_msg_id"] = int(result_msg_id or 0)
+    updates["fishing_last_result"] = _format_miniapp_result_summary(result)
+    updates["fishing_last_error"] = "" if ok else updates["fishing_last_result"]
+    if ok and status in {"next_failed", "next_unavailable"}:
+        updates["fishing_last_error"] = updates["fishing_last_result"]
+
+    day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
+    updates.update(daily_updates)
+    progress = _extract_miniapp_daily_progress(data)
+    if progress.get("limit", 0) > 0:
+        limit = fishing_behavior.clamp_fishing_daily_limit(progress.get("limit"))
+        updates["fishing_daily_limit"] = limit
+    if progress.get("used", -1) >= 0:
+        count = min(int(limit or 0), max(0, int(progress.get("used") or 0)))
+    elif progress.get("remaining", -1) >= 0 and int(limit or 0) > 0:
+        count = min(int(limit or 0), max(0, int(limit or 0) - int(progress.get("remaining") or 0)))
+    if ok and status in {"settled", "finish_submitted", "daily_limit", "next_failed", "next_unavailable"}:
+        settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 1)
+        settled_count = max(1, settled_count)
+        if progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0:
+            count = min(int(limit or 0), int(count or 0))
+        else:
+            count = min(int(limit or 0), int(count or 0) + settled_count)
+        if status == "daily_limit":
+            count = int(limit or count or 0)
+        updates["fishing_daily_day"] = day_key
+        updates["fishing_daily_count"] = count
+        updates["fishing_daily_catch_summary_json"] = _merge_fishing_daily_catches(
+            state.get("fishing_daily_catch_summary_json"),
+            day_key,
+            catches,
+            settled_count=settled_count,
+        )
+        catch_counts = _miniapp_catch_counts(catches)
+        if catch_counts:
+            updates["fishing_basket_calibrated_day"] = ""
+            transfer_target_id = _parse_int(state.get("fishing_transfer_target_id", 0))
+            if transfer_target_id > 0:
+                pending = fishing_behavior.parse_pending_open_fish(state.get("fishing_caught_fish_json"))
+                for fish, amount in catch_counts.items():
+                    pending[fish] = pending.get(fish, 0) + int(amount or 0)
+                updates["fishing_caught_fish_json"] = json.dumps(pending, ensure_ascii=False, sort_keys=True)
+                if float(state.get("fishing_transfer_due_at", 0) or 0) <= 0:
+                    updates["fishing_transfer_due_at"] = float(now + fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC)
+        if count >= int(limit or 0) or status == "daily_limit":
+            if state.get("fishing_auto_open_fish_enabled") or _parse_int(state.get("fishing_transfer_target_id", 0)) > 0:
+                updates["fishing_basket_calibrated_day"] = ""
+                updates["next_fishing_time"] = float(now + random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC))
+            else:
+                updates["next_fishing_time"] = fishing_behavior.next_fishing_daily_limit_check_timestamp(
+                    now,
+                    random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
+                )
+        elif status in {"next_failed", "next_unavailable"}:
+            updates["next_fishing_time"] = _miniapp_failure_backoff(now)
+        else:
+            updates["next_fishing_time"] = float(now + random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC))
+    else:
+        updates["next_fishing_time"] = _miniapp_failure_backoff(now)
+    _apply_updates(updates)
+    catch_counts = _miniapp_catch_counts(catches)
+    if catch_counts:
+        apply_storage_bag_item_deltas(get_current_identity_id(), catch_counts)
+        for catch in catches:
+            reward_text = "\n".join(
+                f"- 伴生机缘：【{reward.get('name')}】x{max(1, _parse_int(reward.get('qty'), 1))}"
+                for reward in (catch.get("rewards") or ())
+                if isinstance(reward, dict) and str(reward.get("name") or "").strip()
+            )
+            if reward_text:
+                text = f"【提竿成功】\n钓获：【{catch.get('fish')}】\n{reward_text}"
+                _queue_fishing_valuable_drop_reminders(text, now, result_msg_id=result_msg_id)
+    save_state()
+    return updates["fishing_last_result"]
+
+
+def _remaining_miniapp_chain_rounds(now):
+    _day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
+    if daily_updates:
+        _apply_updates(daily_updates)
+        mark_dirty()
+    remaining = max(1, int(limit or 0) - int(count or 0))
+    return max(1, remaining)
+
+
+def _fishing_miniapp_capture_store(now):
+    day_key = get_day_key(now)
+    path = FISHING_MINIAPP_CAPTURE_DIR / f"fishing-{day_key}.jsonl"
+    return MiniAppCaptureStore(path, keep_memory=False)
+
+
+def _is_deprecated_fishing_followup_command(command):
+    raw = str(command or "").strip()
+    if not raw.startswith((CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_CANCEL)):
+        return False
+    phase = str(state.get("fishing_phase") or "").strip()
+    last_result = str(state.get("fishing_last_result") or "")
+    last_error = str(state.get("fishing_last_error") or "")
+    return phase == "miniapp" or "MiniApp" in last_result or "MiniApp" in last_error
+
+
+async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
+    if not state.get("fishing_enabled"):
+        return False
+    launch = extract_fishing_miniapp_launch(event, message_text=text)
+    if not launch:
+        return False
+    is_routed_fishing = _is_fishing_reply(reply_to, matched_family=matched_family)
+    if not is_routed_fishing and not _looks_like_fishing_miniapp_entry(text):
+        return False
+    explicit_angler = _explicit_fishing_angler(text)
+    current_username = _current_identity_username()
+    if explicit_angler and current_username and explicit_angler != current_username:
+        return False
+
+    lock = _fishing_send_lock(get_current_identity_id())
+    if lock.locked():
+        state["fishing_last_error"] = "MiniApp 钓鱼接管中，重复入口已忽略"
+        mark_dirty()
+        return True
+    async with lock:
+        max_rounds = _remaining_miniapp_chain_rounds(now)
+        _cancel_fishing_followup(get_current_identity_id())
+        _cancel_fishing_recovery(get_current_identity_id())
+        state["fishing_phase"] = "miniapp"
+        state["fishing_reply_to_msg_id"] = 0
+        state["fishing_reply_due_at"] = 0
+        state["fishing_last_msg_id"] = int(result_msg_id or getattr(event, "id", 0) or 0)
+        state["fishing_last_result"] = "MiniApp 钓鱼接管中"
+        state["fishing_last_error"] = ""
+        state["next_fishing_time"] = float(now + FISHING_REPLY_TIMEOUT_SEC * max_rounds)
+        save_state()
+        await send_audit_log(
+            "🎣 灵溪垂钓 MiniApp 接管入口，开始 WebView/HTTP 流程。",
+            scope="identity",
+            priority="low",
+            limit=180,
+        )
+        result = await run_fishing_miniapp_production_flow(
+            get_current_identity_id(),
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            max_rounds=max_rounds,
+            capture_sink=_fishing_miniapp_capture_store(now),
+            capture_source=f"fishing_runtime:{get_current_identity_id()}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+        )
+        result = dict(result or {})
+        summary = _apply_fishing_miniapp_result(result, now, result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0))
+        await _send_fishing_miniapp_harvest_summary(result)
+        if not result.get("ok") or str(result.get("status") or "").strip() in {"next_failed", "next_unavailable"}:
+            await send_audit_log(f"🎣 灵溪垂钓 MiniApp 异常：{summary}", scope="identity", limit=240)
+        else:
+            await _send_fishing_daily_completion_summary(now)
+        return True
 
 
 def _priority_for_fishing_command(command):
@@ -930,6 +1390,23 @@ async def _send_fishing_command(command, now):
 
 async def _send_fishing_command_locked(command, now):
     phase = fishing_behavior.command_phase(command)
+    if _is_deprecated_fishing_followup_command(command):
+        updates = fishing_behavior.clear_pending_updates()
+        updates.update({
+            "fishing_started_at": 0,
+            "fishing_last_result": "MiniApp 钓鱼模式：旧文本提竿链已停止",
+            "fishing_last_error": f"旧文本钓鱼后续已禁用：{command}",
+            "next_fishing_time": _miniapp_failure_backoff(now),
+        })
+        _apply_updates(updates)
+        save_state()
+        await send_audit_log(
+            f"🎣 灵溪垂钓旧文本后续已拦截：{command}；等待 MiniApp 入口/HTTP 流程，不再自动提竿。",
+            scope="identity",
+            priority="low",
+            limit=220,
+        )
+        return False
     if _recent_fishing_command_blocks(command, now):
         state["fishing_last_error"] = f"短窗重复指令已抑制：{command}"
         mark_dirty()
@@ -997,6 +1474,9 @@ async def _send_fishing_command_locked(command, now):
 
 async def run_fishing_scheduler(now):
     if await _run_fishing_valuable_drop_reminders(now):
+        return
+
+    if await _send_fishing_daily_completion_summary(now):
         return
 
     if await _run_pending_fishing_transfer(now):
@@ -1075,6 +1555,7 @@ __all__ = [
     "get_fishing_status_text",
     "get_day_key",
     "is_fishing_reply_text",
+    "handle_fishing_miniapp_entry",
     "handle_fishing_reply",
     "run_fishing_scheduler",
     "schedule_fishing_initial_check",

@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_send_as_profile, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
@@ -33,6 +33,7 @@ RE_WENDAO_REWARD_PLAIN = re.compile(r"^(.+?)\s*[xX*＊]\s*([\d,]+)$")
 RE_WENDAO_NOISE_PREFIX = re.compile(r"^[\-•·\s]+")
 WENDAO_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 WENDAO_LOG_REPLAY_LOOKAHEAD_SEC = 30
+WENDAO_SEND_UNKNOWN_BACKOFF_SEC = 10 * 60
 
 
 def _parse_int(value):
@@ -342,10 +343,15 @@ async def run_wendao_scheduler(now):
 
     msg = await send_game_command(CMD_WENDAO, track=False, max_retry=0, source_module="问道")
     if not msg:
-        state["next_wendao_time"] = float(now + RETRY_MAX_SEC)
-        state["wendao_last_error"] = "问道发送失败"
+        send_block = classify_game_send_block(get_current_identity_id(), CMD_WENDAO)
+        if send_block.get("status") == "unsent":
+            state["next_wendao_time"] = float(now + RETRY_MAX_SEC)
+            state["wendao_last_error"] = f"问道未发送，延后重试：{send_block.get('code') or 'blocked'}"
+        else:
+            state["next_wendao_time"] = float(now + WENDAO_SEND_UNKNOWN_BACKOFF_SEC)
+            state["wendao_last_error"] = "问道发送状态未知，等待被动回复或稍后校准"
         save_state()
-        await send_audit_log("❌ 问道发送失败，稍后重试。", scope="identity", limit=180)
+        await send_audit_log(f"⚠️ {state['wendao_last_error']}。", scope="identity", limit=180)
         return
 
     sent_at = float(getattr(msg, "sent_at", 0) or time.time())

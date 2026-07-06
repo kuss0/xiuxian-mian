@@ -33,9 +33,11 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         fishing = snapshot["fishing"]
         self.assertEqual("青溪浅滩", fishing["pond"])
         self.assertEqual("凡饵", fishing["bait"])
+        self.assertEqual("MiniApp", fishing["flow_mode"])
         self.assertEqual(20, fishing["daily_limit"])
         self.assertEqual(20, fishing["auto_buy_bait_count"])
         self.assertEqual(0, fishing["daily_count"])
+        self.assertEqual({"day": "", "rods": 0, "fish": {}, "rewards": {}}, fishing["daily_catch_summary"])
         self.assertTrue(fishing["auto_chum_enabled"])
         self.assertEqual(["米糠小窝"], fishing["chum_names"])
         self.assertTrue(fishing["auto_buy_bait_enabled"])
@@ -48,6 +50,19 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fishing["bait_inventory_known"])
         self.assertTrue(fishing["plan"]["allow_start"])
         self.assertEqual([".买鱼饵 凡饵 20", ".打窝 米糠小窝", ".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
+
+    def test_identity_snapshot_includes_daily_catch_summary_for_miniapp_ui(self):
+        identity_state = state_module.get_identity_state(self.identity_id)
+        identity_state["fishing_daily_catch_summary_json"] = (
+            '{"day":"2026-07-06","rods":2,"fish":{"银须灵鲢":1},"rewards":{"幸运符":1}}'
+        )
+
+        fishing = ui.get_identity_ui_snapshot(self.identity_id)["fishing"]
+
+        self.assertEqual("2026-07-06", fishing["daily_catch_summary"]["day"])
+        self.assertEqual(2, fishing["daily_catch_summary"]["rods"])
+        self.assertEqual({"银须灵鲢": 1}, fishing["daily_catch_summary"]["fish"])
+        self.assertEqual({"幸运符": 1}, fishing["daily_catch_summary"]["rewards"])
 
     async def test_set_fishing_config_persists_choices_and_plans_missing_bait_purchase(self):
         state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 385, "凝血草": 5}, "sections": {}}})
@@ -196,7 +211,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
             low_limit = state_module.get_identity_state(self.identity_id)["fishing_daily_limit"]
 
         self.assertTrue(ok_high)
-        self.assertEqual(20, high_limit)
+        self.assertEqual(99, high_limit)
         self.assertTrue(ok_low)
         self.assertEqual(1, low_limit)
 
@@ -224,6 +239,11 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data-open-fishing-config>设置</button>", script)
         self.assertNotIn("data-open-fishing-config>垂钓设置</button>", script)
         self.assertIn("renderFishingConfigModal(false)", script)
+        self.assertIn("MiniApp：.钓鱼 入口｜页面内连钓", script)
+        self.assertIn("旧链兜底", script)
+        self.assertIn("fishing-legacy-controls", script)
+        self.assertIn("dailyCatchSummaryText", script)
+        self.assertIn("compactCountMapText", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
         self.assertIn('name="cancel_after_sec"', script)

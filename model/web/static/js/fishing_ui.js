@@ -42,7 +42,7 @@
     if(!Number.isFinite(parsed)){
       return 20;
     }
-    return Math.max(1, Math.min(20, parsed));
+    return Math.max(1, Math.min(99, parsed));
   }
 
   function clampBuyBaitCount(value){
@@ -135,13 +135,46 @@
     return parts.length ? parts.join('、') : '无';
   }
 
+  function compactCountMapText(counts, limit){
+    var parts = [];
+    Object.keys(counts || {}).sort().forEach(function(name){
+      var count = Number(counts[name] || 0);
+      if(name && count > 0){
+        parts.push(name+'x'+count);
+      }
+    });
+    if(!parts.length){
+      return '无';
+    }
+    limit = Math.max(1, Number(limit || 4));
+    return parts.slice(0, limit).join('、') + (parts.length > limit ? '…' : '');
+  }
+
+  function dailyCatchSummaryText(fishing){
+    var summary = fishing.daily_catch_summary || {};
+    var fishText = compactCountMapText(summary.fish || {}, 4);
+    var rewardText = compactCountMapText(summary.rewards || {}, 4);
+    if(fishText === '无' && rewardText === '无'){
+      return '';
+    }
+    if(rewardText === '无'){
+      return '收获 '+fishText;
+    }
+    if(fishText === '无'){
+      return '奖励 '+rewardText;
+    }
+    return '收获 '+fishText+' / '+rewardText;
+  }
+
   function fishingStatusText(fishing, plan){
     var bits = [];
+    bits.push(esc(fishing.flow_mode || 'MiniApp'));
     bits.push(esc(fishing.pond || '青溪浅滩')+'/'+esc(fishing.bait || '凡饵'));
     bits.push('竿 '+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit)));
-    bits.push('买饵 '+(fishing.auto_buy_bait_enabled ? '开' : '关')+'x'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count)));
-    bits.push('开鱼 '+(fishing.auto_open_fish_enabled ? '开' : '关'));
-    bits.push('收竿 '+(clampCancelAfterSec(fishing.cancel_after_sec) > 0 ? esc(clampCancelAfterSec(fishing.cancel_after_sec))+'s' : '关'));
+    var catchSummary = dailyCatchSummaryText(fishing);
+    if(catchSummary){
+      bits.push(esc(catchSummary));
+    }
     if(Number(fishing.transfer_target_id || 0) > 0){
       bits.push('赠 '+esc(fishing.transfer_target_label || fishing.transfer_target_id));
     }
@@ -160,18 +193,22 @@
   function fishingConfigFormHtml(fishing, plan){
     return ''+
       '<form id="fishing-config-form" class="fishing-config-grid fishing-config-modal-grid">'+
+      '<div class="fishing-plan fishing-plan-wide"><span>主路径</span><div>MiniApp：.钓鱼 入口｜页面内连钓</div></div>'+
       '<label class="field-label"><span>鱼塘</span><select class="text-input" name="pond">'+optionHtml(fishing.pond_choices || [], fishing.pond)+'</select></label>'+
       '<label class="field-label"><span>鱼饵</span><select class="text-input" name="bait">'+optionHtml(fishing.bait_choices || [], fishing.bait)+'</select></label>'+
-      '<label class="field-label"><span>每日竿数</span><input class="text-input" type="number" name="daily_limit" min="1" max="20" step="1" value="'+esc(clampDailyLimit(fishing.daily_limit))+'" /></label>'+
+      '<label class="field-label"><span>每日竿数</span><input class="text-input" type="number" name="daily_limit" min="1" max="99" step="1" value="'+esc(clampDailyLimit(fishing.daily_limit))+'" /></label>'+
       '<label class="field-label"><span>买饵数量</span><input class="text-input" type="number" name="auto_buy_bait_count" min="1" max="99" step="1" value="'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count))+'" /></label>'+
-      '<label class="field-label"><span>卡竿收竿</span><input class="text-input" type="number" name="cancel_after_sec" min="0" max="600" step="10" value="'+esc(clampCancelAfterSec(fishing.cancel_after_sec))+'" /></label>'+
-      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_chum_enabled" '+(fishing.auto_chum_enabled ? 'checked' : '')+' /><span>打窝</span></label>'+
-      '<div class="fishing-plan fishing-chum-plan"><span>窝料顺序</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_buy_bait_enabled" '+(fishing.auto_buy_bait_enabled ? 'checked' : '')+' /><span>缺饵购买</span></label>'+
-      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
-      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_open_fish_enabled" '+(fishing.auto_open_fish_enabled ? 'checked' : '')+' /><span>自动开鱼</span></label>'+
+      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_chum_enabled" '+(fishing.auto_chum_enabled ? 'checked' : '')+' /><span>打窝</span></label>'+
+      '<div class="fishing-plan fishing-chum-plan"><span>窝料</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
       '<label class="field-label"><span>鱼获赠送</span><select class="text-input" name="transfer_target_id">'+identityOptionHtml(fishing.transfer_identity_options || [], fishing.transfer_target_id)+'</select></label>'+
+      '<div class="fishing-plan fishing-plan-wide"><span>旧链兜底</span><div class="fishing-legacy-controls">'+
+        '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
+        '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_open_fish_enabled" '+(fishing.auto_open_fish_enabled ? 'checked' : '')+' /><span>开鱼</span></label>'+
+        '<label class="field-label fishing-inline-field"><span>收竿</span><input class="text-input" type="number" name="cancel_after_sec" min="0" max="600" step="10" value="'+esc(clampCancelAfterSec(fishing.cancel_after_sec))+'" /></label>'+
+      '</div></div>'+
       '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
+      '<div class="fishing-plan"><span>收获</span><div>'+esc(dailyCatchSummaryText(fishing) || '无')+'</div></div>'+
       '<div class="fishing-plan"><span>待赠</span><div>'+esc(countMapText(fishing.caught_fish || {}))+'</div></div>'+
       '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
       '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+

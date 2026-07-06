@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -180,6 +180,458 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
                 self.assertEqual(22028, state_module.state["fishing_last_msg_id"])
                 self.assertEqual("", state_module.state["fishing_last_error"])
+
+    def _miniapp_event(self, url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234"):
+        return SimpleNamespace(
+            id=33001,
+            message=SimpleNamespace(
+                buttons=[
+                    [
+                        SimpleNamespace(
+                            text="进入钓鱼",
+                            button=SimpleNamespace(url=url),
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    async def test_miniapp_entry_is_ignored_when_fishing_disabled(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 50, 0)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock()) as flow_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+        self.assertFalse(handled)
+        flow_mock.assert_not_awaited()
+
+    async def test_miniapp_entry_runs_flow_and_updates_daily_counter(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 52, 0)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {"fish": "银须灵鲢", "reward": "灵石x28"},
+            "events": [{"step": "result", "ok": True}],
+            "proof": {"score": 94},
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 2
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            flow_mock.assert_awaited_once_with(
+                identity_id,
+                token="fish_TEST1234",
+                webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
+                max_rounds=3,
+                capture_sink=ANY,
+                capture_source="fishing_runtime:8659059191:33001",
+            )
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual(33001, state_module.state["fishing_last_msg_id"])
+            self.assertEqual(3, state_module.state["fishing_daily_count"])
+            self.assertIn("MiniApp settled", state_module.state["fishing_last_result"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertEqual(now + 4, state_module.state["next_fishing_time"])
+
+    async def test_miniapp_entry_counts_chained_rounds_without_second_chat_send(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 53, 0)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {"settled_count": 4, "rounds": [{}, {}, {}, {}]},
+            "events": [{"step": "round", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 1
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            flow_mock.assert_awaited_once_with(
+                identity_id,
+                token="fish_TEST1234",
+                webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
+                max_rounds=4,
+                capture_sink=ANY,
+                capture_source="fishing_runtime:8659059191:33001",
+            )
+            send_mock.assert_not_awaited()
+            self.assertEqual(5, state_module.state["fishing_daily_count"])
+            self.assertIn("4竿", state_module.state["fishing_last_result"])
+
+    async def test_miniapp_entry_uses_remaining_rods_without_fixed_five_cap(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 53, 30)
+        flow_result = {
+            "ok": True,
+            "status": "next_unavailable",
+            "data": {"settled_count": 1, "next_status": "missing_token"},
+            "events": [{"step": "next", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 2
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            flow_mock.assert_awaited_once_with(
+                identity_id,
+                token="fish_TEST1234",
+                webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
+                max_rounds=18,
+                capture_sink=ANY,
+                capture_source="fishing_runtime:8659059191:33001",
+            )
+
+    async def test_miniapp_result_calibrates_daily_progress_from_api_payload(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 53, 40)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "settled_count": 1,
+                "daily": {"used": 6, "limit": 30, "remaining": 24},
+                "catches": [{"fish": "银须灵鲢"}],
+            },
+            "events": [{"step": "result", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 4
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(30, state_module.state["fishing_daily_limit"])
+            self.assertEqual(6, state_module.state["fishing_daily_count"])
+
+    async def test_miniapp_next_unavailable_backs_off_instead_of_chat_resend(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 54, 0)
+        flow_result = {
+            "ok": True,
+            "status": "next_unavailable",
+            "data": {"settled_count": 1, "next_status": "missing_token"},
+            "events": [{"step": "next", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 1
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+                await fishing_runtime.run_fishing_scheduler(now + 10)
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            self.assertEqual(2, state_module.state["fishing_daily_count"])
+            self.assertIn("next_unavailable", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+
+    async def test_miniapp_daily_limit_after_chained_rounds_calibrates_to_full(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 55, 0)
+        flow_result = {
+            "ok": True,
+            "status": "daily_limit",
+            "data": {"settled_count": 4, "next_status": "daily_limit"},
+            "events": [{"step": "next", "ok": False}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(5, state_module.state["fishing_daily_count"])
+            self.assertEqual(5, state_module.state["fishing_daily_limit"])
+            self.assertGreater(state_module.state["next_fishing_time"], now)
+            self.assertLess(state_module.state["next_fishing_time"], now + 60)
+            self.assertEqual("", state_module.state["fishing_basket_calibrated_day"])
+
+    async def test_miniapp_result_records_catch_summary_and_transfer_items(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 56, 0)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "settled_count": 1,
+                "catches": [{
+                    "fish": "银须灵鲢",
+                    "grade": "灵鱼",
+                    "weight": "2.88斤",
+                    "rewards": [{"name": "幸运符", "qty": 1}],
+                    "companion": True,
+                }],
+            },
+            "events": [{"step": "round", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            state_module.state["fishing_transfer_target_id"] = 301299112
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas") as delta_mock,
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertIn("渔获:银须灵鲢", state_module.state["fishing_last_result"])
+            self.assertIn("幸运符x1", state_module.state["fishing_last_result"])
+            self.assertEqual('{"银须灵鲢": 1}', state_module.state["fishing_caught_fish_json"])
+            delta_mock.assert_called_once_with(identity_id, {"银须灵鲢": 1})
+            audit_texts = [call.args[0] for call in audit_mock.await_args_list]
+            self.assertTrue(any("MiniApp 接管入口" in text for text in audit_texts))
+            harvest_texts = [text for text in audit_texts if "MiniApp 收获" in text]
+            self.assertEqual(1, len(harvest_texts))
+            self.assertIn("银须灵鲢", harvest_texts[0])
+            self.assertIn("幸运符x1", harvest_texts[0])
+            self.assertFalse(any("灵溪垂钓日结" in text for text in audit_texts))
+
+    async def test_miniapp_daily_completion_sends_one_catch_summary(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 57, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "settled_count": 1,
+                "catches": [{
+                    "fish": "银须灵鲢",
+                    "grade": "灵鱼",
+                    "weight": "2.88斤",
+                    "rewards": [{"name": "灵石", "qty": 28}],
+                }],
+            },
+            "events": [{"step": "round", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 4
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+                await fishing_runtime._send_fishing_daily_completion_summary(now + 1)
+
+            self.assertTrue(handled)
+            self.assertEqual(5, state_module.state["fishing_daily_count"])
+            self.assertEqual(day_key, state_module.state["fishing_daily_summary_day"])
+            self.assertIn("银须灵鲢", state_module.state["fishing_daily_catch_summary_json"])
+            audit_texts = [call.args[0] for call in audit_mock.await_args_list]
+            daily_texts = [text for text in audit_texts if "灵溪垂钓日结" in text]
+            self.assertEqual(1, len(daily_texts))
+            self.assertIn("5/5竿", daily_texts[0])
+            self.assertIn("银须灵鲢x1", daily_texts[0])
+            self.assertIn("灵石x28", daily_texts[0])
+
+    async def test_miniapp_failure_backs_off_without_old_followup_chain(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 8, 50, 0)
+        flow_result = {
+            "ok": False,
+            "status": "failed",
+            "error": "webview failed",
+            "events": [{"step": "launch", "ok": False}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+            state_module.state["fishing_phase"] = "checking"
+            state_module.state["fishing_reply_to_msg_id"] = 22027
+            state_module.state["fishing_reply_due_at"] = now + 3
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+                await fishing_runtime.run_fishing_scheduler(now + 60)
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual("", state_module.state["fishing_pending_action"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertIn("MiniApp failed", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+
+    async def test_miniapp_mode_blocks_deprecated_lift_followup(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_last_result"] = "MiniApp failed｜webview failed"
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now - 1
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_awaited_once()
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual("", state_module.state["fishing_pending_action"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertIn("旧文本钓鱼后续已禁用", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+
+    async def test_miniapp_entry_rejects_other_angler(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 55, 0)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock()) as flow_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@xianxia_01，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+        self.assertFalse(handled)
+        flow_mock.assert_not_awaited()
 
     async def test_initial_check_uses_short_human_delay(self):
         identity_id = self._prepare_identity()

@@ -63,6 +63,25 @@ class WendaoTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + wendao.WENDAO_REPLY_TIMEOUT_SEC, state_module.state["wendao_reply_due_at"])
             self.assertEqual("已发送", state_module.state["wendao_last_result"])
 
+    async def test_scheduler_send_timeout_uses_unknown_backoff(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wendao_enabled"] = True
+            state_module.state["next_wendao_time"] = now - 1
+            with (
+                patch.object(wendao, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(wendao, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+                patch.object(wendao, "send_audit_log", new=AsyncMock()),
+                patch.object(wendao, "save_state"),
+            ):
+                await wendao.run_wendao_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".问道", track=False, max_retry=0, source_module="问道")
+            self.assertEqual(now + wendao.WENDAO_SEND_UNKNOWN_BACKOFF_SEC, state_module.state["next_wendao_time"])
+            self.assertIn("状态未知", state_module.state["wendao_last_error"])
+            self.assertEqual(0, state_module.state["wendao_reply_to_msg_id"])
+
     async def test_scheduler_blocks_unparseable_next_time_without_retry_spam(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

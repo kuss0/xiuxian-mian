@@ -466,10 +466,6 @@
         if(txCraftIntervalMax === undefined || txCraftIntervalMax === null || txCraftIntervalMax === ''){ txCraftIntervalMax = 300; }
         var txCraftTimeout = txConfig.craft_farm_reply_timeout_sec;
         if(txCraftTimeout === undefined || txCraftTimeout === null || txCraftTimeout === ''){ txCraftTimeout = 120; }
-        var txCraftOffWindowMin = txConfig.craft_farm_off_window_interval_min_sec;
-        if(txCraftOffWindowMin === undefined || txCraftOffWindowMin === null || txCraftOffWindowMin === ''){ txCraftOffWindowMin = 1800; }
-        var txCraftOffWindowMax = txConfig.craft_farm_off_window_interval_max_sec;
-        if(txCraftOffWindowMax === undefined || txCraftOffWindowMax === null || txCraftOffWindowMax === ''){ txCraftOffWindowMax = 3600; }
         var txPrepareLead = txConfig.route_prepare_lead_sec;
         if(txPrepareLead === undefined || txPrepareLead === null || txPrepareLead === ''){ txPrepareLead = 300; }
         var txMinTianjiForChange = txConfig.min_tianji_for_change;
@@ -519,26 +515,23 @@
             '<label class="module-setting-field"><span>提前准备秒</span><input class="text-input module-hour-input" type="number" min="30" max="3600" step="30" value="'+esc(txPrepareLead)+'" data-tianxing-config="route_prepare_lead_sec"></label>'
           )+
           settingSection(
-            '攒天机窗口',
-            '按上海时间填写多段时段；炼制或闭关由下方开关决定，下游动作临近时会让路。',
+            '闭关攒点窗口',
+            '仅影响闭关攒点；炼制全天可跑，并避让世界 boss 与探索消费窗口。',
             settingCheckbox('farm_window_enabled', '启用攒点窗口', txConfig.farm_window_enabled)+
             currentChoiceText('当前方式', txConfig.craft_farm_enabled ? '炼制' : (txConfig.retreat_farm_enabled ? '闭关' : '未启用'))+
             '<label class="module-setting-field module-setting-field-wide"><span>时段</span><input class="text-input module-name-input" type="text" value="'+esc(txFarmWindows)+'" data-tianxing-config="farm_windows_text"></label>'
           )+
           settingSection(
             '炼制攒天机',
-            '默认等炼制路线确认；已有异路推命时不裸炼，避免逆命劫。',
+            '不按时段限制；缺天机时优先用炼制补点，世界 boss 和探索消费窗口会自动让路。',
             settingCheckbox('craft_farm_enabled', '启用炼制', txConfig.craft_farm_enabled)+
             settingCheckbox('craft_farm_dry_run_enabled', '炼制试运行', txConfig.craft_farm_dry_run_enabled)+
-            settingCheckbox('craft_farm_off_window_enabled', '窗口外少练', txConfig.craft_farm_off_window_enabled)+
             settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费', txConfig.consume_conflicting_prediction_enabled)+
             settingCheckbox('craft_farm_allow_unpredicted_override_enabled', '允许裸炼制', txConfig.craft_farm_allow_unpredicted_override_enabled)+
             '<label class="module-setting-field"><span>炼制物品</span><input class="text-input module-name-input" value="'+esc(txConfig.craft_farm_item || '玄铁剑')+'" data-tianxing-config="craft_farm_item"></label>'+
             '<label class="module-setting-field"><span>每日上限</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txCraftLimit)+'" data-tianxing-config="craft_farm_daily_limit"></label>'+
             '<label class="module-setting-field"><span>间隔最小秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftIntervalMin)+'" data-tianxing-config="craft_farm_interval_min_sec"></label>'+
             '<label class="module-setting-field"><span>间隔最大秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftIntervalMax)+'" data-tianxing-config="craft_farm_interval_max_sec"></label>'+
-            '<label class="module-setting-field"><span>窗口外最小秒</span><input class="text-input module-hour-input" type="number" min="60" max="21600" step="60" value="'+esc(txCraftOffWindowMin)+'" data-tianxing-config="craft_farm_off_window_interval_min_sec"></label>'+
-            '<label class="module-setting-field"><span>窗口外最大秒</span><input class="text-input module-hour-input" type="number" min="60" max="21600" step="60" value="'+esc(txCraftOffWindowMax)+'" data-tianxing-config="craft_farm_off_window_interval_max_sec"></label>'+
             '<label class="module-setting-field"><span>回复超时秒</span><input class="text-input module-hour-input" type="number" min="30" max="1800" step="10" value="'+esc(txCraftTimeout)+'" data-tianxing-config="craft_farm_reply_timeout_sec"></label>'+
             currentChoiceText('炼制状态', (txCraftFarm.phase || 'idle')+' / '+(txCraftFarm.last_action || '无'))+
             currentChoiceText('今日轮次', String(txCraftFarm.daily_count || 0)+' / '+String(txCraftFarm.daily_limit || txCraftLimit || 0))+

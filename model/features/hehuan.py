@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from ..config import CMD_HEHUAN_DUAL, GAME_TOPIC_ID, MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import get_last_game_send_block, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
@@ -45,6 +45,20 @@ HEHUAN_ANCHOR_TEXT = "。"
 HEHUAN_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC = 30
 HEHUAN_FINAL_EDIT_WAIT_SEC = 3 * 60
+HEHUAN_UNSENT_BLOCK_CODES = {
+    "send_queue_timeout",
+    "send_prepare_timeout",
+    "global_disabled",
+    "dungeon_quiet",
+    "account_offline",
+    "account_client_missing",
+    "account_client_not_ready",
+    "account_session_error",
+    "bot_health",
+    "identity_weak",
+    "pre_send_guard",
+    "action_guard",
+}
 
 PATH_FANCHEN = "凡尘缘"
 PATH_TONGCAN = "同参道"
@@ -1081,6 +1095,21 @@ def _set_hehuan_auto_block(observed, now, reason, next_time=None):
     save_state()
 
 
+def _hehuan_unsent_block(command):
+    block = get_last_game_send_block(get_current_identity_id(), command)
+    code = str((block or {}).get("code") or "")
+    if code in HEHUAN_UNSENT_BLOCK_CODES or code.startswith("flood_wait"):
+        reason = str((block or {}).get("reason") or "").strip()
+        return code, reason
+    return "", ""
+
+
+def _hehuan_block_label(code, reason):
+    code = str(code or "runtime_block")
+    reason = str(reason or "").strip()
+    return f"{code}: {reason}" if reason else code
+
+
 async def _ensure_hehuan_reply_anchor(observed, now):
     partner = str((observed or {}).get("last_partner") or "").strip()
     if partner:
@@ -1326,6 +1355,15 @@ async def run_hehuan_scheduler(now):
     )
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     if not msg:
+        block_code, block_reason = _hehuan_unsent_block(plan["command"])
+        if block_code:
+            _set_hehuan_auto_block(
+                observed,
+                now,
+                f"合欢宗自动温养未发送：{_hehuan_block_label(block_code, block_reason)}",
+                now + HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC,
+            )
+            return
         recovered_sent = _find_recent_hehuan_sent_from_message_log(
             get_current_identity_id(),
             plan["command"],

@@ -20,7 +20,7 @@ from ..action_guard import get_blocked_until as get_action_guard_blocked_until
 from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_text_delta
@@ -74,7 +74,6 @@ SMALL_WORLD_BARRIER_COST_BY_LEVEL = {
     3: 5400,
     4: 9600,
 }
-
 _SMALL_WORLD_GOD_ACTION_LOCK = asyncio.Lock()
 
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
@@ -256,6 +255,20 @@ def _schedule_next_cycle(now):
 
 def _schedule_short_retry(now):
     return _schedule_after(now, 10 * 60, 30 * 60)
+
+
+def _small_world_definitely_unsent_block(command):
+    block = classify_game_send_block(get_current_identity_id(), command)
+    code = str((block or {}).get("code") or "")
+    if str((block or {}).get("status") or "") == "unsent":
+        return True, code, str((block or {}).get("reason") or "")
+    return False, code, str((block or {}).get("reason") or "")
+
+
+def _small_world_block_label(code, reason):
+    code = str(code or "runtime_block")
+    reason = str(reason or "").strip()
+    return f"{code}: {reason}" if reason else code
 
 
 def _schedule_theft_calibration(now, loss_amount):
@@ -1133,21 +1146,32 @@ async def _send_small_world_god_action(now, command, reason):
         if not sent_msg:
             if _phase() != "preach_pending" or int(state.get("small_world_preach_reply_to_msg_id", 0) or 0) > 0:
                 return True
+            definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(command)
             _clear_preach_pending()
             state["small_world_last_god_action"] = prev_last_god_action
             state["small_world_last_god_sent_at"] = prev_last_god_sent_at
-            state["small_world_last_error"] = f"神迹{action_name}发送结果未知，保留待办并短退避重试"
             if state.get("small_world_pending_god_action"):
                 if _pending_god_priority() >= SMALL_WORLD_GOD_PRIORITY_DISASTER:
                     _schedule_after(optimistic_sent_at, SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
                 else:
                     _schedule_short_retry(optimistic_sent_at)
+            if definitely_unsent:
+                state["small_world_last_error"] = (
+                    f"神迹{action_name}未发送，保留待办并短退避重试: "
+                    f"{_small_world_block_label(block_code, block_reason)}"
+                )
+                block_kind = block_code or "send_blocked"
+                block_note = f"神迹{action_name}未发送，短退避重试"
+            else:
+                state["small_world_last_error"] = f"神迹{action_name}发送结果未知，保留待办并短退避重试"
+                block_kind = "send_unknown"
+                block_note = f"神迹{action_name}发送结果未知，短退避重试"
             _note_small_world_god_remote_block(
                 command,
                 optimistic_sent_at,
                 state.get("next_small_world_time", 0),
-                f"神迹{action_name}发送结果未知，短退避重试",
-                "send_unknown",
+                block_note,
+                block_kind,
             )
             save_state()
             return True
@@ -1200,6 +1224,24 @@ async def _send_query(now, reason, *, refresh_attempt=None):
     if not msg:
         if _phase() != "query_pending" or int(state.get("small_world_query_msg_id", 0) or 0) > 0:
             return True
+        definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(CMD_SMALL_WORLD_QUERY)
+        if definitely_unsent:
+            _clear_chain_pending()
+            _schedule_short_retry(started_at)
+            state["small_world_last_error"] = (
+                f"{reason}发送 .小世界 未发送，短退避后重试: "
+                f"{_small_world_block_label(block_code, block_reason)}"
+            )
+            _note_small_world_remote_block(
+                "small_world_query",
+                CMD_SMALL_WORLD_QUERY,
+                started_at,
+                state["next_small_world_time"],
+                "小世界查询未发送，短退避重试",
+                block_code or "send_blocked",
+            )
+            save_state()
+            return True
         state["small_world_last_error"] = f"{reason}发送 .小世界 结果未知，等待小世界面板"
         _note_small_world_remote_block(
             "small_world_query",
@@ -1234,6 +1276,24 @@ async def _send_manifest(now):
     if not msg:
         if _phase() != "manifest_pending" or int(state.get("small_world_manifest_msg_id", 0) or 0) > 0:
             return True
+        definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(CMD_SMALL_WORLD_MANIFEST)
+        if definitely_unsent:
+            _clear_chain_pending()
+            _schedule_short_retry(started_at)
+            state["small_world_last_error"] = (
+                f"发送 .显灵 未发送，短退避后重试: "
+                f"{_small_world_block_label(block_code, block_reason)}"
+            )
+            _note_small_world_remote_block(
+                "small_world_manifest",
+                CMD_SMALL_WORLD_MANIFEST,
+                started_at,
+                state["next_small_world_time"],
+                "小世界显灵未发送，短退避重试",
+                block_code or "send_blocked",
+            )
+            save_state()
+            return True
         state["small_world_last_error"] = "发送 .显灵 结果未知，等待回执"
         _note_small_world_remote_block(
             "small_world_manifest",
@@ -1267,6 +1327,24 @@ async def _send_harvest(now):
     if not msg:
         if _phase() != "harvest_sent" or int(state.get("small_world_harvest_msg_id", 0) or 0) > 0:
             return True
+        definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(CMD_SMALL_WORLD_HARVEST)
+        if definitely_unsent:
+            _clear_chain_pending()
+            _schedule_short_retry(started_at)
+            state["small_world_last_error"] = (
+                f"发送 .收割香火 未发送，短退避后重试: "
+                f"{_small_world_block_label(block_code, block_reason)}"
+            )
+            _note_small_world_remote_block(
+                "small_world_harvest",
+                CMD_SMALL_WORLD_HARVEST,
+                started_at,
+                state["next_small_world_time"],
+                "小世界收割香火未发送，短退避重试",
+                block_code or "send_blocked",
+            )
+            save_state()
+            return True
         state["small_world_last_error"] = "发送 .收割香火 结果未知，等待回执或复查"
         _note_small_world_remote_block(
             "small_world_harvest",
@@ -1290,6 +1368,8 @@ async def _send_harvest(now):
 async def _send_harvest_before_manifest(now):
     if not await _send_harvest(now):
         return False
+    if _phase() != "harvest_sent" and int(state.get("small_world_harvest_msg_id", 0) or 0) <= 0:
+        return True
     _set_phase("harvest_before_manifest_sent")
     state["small_world_last_error"] = "显灵前收割香火已发送，等待回执确认"
     save_state()
@@ -1313,6 +1393,24 @@ async def _send_refine(now, amount):
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         if _phase() != "refine_sent" or int(state.get("small_world_refine_msg_id", 0) or 0) > 0:
+            return True
+        definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(command)
+        if definitely_unsent:
+            _clear_chain_pending()
+            _schedule_short_retry(started_at)
+            state["small_world_last_error"] = (
+                f"发送 {command} 未发送，短退避后重试: "
+                f"{_small_world_block_label(block_code, block_reason)}"
+            )
+            _note_small_world_remote_block(
+                "small_world_refine",
+                command,
+                started_at,
+                state["next_small_world_time"],
+                "小世界神识淬炼未发送，短退避重试",
+                block_code or "send_blocked",
+            )
+            save_state()
             return True
         state["small_world_last_error"] = f"发送 {command} 结果未知，等待回执或复查"
         _note_small_world_remote_block(
@@ -1346,6 +1444,24 @@ async def _send_barrier(now, reason):
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         if int(state.get("small_world_barrier_msg_id", 0) or 0) > 0 or float(state.get("small_world_barrier_due_at", 0) or 0) <= 0:
+            return True
+        definitely_unsent, block_code, block_reason = _small_world_definitely_unsent_block(CMD_SMALL_WORLD_BARRIER)
+        if definitely_unsent:
+            _clear_barrier_pending()
+            _schedule_short_retry(started_at)
+            state["small_world_last_error"] = (
+                f"发送 .护界禁制 未发送，短退避后重试: {reason}: "
+                f"{_small_world_block_label(block_code, block_reason)}"
+            )
+            _note_small_world_remote_block(
+                "small_world_barrier",
+                CMD_SMALL_WORLD_BARRIER,
+                started_at,
+                state["next_small_world_time"],
+                "小世界护界禁制未发送，短退避重试",
+                block_code or "send_blocked",
+            )
+            save_state()
             return True
         state["small_world_last_barrier_sent_at"] = started_at
         state["small_world_last_error"] = f"发送 .护界禁制 结果未知，等待回执: {reason}"

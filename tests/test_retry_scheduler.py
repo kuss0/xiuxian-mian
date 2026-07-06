@@ -235,6 +235,38 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             self.assertEqual(1, pending[211]["retry_send_blocked_count"])
             self.assertEqual("send_queue_timeout", pending[211]["retry_send_blocked_code"])
 
+    def test_pending_retry_recovers_logged_reply_before_resend(self):
+        send_as_id = 971014
+        now = 6300.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                231: {
+                    "cmd": ".元婴状态",
+                    "sent_at": now - 40,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                }
+            }
+
+        recovered_reply = {
+            "message_id": 232,
+            "reply_to_msg_id": 231,
+            "text": "【元婴状态】\n元婴正在温养。",
+        }
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "find_message_log_replies", return_value=[recovered_reply]) as recover_mock, \
+             patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        recover_mock.assert_called_once()
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
+
     def test_pending_retry_preserves_send_intent_metadata(self):
         send_as_id = 971005
         now = 6500.0

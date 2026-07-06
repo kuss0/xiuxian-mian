@@ -45,7 +45,7 @@ from ..config import (
 )
 from ..identity_levels import parse_second_soul_level_text, update_identity_level_record
 from ..persistence import save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, mono, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
@@ -94,6 +94,10 @@ def _choice_label():
 
 def _next_pending_timeout(now):
     return now + random.uniform(SECOND_SOUL_PENDING_TIMEOUT_MIN, SECOND_SOUL_PENDING_TIMEOUT_MAX)
+
+
+def _send_was_definitely_unsent(send_as_id, command):
+    return classify_game_send_block(send_as_id, command).get("status") == "unsent"
 
 
 def _is_current_reply(reply_to, state_key):
@@ -207,6 +211,15 @@ async def _send_second_soul_purge(send_as_id, now, *, reason=""):
                 scope="identity", send_as_id=send_as_id, limit=240,
             )
             return True
+        if not _send_was_definitely_unsent(send_as_id, CMD_SECOND_SOUL_PURGE):
+            state["second_soul_purge_msg_id"] = 0
+            state["second_soul_last_error"] = "元神镇魔发送状态未知，等待回复或到点查魔染"
+            save_state()
+            await send_audit_log(
+                "🌀 第二元神元神镇魔发送状态未知，保持镇魔等待，稍后查魔染校准。",
+                scope="identity", send_as_id=send_as_id, limit=240,
+            )
+            return True
         state["second_soul_last_error"] = "发送 .元神镇魔 失败，稍后查魔染"
         save_state()
         await send_audit_log(
@@ -239,6 +252,15 @@ async def _send_second_soul_demon_status(send_as_id, now):
             state["second_soul_last_error"] = ""
             save_state()
             console_log("🌀 已发 .五子同心魔 查第二元神魔染。")
+            return True
+        if not _send_was_definitely_unsent(send_as_id, CMD_SECOND_SOUL_DEMON_STATUS):
+            state["second_soul_purge_status_msg_id"] = 0
+            state["second_soul_last_error"] = "五子同心魔查询发送状态未知，等待回复或超时自愈"
+            save_state()
+            await send_audit_log(
+                "🌀 第二元神五子同心魔查询发送状态未知，保持查询等待。",
+                scope="identity", send_as_id=send_as_id, limit=240,
+            )
             return True
         state["second_soul_last_error"] = "发送 .五子同心魔 失败，停止自动镇魔"
         _finish_purge_ready(sent_at, last_error=state["second_soul_last_error"])
@@ -977,6 +999,14 @@ async def run_second_soul_scheduler(now):
         msg = await send_game_command(CMD_SECOND_SOUL_TRAIN, track=False, priority="chain")
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
+            if not _send_was_definitely_unsent(get_current_identity_id(), CMD_SECOND_SOUL_TRAIN):
+                _set_phase("train_pending")
+                state["second_soul_last_error"] = "元神修炼发送状态未知，等待确认或超时自愈"
+                state["next_second_soul_time"] = _next_pending_timeout(sent_at)
+                state["second_soul_train_msg_id"] = 0
+                save_state()
+                await send_audit_log("🌀 第二元神修炼发送状态未知，保持确认等待。")
+                return
             _set_phase("ready_to_train")
             state["second_soul_last_error"] = "发送 .元神修炼 失败"
             state["next_second_soul_time"] = sent_at + 600
@@ -1003,6 +1033,14 @@ async def run_second_soul_scheduler(now):
     msg = await send_game_command(CMD_SECOND_SOUL_STATUS, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        if not _send_was_definitely_unsent(get_current_identity_id(), CMD_SECOND_SOUL_STATUS):
+            _set_phase("status_pending")
+            state["next_second_soul_time"] = _next_pending_timeout(sent_at)
+            state["second_soul_status_msg_id"] = 0
+            state["second_soul_last_error"] = "第二元神状态查询发送状态未知，等待回复或超时自愈"
+            save_state()
+            await send_audit_log("🌀 第二元神状态查询发送状态未知，保持查询等待。")
+            return
         # 发送失败：回退到 idle，下个 scheduler tick 重试
         _set_phase("idle")
         state["next_second_soul_time"] = sent_at + 60  # 1min 后重试

@@ -32,6 +32,7 @@
 <button type='button' class='topbar-btn' data-open-logs='1' title='日志'>日志</button>
 <button type='button' class='topbar-btn' data-open-passive-inbox='1' title='消息盒子'>消息盒子</button>
 <button type='button' class='topbar-btn' data-open-runtime-health='1' title='运行健康'>健康</button>
+<button type='button' class='topbar-btn' data-open-miniapp='1' title='MiniApp'>MiniApp</button>
 <button type='button' class='topbar-btn' data-open-basic-config='1' title='基础配置'>配置</button>
 <button type='button' class='topbar-btn' data-open-dungeon='1' title='副本'>副本</button>
 <button type='button' class='topbar-btn' data-open-storage-bag='1' title='储物袋'>储物袋</button>
@@ -76,6 +77,11 @@
 <h3 class='modal-title'>运行健康</h3>
 <button class='icon-btn' type='button' data-close-modal='runtime-health'>×</button>
 </div>    <div id='runtime-health-modal-body'></div>  </div>
+</div>
+<div id='miniapp-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide miniapp-modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>MiniApp</h3>
+<button class='icon-btn' type='button' data-close-modal='miniapp'>×</button>
+</div>    <div id='miniapp-modal-body'></div>  </div>
 </div>
 <div id='basic-config-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
 <h3 class='modal-title'>基础配置</h3>
@@ -268,12 +274,14 @@
 </div>
 <script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
 <script src='/static/js/app.js?v={{asset_version}}'></script>
+<script src='/static/js/ui_write_guard.js?v={{asset_version}}'></script>
 <script src='/static/js/module_cards_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/fishing_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/guanxing_config_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/identity_api_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/passive_inbox_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/runtime_health_ui.js?v={{asset_version}}'></script>
+<script src='/static/js/miniapp_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/queue_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/official_schedule_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/wild_training_ui.js?v={{asset_version}}'></script>

@@ -9,7 +9,8 @@ import time
 
 from ..config import CMD_TIANDAO_JUDGEMENT_PROVE, MESSAGES_DIR
 from ..persistence import save_state
-from ..runtime import _get_identity_client, console_log, get_reply_context, mono, send_audit_log, send_game_command
+from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
+from ..runtime import account_rpc_slot, console_log, get_reply_context, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_account,
@@ -45,6 +46,24 @@ TIANDAO_MINIAPP_RETRY_LIMIT = 1
 TIANDAO_MINIAPP_TERMINAL_TTL_SEC = 30 * 60
 _TIANDAO_JUDGEMENT_SCHEDULER_LOCK = asyncio.Lock()
 _tiandao_miniapp_terminal_events = {}
+
+
+def _get_identity_client(identity_id=None):
+    _account_id, client = _runtime_get_identity_client_with_account(identity_id)
+    return client
+
+
+def _get_identity_client_for_rpc(identity_id=None):
+    client = _get_identity_client(identity_id)
+    if client is None:
+        return 0, None
+    try:
+        account_id, runtime_client = _runtime_get_identity_client_with_account(identity_id)
+        if runtime_client is client:
+            return int(account_id or 0), client
+    except Exception:
+        pass
+    return 0, client
 
 TIANDAO_JUDGEMENT_VALUE_MAP = {
     "炼制玄铁剑消耗灵石": 10,
@@ -499,19 +518,20 @@ async def _click_tiandao_judgement_buttons(event, identity_id, sequence):
         used_positions.add(matched_position)
         click_positions.append(matched_position)
 
-    client = _get_identity_client(identity_id)
+    account_id, client = _get_identity_client_for_rpc(identity_id)
     if client is None:
         return False, "身份客户端不可用"
     message_id = int(getattr(message, "id", 0) or 0)
     chat_id = getattr(message, "chat_id", None) or getattr(event, "chat_id", None)
-    if message_id > 0 and chat_id:
-        message = await client.get_messages(chat_id, ids=message_id)
-        if message is None:
-            return False, f"无法重新获取消息：{message_id}"
+    async with account_rpc_slot(account_id=account_id, client_obj=client):
+        if message_id > 0 and chat_id:
+            message = await client.get_messages(chat_id, ids=message_id)
+            if message is None:
+                return False, f"无法重新获取消息：{message_id}"
 
-    for row_index, col_index in click_positions:
-        await message.click(row_index, col_index)
-        await asyncio.sleep(random.uniform(TIANDAO_JUDGEMENT_BUTTON_CLICK_DELAY_MIN_SEC, TIANDAO_JUDGEMENT_BUTTON_CLICK_DELAY_MAX_SEC))
+        for row_index, col_index in click_positions:
+            await message.click(row_index, col_index)
+            await asyncio.sleep(random.uniform(TIANDAO_JUDGEMENT_BUTTON_CLICK_DELAY_MIN_SEC, TIANDAO_JUDGEMENT_BUTTON_CLICK_DELAY_MAX_SEC))
     return True, ""
 
 

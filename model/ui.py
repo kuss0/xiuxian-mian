@@ -35,12 +35,15 @@ except ImportError:
             segno = None
 
 from .config import (
+    CMD_FISHING,
     CMD_DUNGEON_HUANGLONG_JOIN,
     CMD_DUNGEON_JOIN,
     CMD_DUNGEON_ZHUIMO_JOIN,
     CMD_REPLICA_CANGKUN_JOIN,
     CMD_REPLICA_KUNWU_JOIN,
     CMD_REPLICA_LUOYUN_JOIN,
+    CMD_STARGAZER_PANEL,
+    CMD_TIANJI_TRIAL,
     CMD_TIANTI_GANGFENG,
     MESSAGES_DIR,
     MODULE_KEY_MAP,
@@ -85,10 +88,12 @@ from .features.hehuan import HEHUAN_AUTO_RETRY_LIMIT, HEHUAN_RETRY_DEFAULT_MAX_I
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
+from .features import miniapp_registry
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
-from .features.stargazer import sync_stargazer_total_slots
+from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.trial_runtime import authorize_trial_miniapp_manual_run, revoke_trial_miniapp_manual_run
 from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing_automation_pause_text, normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
@@ -256,6 +261,52 @@ UI_STATIC_CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
 }
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
+MINIAPP_ENTRY_PROBE_COMMANDS = {
+    "cave_treasure": ".洞府",
+    "fishing": CMD_FISHING,
+    "stargazer": CMD_STARGAZER_PANEL,
+    "trial": CMD_TIANJI_TRIAL,
+}
+MINIAPP_MANUAL_RUN_COMMANDS = {
+    "stargazer": CMD_STARGAZER_PANEL,
+    "trial": CMD_TIANJI_TRIAL,
+}
+
+
+def get_miniapp_status_snapshot():
+    registry = miniapp_registry.build_known_miniapp_registry()
+    plans = miniapp_registry.build_known_miniapp_flow_plans()
+    return {
+        "adapters": registry.safe_snapshot(),
+        "flow_plans": {
+            str(key): plan.safe_summary()
+            for key, plan in sorted(plans.items())
+        },
+        "entry_probe_commands": [
+            {
+                "game_key": str(key),
+                "command": str(command),
+                "registered": key in registry.keys(),
+                "has_flow_plan": key in plans,
+            }
+            for key, command in sorted(MINIAPP_ENTRY_PROBE_COMMANDS.items())
+        ],
+        "manual_run_commands": [
+            {
+                "game_key": str(key),
+                "command": str(command),
+                "registered": key in registry.keys(),
+                "has_flow_plan": key in plans,
+            }
+            for key, command in sorted(MINIAPP_MANUAL_RUN_COMMANDS.items())
+        ],
+        "policy": {
+            "default_enabled": False,
+            "manual_only": True,
+            "raw_init_data_persisted": False,
+            "raw_start_token_persisted": False,
+        },
+    }
 _storage_bag_api_state = {
     "running": False,
     "running_kind": "",
@@ -2941,6 +2992,40 @@ def _format_fishing_command_plan(plan):
     return plan.blocked_reason or "未生成"
 
 
+def _parse_fishing_daily_catch_summary(value):
+    raw = value
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    summary = {
+        "day": str(raw.get("day") or "").strip(),
+        "rods": 0,
+        "fish": {},
+        "rewards": {},
+    }
+    try:
+        summary["rods"] = max(0, int(raw.get("rods", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        summary["rods"] = 0
+    for key in ("fish", "rewards"):
+        values = raw.get(key)
+        if not isinstance(values, dict):
+            continue
+        for name, count in values.items():
+            name = str(name or "").strip()
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError, OverflowError):
+                amount = 0
+            if name and amount > 0:
+                summary[key][name] = amount
+    return summary
+
+
 def _get_fishing_ui_config(identity_state):
     config = normalize_fishing_config(
         identity_state.get("fishing_pond") or "青溪浅滩",
@@ -3024,12 +3109,15 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         if transfer_target_id > 0:
             transfer_target_label = f"未知身份 {transfer_target_id}"
     caught_fish = parse_pending_open_fish(identity_state.get("fishing_caught_fish_json"))
+    daily_catch_summary = _parse_fishing_daily_catch_summary(identity_state.get("fishing_daily_catch_summary_json"))
     return {
         "pond": config.pond,
         "bait": config.bait,
+        "flow_mode": "MiniApp",
         "daily_limit": _coerce_fishing_daily_limit(identity_state.get("fishing_daily_limit", 20)),
         "daily_day": identity_state.get("fishing_daily_day") or "",
         "daily_count": int(identity_state.get("fishing_daily_count", 0) or 0),
+        "daily_catch_summary": daily_catch_summary,
         "auto_chum_enabled": bool(config.auto_chum_enabled),
         "chum_name": config.chum_name,
         "chum_names": list(config.chum_names or ()),
@@ -5887,6 +5975,109 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'} ｜ 观星首发偏移 {display_shift_delay}"
 
 
+async def ui_send_miniapp_entry_probe(send_as_id, game_key):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    if identity_id not in get_identity_ids():
+        return False, "身份不存在", {}
+    if not get_identity_enabled(identity_id):
+        return False, "身份已停用", {}
+
+    normalized_game_key = str(game_key or "").strip().lower()
+    command = MINIAPP_ENTRY_PROBE_COMMANDS.get(normalized_game_key)
+    if not command:
+        allowed = "/".join(sorted(MINIAPP_ENTRY_PROBE_COMMANDS))
+        return False, f"MiniApp 入口诊断仅允许 {allowed}", {}
+
+    op_id = f"miniapp_entry_probe:{normalized_game_key}:{identity_id}:{int(time.time())}"
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=identity_id,
+        priority="normal",
+        max_retry=0,
+        source_module="MiniApp诊断",
+        op_id=op_id,
+        chain_id="miniapp_entry_probe",
+        delete_policy="keep",
+        queue_timeout=90,
+    )
+    extra = {
+        "game_key": normalized_game_key,
+        "command": command,
+    }
+    if not msg:
+        return False, "入口命令未发送，可能被全局暂停/安全锁/队列保护拦截", extra
+
+    extra["msg_id"] = int(getattr(msg, "id", 0) or 0)
+    await send_audit_log(
+        f"🧪 MiniApp入口诊断已发送：{command}｜玩法={normalized_game_key}｜msg_id={extra['msg_id']}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=220,
+        priority="low",
+    )
+    return True, "已发送 MiniApp 入口诊断命令，等待真实按钮/回包入库", extra
+
+
+async def ui_send_miniapp_manual_run(send_as_id, game_key):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    if identity_id not in get_identity_ids():
+        return False, "身份不存在", {}
+    if not get_identity_enabled(identity_id):
+        return False, "身份已停用", {}
+
+    normalized_game_key = str(game_key or "").strip().lower()
+    command = MINIAPP_MANUAL_RUN_COMMANDS.get(normalized_game_key)
+    if not command:
+        allowed = "/".join(sorted(MINIAPP_MANUAL_RUN_COMMANDS))
+        return False, f"MiniApp 手动执行仅允许 {allowed}", {}
+
+    if normalized_game_key == "stargazer":
+        authorize_stargazer_miniapp_manual_run(identity_id)
+    if normalized_game_key == "trial":
+        authorize_trial_miniapp_manual_run(identity_id)
+
+    op_id = f"miniapp_manual_run:{normalized_game_key}:{identity_id}:{int(time.time())}"
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=identity_id,
+        priority="normal",
+        max_retry=0,
+        source_module="MiniApp手动",
+        op_id=op_id,
+        chain_id="miniapp_manual_run",
+        delete_policy="keep",
+        queue_timeout=90,
+    )
+    extra = {
+        "game_key": normalized_game_key,
+        "command": command,
+    }
+    if not msg:
+        if normalized_game_key == "stargazer":
+            revoke_stargazer_miniapp_manual_run(identity_id)
+        if normalized_game_key == "trial":
+            revoke_trial_miniapp_manual_run(identity_id)
+        return False, "手动执行命令未发送，可能被全局暂停/安全锁/队列保护拦截", extra
+
+    extra["msg_id"] = int(getattr(msg, "id", 0) or 0)
+    await send_audit_log(
+        f"🧪 MiniApp手动执行已发送：{command}｜玩法={normalized_game_key}｜msg_id={extra['msg_id']}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=220,
+        priority="low",
+    )
+    return True, "已发送 MiniApp 手动执行命令，等待入口按钮接管", extra
+
+
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
     body_bytes = body if isinstance(body, bytes) else str(body).encode("utf-8")
     headers = [
@@ -6083,6 +6274,20 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     body = _make_json_payload(True, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")))
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 200 OK",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+            elif path == "/api/miniapp-status":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "GET":
+                    _write_method_not_allowed(writer)
+                else:
+                    body = _make_json_payload(True, extra={"miniapp": get_miniapp_status_snapshot()})
                     _write_response(
                         writer,
                         "HTTP/1.1 200 OK",
@@ -6787,6 +6992,48 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_fishing_config(send_as_id, payload)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/miniapp-entry-probe":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    game_key = payload.get("game_key")
+                    if send_as_id in {None, ""} or not game_key:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 game_key 参数", auth_headers)
+                    else:
+                        ok, message, extra = await ui_send_miniapp_entry_probe(send_as_id, game_key)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            extra=extra,
+                            include_snapshot=False,
+                        )
+            elif path == "/api/miniapp-manual-run":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    game_key = payload.get("game_key")
+                    if send_as_id in {None, ""} or not game_key:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 game_key 参数", auth_headers)
+                    else:
+                        ok, message, extra = await ui_send_miniapp_manual_run(send_as_id, game_key)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            extra=extra,
+                            include_snapshot=False,
+                        )
             elif path == "/api/stargazer-star-choice":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -7109,4 +7356,7 @@ __all__ = [
     "ui_sync_stargazer_total_slots",
     "ui_sync_tianti_status",
     "ui_set_tianti_feature_enabled",
+    "get_miniapp_status_snapshot",
+    "ui_send_miniapp_entry_probe",
+    "ui_send_miniapp_manual_run",
 ]

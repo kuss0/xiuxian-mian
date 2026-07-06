@@ -657,6 +657,41 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(8801, observed["auto_reply_anchor_msg_id"])
             self.assertGreaterEqual(observed["auto_pending_deadline_at"], now + hehuan.HEHUAN_FINAL_EDIT_WAIT_SEC)
 
+    async def test_scheduler_runtime_unsent_block_does_not_recover_or_mark_pending(self):
+        now = datetime(2026, 7, 5, 7, 25, tzinfo=hehuan.TZ_LOCAL).timestamp()
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+            }
+            with (
+                patch.object(hehuan, "_ensure_hehuan_reply_anchor", new=AsyncMock(return_value=(8801, ""))),
+                patch.object(hehuan, "_hehuan_retry_delay_sec", return_value=90.0),
+                patch.object(hehuan, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    hehuan,
+                    "get_last_game_send_block",
+                    return_value={"code": "send_queue_timeout", "reason": ">60s"},
+                ),
+                patch.object(hehuan, "_find_recent_hehuan_sent_from_message_log") as recover_sent_mock,
+                patch.object(hehuan, "save_state") as save_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+        send_mock.assert_awaited_once()
+        recover_sent_mock.assert_not_called()
+        save_mock.assert_called_once()
+        observed = state_module.state["hehuan_observation"]
+        self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertEqual(0, observed["auto_pending_deadline_at"])
+        self.assertEqual(now + hehuan.HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC, observed["auto_next_time"])
+        self.assertIn("未发送", observed["auto_last_error"])
+        self.assertIn("send_queue_timeout", observed["auto_last_error"])
+
     def test_recent_baiji_anchor_skips_command_messages(self):
         base_dt = datetime(2026, 6, 29, 12, 5, tzinfo=hehuan.TZ_LOCAL)
         now = base_dt.timestamp()

@@ -25,7 +25,7 @@ from ..config import (
 from ..action_guard import close_by_family as close_action_guard_by_family
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
-from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_display_name,
@@ -761,8 +761,12 @@ def _schedule_next(observed, now, delay_sec=WANXIN_CHAIN_STEP_SEC, *, result="",
 
 
 def _send_block_code(send_as_id, command):
-    block = get_last_game_send_block(send_as_id, command)
+    block = classify_game_send_block(send_as_id, command)
     return str((block or {}).get("code") or "").strip(), str((block or {}).get("reason") or "").strip()
+
+
+def _send_block_info(send_as_id, command):
+    return classify_game_send_block(send_as_id, command)
 
 
 def _apply_uncertain_action_backoff(observed, action, now, reason="", *, result=""):
@@ -786,8 +790,11 @@ def _apply_uncertain_action_backoff(observed, action, now, reason="", *, result=
 
 
 def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_id):
-    code, reason = _send_block_code(send_as_id, command)
-    if code == "send_timeout":
+    block = _send_block_info(send_as_id, command)
+    code = str((block or {}).get("code") or "").strip()
+    reason = str((block or {}).get("reason") or "").strip()
+    status = str((block or {}).get("status") or "").strip()
+    if status == "unknown" or not code:
         detail = reason or f"{command} 发送状态未知"
         _apply_uncertain_action_backoff(observed, action, now, detail)
         return False
@@ -800,8 +807,11 @@ def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_
     if code in {"action_guard", "pre_send_guard", "bot_health", "account_offline", "identity_weak"}:
         _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or f"{command} 未发送，延后重试")
         return False
+    if status == "unsent":
+        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or f"{command} 未发送，延后重试")
+        return False
     detail = reason or f"{command} 发送未确认，延后重试"
-    _schedule_next(observed, now, RETRY_MAX_SEC, error=detail)
+    _apply_uncertain_action_backoff(observed, action, now, detail)
     return False
 
 
@@ -1058,7 +1068,8 @@ async def _send_assist_action(observed, action, now):
         queue_timeout=WANXIN_SEND_QUEUE_TIMEOUT_SEC,
     )
     if not msg:
-        if str(_send_block_code(assist_send_as_id, command)[0]) == "send_timeout" and _recover_recent_assist_success_from_log(observed, action, now):
+        send_block = _send_block_info(assist_send_as_id, command)
+        if str((send_block or {}).get("status") or "") == "unknown" and _recover_recent_assist_success_from_log(observed, action, now):
             return True
         _handle_unsent_or_uncertain_send(observed, action, command, now, send_as_id=assist_send_as_id)
         return False
@@ -1198,14 +1209,19 @@ async def run_wanxin_phaseful_cleanup_scheduler(now):
     if not state.get("wanxin_enabled"):
         return
     now = float(now or time.time())
-    _cleanup_wanxin_pending_only(now)
+    await _cleanup_wanxin_pending_only(now)
 
 
-def _cleanup_wanxin_pending_only(now):
+async def _cleanup_wanxin_pending_only(now):
     observed = normalize_wanxin_observation(state.get("wanxin_observation"))
     pending_before = dict(observed.get("pending") or {})
     if not pending_before:
         return False
+    if float(pending_before.get("reply_due_at", 0) or 0) <= now:
+        if await _recover_wanxin_pending_from_message_log(observed, now):
+            _set_observed(observed)
+            save_state()
+            return True
     _pending_blocks(observed, now)
     if pending_before and not observed.get("pending"):
         _set_observed(observed)
@@ -1230,7 +1246,7 @@ async def run_wanxin_global_cleanup_scheduler(now):
         with use_identity(identity_id):
             if not state.get("wanxin_enabled"):
                 continue
-            _cleanup_wanxin_pending_only(now)
+            await _cleanup_wanxin_pending_only(now)
 
 
 def _apply_success_cooldown(observed, action, now, parsed=None):

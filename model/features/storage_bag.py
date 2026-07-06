@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from ..config import MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
-from ..runtime import _get_identity_client, send_audit_log, send_game_command
+from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
+from ..runtime import _run_account_rpc, get_last_game_send_block, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
 from ..timing import fmt_abs_ts
 from . import workflow_log
@@ -51,6 +52,22 @@ STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC = 5 * 60
 STORAGE_TRANSFER_GIFT_INTERVAL_SEC = 20
 STORAGE_TRANSFER_EXEC_METHODS = {"basic", "gift", "unknown"}
 STORAGE_TRANSFER_LISTING_SYNTAXES = {"space", "compact"}
+STORAGE_TRANSFER_SEND_BLOCK_DEFER_CODES = {
+    "send_timeout",
+    "send_exception",
+    "send_queue_timeout",
+    "send_prepare_timeout",
+    "global_disabled",
+    "dungeon_quiet",
+    "account_offline",
+    "account_client_missing",
+    "account_client_not_ready",
+    "account_session_error",
+    "bot_health",
+    "identity_weak",
+    "pre_send_guard",
+    "action_guard",
+}
 STORAGE_BAG_NON_ITEM_NAMES = {
     "修为",
     "宗门贡献",
@@ -137,6 +154,24 @@ _storage_bag_transfer_batch_state = {
 }
 
 _storage_bag_recent_listing_sends = {}
+
+
+def _get_identity_client(identity_id=None):
+    _account_id, client = _runtime_get_identity_client_with_account(identity_id)
+    return client
+
+
+def _get_identity_client_for_rpc(identity_id=None):
+    client = _get_identity_client(identity_id)
+    if client is None:
+        return 0, None
+    try:
+        account_id, runtime_client = _runtime_get_identity_client_with_account(identity_id)
+        if runtime_client is client:
+            return int(account_id or 0), client
+    except Exception:
+        pass
+    return 0, client
 
 
 def _storage_bag_operation_label(operation=None):
@@ -735,6 +770,28 @@ def _storage_transfer_reply_timeout_sec(wait_step, *, retry=False):
     return STORAGE_TRANSFER_RETRY_INTERVAL_SEC if retry else STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
 
 
+def _storage_transfer_deferred_send_result(code, reason):
+    return SimpleNamespace(storage_transfer_send_deferred=True, code=str(code or ""), reason=str(reason or ""))
+
+
+def _is_storage_transfer_deferred_send(msg):
+    return bool(getattr(msg, "storage_transfer_send_deferred", False))
+
+
+def _storage_transfer_send_block(identity_id, command):
+    block = get_last_game_send_block(identity_id, command)
+    code = str((block or {}).get("code") or "")
+    if not code:
+        return "", ""
+    return code, str((block or {}).get("reason") or "")
+
+
+def _storage_transfer_defer_label(code, reason):
+    code = str(code or "runtime_block")
+    reason = str(reason or "").strip()
+    return f"{code}: {reason}" if reason else code
+
+
 def _remember_storage_transfer_msg_id(msg_id_key, msg_id):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
@@ -793,6 +850,32 @@ async def _send_storage_bag_transfer_command(
     msg = await send_game_command(command, **kwargs)
     now = time.time()
     if not msg:
+        block_code, block_reason = _storage_transfer_send_block(identity_id, command)
+        if block_code in STORAGE_TRANSFER_SEND_BLOCK_DEFER_CODES or block_code.startswith("flood_wait"):
+            retry_wait = block_code not in {"send_timeout", "send_exception"}
+            _storage_bag_transfer_state["step"] = str(wait_step or "")
+            _storage_bag_transfer_state["reply_due_at"] = now + _storage_transfer_reply_timeout_sec(wait_step, retry=retry_wait)
+            _storage_bag_transfer_state["retry_command"] = command
+            _storage_bag_transfer_state["retry_identity_id"] = identity_id
+            _storage_bag_transfer_state["retry_reply_to"] = reply_to
+            _storage_bag_transfer_state["retry_msg_id_key"] = str(msg_id_key or "")
+            _storage_bag_transfer_state["retry_wait_step"] = str(wait_step or "")
+            _storage_bag_transfer_state["retry_family"] = str(family or "")
+            _storage_bag_transfer_state["retry_last_at"] = now
+            _record_storage_transfer_event(
+                "发送暂缓",
+                identity_id=identity_id,
+                family=family,
+                command=command,
+                step=str(wait_step or ""),
+                detail=_storage_transfer_defer_label(block_code, block_reason),
+                decision="send_deferred_by_runtime_block",
+            )
+            _storage_transfer_log(
+                f"{command} 发送暂缓，链路保留等待补发：{_storage_transfer_defer_label(block_code, block_reason)}",
+                level="warning",
+            )
+            return _storage_transfer_deferred_send_result(block_code, block_reason)
         if retry:
             _storage_bag_transfer_state["reply_due_at"] = now + _storage_transfer_reply_timeout_sec(wait_step, retry=True)
             _storage_bag_transfer_state["retry_last_at"] = now
@@ -859,6 +942,8 @@ async def _send_next_storage_bag_aggregate_buy(listing_id):
         wait_step="waiting_buy_reply",
         family="storage_bag_buy",
     )
+    if _is_storage_transfer_deferred_send(msg):
+        return True
     if not msg:
         _record_storage_transfer_event(
             "聚合购买发送失败",
@@ -1336,8 +1421,14 @@ async def _delete_storage_bag_gift_locator():
         _storage_transfer_log("自动删除消息未开启，保留赠送定位消息")
         return True
     try:
-        client = _get_identity_client(int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0))
-        await client.delete_messages(get_game_group_id(), [msg_id])
+        account_id, client = _get_identity_client_for_rpc(int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0))
+        if client is None:
+            raise RuntimeError("身份客户端不可用")
+        await _run_account_rpc(
+            client.delete_messages(get_game_group_id(), [msg_id]),
+            account_id=account_id,
+            client_obj=client,
+        )
     except Exception as exc:
         error = str(exc)
         _storage_bag_transfer_state["gift_locator_delete_error"] = error
@@ -1390,6 +1481,8 @@ async def _send_next_storage_bag_gift():
         family="storage_bag_gift",
         reply_to=int(_storage_bag_transfer_state.get("gift_locator_msg_id", 0) or 0),
     )
+    if _is_storage_transfer_deferred_send(msg):
+        return True, "赠送命令发送暂缓，等待补发"
     if not msg:
         _record_storage_transfer_event(
             "赠送发送失败",
@@ -1468,6 +1561,8 @@ async def _start_storage_bag_gift_phase():
         wait_step="gift_marker",
         family="storage_bag_gift_locator",
     )
+    if _is_storage_transfer_deferred_send(msg):
+        return True, "赠送定位发送暂缓，等待补发"
     if not msg:
         _record_storage_transfer_event(
             "赠送定位发送失败",
@@ -1623,6 +1718,8 @@ async def start_storage_bag_transfer_task(
         wait_step="waiting_listing_reply",
         family="storage_bag_listing",
     )
+    if _is_storage_transfer_deferred_send(msg):
+        return True, "上架发送暂缓，等待补发", get_storage_bag_transfer_snapshot()
     if not msg:
         _record_storage_transfer_event(
             "上架发送失败",
@@ -2027,6 +2124,8 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
             wait_step="waiting_buy_reply",
             family="storage_bag_buy",
         )
+        if _is_storage_transfer_deferred_send(msg):
+            return True
         if not msg:
             _record_storage_transfer_event(
                 "购买发送失败",
@@ -2355,6 +2454,16 @@ def _storage_transfer_retry_config_for_step(step):
             "wait_step": "waiting_gift_reply",
             "family": "storage_bag_gift",
         }
+    if step == "gift_marker":
+        return {
+            "label": "赠送定位",
+            "command": str(_storage_bag_transfer_state.get("gift_locator_command") or ""),
+            "identity_id": int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+            "reply_to": 0,
+            "msg_id_key": "gift_locator_msg_id",
+            "wait_step": "gift_marker",
+            "family": "storage_bag_gift_locator",
+        }
     return {}
 
 
@@ -2444,6 +2553,8 @@ async def _retry_storage_bag_transfer_waiting_step(step):
     )
     if not msg:
         _storage_transfer_log(f"{label}补发发送失败，稍后继续检查", level="warning")
+    elif not _is_storage_transfer_deferred_send(msg) and str(step or "") == "gift_marker":
+        await _send_next_storage_bag_gift()
     return True
 
 
@@ -2464,7 +2575,7 @@ async def run_storage_bag_transfer_scheduler(now):
             return await _send_next_storage_bag_gift()
     elif reply_due_at <= 0 or now < reply_due_at:
         return
-    if step in {"waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply"}:
+    if step in {"waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply", "gift_marker"}:
         if await _recover_storage_bag_transfer_waiting_step(step, now):
             save_state()
             return

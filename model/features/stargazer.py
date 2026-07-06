@@ -1,6 +1,7 @@
 import random
 import re
 import time
+from pathlib import Path
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -14,9 +15,11 @@ from ..config import (
 from ..persistence import save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, track_reply_chain_message
 from ..state import get_current_identity_id, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
-from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
+from ..webapp_core import MiniAppCaptureStore
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
-from .storage_bag import apply_storage_bag_item_text_delta
+from .storage_bag import apply_storage_bag_item_deltas, apply_storage_bag_item_text_delta
+from .stargazer_miniapp import extract_stargazer_miniapp_launch, run_stargazer_miniapp_production_flow
 
 
 RE_STARGAZER_SLOT_LINE = re.compile(r"^\s*(\d+)号引星盘[:：]\s*(.+)$")
@@ -37,6 +40,54 @@ STARGAZER_PENDING_COMMANDS = (
 )
 STARGAZER_GUIDE_RESOURCE_KEY = "stargazer_guide"
 STARGAZER_SOOTHE_RESOURCE_KEY = "stargazer_soothe"
+STARGAZER_MINIAPP_PAUSED_ACTION = "miniapp_entry_seen"
+STARGAZER_MINIAPP_MANUAL_AUTH_TTL_SEC = 10 * 60
+STARGAZER_MINIAPP_ENTRY_KEYWORDS = (
+    "小程序",
+    "miniapp",
+    "mini app",
+    "webapp",
+    "web app",
+    "进入观星",
+    "打开观星",
+    "进入灵圃",
+    "宗门灵圃",
+    "迁入",
+)
+STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
+STARGAZER_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+_MINIAPP_MANUAL_AUTH_UNTIL = {}
+
+
+def _identity_id(value=None):
+    try:
+        return int(value if value is not None else get_current_identity_id() or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def authorize_stargazer_miniapp_manual_run(identity_id, *, now=None, ttl_sec=STARGAZER_MINIAPP_MANUAL_AUTH_TTL_SEC):
+    identity_id = _identity_id(identity_id)
+    if identity_id <= 0:
+        return 0
+    now = float(now or time.time())
+    _MINIAPP_MANUAL_AUTH_UNTIL[identity_id] = now + max(30, float(ttl_sec or STARGAZER_MINIAPP_MANUAL_AUTH_TTL_SEC))
+    return _MINIAPP_MANUAL_AUTH_UNTIL[identity_id]
+
+
+def revoke_stargazer_miniapp_manual_run(identity_id):
+    _MINIAPP_MANUAL_AUTH_UNTIL.pop(_identity_id(identity_id), None)
+
+
+def _has_stargazer_miniapp_manual_auth(identity_id, now):
+    identity_id = _identity_id(identity_id)
+    expires_at = float(_MINIAPP_MANUAL_AUTH_UNTIL.get(identity_id, 0) or 0)
+    if expires_at <= 0:
+        return False
+    if float(now or time.time()) > expires_at:
+        _MINIAPP_MANUAL_AUTH_UNTIL.pop(identity_id, None)
+        return False
+    return True
 
 
 def _has_pending_stargazer_command():
@@ -48,6 +99,44 @@ def _has_pending_stargazer_command():
         ):
             return True
     return False
+
+
+def _is_stargazer_miniapp_paused():
+    return str(state.get("stargazer_last_action") or "").strip() == STARGAZER_MINIAPP_PAUSED_ACTION
+
+
+def _looks_like_stargazer_miniapp_entry(text):
+    raw_text = str(text or "")
+    if "观星" not in raw_text and "星台" not in raw_text:
+        return False
+    lowered = raw_text.lower()
+    return any(keyword in lowered for keyword in STARGAZER_MINIAPP_ENTRY_KEYWORDS)
+
+
+def _is_stargazer_panel_reply(reply_to=None, matched_family=None):
+    family = str(matched_family or "").strip()
+    if family in {"stargazer_panel", "stargazer_sync", "stargazer_panel_edit"}:
+        return True
+    orig_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()
+    return orig_cmd.startswith(CMD_STARGAZER_PANEL)
+
+
+def _pause_stargazer_legacy_chain(now, *, result_msg_id=0):
+    _clear_stargazer_collect_flags()
+    state["stargazer_followup_due_at"] = 0
+    state["stargazer_queued_action"] = ""
+    state["next_stargazer_panel_time"] = 0
+    state["stargazer_collect_due_at"] = 0
+    state["stargazer_busy_until"] = 0
+    state["stargazer_last_action"] = STARGAZER_MINIAPP_PAUSED_ACTION
+    if int(result_msg_id or 0) > 0:
+        state["stargazer_last_panel_msg_id"] = int(result_msg_id or 0)
+    save_state()
+
+
+def _stargazer_miniapp_capture_store(now):
+    day_key = get_day_key(now)
+    return MiniAppCaptureStore(STARGAZER_MINIAPP_CAPTURE_DIR / f"stargazer-{day_key}.jsonl", keep_memory=False)
 
 
 def _build_stargazer_guide_command(choice=None):
@@ -308,12 +397,130 @@ def get_stargazer_status_text():
         next_due_at = min(followup_due_at, next_panel_time)
     else:
         next_due_at = followup_due_at or next_panel_time
+    pause_line = "\n- 状态：MiniApp入口已识别，旧文本链暂停" if _is_stargazer_miniapp_paused() else ""
     return (
         "🔭 观星台\n"
         f"- 总星盘：{total_slots}\n"
         f"- 空闲盘：{idle_slot_count} ｜ 牵引中：{guiding_slot_count} ｜ 黯淡盘：{dim_slot_count} ｜ 精华已成：{ready_slot_count}\n"
         f"- 下次动作：{fmt_abs_ts(next_due_at)}（{fmt_remaining(next_due_at)}）"
+        f"{pause_line}"
     )
+
+
+def _format_stargazer_item_deltas(item_deltas):
+    return "、".join(
+        f"{name}x{count}"
+        for name, count in sorted((item_deltas or {}).items(), key=lambda item: str(item[0]))
+        if str(name or "").strip() and int(count or 0) > 0
+    )
+
+
+def _format_stargazer_miniapp_action_summary(action_counts, item_deltas, star_choice, suffix=""):
+    parts = []
+    action_counts = dict(action_counts or {})
+    if int(action_counts.get("soothe", 0) or 0) > 0:
+        parts.append(f"安抚 {int(action_counts.get('soothe', 0) or 0)} 座")
+    if int(action_counts.get("collect", 0) or 0) > 0:
+        parts.append(f"收集 {int(action_counts.get('collect', 0) or 0)} 次")
+    if int(action_counts.get("pull", 0) or 0) > 0:
+        star_text = str(star_choice or get_stargazer_star_choice() or "").strip()
+        parts.append(f"牵引 {int(action_counts.get('pull', 0) or 0)} 座{star_text}")
+    item_summary = _format_stargazer_item_deltas(item_deltas)
+    if item_summary:
+        parts.append(item_summary)
+    if suffix:
+        parts.append(suffix)
+    return "｜".join(parts)
+
+
+async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
+    result = dict(result or {})
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    farm_state = data.get("farm_state") if isinstance(data.get("farm_state"), dict) else {}
+    action_counts = data.get("action_counts") if isinstance(data.get("action_counts"), dict) else {}
+    item_deltas = data.get("item_deltas") if isinstance(data.get("item_deltas"), dict) else {}
+
+    if farm_state:
+        _sync_stargazer_panel_state(farm_state, now)
+    if item_deltas:
+        apply_storage_bag_item_deltas(get_current_identity_id(), item_deltas)
+    state["stargazer_followup_due_at"] = 0
+    state["stargazer_queued_action"] = ""
+    state["stargazer_wait_full_collect"] = False
+    _clear_stargazer_collect_flags()
+
+    if result.get("ok"):
+        wait_sec = int(farm_state.get("max_wait", 0) or 0) if farm_state else 0
+        if wait_sec > 0:
+            next_panel_time = now + wait_sec + CD_BUFFER_SEC + random.uniform(5, 10)
+        else:
+            next_panel_time = now + RETRY_MAX_SEC + random.uniform(5, 10)
+        _schedule_next_stargazer_action(next_panel_time)
+        state["stargazer_last_action"] = "miniapp_waiting_panel"
+        save_state()
+        suffix = f"回查→{fmt_time_after(max(1, next_panel_time - now))}"
+        summary = _format_stargazer_miniapp_action_summary(action_counts, item_deltas, star_choice, suffix)
+        await send_audit_log(f"🔭 观星台 MiniApp：{summary or suffix}", scope="identity", priority="low", limit=260)
+        return True
+
+    error_text = str(result.get("error") or "未知错误")
+    if "修为不足" in error_text or "灵力不足" in error_text:
+        delay = _get_stargazer_after_deep_retreat_delay(now)
+        audit_text = "⏳ 观星台 MiniApp 修为/灵力不足，深闭 CD 后回查"
+    else:
+        delay = STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC + random.uniform(30, 90)
+        audit_text = "❌ 观星台 MiniApp 处理失败"
+    _queue_stargazer_followup_action(now, "panel", delay)
+    state["stargazer_last_action"] = "miniapp_error"
+    save_state()
+    await send_audit_log(f"{audit_text}：{error_text}→{fmt_time_after(delay)}", scope="identity", limit=260)
+    return True
+
+
+async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
+    identity_id = get_current_identity_id()
+    manual_auth = _has_stargazer_miniapp_manual_auth(identity_id, now)
+    if not state.get("stargazer_enabled") and not manual_auth:
+        return False
+
+    launch = extract_stargazer_miniapp_launch(event, message_text=text)
+    looks_like_entry = _looks_like_stargazer_miniapp_entry(text)
+    if not launch and not looks_like_entry:
+        return False
+    if not launch and not _is_stargazer_panel_reply(reply_to, matched_family=matched_family):
+        return False
+
+    was_paused = _is_stargazer_miniapp_paused()
+    _pause_stargazer_legacy_chain(now, result_msg_id=result_msg_id or getattr(event, "id", 0) or 0)
+    if manual_auth:
+        revoke_stargazer_miniapp_manual_run(identity_id)
+    if not launch:
+        if not was_paused:
+            await send_audit_log(
+                "🔭 观星台已识别 MiniApp 入口，旧文本自动链路已暂停；未拿到按钮，等待手动处理或下次入口。",
+                scope="identity",
+                priority="low",
+                limit=180,
+            )
+        return True
+
+    star_choice = get_stargazer_star_choice()
+    if not was_paused:
+        await send_audit_log(
+            "🔭 观星台 MiniApp 接管入口，开始 WebView/HTTP 流程。",
+            scope="identity",
+            priority="low",
+            limit=180,
+        )
+    result = await run_stargazer_miniapp_production_flow(
+        identity_id,
+        token=launch.get("token"),
+        webview_url=launch.get("webview_url"),
+        star_choice=star_choice,
+        capture_sink=_stargazer_miniapp_capture_store(now),
+        capture_source=f"stargazer_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+    )
+    return await _finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
 
 
 async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None):
@@ -603,6 +810,9 @@ async def run_stargazer_scheduler(now):
     if not state.get("stargazer_enabled"):
         return
 
+    if _is_stargazer_miniapp_paused():
+        return
+
     if _has_pending_stargazer_command():
         return
 
@@ -677,12 +887,15 @@ def handle_stargazer_sync_reply(text, now=None):
 
 
 __all__ = [
+    "authorize_stargazer_miniapp_manual_run",
     "get_stargazer_status_text",
     "handle_stargazer_collect_reply",
     "handle_stargazer_guide_reply",
+    "handle_stargazer_miniapp_entry",
     "handle_stargazer_panel",
     "handle_stargazer_soothe_reply",
     "handle_stargazer_sync_reply",
+    "revoke_stargazer_miniapp_manual_run",
     "run_stargazer_scheduler",
     "sync_stargazer_total_slots",
 ]

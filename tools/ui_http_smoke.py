@@ -158,6 +158,14 @@ async def _run_smoke(port: int) -> list[CheckResult]:
             f"status={status}",
         )
 
+        status, _headers, text = await _request(port, "GET", "/static/js/miniapp_ui.js", cookie=cookie)
+        _add(
+            results,
+            "miniapp javascript is served",
+            status == 200 and "/api/miniapp-status" in text and "/api/miniapp-manual-run" in text,
+            f"status={status}",
+        )
+
         status, _headers, text = await _request(port, "GET", "/static/js/dungeon_ui.js", cookie=cookie)
         _add(
             results,
@@ -191,6 +199,24 @@ async def _run_smoke(port: int) -> list[CheckResult]:
             and "virtual_hall" in snapshot.get("replica", {}).get("kind_configs", {})
             and snapshot.get("replica", {}).get("participant_identity_ids") == [990001],
             f"status={status} identities={len(identities)}",
+        )
+
+        status, _headers, text = await _request(port, "GET", "/api/miniapp-status", cookie=cookie)
+        payload = _json_body(text)
+        miniapp = payload.get("miniapp") if isinstance(payload.get("miniapp"), dict) else {}
+        adapters = miniapp.get("adapters") if isinstance(miniapp.get("adapters"), list) else []
+        manual_runs = miniapp.get("manual_run_commands") if isinstance(miniapp.get("manual_run_commands"), list) else []
+        _add(
+            results,
+            "miniapp status api returns safe registry",
+            status == 200
+            and payload.get("ok") is True
+            and any(item.get("game_key") == "trial" for item in adapters if isinstance(item, dict))
+            and any(item.get("game_key") == "trial" and item.get("command") == ".天机试炼" for item in manual_runs if isinstance(item, dict))
+            and "tgWebAppData" not in text
+            and "initData=" not in text
+            and "hash=" not in text,
+            f"status={status} adapters={len(adapters)}",
         )
 
         status, _headers, text = await _request(

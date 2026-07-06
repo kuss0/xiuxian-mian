@@ -174,7 +174,32 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
-                patch.object(wanxin, "get_last_game_send_block", return_value={"code": "send_timeout", "reason": ">25s"}),
+                patch.object(wanxin, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout", "reason": ">25s"}),
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual({}, observed["pending"])
+            self.assertGreaterEqual(observed["next_protect_time"], now + wanxin.WANXIN_PROTECT_CD_SEC)
+            self.assertEqual(observed["next_protect_time"], observed["auto_next_time"])
+            self.assertIn("状态未知", observed["auto_last_result"])
+
+    async def test_owner_action_send_exception_uses_conservative_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_055.5
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now - 1,
+                "next_deduce_time": now + 3600,
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(wanxin, "classify_game_send_block", return_value={"status": "unknown", "code": "send_exception", "reason": "rpc error"}),
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
@@ -199,7 +224,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
-                patch.object(wanxin, "get_last_game_send_block", return_value={"code": "send_queue_timeout", "reason": ">60s"}),
+                patch.object(wanxin, "classify_game_send_block", return_value={"status": "unsent", "code": "send_queue_timeout", "reason": ">60s"}),
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
@@ -236,7 +261,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
-                patch.object(wanxin, "get_last_game_send_block", return_value={"code": "action_guard", "reason": "本轮已发送"}),
+                patch.object(wanxin, "classify_game_send_block", return_value={"status": "unsent", "code": "action_guard", "reason": "本轮已发送"}),
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
@@ -292,7 +317,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(wanxin, "MESSAGES_DIR", tmpdir),
                     patch.object(wanxin.time, "time", return_value=fake_now),
                     patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
-                    patch.object(wanxin, "get_last_game_send_block", return_value={"code": "send_timeout", "reason": ">25s"}),
+                    patch.object(wanxin, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout", "reason": ">25s"}),
                     patch.object(wanxin, "save_state"),
                 ):
                     await wanxin.run_wanxin_scheduler(now)
@@ -350,6 +375,84 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
             self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
             self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
+
+    async def test_phaseful_cleanup_recovers_deduce_reply_before_timeout_cleanup(self):
+        identity_id = self._prepare_identity(301299112, username="jfdffdddd")
+        now = datetime(2026, 7, 6, 13, 49, tzinfo=wanxin.TZ_LOCAL).timestamp()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-06.log"
+            log_path.write_text(
+                "\n".join(
+                    json.dumps(item, ensure_ascii=False)
+                    for item in (
+                        {
+                            "ts": "2026-07-06 13:46:51 UTC+8",
+                            "event_type": "sent",
+                            "message_id": 11533841,
+                            "sender_id": identity_id,
+                            "reply_to_msg_id": 0,
+                            "text": ".推演封魂咒",
+                            "family": "wanxin_deduce",
+                        },
+                        {
+                            "ts": "2026-07-06 13:46:53 UTC+8",
+                            "event_type": "message",
+                            "message_id": 11533842,
+                            "sender_id": 8609885831,
+                            "reply_to_msg_id": 11533841,
+                            "text": (
+                                "【推演封魂咒】\n"
+                                "你沿着素女禁纹反推咒源，隐约看见阴罗秘咒的残痕。\n"
+                                "咒源 +16。\n\n"
+                                "阶段：玄冰丹方（封魂未解）\n"
+                                "婉心：92\n"
+                                "魂封：0\n"
+                                "月魄：14\n"
+                                "咒源：120"
+                            ),
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with state_module.use_identity(identity_id):
+                state_module.state["wanxin_enabled"] = True
+                state_module.state["wanxin_observation"] = {
+                    "pending": {
+                        "action": "deduce",
+                        "family": "wanxin_deduce",
+                        "msg_id": 11533841,
+                        "send_as_id": identity_id,
+                        "reply_due_at": now - 1,
+                    },
+                    "auto_next_time": now - 1,
+                    "next_deduce_time": now - 1,
+                }
+                with (
+                    patch("model.message_log_recovery.MESSAGES_DIR", tmpdir),
+                    patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(wanxin, "close_action_guard_by_family") as close_guard_mock,
+                    patch.object(wanxin, "save_state"),
+                ):
+                    await wanxin.run_wanxin_phaseful_cleanup_scheduler(now)
+
+                send_mock.assert_not_awaited()
+                close_guard_mock.assert_called_once()
+                self.assertEqual("wanxin_deduce", close_guard_mock.call_args.args[0])
+                self.assertEqual(identity_id, close_guard_mock.call_args.kwargs["send_as_id"])
+                self.assertEqual("wanxin_reply", close_guard_mock.call_args.kwargs["reason"])
+                self.assertLess(close_guard_mock.call_args.kwargs["now"], now)
+                observed = state_module.state["wanxin_observation"]
+                self.assertEqual({}, observed["pending"])
+                self.assertEqual("玄冰丹方（封魂未解）", observed["stage"])
+                self.assertEqual(92, observed["wanxin"])
+                self.assertEqual(0, observed["soul_seal"])
+                self.assertEqual(14, observed["moon_soul"])
+                self.assertEqual(120, observed["curse_source"])
+                self.assertEqual("推演成功", observed["auto_last_result"])
+                self.assertEqual("", observed["auto_last_error"])
+                self.assertGreater(observed["next_deduce_time"], now + 7 * 3600)
 
     async def test_global_cleanup_clears_expired_pending_across_identities(self):
         first_id = self._prepare_identity(301299112, username="jfdffdddd")

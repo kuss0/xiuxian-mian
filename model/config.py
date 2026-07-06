@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 import time
 from datetime import timedelta, timezone
 from urllib.parse import quote
@@ -293,6 +294,7 @@ CMD_FISHING_LIFT = ".提竿"
 CMD_FISHING_CANCEL = ".收竿"
 CMD_FISHING_OPEN = ".开鱼"
 CMD_FISHING_BASKET = ".鱼篓"
+CMD_TIANJI_TRIAL = ".天机试炼"
 CMD_NORMAL_RETREAT = ".闭关修炼"
 CMD_CRAFT = ".炼制"
 CMD_DEEP_RETREAT_FORCE_EXIT = ".强行出关"
@@ -723,6 +725,15 @@ def prepare_storage_dirs():
 prepare_storage_dirs()
 os.environ['PYTHONUNBUFFERED'] = '1'
 
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s:%(name)s:%(message)s")
+
+
+def _telethon_logger_name(session_path):
+    session_label = os.path.basename(str(session_path or "telegram")).replace(".session", "")
+    session_label = re.sub(r"[^0-9A-Za-z_.-]+", "_", session_label).strip("_") or "telegram"
+    return f"xiuxian.telethon.{session_label}"
+
 
 def _normalize_telegram_api(api_id=None, api_hash=None):
     api_id_value = API_ID
@@ -745,7 +756,13 @@ def _normalize_telegram_api(api_id=None, api_hash=None):
 
 def _create_telegram_client(session_path, *, api_id=None, api_hash=None):
     resolved_api_id, resolved_api_hash = _normalize_telegram_api(api_id, api_hash)
-    return TelegramClient(session_path, resolved_api_id, resolved_api_hash, proxy=TELETHON_PROXY)
+    return TelegramClient(
+        session_path,
+        resolved_api_id,
+        resolved_api_hash,
+        proxy=TELETHON_PROXY,
+        base_logger=_telethon_logger_name(session_path),
+    )
 
 
 client = _create_telegram_client(SESSION_FILE)

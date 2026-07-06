@@ -64,10 +64,14 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "/static/css/ui_fixes.css" in body
     assert "/static-new/css/app.css" in body
     assert "/static/js/module_cards_ui.js" in body
+    assert "/static/js/ui_write_guard.js" in body
     assert "/static/js/storage_bag_ui.js" in body
     assert "/static/js/runtime_health_ui.js" in body
+    assert "/static/js/miniapp_ui.js" in body
     assert "data-open-runtime-health='1'" in body
+    assert "data-open-miniapp='1'" in body
     assert "id='runtime-health-modal'" in body
+    assert "id='miniapp-modal'" in body
     assert "id='runtime-health-panel'" not in body
     assert "class='topbar-left'" in body
     assert (
@@ -104,11 +108,24 @@ def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     assert "id='passive-inbox-modal'" in body
     assert "data-open-passive-inbox='1'" in body
     assert "/static-new/css/app.css" in body
-    assert body.index("/static/js/app.js") < body.index("/static/js/module_cards_ui.js") < body.index("/static/js/fishing_ui.js")
+    assert body.index("/static/js/app.js") < body.index("/static/js/ui_write_guard.js") < body.index("/static/js/module_cards_ui.js") < body.index("/static/js/fishing_ui.js")
     assert "/static/js/dungeon_ui.js" in body
     assert "data-open-dungeon='1'" in body
     assert "/static/js/passive_inbox_ui.js" in body
     assert "fonts.googleapis.com" not in body
+
+
+def test_miniapp_ui_is_readonly_status_with_manual_probe():
+    script = (PROJECT_ROOT / "model/web/static/js/miniapp_ui.js").read_text(encoding="utf-8")
+
+    assert "/api/miniapp-status" in script
+    assert "/api/miniapp-entry-probe" in script
+    assert "/api/miniapp-manual-run" in script
+    assert "data-miniapp-probe" in script
+    assert "data-miniapp-run" in script
+    assert "setInterval" not in script
+    assert "runEntryProbe" in script
+    assert "runManualMiniApp" in script
 
 
 def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal():
@@ -222,6 +239,17 @@ def test_summary_card_script_keeps_role_resource_fields():
     assert "['元婴',identity.yuanying_level_text||'未读取']" in script
     assert "['第二元神',identity.second_soul_level_text||'未读取']" in script
     assert "['洞府灵气',identity.cave_lingqi_text||'未读取']" in script
+
+
+def test_ui_write_guard_blocks_stale_silent_refresh_snapshots():
+    body = (PROJECT_ROOT / "model/web/static/js/ui_write_guard.js").read_text(encoding="utf-8")
+
+    assert "writeInFlight" in body
+    assert "lastWriteStartedAt" in body
+    assert "window.postJson = async function" in body
+    assert "window.refreshState = async function" in body
+    assert "window.applySnapshot = function" in body
+    assert "marker.silent && hasBlockingWrite(marker.startedAt)" in body
 
 
 def test_new_static_asset_loader_serves_css_and_blocks_traversal():

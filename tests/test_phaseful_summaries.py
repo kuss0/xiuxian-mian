@@ -698,6 +698,68 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(state_module.state["yuanying_probe_pending"])
             probe_mock.assert_awaited_once()
 
+    async def test_yuanying_recovered_launch_replays_already_logged_running_reply(self):
+        send_as_id = 8659059203
+        now = 1_700_000_363.0
+        started_at = now - yuanying.YUANYING_SPEC.summary_active_query_grace_sec - 1
+        self._prepare_identity(send_as_id, "RecoveredYuanying")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="元婴宗")
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "summary_due"
+            state_module.state["yuanying_summary_sent_at"] = started_at
+            state_module.state["next_yuanying_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.time, "time", return_value=now + 25),
+                patch.object(_phaseful.random, "uniform", return_value=60),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    _phaseful,
+                    "classify_game_send_block",
+                    return_value={"status": "unknown", "code": "send_timeout", "reason": ">25s"},
+                ),
+                patch.object(
+                    _phaseful,
+                    "find_recent_message_log_command",
+                    return_value={"message_id": 9257, "ts_epoch": now + 1},
+                ),
+                patch.object(
+                    _phaseful,
+                    "find_message_log_replies",
+                    return_value=[
+                        {
+                            "event_type": "message",
+                            "message_id": 9258,
+                            "reply_to_msg_id": 9257,
+                            "ts_epoch": now + 2,
+                            "text": "你的元婴正在执行“元婴闭关”任务，请先使用 .元婴归窍 将其召回。",
+                        }
+                    ],
+                ) as replies_mock,
+                patch.object(yuanying, "schedule_yuanying_status_probe", new=AsyncMock()) as probe_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+                patch.object(yuanying, "save_state"),
+                patch.object(yuanying, "mark_dirty"),
+            ):
+                await yuanying.run_yuanying_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                yuanying.CMD_YUANYING_SECT_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="元婴",
+            )
+            replies_mock.assert_called_once()
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertGreater(state_module.state["next_yuanying_time"], now + yuanying.YUANYING_CD)
+            self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
+            self.assertTrue(state_module.state["yuanying_probe_pending"])
+            probe_mock.assert_awaited_once()
+            self.assertTrue(any("已回放既有回复" in str(call.args[0]) for call in audit_mock.await_args_list))
+
     async def test_yuanying_late_summary_does_not_clobber_new_running_cycle(self):
         send_as_id = 8659059204
         now = 1_700_000_363.0
@@ -871,6 +933,64 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(handled)
             send_mock.assert_awaited_once_with(yuanying.CMD_YUANYING_SECT_RETREAT, track=False, priority="chain")
             self.assertEqual("launching", state_module.state["yuanying_phase"])
+
+
+    async def test_yuanying_qiaozhong_send_timeout_keeps_launching_for_calibration(self):
+        send_as_id = 8659059239
+        now = 1_700_000_372.0
+        self._prepare_identity(send_as_id, "YuanyingWarmTimeout")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "launching"
+
+            with (
+                patch.object(yuanying, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(yuanying, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+                patch.object(yuanying, "_recover_phaseful_sent_from_message_log", return_value=None),
+                patch.object(yuanying.time, "time", return_value=now + 2),
+                patch.object(yuanying, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+            ):
+                handled = await yuanying.handle_yuanying_status_reply(
+                    "【元婴状态】\n状态: 窍中温养，可继续出窍。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_STATUS),
+                    matched_family="yuanying",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("launching", state_module.state["yuanying_phase"])
+            self.assertEqual(now + 2, state_module.state["last_yuanying_command_time"])
+            self.assertGreater(state_module.state["next_yuanying_time"], now + yuanying.YUANYING_CD)
+            self.assertIn("状态未知", audit_mock.await_args.args[0])
+
+    async def test_yuanying_qiaozhong_send_queue_timeout_retries_without_launching(self):
+        send_as_id = 8659059240
+        now = 1_700_000_373.0
+        self._prepare_identity(send_as_id, "YuanyingWarmQueueTimeout")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "launching"
+
+            with (
+                patch.object(yuanying, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(yuanying, "classify_game_send_block", return_value={"status": "unsent", "code": "send_queue_timeout"}),
+                patch.object(yuanying.time, "time", return_value=now + 3),
+                patch.object(yuanying, "save_state"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                handled = await yuanying.handle_yuanying_status_reply(
+                    "【元婴状态】\n状态: 窍中温养，可继续出窍。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_STATUS),
+                    matched_family="yuanying",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["yuanying_phase"])
+            self.assertEqual(now + 3 + yuanying.RETRY_MAX_SEC, state_module.state["next_yuanying_time"])
 
 
     async def test_summary_timeout_falls_back_to_normal_cd_without_relaunch(self):
@@ -1237,7 +1357,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             with (
                 patch.object(_phaseful.time, "time", return_value=now + 25),
                 patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
-                patch.object(_phaseful, "get_last_game_send_block", return_value={"code": "send_timeout", "reason": ">25s"}),
+                patch.object(
+                    _phaseful,
+                    "classify_game_send_block",
+                    return_value={"status": "unknown", "code": "send_timeout", "reason": ">25s"},
+                ),
                 patch.object(
                     _phaseful,
                     "find_recent_message_log_command",
@@ -1261,7 +1385,50 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(state_module.state["deep_retreat_probe_pending"])
             self.assertTrue(any("消息日志恢复" in str(call.args[0]) for call in audit_mock.await_args_list))
 
-    async def test_deep_retreat_post_summary_recovers_delayed_send_timeout_launch_before_resend(self):
+    async def test_deep_retreat_summary_due_recovers_send_exception_launch_from_message_log(self):
+        send_as_id = 8659059256
+        now = 1_700_000_450.0
+        started_at = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec - 1
+        self._prepare_identity(send_as_id, "RecoveredExceptionRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = started_at
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.time, "time", return_value=now + 25),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    _phaseful,
+                    "classify_game_send_block",
+                    return_value={"status": "unknown", "code": "send_exception", "reason": "rpc slow"},
+                ),
+                patch.object(
+                    _phaseful,
+                    "find_recent_message_log_command",
+                    return_value={"message_id": 9256, "ts_epoch": now + 20},
+                ),
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 20, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(9256, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertTrue(state_module.state["deep_retreat_probe_pending"])
+            self.assertTrue(any("消息日志恢复" in str(call.args[0]) for call in audit_mock.await_args_list))
+
+    async def test_deep_retreat_post_summary_ignores_old_summary_trigger_before_resend(self):
         send_as_id = 8659059254
         now = 1_700_000_450.0
         first_attempt_at = now - 80
@@ -1273,24 +1440,31 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["last_deep_retreat_command_time"] = first_attempt_at
             state_module.state["next_deep_retreat_time"] = now - 1
 
+            sent_msg = SimpleNamespace(id=9255, sent_at=now)
             with (
-                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
                 patch.object(
                     _phaseful,
                     "find_recent_message_log_command",
                     return_value={"message_id": 9254, "ts_epoch": first_attempt_at + 35},
-                ),
+                ) as recovery_mock,
                 patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(_phaseful, "console_log"),
                 patch.object(_phaseful, "save_state"),
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
-            send_mock.assert_not_awaited()
+            recovery_mock.assert_not_called()
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
             self.assertEqual("launching", state_module.state["deep_retreat_phase"])
-            self.assertEqual(first_attempt_at + 35, state_module.state["last_deep_retreat_command_time"])
+            self.assertEqual(now, state_module.state["last_deep_retreat_command_time"])
             self.assertGreater(state_module.state["next_deep_retreat_time"], now)
-            self.assertTrue(any("消息日志恢复" in str(call.args[0]) for call in audit_mock.await_args_list))
+            self.assertFalse(any("消息日志恢复" in str(call.args[0]) for call in audit_mock.await_args_list))
 
     async def test_deep_retreat_post_summary_failed_launch_stays_in_post_wait(self):
         send_as_id = 8659059202

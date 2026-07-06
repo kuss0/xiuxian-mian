@@ -25,7 +25,7 @@ from ..config import (
     is_account_offline,
 )
 from ..persistence import save_state
-from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -78,6 +78,10 @@ RE_TREE_HARVEST_REWARD_ITEM = re.compile(r"【([^】]+)】\s*(?:[xX×]\s*([\d,]+
 TREE_HARVEST_REWARD_KEYWORDS = ("获得【", "分得【", "稳定分得【")
 RE_TREE_PULSE_PROGRESS = re.compile(r"([0-9]+(?:\.[0-9]+)?)%")
 RE_TREE_PULSE_ELEMENTS = re.compile(r"主脉【([^】]+)】\s*/\s*辅脉【([^】]+)】\s*/\s*逆脉【([^】]+)】\s*/\s*平脉【([^】]+)】")
+
+
+def _tree_send_status_unknown(command):
+    return classify_game_send_block(get_current_identity_id(), command).get("status") == "unknown"
 RE_TREE_PULSE_MAIN = re.compile(r"主脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
 RE_TREE_PULSE_AUX = re.compile(r"辅脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
 RE_TREE_PULSE_REVERSE = re.compile(r"逆脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
@@ -588,6 +592,9 @@ async def _send_tree_harvest(now=None):
     save_state()
     msg = await send_game_command(CMD_TREE_HARVEST, max_retry=TREE_HARVEST_RETRY_LIMIT)
     if not msg:
+        if _tree_send_status_unknown(CMD_TREE_HARVEST):
+            await send_audit_log("⏳ 采摘发送状态未知，保持在途等待回包，避免重复采摘。")
+            return True
         state["tree_harvest_inflight_until"] = 0
         save_state()
         await send_audit_log("❌ 采摘发送失败，等待下轮调度。")
@@ -643,6 +650,8 @@ async def queue_tree_harvest_for_identity_ids(identity_ids, now=None, *, reason=
                     continue
                 msg = await send_game_command(CMD_TREE_HARVEST, max_retry=TREE_HARVEST_RETRY_LIMIT)
                 if not msg:
+                    if _tree_send_status_unknown(CMD_TREE_HARVEST):
+                        continue
                     state["tree_harvest_inflight_until"] = 0
                     save_state()
 
@@ -792,6 +801,10 @@ async def _send_tree_status(now=None, *, force=False):
         source_module="灵树",
     )
     if not msg:
+        if _tree_send_status_unknown(CMD_TREE_PULSE_STATUS):
+            state["last_tree_status_sent_at"] = now
+            save_state()
+            return True
         return False
     state["last_tree_status_sent_at"] = float(getattr(msg, "sent_at", 0) or time.time())
     return True
@@ -1451,7 +1464,11 @@ async def run_tree_scheduler(now):
             )
             sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
             if not msg:
-                state["next_irr_time"] = sent_at + RETRY_MAX_SEC
+                if _tree_send_status_unknown(CMD_TREE_PULSE_STATUS):
+                    state["last_tree_status_sent_at"] = sent_at
+                    _schedule_tree_pulse_status_spread(sent_at)
+                else:
+                    state["next_irr_time"] = sent_at + RETRY_MAX_SEC
                 save_state()
             else:
                 state["last_tree_status_sent_at"] = sent_at
@@ -1480,7 +1497,12 @@ async def run_tree_scheduler(now):
                 )
                 sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
                 if not msg:
-                    state["next_irr_time"] = sent_at + RETRY_MAX_SEC
+                    if _tree_send_status_unknown(command):
+                        state["tree_pulse_last_action"] = command
+                        state["tree_pulse_last_error"] = f"{reason}，发送状态未知"
+                        state["next_irr_time"] = sent_at + TREE_PULSE_ACTION_FOLLOWUP_MIN_SEC
+                    else:
+                        state["next_irr_time"] = sent_at + RETRY_MAX_SEC
                     save_state()
                 else:
                     state["tree_pulse_last_action"] = command
@@ -1505,9 +1527,14 @@ async def run_tree_scheduler(now):
         msg = await send_game_command(CMD_TREE_GUARD, max_retry=0)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            state["next_guard_time"] = sent_at + RETRY_MAX_SEC
+            if _tree_send_status_unknown(CMD_TREE_GUARD):
+                state["next_guard_time"] = sent_at + g_delay
+                audit_text = "⏳ 守山发送状态未知，按可能已发送延后，避免重复守山。"
+            else:
+                state["next_guard_time"] = sent_at + RETRY_MAX_SEC
+                audit_text = "❌ 守山发送失败，稍后重试。"
             save_state()
-            await send_audit_log("❌ 守山发送失败，稍后重试。")
+            await send_audit_log(audit_text)
         else:
             state["next_guard_time"] = sent_at + g_delay
             save_state()

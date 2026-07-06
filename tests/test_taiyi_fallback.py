@@ -311,6 +311,60 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                 summaries = self._inbox_summaries(inbox_mock)
                 self.assertTrue(any("引道已发送" in summary and "msg_id=555" in summary and ".引道 水" in summary for summary in summaries))
 
+    async def test_yindao_send_timeout_keeps_pending_for_late_reply(self):
+        now = 1_700_000_180.0
+        send_as_id = self._prepare_identity("idle", entered_at=0)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["next_taiyi_cycle_time"] = now - 1
+            with (
+                patch.object(taiyi, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    taiyi,
+                    "classify_game_send_block",
+                    return_value={"status": "unknown", "code": "send_timeout", "reason": ">60s"},
+                ),
+                patch.object(taiyi.time, "time", return_value=now + 2),
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+                patch.object(taiyi, "save_state"),
+            ):
+                await taiyi.run_taiyi_scheduler(now)
+
+                send_mock.assert_awaited_once()
+                self.assertEqual("yindao_pending", state_module.state["taiyi_phase"])
+                self.assertEqual(0, state_module.state["taiyi_yindao_msg_id"])
+                self.assertEqual(now + 2, state_module.state["taiyi_phase_entered_at"])
+                self.assertIn("发送状态未知", state_module.state["taiyi_last_error"])
+                summaries = self._inbox_summaries(inbox_mock)
+                self.assertTrue(any("引道发送状态未知" in summary for summary in summaries))
+
+    async def test_node_search_send_timeout_keeps_pending_for_late_reply(self):
+        now = 1_700_000_185.0
+        send_as_id = self._prepare_identity("search_scheduled", entered_at=now - 10)
+
+        with state_module.use_identity(send_as_id):
+            with (
+                patch.object(taiyi, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(
+                    taiyi,
+                    "classify_game_send_block",
+                    return_value={"status": "unknown", "code": "send_timeout", "reason": ">60s"},
+                ),
+                patch.object(taiyi.time, "time", return_value=now + 3),
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+                patch.object(taiyi, "save_state"),
+            ):
+                sent = await taiyi._send_taiyi_search(now)
+
+                self.assertTrue(sent)
+                send_mock.assert_awaited_once()
+                self.assertEqual("search_pending", state_module.state["taiyi_phase"])
+                self.assertEqual(0, state_module.state["taiyi_node_search_msg_id"])
+                self.assertEqual(now + 3, state_module.state["taiyi_phase_entered_at"])
+                self.assertIn("发送状态未知", state_module.state["taiyi_last_error"])
+                summaries = self._inbox_summaries(inbox_mock)
+                self.assertTrue(any("搜寻节点发送状态未知" in summary for summary in summaries))
+
     async def test_search_timeout_falls_back_without_resend(self):
         now = 1_700_000_200.0
         entered_at = now - taiyi.TAIYI_REPLY_LOST_TIMEOUT_SEC - 1

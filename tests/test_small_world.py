@@ -2662,6 +2662,96 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(allowed, reason)
 
+    async def test_manifest_unsent_runtime_block_does_not_create_pending(self):
+        send_as_id = 8659059318
+        now = 7190.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "江河决堤",
+                "manifest_cost": "修为x800",
+                "updated_at": now,
+            }
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(
+                    small_world,
+                    "classify_game_send_block",
+                    return_value={"status": "unsent", "code": "send_queue_timeout", "reason": ">60s"},
+                ),
+                patch.object(small_world.random, "uniform", return_value=600),
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_manifest(now)
+
+            self.assertTrue(sent)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            self.assertIn("未发送", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+            self.assertTrue(state_module.state["small_world_panel_snapshot"]["has_prayer"])
+            self.assertEqual("江河决堤", state_module.state["small_world_panel_snapshot"]["prayer_name"])
+
+    async def test_query_unsent_runtime_block_does_not_wait_panel(self):
+        send_as_id = 8659059319
+        now = 7195.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(
+                    small_world,
+                    "classify_game_send_block",
+                    return_value={"status": "unsent", "code": "global_disabled", "reason": "global_enabled=0"},
+                ),
+                patch.object(small_world.random, "uniform", return_value=600),
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_query(now, "周期自查")
+
+            self.assertTrue(sent)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertIn("未发送", state_module.state["small_world_last_error"])
+            self.assertNotIn("等待小世界面板", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+
+    async def test_harvest_before_manifest_unsent_block_does_not_fake_harvest_phase(self):
+        send_as_id = 8659059320
+        now = 7198.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(
+                    small_world,
+                    "classify_game_send_block",
+                    return_value={"status": "unsent", "code": "action_guard", "reason": "本轮已发送"},
+                ),
+                patch.object(small_world.random, "uniform", return_value=600),
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_harvest_before_manifest(now)
+
+            self.assertTrue(sent)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_harvest_msg_id"])
+            self.assertIn("未发送", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+
     async def test_manifest_failure_clears_cached_prayer_to_avoid_stale_retry_loop(self):
         send_as_id = 8659059310
         now = 7200.0

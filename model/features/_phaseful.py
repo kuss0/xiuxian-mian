@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
-from ..message_log_recovery import find_recent_message_log_command
-from ..runtime import _fire_and_forget, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
+from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
+from ..runtime import _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 
@@ -161,6 +161,55 @@ def _recover_phaseful_sent_from_message_log(command, attempt_started_at, now=Non
     if msg_id <= 0 or sent_at + 3 < attempt_started_at:
         return None
     return SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=True)
+
+
+async def _replay_recovered_phaseful_replies(spec, command, msg, now=None):
+    """Replay bot replies that arrived before a timed-out send was recovered."""
+    try:
+        msg_id = int(getattr(msg, "id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg_id <= 0:
+        return False
+    now = float(now if now is not None else time.time())
+    replies = find_message_log_replies(
+        msg_id,
+        now,
+        lookback_sec=PHASEFUL_SEND_TIMEOUT_RECOVERY_LOOKBACK_SEC,
+        lookahead_sec=PHASEFUL_SEND_TIMEOUT_RECOVERY_LOOKAHEAD_SEC,
+        predicate=lambda entry: str((entry or {}).get("event_type") or "") in {"message", "edit"},
+    )
+    if not replies:
+        return False
+
+    reply_to = SimpleNamespace(id=msg_id, raw_text=str(command or "").strip())
+    module_name = str(spec.source_module or "").strip()
+    for entry in replies:
+        text = str((entry or {}).get("text") or "")
+        if not text:
+            continue
+        reply_now = float((entry or {}).get("ts_epoch") or now)
+        if module_name == "元婴":
+            from . import yuanying
+
+            for handler in (
+                yuanying.handle_yuanying_success_reply,
+                yuanying.handle_yuanying_running_reply,
+                yuanying.handle_yuanying_status_reply,
+            ):
+                if await handler(text, reply_now, reply_to=reply_to, matched_family="yuanying"):
+                    return True
+        elif module_name == "深度闭关":
+            from . import deep_retreat
+
+            for handler in (
+                deep_retreat.handle_deep_retreat_success_reply,
+                deep_retreat.handle_deep_retreat_running_reply,
+                deep_retreat.handle_deep_retreat_status_reply,
+            ):
+                if await handler(text, reply_now, reply_to=reply_to, matched_family="deep_retreat"):
+                    return True
+    return False
 
 
 def register_phaseful_spec(spec):
@@ -758,15 +807,17 @@ async def _send_summary_trigger(spec, console_message):
     msg = await send_game_command(command, track=False, priority="chain", source_module=spec.source_module or None)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
-        send_block = get_last_game_send_block(get_current_identity_id(), command)
-        if str((send_block or {}).get("code") or "") == "send_timeout":
+        send_block = classify_game_send_block(get_current_identity_id(), command)
+        if send_block.get("status") == "unknown":
             msg = _recover_phaseful_sent_from_message_log(command, attempt_started_at, sent_at)
         if msg:
             sent_at = float(getattr(msg, "sent_at", 0) or sent_at)
             begin_summary_wait(spec, sent_at)
             state[spec.last_summary_msg_id_key] = int(msg.id)
             save_state()
-            await send_audit_log(f"{spec.title} 状态触发发送超时，已从消息日志恢复。", priority="low")
+            replayed = await _replay_recovered_phaseful_replies(spec, command, msg, sent_at)
+            suffix = "，已回放既有回复" if replayed else ""
+            await send_audit_log(f"{spec.title} 状态触发发送超时，已从消息日志恢复{suffix}。", priority="low")
             return True
         _schedule_summary_trigger_retry(spec, sent_at)
         await send_audit_log(f"{spec.title} 总结触发指令未发出，已延后重试。")
@@ -796,7 +847,9 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
 
         previous_summary_started_at = float(state.get(spec.summary_sent_at_key, 0) or 0)
         previous_command_at = float(state.get(spec.last_command_key, 0) or 0)
-        recovered_msg = _recover_phaseful_sent_from_message_log(launch_command, previous_command_at, now)
+        recovered_msg = None
+        if previous_phase != "post_summary_wait":
+            recovered_msg = _recover_phaseful_sent_from_message_log(launch_command, previous_command_at, now)
         if recovered_msg:
             sent_at = float(getattr(recovered_msg, "sent_at", 0) or now)
             if previous_phase == "post_summary_wait":
@@ -805,7 +858,9 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
                 begin_summary_wait(spec, sent_at, launch_probe=True)
                 state[spec.last_summary_msg_id_key] = int(recovered_msg.id)
                 save_state()
-            await send_audit_log(f"{spec.title} 续轮发送超时，已从消息日志恢复。", priority="low")
+            replayed = await _replay_recovered_phaseful_replies(spec, launch_command, recovered_msg, now)
+            suffix = "，已回放既有回复" if replayed else ""
+            await send_audit_log(f"{spec.title} 续轮发送超时，已从消息日志恢复{suffix}。", priority="low")
             return True
 
         await delete_summary_trigger_msg(spec)
@@ -820,8 +875,8 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
         )
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            send_block = get_last_game_send_block(get_current_identity_id(), launch_command)
-            if str((send_block or {}).get("code") or "") == "send_timeout":
+            send_block = classify_game_send_block(get_current_identity_id(), launch_command)
+            if send_block.get("status") == "unknown":
                 msg = _recover_phaseful_sent_from_message_log(launch_command, attempt_started_at, sent_at)
             if msg:
                 sent_at = float(getattr(msg, "sent_at", 0) or sent_at)
@@ -831,7 +886,9 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
                     begin_summary_wait(spec, sent_at, launch_probe=True)
                     state[spec.last_summary_msg_id_key] = int(msg.id)
                     save_state()
-                await send_audit_log(f"{spec.title} 续轮发送超时，已从消息日志恢复。", priority="low")
+                replayed = await _replay_recovered_phaseful_replies(spec, launch_command, msg, sent_at)
+                suffix = "，已回放既有回复" if replayed else ""
+                await send_audit_log(f"{spec.title} 续轮发送超时，已从消息日志恢复{suffix}。", priority="low")
                 return True
             block_detail = ""
             if send_block:
@@ -873,15 +930,17 @@ async def _send_active_summary_query(spec, now, *, probe_reserved=False):
     )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
-        send_block = get_last_game_send_block(get_current_identity_id(), spec.summary_trigger_command)
-        if str((send_block or {}).get("code") or "") == "send_timeout":
+        send_block = classify_game_send_block(get_current_identity_id(), spec.summary_trigger_command)
+        if send_block.get("status") == "unknown":
             msg = _recover_phaseful_sent_from_message_log(spec.summary_trigger_command, attempt_started_at, sent_at)
         if msg:
             sent_at = float(getattr(msg, "sent_at", 0) or sent_at)
             begin_summary_wait(spec, sent_at)
             state[spec.last_summary_msg_id_key] = int(msg.id)
             save_state()
-            await send_audit_log(f"{spec.title} 状态查询发送超时，已从消息日志恢复。", priority="low")
+            replayed = await _replay_recovered_phaseful_replies(spec, spec.summary_trigger_command, msg, sent_at)
+            suffix = "，已回放既有回复" if replayed else ""
+            await send_audit_log(f"{spec.title} 状态查询发送超时，已从消息日志恢复{suffix}。", priority="low")
             return True
         _schedule_summary_trigger_retry(spec, sent_at)
         await send_audit_log(f"{spec.title} 状态查询未发出，已延后重试。")
@@ -958,8 +1017,13 @@ async def delete_summary_trigger_msg(spec):
     msg_id = abs(int(msg_id))
     if is_auto_delete_sent_messages_enabled():
         try:
-            from ..runtime import _get_identity_client
-            await _get_identity_client().delete_messages(get_game_group_id(), [msg_id])
+            from ..runtime import _get_identity_client_with_account, _run_account_rpc
+            account_id, client = _get_identity_client_with_account()
+            await _run_account_rpc(
+                client.delete_messages(get_game_group_id(), [msg_id]),
+                account_id=account_id,
+                client_obj=client,
+            )
         except Exception:
             pass
     state["my_msg_ids"].pop(msg_id, None)

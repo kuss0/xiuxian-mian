@@ -197,6 +197,20 @@ CONCUBINE_VOYAGE_RUNTIME_KEYS = (
     "concubine_voyage_retry_count",
 )
 _SEND_QUEUE_TIMEOUT_OVERRIDE = ContextVar("concubine_send_queue_timeout_override", default=None)
+CONCUBINE_UNSENT_BLOCK_CODES = {
+    "send_queue_timeout",
+    "send_prepare_timeout",
+    "global_disabled",
+    "dungeon_quiet",
+    "account_offline",
+    "account_client_missing",
+    "account_client_not_ready",
+    "account_session_error",
+    "bot_health",
+    "identity_weak",
+    "pre_send_guard",
+    "action_guard",
+}
 
 
 @contextmanager
@@ -510,7 +524,8 @@ def _schedule_chain_action(now):
 
 def _handle_send_queue_timeout(command, now, *, due_key=None, error_key="concubine_last_error", label="侍妾指令"):
     send_block = get_last_game_send_block(get_current_identity_id(), command)
-    if str((send_block or {}).get("code") or "") != "send_queue_timeout":
+    code = str((send_block or {}).get("code") or "")
+    if code not in CONCUBINE_UNSENT_BLOCK_CODES and not code.startswith("flood_wait"):
         return False
     retry_at = _schedule_after(
         float(now or time.time()),
@@ -520,7 +535,12 @@ def _handle_send_queue_timeout(command, now, *, due_key=None, error_key="concubi
     if due_key and float(state.get(due_key, 0) or 0) <= float(now or time.time()):
         state[due_key] = retry_at
     state[error_key] = ""
-    state["concubine_last_result"] = f"{label}发送队列拥堵，已错峰重试"
+    if code == "send_queue_timeout":
+        state["concubine_last_result"] = f"{label}发送队列拥堵，已错峰重试"
+    else:
+        reason = str((send_block or {}).get("reason") or "").strip()
+        detail = f"{code}: {reason}" if reason else code or "runtime_block"
+        state["concubine_last_result"] = f"{label}未发送，已错峰重试（{detail}）"
     _set_phase("idle")
     return True
 

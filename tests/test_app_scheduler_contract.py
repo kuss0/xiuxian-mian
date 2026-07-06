@@ -1028,6 +1028,92 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once()
         self.assertEqual([(identity_id, now)], seen)
 
+    async def test_due_tianxing_fast_scan_ignores_stale_craft_next_when_business_blocked(self):
+        identity_id = 991837
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "auto_next_time": now + 6 * 3600,
+                "tianji_value": 1,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "ready",
+                    "next_time": now - 600,
+                },
+            }
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "has_tianxing_timeline_due_work", return_value=False),
+            patch.object(app, "has_tianxing_craft_farm_due", return_value=False),
+            patch.object(app, "has_tianxing_craft_farm_override_due", return_value=False),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_tianxing_scheduler", new=AsyncMock()) as scheduler_mock,
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        scheduler_mock.assert_not_awaited()
+
+    async def test_due_tianxing_fast_scan_prioritizes_lower_tianji_craft_farm(self):
+        high_tianji_identity_id = 991838
+        low_tianji_identity_id = 991839
+        now = 1_700_000_000.0
+        for identity_id in (high_tianji_identity_id, low_tianji_identity_id):
+            state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(high_tianji_identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "auto_next_time": now + 6 * 3600,
+                "tianji_value": 30,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "ready",
+                    "next_time": now - 1800,
+                },
+            }
+        with state_module.use_identity(low_tianji_identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "auto_next_time": now + 6 * 3600,
+                "tianji_value": 2,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "ready",
+                    "next_time": now - 60,
+                },
+            }
+
+        seen = []
+
+        async def fake_tianxing_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[high_tianji_identity_id, low_tianji_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "has_tianxing_timeline_due_work", return_value=False),
+            patch.object(app, "has_tianxing_craft_farm_due", return_value=True),
+            patch.object(app, "has_tianxing_craft_farm_override_due", return_value=False),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_tianxing_scheduler", new=AsyncMock(side_effect=fake_tianxing_scheduler)) as scheduler_mock,
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once()
+        self.assertEqual([(low_tianji_identity_id, now)], seen)
+
     async def test_tianxing_daily_bootstrap_pending_does_not_consume_send_limit(self):
         first_identity_id = 991793
         second_identity_id = 991794

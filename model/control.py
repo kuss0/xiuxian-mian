@@ -5099,8 +5099,13 @@ async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
         return
     if is_auto_delete_sent_messages_enabled():
         try:
-            from .runtime import _get_identity_client
-            await _get_identity_client(send_as_id).delete_messages(get_game_group_id(), [msg_id])
+            from .runtime import _get_identity_client_with_account, _run_account_rpc
+            account_id, client = _get_identity_client_with_account(send_as_id)
+            await _run_account_rpc(
+                client.delete_messages(get_game_group_id(), [msg_id]),
+                account_id=account_id,
+                client_obj=client,
+            )
         except Exception as e:
             console_log(
                 f"❌ 删除身份信息触发消息失败：{e}｜msg={msg_id}",

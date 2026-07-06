@@ -5,7 +5,8 @@ import time
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC, RE_WHITESPACE
 from ..persistence import mark_dirty, save_quiz_ai_config_state, save_quiz_learning_watchers_state, save_state
-from ..runtime import _get_identity_client, mono, send_audit_log, send_game_command
+from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
+from ..runtime import account_rpc_slot, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -53,6 +54,24 @@ QUIZ_ANSWER_METHOD_COMMAND = "command"
 
 _QUIZ_BANK = None
 _QUIZ_BANK_INDEX = None
+
+
+def _get_identity_client(identity_id=None):
+    _account_id, client = _runtime_get_identity_client_with_account(identity_id)
+    return client
+
+
+def _get_identity_client_for_rpc(identity_id=None):
+    client = _get_identity_client(identity_id)
+    if client is None:
+        return 0, None
+    try:
+        account_id, runtime_client = _runtime_get_identity_client_with_account(identity_id)
+        if runtime_client is client:
+            return int(account_id or 0), client
+    except Exception:
+        pass
+    return 0, client
 
 
 def _normalize_text(text):
@@ -455,18 +474,19 @@ async def _click_quiz_answer_button(identity_id, chat_id, message_id, answer):
     if int(chat_id or 0) == 0 or int(message_id or 0) <= 0:
         return False, "缺少题面消息"
     try:
-        client = _get_identity_client(identity_id)
+        account_id, client = _get_identity_client_for_rpc(identity_id)
         if client is None:
             return False, "身份客户端不可用"
-        message = await client.get_messages(int(chat_id or 0), ids=int(message_id or 0))
-        if message is None:
-            return False, f"无法重新获取消息：{message_id}"
-        for row_index, row in enumerate(getattr(message, "buttons", None) or []):
-            for col_index, button in enumerate(row or []):
-                if str(getattr(button, "text", "") or "").strip().upper() != answer:
-                    continue
-                await message.click(row_index, col_index)
-                return True, ""
+        async with account_rpc_slot(account_id=account_id, client_obj=client):
+            message = await client.get_messages(int(chat_id or 0), ids=int(message_id or 0))
+            if message is None:
+                return False, f"无法重新获取消息：{message_id}"
+            for row_index, row in enumerate(getattr(message, "buttons", None) or []):
+                for col_index, button in enumerate(row or []):
+                    if str(getattr(button, "text", "") or "").strip().upper() != answer:
+                        continue
+                    await message.click(row_index, col_index)
+                    return True, ""
     except Exception as exc:
         return False, str(exc) or "按钮点击失败"
     return False, f"未找到按钮：{answer}"

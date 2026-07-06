@@ -1,0 +1,166 @@
+import unittest
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from model import ui
+
+
+class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_sends_only_whitelisted_entry_command_without_tracking(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_entry_probe(1001, "fishing")
+
+        self.assertTrue(ok)
+        self.assertIn("入口诊断", message)
+        self.assertEqual(".钓鱼", extra["command"])
+        self.assertEqual(12345, extra["msg_id"])
+        send_mock.assert_awaited_once()
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual(1001, kwargs["send_as_id"])
+        self.assertEqual("MiniApp诊断", kwargs["source_module"])
+        self.assertEqual("miniapp_entry_probe", kwargs["chain_id"])
+
+    async def test_probe_rejects_unknown_game_key_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "send_game_command", new=send_mock):
+            ok, message, extra = await ui.ui_send_miniapp_entry_probe(1001, "world_boss")
+
+        self.assertFalse(ok)
+        self.assertIn("仅允许", message)
+        self.assertEqual({}, extra)
+        send_mock.assert_not_awaited()
+
+    async def test_probe_allows_trial_entry_command_without_tracking(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12346))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_entry_probe(1001, "trial")
+
+        self.assertTrue(ok)
+        self.assertIn("入口诊断", message)
+        self.assertEqual(".天机试炼", extra["command"])
+        self.assertEqual(12346, extra["msg_id"])
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp诊断", kwargs["source_module"])
+
+    async def test_probe_allows_cave_treasure_entry_command_without_tracking(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12347))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_entry_probe(1001, "cave_treasure")
+
+        self.assertTrue(ok)
+        self.assertIn("入口诊断", message)
+        self.assertEqual(".洞府", extra["command"])
+        self.assertEqual(12347, extra["msg_id"])
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp诊断", kwargs["source_module"])
+        self.assertEqual("miniapp_entry_probe", kwargs["chain_id"])
+
+    async def test_probe_rejects_disabled_identity_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=False), \
+                patch.object(ui, "send_game_command", new=send_mock):
+            ok, message, extra = await ui.ui_send_miniapp_entry_probe(1001, "stargazer")
+
+        self.assertFalse(ok)
+        self.assertEqual("身份已停用", message)
+        self.assertEqual({}, extra)
+        send_mock.assert_not_awaited()
+
+    async def test_manual_run_allows_trial_and_authorizes_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12348))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "authorize_trial_miniapp_manual_run", return_value=123456.0) as auth_mock, \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "trial")
+
+        self.assertTrue(ok)
+        self.assertIn("手动执行", message)
+        self.assertEqual(".天机试炼", extra["command"])
+        auth_mock.assert_called_once_with(1001)
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp手动", kwargs["source_module"])
+        self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
+
+    async def test_manual_run_allows_stargazer_and_authorizes_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12350))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "authorize_stargazer_miniapp_manual_run", return_value=123456.0) as auth_mock, \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "stargazer")
+
+        self.assertTrue(ok)
+        self.assertIn("手动执行", message)
+        self.assertEqual(".观星台", extra["command"])
+        auth_mock.assert_called_once_with(1001)
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp手动", kwargs["source_module"])
+        self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
+
+    async def test_manual_run_rejects_non_manual_game_key_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12349))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "send_game_command", new=send_mock):
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "fishing")
+
+        self.assertFalse(ok)
+        self.assertIn("仅允许", message)
+        self.assertEqual({}, extra)
+        send_mock.assert_not_awaited()
+
+    def test_miniapp_status_snapshot_is_safe_and_includes_cave_treasure(self):
+        snapshot = ui.get_miniapp_status_snapshot()
+        text = json.dumps(snapshot, ensure_ascii=False)
+        adapters = {item["game_key"]: item for item in snapshot["adapters"]}
+        probe_commands = {item["game_key"]: item["command"] for item in snapshot["entry_probe_commands"]}
+        manual_run_commands = {item["game_key"]: item["command"] for item in snapshot["manual_run_commands"]}
+
+        self.assertIn("cave_treasure", adapters)
+        self.assertFalse(adapters["cave_treasure"]["default_enabled"])
+        self.assertTrue(adapters["cave_treasure"]["manual_only"])
+        self.assertEqual(".洞府", probe_commands["cave_treasure"])
+        self.assertEqual(".钓鱼", probe_commands["fishing"])
+        self.assertEqual(".观星台", manual_run_commands["stargazer"])
+        self.assertEqual(".天机试炼", manual_run_commands["trial"])
+        self.assertNotIn("fishing", manual_run_commands)
+        self.assertIn("cave_treasure", snapshot["flow_plans"])
+        self.assertFalse(snapshot["flow_plans"]["cave_treasure"]["default_enabled"])
+        self.assertTrue(snapshot["flow_plans"]["cave_treasure"]["manual_only"])
+        self.assertFalse(snapshot["policy"]["raw_init_data_persisted"])
+        self.assertFalse(snapshot["policy"]["raw_start_token_persisted"])
+        self.assertNotIn("tgWebAppData", text)
+        self.assertNotIn("initData=", text)
+        self.assertNotIn("hash=", text)
+        self.assertNotIn("df_SECRET", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

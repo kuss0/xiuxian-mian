@@ -86,9 +86,11 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
+from .features.trial_runtime import handle_trial_miniapp_entry
 from .features.tianxing import (
     apply_tianxing_passive,
     build_tianxing_consume_window,
+    has_tianxing_craft_farm_due,
     has_tianxing_craft_farm_override_due,
     has_tianxing_timeline_due_work,
     is_tianxing_route_released,
@@ -115,6 +117,7 @@ from .features.small_world import (
 from .features.stargazer import (
     handle_stargazer_collect_reply,
     handle_stargazer_guide_reply,
+    handle_stargazer_miniapp_entry,
     handle_stargazer_panel,
     handle_stargazer_soothe_reply,
     handle_stargazer_sync_reply,
@@ -162,7 +165,7 @@ from .features.yuanying import (
 )
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
 from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
-from .features.fishing_runtime import handle_fishing_reply, is_fishing_reply_text, run_fishing_scheduler
+from .features.fishing_runtime import handle_fishing_miniapp_entry, handle_fishing_reply, is_fishing_reply_text, run_fishing_scheduler
 from .features.wild_training import (
     WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RETRY_MAX_SEC,
@@ -1651,14 +1654,19 @@ async def _run_tianxing_timeline_followup_identity_schedulers(now, *, limit=TIAN
                 processed += 1
 
 
-def _tianxing_fast_due_time(now):
+def _tianxing_fast_due_info(now):
     due_times = []
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    try:
+        tianji_value = int(observed.get("tianji_value", 999999))
+    except (TypeError, ValueError, OverflowError):
+        tianji_value = 999999
     try:
         auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         auto_next_time = 0.0
-    if auto_next_time > 0:
+    auto_due = auto_next_time > 0 and auto_next_time <= now
+    if auto_next_time > 0 and auto_due:
         due_times.append(auto_next_time)
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
@@ -1667,25 +1675,39 @@ def _tianxing_fast_due_time(now):
     except (TypeError, ValueError, OverflowError):
         craft_next_time = 0.0
     craft_phase = str(craft_farm.get("phase") or "").strip()
-    if craft_next_time > 0 and craft_phase in {
-        "ready",
-        "timeline_waiting",
-        "prediction_conflict",
-        "waiting",
+    craft_recovery_due = craft_next_time > 0 and craft_next_time <= now and craft_phase in {
         "send_blocked",
         "calibrating",
         "sent_waiting_reply",
         "crafting_waiting_final",
-    }:
-        due_times.append(craft_next_time)
-    if has_tianxing_timeline_due_work(now):
+    }
+    craft_due = has_tianxing_craft_farm_due(now)
+    if craft_recovery_due or craft_due:
+        due_times.append(craft_next_time if craft_next_time > 0 else float(now))
+    timeline_due = has_tianxing_timeline_due_work(now)
+    craft_override_due = has_tianxing_craft_farm_override_due(now)
+    if timeline_due:
         due_times.append(float(now))
-    if has_tianxing_craft_farm_override_due(now):
+    if craft_override_due:
         due_times.append(float(now))
     due_times = [value for value in due_times if value > 0]
     if not due_times:
-        return 0.0
-    return min(due_times)
+        return {"due_at": 0.0, "priority": 99, "tianji": tianji_value}
+    if timeline_due or craft_recovery_due:
+        priority = 0
+    elif craft_override_due:
+        priority = 1
+    elif craft_due:
+        priority = 2
+    elif auto_due:
+        priority = 3
+    else:
+        priority = 9
+    return {"due_at": min(due_times), "priority": priority, "tianji": tianji_value}
+
+
+def _tianxing_fast_due_time(now):
+    return float(_tianxing_fast_due_info(now).get("due_at", 0.0) or 0.0)
 
 
 async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
@@ -1704,26 +1726,34 @@ async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
                 continue
             if not state.get("tianxing_enabled"):
                 continue
-            due_at = _tianxing_fast_due_time(scheduler_now)
+            due_info = _tianxing_fast_due_info(scheduler_now)
+            due_at = float(due_info.get("due_at", 0.0) or 0.0)
             if due_at <= 0 or due_at > scheduler_now:
                 continue
-            candidates.append((due_at, scan_index, identity_id, scheduler_now))
+            candidates.append((
+                int(due_info.get("priority", 99) or 99),
+                int(due_info.get("tianji", 999999) or 999999),
+                due_at,
+                scan_index,
+                identity_id,
+                scheduler_now,
+            ))
 
     if candidates and float(now or 0) - _due_tianxing_last_diag_at >= DUE_TIANXING_DIAG_INTERVAL_SEC:
         _due_tianxing_last_diag_at = float(now or time.time())
         preview = []
-        for due_at, _scan_index, identity_id, _scheduler_now in sorted(candidates)[:5]:
+        for priority, tianji_value, due_at, _scan_index, identity_id, _scheduler_now in sorted(candidates)[:5]:
             profile = get_send_as_profile(identity_id)
             username = str((profile or {}).get("username") or identity_id)
             overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
-            preview.append(f"@{username}:run/{overdue}s")
+            preview.append(f"@{username}:p{priority}/tj{tianji_value}/run/{overdue}s")
         console_log(
             f"🌌 到期天星扫描候选 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
             scope="global",
         )
 
     processed = 0
-    for _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
+    for _priority, _tianji_value, _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
         if processed >= int(limit or 1):
             break
         try:
@@ -1875,6 +1905,25 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 )
                 handled_any = True
 
+        stargazer_miniapp_done = await handle_stargazer_miniapp_entry(
+            event,
+            text,
+            now,
+            reply_to,
+            matched_family=matched_family,
+            result_msg_id=event.id,
+        )
+        handled_any = stargazer_miniapp_done or handled_any
+        trial_miniapp_done = await handle_trial_miniapp_entry(
+            event,
+            text,
+            now,
+            reply_to,
+            matched_family=matched_family,
+            result_msg_id=event.id,
+        )
+        handled_any = trial_miniapp_done or handled_any
+
         if allow_tree_panel_claim and not already_consumed and matched_family != "stargazer_sync":
             tree_panel_done = False
             if not tree_runtime_archived:
@@ -1959,13 +2008,23 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 matched_family=matched_family,
                 result_msg_id=event.id,
             ) or handled_any
-            handled_any = await handle_fishing_reply(
+            fishing_miniapp_handled = await handle_fishing_miniapp_entry(
+                event,
                 text,
                 now,
                 reply_to,
                 matched_family=matched_family,
                 result_msg_id=event.id,
-            ) or handled_any
+            )
+            handled_any = fishing_miniapp_handled or handled_any
+            if not fishing_miniapp_handled:
+                handled_any = await handle_fishing_reply(
+                    text,
+                    now,
+                    reply_to,
+                    matched_family=matched_family,
+                    result_msg_id=event.id,
+                ) or handled_any
             if not tree_runtime_archived:
                 handled_any = await handle_tree_exception_prompt(text, now) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any

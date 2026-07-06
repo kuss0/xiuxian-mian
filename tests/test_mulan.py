@@ -661,7 +661,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(mulan, "get_phaseful_summary_risk_reason", return_value=""),
                 patch.object(mulan, "send_game_command", new=AsyncMock(return_value=None)),
                 patch.object(mulan, "was_last_game_send_blocked_by_global", return_value=False),
-                patch.object(mulan, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}),
+                patch.object(mulan, "classify_game_send_block", return_value={"status": "unsent", "code": "send_queue_timeout"}),
                 patch.object(mulan.random, "uniform", return_value=180),
                 patch.object(mulan, "save_state"),
             ):
@@ -670,6 +670,25 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("发送队列拥挤，慕兰错峰重试", state_module.state["mulan_last_result"])
             self.assertEqual("", state_module.state["mulan_last_error"])
             self.assertEqual(now + 180, state_module.state["next_mulan_time"])
+
+    async def test_send_timeout_uses_unknown_backoff_without_failure_retry(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "get_phaseful_summary_risk_reason", return_value=""),
+                patch.object(mulan, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(mulan, "was_last_game_send_blocked_by_global", return_value=False),
+                patch.object(mulan, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            self.assertEqual("发送状态未知，等待被动回复或稍后校准", state_module.state["mulan_last_result"])
+            self.assertIn("send_timeout", state_module.state["mulan_last_error"])
+            self.assertEqual(now + mulan.MULAN_SEND_UNKNOWN_BACKOFF_SEC, state_module.state["next_mulan_time"])
 
     async def test_publish_uses_critical_send_queue_timeout(self):
         identity_id = self._prepare_identity()

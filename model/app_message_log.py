@@ -15,7 +15,7 @@ import requests
 from .app_runtime import _claim_runtime_log_event
 from .config import LOG_BOT_TOKEN, LOG_GROUP_ID, LOG_SEND_MODE, MESSAGES_DIR, TG_REQUESTS_PROXIES, TZ_LOCAL, client, get_all_clients
 from .log_retention import cleanup_message_logs
-from .runtime import send_audit_log
+from .runtime import _run_account_rpc, send_audit_log
 from .state import (
     get_game_group_id,
     get_game_listener_account_ids,
@@ -563,12 +563,16 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
                 ]
             except Exception:
                 traceback.print_exc()
-        msg = await client_obj.send_message(
-            int(chat_id or 0),
-            str(text or ""),
-            parse_mode=parse_mode or None,
-            reply_to=int(reply_to or 0) or None,
-            **send_kwargs,
+        msg = await _run_account_rpc(
+            client_obj.send_message(
+                int(chat_id or 0),
+                str(text or ""),
+                parse_mode=parse_mode or None,
+                reply_to=int(reply_to or 0) or None,
+                **send_kwargs,
+            ),
+            account_id=listener_account_id,
+            client_obj=client_obj,
         )
         msg_id = int(getattr(msg, "id", 0) or 0)
         if msg_id <= 0:

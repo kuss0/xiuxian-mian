@@ -18,7 +18,7 @@ from ..config import (
 from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..identity_levels import parse_yuanying_level_text, update_identity_level_record
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
@@ -37,6 +37,7 @@ from ._phaseful import (
     register_phaseful_spec,
     run_phaseful_scheduler,
     set_phase,
+    _recover_phaseful_sent_from_message_log,
     update_block_log_state,
 )
 
@@ -99,6 +100,7 @@ YUANYING_SPEC = PhasefulSpec(
 register_phaseful_spec(YUANYING_SPEC)
 
 YUANYING_SECT_NAME = "元婴宗"
+YUANYING_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
 
 
 def get_yuanying_launch_command(send_as_id=None):
@@ -218,7 +220,7 @@ async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None
         return False
 
     estimated_next_time = float(state.get("next_yuanying_time", 0) or 0)
-    if estimated_next_time <= now + CD_BUFFER_SEC:
+    if estimated_next_time <= now + YUANYING_RUNNING_SUMMARY_EARLY_SEC:
         mark_yuanying_success(now)
     else:
         set_yuanying_phase("running")
@@ -278,15 +280,28 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
         clear_yuanying_summary_flags()
         begin_queued_launch(YUANYING_SPEC, now)
         console_log("👶 窍中温养，直接继续元婴。")
-        msg = await send_game_command(get_yuanying_launch_command(), track=False, priority="chain")
+        command = get_yuanying_launch_command()
+        attempt_started_at = time.time()
+        msg = await send_game_command(command, track=False, priority="chain")
         if msg:
             sent_at = float(getattr(msg, "sent_at", 0) or time.time())
             mark_launch_command_sent(YUANYING_SPEC, sent_at)
         else:
             failed_at = time.time()
-            set_yuanying_phase("idle")
-            state["next_yuanying_time"] = failed_at + RETRY_MAX_SEC
-            save_state()
+            send_block = classify_game_send_block(get_current_identity_id(), command)
+            if send_block.get("status") != "unsent":
+                recovered_msg = _recover_phaseful_sent_from_message_log(command, attempt_started_at, failed_at)
+                if recovered_msg:
+                    sent_at = float(getattr(recovered_msg, "sent_at", 0) or failed_at)
+                    mark_launch_command_sent(YUANYING_SPEC, sent_at)
+                    await send_audit_log("👶 元婴续发发送超时，已从消息日志恢复。", priority="low")
+                else:
+                    mark_launch_command_sent(YUANYING_SPEC, failed_at)
+                    await send_audit_log("👶 元婴续发状态未知，按已发起等待状态校准。", priority="low")
+            else:
+                set_yuanying_phase("idle")
+                state["next_yuanying_time"] = failed_at + RETRY_MAX_SEC
+                save_state()
         return True
 
     return False

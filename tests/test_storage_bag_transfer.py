@@ -837,6 +837,86 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_called()
         self.assertFalse(storage_bag._storage_bag_transfer_state["running"])
 
+    async def test_listing_send_runtime_block_keeps_transfer_waiting_for_retry(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return None
+
+        with (
+            patch("model.features.storage_bag.send_game_command", side_effect=fake_send),
+            patch(
+                "model.features.storage_bag.get_last_game_send_block",
+                return_value={"code": "send_queue_timeout", "reason": ">60s"},
+            ),
+            patch("model.features.storage_bag.send_audit_log"),
+            patch("model.features.passive_inbox.record_passive_inbox_event"),
+            patch("model.features.storage_bag.time.time", return_value=1000.0),
+        ):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "妖丹", "quantity": 3, "method": "basic"}],
+                "灵石",
+            )
+
+        self.assertTrue(ok, message)
+        self.assertIn("暂缓", message)
+        self.assertEqual([".上架 灵石*1 换 妖丹*3"], [item[0] for item in sent])
+        self.assertTrue(storage_bag._storage_bag_transfer_state["running"])
+        self.assertEqual("waiting_listing_reply", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual(0, storage_bag._storage_bag_transfer_state["listing_msg_id"])
+        self.assertEqual(1020.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+        self.assertEqual("waiting_listing_reply", transfer["step"])
+
+    async def test_gift_locator_runtime_block_retries_locator_then_sends_gift(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            if len(sent) == 1:
+                return None
+            return SimpleNamespace(id=900 + len(sent))
+
+        with (
+            patch("model.features.storage_bag.send_game_command", side_effect=fake_send),
+            patch(
+                "model.features.storage_bag.get_last_game_send_block",
+                return_value={"code": "send_queue_timeout", "reason": ">60s"},
+            ),
+            patch("model.features.storage_bag.random.choice", return_value="稍等"),
+            patch("model.features.storage_bag.send_audit_log"),
+            patch("model.features.passive_inbox.record_passive_inbox_event"),
+            patch("model.features.storage_bag.time.time", return_value=1000.0),
+        ):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "木髓", "quantity": 2, "method": "gift"}],
+                "",
+            )
+
+        self.assertTrue(ok, message)
+        self.assertIn("暂缓", message)
+        self.assertEqual(["稍等"], [item[0] for item in sent])
+        self.assertEqual("gift_marker", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual(1005.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+        self.assertEqual("gift_marker", transfer["step"])
+
+        with (
+            patch("model.features.storage_bag.send_game_command", side_effect=fake_send),
+            patch("model.features.storage_bag.send_audit_log"),
+            patch("model.features.storage_bag.time.time", return_value=1006.0),
+        ):
+            await run_storage_bag_transfer_scheduler(1006.0)
+
+        self.assertEqual(["稍等", "稍等", ".赠送 木髓*2"], [item[0] for item in sent])
+        self.assertEqual(902, storage_bag._storage_bag_transfer_state["gift_locator_msg_id"])
+        self.assertEqual(903, storage_bag._storage_bag_transfer_state["gift_msg_id"])
+        self.assertEqual("waiting_gift_reply", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual(1026.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+
     async def test_basic_transfer_executes_listing_then_buy_and_syncs_records(self):
         sent = []
 

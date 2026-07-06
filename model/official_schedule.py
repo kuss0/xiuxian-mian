@@ -341,21 +341,37 @@ async def _resolve_schedule_context(send_as_id):
             reason = "账号 client 未注册或启动失败"
             mark_account_offline(account_id, reason)
             raise RuntimeError(reason)
-        await runtime._ensure_account_client_ready(active_client)
+        await runtime._run_account_rpc(
+            runtime._ensure_account_client_ready(active_client),
+            account_id=account_id,
+            client_obj=active_client,
+        )
     else:
-        active_client = runtime._get_any_authed_client()
+        account_id, active_client = runtime._get_any_authed_client_with_account()
     game_group_id = get_game_group_id()
     if not game_group_id:
         raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
     try:
-        peer = await active_client.get_input_entity(game_group_id)
+        peer = await runtime._run_account_rpc(
+            active_client.get_input_entity(game_group_id),
+            account_id=account_id,
+            client_obj=active_client,
+        )
     except ValueError:
-        await active_client.get_dialogs()
-        peer = await active_client.get_input_entity(game_group_id)
-    send_as_peer = await active_client.get_input_entity(send_as_id)
+        await runtime._run_account_rpc(active_client.get_dialogs(), account_id=account_id, client_obj=active_client)
+        peer = await runtime._run_account_rpc(
+            active_client.get_input_entity(game_group_id),
+            account_id=account_id,
+            client_obj=active_client,
+        )
+    send_as_peer = await runtime._run_account_rpc(
+        active_client.get_input_entity(send_as_id),
+        account_id=account_id,
+        client_obj=active_client,
+    )
     topic_id = int(get_game_topic_id() or 0)
     reply_to = types.InputReplyToMessage(reply_to_msg_id=topic_id) if topic_id > 0 else None
-    return active_client, peer, send_as_peer, reply_to
+    return active_client, peer, send_as_peer, reply_to, account_id
 
 
 async def create_official_scheduled_message(send_as_id, command, schedule_at, *, local_id=None):
@@ -367,16 +383,20 @@ async def create_official_scheduled_message(send_as_id, command, schedule_at, *,
     schedule_at = float(schedule_at or 0)
     if schedule_at <= _now() + 60:
         raise ValueError("官方定时时间至少需要晚于当前 60 秒")
-    active_client, peer, send_as_peer, reply_to = await _resolve_schedule_context(send_as_id)
+    active_client, peer, send_as_peer, reply_to, account_id = await _resolve_schedule_context(send_as_id)
     try:
-        result = await active_client(
-            functions.messages.SendMessageRequest(
-                peer=peer,
-                message=command,
-                reply_to=reply_to,
-                send_as=send_as_peer,
-                schedule_date=datetime.fromtimestamp(schedule_at, TZ_LOCAL),
-            )
+        result = await runtime._run_account_rpc(
+            active_client(
+                functions.messages.SendMessageRequest(
+                    peer=peer,
+                    message=command,
+                    reply_to=reply_to,
+                    send_as=send_as_peer,
+                    schedule_date=datetime.fromtimestamp(schedule_at, TZ_LOCAL),
+                )
+            ),
+            account_id=account_id,
+            client_obj=active_client,
         )
     except FloodWaitError as flood_err:
         raise RuntimeError(f"TG FloodWait {int(flood_err.seconds)}s") from flood_err
@@ -389,8 +409,12 @@ async def create_official_scheduled_message(send_as_id, command, schedule_at, *,
 
 
 async def list_official_scheduled_messages(send_as_id):
-    active_client, peer, _send_as_peer, _reply_to = await _resolve_schedule_context(send_as_id)
-    result = await active_client(functions.messages.GetScheduledHistoryRequest(peer=peer, hash=0))
+    active_client, peer, _send_as_peer, _reply_to, account_id = await _resolve_schedule_context(send_as_id)
+    result = await runtime._run_account_rpc(
+        active_client(functions.messages.GetScheduledHistoryRequest(peer=peer, hash=0)),
+        account_id=account_id,
+        client_obj=active_client,
+    )
     messages = getattr(result, "messages", None) or []
     items = []
     for message in messages:
@@ -413,8 +437,12 @@ async def delete_official_scheduled_messages(send_as_id, scheduled_msg_ids):
     ids = [int(item) for item in (scheduled_msg_ids or []) if int(item or 0) > 0]
     if not ids:
         return 0
-    active_client, peer, _send_as_peer, _reply_to = await _resolve_schedule_context(send_as_id)
-    await active_client(functions.messages.DeleteScheduledMessagesRequest(peer=peer, id=ids))
+    active_client, peer, _send_as_peer, _reply_to, account_id = await _resolve_schedule_context(send_as_id)
+    await runtime._run_account_rpc(
+        active_client(functions.messages.DeleteScheduledMessagesRequest(peer=peer, id=ids)),
+        account_id=account_id,
+        client_obj=active_client,
+    )
     return len(ids)
 
 
