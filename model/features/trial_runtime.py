@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from pathlib import Path
 
@@ -15,6 +16,17 @@ TRIAL_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "stat
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
+_TRIAL_GAIN_KEYS = {
+    "expgain": "经验",
+    "experiencegain": "经验",
+    "tracegain": "天机残痕",
+    "tianjitracegain": "天机残痕",
+    "cultivationgain": "修为",
+    "xiuweigain": "修为",
+    "lingshigain": "灵石",
+    "spiritstonegain": "灵石",
+}
+_TRIAL_REWARD_CONTAINER_KEYS = {"rewards", "reward", "bonusloot", "loot", "drops", "items", "materials"}
 
 
 def _identity_id(value=None):
@@ -57,6 +69,106 @@ def _run_lock(identity_id):
     return lock
 
 
+def _normalize_result_key(key):
+    return re.sub(r"[^A-Za-z0-9]", "", str(key or "")).lower()
+
+
+def _parse_int(value, default=0):
+    try:
+        return int(float(str(value).replace(",", "")))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _trial_reward_from_value(value, *, fallback_name=""):
+    if isinstance(value, str):
+        name = value.strip()
+        return {"name": name, "qty": 1} if name else {}
+    if isinstance(value, (int, float)) and fallback_name:
+        qty = _parse_int(value, 0)
+        return {"name": str(fallback_name).strip(), "qty": qty} if qty > 0 else {}
+    if not isinstance(value, dict):
+        return {}
+    name = ""
+    for key in ("name", "itemName", "item_name", "title", "label"):
+        if value.get(key) not in (None, ""):
+            name = str(value.get(key) or "").strip()
+            break
+    if not name and fallback_name:
+        name = str(fallback_name).strip()
+    if not name:
+        return {}
+    qty = value.get("qty", value.get("count", value.get("quantity", value.get("amount", 1))))
+    return {"name": name, "qty": max(1, _parse_int(qty, 1))}
+
+
+def _trial_rewards_from_container(value):
+    rewards = []
+    if isinstance(value, list):
+        for item in value:
+            reward = _trial_reward_from_value(item)
+            if reward:
+                rewards.append(reward)
+        return rewards
+    if isinstance(value, dict):
+        direct = _trial_reward_from_value(value)
+        if direct:
+            return [direct]
+        for name, amount in value.items():
+            reward = _trial_reward_from_value(amount, fallback_name=name)
+            if reward:
+                rewards.append(reward)
+    return rewards
+
+
+def _merge_reward_counts(target, rewards):
+    for reward in rewards or ():
+        if not isinstance(reward, dict):
+            continue
+        name = str(reward.get("name") or "").strip()
+        if not name:
+            continue
+        target[name] = int(target.get(name, 0) or 0) + max(1, _parse_int(reward.get("qty"), 1))
+
+
+def _collect_trial_materials(value, *, rewards=None, gains=None, depth=0):
+    rewards = rewards if rewards is not None else {}
+    gains = gains if gains is not None else {}
+    if depth > 4:
+        return rewards, gains
+    if isinstance(value, list):
+        for item in value:
+            _collect_trial_materials(item, rewards=rewards, gains=gains, depth=depth + 1)
+        return rewards, gains
+    if not isinstance(value, dict):
+        return rewards, gains
+    for key, child in value.items():
+        normalized = _normalize_result_key(key)
+        if normalized in _TRIAL_REWARD_CONTAINER_KEYS:
+            _merge_reward_counts(rewards, _trial_rewards_from_container(child))
+            continue
+        gain_label = _TRIAL_GAIN_KEYS.get(normalized)
+        if gain_label:
+            amount = _parse_int(child, 0)
+            if amount > 0:
+                gains[gain_label] = int(gains.get(gain_label, 0) or 0) + amount
+            continue
+        if normalized in {"score", "sessionid", "qualitybonus", "ready", "durationms", "mode", "challengeid"}:
+            continue
+        _collect_trial_materials(child, rewards=rewards, gains=gains, depth=depth + 1)
+    return rewards, gains
+
+
+def _format_trial_material_summary(data):
+    rewards, gains = _collect_trial_materials(data or {})
+    parts = []
+    if gains:
+        parts.append("收益:" + "、".join(f"{name}+{amount}" for name, amount in sorted(gains.items()) if amount > 0))
+    if rewards:
+        parts.append("奖励:" + "、".join(f"{name}x{amount}" for name, amount in sorted(rewards.items()) if amount > 0))
+    return "｜".join(parts)
+
+
 def _format_trial_summary(result):
     result = dict(result or {})
     status = str(result.get("status") or "unknown").strip() or "unknown"
@@ -67,7 +179,8 @@ def _format_trial_summary(result):
         settled_count = 0
     if result.get("ok"):
         prefix = f"{settled_count}次｜" if settled_count > 0 else ""
-        return f"MiniApp {status}｜{prefix}已结算"
+        material_text = _format_trial_material_summary(data)
+        return f"MiniApp {status}｜{prefix}{material_text or '已结算'}"
     error = str(result.get("error") or "").strip()
     return f"MiniApp {status}｜{error or '未完成'}"
 

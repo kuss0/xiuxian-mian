@@ -75,6 +75,45 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("天机试炼 MiniApp 接管入口", audit_text)
         self.assertIn("天机试炼结果", audit_text)
 
+    async def test_trial_result_reports_game_materials_not_technical_fields(self):
+        trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "settled_count": 2,
+                "results": [
+                    {
+                        "expGain": 10,
+                        "traceGain": 1,
+                        "rewards": [{"name": "灵脉砂", "qty": 2}],
+                        "score": 99,
+                        "sessionId": 123,
+                    },
+                    {
+                        "expGain": 5,
+                        "bonusLoot": [{"name": "玄晶", "qty": 1}],
+                    },
+                ],
+            },
+        }
+        with state_module.use_identity(1001):
+            with patch.object(trial_runtime, "run_trial_miniapp_production_flow", new=AsyncMock(return_value=flow_result)), \
+                    patch.object(trial_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+                handled = await trial_runtime.handle_trial_miniapp_entry(
+                    _trial_event(),
+                    "【天机试炼台】灵脉点穴",
+                    1_700_000_001.0,
+                    result_msg_id=5001,
+                )
+
+        self.assertTrue(handled)
+        result_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list if "天机试炼结果" in str(call.args[0]))
+        self.assertIn("收益:天机残痕+1、经验+15", result_text)
+        self.assertIn("奖励:灵脉砂x2、玄晶x1", result_text)
+        self.assertNotIn("score", result_text)
+        self.assertNotIn("session", result_text)
+
     async def test_expired_trial_authorization_does_not_run(self):
         trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0, ttl_sec=60)
         with state_module.use_identity(1001):
