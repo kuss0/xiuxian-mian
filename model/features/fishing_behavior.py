@@ -601,7 +601,7 @@ def command_phase(command):
 
 def is_rod_in_progress(snapshot):
     phase = str(snapshot.get("fishing_phase") or "idle").strip()
-    if phase in {"fishing", "waiting", "checking", "probing", "lifting"}:
+    if phase in {"fishing", "waiting", "checking", "probing", "lifting", "miniapp"}:
         return True
     pending_action = str(snapshot.get("fishing_pending_action") or "").strip()
     if pending_action in {CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT}:

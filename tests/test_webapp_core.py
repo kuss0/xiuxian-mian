@@ -1152,6 +1152,73 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("fish_SECRET999", capture_text)
         self.assertIn("payload_shape", capture_text)
 
+    def test_fishing_lab_flow_waits_between_not_ready_result_polls(self):
+        calls = []
+        sleeps = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "session": {"phase": "bite", "serverNow": 0},
+                    "challenge": {"challengeId": "c1", "minDurationMs": 20, "maxDurationMs": 70000},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 94}}
+            if endpoint == "result":
+                result_calls = len([item for item in calls if item == "result"])
+                if result_calls < 3:
+                    return 200, {"ok": True, "ready": False, "result": {"message": "鱼获结算中。"}}
+                return 200, {"ok": True, "ready": True, "result": {"score": 94, "grade": "甲等"}}
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = fishing_miniapp.run_fishing_miniapp_lab_flow(
+            token="fish_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=__import__("random").Random(5),
+            sleeper=sleeps.append,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("settled", result["status"])
+        self.assertEqual(["start", "finish", "result", "result", "result"], calls)
+        self.assertEqual([fishing_miniapp.FISHING_MINIAPP_RESULT_POLL_DELAY_SEC] * 2, sleeps)
+
+    def test_fishing_lab_flow_reports_not_ready_after_result_poll_limit(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "session": {"phase": "bite", "serverNow": 0},
+                    "challenge": {"challengeId": "c1", "minDurationMs": 20, "maxDurationMs": 70000},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 94}}
+            if endpoint == "result":
+                return 200, {"ok": True, "ready": False, "result": {"message": "鱼获结算中。"}}
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = fishing_miniapp.run_fishing_miniapp_lab_flow(
+            token="fish_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            result_poll_limit=2,
+            rng=__import__("random").Random(5),
+            sleeper=lambda _sec: None,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("not_ready", result["status"])
+        self.assertEqual("result_not_ready", result["error"])
+        self.assertEqual(["start", "finish", "result", "result"], calls)
+
     def test_fishing_lab_flow_far_bite_is_not_ready_without_finish(self):
         calls = []
 

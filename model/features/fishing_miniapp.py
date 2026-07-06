@@ -38,7 +38,8 @@ FISHING_MINIAPP_DEFAULT_SCORE_HIGH = 97
 FISHING_MINIAPP_PROOF_DURATION_CAP_MS = 120_000
 FISHING_MINIAPP_BITE_WAIT_CAP_MS = 20_000
 FISHING_MINIAPP_PLAY_RANGE_MS = (9_500, 15_500)
-FISHING_MINIAPP_RESULT_POLL_LIMIT = 3
+FISHING_MINIAPP_RESULT_POLL_LIMIT = 8
+FISHING_MINIAPP_RESULT_POLL_DELAY_SEC = 1.5
 FISHING_MINIAPP_PRODUCTION_BITE_WAIT_CAP_MS = 75_000
 FISHING_MINIAPP_HTTP_TIMEOUT = (5, 20)
 FISHING_MINIAPP_CHAIN_REST_RANGE_SEC = (2.0, 4.0)
@@ -676,8 +677,17 @@ def run_fishing_miniapp_lab_flow(
             result_data = result.data.get("result") if isinstance(result.data.get("result"), dict) else result.data
             return _flow_result(True, "settled", data=result_data, events=events, proof=proof)
         events.append({"step": "result_wait", "ok": True, "attempt": attempt + 1, "ready": bool(ready)})
+        if sleeper is not None and attempt < max(0, int(result_poll_limit or 0)) - 1:
+            sleeper(FISHING_MINIAPP_RESULT_POLL_DELAY_SEC)
 
-    return _flow_result(True, "finish_submitted", data=result_data, events=events, proof=proof)
+    return _flow_result(
+        False,
+        "not_ready",
+        error="result_not_ready",
+        data={"phase": "finish_submitted", "ready": False},
+        events=events,
+        proof=proof,
+    )
 
 
 def run_fishing_miniapp_loop_lab_flow(

@@ -117,6 +117,34 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
             self.assertEqual("fishing", state_module.state["fishing_phase"])
 
+    async def test_scheduler_defers_new_fishing_when_miniapp_capacity_full(self):
+        identity_id = self._prepare_identity()
+        other_id = self._prepare_identity(10001)
+        another_id = self._prepare_identity(10002)
+        now = 1_700_000_000.0
+
+        for active_id in (other_id, another_id):
+            with state_module.use_identity(active_id):
+                state_module.state["fishing_enabled"] = True
+                state_module.state["fishing_phase"] = "miniapp"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_bait"] = "凡饵"
+            state_module.state["fishing_auto_chum_enabled"] = False
+            state_module.state["fishing_auto_buy_bait_enabled"] = False
+            state_module.state["next_fishing_time"] = now - 1
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + 4, state_module.state["next_fishing_time"])
+            self.assertIn("钓鱼排队中", state_module.state["fishing_last_error"])
+
     async def test_status_command_uses_short_reply_timeout(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -411,6 +439,73 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertEqual(2, state_module.state["fishing_daily_count"])
             self.assertIn("next_unavailable", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+
+    async def test_miniapp_not_ready_does_not_increment_daily_counter(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 54, 30)
+        flow_result = {
+            "ok": False,
+            "status": "not_ready",
+            "error": "result_not_ready",
+            "data": {"phase": "finish_submitted", "ready": False},
+            "events": [{"step": "result_wait", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 2
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(2, state_module.state["fishing_daily_count"])
+            self.assertIn("MiniApp not_ready", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+
+    async def test_miniapp_partial_not_ready_counts_only_settled_rounds(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 54, 40)
+        flow_result = {
+            "ok": True,
+            "status": "not_ready",
+            "data": {"settled_count": 2, "last_status": "not_ready"},
+            "events": [{"step": "round", "ok": False}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 1
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(3, state_module.state["fishing_daily_count"])
+            self.assertIn("MiniApp not_ready", state_module.state["fishing_last_error"])
             self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
 
     async def test_miniapp_daily_limit_after_chained_rounds_calibrates_to_full(self):

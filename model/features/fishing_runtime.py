@@ -710,7 +710,9 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     updates["fishing_last_msg_id"] = int(result_msg_id or 0)
     updates["fishing_last_result"] = _format_miniapp_result_summary(result)
     updates["fishing_last_error"] = "" if ok else updates["fishing_last_result"]
-    if ok and status in {"next_failed", "next_unavailable"}:
+    partial_statuses = {"next_failed", "next_unavailable", "not_ready"}
+    settled_statuses = {"settled", "finish_submitted", "daily_limit"}
+    if ok and status in partial_statuses:
         updates["fishing_last_error"] = updates["fishing_last_result"]
 
     day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
@@ -723,9 +725,11 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
         count = min(int(limit or 0), max(0, int(progress.get("used") or 0)))
     elif progress.get("remaining", -1) >= 0 and int(limit or 0) > 0:
         count = min(int(limit or 0), max(0, int(limit or 0) - int(progress.get("remaining") or 0)))
-    if ok and status in {"settled", "finish_submitted", "daily_limit", "next_failed", "next_unavailable"}:
-        settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 1)
-        settled_count = max(1, settled_count)
+    has_progress = progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0
+    default_settled_count = 1 if status in settled_statuses else 0
+    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), default_settled_count)
+    if ok and (status in settled_statuses or settled_count > 0 or has_progress):
+        settled_count = max(default_settled_count, settled_count)
         if progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0:
             count = min(int(limit or 0), int(count or 0))
         else:
@@ -760,7 +764,7 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
                     now,
                     random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
                 )
-        elif status in {"next_failed", "next_unavailable"}:
+        elif status in partial_statuses:
             updates["next_fishing_time"] = _miniapp_failure_backoff(now)
         else:
             updates["next_fishing_time"] = float(now + random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC))
