@@ -586,6 +586,19 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("wait", wait["action"])
         self.assertEqual(80, wait["wait_sec"])
 
+    def test_stargazer_farm_state_uses_progress_remaining_fallback(self):
+        busy = stargazer_miniapp.parse_stargazer_farm_state({
+            "domain": {"mode": "stars", "plots": [
+                {"key": "1", "name": "庚金星", "empty": False, "status": "凝聚中", "progress": 50},
+            ]}
+        })
+
+        self.assertEqual(1, busy["total_slots"])
+        self.assertEqual([3 * 3600], busy["busy_waits"])
+        wait = stargazer_miniapp.choose_stargazer_farm_action(busy)
+        self.assertEqual("wait", wait["action"])
+        self.assertEqual(3 * 3600, wait["wait_sec"])
+
     def test_stargazer_miniapp_lab_flow_runs_actions_and_captures_safely(self):
         calls = []
 
@@ -848,7 +861,7 @@ class WebAppCoreTests(unittest.TestCase):
         plan = cave_treasure_miniapp.build_cave_treasure_miniapp_flow_plan()
         serialized = json.dumps({"request": request["safe_summary"], "summary": summary, "safe": extracted["safe_summary"]}, ensure_ascii=False)
 
-        self.assertEqual("https://asc.aiopenai.app/api/miniapp/xianxia-dongfu/start", request["url"])
+        self.assertEqual("https://asc.aiopenai.app/api/miniapp/xianxia-dwelling/start", request["url"])
         self.assertEqual("df_SECRET999", request["payload"]["token"])
         self.assertEqual("cave_treasure", summary["game_hint"])
         self.assertEqual("df_SECRET999", extracted["token"])
@@ -856,7 +869,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("df_SECRET999", args["start_param"])
         self.assertTrue(plan.manual_only)
         self.assertFalse(plan.default_enabled)
-        self.assertEqual(["launch", "start", "decide_action", "action"], [step.key for step in plan.steps])
+        self.assertEqual(["launch", "start", "decide_action", "hunt", "reveal", "settle"], [step.key for step in plan.steps])
         self.assertNotIn("df_SECRET999", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
 
@@ -866,6 +879,7 @@ class WebAppCoreTests(unittest.TestCase):
             "data": {
                 "tab": "寻宝",
                 "inRound": True,
+                "sessionId": "hunt-1",
                 "sense": "神识 8/8",
                 "games": "游戏 0/3",
                 "hint": "石室里第3个小人脚下有微光。",
@@ -878,14 +892,16 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(8, parsed["action_limit"])
         self.assertEqual(0, parsed["games_used"])
         self.assertEqual(3, parsed["games_limit"])
+        self.assertEqual("hunt-1", parsed["session_id"])
         self.assertEqual("search", decision["action"])
         self.assertEqual(3, decision["targetIndex"])
+        self.assertEqual("hunt-1", decision["sessionId"])
         self.assertEqual("hint_target", decision["reason"])
 
         exhausted = dict(parsed, games_used=3, games_limit=3)
-        self.assertEqual("done", cave_treasure_miniapp.choose_cave_treasure_action(exhausted)["action"])
-        found = dict(parsed, treasure_found=True, can_bonus_retry=True)
-        self.assertEqual("bonus_retry", cave_treasure_miniapp.choose_cave_treasure_action(found)["action"])
+        self.assertEqual("search", cave_treasure_miniapp.choose_cave_treasure_action(exhausted)["action"])
+        found = dict(parsed, treasure_found=True)
+        self.assertEqual("settle", cave_treasure_miniapp.choose_cave_treasure_action(found)["action"])
         no_hit_spent = dict(parsed, action_remaining=0, treasure_found=False, settled=False)
         self.assertEqual("settle", cave_treasure_miniapp.choose_cave_treasure_action(no_hit_spent)["action"])
 
@@ -895,6 +911,7 @@ class WebAppCoreTests(unittest.TestCase):
             "data": {
                 "tab": "寻宝",
                 "inRound": True,
+                "sessionId": "hunt-2",
                 "text": "寻宝中\n神识：9/11\n游戏：1/4\n石室内没有明显提示。",
             },
         })
@@ -916,7 +933,7 @@ class WebAppCoreTests(unittest.TestCase):
             dict(parsed, action_remaining=0, games_used=1, games_limit=4, settled=False)
         )["action"])
         self.assertEqual("done", cave_treasure_miniapp.choose_cave_treasure_action(
-            dict(parsed, action_remaining=0, games_used=4, games_limit=4, settled=True)
+            dict(parsed, in_round=False, action_remaining=0, games_used=4, games_limit=4, settled=True)
         )["action"])
 
     def test_cave_treasure_lab_flow_uses_page_state_until_daily_done_without_secret_leak(self):
@@ -925,45 +942,46 @@ class WebAppCoreTests(unittest.TestCase):
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             payload = dict(request["payload"])
-            calls.append((endpoint, payload.get("action"), payload.get("targetIndex")))
+            calls.append((endpoint, payload.get("sessionId"), payload.get("index")))
             if endpoint == "start":
-                return 200, {"ok": True, "data": {"tab": "洞府", "games": "游戏 0/3", "sense": "神识 8/8"}}
-            if endpoint == "action" and payload.get("action") == "switch_treasure":
-                return 200, {"ok": True, "data": {"tab": "寻宝", "games": "游戏 0/3", "sense": "神识 8/8"}}
-            if endpoint == "action" and payload.get("action") == "enter":
+                return 200, {"ok": True, "dwelling": {"hunt": {"used": 0, "limit": 3, "remaining": 3, "actionPoints": 8}}}
+            if endpoint == "hunt":
                 return 200, {
                     "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "inRound": True,
-                        "games": "游戏 0/3",
-                        "sense": "神识 1/8",
-                        "hint": "第1个小人处灵气浮动。",
-                        "targetCount": 7,
+                    "dwelling": {"hunt": {"used": 1, "limit": 3, "remaining": 2, "actionPoints": 8}},
+                    "huntRun": {
+                        "sessionId": "hunt-1",
+                        "status": "active",
+                        "size": 5,
+                        "ap": 1,
+                        "maxAp": 8,
+                        "cells": [
+                            {"index": 0, "revealed": False},
+                            {"index": 1, "revealed": False},
+                        ],
                     },
                 }
-            if endpoint == "action" and payload.get("action") == "search":
-                self.assertEqual(1, payload.get("targetIndex"))
+            if endpoint == "hunt_reveal":
+                self.assertEqual("hunt-1", payload.get("sessionId"))
+                self.assertEqual(0, payload.get("index"))
                 return 200, {
                     "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "inRound": True,
-                        "games": "游戏 0/3",
-                        "sense": "神识 0/8",
-                        "found": True,
-                        "text": "寻得洞府宝光，可见好就收。",
+                    "huntRun": {
+                        "sessionId": "hunt-1",
+                        "status": "active",
+                        "size": 5,
+                        "ap": 0,
+                        "maxAp": 8,
+                        "foundMain": True,
+                        "loot": [{"name": "灵石", "quantity": 12}],
                     },
                 }
-            if endpoint == "action" and payload.get("action") == "settle":
+            if endpoint == "hunt_settle":
+                self.assertEqual("hunt-1", payload.get("sessionId"))
                 return 200, {
                     "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "games": "游戏 3/3",
-                        "sense": "神识 0/8",
-                        "text": "见好就收，今日寻宝已结算。",
-                    },
+                    "dwelling": {"hunt": {"used": 3, "limit": 3, "remaining": 0, "actionPoints": 8}},
+                    "huntResult": {"grade": "甲等", "score": 80, "loot": [{"name": "灵石", "quantity": 12}]},
                 }
             return 404, {"ok": False, "error": "unexpected"}
 
@@ -978,7 +996,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("daily_limit", result["status"])
         self.assertEqual(
-            [("start", None, None), ("action", "switch_treasure", None), ("action", "enter", None), ("action", "search", 1), ("action", "settle", None)],
+            [("start", None, None), ("hunt", None, None), ("hunt_reveal", "hunt-1", 0), ("hunt_settle", "hunt-1", None)],
             calls,
         )
         self.assertNotIn("df_SECRET999", summary_text)
@@ -990,54 +1008,44 @@ class WebAppCoreTests(unittest.TestCase):
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             payload = dict(request["payload"])
-            calls.append((endpoint, payload.get("action"), payload.get("targetIndex")))
+            calls.append((endpoint, payload.get("sessionId"), payload.get("index")))
             if endpoint == "start":
                 return 200, {
                     "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "inRound": True,
-                        "games": "游戏 1/4",
-                        "sense": "神识 1/9",
-                        "hint": "第2个小人处宝光闪动。",
-                        "targetCount": 9,
+                    "dwelling": {"hunt": {"used": 1, "limit": 4, "remaining": 3, "actionPoints": 9}},
+                    "huntRun": {
+                        "sessionId": "hunt-2",
+                        "status": "active",
+                        "size": 3,
+                        "ap": 1,
+                        "maxAp": 9,
+                        "cells": [
+                            {"index": 0, "revealed": True, "hint": {"markers": [{"index": 1, "kind": "treasure"}]}},
+                            {"index": 1, "revealed": False},
+                            {"index": 2, "revealed": False},
+                        ],
                     },
                 }
-            if endpoint == "action" and payload.get("action") == "search":
-                self.assertEqual(2, payload.get("targetIndex"))
+            if endpoint == "hunt_reveal":
+                self.assertEqual("hunt-2", payload.get("sessionId"))
+                self.assertEqual(1, payload.get("index"))
                 return 200, {
                     "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "inRound": True,
-                        "games": "游戏 1/4",
-                        "sense": "神识 0/9",
-                        "found": True,
-                        "text": "寻得宝物，可再来一次，也可见好就收。",
+                    "huntRun": {
+                        "sessionId": "hunt-2",
+                        "status": "active",
+                        "size": 3,
+                        "ap": 0,
+                        "maxAp": 9,
+                        "loot": [{"name": "凝血草", "quantity": 1}],
                     },
                 }
-            if endpoint == "action" and payload.get("action") == "bonus_retry":
+            if endpoint == "hunt_settle":
+                self.assertEqual("hunt-2", payload.get("sessionId"))
                 return 200, {
                     "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "inRound": True,
-                        "games": "游戏 1/4",
-                        "sense": "神识 0/9",
-                        "found": True,
-                        "text": "宝光已稳，请见好就收。",
-                    },
-                }
-            if endpoint == "action" and payload.get("action") == "settle":
-                return 200, {
-                    "ok": True,
-                    "data": {
-                        "tab": "寻宝",
-                        "games": "游戏 4/4",
-                        "sense": "神识 0/9",
-                        "settled": True,
-                        "text": "见好就收，今日寻宝已结算。",
-                    },
+                    "dwelling": {"hunt": {"used": 4, "limit": 4, "remaining": 0, "actionPoints": 9}},
+                    "huntResult": {"grade": "乙等", "score": 58, "loot": [{"name": "凝血草", "quantity": 1}]},
                 }
             return 404, {"ok": False, "error": "unexpected"}
 
@@ -1052,7 +1060,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("daily_limit", result["status"])
         self.assertEqual(
-            [("start", None, None), ("action", "search", 2), ("action", "bonus_retry", None), ("action", "settle", None)],
+            [("start", None, None), ("hunt_reveal", "hunt-2", 1), ("hunt_settle", "hunt-2", None)],
             calls,
         )
         self.assertNotIn("df_SECRET999", summary_text)
@@ -1284,11 +1292,13 @@ class WebAppCoreTests(unittest.TestCase):
             if endpoint == "result":
                 token = request["payload"].get("token")
                 fish = "银须灵鲢" if token == "fish_FIRST" else "赤尾火鲤"
+                exp_gain = 4 if token == "fish_FIRST" else 8
                 return 200, {
                     "ok": True,
                     "ready": True,
                     "result": {
                         "score": 94,
+                        "expGain": exp_gain,
                         "details": {
                             "fish": {"name": fish, "grade": "灵鱼", "weight": 2.88},
                             "rewards": [{"name": "幸运符", "qty": 1}],
@@ -1312,6 +1322,8 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(2, result["data"]["settled_count"])
         self.assertEqual(["银须灵鲢", "赤尾火鲤"], [item["fish"] for item in result["data"]["catches"]])
+        self.assertEqual(12, result["data"]["expGain"])
+        self.assertNotIn("last_expGain", result["data"])
         self.assertEqual("幸运符", result["data"]["catches"][0]["rewards"][0]["name"])
         self.assertIn(("next", "fish_FIRST"), calls)
         self.assertIn(("start", "fish_NEXT"), calls)

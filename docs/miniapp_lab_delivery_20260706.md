@@ -77,9 +77,9 @@
 - `model/features/cave_treasure_miniapp.py`
   - 新增洞府寻宝 MiniApp adapter。
   - 已按真实 `.洞府` 回包识别 `df_*` start 参数，接入统一 URL 摘要、registry 和脱敏。
-  - 候选请求构造暂按 `/api/miniapp/xianxia-dongfu/start|action`，必须等真实抓包后校准 endpoint/payload。
+  - 已按真实前端协议校准 `/api/miniapp/xianxia-dwelling/start|hunt|hunt/reveal|hunt/settle`。
   - 新增 `parse_cave_treasure_state()`：`神识 8/8` 解析为单局剩余出手/总出手，`游戏 0/3` 解析为今日已玩局数/总局数。
-  - 新增 `choose_cave_treasure_action()`：切换寻宝、入府、优先按答案/提示点小人，无提示才随机；命中后再来一次/结算，耗尽后结算；不写死 7 次或 3 局。
+  - 新增 `choose_cave_treasure_action()`：入府、优先按答案/提示点小人，无提示才随机；命中或耗尽后结算；不写死 7 次或 3 局。
   - 新增 `run_cave_treasure_miniapp_lab_flow()` mock/lab flow，默认不接生产 scheduler，不自动发送 `.洞府`。
 - `model/features/miniapp_registry.py`
   - 接入观星台、天机试炼、洞府寻宝 MiniApp adapter 和 flow plan。

@@ -5,7 +5,7 @@ import time
 import requests
 from telethon import functions
 
-from ..config import TG_REQUESTS_PROXIES
+from ..config import STARGAZER_STAR_DURATIONS, TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
@@ -223,6 +223,15 @@ def _coerce_remaining_seconds(plot):
         text = str(plot.get(key) or "")
         if has_wait_time(text):
             return int(parse_wait_time(text) or 0)
+    name = str(plot.get("name") or plot.get("starName") or plot.get("star") or "").strip()
+    duration_sec = int(STARGAZER_STAR_DURATIONS.get(name, 0) or 0)
+    if duration_sec > 0:
+        try:
+            progress = float(plot.get("progress"))
+        except (TypeError, ValueError, OverflowError):
+            progress = 0
+        if 0 <= progress < 100:
+            return int(duration_sec * max(0.0, 100.0 - progress) / 100.0)
     return 0
 
 

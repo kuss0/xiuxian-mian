@@ -460,7 +460,8 @@ async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
         save_state()
         suffix = f"回查→{fmt_time_after(max(1, next_panel_time - now))}"
         summary = _format_stargazer_miniapp_action_summary(action_counts, item_deltas, star_choice, suffix)
-        await send_audit_log(f"🔭 观星台 MiniApp：{summary or suffix}", scope="identity", priority="low", limit=260)
+        priority = "normal" if item_deltas else "low"
+        await send_audit_log(f"🔭 观星台 MiniApp：{summary or suffix}", scope="identity", priority=priority, limit=260)
         return True
 
     error_text = str(result.get("error") or "未知错误")

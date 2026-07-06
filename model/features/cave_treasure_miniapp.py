@@ -26,20 +26,19 @@ CAVE_TREASURE_MINIAPP_GAME_KEY = "cave_treasure"
 CAVE_TREASURE_MINIAPP_LABEL = "洞府寻宝"
 CAVE_TREASURE_MINIAPP_DEFAULT_API_BASE_URL = "https://asc.aiopenai.app"
 CAVE_TREASURE_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
-CAVE_TREASURE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-dongfu/"
+CAVE_TREASURE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-dwelling/"
 CAVE_TREASURE_MINIAPP_ENDPOINTS = {
     "start": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}start",
-    "action": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}action",
+    "hunt": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt",
+    "hunt_reveal": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt/reveal",
+    "hunt_settle": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt/settle",
 }
 CAVE_TREASURE_MINIAPP_START_PARAM_PATTERN = r"(?:df_)?[A-Za-z0-9_-]{4,160}"
 CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT = (5, 20)
 CAVE_TREASURE_SENDABLE_ACTIONS = {
-    "switch_treasure",
     "enter",
     "search",
-    "bonus_retry",
     "settle",
-    "next",
 }
 
 _RATIO_RE = re.compile(r"(?P<label>神识|出手|次数|游戏|局数)?\s*[:：]?\s*(?P<a>\d+)\s*/\s*(?P<b>\d+)")
@@ -199,11 +198,22 @@ def build_cave_treasure_miniapp_flow_plan():
                 note="按页面剩余次数决策；当前样本通常入府后最多 7 次探索，但不写死",
             ),
             MiniAppFlowStep(
-                key="action",
-                endpoint="action",
-                required_payload_keys=("token", "initData", "action"),
-                optional_payload_keys=("targetIndex", "tab"),
-                note="切换寻宝、入府、点小人、再来一次或见好就收",
+                key="hunt",
+                endpoint="hunt",
+                required_payload_keys=("token", "initData"),
+                note="入府开启一局寻宝，返回 huntRun/sessionId/cells",
+            ),
+            MiniAppFlowStep(
+                key="reveal",
+                endpoint="hunt_reveal",
+                required_payload_keys=("token", "initData", "sessionId", "index"),
+                note="按提示或随机翻开一个未探明石室",
+            ),
+            MiniAppFlowStep(
+                key="settle",
+                endpoint="hunt_settle",
+                required_payload_keys=("token", "initData", "sessionId"),
+                note="见好就收结算本局寻宝",
             ),
         ),
     )
@@ -304,7 +314,7 @@ def _extract_hint_target(text):
 
 
 def parse_cave_treasure_state(data):
-    """Normalize unknown cave treasure MiniApp payloads into decision state.
+    """Normalize cave treasure MiniApp payloads into decision state.
 
     The game currently reports two different ratio meanings:
     - 神识 8/8: remaining actions / total actions for the current round.
@@ -314,6 +324,10 @@ def parse_cave_treasure_state(data):
     if not isinstance(data, dict):
         return {}
     root = data.get("data") if isinstance(data.get("data"), dict) else data
+    dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
+    hunt_panel = dwelling.get("hunt") if isinstance(dwelling.get("hunt"), dict) else {}
+    hunt_run = root.get("huntRun") if isinstance(root.get("huntRun"), dict) else {}
+    hunt_result = root.get("huntResult") if isinstance(root.get("huntResult"), dict) else {}
     treasure = _find_nested_dict(
         root,
         {
@@ -328,7 +342,7 @@ def parse_cave_treasure_state(data):
             "phase",
             "tab",
         },
-    ) or root
+    ) or hunt_run or hunt_panel or root
     all_text = "\n".join(
         str(value)
         for key, value in treasure.items()
@@ -348,72 +362,110 @@ def parse_cave_treasure_state(data):
         treasure,
         ("sense", "shenshi", "divineSense", "spiritSense", "actions", "attempts", "mind"),
     )
+    if hunt_run:
+        sense_ratio = (
+            _coerce_int(hunt_run.get("ap"), sense_ratio[0]),
+            _coerce_int(hunt_run.get("maxAp"), sense_ratio[1]),
+        )
+    elif hunt_panel:
+        action_points = _coerce_int(hunt_panel.get("actionPoints"), 0)
+        if action_points > 0:
+            sense_ratio = (action_points, action_points)
     games_ratio = _first_ratio_by_keys(
         treasure,
         ("games", "gameCount", "rounds", "dailyGames", "playCount", "plays"),
     )
+    if hunt_panel:
+        games_ratio = (
+            _coerce_int(hunt_panel.get("used"), games_ratio[0]),
+            _coerce_int(hunt_panel.get("limit"), games_ratio[1]),
+        )
     text_ratios = _ratios_from_text(all_text)
     if sense_ratio == (0, 0):
         sense_ratio = text_ratios["sense"]
     if games_ratio == (0, 0):
         games_ratio = text_ratios["games"]
 
+    raw_cells = hunt_run.get("cells") if isinstance(hunt_run.get("cells"), list) else []
+    board_size = _coerce_int(hunt_run.get("size"), 0)
     target_count = _coerce_int(
         treasure.get("targetCount")
         or treasure.get("npcCount")
         or treasure.get("dwarfCount")
         or treasure.get("pointCount")
-        or treasure.get("gridCount"),
+        or treasure.get("gridCount")
+        or (board_size * board_size if board_size > 0 else 0),
         0,
     )
-    raw_targets = treasure.get("targets") or treasure.get("points") or treasure.get("dwarfs") or ()
+    raw_targets = raw_cells or treasure.get("targets") or treasure.get("points") or treasure.get("dwarfs") or ()
     if not target_count and isinstance(raw_targets, list):
         target_count = len(raw_targets)
     if target_count <= 0:
         target_count = max(sense_ratio[1] or 0, 1)
+    available_targets = []
+    if raw_cells:
+        for cell in raw_cells:
+            if not isinstance(cell, dict):
+                continue
+            if _bool_from_any(cell.get("revealed")):
+                continue
+            available_targets.append(_coerce_int(cell.get("index"), len(available_targets)) + 1)
 
+    status = str(hunt_run.get("status") or treasure.get("status") or "").strip()
     in_round = _bool_from_any(
         treasure.get("inRound"),
         treasure.get("entered"),
         treasure.get("active"),
         treasure.get("started"),
-    ) or any(keyword in all_text for keyword in ("寻宝中", "已入府", "正在寻宝"))
+    ) or bool(hunt_run) or any(keyword in all_text for keyword in ("寻宝中", "已入府", "正在寻宝"))
     on_treasure_tab = _bool_from_any(
         treasure.get("onTreasureTab"),
         treasure.get("treasureTab"),
-    ) or "寻宝" in all_text
+    ) or bool(hunt_panel or hunt_run or hunt_result) or "寻宝" in all_text
     treasure_found = _bool_from_any(
         treasure.get("found"),
         treasure.get("treasureFound"),
         treasure.get("hit"),
-    ) or any(keyword in outcome_text for keyword in ("寻得", "发现宝", "命中宝", "宝物到手", "见好就收", "再来一次"))
-    can_bonus_retry = _bool_from_any(
-        treasure.get("canRetry"),
-        treasure.get("canAgain"),
-        treasure.get("bonusRetry"),
-    ) or "再来一次" in outcome_text
-    settled = _bool_from_any(treasure.get("settled"), treasure.get("finished")) or any(
+        hunt_run.get("foundMain"),
+        bool(hunt_result),
+    ) or bool(hunt_run.get("loot") if isinstance(hunt_run.get("loot"), list) else []) or any(keyword in outcome_text for keyword in ("寻得", "发现宝", "命中宝", "宝物到手", "见好就收", "再来一次"))
+    settled = bool(hunt_result) or _bool_from_any(treasure.get("settled"), treasure.get("finished")) or any(
         keyword in all_text for keyword in ("结算完成", "已结算", "今日寻宝已结算", "已收获")
     )
 
     hint_text = str(treasure.get("hint") or treasure.get("tips") or treasure.get("message") or treasure.get("text") or "").strip()
     hint_target = _coerce_int(treasure.get("hintTarget") or treasure.get("answer") or treasure.get("targetIndex"), 0)
+    if hint_target <= 0 and raw_cells:
+        for cell in raw_cells:
+            if not isinstance(cell, dict):
+                continue
+            hint = cell.get("hint") if isinstance(cell.get("hint"), dict) else {}
+            for marker in hint.get("markers") or ():
+                if not isinstance(marker, dict):
+                    continue
+                if str(marker.get("kind") or "").strip() == "treasure":
+                    hint_target = _coerce_int(marker.get("index"), -1) + 1
+                    break
+            if hint_target > 0:
+                break
     if hint_target <= 0:
         hint_target = _extract_hint_target(hint_text or all_text)
 
     return {
         "on_treasure_tab": bool(on_treasure_tab),
         "in_round": bool(in_round),
+        "session_id": str(hunt_run.get("sessionId") or treasure.get("sessionId") or "").strip(),
+        "status": status,
         "action_remaining": max(0, sense_ratio[0]),
         "action_limit": max(0, sense_ratio[1]),
         "games_used": max(0, games_ratio[0]),
         "games_limit": max(0, games_ratio[1]),
         "treasure_found": bool(treasure_found),
-        "can_bonus_retry": bool(can_bonus_retry),
         "settled": bool(settled),
         "hint_text": sanitize_webapp_secret_text(hint_text, limit=160),
         "hint_target": max(0, hint_target),
         "target_count": max(1, target_count),
+        "available_targets": available_targets,
     }
 
 
@@ -424,30 +476,34 @@ def choose_cave_treasure_action(state, *, rng=None):
     games_used = _coerce_int(state.get("games_used"), 0)
     action_remaining = _coerce_int(state.get("action_remaining"), 0)
     target_count = max(1, _coerce_int(state.get("target_count"), 1))
+    in_round = bool(state.get("in_round"))
+    session_id = str(state.get("session_id") or "").strip()
 
-    if games_limit > 0 and games_used >= games_limit:
+    if games_limit > 0 and games_used >= games_limit and not in_round:
         return {"action": "done", "reason": "daily_games_exhausted"}
-    if not state.get("on_treasure_tab"):
-        return {"action": "switch_treasure", "tab": "寻宝", "reason": "not_on_treasure_tab"}
-    if not state.get("in_round") and not state.get("settled"):
+    if not in_round:
         return {"action": "enter", "reason": "not_in_round"}
-    if state.get("treasure_found") and state.get("can_bonus_retry"):
-        return {"action": "bonus_retry", "reason": "treasure_found_bonus_retry"}
     if state.get("treasure_found"):
-        return {"action": "settle", "reason": "treasure_found"}
+        return {"action": "settle", "sessionId": session_id, "reason": "treasure_found"}
+    if str(state.get("status") or "").strip() == "failed":
+        return {"action": "settle", "sessionId": session_id, "reason": "round_failed"}
     if action_remaining > 0:
         target_index = _coerce_int(state.get("hint_target"), 0)
         reason = "hint_target" if target_index > 0 else "random_target"
         if target_index <= 0:
-            target_index = int(rng.randint(1, target_count))
+            candidates = [
+                _coerce_int(item, 0)
+                for item in state.get("available_targets") or ()
+                if _coerce_int(item, 0) > 0
+            ]
+            target_index = int(rng.choice(candidates)) if candidates else int(rng.randint(1, target_count))
         return {
             "action": "search",
+            "sessionId": session_id,
             "targetIndex": max(1, min(target_index, target_count)),
             "reason": reason,
         }
-    if state.get("settled") and (not games_limit or games_used < games_limit):
-        return {"action": "next", "reason": "next_game_available"}
-    return {"action": "settle", "reason": "round_actions_exhausted"}
+    return {"action": "settle", "sessionId": session_id, "reason": "round_actions_exhausted"}
 
 
 def build_cave_treasure_action_request(decision, *, token, init_data_session=None, init_data="", adapter=None):
@@ -455,13 +511,17 @@ def build_cave_treasure_action_request(decision, *, token, init_data_session=Non
     action = str(decision.get("action") or "").strip()
     if action not in CAVE_TREASURE_SENDABLE_ACTIONS:
         raise ValueError(f"cave treasure action not sendable: {action or 'missing'}")
-    payload = {"action": action}
-    if decision.get("tab"):
-        payload["tab"] = str(decision.get("tab") or "").strip()
+    payload = {}
+    endpoint = "hunt"
     if action == "search":
-        payload["targetIndex"] = max(1, _coerce_int(decision.get("targetIndex"), 1))
+        endpoint = "hunt_reveal"
+        payload["sessionId"] = str(decision.get("sessionId") or "").strip()
+        payload["index"] = max(0, _coerce_int(decision.get("targetIndex"), 1) - 1)
+    elif action == "settle":
+        endpoint = "hunt_settle"
+        payload["sessionId"] = str(decision.get("sessionId") or "").strip()
     return build_cave_treasure_miniapp_request(
-        "action",
+        endpoint,
         token=token,
         init_data_session=init_data_session,
         init_data=init_data,

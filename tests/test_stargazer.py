@@ -158,6 +158,8 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertEqual(2, audit_mock.await_count)
+            self.assertEqual("normal", audit_mock.await_args_list[-1].kwargs["priority"])
+            self.assertIn("星辰精华x2", audit_mock.await_args_list[-1].args[0])
             flow_mock.assert_awaited_once()
             storage_mock.assert_called_once_with(identity_id, {"星辰精华": 2})
             queue_mock.assert_not_awaited()

@@ -661,7 +661,7 @@ async def _send_fishing_miniapp_harvest_summary(result):
     return await send_audit_log(
         f"🎣 灵溪垂钓 MiniApp 收获｜{material_text}",
         scope="identity",
-        priority="low",
+        priority="normal",
         limit=260,
     )
 
@@ -877,7 +877,7 @@ async def _send_fishing_daily_completion_summary(now):
         limit,
         summary,
     )
-    ok = await send_audit_log(message, scope="identity", priority="low", limit=260)
+    ok = await send_audit_log(message, scope="identity", priority="normal", limit=260)
     if not ok:
         state["fishing_last_error"] = "灵溪垂钓日结播报发送失败，稍后重试"
         mark_dirty()

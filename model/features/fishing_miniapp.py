@@ -525,8 +525,39 @@ def _extract_catch_from_mapping(data, *, context=""):
     }
 
 
+def _normalize_catch_entry(item):
+    if not isinstance(item, dict):
+        return {}
+    fish = _as_clean_text(item.get("fish"))
+    if not fish:
+        return {}
+    return {
+        "fish": fish,
+        "grade": _as_clean_text(item.get("grade")),
+        "weight": _as_clean_text(item.get("weight")),
+        "rewards": [
+            {"name": _as_clean_text(reward.get("name")), "qty": int(reward.get("qty") or 1)}
+            for reward in (item.get("rewards") or ())
+            if isinstance(reward, dict) and _as_clean_text(reward.get("name"))
+        ],
+        "companion": bool(item.get("companion")),
+    }
+
+
 def extract_fishing_miniapp_catches(data):
     """Return non-sensitive catch summaries from a MiniApp result payload."""
+    if isinstance(data, dict) and isinstance(data.get("catches"), list):
+        direct_catches = []
+        for raw_item in data.get("catches") or ():
+            parsed = _extract_catch_from_mapping(raw_item, context="catch") if isinstance(raw_item, dict) else {}
+            if not parsed and isinstance(raw_item, str):
+                parsed = _extract_catch_from_text(raw_item)
+            normalized = _normalize_catch_entry(parsed)
+            if normalized:
+                direct_catches.append(normalized)
+        if direct_catches:
+            return direct_catches
+
     catches = []
 
     def visit(value, context=""):
@@ -555,26 +586,39 @@ def extract_fishing_miniapp_catches(data):
     deduped = []
     seen = set()
     for item in catches:
-        fish = _as_clean_text(item.get("fish"))
-        if not fish:
+        entry = _normalize_catch_entry(item)
+        if not entry:
             continue
-        entry = {
-            "fish": fish,
-            "grade": _as_clean_text(item.get("grade")),
-            "weight": _as_clean_text(item.get("weight")),
-            "rewards": [
-                {"name": _as_clean_text(reward.get("name")), "qty": int(reward.get("qty") or 1)}
-                for reward in (item.get("rewards") or ())
-                if isinstance(reward, dict) and _as_clean_text(reward.get("name"))
-            ],
-            "companion": bool(item.get("companion")),
-        }
         key = (entry["fish"], entry["grade"], entry["weight"], tuple((r["name"], r["qty"]) for r in entry["rewards"]))
         if key in seen:
             continue
         seen.add(key)
         deduped.append(entry)
     return deduped
+
+
+_LOOP_GAIN_FIELDS = (
+    "expGain",
+    "experienceGain",
+    "lingShiGain",
+    "lingshiGain",
+    "lingstoneGain",
+    "spiritStoneGain",
+    "stoneGain",
+)
+
+
+def _merge_loop_gain_fields(target, data):
+    if not isinstance(data, dict):
+        return target
+    for key in _LOOP_GAIN_FIELDS:
+        try:
+            amount = int(float(data.get(key) or 0))
+        except (TypeError, ValueError, OverflowError):
+            amount = 0
+        if amount > 0:
+            target[key] = int(target.get(key, 0) or 0) + amount
+    return target
 
 
 def run_fishing_miniapp_lab_flow(
@@ -723,6 +767,7 @@ def run_fishing_miniapp_loop_lab_flow(
     events = []
     rounds = []
     settled_count = 0
+    loop_gains = {}
     last_result = {}
     last_status = "failed"
     last_error = ""
@@ -745,7 +790,9 @@ def run_fishing_miniapp_loop_lab_flow(
         last_result = dict(round_result or {})
         last_status = str(last_result.get("status") or "").strip()
         last_error = str(last_result.get("error") or "").strip()
-        catch_summary = extract_fishing_miniapp_catches(last_result.get("data") or {})
+        round_data = last_result.get("data") or {}
+        _merge_loop_gain_fields(loop_gains, round_data)
+        catch_summary = extract_fishing_miniapp_catches(round_data)
         rounds.append({
             "index": index + 1,
             "ok": bool(last_result.get("ok")),
@@ -767,6 +814,7 @@ def run_fishing_miniapp_loop_lab_flow(
                 "rounds": rounds,
                 "catches": [item.get("catch") for item in rounds if item.get("catch")],
                 "last_status": last_status,
+                **loop_gains,
             }
             return _flow_result(settled_count > 0, last_status or "failed", error=last_error, data=data, events=events)
 
@@ -793,6 +841,7 @@ def run_fishing_miniapp_loop_lab_flow(
                 "last_status": last_status,
                 "next_status": next_status,
                 "next_error": next_result.error,
+                **loop_gains,
             }
             if isinstance(next_result.data, dict) and next_result.data.get("baitName"):
                 data["next_bait_name"] = str(next_result.data.get("baitName") or "")
@@ -807,6 +856,7 @@ def run_fishing_miniapp_loop_lab_flow(
                 "catches": [item.get("catch") for item in rounds if item.get("catch")],
                 "last_status": last_status,
                 "next_status": "missing_token",
+                **loop_gains,
             }
             return _flow_result(True, "next_unavailable", error="next token missing", data=data, events=events)
 
@@ -820,9 +870,14 @@ def run_fishing_miniapp_loop_lab_flow(
         "rounds": rounds,
         "catches": [item.get("catch") for item in rounds if item.get("catch")],
         "last_status": last_status,
+        **loop_gains,
     }
     if isinstance(last_result.get("data"), dict):
-        data.update({f"last_{key}": value for key, value in last_result["data"].items() if key not in data})
+        data.update({
+            f"last_{key}": value
+            for key, value in last_result["data"].items()
+            if key not in data and key not in _LOOP_GAIN_FIELDS
+        })
     status = "settled" if all(item.get("status") == "settled" for item in rounds) else (last_status or "finish_submitted")
     return _flow_result(True, status, data=data, events=events)
 
