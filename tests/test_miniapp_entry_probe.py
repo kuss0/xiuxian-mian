@@ -124,6 +124,25 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("MiniApp手动", kwargs["source_module"])
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
+    async def test_manual_run_allows_cave_treasure_and_authorizes_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12351))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "authorize_cave_treasure_miniapp_manual_run", return_value=123456.0) as auth_mock, \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "cave_treasure")
+
+        self.assertTrue(ok)
+        self.assertIn("手动执行", message)
+        self.assertEqual(".洞府", extra["command"])
+        auth_mock.assert_called_once_with(1001)
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp手动", kwargs["source_module"])
+        self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
+
     async def test_manual_run_rejects_non_manual_game_key_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12349))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -148,6 +167,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(adapters["cave_treasure"]["manual_only"])
         self.assertEqual(".洞府", probe_commands["cave_treasure"])
         self.assertEqual(".钓鱼", probe_commands["fishing"])
+        self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
         self.assertNotIn("fishing", manual_run_commands)

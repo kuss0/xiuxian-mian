@@ -1,6 +1,13 @@
+import asyncio
 import random
 import re
+import time
 
+import requests
+from telethon import functions
+
+from ..config import TG_REQUESTS_PROXIES
+from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
@@ -9,6 +16,7 @@ from ..webapp_core import (
     build_miniapp_launch_request,
     build_request_webview_args,
     execute_miniapp_http_request,
+    extract_miniapp_init_data_from_url,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -24,6 +32,7 @@ CAVE_TREASURE_MINIAPP_ENDPOINTS = {
     "action": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}action",
 }
 CAVE_TREASURE_MINIAPP_START_PARAM_PATTERN = r"(?:df_)?[A-Za-z0-9_-]{4,160}"
+CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT = (5, 20)
 CAVE_TREASURE_SENDABLE_ACTIONS = {
     "switch_treasure",
     "enter",
@@ -119,6 +128,44 @@ def build_cave_treasure_launch_args(url, *, start_param="", bot_username=CAVE_TR
     adapter = build_cave_treasure_miniapp_adapter(bot_username=bot_username)
     request = build_miniapp_launch_request(adapter, url, start_param=start_param)
     return request, build_request_webview_args(adapter, request) if request.allowed else {}
+
+
+async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None):
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
+    if not launch.allowed:
+        raise ValueError(launch.reason or "cave treasure miniapp launch not allowed")
+    account_id, client = _get_identity_client_with_account(identity_id)
+    if client is None:
+        raise RuntimeError("身份客户端不可用")
+    async with account_rpc_slot(account_id=account_id, client_obj=client):
+        bot = await client.get_entity(launch.bot_username or adapter.bot_username)
+        bot_input = await client.get_input_entity(bot)
+        result = await client(functions.messages.RequestMainWebViewRequest(
+            peer=bot_input,
+            bot=bot_input,
+            platform=launch.platform or adapter.platform,
+            start_param=launch.start_param,
+        ))
+    init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
+    if not init_data:
+        raise RuntimeError("WebView URL 缺少 tgWebAppData")
+    return init_data
+
+
+def _requests_transport(request):
+    return requests.request(
+        str(request.get("method") or "POST"),
+        request["url"],
+        json=request.get("payload") or {},
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json",
+            **dict(request.get("headers") or {}),
+        },
+        proxies=TG_REQUESTS_PROXIES,
+        timeout=CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT,
+    )
 
 
 def build_cave_treasure_miniapp_flow_plan():
@@ -454,6 +501,8 @@ def run_cave_treasure_miniapp_lab_flow(
     rng=None,
     sleeper=None,
     max_steps=32,
+    capture_sink=None,
+    capture_source="",
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -465,7 +514,14 @@ def run_cave_treasure_miniapp_lab_flow(
 
     events = []
     start_request = build_cave_treasure_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
-    start_result = execute_miniapp_http_request(start_request, transport, sleeper=sleeper)
+    start_result = execute_miniapp_http_request(
+        start_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="start",
+    )
     _append_http_event(events, "start", start_result)
     if not start_result.ok:
         return _flow_result(False, "failed", error=start_result.error, events=events)
@@ -495,7 +551,14 @@ def run_cave_treasure_miniapp_lab_flow(
             init_data=init_data,
             adapter=adapter,
         )
-        action_result = execute_miniapp_http_request(action_request, transport, sleeper=sleeper)
+        action_result = execute_miniapp_http_request(
+            action_request,
+            transport,
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"action:{decision.get('action')}",
+        )
         _append_http_event(events, f"action:{decision.get('action')}", action_result)
         if not action_result.ok:
             return _flow_result(False, "failed", error=action_result.error, data={"state": last_state}, events=events)
@@ -504,8 +567,43 @@ def run_cave_treasure_miniapp_lab_flow(
     return _flow_result(False, "step_limit", data={"state": last_state}, events=events)
 
 
+async def run_cave_treasure_miniapp_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    transport=None,
+    adapter=None,
+    rng=None,
+    sleeper=None,
+    max_steps=32,
+    capture_sink=None,
+    capture_source="",
+):
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        return await asyncio.to_thread(
+            run_cave_treasure_miniapp_lab_flow,
+            token=token,
+            init_data=init_data,
+            transport=transport or _requests_transport,
+            adapter=adapter,
+            rng=rng,
+            sleeper=sleeper or time.sleep,
+            max_steps=max_steps,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 __all__ = [
     "CAVE_TREASURE_MINIAPP_GAME_KEY",
+    "CAVE_TREASURE_MINIAPP_ENDPOINTS",
     "build_cave_treasure_action_request",
     "build_cave_treasure_launch_args",
     "build_cave_treasure_miniapp_adapter",
@@ -514,6 +612,8 @@ __all__ = [
     "choose_cave_treasure_action",
     "extract_cave_treasure_miniapp_launch",
     "parse_cave_treasure_state",
+    "request_cave_treasure_miniapp_init_data",
     "run_cave_treasure_miniapp_lab_flow",
+    "run_cave_treasure_miniapp_production_flow",
     "summarize_cave_treasure_entry",
 ]

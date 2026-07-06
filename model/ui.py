@@ -91,6 +91,7 @@ from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, no
 from .features import miniapp_registry
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
+from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manual_run, revoke_cave_treasure_miniapp_manual_run
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.trial_runtime import authorize_trial_miniapp_manual_run, revoke_trial_miniapp_manual_run
@@ -268,6 +269,7 @@ MINIAPP_ENTRY_PROBE_COMMANDS = {
     "trial": CMD_TIANJI_TRIAL,
 }
 MINIAPP_MANUAL_RUN_COMMANDS = {
+    "cave_treasure": ".洞府",
     "stargazer": CMD_STARGAZER_PANEL,
     "trial": CMD_TIANJI_TRIAL,
 }
@@ -6038,6 +6040,8 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key):
         allowed = "/".join(sorted(MINIAPP_MANUAL_RUN_COMMANDS))
         return False, f"MiniApp 手动执行仅允许 {allowed}", {}
 
+    if normalized_game_key == "cave_treasure":
+        authorize_cave_treasure_miniapp_manual_run(identity_id)
     if normalized_game_key == "stargazer":
         authorize_stargazer_miniapp_manual_run(identity_id)
     if normalized_game_key == "trial":
@@ -6061,6 +6065,8 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key):
         "command": command,
     }
     if not msg:
+        if normalized_game_key == "cave_treasure":
+            revoke_cave_treasure_miniapp_manual_run(identity_id)
         if normalized_game_key == "stargazer":
             revoke_stargazer_miniapp_manual_run(identity_id)
         if normalized_game_key == "trial":
