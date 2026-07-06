@@ -1352,6 +1352,44 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(1, result["data"]["settled_count"])
         self.assertEqual(["start", "finish", "result", "next"], calls)
 
+    def test_fishing_loop_flow_preserves_next_missing_bait_detail(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "session": {"phase": "bite", "serverNow": 0},
+                    "challenge": {"challengeId": "c1", "minDurationMs": 20, "maxDurationMs": 70000},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 94}}
+            if endpoint == "result":
+                return 200, {"ok": True, "result": {"ready": True, "score": 94}}
+            if endpoint == "next":
+                return 200, {"ok": False, "error": "fishing_bait_missing", "baitName": "凡饵"}
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = fishing_miniapp.run_fishing_miniapp_loop_lab_flow(
+            token="fish_FIRST",
+            init_data="init",
+            transport=transport,
+            max_rounds=2,
+            rng=__import__("random").Random(5),
+            sleeper=lambda _sec: None,
+            rest_range_sec=(0, 0),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("next_failed", result["status"])
+        self.assertEqual("fishing_bait_missing", result["error"])
+        self.assertEqual("fishing_bait_missing", result["data"]["next_error"])
+        self.assertEqual("凡饵", result["data"]["next_bait_name"])
+        self.assertEqual(1, result["data"]["settled_count"])
+        self.assertEqual(["start", "finish", "result", "next"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

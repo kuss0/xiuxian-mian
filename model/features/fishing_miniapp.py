@@ -788,7 +788,10 @@ def run_fishing_miniapp_loop_lab_flow(
                 "catches": [item.get("catch") for item in rounds if item.get("catch")],
                 "last_status": last_status,
                 "next_status": next_status,
+                "next_error": next_result.error,
             }
+            if isinstance(next_result.data, dict) and next_result.data.get("baitName"):
+                data["next_bait_name"] = str(next_result.data.get("baitName") or "")
             ok = settled_count > 0
             return _flow_result(ok, "daily_limit" if next_status == "daily_limit" else "next_failed", error=next_result.error, data=data, events=events)
 

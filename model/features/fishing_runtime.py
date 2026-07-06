@@ -712,8 +712,15 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     updates["fishing_last_error"] = "" if ok else updates["fishing_last_result"]
     partial_statuses = {"next_failed", "next_unavailable", "not_ready"}
     settled_statuses = {"settled", "finish_submitted", "daily_limit"}
+    error_text = str(result.get("error") or data.get("next_error") or "").strip()
+    missing_bait_error = status == "next_failed" and "bait_missing" in error_text
     if ok and status in partial_statuses:
         updates["fishing_last_error"] = updates["fishing_last_result"]
+    if ok and missing_bait_error:
+        bait_name = str(data.get("next_bait_name") or state.get("fishing_bait") or "鱼饵").strip()
+        updates["fishing_forced_buy_bait"] = bait_name
+        updates["fishing_forced_buy_count"] = fishing_behavior.fishing_buy_bait_count(_state_snapshot())
+        updates["fishing_last_error"] = f"缺少鱼饵：{bait_name}"
 
     day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
     updates.update(daily_updates)
@@ -765,7 +772,13 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
                     random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
                 )
         elif status in partial_statuses:
-            updates["next_fishing_time"] = _miniapp_failure_backoff(now)
+            if missing_bait_error:
+                if state.get("fishing_auto_buy_bait_enabled"):
+                    updates["next_fishing_time"] = float(now + random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC))
+                else:
+                    updates["next_fishing_time"] = float(now + fishing_behavior.FISHING_BLOCKED_RETRY_SEC)
+            else:
+                updates["next_fishing_time"] = _miniapp_failure_backoff(now)
         else:
             updates["next_fishing_time"] = float(now + random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC))
     else:

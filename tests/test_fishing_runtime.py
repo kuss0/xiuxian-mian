@@ -441,6 +441,49 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("next_unavailable", state_module.state["fishing_last_error"])
             self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
 
+    async def test_miniapp_next_missing_bait_keeps_settled_count_and_backs_off(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 54, 10)
+        flow_result = {
+            "ok": True,
+            "status": "next_failed",
+            "error": "fishing_bait_missing",
+            "data": {
+                "settled_count": 1,
+                "next_status": "failed",
+                "next_error": "fishing_bait_missing",
+                "next_bait_name": "凡饵",
+                "catches": [{"fish": "银须灵鲢", "weight": "1.3斤"}],
+            },
+            "events": [{"step": "next", "ok": False}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 1
+            state_module.state["fishing_auto_buy_bait_enabled"] = False
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(2, state_module.state["fishing_daily_count"])
+            self.assertEqual("凡饵", state_module.state["fishing_forced_buy_bait"])
+            self.assertIn("缺少鱼饵：凡饵", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.fishing_behavior.FISHING_BLOCKED_RETRY_SEC, state_module.state["next_fishing_time"])
+            self.assertIn("银须灵鲢", state_module.state["fishing_daily_catch_summary_json"])
+
     async def test_miniapp_not_ready_does_not_increment_daily_counter(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 7, 54, 30)
