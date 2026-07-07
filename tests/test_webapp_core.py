@@ -286,6 +286,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertIn("trial_invalid_proof", sanitized)
         self.assertIn("trial_token_used", sanitized)
         self.assertNotIn("trial_SECRET999", sanitized)
+        self.assertNotIn("trial_lowercase", webapp_core.sanitize_webapp_secret_text("token=trial_lowercase"))
         self.assertNotIn("df_SECRET777", sanitized)
         self.assertNotIn("secret", sanitized.lower())
 
