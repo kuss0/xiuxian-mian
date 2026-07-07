@@ -588,6 +588,7 @@ def run_cave_treasure_miniapp_lab_flow(
 
     current_data = start_result.data
     last_state = {}
+    results = []
     for _step_index in range(max(1, int(max_steps or 1))):
         state = parse_cave_treasure_state(current_data)
         last_state = state
@@ -601,9 +602,20 @@ def run_cave_treasure_miniapp_lab_flow(
             "games": f"{state.get('games_used', 0)}/{state.get('games_limit', 0)}",
         })
         if decision.get("action") == "done":
-            return _flow_result(True, "daily_limit", data={"state": last_state}, events=events)
+            return _flow_result(
+                True,
+                "daily_limit",
+                data={"state": last_state, "results": results, "settled_count": len(results)},
+                events=events,
+            )
         if decision.get("action") not in CAVE_TREASURE_SENDABLE_ACTIONS:
-            return _flow_result(False, "blocked", error=f"unsendable action: {decision.get('action')}", data={"state": last_state}, events=events)
+            return _flow_result(
+                False,
+                "blocked",
+                error=f"unsendable action: {decision.get('action')}",
+                data={"state": last_state, "results": results, "settled_count": len(results)},
+                events=events,
+            )
 
         action_request = build_cave_treasure_action_request(
             decision,
@@ -621,10 +633,24 @@ def run_cave_treasure_miniapp_lab_flow(
         )
         _append_http_event(events, f"action:{decision.get('action')}", action_result)
         if not action_result.ok:
-            return _flow_result(False, "failed", error=action_result.error, data={"state": last_state}, events=events)
+            return _flow_result(
+                False,
+                "failed",
+                error=action_result.error,
+                data={"state": last_state, "results": results, "settled_count": len(results)},
+                events=events,
+            )
         current_data = action_result.data
+        if decision.get("action") == "settle":
+            hunt_result = current_data.get("huntResult") if isinstance(current_data.get("huntResult"), dict) else {}
+            results.append(dict(hunt_result or current_data or {}))
 
-    return _flow_result(False, "step_limit", data={"state": last_state}, events=events)
+    return _flow_result(
+        False,
+        "step_limit",
+        data={"state": last_state, "results": results, "settled_count": len(results)},
+        events=events,
+    )
 
 
 async def run_cave_treasure_miniapp_production_flow(

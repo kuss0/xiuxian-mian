@@ -24,6 +24,7 @@ _GAIN_KEYS = {
     "lingshigain": "灵石",
     "spiritstonegain": "灵石",
     "stonegain": "灵石",
+    "contribution": "贡献",
 }
 _REWARD_CONTAINER_KEYS = {"rewards", "reward", "bonusloot", "loot", "drops", "items", "materials", "gains"}
 _TECHNICAL_KEYS = {

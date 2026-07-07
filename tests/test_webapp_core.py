@@ -1146,6 +1146,8 @@ class WebAppCoreTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual("daily_limit", result["status"])
+        self.assertEqual(1, result["data"]["settled_count"])
+        self.assertEqual([{"grade": "甲等", "score": 80, "loot": [{"name": "灵石", "quantity": 12}]}], result["data"]["results"])
         self.assertEqual(
             [("start", None, None), ("hunt", None, None), ("hunt_reveal", "hunt-1", 0), ("hunt_settle", "hunt-1", None)],
             calls,

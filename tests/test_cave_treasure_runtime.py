@@ -109,14 +109,18 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "status": "daily_limit",
             "data": {
                 "state": {"games_used": 3, "games_limit": 3},
-                "result": {
-                    "cultivationGain": 10,
-                    "rewards": [{"name": "玄晶", "qty": 2}],
-                    "text": "获得灵石 +20，获得【古禁印痕】x1",
-                    "score": 99,
-                    "sessionId": "secret-session",
-                    "qualityBonus": 3,
-                },
+                "results": [
+                    {
+                        "cultivationGain": 10,
+                        "contribution": 48,
+                        "loot": [{"name": "灵石", "quantity": 31}],
+                        "rewards": [{"name": "玄晶", "qty": 2}],
+                        "text": "获得灵石 +20，获得【古禁印痕】x1",
+                        "score": 99,
+                        "sessionId": "secret-session",
+                        "qualityBonus": 3,
+                    },
+                ],
             },
         }
         with state_module.use_identity(1001):
@@ -132,8 +136,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         result_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list if "洞府寻宝结果" in str(call.args[0]))
         self.assertIn("游戏 3/3", result_text)
-        self.assertIn("收益:修为+10、灵石+20", result_text)
-        self.assertIn("奖励:古禁印痕x1、玄晶x2", result_text)
+        self.assertIn("收益:修为+10、灵石+20、贡献+48", result_text)
+        self.assertIn("奖励:古禁印痕x1、灵石x31、玄晶x2", result_text)
         self.assertNotIn("score", result_text)
         self.assertNotIn("session", result_text)
         self.assertNotIn("quality", result_text)
