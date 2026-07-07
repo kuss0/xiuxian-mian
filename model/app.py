@@ -88,6 +88,7 @@ from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
 from .features.cave_treasure_runtime import handle_cave_treasure_miniapp_entry
 from .features.trial_runtime import handle_trial_miniapp_entry
+from .features.tree_runtime import handle_tree_miniapp_entry
 from .features.tianxing import (
     apply_tianxing_passive,
     build_tianxing_consume_window,
@@ -1962,6 +1963,15 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             result_msg_id=event.id,
         )
         handled_any = cave_treasure_miniapp_done or handled_any
+        tree_miniapp_done = await handle_tree_miniapp_entry(
+            event,
+            text,
+            now,
+            reply_to,
+            matched_family=matched_family,
+            result_msg_id=event.id,
+        )
+        handled_any = tree_miniapp_done or handled_any
 
         if allow_tree_panel_claim and not already_consumed and matched_family != "stargazer_sync":
             tree_panel_done = False

@@ -46,8 +46,8 @@ TREE_MINIAPP_MIN_TARGET_SCORE = {
     "fly": 20,
 }
 TREE_MINIAPP_MAX_TARGET_SCORE = {
-    "jump": 80,
-    "fly": 80,
+    "jump": 150,
+    "fly": 150,
 }
 TREE_MINIAPP_FLY_GRAVITY = 560.0
 TREE_MINIAPP_FLY_IMPULSE = -255.0
@@ -618,6 +618,23 @@ def _choose_jump_miss_charge(current, next_platform, center_combo, rng):
     return round(0.0 if ideal >= 0.5 else 1.0, 4)
 
 
+def _choose_jump_edge_charge(current, next_platform, center_combo, rng):
+    dx = float(next_platform["x"]) - float(current["x"])
+    dy = float(next_platform["y"]) - float(current["y"])
+    dist = math.hypot(dx, dy)
+    ideal = _clamp((dist - 54.0) / 245.0, 0.0, 1.0)
+    deltas = [0.052, -0.052, 0.064, -0.064, 0.078, -0.078, 0.092, -0.092]
+    if rng.random() < 0.5:
+        deltas.reverse()
+    for delta in deltas:
+        charge = round(float(_clamp(ideal + delta, 0.0, 1.0)), 4)
+        landing = _estimate_jump_landing(current, next_platform, charge)
+        result = _score_jump_landing(next_platform, landing, center_combo)
+        if result["hit"] and not result["center"]:
+            return charge
+    return None
+
+
 def simulate_tree_jump_run(seed, charges):
     seed = str(seed or "").strip()
     current = make_tree_jump_platform(seed, 0)
@@ -655,8 +672,10 @@ def build_tree_jump_proof(run, *, rng=None, profile=None):
     if not seed:
         raise ValueError("jump seed missing")
     target_score = _target_score("jump", rng, profile)
-    cap_score = int(TREE_MINIAPP_MAX_TARGET_SCORE.get("jump", 80))
-    max_jumps = max(2, int(profile.get("max_jumps") or 14))
+    cap_score = target_score
+    high_precision = bool(profile.get("high_precision")) or target_score >= 100
+    default_max_jumps = max(14, int(target_score // 6) + 4) if high_precision else 14
+    max_jumps = max(2, int(profile.get("max_jumps") or default_max_jumps))
     current = make_tree_jump_platform(seed, 0)
     next_platform = make_tree_jump_platform(seed, 1, current)
     charges = []
@@ -673,17 +692,22 @@ def build_tree_jump_proof(run, *, rng=None, profile=None):
             charge = _choose_jump_miss_charge(current, next_platform, center_combo, rng)
             forced_miss = True
         else:
-            charge = _clamp(ideal + rng.uniform(-0.045, 0.055), 0.0, 1.0)
-            if rng.random() < 0.22:
+            jitter = rng.uniform(-0.012, 0.012) if high_precision else rng.uniform(-0.045, 0.055)
+            charge = _clamp(ideal + jitter, 0.0, 1.0)
+            if not high_precision and rng.random() < 0.22:
                 charge = _clamp(charge + rng.choice((-1, 1)) * rng.uniform(0.045, 0.075), 0.0, 1.0)
         charge = round(float(charge), 4)
         charges.append(charge)
         landing = _estimate_jump_landing(current, next_platform, charge)
         result = _score_jump_landing(next_platform, landing, center_combo)
         if result["hit"] and score + int(result["points"]) > cap_score:
-            charge = _choose_jump_miss_charge(current, next_platform, center_combo, rng)
+            charge = None
+            if high_precision and score < target_score:
+                charge = _choose_jump_edge_charge(current, next_platform, center_combo, rng)
+            if charge is None:
+                charge = _choose_jump_miss_charge(current, next_platform, center_combo, rng)
+                forced_miss = True
             charges[-1] = charge
-            forced_miss = True
             landing = _estimate_jump_landing(current, next_platform, charge)
             result = _score_jump_landing(next_platform, landing, center_combo)
         if not result["hit"]:

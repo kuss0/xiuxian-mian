@@ -96,6 +96,7 @@ from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manu
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_miniapp import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
+from .features.tree_runtime import authorize_tree_miniapp_manual_run, revoke_tree_miniapp_manual_run
 from .features.trial_runtime import authorize_trial_miniapp_manual_run, revoke_trial_miniapp_manual_run
 from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing_automation_pause_text, normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
@@ -276,6 +277,7 @@ MINIAPP_ENTRY_PROBE_COMMANDS = {
 MINIAPP_MANUAL_RUN_COMMANDS = {
     "cave_treasure": ".洞府",
     "stargazer": CMD_STARGAZER_PANEL,
+    "tree": ".灵树",
     "trial": CMD_TIANJI_TRIAL,
 }
 MINIAPP_UI_GROUPS = {
@@ -332,7 +334,7 @@ def get_tree_miniapp_score_config(send_as_id=None):
             "max_target_score": int(TREE_MINIAPP_MAX_TARGET_SCORE["fly"]),
         },
         "submit_default": False,
-        "note": "灵树跳一跳/飞一飞必须使用可调几十目标分；默认不追高分，不自动提交。",
+        "note": "灵树跳一跳/飞一飞默认低分；手动执行可按身份配置目标分，不接定时自动跑分。",
     }
 
 
@@ -6145,6 +6147,14 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key):
         authorize_cave_treasure_miniapp_manual_run(identity_id)
     if normalized_game_key == "stargazer":
         authorize_stargazer_miniapp_manual_run(identity_id)
+    if normalized_game_key == "tree":
+        tree_score_config = get_tree_miniapp_score_config(identity_id)
+        authorize_tree_miniapp_manual_run(
+            identity_id,
+            mode="jump",
+            score_profile=(tree_score_config.get("jump") or {}),
+            submit=True,
+        )
     if normalized_game_key == "trial":
         authorize_trial_miniapp_manual_run(identity_id)
 
@@ -6170,6 +6180,8 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key):
             revoke_cave_treasure_miniapp_manual_run(identity_id)
         if normalized_game_key == "stargazer":
             revoke_stargazer_miniapp_manual_run(identity_id)
+        if normalized_game_key == "tree":
+            revoke_tree_miniapp_manual_run(identity_id)
         if normalized_game_key == "trial":
             revoke_trial_miniapp_manual_run(identity_id)
         return False, "手动执行命令未发送，可能被全局暂停/安全锁/队列保护拦截", extra

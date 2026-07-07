@@ -20,11 +20,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_miniapp_send_whitelists_are_exact(self):
         self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
-        self.assertEqual({"cave_treasure", "stargazer", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
+        self.assertEqual({"cave_treasure", "stargazer", "tree", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
         self.assertNotIn("world_boss", ui.MINIAPP_ENTRY_PROBE_COMMANDS)
         self.assertNotIn("world_boss", ui.MINIAPP_MANUAL_RUN_COMMANDS)
         self.assertNotIn("fishing", ui.MINIAPP_MANUAL_RUN_COMMANDS)
-        self.assertNotIn("tree", ui.MINIAPP_MANUAL_RUN_COMMANDS)
 
     async def test_tree_score_config_is_ui_adjustable_tens_policy(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -39,11 +38,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertIn("跳一跳 20", message)
-        self.assertIn("飞一飞 80", message)
+        self.assertIn("飞一飞 150", message)
         self.assertEqual([20, 20], tree["jump"]["target_score_range"])
-        self.assertEqual([80, 80], tree["fly"]["target_score_range"])
+        self.assertEqual([150, 150], tree["fly"]["target_score_range"])
         self.assertEqual(20, tree["jump"]["min_target_score"])
-        self.assertEqual(80, tree["fly"]["max_target_score"])
+        self.assertEqual(150, tree["fly"]["max_target_score"])
         save_mock.assert_called_once()
 
     async def test_tree_score_config_is_scoped_by_identity(self):
@@ -237,6 +236,34 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("MiniApp手动", kwargs["source_module"])
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
+    async def test_manual_run_allows_tree_and_authorizes_with_score_config_before_send(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12353))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_score_config", return_value={
+                    "jump": {"target_score_range": [126, 126]},
+                    "fly": {"target_score_range": [36, 36]},
+                }), \
+                patch.object(ui, "authorize_tree_miniapp_manual_run", return_value=123456.0) as auth_mock, \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree")
+
+        self.assertTrue(ok)
+        self.assertIn("手动执行", message)
+        self.assertEqual(".灵树", extra["command"])
+        auth_mock.assert_called_once_with(
+            1001,
+            mode="jump",
+            score_profile={"target_score_range": [126, 126]},
+            submit=True,
+        )
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp手动", kwargs["source_module"])
+        self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
+
     async def test_manual_run_rejects_non_manual_game_key_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12349))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -267,9 +294,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".灵树", probe_commands["tree"])
         self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
+        self.assertEqual(".灵树", manual_run_commands["tree"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
         self.assertNotIn("fishing", manual_run_commands)
-        self.assertNotIn("tree", manual_run_commands)
         self.assertIn("cave_treasure", snapshot["flow_plans"])
         self.assertIn("tree", snapshot["flow_plans"])
         self.assertFalse(snapshot["flow_plans"]["cave_treasure"]["default_enabled"])
