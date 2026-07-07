@@ -1,4 +1,6 @@
 import asyncio
+import math
+import random
 import time
 
 import requests
@@ -34,6 +36,37 @@ TREE_MINIAPP_ENDPOINTS = {
 }
 TREE_MINIAPP_START_PARAM_PATTERN = r"(?:tree|spirittree|spirit_tree|lyz)[_-][A-Za-z0-9_-]{4,180}"
 TREE_MINIAPP_HTTP_TIMEOUT = (5, 20)
+TREE_MINIAPP_MODES = {"jump", "fly"}
+TREE_MINIAPP_DEFAULT_TARGET_SCORE = {
+    "jump": (24, 42),
+    "fly": (24, 45),
+}
+TREE_MINIAPP_MIN_TARGET_SCORE = {
+    "jump": 20,
+    "fly": 20,
+}
+TREE_MINIAPP_MAX_TARGET_SCORE = {
+    "jump": 80,
+    "fly": 80,
+}
+TREE_MINIAPP_FLY_GRAVITY = 560.0
+TREE_MINIAPP_FLY_IMPULSE = -255.0
+TREE_MINIAPP_FLY_BASE_SPEED = 112.0
+TREE_MINIAPP_FLY_SCORE_SPEED = 3.0
+TREE_MINIAPP_FLY_SPEED_CAP = 70.0
+TREE_MINIAPP_FLY_PLAYER_X = 86.0
+TREE_MINIAPP_FLY_PLAYER_RADIUS = 15.0
+TREE_MINIAPP_FLY_TOP_Y = 26.0
+TREE_MINIAPP_FLY_BOTTOM_Y = 334.0
+TREE_MINIAPP_FLY_GATE_GAP = 112.0
+TREE_MINIAPP_FLY_GATE_WIDTH = 54.0
+TREE_MINIAPP_FLY_GATE_SPACING = 174.0
+TREE_MINIAPP_FLY_FRAME_MS = 16
+TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH = 420
+TREE_MINIAPP_FLY_MAX_BEAM_WIDTH = 640
+TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS = 120000
+TREE_MINIAPP_FLY_MAX_PLAN_FRAMES = 7600
+TREE_MINIAPP_JUMP_START = {"x": 116.0, "y": 246.0, "r": 34.0}
 TREE_MINIAPP_STOP_ERROR_KEYWORDS = (
     "daily_limit",
     "no_remaining",
@@ -201,13 +234,15 @@ def build_tree_miniapp_flow_plan():
                 key="run_start",
                 endpoint="run_start",
                 required_payload_keys=("token", "initData", "mode"),
+                optional_payload_keys=("targetScore", "targetScoreRange"),
                 note="服务端开局，返回 runToken/seed；候选接口，未接生产",
             ),
             MiniAppFlowStep(
                 key="run_submit",
                 endpoint="run_submit",
                 required_payload_keys=("token", "initData", "mode", "runToken", "proof"),
-                note="提交 jump/fly proof；候选接口，需主控复核后才可上线",
+                optional_payload_keys=("targetScore", "targetScoreRange"),
+                note="提交 jump/fly proof；目标分必须可调且默认低分，需主控复核后才可上线",
             ),
             MiniAppFlowStep(
                 key="reward_claim",
@@ -224,6 +259,457 @@ def _int_value(value, default=0):
         return int(float(str(value).replace(",", "")))
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _float_value(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _clamp(value, lower, upper):
+    return max(float(lower), min(float(upper), float(value)))
+
+
+def _int_between(value, default, lower, upper):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = int(default)
+    return max(int(lower), min(int(upper), parsed))
+
+
+def tree_miniapp_seed_hash(seed, index):
+    """Match the WebView's FNV-style deterministic course generator."""
+
+    text = f"{seed or 'luoyun'}:{int(index or 0)}"
+    value = 2166136261
+    for char in text:
+        value ^= ord(char)
+        value = (value * 16777619) & 0xFFFFFFFF
+    return value / 4294967295.0
+
+
+def _target_score(mode, rng, profile=None):
+    profile = dict(profile or {})
+    floor = int(TREE_MINIAPP_MIN_TARGET_SCORE.get(mode, 20))
+    cap = int(TREE_MINIAPP_MAX_TARGET_SCORE.get(mode, 80))
+    if "target_score" in profile:
+        return max(floor, min(cap, int(profile.get("target_score") or floor)))
+    raw_range = profile.get("target_score_range") or TREE_MINIAPP_DEFAULT_TARGET_SCORE.get(mode, (3, 7))
+    try:
+        low, high = raw_range
+    except (TypeError, ValueError):
+        low, high = TREE_MINIAPP_DEFAULT_TARGET_SCORE.get(mode, (3, 7))
+    low = max(floor, min(cap, int(low or floor)))
+    high = max(low, min(cap, int(high or low)))
+    return int(rng.randint(low, high))
+
+
+def make_tree_fly_gate(seed, index, x):
+    index = int(index or 0)
+    return {
+        "x": float(x),
+        "gapY": 102.0 + tree_miniapp_seed_hash(seed, index * 19 + 5) * 152.0,
+        "gap": TREE_MINIAPP_FLY_GATE_GAP,
+        "width": TREE_MINIAPP_FLY_GATE_WIDTH,
+        "passed": False,
+        "index": index,
+    }
+
+
+def _initial_tree_fly_gates(seed):
+    return [
+        make_tree_fly_gate(seed, 1, 314.0),
+        make_tree_fly_gate(seed, 2, 488.0),
+        make_tree_fly_gate(seed, 3, 662.0),
+    ]
+
+
+def simulate_tree_fly_run(seed, flaps, *, max_duration_ms=30000, frame_ms=TREE_MINIAPP_FLY_FRAME_MS):
+    """Replay the WebView fly physics from a list of flap timestamps."""
+
+    flaps = sorted(max(0, int(round(item))) for item in (flaps or ()))
+    frame_ms = max(8, int(frame_ms or TREE_MINIAPP_FLY_FRAME_MS))
+    max_duration_ms = max(frame_ms, int(max_duration_ms or 30000))
+    gates = _initial_tree_fly_gates(seed)
+    player = {"x": TREE_MINIAPP_FLY_PLAYER_X, "y": 178.0, "vy": 0.0}
+    score = 0
+    flap_index = 0
+    now_ms = 0
+    game_over = False
+
+    while now_ms <= max_duration_ms and not game_over:
+        while flap_index < len(flaps) and flaps[flap_index] <= now_ms:
+            player["vy"] = TREE_MINIAPP_FLY_IMPULSE
+            flap_index += 1
+        dt = frame_ms / 1000.0
+        player["vy"] += TREE_MINIAPP_FLY_GRAVITY * dt
+        player["y"] += player["vy"] * dt
+        speed = TREE_MINIAPP_FLY_BASE_SPEED + min(TREE_MINIAPP_FLY_SPEED_CAP, score * TREE_MINIAPP_FLY_SCORE_SPEED)
+        for gate in gates:
+            gate["x"] -= speed * dt
+            if not gate.get("passed") and gate["x"] + gate["width"] < player["x"] - 10:
+                gate["passed"] = True
+                score += 1
+        last = gates[-1] if gates else None
+        while gates and gates[0]["x"] < -80:
+            gates.pop(0)
+        while len(gates) < 3:
+            tail = gates[-1] if gates else last or {"x": 300.0, "index": 0}
+            gates.append(make_tree_fly_gate(seed, int(tail.get("index") or 0) + 1, float(tail.get("x") or 300.0) + TREE_MINIAPP_FLY_GATE_SPACING))
+
+        radius = TREE_MINIAPP_FLY_PLAYER_RADIUS
+        hit = player["y"] < TREE_MINIAPP_FLY_TOP_Y or player["y"] > TREE_MINIAPP_FLY_BOTTOM_Y
+        for gate in gates:
+            inside_x = player["x"] + radius > gate["x"] and player["x"] - radius < gate["x"] + gate["width"]
+            outside_gap = player["y"] - radius < gate["gapY"] - gate["gap"] / 2 or player["y"] + radius > gate["gapY"] + gate["gap"] / 2
+            if inside_x and outside_gap:
+                hit = True
+                break
+        game_over = bool(hit)
+        now_ms += frame_ms
+
+    return {
+        "score": int(score),
+        "durationMs": int(min(now_ms, max_duration_ms)),
+        "gameOver": bool(game_over),
+        "flapCount": len(flaps),
+        "finalY": round(float(player["y"]), 3),
+        "finalVy": round(float(player["vy"]), 3),
+    }
+
+
+def _step_tree_fly_state(seed, state_item, *, flap=False, frame_ms=TREE_MINIAPP_FLY_FRAME_MS):
+    now_ms, y, vy, score, gates, flaps, last_flap_ms = state_item
+    if flap:
+        vy = TREE_MINIAPP_FLY_IMPULSE
+        flaps = tuple(list(flaps) + [int(now_ms)])
+        last_flap_ms = int(now_ms)
+    dt = max(8, int(frame_ms or TREE_MINIAPP_FLY_FRAME_MS)) / 1000.0
+    vy += TREE_MINIAPP_FLY_GRAVITY * dt
+    y += vy * dt
+    speed = TREE_MINIAPP_FLY_BASE_SPEED + min(TREE_MINIAPP_FLY_SPEED_CAP, score * TREE_MINIAPP_FLY_SCORE_SPEED)
+    gates = [dict(gate) for gate in gates]
+    for gate in gates:
+        gate["x"] -= speed * dt
+        if not gate.get("passed") and gate["x"] + gate["width"] < TREE_MINIAPP_FLY_PLAYER_X - 10:
+            gate["passed"] = True
+            score += 1
+    last_gate = gates[-1] if gates else None
+    while gates and gates[0]["x"] < -80:
+        gates.pop(0)
+    while len(gates) < 3:
+        tail = gates[-1] if gates else last_gate or {"x": 300.0, "index": 0}
+        gates.append(make_tree_fly_gate(seed, int(tail.get("index") or 0) + 1, float(tail.get("x") or 300.0) + TREE_MINIAPP_FLY_GATE_SPACING))
+
+    radius = TREE_MINIAPP_FLY_PLAYER_RADIUS
+    hit = y < TREE_MINIAPP_FLY_TOP_Y or y > TREE_MINIAPP_FLY_BOTTOM_Y
+    for gate in gates:
+        inside_x = TREE_MINIAPP_FLY_PLAYER_X + radius > gate["x"] and TREE_MINIAPP_FLY_PLAYER_X - radius < gate["x"] + gate["width"]
+        outside_gap = y - radius < gate["gapY"] - gate["gap"] / 2 or y + radius > gate["gapY"] + gate["gap"] / 2
+        if inside_x and outside_gap:
+            hit = True
+            break
+    if hit:
+        return None
+    return (int(now_ms) + int(frame_ms), float(y), float(vy), int(score), gates, flaps, int(last_flap_ms))
+
+
+def _tree_fly_state_quality(state_item):
+    now_ms, y, vy, score, gates, flaps, _last_flap_ms = state_item
+    next_gate = next((gate for gate in gates if gate["x"] + gate["width"] >= TREE_MINIAPP_FLY_PLAYER_X - 10), gates[0])
+    center_penalty = abs(float(y) - float(next_gate["gapY"])) * 8.0
+    velocity_penalty = abs(float(vy)) * 0.45
+    flap_penalty = len(flaps) * 2.5
+    return int(score) * 10000.0 + int(now_ms) * 0.04 - center_penalty - velocity_penalty - flap_penalty
+
+
+def plan_tree_fly_flaps(seed, *, target_score, rng=None, profile=None):
+    rng = rng or random
+    profile = dict(profile or {})
+    target_score = max(1, int(target_score or 1))
+    beam_width = _int_between(
+        profile.get("beam_width"),
+        TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH,
+        80,
+        TREE_MINIAPP_FLY_MAX_BEAM_WIDTH,
+    )
+    frame_ms = max(8, int(profile.get("frame_ms") or TREE_MINIAPP_FLY_FRAME_MS))
+    requested_duration_ms = max(15000, int(profile.get("max_duration_ms") or max(45000, target_score * 1400)))
+    max_duration_ms = min(requested_duration_ms, TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS)
+    max_plan_frames = _int_between(
+        profile.get("max_plan_frames"),
+        TREE_MINIAPP_FLY_MAX_PLAN_FRAMES,
+        1,
+        TREE_MINIAPP_FLY_MAX_PLAN_FRAMES,
+    )
+    min_interval_ms = max(120, int(profile.get("min_interval_ms") or rng.randint(175, 260)))
+    first_flap_floor_ms = max(80, int(profile.get("first_flap_floor_ms") or rng.randint(120, 260)))
+    initial = (
+        0,
+        178.0,
+        0.0,
+        0,
+        _initial_tree_fly_gates(seed),
+        tuple(),
+        -99999,
+    )
+    beam = [initial]
+    best = initial
+    for _frame in range(min(max_duration_ms // frame_ms, max_plan_frames)):
+        candidates = []
+        for state_item in beam:
+            if int(state_item[3]) > int(best[3]) or (int(state_item[3]) == int(best[3]) and _tree_fly_state_quality(state_item) > _tree_fly_state_quality(best)):
+                best = state_item
+            steady = _step_tree_fly_state(seed, state_item, flap=False, frame_ms=frame_ms)
+            if steady is not None:
+                candidates.append(steady)
+            now_ms, y, vy, _score, _gates, _flaps, last_flap_ms = state_item
+            can_flap = (
+                now_ms >= first_flap_floor_ms
+                and now_ms - last_flap_ms >= min_interval_ms
+                and y > TREE_MINIAPP_FLY_TOP_Y + 18
+                and vy > -235
+            )
+            if can_flap:
+                flapped = _step_tree_fly_state(seed, state_item, flap=True, frame_ms=frame_ms)
+                if flapped is not None:
+                    candidates.append(flapped)
+        if not candidates:
+            break
+        buckets = {}
+        for state_item in candidates:
+            now_ms, y, vy, score, gates, _flaps, _last_flap_ms = state_item
+            first_gate = gates[0]
+            key = (
+                int(score),
+                int(y // 8),
+                int(vy // 32),
+                int(first_gate.get("index") or 0),
+                int(float(first_gate.get("x") or 0) // 12),
+            )
+            old = buckets.get(key)
+            if old is None or _tree_fly_state_quality(state_item) > _tree_fly_state_quality(old):
+                buckets[key] = state_item
+        beam = sorted(buckets.values(), key=_tree_fly_state_quality, reverse=True)[:beam_width]
+        reached = [state_item for state_item in beam if int(state_item[3]) >= target_score]
+        if reached:
+            selected = max(reached, key=_tree_fly_state_quality)
+            return list(selected[5]), selected
+    return list(best[5]), best
+
+
+def build_tree_fly_proof(run, *, rng=None, profile=None):
+    rng = rng or random
+    profile = dict(profile or {})
+    seed = str((run or {}).get("seed") or profile.get("seed") or "").strip()
+    if not seed:
+        raise ValueError("fly seed missing")
+    target_score = _target_score("fly", rng, profile)
+    frame_ms = max(8, int(profile.get("frame_ms") or TREE_MINIAPP_FLY_FRAME_MS))
+    requested_duration_ms = max(15000, int(profile.get("max_duration_ms") or max(45000, target_score * 1400)))
+    max_duration_ms = min(requested_duration_ms, TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS)
+    submit_delay_ms = int(profile.get("submit_delay_ms") or rng.randint(650, 1800))
+    flaps, planned_state = plan_tree_fly_flaps(seed, target_score=target_score, rng=rng, profile=profile)
+    replay = simulate_tree_fly_run(seed, flaps, max_duration_ms=max_duration_ms, frame_ms=frame_ms)
+    duration_ms = max(int(replay["durationMs"]), flaps[-1] if flaps else 0) + submit_delay_ms
+    proof = {
+        "flaps": [int(item) for item in flaps],
+        "durationMs": int(duration_ms),
+        "clientScore": int(replay["score"]),
+    }
+    summary = {
+        "mode": "fly",
+        "targetScore": int(target_score),
+        "score": int(replay["score"]),
+        "flapCount": len(flaps),
+        "durationMs": proof["durationMs"],
+        "gameOver": bool(replay["gameOver"]),
+        "profile": {
+            "beam_width": _int_between(
+                profile.get("beam_width"),
+                TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH,
+                80,
+                TREE_MINIAPP_FLY_MAX_BEAM_WIDTH,
+            ),
+            "max_duration_ms": int(max_duration_ms),
+            "min_interval_ms": int(profile.get("min_interval_ms") or 0),
+            "planned_score": int(planned_state[3]) if planned_state else 0,
+            "forced_miss": bool(replay["gameOver"] and replay["score"] >= target_score),
+        },
+    }
+    return proof, summary
+
+
+def _jump_type(seed, index):
+    roll = tree_miniapp_seed_hash(seed, index * 7 + 3)
+    if index > 0 and index % 7 == 0:
+        return {"score": 1.5}
+    if roll > 0.82:
+        return {"score": 1.25}
+    if roll > 0.62:
+        return {"score": 1.12}
+    if roll > 0.42:
+        return {"score": 1.08}
+    return {"score": 1.0}
+
+
+def make_tree_jump_platform(seed, index, origin=None):
+    base = dict(origin or TREE_MINIAPP_JUMP_START)
+    index = int(index or 0)
+    if index <= 0:
+        return {"x": float(base["x"]), "y": float(base["y"]), "r": 34.0, "type": _jump_type(seed, 0)}
+    return {
+        "x": float(base["x"]) + 112.0 + tree_miniapp_seed_hash(seed, index * 11 + 1) * 58.0,
+        "y": float(base["y"]) + -72.0 + tree_miniapp_seed_hash(seed, index * 13 + 2) * 136.0,
+        "r": 29.0 + tree_miniapp_seed_hash(seed, index * 17 + 4) * 8.0,
+        "type": _jump_type(seed, index),
+    }
+
+
+def _jump_distance_for_charge(charge):
+    return 54.0 + _clamp(charge, 0, 1) * 245.0
+
+
+def _estimate_jump_landing(current, next_platform, charge):
+    dx = float(next_platform["x"]) - float(current["x"])
+    dy = float(next_platform["y"]) - float(current["y"])
+    dist = max(1.0, math.hypot(dx, dy))
+    jump_dist = _jump_distance_for_charge(charge)
+    return {
+        "x": float(current["x"]) + dx / dist * jump_dist,
+        "y": float(current["y"]) + dy / dist * jump_dist,
+    }
+
+
+def _score_jump_landing(next_platform, landing, center_combo):
+    error = math.hypot(float(landing["x"]) - float(next_platform["x"]), float(landing["y"]) - float(next_platform["y"]))
+    perfect = max(11.0, float(next_platform["r"]) * 0.32)
+    edge = max(28.0, float(next_platform["r"]) * 0.86)
+    hit = error <= edge
+    center = error <= perfect
+    next_center_combo = int(center_combo or 0) + 1 if center else 0
+    points = next_center_combo * 2 if hit and center else 1 if hit else 0
+    return {
+        "hit": bool(hit),
+        "center": bool(center),
+        "error": float(error),
+        "points": int(points),
+        "centerCombo": int(next_center_combo),
+    }
+
+
+def _choose_jump_miss_charge(current, next_platform, center_combo, rng):
+    dx = float(next_platform["x"]) - float(current["x"])
+    dy = float(next_platform["y"]) - float(current["y"])
+    dist = math.hypot(dx, dy)
+    ideal = _clamp((dist - 54.0) / 245.0, 0.0, 1.0)
+    deltas = [-0.32, 0.32, -0.45, 0.45, -0.6, 0.6]
+    if rng.random() < 0.5:
+        deltas.reverse()
+    for delta in deltas:
+        charge = round(float(_clamp(ideal + delta, 0.0, 1.0)), 4)
+        landing = _estimate_jump_landing(current, next_platform, charge)
+        result = _score_jump_landing(next_platform, landing, center_combo)
+        if not result["hit"]:
+            return charge
+    return round(0.0 if ideal >= 0.5 else 1.0, 4)
+
+
+def simulate_tree_jump_run(seed, charges):
+    seed = str(seed or "").strip()
+    current = make_tree_jump_platform(seed, 0)
+    next_platform = make_tree_jump_platform(seed, 1, current)
+    score = 0
+    center_combo = 0
+    index = 0
+    game_over = False
+    last_result = {}
+    for raw_charge in charges or ():
+        charge = _clamp(raw_charge, 0, 1)
+        landing = _estimate_jump_landing(current, next_platform, charge)
+        result = _score_jump_landing(next_platform, landing, center_combo)
+        last_result = result
+        if not result["hit"]:
+            game_over = True
+            break
+        score += int(result["points"])
+        center_combo = int(result["centerCombo"])
+        index += 1
+        current = dict(next_platform)
+        next_platform = make_tree_jump_platform(seed, index + 1, current)
+    return {
+        "score": int(score),
+        "jumps": int(index),
+        "gameOver": bool(game_over),
+        "lastError": round(float(last_result.get("error", 0.0)), 3),
+    }
+
+
+def build_tree_jump_proof(run, *, rng=None, profile=None):
+    rng = rng or random
+    profile = dict(profile or {})
+    seed = str((run or {}).get("seed") or profile.get("seed") or "").strip()
+    if not seed:
+        raise ValueError("jump seed missing")
+    target_score = _target_score("jump", rng, profile)
+    cap_score = int(TREE_MINIAPP_MAX_TARGET_SCORE.get("jump", 80))
+    max_jumps = max(2, int(profile.get("max_jumps") or 14))
+    current = make_tree_jump_platform(seed, 0)
+    next_platform = make_tree_jump_platform(seed, 1, current)
+    charges = []
+    score = 0
+    center_combo = 0
+    index = 0
+    forced_miss = False
+    while index < max_jumps:
+        dx = float(next_platform["x"]) - float(current["x"])
+        dy = float(next_platform["y"]) - float(current["y"])
+        dist = math.hypot(dx, dy)
+        ideal = _clamp((dist - 54.0) / 245.0, 0.0, 1.0)
+        if score >= target_score:
+            charge = _choose_jump_miss_charge(current, next_platform, center_combo, rng)
+            forced_miss = True
+        else:
+            charge = _clamp(ideal + rng.uniform(-0.045, 0.055), 0.0, 1.0)
+            if rng.random() < 0.22:
+                charge = _clamp(charge + rng.choice((-1, 1)) * rng.uniform(0.045, 0.075), 0.0, 1.0)
+        charge = round(float(charge), 4)
+        charges.append(charge)
+        landing = _estimate_jump_landing(current, next_platform, charge)
+        result = _score_jump_landing(next_platform, landing, center_combo)
+        if result["hit"] and score + int(result["points"]) > cap_score:
+            charge = _choose_jump_miss_charge(current, next_platform, center_combo, rng)
+            charges[-1] = charge
+            forced_miss = True
+            landing = _estimate_jump_landing(current, next_platform, charge)
+            result = _score_jump_landing(next_platform, landing, center_combo)
+        if not result["hit"]:
+            break
+        score += int(result["points"])
+        center_combo = int(result["centerCombo"])
+        index += 1
+        current = dict(next_platform)
+        next_platform = make_tree_jump_platform(seed, index + 1, current)
+    replay = simulate_tree_jump_run(seed, charges)
+    duration_ms = int(sum(max(220, min(1200, charge * 1200)) + rng.randint(520, 1350) for charge in charges) + rng.randint(800, 2200))
+    proof = {
+        "charges": list(charges),
+        "durationMs": max(1200, duration_ms),
+        "clientScore": int(replay["score"]),
+    }
+    summary = {
+        "mode": "jump",
+        "targetScore": int(target_score),
+        "score": int(replay["score"]),
+        "chargeCount": len(charges),
+        "durationMs": proof["durationMs"],
+        "gameOver": bool(replay["gameOver"]),
+        "forced_miss": bool(forced_miss),
+    }
+    return proof, summary
 
 
 def _mode_quota(data, mode):
@@ -284,6 +770,47 @@ def classify_tree_miniapp_error(error):
     return "failed"
 
 
+def normalize_tree_score_profile(mode, profile=None):
+    mode = str(mode or "").strip().lower()
+    if mode not in TREE_MINIAPP_MODES:
+        raise ValueError("tree miniapp mode must be jump or fly")
+    source = dict(profile or {})
+    default_low, default_high = TREE_MINIAPP_DEFAULT_TARGET_SCORE[mode]
+    low = default_low
+    high = default_high
+    if "target_score_range" in source:
+        try:
+            raw_low, raw_high = source.get("target_score_range") or ()
+            low = int(raw_low or default_low)
+            high = int(raw_high or default_high)
+        except (TypeError, ValueError):
+            low, high = default_low, default_high
+    if "target_score" in source:
+        try:
+            score = int(source.get("target_score") or default_low)
+        except (TypeError, ValueError):
+            score = default_low
+        low = high = score
+    floor = int(TREE_MINIAPP_MIN_TARGET_SCORE.get(mode, 20))
+    cap = int(TREE_MINIAPP_MAX_TARGET_SCORE.get(mode, 80))
+    low = max(floor, min(cap, low))
+    high = max(low, min(cap, high))
+    normalized = dict(source)
+    normalized["target_score_range"] = (low, high)
+    normalized.pop("target_score", None)
+    return normalized
+
+
+def build_tree_game_proof(mode, run, *, rng=None, profile=None):
+    normalized_mode = str(mode or "").strip().lower()
+    profile = normalize_tree_score_profile(normalized_mode, profile)
+    if normalized_mode == "fly":
+        return build_tree_fly_proof(run, rng=rng, profile=profile)
+    if normalized_mode == "jump":
+        return build_tree_jump_proof(run, rng=rng, profile=profile)
+    raise ValueError("tree miniapp mode must be jump or fly")
+
+
 def _flow_result(ok, status, *, data=None, events=None, error=""):
     return {
         "ok": bool(ok),
@@ -292,6 +819,18 @@ def _flow_result(ok, status, *, data=None, events=None, error=""):
         "events": list(events or ()),
         "error": sanitize_webapp_secret_text(error),
     }
+
+
+def _append_http_event(events, step, result):
+    events.append({
+        "step": step,
+        "ok": bool(result.ok),
+        "status_code": int(result.status_code or 0),
+        "error_type": result.error_type,
+        "attempts": int(result.attempts or 0),
+        "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
+        "error": sanitize_webapp_secret_text(result.error),
+    })
 
 
 def run_tree_miniapp_start_lab_flow(
@@ -324,6 +863,153 @@ def run_tree_miniapp_start_lab_flow(
     return _flow_result(True, "ready", data={"state": parsed}, events=events)
 
 
+def run_tree_miniapp_game_lab_flow(
+    *,
+    token,
+    init_data,
+    mode="fly",
+    submit=False,
+    transport=None,
+    adapter=None,
+    rng=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    score_profile=None,
+):
+    adapter = adapter or build_tree_miniapp_adapter()
+    transport = transport or _requests_transport
+    rng = rng or random
+    sleeper = sleeper or time.sleep
+    token = str(token or "").strip()
+    init_data = str(init_data or "").strip()
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in TREE_MINIAPP_MODES:
+        return _flow_result(False, "failed", error="tree miniapp mode must be jump or fly")
+    if not token:
+        return _flow_result(False, "failed", error="token missing")
+    if not init_data:
+        return _flow_result(False, "failed", error="initData missing")
+    try:
+        score_profile = normalize_tree_score_profile(normalized_mode, score_profile)
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+    events = []
+    start_request = build_tree_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+    start_result = execute_miniapp_http_request(
+        start_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="start",
+    )
+    _append_http_event(events, "start", start_result)
+    if not start_result.ok:
+        return _flow_result(False, classify_tree_miniapp_error(start_result.error), error=start_result.error, events=events)
+
+    state = parse_tree_miniapp_state(start_result.data)
+    quota = state.get(normalized_mode) if isinstance(state, dict) else {}
+    if _int_value((quota or {}).get("remaining"), 0) <= 0:
+        return _flow_result(False, "daily_limit", data={"state": state}, events=events)
+
+    run_start_request = build_tree_miniapp_request(
+        "run_start",
+        token=token,
+        init_data=init_data,
+        payload={"mode": normalized_mode},
+        adapter=adapter,
+    )
+    run_start_result = execute_miniapp_http_request(
+        run_start_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="run_start",
+    )
+    _append_http_event(events, "run_start", run_start_result)
+    if not run_start_result.ok:
+        return _flow_result(False, classify_tree_miniapp_error(run_start_result.error), error=run_start_result.error, data={"state": state}, events=events)
+    run = run_start_result.data.get("run") if isinstance(run_start_result.data.get("run"), dict) else {}
+    if not run.get("runToken") or not run.get("seed"):
+        return _flow_result(False, "not_ready", error="runToken or seed missing", data={"state": state, "run_keys": sorted(str(key) for key in run)}, events=events)
+
+    try:
+        proof, proof_summary = build_tree_game_proof(normalized_mode, run, rng=rng, profile=score_profile)
+    except Exception as exc:
+        events.append({
+            "step": "solve",
+            "ok": False,
+            "mode": normalized_mode,
+            "error": sanitize_webapp_secret_text(exc),
+        })
+        return _flow_result(False, "solve_failed", error=exc, data={"state": state, "run_keys": sorted(str(key) for key in run)}, events=events)
+
+    events.append({
+        "step": "solve",
+        "ok": True,
+        "mode": normalized_mode,
+        "score": int(proof_summary.get("score") or 0),
+        "targetScore": int(proof_summary.get("targetScore") or 0),
+        "durationMs": int(proof_summary.get("durationMs") or proof.get("durationMs") or 0),
+    })
+    data = {
+        "state": state,
+        "mode": normalized_mode,
+        "run": {
+            "mode": str(run.get("mode") or normalized_mode),
+            "used": _int_value(run.get("used"), 0),
+            "limit": _int_value(run.get("limit"), 0),
+            "runNo": _int_value(run.get("runNo"), 0),
+            "seasonId": str(run.get("seasonId") or ""),
+            "playDate": str(run.get("playDate") or ""),
+        },
+        "proof_summary": proof_summary,
+        "score_profile": {
+            "target_score_range": list(score_profile.get("target_score_range") or ()),
+        },
+    }
+    if not submit:
+        return _flow_result(True, "prepared", data=data, events=events)
+
+    duration_ms = max(0, int(proof.get("durationMs") or proof_summary.get("durationMs") or 0))
+    if duration_ms > 0:
+        sleeper(float(duration_ms) / 1000.0)
+    submit_request = build_tree_miniapp_request(
+        "run_submit",
+        token=token,
+        init_data=init_data,
+        payload={
+            "mode": normalized_mode,
+            "runToken": str(run.get("runToken") or ""),
+            "proof": proof,
+        },
+        adapter=adapter,
+    )
+    submit_result = execute_miniapp_http_request(
+        submit_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="run_submit",
+    )
+    _append_http_event(events, "run_submit", submit_result)
+    if not submit_result.ok:
+        return _flow_result(False, classify_tree_miniapp_error(submit_result.error), error=submit_result.error, data=data, events=events)
+    submitted_score = _int_value(submit_result.data.get("score"), int(proof_summary.get("score") or 0))
+    data["submit"] = {
+        "score": submitted_score,
+        "data_keys": sorted(str(key) for key in submit_result.data),
+    }
+    season_state = submit_result.data.get("seasonState") if isinstance(submit_result.data.get("seasonState"), dict) else {}
+    if season_state:
+        data["season_state_keys"] = sorted(str(key) for key in season_state)
+    return _flow_result(True, "settled", data=data, events=events)
+
+
 async def run_tree_miniapp_start_production_flow(
     identity_id,
     *,
@@ -354,18 +1040,72 @@ async def run_tree_miniapp_start_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_tree_miniapp_game_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    mode="fly",
+    submit=False,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    rng=None,
+    capture_sink=None,
+    capture_source="",
+    score_profile=None,
+):
+    adapter = adapter or build_tree_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = await request_tree_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        return await asyncio.to_thread(
+            run_tree_miniapp_game_lab_flow,
+            token=token,
+            init_data=init_data,
+            mode=mode,
+            submit=submit,
+            transport=transport or _requests_transport,
+            adapter=adapter,
+            rng=rng,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            score_profile=score_profile,
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 __all__ = [
     "TREE_MINIAPP_ENDPOINTS",
+    "TREE_MINIAPP_FLY_MAX_BEAM_WIDTH",
+    "TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS",
+    "TREE_MINIAPP_FLY_MAX_PLAN_FRAMES",
     "TREE_MINIAPP_GAME_KEY",
+    "TREE_MINIAPP_MAX_TARGET_SCORE",
+    "TREE_MINIAPP_MIN_TARGET_SCORE",
+    "build_tree_fly_proof",
+    "build_tree_game_proof",
+    "build_tree_jump_proof",
     "build_tree_launch_args",
     "build_tree_miniapp_adapter",
     "build_tree_miniapp_flow_plan",
     "build_tree_miniapp_request",
     "classify_tree_miniapp_error",
     "extract_tree_miniapp_launch",
+    "make_tree_fly_gate",
+    "make_tree_jump_platform",
+    "normalize_tree_score_profile",
     "parse_tree_miniapp_state",
     "request_tree_miniapp_init_data",
+    "run_tree_miniapp_game_lab_flow",
+    "run_tree_miniapp_game_production_flow",
     "run_tree_miniapp_start_lab_flow",
     "run_tree_miniapp_start_production_flow",
+    "simulate_tree_fly_run",
+    "simulate_tree_jump_run",
+    "tree_miniapp_seed_hash",
     "summarize_tree_entry",
 ]

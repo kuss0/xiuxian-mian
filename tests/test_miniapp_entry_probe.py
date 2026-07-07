@@ -15,6 +15,38 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("fishing", ui.MINIAPP_MANUAL_RUN_COMMANDS)
         self.assertNotIn("tree", ui.MINIAPP_MANUAL_RUN_COMMANDS)
 
+    async def test_tree_score_config_is_ui_adjustable_tens_policy(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "save_state", return_value=True) as save_mock:
+            ok, message = await ui.ui_set_tree_miniapp_score_config(1001, {
+                "jump_target_score": 7,
+                "fly_target_score": 999,
+            })
+
+        snapshot = ui.get_miniapp_status_snapshot(send_as_id=1001)
+        tree = snapshot["score_controls"]["tree"]
+
+        self.assertTrue(ok)
+        self.assertIn("跳一跳 20", message)
+        self.assertIn("飞一飞 80", message)
+        self.assertEqual([20, 20], tree["jump"]["target_score_range"])
+        self.assertEqual([80, 80], tree["fly"]["target_score_range"])
+        self.assertEqual(20, tree["jump"]["min_target_score"])
+        self.assertEqual(80, tree["fly"]["max_target_score"])
+        save_mock.assert_called_once()
+
+    async def test_tree_score_config_rejects_non_numeric_before_save(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1002]), \
+                patch.object(ui, "save_state", return_value=True) as save_mock:
+            ok, message = await ui.ui_set_tree_miniapp_score_config(1002, {
+                "jump_target_score": "abc",
+                "fly_target_score": 30,
+            })
+
+        self.assertFalse(ok)
+        self.assertIn("目标分必须是数字", message)
+        save_mock.assert_not_called()
+
     async def test_probe_sends_only_whitelisted_entry_command_without_tracking(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \

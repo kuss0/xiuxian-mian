@@ -101,6 +101,29 @@
       + '</section>';
   }
 
+  function targetScoreValue(config, mode) {
+    var item = (config && config[mode]) || {};
+    var range = Array.isArray(item.target_score_range) ? item.target_score_range : [];
+    var value = Number(range[0] || 0);
+    return Number.isFinite(value) && value > 0 ? value : 24;
+  }
+
+  function renderTreeScoreControls(scoreControls) {
+    var tree = scoreControls && scoreControls.tree;
+    if (!tree) return '';
+    var jumpMin = Number((tree.jump && tree.jump.min_target_score) || 20);
+    var flyMin = Number((tree.fly && tree.fly.min_target_score) || 20);
+    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 80);
+    var flyMax = Number((tree.fly && tree.fly.max_target_score) || 80);
+    return ''
+      + '<section class="miniapp-score-config" data-miniapp-score-config="tree">'
+      + '<div class="miniapp-score-title"><strong>灵树目标分</strong><span>身份：' + esc(selectedIdentityId() || '-') + '</span></div>'
+      + '<label><span>跳一跳</span><input type="number" min="' + esc(jumpMin) + '" max="' + esc(jumpMax) + '" step="1" data-tree-score-input="jump" value="' + esc(targetScoreValue(tree, 'jump')) + '"></label>'
+      + '<label><span>飞一飞</span><input type="number" min="' + esc(flyMin) + '" max="' + esc(flyMax) + '" step="1" data-tree-score-input="fly" value="' + esc(targetScoreValue(tree, 'fly')) + '"></label>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-score-save="1">保存</button>'
+      + '</section>';
+  }
+
   function renderCaptureSummary(summary) {
     var panel = document.getElementById('miniapp-capture-panel');
     if (!panel) return;
@@ -151,6 +174,7 @@
     probes.forEach(function (item) { probeByKey[item.game_key] = item; });
     runners.forEach(function (item) { runByKey[item.game_key] = item; });
     var policy = miniapp.policy || {};
+    var scoreControls = miniapp.score_controls || {};
     body.innerHTML = ''
       + '<div class="miniapp-toolbar">'
       + '<div id="miniapp-status-line" class="form-label form-label-inline">身份：' + esc(selectedIdentityId() || '未选择') + '</div>'
@@ -162,6 +186,7 @@
       + badge(policy.raw_init_data_persisted ? 'initData落盘' : 'initData不落盘', policy.raw_init_data_persisted ? 'warn' : 'ok')
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + '</div>'
+      + renderTreeScoreControls(scoreControls)
       + '<div class="miniapp-list">'
       + (adapters.length ? groups.map(function (group) {
         return renderAdapterGroup(group, adapters, probeByKey, runByKey, plans);
@@ -174,7 +199,9 @@
     var body = document.getElementById('miniapp-modal-body');
     if (body) body.innerHTML = '<div class="miniapp-empty">加载中</div>';
     try {
-      var response = await fetch('/api/miniapp-status', { credentials: 'same-origin', cache: 'no-store' });
+      var identity = selectedIdentityId();
+      var url = '/api/miniapp-status' + (identity ? '?send_as_id=' + encodeURIComponent(identity) : '');
+      var response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
       var data = await parseResponse(response);
       if (!data) return;
       renderMiniAppStatus(data);
@@ -237,6 +264,33 @@
     }
   }
 
+  async function saveTreeScoreConfig(button) {
+    var sendAsId = selectedIdentityId();
+    if (!sendAsId) {
+      flash('请选择身份', true);
+      return;
+    }
+    var panel = document.querySelector('[data-miniapp-score-config="tree"]');
+    if (!panel) return;
+    var jumpInput = panel.querySelector('[data-tree-score-input="jump"]');
+    var flyInput = panel.querySelector('[data-tree-score-input="fly"]');
+    if (button) button.disabled = true;
+    try {
+      var data = await post('/api/miniapp-tree-score-config', {
+        send_as_id: sendAsId,
+        jump_target_score: jumpInput ? jumpInput.value : '',
+        fly_target_score: flyInput ? flyInput.value : ''
+      });
+      flash(data.message || '灵树目标分已保存', false);
+      if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });
+      else refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || '灵树目标分保存失败', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function loadCaptureSummary(gameKey, button) {
     if (!gameKey) return;
     if (button) button.disabled = true;
@@ -267,6 +321,11 @@
     }
     if (event.target.closest('[data-miniapp-refresh]')) {
       refreshMiniAppStatus();
+      return;
+    }
+    var scoreSaveBtn = event.target.closest('[data-miniapp-tree-score-save]');
+    if (scoreSaveBtn) {
+      saveTreeScoreConfig(scoreSaveBtn);
       return;
     }
     var probeBtn = event.target.closest('[data-miniapp-probe]');

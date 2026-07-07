@@ -95,6 +95,7 @@ from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manual_run, revoke_cave_treasure_miniapp_manual_run
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.tree_miniapp import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
 from .features.trial_runtime import authorize_trial_miniapp_manual_run, revoke_trial_miniapp_manual_run
 from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing_automation_pause_text, normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
@@ -185,6 +186,7 @@ from .state import (
     get_storage_bag_item_rules,
     get_storage_bag_records,
     get_tianjige_dao_path_records,
+    get_tree_miniapp_score_configs,
     get_tianti_rank_choice,
     get_wild_training_strategy,
     set_account,
@@ -222,6 +224,7 @@ from .state import (
     set_storage_bag_item_rules,
     set_storage_bag_records,
     set_tianjige_dao_path_records,
+    set_tree_miniapp_score_configs,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
     state,
@@ -297,7 +300,73 @@ def _with_miniapp_ui_group(item):
     return result
 
 
-def get_miniapp_status_snapshot():
+def _miniapp_tree_score_config_key(send_as_id=None):
+    try:
+        return int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _tree_miniapp_score_config_for_key(key):
+    records = get_tree_miniapp_score_configs()
+    if not isinstance(records, dict):
+        return {}
+    return dict(records.get(str(key)) or records.get(int(key)) or {})
+
+
+def get_tree_miniapp_score_config(send_as_id=None):
+    key = _miniapp_tree_score_config_key(send_as_id)
+    saved = _tree_miniapp_score_config_for_key(key)
+    jump = normalize_tree_score_profile("jump", saved.get("jump"))
+    fly = normalize_tree_score_profile("fly", saved.get("fly"))
+    return {
+        "identity_id": key,
+        "jump": {
+            "target_score_range": list(jump.get("target_score_range") or ()),
+            "min_target_score": int(TREE_MINIAPP_MIN_TARGET_SCORE["jump"]),
+            "max_target_score": int(TREE_MINIAPP_MAX_TARGET_SCORE["jump"]),
+        },
+        "fly": {
+            "target_score_range": list(fly.get("target_score_range") or ()),
+            "min_target_score": int(TREE_MINIAPP_MIN_TARGET_SCORE["fly"]),
+            "max_target_score": int(TREE_MINIAPP_MAX_TARGET_SCORE["fly"]),
+        },
+        "submit_default": False,
+        "note": "灵树跳一跳/飞一飞必须使用可调几十目标分；默认不追高分，不自动提交。",
+    }
+
+
+async def ui_set_tree_miniapp_score_config(send_as_id, payload=None):
+    payload = dict(payload or {})
+    key = _miniapp_tree_score_config_key(send_as_id)
+    if key not in get_identity_ids():
+        return False, "身份不存在"
+    current = get_tree_miniapp_score_config(key)
+    updates = {}
+    for mode in ("jump", "fly"):
+        raw_value = payload.get(f"{mode}_target_score")
+        nested = payload.get(mode) if isinstance(payload.get(mode), dict) else {}
+        if raw_value in {None, ""}:
+            raw_value = nested.get("target_score")
+        if raw_value in {None, ""}:
+            raw_range = (current.get(mode) or {}).get("target_score_range") or []
+            raw_value = raw_range[0] if raw_range else 1
+        try:
+            target_score = int(str(raw_value).strip())
+        except (TypeError, ValueError, OverflowError):
+            return False, f"{mode} 目标分必须是数字"
+        updates[mode] = normalize_tree_score_profile(mode, {"target_score": target_score})
+    records = dict(get_tree_miniapp_score_configs())
+    records[str(key)] = updates
+    set_tree_miniapp_score_configs(records)
+    save_state()
+    refreshed = get_tree_miniapp_score_config(key)
+    jump_score = (refreshed["jump"]["target_score_range"] or [0])[0]
+    fly_score = (refreshed["fly"]["target_score_range"] or [0])[0]
+    return True, f"灵树目标分已更新：跳一跳 {jump_score}｜飞一飞 {fly_score}"
+
+
+def get_miniapp_status_snapshot(send_as_id=None):
     registry = miniapp_registry.build_known_miniapp_registry()
     plans = miniapp_registry.build_known_miniapp_flow_plans()
     return {
@@ -336,6 +405,9 @@ def get_miniapp_status_snapshot():
             "manual_only": True,
             "raw_init_data_persisted": False,
             "raw_start_token_persisted": False,
+        },
+        "score_controls": {
+            "tree": get_tree_miniapp_score_config(send_as_id),
         },
     }
 _storage_bag_api_state = {
@@ -6322,7 +6394,8 @@ async def handle_ui_http(reader, writer):
                 elif method != "GET":
                     _write_method_not_allowed(writer)
                 else:
-                    body = _make_json_payload(True, extra={"miniapp": get_miniapp_status_snapshot()})
+                    send_as_id = query.get("send_as_id", [""])[0]
+                    body = _make_json_payload(True, extra={"miniapp": get_miniapp_status_snapshot(send_as_id=send_as_id)})
                     _write_response(
                         writer,
                         "HTTP/1.1 200 OK",
@@ -7090,6 +7163,26 @@ async def handle_ui_http(reader, writer):
                             extra=extra,
                             include_snapshot=False,
                         )
+            elif path == "/api/miniapp-tree-score-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_tree_miniapp_score_config(send_as_id, payload)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            extra={"miniapp": get_miniapp_status_snapshot(send_as_id=send_as_id)},
+                            include_snapshot=False,
+                        )
             elif path == "/api/stargazer-star-choice":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -7413,6 +7506,8 @@ __all__ = [
     "ui_sync_tianti_status",
     "ui_set_tianti_feature_enabled",
     "get_miniapp_status_snapshot",
+    "get_tree_miniapp_score_config",
     "ui_send_miniapp_entry_probe",
     "ui_send_miniapp_manual_run",
+    "ui_set_tree_miniapp_score_config",
 ]

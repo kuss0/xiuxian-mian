@@ -2736,6 +2736,51 @@ body {
   border-color: #334155;
 }
 
+.miniapp-score-config {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 128px) minmax(96px, 128px) auto;
+  gap: 8px;
+  align-items: end;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: #020617;
+}
+
+.miniapp-score-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.miniapp-score-title strong {
+  color: #e5e7eb;
+  font-size: 13px;
+}
+
+.miniapp-score-title span,
+.miniapp-score-config label span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.miniapp-score-config label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.miniapp-score-config input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #e5e7eb;
+  background: #0f172a;
+}
+
 .miniapp-empty {
   padding: 16px;
   text-align: center;
@@ -3237,6 +3282,11 @@ body {
     grid-template-columns: 1fr;
     gap: 8px;
     padding: 10px;
+  }
+
+  .miniapp-score-config {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .module-setting-controls {

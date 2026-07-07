@@ -60,6 +60,7 @@ from .state import (
     get_storage_bag_item_rules,
     get_storage_bag_records,
     get_tianjige_dao_path_records,
+    get_tree_miniapp_score_configs,
     new_identity_state,
     set_auto_delete_sent_messages,
     set_dungeon_join_run_state,
@@ -100,6 +101,7 @@ from .state import (
     set_storage_bag_item_rules,
     set_storage_bag_records,
     set_tianjige_dao_path_records,
+    set_tree_miniapp_score_configs,
     get_accounts,
     set_accounts,
     get_identity_account_map,
@@ -1978,6 +1980,10 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("tree_miniapp_score_configs", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("quiz_learning_watchers", "{}"),
     )
     conn.execute(
@@ -2571,6 +2577,11 @@ _META_STATE_CODEC = {
         lambda: _meta_state.get("mulan_intel_state") if isinstance(_meta_state.get("mulan_intel_state"), dict) else {},
         _encode_meta_json,
         lambda value: _set_meta_value("mulan_intel_state", _decode_meta_json(value, {})),
+    ),
+    "tree_miniapp_score_configs": (
+        get_tree_miniapp_score_configs,
+        _encode_meta_json,
+        lambda value: set_tree_miniapp_score_configs(_decode_meta_json(value, {})),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,
