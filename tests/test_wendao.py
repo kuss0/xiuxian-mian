@@ -186,6 +186,61 @@ class WendaoTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 3723 + wendao.CD_BUFFER_SEC, state_module.state["next_wendao_time"])
             self.assertEqual("冷却中", state_module.state["wendao_last_result"])
 
+    async def test_recovered_pending_reply_extends_wait_from_recovery_time(self):
+        identity_id = self._prepare_identity()
+        original_ts = 1_700_000_000.0
+        recovery_ts = original_ts + wendao.WENDAO_REPLY_TIMEOUT_SEC + 5
+        with state_module.use_identity(identity_id):
+            state_module.state["wendao_enabled"] = True
+            state_module.state["wendao_reply_to_msg_id"] = 22027
+            state_module.state["wendao_reply_due_at"] = original_ts + wendao.WENDAO_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(wendao.time, "time", return_value=recovery_ts),
+                patch.object(wendao, "save_state"),
+            ):
+                handled = await wendao.handle_wendao_reply(
+                    "你消耗了 1000 点修为，虔诚地向宗门长老问道，希望能获得一丝天机...",
+                    original_ts,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".问道"),
+                    matched_family="wendao",
+                    result_msg_id=22028,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(22027, state_module.state["wendao_reply_to_msg_id"])
+            self.assertEqual(22028, state_module.state["wendao_pending_result_msg_id"])
+            self.assertEqual(recovery_ts + wendao.WENDAO_REPLY_TIMEOUT_SEC, state_module.state["wendao_reply_due_at"])
+            self.assertEqual(state_module.state["wendao_reply_due_at"], state_module.state["next_wendao_time"])
+            self.assertEqual("问道中", state_module.state["wendao_last_result"])
+
+    async def test_recovery_does_not_replay_same_pending_ack_after_wait_expires(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wendao_enabled"] = True
+            state_module.state["wendao_reply_to_msg_id"] = 22027
+            state_module.state["wendao_pending_result_msg_id"] = 22028
+            state_module.state["wendao_reply_due_at"] = now - 1
+            only_ack_entry = {
+                "message_id": 22028,
+                "ts_epoch": now - wendao.WENDAO_REPLY_TIMEOUT_SEC,
+                "text": "你消耗了 1000 点修为，虔诚地向宗门长老问道，希望能获得一丝天机...",
+            }
+            with (
+                patch.object(wendao, "find_message_log_message", return_value=only_ack_entry),
+                patch.object(wendao, "find_message_log_replies", return_value=[only_ack_entry]),
+                patch.object(wendao, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(wendao, "save_state"),
+            ):
+                await wendao.run_wendao_scheduler(now)
+
+            self.assertEqual(0, state_module.state["wendao_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["wendao_pending_result_msg_id"])
+            self.assertEqual("问道回复超时", state_module.state["wendao_last_error"])
+            self.assertEqual(now + wendao.RETRY_MAX_SEC, state_module.state["next_wendao_time"])
+            audit_mock.assert_awaited_once()
+            self.assertIn("问道回复超时", audit_mock.await_args.args[0])
+
     async def test_inventory_fenglei_wings_does_not_shorten_cd_without_equipped_signal(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

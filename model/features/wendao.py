@@ -219,6 +219,12 @@ async def handle_wendao_reply(text, now, reply_to=None, matched_family=None, res
         if result_msg_id > 0:
             state["wendao_pending_result_msg_id"] = result_msg_id
             state["wendao_last_msg_id"] = result_msg_id
+        # A recovered pending/ack reply may be replayed after its original
+        # timestamp. Move the wait window from the recovery time, otherwise the
+        # scheduler immediately replays the same ack and floods audit logs.
+        recovery_now = max(float(now or 0), time.time())
+        state["wendao_reply_due_at"] = float(recovery_now + WENDAO_REPLY_TIMEOUT_SEC)
+        state["next_wendao_time"] = state["wendao_reply_due_at"]
         state["wendao_last_result"] = "问道中"
         state["wendao_last_error"] = ""
         save_state()
@@ -257,6 +263,15 @@ def _is_wendao_reply_log_entry(entry):
     return is_wendao_reply_text(str((entry or {}).get("text") or "").strip())
 
 
+def _is_same_pending_ack(entry, pending_result_msg_id):
+    if int(pending_result_msg_id or 0) <= 0:
+        return False
+    if int((entry or {}).get("message_id") or 0) != int(pending_result_msg_id or 0):
+        return False
+    text = str((entry or {}).get("text") or "").strip()
+    return WENDAO_PENDING_KEYWORD in text and not text.startswith(WENDAO_RESULT_TITLE)
+
+
 async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
     reply_to_msg_id = int(reply_to_msg_id or 0)
     if reply_to_msg_id <= 0:
@@ -271,7 +286,7 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
             lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
             predicate=_is_wendao_reply_log_entry,
         )
-        if entry:
+        if entry and not _is_same_pending_ack(entry, pending_result_msg_id):
             handled = await handle_wendao_reply(
                 entry.get("text") or "",
                 float(entry.get("ts_epoch") or now),
@@ -290,6 +305,8 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
     )
     handled_any = False
     for entry in replies:
+        if _is_same_pending_ack(entry, pending_result_msg_id):
+            continue
         handled = await handle_wendao_reply(
             entry.get("text") or "",
             float(entry.get("ts_epoch") or now),
