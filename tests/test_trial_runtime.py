@@ -23,17 +23,27 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._manual_auth = dict(trial_runtime._MANUAL_AUTH_UNTIL)
+        self._batch_runs = copy.deepcopy(trial_runtime._BATCH_RUNS)
+        self._batch_by_identity = dict(trial_runtime._BATCH_BY_IDENTITY)
         trial_runtime._MANUAL_AUTH_UNTIL.clear()
+        trial_runtime._BATCH_RUNS.clear()
+        trial_runtime._BATCH_BY_IDENTITY.clear()
         trial_runtime._RUN_LOCKS.clear()
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module.ensure_identity_registered(1001)
         state_module.update_send_as_profile(1001, username="xuruode4", label="竹灵 2")
+        state_module.ensure_identity_registered(1002)
+        state_module.update_send_as_profile(1002, username="xuruode5", label="竹灵 3")
 
     def tearDown(self):
         trial_runtime._MANUAL_AUTH_UNTIL.clear()
         trial_runtime._MANUAL_AUTH_UNTIL.update(self._manual_auth)
+        trial_runtime._BATCH_RUNS.clear()
+        trial_runtime._BATCH_RUNS.update(copy.deepcopy(self._batch_runs))
+        trial_runtime._BATCH_BY_IDENTITY.clear()
+        trial_runtime._BATCH_BY_IDENTITY.update(self._batch_by_identity)
         trial_runtime._RUN_LOCKS.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
@@ -75,6 +85,35 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
         self.assertIn("天机试炼 MiniApp 接管入口", audit_text)
         self.assertIn("天机试炼结果", audit_text)
+
+    async def test_trial_batch_collects_results_and_sends_one_summary(self):
+        with patch.object(trial_runtime.asyncio, "create_task", side_effect=lambda coro: coro.close()):
+            batch_id = trial_runtime.start_trial_miniapp_batch_run([1001, 1002], now=1_700_000_000.0)
+        self.assertTrue(batch_id)
+        trial_runtime.note_trial_batch_send_result(batch_id, 1001, ok=True, msg_id=11)
+        trial_runtime.note_trial_batch_send_result(batch_id, 1002, ok=True, msg_id=12)
+        trial_runtime._record_trial_batch_result(batch_id, 1001, {
+            "ok": True,
+            "status": "settled",
+            "data": {"reward_trace": 9, "rewards": [{"name": "灵脉砂", "qty": 2}]},
+        })
+        trial_runtime._record_trial_batch_result(batch_id, 1002, {
+            "ok": True,
+            "status": "settled",
+            "data": {"traceGain": 11, "bonusLoot": [{"name": "玄晶", "qty": 1}]},
+        })
+
+        with patch.object(trial_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+            finalized = await trial_runtime.finalize_trial_batch_run(batch_id)
+
+        self.assertTrue(finalized)
+        audit_mock.assert_awaited_once()
+        text = str(audit_mock.await_args.args[0])
+        self.assertIn("天机试炼批量结果｜2/2 成功", text)
+        self.assertIn("收益：天机残痕+20", text)
+        self.assertIn("奖励：灵脉砂x2、玄晶x1", text)
+        self.assertIn("成功：", text)
+        self.assertNotIn(batch_id, trial_runtime._BATCH_RUNS)
 
     async def test_trial_entry_respects_global_pause_before_http(self):
         trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0)

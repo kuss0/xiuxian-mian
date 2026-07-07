@@ -300,12 +300,28 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, extra)
         send_mock.assert_not_awaited()
 
+    async def test_trial_batch_run_uses_enabled_identities_and_background_task(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001, 1002, 1003]), \
+                patch.object(ui, "get_identity_enabled", side_effect=lambda identity_id: identity_id != 1002), \
+                patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch1") as start_mock, \
+                patch.object(ui, "_fire_and_forget", side_effect=lambda coro: coro.close()) as fire_mock, \
+                patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock:
+            ok, message, extra = await ui.ui_start_trial_miniapp_batch_run()
+
+        self.assertTrue(ok)
+        self.assertIn("2 个身份", message)
+        self.assertEqual({"batch_id": "batch1", "count": 2}, extra)
+        start_mock.assert_called_once_with([1001, 1003])
+        fire_mock.assert_called_once()
+        audit_mock.assert_awaited_once()
+
     def test_miniapp_status_snapshot_is_safe_and_includes_cave_treasure(self):
         snapshot = ui.get_miniapp_status_snapshot()
         text = json.dumps(snapshot, ensure_ascii=False)
         adapters = {item["game_key"]: item for item in snapshot["adapters"]}
         probe_commands = {item["game_key"]: item["command"] for item in snapshot["entry_probe_commands"]}
         manual_run_commands = {item["game_key"]: item["command"] for item in snapshot["manual_run_commands"]}
+        batch_run_commands = {item["game_key"]: item for item in snapshot["batch_run_commands"]}
 
         self.assertIn("cave_treasure", adapters)
         self.assertFalse(adapters["cave_treasure"]["default_enabled"])
@@ -320,6 +336,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
         self.assertEqual(".灵树", manual_run_commands["tree"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
+        self.assertEqual(".天机试炼", batch_run_commands["trial"]["command"])
+        self.assertEqual("/api/miniapp-trial-batch-run", batch_run_commands["trial"]["endpoint"])
+        self.assertIn("全号批量", batch_run_commands["trial"]["label"])
         self.assertNotIn("fishing", manual_run_commands)
         self.assertIn("cave_treasure", snapshot["flow_plans"])
         self.assertIn("tree", snapshot["flow_plans"])

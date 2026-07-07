@@ -161,6 +161,14 @@
       + '<div class="miniapp-capture-list">' + endpointHtml + '</div>';
   }
 
+  function renderBatchButtons(batchCommands) {
+    var commands = Array.isArray(batchCommands) ? batchCommands : [];
+    return commands.map(function (item) {
+      if (!item || !item.endpoint) return '';
+      return '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-batch-run="' + esc(item.endpoint) + '">' + esc(item.label || '批量执行') + '</button>';
+    }).join('');
+  }
+
   function renderMiniAppStatus(snapshot) {
     var body = document.getElementById('miniapp-modal-body');
     if (!body) return;
@@ -180,9 +188,11 @@
     runners.forEach(function (item) { runByKey[item.game_key] = item; });
     var policy = miniapp.policy || {};
     var scoreControls = miniapp.score_controls || {};
+    var batchButtons = renderBatchButtons(miniapp.batch_run_commands);
     body.innerHTML = ''
       + '<div class="miniapp-toolbar">'
       + '<div id="miniapp-status-line" class="form-label form-label-inline">身份：' + esc(selectedIdentityId() || '未选择') + '</div>'
+      + batchButtons
       + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-refresh="1">刷新</button>'
       + '</div>'
       + '<div class="miniapp-policy">'
@@ -271,6 +281,21 @@
     }
   }
 
+  async function runMiniAppBatch(button) {
+    var endpoint = button && button.getAttribute('data-miniapp-batch-run');
+    if (!endpoint) return;
+    if (button) button.disabled = true;
+    try {
+      var data = await post(endpoint, {});
+      flash(data.message || 'MiniApp 批量已启动', false);
+      refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || 'MiniApp 批量启动失败', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function saveTreeScoreConfig(button) {
     var sendAsId = selectedIdentityId();
     if (!sendAsId) {
@@ -328,6 +353,11 @@
     }
     if (event.target.closest('[data-miniapp-refresh]')) {
       refreshMiniAppStatus();
+      return;
+    }
+    var batchBtn = event.target.closest('[data-miniapp-batch-run]');
+    if (batchBtn) {
+      runMiniAppBatch(batchBtn);
       return;
     }
     var scoreSaveBtn = event.target.closest('[data-miniapp-tree-score-save]');

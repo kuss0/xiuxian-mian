@@ -97,7 +97,13 @@ from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_s
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_miniapp import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
 from .features.tree_runtime import authorize_tree_miniapp_manual_run, revoke_tree_miniapp_manual_run
-from .features.trial_runtime import authorize_trial_miniapp_manual_run, revoke_trial_miniapp_manual_run
+from .features.trial_runtime import (
+    authorize_trial_miniapp_manual_run,
+    maybe_finalize_trial_batch_run,
+    note_trial_batch_send_result,
+    revoke_trial_miniapp_manual_run,
+    start_trial_miniapp_batch_run,
+)
 from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing_automation_pause_text, normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
@@ -397,6 +403,16 @@ def get_miniapp_status_snapshot(send_as_id=None):
                 "has_flow_plan": key in plans,
             })
             for key, command in sorted(MINIAPP_MANUAL_RUN_COMMANDS.items())
+        ],
+        "batch_run_commands": [
+            _with_miniapp_ui_group({
+                "game_key": "trial",
+                "label": "天机试炼全号批量",
+                "endpoint": "/api/miniapp-trial-batch-run",
+                "command": MINIAPP_MANUAL_RUN_COMMANDS["trial"],
+                "registered": "trial" in registry.keys(),
+                "has_flow_plan": "trial" in plans,
+            })
         ],
         "ui_groups": [
             {"key": "miniapp", "label": "MiniApp合集"},
@@ -6201,6 +6217,86 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
     return True, "已发送 MiniApp 手动执行命令，等待入口按钮接管", extra
 
 
+def _normalize_trial_batch_identity_ids(payload):
+    payload = dict(payload or {})
+    raw_ids = payload.get("send_as_ids")
+    if raw_ids in (None, "", []):
+        raw_ids = get_identity_ids()
+    if isinstance(raw_ids, str):
+        raw_ids = [item for item in re.split(r"[\s,，]+", raw_ids) if item]
+    result = []
+    seen = set()
+    for raw_id in raw_ids or ():
+        try:
+            identity_id = int(raw_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if identity_id <= 0 or identity_id in seen:
+            continue
+        if identity_id not in get_identity_ids():
+            continue
+        if not get_identity_enabled(identity_id):
+            continue
+        seen.add(identity_id)
+        result.append(identity_id)
+    return result
+
+
+async def _run_trial_miniapp_batch(batch_id, identity_ids):
+    sent = 0
+    for identity_id in identity_ids:
+        authorize_trial_miniapp_manual_run(identity_id, batch_id=batch_id)
+        op_id = f"miniapp_trial_batch:{batch_id}:{identity_id}"
+        msg = await send_game_command(
+            MINIAPP_MANUAL_RUN_COMMANDS["trial"],
+            track=False,
+            send_as_id=identity_id,
+            priority="normal",
+            max_retry=0,
+            source_module="MiniApp批量",
+            op_id=op_id,
+            chain_id="miniapp_trial_batch",
+            delete_policy="keep",
+            queue_timeout=120,
+        )
+        if msg:
+            msg_id = int(getattr(msg, "id", 0) or 0)
+            sent += 1
+            note_trial_batch_send_result(batch_id, identity_id, ok=True, msg_id=msg_id)
+        else:
+            revoke_trial_miniapp_manual_run(identity_id)
+            note_trial_batch_send_result(batch_id, identity_id, ok=False, error="发送被保护拦截")
+        await maybe_finalize_trial_batch_run(batch_id)
+        await asyncio.sleep(1.0)
+    await send_audit_log(
+        f"🧪 天机试炼批量已排队完成：{sent}/{len(identity_ids)} 条入口命令已发送，等待 MiniApp 回包汇总。",
+        scope="global",
+        priority="low",
+        limit=260,
+    )
+    await maybe_finalize_trial_batch_run(batch_id)
+
+
+async def ui_start_trial_miniapp_batch_run(payload=None):
+    identity_ids = _normalize_trial_batch_identity_ids(payload)
+    if not identity_ids:
+        return False, "没有可执行的启用身份", {}
+    batch_id = start_trial_miniapp_batch_run(identity_ids)
+    if not batch_id:
+        return False, "批量任务创建失败", {}
+    _fire_and_forget(_run_trial_miniapp_batch(batch_id, identity_ids))
+    await send_audit_log(
+        f"🧪 天机试炼批量启动：{len(identity_ids)} 个身份，完成后合并通报。batch={batch_id}",
+        scope="global",
+        priority="normal",
+        limit=320,
+    )
+    return True, f"已启动天机试炼批量：{len(identity_ids)} 个身份，完成后合并通报", {
+        "batch_id": batch_id,
+        "count": len(identity_ids),
+    }
+
+
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
     body_bytes = body if isinstance(body, bytes) else str(body).encode("utf-8")
     headers = [
@@ -7179,6 +7275,22 @@ async def handle_ui_http(reader, writer):
                             extra=extra,
                             include_snapshot=False,
                         )
+            elif path == "/api/miniapp-trial-batch-run":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, extra = await ui_start_trial_miniapp_batch_run(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra=extra,
+                        include_snapshot=False,
+                    )
             elif path == "/api/miniapp-tree-score-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -7525,5 +7637,6 @@ __all__ = [
     "get_tree_miniapp_score_config",
     "ui_send_miniapp_entry_probe",
     "ui_send_miniapp_manual_run",
+    "ui_start_trial_miniapp_batch_run",
     "ui_set_tree_miniapp_score_config",
 ]
