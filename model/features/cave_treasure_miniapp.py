@@ -422,13 +422,17 @@ def parse_cave_treasure_state(data):
         treasure.get("onTreasureTab"),
         treasure.get("treasureTab"),
     ) or bool(hunt_panel or hunt_run or hunt_result) or "寻宝" in all_text
-    treasure_found = _bool_from_any(
+    explicit_treasure_found = _bool_from_any(
         treasure.get("found"),
         treasure.get("treasureFound"),
         treasure.get("hit"),
         hunt_run.get("foundMain"),
         bool(hunt_result),
-    ) or bool(hunt_run.get("loot") if isinstance(hunt_run.get("loot"), list) else []) or any(keyword in outcome_text for keyword in ("寻得", "发现宝", "命中宝", "宝物到手", "见好就收", "再来一次"))
+    )
+    treasure_found = explicit_treasure_found or any(
+        keyword in outcome_text
+        for keyword in ("发现宝", "命中宝", "主宝", "秘宝", "宝物到手", "见好就收", "再来一次")
+    )
     settled = bool(hunt_result) or _bool_from_any(treasure.get("settled"), treasure.get("finished")) or any(
         keyword in all_text for keyword in ("结算完成", "已结算", "今日寻宝已结算", "已收获")
     )
@@ -448,8 +452,8 @@ def parse_cave_treasure_state(data):
                     break
             if hint_target > 0:
                 break
-    if hint_target <= 0:
-        hint_target = _extract_hint_target(hint_text or all_text)
+    if hint_target <= 0 and hint_text:
+        hint_target = _extract_hint_target(hint_text)
 
     return {
         "on_treasure_tab": bool(on_treasure_tab),
@@ -489,13 +493,15 @@ def choose_cave_treasure_action(state, *, rng=None):
         return {"action": "settle", "sessionId": session_id, "reason": "round_failed"}
     if action_remaining > 0:
         target_index = _coerce_int(state.get("hint_target"), 0)
+        candidates = [
+            _coerce_int(item, 0)
+            for item in state.get("available_targets") or ()
+            if _coerce_int(item, 0) > 0
+        ]
+        if target_index > 0 and candidates and target_index not in candidates:
+            target_index = 0
         reason = "hint_target" if target_index > 0 else "random_target"
         if target_index <= 0:
-            candidates = [
-                _coerce_int(item, 0)
-                for item in state.get("available_targets") or ()
-                if _coerce_int(item, 0) > 0
-            ]
             target_index = int(rng.choice(candidates)) if candidates else int(rng.randint(1, target_count))
         return {
             "action": "search",

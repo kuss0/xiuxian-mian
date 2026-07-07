@@ -22,6 +22,8 @@ _TRIAL_GAIN_KEYS = {
     "experiencegain": "经验",
     "tracegain": "天机残痕",
     "tianjitracegain": "天机残痕",
+    "rewardtrace": "天机残痕",
+    "rewardtracegain": "天机残痕",
     "cultivationgain": "修为",
     "xiuweigain": "修为",
     "lingshigain": "灵石",

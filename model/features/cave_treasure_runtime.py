@@ -27,6 +27,7 @@ _GAIN_KEYS = {
     "contribution": "贡献",
 }
 _REWARD_CONTAINER_KEYS = {"rewards", "reward", "bonusloot", "loot", "drops", "items", "materials", "gains"}
+_LOG_KEYS = {"logs", "log"}
 _TECHNICAL_KEYS = {
     "score",
     "session",
@@ -37,7 +38,6 @@ _TECHNICAL_KEYS = {
     "status",
     "phase",
     "mode",
-    "logs",
     "step",
     "steps",
     "events",
@@ -196,6 +196,13 @@ def _collect_materials(value, *, rewards=None, gains=None, depth=0):
     for key, child in value.items():
         normalized = _normalize_key(key)
         if normalized in _TECHNICAL_KEYS:
+            continue
+        if normalized in _LOG_KEYS:
+            log_rewards, log_gains = _collect_materials(child, rewards={}, gains={}, depth=depth + 1)
+            for name, qty in log_rewards.items():
+                rewards[name] = max(int(rewards.get(name, 0) or 0), int(qty or 0))
+            for name, amount in log_gains.items():
+                gains[name] = max(int(gains.get(name, 0) or 0), int(amount or 0))
             continue
         if normalized in _REWARD_CONTAINER_KEYS:
             _merge_reward_counts(rewards, _rewards_from_container(child))

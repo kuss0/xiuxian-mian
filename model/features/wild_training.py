@@ -387,18 +387,21 @@ async def _defer_wild_training_for_deep_retreat_summary_window(now):
         next_deep_time = 0.0
     blocking_phases = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait", "queued_launch", "launching"}
     should_defer = phase in blocking_phases
-    if not should_defer and phase == "running" and 0 < next_deep_time <= float(now or 0) + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
+    if not should_defer and phase == "running":
         should_defer = True
     if not should_defer:
         return False
 
     anchor = float(now or 0)
-    if 0 < next_deep_time <= anchor + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
+    if phase == "running" and next_deep_time > 0:
+        anchor = max(anchor, next_deep_time)
+    elif 0 < next_deep_time <= anchor + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
         anchor = max(anchor, next_deep_time)
     next_time = anchor + random.uniform(WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC, WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC)
     state["next_wild_training_time"] = float(next_time)
     state["wild_training_reply_to_msg_id"] = 0
     state["wild_training_reply_due_at"] = 0
+    state["wild_training_retry_count"] = 0
     state["wild_training_last_result"] = "深闭结算窗口避让，未发送"
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = f"野外历练避让深度闭关结算窗口：phase={phase or 'idle'}，延后至 {fmt_abs_ts(next_time)}"

@@ -1246,6 +1246,65 @@ class WebAppCoreTests(unittest.TestCase):
             dict(parsed, in_round=False, action_remaining=0, games_used=4, games_limit=4, settled=True)
         )["action"])
 
+    def test_cave_treasure_minor_loot_does_not_stop_round_while_ap_remains(self):
+        parsed = cave_treasure_miniapp.parse_cave_treasure_state({
+            "ok": True,
+            "huntRun": {
+                "sessionId": "hunt-minor",
+                "status": "active",
+                "size": 5,
+                "ap": 7,
+                "maxAp": 8,
+                "foundMain": False,
+                "loot": [{"name": "凝血草", "quantity": 2}],
+                "logs": ["探开15号石室：药圃。 获得凝血草 x2。"],
+                "cells": [
+                    {"index": 0, "revealed": False},
+                    {"index": 14, "revealed": True, "loot": {"name": "凝血草", "quantity": 2}},
+                ],
+            },
+        })
+        decision = cave_treasure_miniapp.choose_cave_treasure_action(
+            parsed,
+            rng=__import__("random").Random(3),
+        )
+
+        self.assertFalse(parsed["treasure_found"])
+        self.assertEqual(7, parsed["action_remaining"])
+        self.assertEqual("search", decision["action"])
+        self.assertEqual("random_target", decision["reason"])
+
+    def test_cave_treasure_does_not_repeat_revealed_log_number_as_hint(self):
+        parsed = cave_treasure_miniapp.parse_cave_treasure_state({
+            "ok": True,
+            "huntRun": {
+                "sessionId": "hunt-repeat",
+                "status": "active",
+                "size": 5,
+                "ap": 1,
+                "maxAp": 8,
+                "foundMain": False,
+                "logs": [
+                    "探开12号石室：宝匣。 获得二级妖丹 x1。",
+                    "线索。灵气流向北东。附近有禁制残痕或妖气波动。",
+                ],
+                "cells": [
+                    {"index": 0, "revealed": False},
+                    {"index": 11, "revealed": True, "loot": {"name": "二级妖丹", "quantity": 1}},
+                    {"index": 12, "revealed": False},
+                ],
+            },
+        })
+        decision = cave_treasure_miniapp.choose_cave_treasure_action(
+            parsed,
+            rng=__import__("random").Random(1),
+        )
+
+        self.assertEqual(0, parsed["hint_target"])
+        self.assertEqual("search", decision["action"])
+        self.assertNotEqual(12, decision["targetIndex"])
+        self.assertIn(decision["targetIndex"], {1, 13})
+
     def test_cave_treasure_lab_flow_uses_page_state_until_daily_done_without_secret_leak(self):
         calls = []
 

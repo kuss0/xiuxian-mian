@@ -138,7 +138,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         result_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list if "洞府寻宝结果" in str(call.args[0]))
         self.assertIn("游戏 3/3", result_text)
         self.assertIn("收益:修为+10、灵石+20、贡献+48", result_text)
-        self.assertIn("奖励:古禁印痕x1、灵石x31、玄晶x2", result_text)
+        self.assertIn("奖励:凝血草x5、古禁印痕x1、灵石x31、玄晶x2", result_text)
         self.assertNotIn("score", result_text)
         self.assertNotIn("session", result_text)
         self.assertNotIn("quality", result_text)

@@ -112,6 +112,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     },
                     {
                         "expGain": 5,
+                        "reward_trace": 11,
                         "bonusLoot": [{"name": "玄晶", "qty": 1}],
                     },
                 ],
@@ -129,7 +130,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         result_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list if "天机试炼结果" in str(call.args[0]))
-        self.assertIn("收益:天机残痕+1、经验+15", result_text)
+        self.assertIn("收益:天机残痕+12、经验+15", result_text)
         self.assertIn("奖励:灵脉砂x2、玄晶x1", result_text)
         self.assertNotIn("score", result_text)
         self.assertNotIn("session", result_text)
