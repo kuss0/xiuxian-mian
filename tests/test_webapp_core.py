@@ -285,6 +285,8 @@ class WebAppCoreTests(unittest.TestCase):
 
         self.assertIn("trial_invalid_proof", sanitized)
         self.assertIn("trial_token_used", sanitized)
+        self.assertIn("trial_title", webapp_core.sanitize_webapp_secret_text("key=trial_title"))
+        self.assertIn("trial_type", webapp_core.sanitize_webapp_secret_text("key=trial_type"))
         self.assertNotIn("trial_SECRET999", sanitized)
         self.assertNotIn("trial_lowercase", webapp_core.sanitize_webapp_secret_text("token=trial_lowercase"))
         self.assertNotIn("df_SECRET777", sanitized)
@@ -937,6 +939,50 @@ class WebAppCoreTests(unittest.TestCase):
         )
         self.assertNotIn("trial_SECRET999", summary_text)
         self.assertNotIn("trial_NEXT888", summary_text)
+        self.assertNotIn("VERY_SECRET", summary_text)
+
+    def test_trial_lab_loop_treats_next_login_error_as_unavailable_after_settlement(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "trial": {"title": "灵脉点穴"},
+                    "challenge": {
+                        "mode": "tianjiMeridianV1",
+                        "challengeId": "c1",
+                        "sequence": [1],
+                        "trapIds": [],
+                        "points": [{"id": "1", "x": 10, "y": 20}],
+                        "minDurationMs": 20,
+                        "maxDurationMs": 90000,
+                    },
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"traceGain": 1}}
+            if endpoint == "next":
+                return 401, {"error": "请先登录"}
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = trial_miniapp.run_trial_miniapp_loop_lab_flow(
+            token="trial_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=__import__("random").Random(5),
+            sleeper=lambda _delay: None,
+            max_rounds=3,
+        )
+        summary_text = json.dumps(result, ensure_ascii=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("next_unavailable", result["status"])
+        self.assertEqual(1, result["data"]["settled_count"])
+        self.assertEqual("请先登录", result["data"]["next_error"])
+        self.assertEqual(["start", "finish", "next"], calls)
+        self.assertNotIn("trial_SECRET999", summary_text)
         self.assertNotIn("VERY_SECRET", summary_text)
 
     def test_cave_treasure_entry_state_and_flow_are_lab_only(self):

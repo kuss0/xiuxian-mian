@@ -110,6 +110,8 @@ def _redact_miniapp_start_token_match(match):
     suffix = raw_value.split("_", 1)[1] if "_" in raw_value else ""
     # MiniApp app errors use stable lowercase snake_case values such as
     # trial_invalid_proof. Keep those visible so captures remain diagnosable.
+    if suffix in {"title", "type"}:
+        return raw_value
     if "_" in suffix and re.fullmatch(r"[a-z_]+", suffix):
         return raw_value
     return f"{kind}_<redacted>"

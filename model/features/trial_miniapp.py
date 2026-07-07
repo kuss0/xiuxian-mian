@@ -831,8 +831,12 @@ def run_trial_miniapp_loop_lab_flow(
             status = classify_trial_miniapp_error(next_result.error)
             if status == "daily_limit":
                 break
-            data = {"results": results, "settled_count": len(results)}
-            return _flow_result(True, "next_failed", error=next_result.error, data=data, events=events)
+            data = {
+                "results": results,
+                "settled_count": len(results),
+                "next_error": sanitize_webapp_secret_text(next_result.error),
+            }
+            return _flow_result(True, "next_unavailable", data=data, events=events)
 
         next_token = _extract_next_trial_token(next_result.data)
         if not next_token:
