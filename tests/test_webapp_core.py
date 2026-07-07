@@ -1305,6 +1305,44 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotEqual(12, decision["targetIndex"])
         self.assertIn(decision["targetIndex"], {1, 13})
 
+    def test_cave_treasure_uses_latest_unrevealed_marker_hint(self):
+        parsed = cave_treasure_miniapp.parse_cave_treasure_state({
+            "ok": True,
+            "huntRun": {
+                "sessionId": "hunt-markers",
+                "status": "active",
+                "size": 5,
+                "ap": 4,
+                "maxAp": 8,
+                "foundMain": False,
+                "cells": [
+                    {
+                        "index": 1,
+                        "revealed": True,
+                        "type": "clue",
+                        "hint": {"markers": [{"index": 2, "kind": "treasure"}]},
+                    },
+                    {"index": 2, "revealed": True, "type": "chest"},
+                    {
+                        "index": 24,
+                        "revealed": True,
+                        "type": "clue",
+                        "hint": {"markers": [{"index": 18, "kind": "treasure"}]},
+                    },
+                    {"index": 18, "revealed": False},
+                ],
+            },
+        })
+        decision = cave_treasure_miniapp.choose_cave_treasure_action(
+            parsed,
+            rng=__import__("random").Random(1),
+        )
+
+        self.assertEqual(19, parsed["hint_target"])
+        self.assertEqual("search", decision["action"])
+        self.assertEqual(19, decision["targetIndex"])
+        self.assertEqual("hint_target", decision["reason"])
+
     def test_cave_treasure_lab_flow_uses_page_state_until_daily_done_without_secret_leak(self):
         calls = []
 

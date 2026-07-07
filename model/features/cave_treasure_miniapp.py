@@ -403,13 +403,16 @@ def parse_cave_treasure_state(data):
     if target_count <= 0:
         target_count = max(sense_ratio[1] or 0, 1)
     available_targets = []
+    revealed_targets = set()
     if raw_cells:
         for cell in raw_cells:
             if not isinstance(cell, dict):
                 continue
+            cell_index = _coerce_int(cell.get("index"), len(available_targets)) + 1
             if _bool_from_any(cell.get("revealed")):
+                revealed_targets.add(cell_index)
                 continue
-            available_targets.append(_coerce_int(cell.get("index"), len(available_targets)) + 1)
+            available_targets.append(cell_index)
 
     status = str(hunt_run.get("status") or treasure.get("status") or "").strip()
     in_round = _bool_from_any(
@@ -440,6 +443,7 @@ def parse_cave_treasure_state(data):
     hint_text = str(treasure.get("hint") or treasure.get("tips") or treasure.get("message") or treasure.get("text") or "").strip()
     hint_target = _coerce_int(treasure.get("hintTarget") or treasure.get("answer") or treasure.get("targetIndex"), 0)
     if hint_target <= 0 and raw_cells:
+        marker_targets = []
         for cell in raw_cells:
             if not isinstance(cell, dict):
                 continue
@@ -448,10 +452,17 @@ def parse_cave_treasure_state(data):
                 if not isinstance(marker, dict):
                     continue
                 if str(marker.get("kind") or "").strip() == "treasure":
-                    hint_target = _coerce_int(marker.get("index"), -1) + 1
-                    break
-            if hint_target > 0:
-                break
+                    marker_target = _coerce_int(marker.get("index"), -1) + 1
+                    if marker_target > 0:
+                        marker_targets.append(marker_target)
+        available_set = set(available_targets)
+        for marker_target in reversed(marker_targets):
+            if marker_target in revealed_targets:
+                continue
+            if available_set and marker_target not in available_set:
+                continue
+            hint_target = marker_target
+            break
     if hint_target <= 0 and hint_text:
         hint_target = _extract_hint_target(hint_text)
 
