@@ -152,19 +152,53 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(identity_id, gate["last_identity_id"])
             self.assertEqual(".搜集军报", gate["last_command"])
 
-    def test_initial_recovery_uses_wide_stagger_to_avoid_midnight_queue_burst(self):
-        identity_id = self._prepare_identity()
-        now = 1_700_000_000.0
+    def test_initial_recovery_uses_daily_batch_windows_to_avoid_midnight_burst(self):
+        now = datetime(2026, 7, 8, 0, 5, tzinfo=mulan.TZ_LOCAL).timestamp()
+        cases = (
+            (1002, datetime(2026, 7, 8, 1, 0, tzinfo=mulan.TZ_LOCAL).timestamp()),
+            (1001, datetime(2026, 7, 8, 5, 0, tzinfo=mulan.TZ_LOCAL).timestamp()),
+        )
+        for identity_id, expected_due_at in cases:
+            with self.subTest(identity_id=identity_id):
+                self._prepare_identity(identity_id)
+                with state_module.use_identity(identity_id):
+                    with (
+                        patch.object(mulan.random, "uniform", side_effect=lambda start, _end: start) as uniform_mock,
+                        patch.object(mulan, "mark_dirty"),
+                    ):
+                        due_at = mulan.schedule_mulan_initial_check(now, persist=False)
+                    self.assertEqual(expected_due_at, state_module.state["next_mulan_time"])
+
+                self.assertEqual(expected_due_at, due_at)
+                uniform_mock.assert_called_once()
+
+    def test_initial_recovery_missed_first_batch_uses_second_window_today(self):
+        identity_id = self._prepare_identity(1002)
+        now = datetime(2026, 7, 8, 4, 30, tzinfo=mulan.TZ_LOCAL).timestamp()
+        expected_due_at = datetime(2026, 7, 8, 5, 0, tzinfo=mulan.TZ_LOCAL).timestamp()
         with state_module.use_identity(identity_id):
             with (
-                patch.object(mulan.random, "uniform", return_value=mulan.MULAN_RECOVERY_MAX_SEC) as uniform_mock,
+                patch.object(mulan.random, "uniform", side_effect=lambda start, _end: start),
                 patch.object(mulan, "mark_dirty"),
             ):
                 due_at = mulan.schedule_mulan_initial_check(now, persist=False)
 
-            uniform_mock.assert_called_once_with(mulan.MULAN_RECOVERY_MIN_SEC, mulan.MULAN_RECOVERY_MAX_SEC)
-            self.assertEqual(now + mulan.MULAN_RECOVERY_MAX_SEC, due_at)
-            self.assertEqual(now + mulan.MULAN_RECOVERY_MAX_SEC, state_module.state["next_mulan_time"])
+        self.assertEqual(expected_due_at, due_at)
+
+    def test_daily_done_delay_uses_next_day_batch_window(self):
+        now = datetime(2026, 7, 8, 0, 46, tzinfo=mulan.TZ_LOCAL).timestamp()
+        cases = (
+            (1002, datetime(2026, 7, 9, 1, 0, tzinfo=mulan.TZ_LOCAL).timestamp()),
+            (1001, datetime(2026, 7, 9, 5, 0, tzinfo=mulan.TZ_LOCAL).timestamp()),
+        )
+        for identity_id, expected_due_at in cases:
+            with self.subTest(identity_id=identity_id):
+                self._prepare_identity(identity_id)
+                with state_module.use_identity(identity_id):
+                    with patch.object(mulan.random, "uniform", side_effect=lambda start, _end: start):
+                        delay_sec = mulan._daily_done_delay_sec(now)
+
+                self.assertEqual(expected_due_at, now + delay_sec)
 
     async def test_scheduler_disables_when_identity_has_no_account_mapping(self):
         identity_id = 3711993781
@@ -186,6 +220,48 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["mulan_phase"])
             self.assertEqual(0, state_module.state["next_mulan_time"])
             self.assertIn("未绑定账号", state_module.state["mulan_last_error"])
+
+    async def test_scheduler_rebuckets_existing_midnight_cooldown_without_sending(self):
+        identity_id = self._prepare_identity(1002)
+        now = datetime(2026, 7, 8, 7, 45, tzinfo=mulan.TZ_LOCAL).timestamp()
+        old_due = datetime(2026, 7, 9, 0, 11, tzinfo=mulan.TZ_LOCAL).timestamp()
+        expected_due = datetime(2026, 7, 9, 1, 0, tzinfo=mulan.TZ_LOCAL).timestamp()
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = mulan.MULAN_PHASE_COOLDOWN
+            state_module.state["next_mulan_time"] = old_due
+            state_module.state["mulan_last_result"] = "支援完成：护阵"
+            with (
+                patch.object(mulan.random, "uniform", side_effect=lambda start, _end: start),
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(expected_due, state_module.state["next_mulan_time"])
+            self.assertIn("批次窗口", state_module.state["mulan_last_result"])
+
+    async def test_scheduler_rebuckets_overdue_midnight_cooldown_into_current_batch_window(self):
+        identity_id = self._prepare_identity(1002)
+        old_due = datetime(2026, 7, 9, 0, 11, tzinfo=mulan.TZ_LOCAL).timestamp()
+        now = datetime(2026, 7, 9, 1, 30, tzinfo=mulan.TZ_LOCAL).timestamp()
+        expected_due = now + mulan.MULAN_INITIAL_WINDOW_LEAD_SEC
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = mulan.MULAN_PHASE_COOLDOWN
+            state_module.state["next_mulan_time"] = old_due
+            state_module.state["mulan_last_result"] = "支援完成：护阵"
+            with (
+                patch.object(mulan.random, "uniform", side_effect=lambda start, _end: start),
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(expected_due, state_module.state["next_mulan_time"])
+            self.assertIn("批次窗口", state_module.state["mulan_last_result"])
 
     async def test_suspicious_judgement_stops_same_identity_and_uses_text_support(self):
         identity_id = self._prepare_identity()

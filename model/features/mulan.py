@@ -30,8 +30,13 @@ from ._phaseful import get_phaseful_summary_risk_reason
 
 
 MULAN_DEFAULT_IDS = (1, 2, 3)
-MULAN_RECOVERY_MIN_SEC = 5 * 60
-MULAN_RECOVERY_MAX_SEC = 25 * 60
+MULAN_INITIAL_WINDOW_LEAD_SEC = 5 * 60
+MULAN_INITIAL_WINDOW_END_MARGIN_SEC = 60
+MULAN_LEGACY_MIDNIGHT_REBUCKET_MINUTE = 30
+MULAN_INITIAL_BATCH_WINDOWS = (
+    {"key": "wave1", "start_hour": 1, "start_minute": 0, "end_hour": 4, "end_minute": 0},
+    {"key": "wave2", "start_hour": 5, "start_minute": 0, "end_hour": 8, "end_minute": 0},
+)
 MULAN_PHASEFUL_DEFER_MIN_SEC = 5 * 60
 MULAN_PHASEFUL_DEFER_MAX_SEC = 10 * 60
 MULAN_SEND_QUEUE_TIMEOUT_SEC = 90
@@ -209,6 +214,64 @@ def _decode_ids(value):
 
 def _mulan_day_key(now):
     return datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL).strftime("%Y-%m-%d")
+
+
+def _mulan_window_bounds(local_now, window, *, day_offset=0):
+    base = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=day_offset)
+    start = base + timedelta(hours=int(window["start_hour"]), minutes=int(window.get("start_minute", 0) or 0))
+    end = base + timedelta(hours=int(window["end_hour"]), minutes=int(window.get("end_minute", 0) or 0))
+    if end <= start:
+        end += timedelta(days=1)
+    return start.timestamp(), end.timestamp()
+
+
+def _mulan_initial_window_index(identity_id):
+    try:
+        return abs(int(identity_id or 0)) % len(MULAN_INITIAL_BATCH_WINDOWS)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _mulan_initial_batch_time(now, identity_id=None):
+    now = float(now or time.time())
+    identity_id = int(identity_id or get_current_identity_id() or 0)
+    local_now = datetime.fromtimestamp(now, TZ_LOCAL)
+    assigned_index = _mulan_initial_window_index(identity_id)
+    today_bounds = [
+        _mulan_window_bounds(local_now, window)
+        for window in MULAN_INITIAL_BATCH_WINDOWS
+    ]
+    assigned_start, assigned_end = today_bounds[assigned_index]
+    if now < assigned_end:
+        start_ts, end_ts = assigned_start, assigned_end
+    else:
+        future_today = [(start_ts, end_ts) for start_ts, end_ts in today_bounds if now < end_ts]
+        if future_today:
+            start_ts, end_ts = future_today[0]
+        else:
+            start_ts, end_ts = _mulan_window_bounds(local_now, MULAN_INITIAL_BATCH_WINDOWS[assigned_index], day_offset=1)
+
+    earliest = max(now + MULAN_INITIAL_WINDOW_LEAD_SEC, start_ts)
+    latest = end_ts - MULAN_INITIAL_WINDOW_END_MARGIN_SEC
+    if latest <= earliest:
+        return float(earliest)
+    return float(random.uniform(earliest, latest))
+
+
+def _mulan_next_daily_batch_time(now, identity_id=None):
+    now = float(now or time.time())
+    identity_id = int(identity_id or get_current_identity_id() or 0)
+    local_now = datetime.fromtimestamp(now, TZ_LOCAL)
+    assigned_index = _mulan_initial_window_index(identity_id)
+    start_ts, end_ts = _mulan_window_bounds(
+        local_now,
+        MULAN_INITIAL_BATCH_WINDOWS[assigned_index],
+        day_offset=1,
+    )
+    latest = end_ts - MULAN_INITIAL_WINDOW_END_MARGIN_SEC
+    if latest <= start_ts:
+        return float(start_ts)
+    return float(random.uniform(start_ts, latest))
 
 
 def _normalize_report_text(text):
@@ -501,11 +564,46 @@ def _close_mulan_action_guard(family, now):
 
 
 def _daily_done_delay_sec(now):
-    current = datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL)
-    tomorrow = (current + timedelta(days=1)).replace(hour=0, minute=10, second=0, microsecond=0)
-    delay = (tomorrow - current).total_seconds()
-    delay += random.uniform(MULAN_JITTER_MIN_SEC, MULAN_JITTER_MAX_SEC)
-    return max(60, delay)
+    now = float(now or time.time())
+    due_at = _mulan_next_daily_batch_time(now)
+    return max(60, due_at - now)
+
+
+def _legacy_midnight_mulan_due_bucket(due_at, now):
+    try:
+        due_at = float(due_at or 0)
+        now = float(now or time.time())
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if due_at <= 0:
+        return ""
+    due_local = datetime.fromtimestamp(due_at, TZ_LOCAL)
+    now_local = datetime.fromtimestamp(now, TZ_LOCAL)
+    if not (due_local.hour == 0 and due_local.minute <= MULAN_LEGACY_MIDNIGHT_REBUCKET_MINUTE):
+        return ""
+    if due_local.date() > now_local.date():
+        return "future"
+    if due_local.date() == now_local.date():
+        _last_start, last_end = _mulan_window_bounds(now_local, MULAN_INITIAL_BATCH_WINDOWS[-1])
+        return "today" if now < last_end else "future"
+    return ""
+
+
+def _rebucket_mulan_cooldown_if_needed(now):
+    if state.get("mulan_phase") != MULAN_PHASE_COOLDOWN:
+        return False
+    bucket = _legacy_midnight_mulan_due_bucket(state.get("next_mulan_time", 0), now)
+    if not bucket:
+        return False
+    next_due = _mulan_initial_batch_time(now) if bucket == "today" else _mulan_next_daily_batch_time(now)
+    state["next_mulan_time"] = float(next_due)
+    state["mulan_last_error"] = ""
+    last_result = str(state.get("mulan_last_result") or "").strip()
+    if "批次窗口" not in last_result:
+        state["mulan_last_result"] = f"{last_result or '已完成'}，已调整至批次窗口"
+    save_state()
+    console_log(f"🕵️ 慕兰 cooldown 已调整至批次窗口：{fmt_abs_ts(next_due)}", scope="identity", limit=180)
+    return True
 
 
 def _is_daily_done_text(text):
@@ -1211,6 +1309,9 @@ async def run_mulan_scheduler(now):
         await _send_mulan_command(f"{CMD_MULAN_SUPPORT} {action}", now, MULAN_PHASE_SUPPORT_PENDING)
         return
 
+    if _rebucket_mulan_cooldown_if_needed(now):
+        return
+
     if _mulan_next_time_blocks(now):
         return
 
@@ -1238,7 +1339,7 @@ def schedule_mulan_initial_check(now, *, persist=False, keep_last_error=True):
     state["mulan_support_action"] = ""
     state["mulan_sent_at"] = 0
     state["mulan_last_error"] = last_error or ""
-    state["next_mulan_time"] = float(now + random.uniform(MULAN_RECOVERY_MIN_SEC, MULAN_RECOVERY_MAX_SEC))
+    state["next_mulan_time"] = _mulan_initial_batch_time(now)
     if persist:
         save_state()
     else:
