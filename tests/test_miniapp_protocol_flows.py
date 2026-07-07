@@ -3,7 +3,7 @@ import random
 import unittest
 
 from model import webapp_core
-from model.features import cave_treasure_miniapp, stargazer_miniapp, trial_miniapp
+from model.features import cave_treasure_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class MiniAppProtocolFlowTests(unittest.TestCase):
@@ -157,6 +157,88 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual("failed", result["status"])
         self.assertEqual([("start", None, None), ("hunt_reveal", "hunt-expired", 0)], calls)
         self.assertNotIn("df_SECRET999", text)
+        self.assertNotIn("VERY_SECRET", text)
+        self.assertNotIn("SUPERSECRET", text)
+        self.assertIn("<redacted>", text)
+
+    def test_tree_start_lab_flow_reads_state_without_gameplay_calls(self):
+        calls = []
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 200, {
+                "ok": True,
+                "tree": {
+                    "gameplayMode": "council",
+                    "gameplayName": "云梦山灵眼赛",
+                    "status": "growing",
+                    "statusLabel": "每日双赛",
+                    "maturity": 73.5,
+                },
+                "council": {
+                    "daily": {
+                        "jump": {"used": 2, "limit": 3, "best": 21},
+                        "fly": {"used": 0, "limit": 3, "best": 0},
+                    },
+                    "season": {"seasonId": "lyz20260706", "status": "active", "dayIndex": 2},
+                },
+                "ranking": {
+                    "myContributionPoints": 128,
+                    "branchRank": 4,
+                    "claimed": False,
+                },
+                "actions": {"canMeridian": True, "canHarvest": False},
+            }
+
+        result = tree_miniapp.run_tree_miniapp_start_lab_flow(
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            sleeper=lambda _delay: None,
+        )
+        text = json.dumps(result, ensure_ascii=False)
+        state = result["data"]["state"]
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("ready", result["status"])
+        self.assertEqual(["start"], calls)
+        self.assertEqual("council", state["gameplay_mode"])
+        self.assertEqual("云梦山灵眼赛", state["gameplay_name"])
+        self.assertEqual("lyz20260706", state["season_id"])
+        self.assertEqual({"used": 2, "limit": 3, "remaining": 1, "best": 21}, state["jump"])
+        self.assertEqual({"used": 0, "limit": 3, "remaining": 3, "best": 0}, state["fly"])
+        self.assertTrue(state["can_run_game"])
+        self.assertFalse(state["can_claim_reward"])
+        self.assertTrue(state["actions"]["canMeridian"])
+        self.assertFalse(state["actions"]["canHarvest"])
+        self.assertNotIn("tree_SECRET999", text)
+        self.assertNotIn("VERY_SECRET", text)
+
+    def test_tree_failed_start_capture_is_sanitized(self):
+        calls = []
+        capture = webapp_core.MiniAppCaptureStore()
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 200, {
+                "ok": False,
+                "error": "session expired token=tree_SECRET999 hash=VERY_SECRET Authorization: Bearer SUPERSECRET",
+            }
+
+        result = tree_miniapp.run_tree_miniapp_start_lab_flow(
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            sleeper=lambda _delay: None,
+            capture_sink=capture,
+            capture_source="unit token=tree_SECRET999 Authorization: Bearer SUPERSECRET",
+        )
+        text = json.dumps({"result": result, "capture": capture.records}, ensure_ascii=False)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("failed", result["status"])
+        self.assertEqual(["start"], calls)
+        self.assertNotIn("tree_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("SUPERSECRET", text)
         self.assertIn("<redacted>", text)

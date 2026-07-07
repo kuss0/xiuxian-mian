@@ -144,7 +144,7 @@ class ControlBoolCoercionTests(unittest.TestCase):
 
         self.assertIn("侍妾远航", modules)
         self.assertIn("共历心劫", modules)
-        self.assertIn("灵树", modules)
+        self.assertNotIn("灵树", modules)
 
     def test_wendao_only_available_for_yuanying_sect_identity(self):
         cases = (
@@ -205,7 +205,7 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["wendao_enabled"])
 
-    def test_luoyun_tree_module_can_be_enabled_for_new_pulse_mode(self):
+    def test_luoyun_legacy_tree_module_is_archived(self):
         send_as_id = 990323
         state_module.ensure_identity_registered(send_as_id)
         state_module.update_send_as_profile(send_as_id, sect_name="落云宗", realm="结丹后期")
@@ -213,12 +213,12 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with patch.object(control, "save_state"), patch.object(control, "console_log"):
             ok, message = asyncio.run(control.set_module_enabled("灵树", True, send_as_id=send_as_id))
 
-        self.assertTrue(ok)
-        self.assertEqual("", message)
+        self.assertFalse(ok)
+        self.assertIn("灵树模块已归档", message)
         with state_module.use_identity(send_as_id):
-            self.assertTrue(state_module.state["tree_enabled"])
+            self.assertFalse(state_module.state["tree_enabled"])
 
-    def test_tree_module_still_rejected_for_non_luoyun_sect(self):
+    def test_archived_tree_module_rejected_before_sect_check(self):
         send_as_id = 990333
         state_module.ensure_identity_registered(send_as_id)
         state_module.update_send_as_profile(send_as_id, sect_name="星宫", realm="结丹后期")
@@ -227,7 +227,7 @@ class ControlBoolCoercionTests(unittest.TestCase):
             ok, message = asyncio.run(control.set_module_enabled("灵树", True, send_as_id=send_as_id))
 
         self.assertFalse(ok)
-        self.assertIn("未提供灵树模块", message)
+        self.assertIn("灵树模块已归档", message)
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["tree_enabled"])
 

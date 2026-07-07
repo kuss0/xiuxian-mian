@@ -82,9 +82,9 @@ RE_TREE_PULSE_ELEMENTS = re.compile(r"主脉【([^】]+)】\s*/\s*辅脉【([^�
 
 def _tree_send_status_unknown(command):
     return classify_game_send_block(get_current_identity_id(), command).get("status") == "unknown"
-RE_TREE_PULSE_MAIN = re.compile(r"主脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
-RE_TREE_PULSE_AUX = re.compile(r"辅脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
-RE_TREE_PULSE_REVERSE = re.compile(r"逆脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
+RE_TREE_PULSE_MAIN = re.compile(r"(?:主脉|主)\s*(?:[:：]\s*)?【?([金木水火土])】?")
+RE_TREE_PULSE_AUX = re.compile(r"(?:辅脉|辅)\s*(?:[:：]\s*)?【?([金木水火土])】?")
+RE_TREE_PULSE_REVERSE = re.compile(r"(?:逆脉|逆)\s*(?:[:：]\s*)?【?([金木水火土])】?")
 RE_TREE_PULSE_NEUTRAL = re.compile(r"(?:平脉|中脉)\s*(?:[:：]\s*)?【?([金木水火土/、,，\s]+)】?")
 RE_TREE_PULSE_STABILITY = re.compile(r"脉稳[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_TREE_PULSE_STABILITY_CURRENT = re.compile(r"(?:脉稳|稳固|稳定)[^\n]*[（(]当前\s*(\d+)")
@@ -156,7 +156,7 @@ def _is_tree_pulse_panel(text):
         or "云梦灵眼定脉" in raw_text
         or "今日脉象:" in raw_text
         or "今日脉象：" in raw_text
-    ) and ("今日定脉令" in raw_text or "定脉玩法" in raw_text)
+    ) and ("今日定脉令" in raw_text or "定脉令" in raw_text or "定脉玩法" in raw_text)
 
 
 def _split_tree_elements(raw_value):
@@ -328,19 +328,19 @@ def _choose_tree_pulse_command(parsed):
         if str(command or "").strip().startswith(CMD_TREE_PULSE)
     ]
 
-    def choose_available(candidates, fallback_reason):
+    def choose_available(candidates, fallback_reason, keyword_order=None):
         if not available_commands:
             return "", ""
         for candidate, reason in candidates:
             candidate = re.sub(r"\s+", " ", str(candidate or "").strip())
             if candidate and candidate in available_commands:
                 return candidate, reason
-        for keyword, reason in (
+        for keyword, reason in (keyword_order or (
             ("净浊", "面板可用净浊"),
             ("固脉", "面板可用固脉"),
             ("注灵", "面板可用注灵"),
             ("冲脉", "面板可用冲脉"),
-        ):
+        )):
             for command in available_commands:
                 if keyword in command:
                     return command, reason
@@ -374,9 +374,17 @@ def _choose_tree_pulse_command(parsed):
     candidates.extend((
         (_format_tree_pulse_command("注灵", main), "主脉注灵"),
         (_format_tree_pulse_command("注灵", aux), "辅脉注灵"),
-        (_format_tree_pulse_command("净浊"), "面板可用净浊"),
     ))
-    selected, selected_reason = choose_available(candidates, "面板限制，选择可用定脉")
+    selected, selected_reason = choose_available(
+        candidates,
+        "面板限制，选择可用定脉",
+        keyword_order=(
+            ("注灵", "面板可用注灵"),
+            ("冲脉", "面板可用冲脉"),
+            ("净浊", "面板可用净浊"),
+            ("固脉", "面板可用固脉"),
+        ),
+    )
     if selected:
         return selected, selected_reason
     if rush_limit <= 0 or rush_used < rush_limit:

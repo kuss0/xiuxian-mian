@@ -990,6 +990,8 @@ def _disable_tree_module_state():
     state["is_harvested"] = False
     state["pending_irrigation"] = False
     state["tree_bootstrap_check_needed"] = False
+    state["tree_bootstrap_check_due_at"] = 0
+    state["last_tree_status_sent_at"] = 0
     state["tree_pulse_mode_seen"] = False
     state["tree_pulse_last_panel_at"] = 0
     state["tree_pulse_progress"] = 0.0
@@ -1011,6 +1013,8 @@ def _disable_tree_module_state():
     state["tree_maturing_logged"] = False
     state["tree_harvest_followup_due_at"] = 0
     state["tree_harvest_inflight_until"] = 0
+    state["tree_last_harvest_result_msg_id"] = 0
+    state["tree_last_harvest_reply_to_msg_id"] = 0
     _clear_pending_tasks_by_commands({CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS, CMD_TREE_PULSE, CMD_TREE_HARVEST})
 
 
@@ -4141,7 +4145,9 @@ def initialize_identity_runtime(send_as_id, now=None):
         return
     with use_identity(send_as_id):
         _clear_disabled_passive_observations()
-        if state["tree_enabled"]:
+        if state["tree_enabled"] and is_module_archived("灵树"):
+            _disable_tree_module_state()
+        elif state["tree_enabled"]:
             _restore_tree_runtime(now)
         if state["pet_enabled"] and state["next_pet_time"] <= 0:
             _schedule_module_immediate_retry("法宝", now)

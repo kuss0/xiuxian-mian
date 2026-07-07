@@ -518,14 +518,14 @@ class MessageContractTests(unittest.TestCase):
         payload = json.loads(out.getvalue())
         readiness = payload["readiness"]
         rows = {row["module"]: row for row in readiness["modules"]}
-        self.assertEqual(33, readiness["totals"]["sample_complete_modules"])
+        self.assertEqual(32, readiness["totals"]["sample_complete_modules"])
         self.assertEqual(2, readiness["totals"]["sample_partial_modules"])
         self.assertEqual(2, readiness["totals"]["sample_missing_modules"])
         self.assertEqual(3, readiness["totals"]["contract_only_modules"])
-        self.assertEqual(0, readiness["totals"]["archived_modules"])
+        self.assertEqual(1, readiness["totals"]["archived_modules"])
         self.assertTrue(rows["灵树"]["strict"])
-        self.assertFalse(rows["灵树"]["archived"])
-        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])
+        self.assertTrue(rows["灵树"]["archived"])
+        self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰烽烟"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["婉心封魂"]["readiness"])
 

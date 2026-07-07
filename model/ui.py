@@ -267,6 +267,7 @@ MINIAPP_ENTRY_PROBE_COMMANDS = {
     "cave_treasure": ".洞府",
     "fishing": CMD_FISHING,
     "stargazer": CMD_STARGAZER_PANEL,
+    "tree": ".灵树",
     "trial": CMD_TIANJI_TRIAL,
 }
 MINIAPP_MANUAL_RUN_COMMANDS = {
@@ -279,6 +280,7 @@ MINIAPP_UI_GROUPS = {
     "cave_treasure": {"key": "miniapp", "label": "MiniApp合集"},
     "fishing": {"key": "miniapp", "label": "MiniApp合集"},
     "trial": {"key": "miniapp", "label": "MiniApp合集"},
+    "tree": {"key": "sect", "label": "宗门玩法"},
     "world_boss": {"key": "miniapp", "label": "MiniApp合集"},
 }
 

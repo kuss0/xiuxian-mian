@@ -60,7 +60,6 @@ class ModuleManifestTests(unittest.TestCase):
                 "灵溪垂钓",
                 "探寻裂缝",
                 "观星监控",
-                "灵树",
                 "法宝",
                 "温养器灵",
                 "器灵试炼",
@@ -95,7 +94,7 @@ class ModuleManifestTests(unittest.TestCase):
 
     def test_reply_family_maps_to_source_module(self):
         self.assertEqual("灵树", module_manifest.get_module_name_for_reply_family("tree_panel"))
-        self.assertFalse(module_manifest.is_reply_family_archived("tree_panel"))
+        self.assertTrue(module_manifest.is_reply_family_archived("tree_panel"))
         self.assertEqual("太一", module_manifest.get_module_name_for_reply_family("taiyi_yindao"))
         self.assertEqual("深度闭关", module_manifest.get_module_name_for_reply_family("deep_retreat"))
         self.assertEqual("储物袋", module_manifest.get_module_name_for_reply_family("storage_bag_buy"))
@@ -368,7 +367,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertTrue(rows["太一"]["strict"])
         self.assertTrue(rows["阴罗宗"]["strict"])
         self.assertFalse(rows["灵树"]["strict"])
-        self.assertFalse(rows["灵树"]["archived"])
+        self.assertTrue(rows["灵树"]["archived"])
         self.assertEqual("phase", rows["太一"]["duplicate_guard"])
         self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, rows["阴罗宗"]["send_policy"])
         self.assertEqual([], rows["太一"]["missing_sample_families"])
@@ -387,22 +386,22 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(40, summary["totals"]["active_modules"])
-        self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(108, summary["totals"]["reply_families"])
-        self.assertEqual(0, summary["totals"]["archived_reply_families"])
-        self.assertEqual(92, summary["totals"]["covered_sample_families"])
+        self.assertEqual(39, summary["totals"]["active_modules"])
+        self.assertEqual(1, summary["totals"]["archived_modules"])
+        self.assertEqual(104, summary["totals"]["reply_families"])
+        self.assertEqual(4, summary["totals"]["archived_reply_families"])
+        self.assertEqual(88, summary["totals"]["covered_sample_families"])
         self.assertEqual(16, summary["totals"]["missing_sample_families"])
-        self.assertEqual(33, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(32, summary["totals"]["sample_complete_modules"])
         self.assertEqual(2, summary["totals"]["sample_partial_modules"])
         self.assertEqual(2, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])
-        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["天星宗"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["深度闭关"]["readiness"])
         self.assertEqual(module_manifest.READINESS_CONTRACT_ONLY, rows["玄骨考校"]["readiness"])
         self.assertEqual([], rows["灵树"]["missing_sample_families"])
-        self.assertFalse(rows["灵树"]["archived"])
+        self.assertTrue(rows["灵树"]["archived"])
         self.assertEqual([], rows["天星宗"]["missing_sample_families"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰烽烟"]["readiness"])
         self.assertEqual(["mulan_panel", "mulan_collect", "mulan_judge", "mulan_publish", "mulan_support"], rows["慕兰烽烟"]["missing_sample_families"])
@@ -481,8 +480,8 @@ class ModuleManifestTests(unittest.TestCase):
         guanxing_monitor = module_manifest.get_behavior_spec("观星监控")
         tree = module_manifest.get_behavior_spec("灵树")
 
-        self.assertFalse(tree.archived)
-        self.assertIn("灵树", [spec.name for spec in module_manifest.execution_order()])
+        self.assertTrue(tree.archived)
+        self.assertNotIn("灵树", [spec.name for spec in module_manifest.execution_order()])
         self.assertIn("灵树", [spec.name for spec in module_manifest.execution_order(include_archived=True)])
         self.assertTrue(deep_retreat.phaseful)
         self.assertTrue(yuanying.phaseful)

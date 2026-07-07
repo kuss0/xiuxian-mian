@@ -135,8 +135,6 @@ from .features.tree import (
     handle_tree_invasion_start,
     handle_tree_panel,
     handle_tree_rebirth_reset,
-    run_tree_bootstrap_check,
-    run_tree_scheduler,
 )
 from .features.second_soul import (
     handle_second_soul_choice_result_broadcast,
@@ -304,8 +302,6 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_wendao_scheduler,
     run_duel_scheduler,
     run_fishing_scheduler,
-    run_tree_bootstrap_check,
-    run_tree_scheduler,
     run_checkin_scheduler,
     run_tower_scheduler,
     run_second_soul_bootstrap_check,
@@ -366,8 +362,6 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_tianti_scheduler": {"manifest_names": ("登天阶",), "helper": False},
     "run_tianxing_scheduler": {"manifest_names": ("天星宗",), "helper": False},
     "run_tower_scheduler": {"manifest_names": ("闯塔",), "helper": False},
-    "run_tree_bootstrap_check": {"manifest_names": ("灵树",), "helper": True},
-    "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
     "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
     "run_mulan_scheduler": {"manifest_names": ("慕兰烽烟",), "helper": False},
     "run_wanxin_scheduler": {"manifest_names": ("婉心封魂",), "helper": False},

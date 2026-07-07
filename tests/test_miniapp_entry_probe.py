@@ -8,11 +8,12 @@ from model import ui
 
 class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
     def test_miniapp_send_whitelists_are_exact(self):
-        self.assertEqual({"cave_treasure", "fishing", "stargazer", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
+        self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
         self.assertEqual({"cave_treasure", "stargazer", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
         self.assertNotIn("world_boss", ui.MINIAPP_ENTRY_PROBE_COMMANDS)
         self.assertNotIn("world_boss", ui.MINIAPP_MANUAL_RUN_COMMANDS)
         self.assertNotIn("fishing", ui.MINIAPP_MANUAL_RUN_COMMANDS)
+        self.assertNotIn("tree", ui.MINIAPP_MANUAL_RUN_COMMANDS)
 
     async def test_probe_sends_only_whitelisted_entry_command_without_tracking(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
@@ -75,6 +76,24 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("入口诊断", message)
         self.assertEqual(".洞府", extra["command"])
         self.assertEqual(12347, extra["msg_id"])
+        kwargs = send_mock.await_args.kwargs
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("MiniApp诊断", kwargs["source_module"])
+        self.assertEqual("miniapp_entry_probe", kwargs["chain_id"])
+
+    async def test_probe_allows_tree_entry_command_without_tracking(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12352))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_entry_probe(1001, "tree")
+
+        self.assertTrue(ok)
+        self.assertIn("入口诊断", message)
+        self.assertEqual(".灵树", extra["command"])
+        self.assertEqual(12352, extra["msg_id"])
         kwargs = send_mock.await_args.kwargs
         self.assertFalse(kwargs["track"])
         self.assertEqual(0, kwargs["max_retry"])
@@ -174,15 +193,21 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(adapters["cave_treasure"]["manual_only"])
         self.assertEqual("miniapp", adapters["cave_treasure"]["ui_group"])
         self.assertEqual("sect", adapters["stargazer"]["ui_group"])
+        self.assertEqual("sect", adapters["tree"]["ui_group"])
         self.assertEqual(".洞府", probe_commands["cave_treasure"])
         self.assertEqual(".钓鱼", probe_commands["fishing"])
+        self.assertEqual(".灵树", probe_commands["tree"])
         self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
         self.assertNotIn("fishing", manual_run_commands)
+        self.assertNotIn("tree", manual_run_commands)
         self.assertIn("cave_treasure", snapshot["flow_plans"])
+        self.assertIn("tree", snapshot["flow_plans"])
         self.assertFalse(snapshot["flow_plans"]["cave_treasure"]["default_enabled"])
+        self.assertFalse(snapshot["flow_plans"]["tree"]["default_enabled"])
         self.assertTrue(snapshot["flow_plans"]["cave_treasure"]["manual_only"])
+        self.assertTrue(snapshot["flow_plans"]["tree"]["manual_only"])
         self.assertFalse(snapshot["policy"]["raw_init_data_persisted"])
         self.assertFalse(snapshot["policy"]["raw_start_token_persisted"])
         self.assertNotIn("tgWebAppData", text)

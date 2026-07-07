@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from urllib.parse import quote, urlencode
 
 from model import webapp_core
-from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_registry, stargazer_miniapp, trial_miniapp
+from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_registry, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class WebAppCoreTests(unittest.TestCase):
@@ -219,10 +219,12 @@ class WebAppCoreTests(unittest.TestCase):
     def test_known_miniapp_registry_is_manual_only_by_default(self):
         registry = miniapp_registry.build_known_miniapp_registry()
 
-        self.assertEqual(("cave_treasure", "fishing", "stargazer", "trial", "world_boss"), registry.keys())
+        self.assertEqual(("cave_treasure", "fishing", "stargazer", "tree", "trial", "world_boss"), registry.keys())
         self.assertFalse(registry.require("fishing").default_enabled)
         self.assertFalse(registry.require("trial").default_enabled)
         self.assertFalse(registry.require("cave_treasure").default_enabled)
+        self.assertFalse(registry.require("tree").default_enabled)
+        self.assertTrue(registry.require("tree").manual_only)
         self.assertTrue(registry.require("world_boss").manual_only)
         inferred = registry.infer(button_text="进入观星台", message_text="星台已迁入小程序")
         self.assertEqual("stargazer", inferred.game_key)
@@ -230,10 +232,13 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("trial", inferred_trial.game_key)
         inferred_cave = registry.infer(button_text="进入洞府", message_text="前往外府石室寻宝")
         self.assertEqual("cave_treasure", inferred_cave.game_key)
+        inferred_tree = registry.infer(button_text="进入灵树", message_text="【落云宗 · 灵眼之树】点击下方 进入灵树。")
+        self.assertEqual("tree", inferred_tree.game_key)
         snapshot_text = json.dumps(registry.safe_snapshot(), ensure_ascii=False)
         self.assertIn("灵溪垂钓", snapshot_text)
         self.assertIn("天机试炼", snapshot_text)
         self.assertIn("洞府寻宝", snapshot_text)
+        self.assertIn("灵眼之树", snapshot_text)
         self.assertNotIn("tgWebAppData", snapshot_text)
 
     def test_miniapp_registry_duplicate_requires_replace(self):
@@ -1038,6 +1043,64 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("df_SECRET999", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
 
+    def test_tree_entry_state_and_flow_are_lab_only(self):
+        url = "https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999"
+        button = SimpleNamespace(
+            text="进入灵树",
+            button=SimpleNamespace(url=url),
+        )
+        event = SimpleNamespace(message=SimpleNamespace(buttons=[[button]]))
+        adapter = tree_miniapp.build_tree_miniapp_adapter()
+        request = tree_miniapp.build_tree_miniapp_request(
+            "start",
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            adapter=adapter,
+        )
+        summary = tree_miniapp.summarize_tree_entry(
+            url,
+            button_text="进入灵树",
+            message_text="【落云宗 · 灵眼之树】点击下方 进入灵树。",
+        )
+        extracted = tree_miniapp.extract_tree_miniapp_launch(
+            event,
+            message_text="【落云宗 · 灵眼之树】点击下方 进入灵树。",
+        )
+        launch, args = tree_miniapp.build_tree_launch_args(url)
+        plan = tree_miniapp.build_tree_miniapp_flow_plan()
+        serialized = json.dumps({"request": request["safe_summary"], "summary": summary, "safe": extracted["safe_summary"]}, ensure_ascii=False)
+
+        self.assertEqual("https://asc.aiopenai.app/api/miniapp/xianxia-spirit-tree/start", request["url"])
+        self.assertEqual("tree_SECRET999", request["payload"]["token"])
+        self.assertEqual("tree", summary["game_hint"])
+        self.assertEqual("tree_SECRET999", extracted["token"])
+        self.assertTrue(launch.allowed)
+        self.assertEqual("tree_SECRET999", args["start_param"])
+        self.assertTrue(plan.manual_only)
+        self.assertFalse(plan.default_enabled)
+        self.assertEqual(["launch", "start", "decide_mode", "run_start", "run_submit", "reward_claim"], [step.key for step in plan.steps])
+        self.assertNotIn("tree_SECRET999", serialized)
+        self.assertNotIn("VERY_SECRET", serialized)
+
+    def test_tree_entry_rejects_unprefixed_start_param(self):
+        url = "https://t.me/fanrenxiuxian_bot?startapp=SECRET999"
+        button = SimpleNamespace(
+            text="进入灵树",
+            button=SimpleNamespace(url=url),
+        )
+        event = SimpleNamespace(message=SimpleNamespace(buttons=[[button]]))
+
+        extracted = tree_miniapp.extract_tree_miniapp_launch(
+            event,
+            message_text="【落云宗 · 灵眼之树】点击下方 进入灵树。",
+        )
+        launch, args = tree_miniapp.build_tree_launch_args(url)
+
+        self.assertEqual({}, extracted)
+        self.assertFalse(launch.allowed)
+        self.assertEqual("start_param not allowed", launch.reason)
+        self.assertEqual({}, args)
+
     def test_cave_treasure_state_keeps_sense_remaining_and_games_used_separate(self):
         parsed = cave_treasure_miniapp.parse_cave_treasure_state({
             "ok": True,
@@ -1236,13 +1299,16 @@ class WebAppCoreTests(unittest.TestCase):
     def test_known_flow_plans_include_stargazer_without_production_enable(self):
         plans = miniapp_registry.build_known_miniapp_flow_plans()
 
-        self.assertEqual({"cave_treasure", "fishing", "stargazer", "trial"}, set(plans))
+        self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(plans))
         self.assertTrue(plans["stargazer"].manual_only)
         self.assertFalse(plans["stargazer"].default_enabled)
         self.assertTrue(plans["trial"].manual_only)
         self.assertFalse(plans["trial"].default_enabled)
         self.assertTrue(plans["cave_treasure"].manual_only)
         self.assertFalse(plans["cave_treasure"].default_enabled)
+        self.assertTrue(plans["tree"].manual_only)
+        self.assertFalse(plans["tree"].default_enabled)
+        self.assertIn("不接生产", plans["tree"].note)
 
     def test_fishing_proof_is_formula_consistent_over_samples(self):
         rng = __import__("random").Random(11)

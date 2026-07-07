@@ -86,9 +86,7 @@ class AppSchedulerContractTests(unittest.TestCase):
         self.assertLess(_index(ordinary, "run_mulan_scheduler"), _index(ordinary, "run_small_world_scheduler"))
         self.assertLess(_index(ordinary, "run_small_world_scheduler"), _index(ordinary, "run_explore_rift_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_wendao_scheduler"))
-        self.assertLess(_index(ordinary, "run_wendao_scheduler"), _index(ordinary, "run_tree_bootstrap_check"))
-        self.assertLess(_index(ordinary, "run_tree_bootstrap_check"), _index(ordinary, "run_tree_scheduler"))
-        self.assertLess(_index(ordinary, "run_tree_scheduler"), _index(ordinary, "run_checkin_scheduler"))
+        self.assertLess(_index(ordinary, "run_wendao_scheduler"), _index(ordinary, "run_checkin_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_checkin_scheduler"))
         self.assertLess(_index(ordinary, "run_tower_scheduler"), _index(ordinary, "run_second_soul_bootstrap_check"))
         self.assertEqual(
@@ -170,14 +168,15 @@ class AppSchedulerContractTests(unittest.TestCase):
         self.assertEqual(("第二元神",), bridge["run_second_soul_bootstrap_check"]["manifest_names"])
         self.assertEqual(("太一",), bridge["run_taiyi_bootstrap_check"]["manifest_names"])
 
-    def test_new_tree_pulse_schedulers_are_in_runtime_order(self):
+    def test_legacy_tree_schedulers_are_archived_out_of_runtime_order(self):
         ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
         bridge = app.get_scheduler_manifest_bridge_contract()
 
-        self.assertFalse(module_manifest.is_module_archived("灵树"))
-        self.assertIn("run_tree_bootstrap_check", ordinary)
-        self.assertIn("run_tree_scheduler", ordinary)
-        self.assertEqual(("灵树",), bridge["run_tree_scheduler"]["manifest_names"])
+        self.assertTrue(module_manifest.is_module_archived("灵树"))
+        self.assertNotIn("run_tree_bootstrap_check", ordinary)
+        self.assertNotIn("run_tree_scheduler", ordinary)
+        self.assertNotIn("run_tree_bootstrap_check", bridge)
+        self.assertNotIn("run_tree_scheduler", bridge)
 
     def test_important_runtime_scheduler_modules_have_behavior_spec_coverage(self):
         bridge = app.get_scheduler_manifest_bridge_contract()
