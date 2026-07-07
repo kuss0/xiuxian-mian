@@ -58,6 +58,8 @@ DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MAX_SEC = 15
 DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
 DEEP_RETREAT_TIANXING_RETRY_MIN_SEC = 2 * 60
 DEEP_RETREAT_TIANXING_RETRY_MAX_SEC = 5 * 60
+DEEP_RETREAT_WILD_INSERT_LOOKAHEAD_SEC = 60
+DEEP_RETREAT_WILD_INSERT_HOLD_SEC = 120
 
 DEEP_RETREAT_SPEC = PhasefulSpec(
     enabled_key="deep_retreat_enabled",
@@ -765,10 +767,37 @@ async def _calibrate_orphan_deep_retreat_summary_due(now):
         return True
 
 
+def _defer_post_summary_relaunch_for_due_wild_training(now):
+    if str(state.get("deep_retreat_phase") or "").strip() != "post_summary_wait":
+        return False
+    if not state.get("wild_training_enabled"):
+        return False
+    try:
+        next_wild = float(state.get("next_wild_training_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_wild = 0.0
+    try:
+        reply_due = float(state.get("wild_training_reply_due_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        reply_due = 0.0
+    pending = int(state.get("wild_training_reply_to_msg_id", 0) or 0) > 0 and reply_due > float(now)
+    due_soon = 0 < next_wild <= float(now) + DEEP_RETREAT_WILD_INSERT_LOOKAHEAD_SEC
+    if not pending and not due_soon:
+        return False
+    target = float(now) + DEEP_RETREAT_WILD_INSERT_HOLD_SEC
+    current = float(state.get("next_deep_retreat_time", 0) or 0)
+    if current < target:
+        state["next_deep_retreat_time"] = target
+        save_state()
+    return True
+
+
 async def run_deep_retreat_scheduler(now):
     if state.get("deep_retreat_phase") == "post_summary_wait":
         _clear_deep_retreat_remote_block_after_summary(now)
     if await _calibrate_orphan_deep_retreat_summary_due(now):
+        return
+    if _defer_post_summary_relaunch_for_due_wild_training(now):
         return
     if not await _run_deep_retreat_tianxing_gate(now):
         return

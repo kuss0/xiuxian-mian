@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..config import CD_BUFFER_SEC, CMD_TIANXING_PANEL, CMD_WILD_TRAINING, DB_FILE, MESSAGES_DIR, TZ_LOCAL, WILD_TRAINING_STRATEGIES
+from ..config import CD_BUFFER_SEC, CMD_TIANXING_PANEL, CMD_WILD_TRAINING, DB_FILE, MESSAGES_DIR, POST_SUMMARY_WAIT_SEC, TZ_LOCAL, WILD_TRAINING_STRATEGIES
 from ..persistence import mark_dirty, save_state
 from ..runtime import (
     classify_game_send_block,
@@ -166,6 +166,22 @@ def _schedule_next(now):
     state["next_wild_training_time"] = float(now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC))
     state["wild_training_retry_count"] = 0
     return state["next_wild_training_time"]
+
+
+def _resume_deep_retreat_after_wild_training(now):
+    if not state.get("deep_retreat_enabled"):
+        return False
+    if str(state.get("deep_retreat_phase") or "").strip() != "post_summary_wait":
+        return False
+    target = float(now or 0) + POST_SUMMARY_WAIT_SEC
+    try:
+        current = float(state.get("next_deep_retreat_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        current = 0.0
+    if current <= 0 or current <= target:
+        return False
+    state["next_deep_retreat_time"] = target
+    return True
 
 
 def _schedule_retry(now):
@@ -385,7 +401,7 @@ async def _defer_wild_training_for_deep_retreat_summary_window(now):
         next_deep_time = float(state.get("next_deep_retreat_time", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         next_deep_time = 0.0
-    blocking_phases = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait", "queued_launch", "launching"}
+    blocking_phases = {"summary_due", "observing_summary", "waiting_summary", "queued_launch", "launching"}
     should_defer = phase in blocking_phases
     if not should_defer and phase == "running":
         should_defer = True
@@ -566,6 +582,7 @@ def _apply_wild_training_cooldown(raw_text, now, msg_id=0):
     state["wild_training_last_result_tianxing"] = False
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = ""
+    _resume_deep_retreat_after_wild_training(now)
 
 
 def _apply_wild_training_result(raw_text, now, msg_id):
@@ -582,6 +599,7 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     state["wild_training_last_error"] = ""
     state["wild_training_retry_count"] = 0
     _schedule_next(now)
+    _resume_deep_retreat_after_wild_training(now)
 
 
 def _is_duplicate_wild_training_result(raw_text, msg_id, now=None):

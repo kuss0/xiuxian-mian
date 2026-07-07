@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import action_guard, control, runtime, ui
-from model.features import _phaseful, concubine, deep_retreat, tianxing, tower, yuanying
+from model.features import _phaseful, concubine, deep_retreat, tianxing, tower, wild_training, yuanying
 
 
 class _StateIsolationMixin:
@@ -1554,6 +1554,31 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
             self.assertTrue(state_module.state["deep_retreat_probe_pending"])
+
+    async def test_deep_retreat_post_summary_yields_to_due_wild_training(self):
+        send_as_id = 8659059203
+        now = 1_700_000_450.0
+        self._prepare_identity(send_as_id, "YieldWildRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["next_wild_training_time"] = now - 1
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["wild_training_reply_due_at"] = 0
+
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat, "save_state") as save_mock,
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            save_mock.assert_called()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + deep_retreat.DEEP_RETREAT_WILD_INSERT_HOLD_SEC, state_module.state["next_deep_retreat_time"])
 
     async def test_deep_retreat_summary_due_wait_log_is_once_per_wait(self):
         send_as_id = 8659059231

@@ -1035,6 +1035,47 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("phase=launching", state_module.state["wild_training_last_error"])
         console_mock.assert_called_once()
 
+    async def test_scheduler_allows_due_wild_training_during_deep_retreat_post_summary_wait(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["deep_retreat_enabled"] = True
+            identity_state["deep_retreat_phase"] = "post_summary_wait"
+            identity_state["next_deep_retreat_time"] = now + 90
+            identity_state["tianxing_enabled"] = False
+
+        sent = SimpleNamespace(id=12345, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent)) as send_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(12345, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+
+    async def test_wild_training_result_resumes_deep_retreat_post_summary_wait(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 12345
+            identity_state["wild_training_reply_due_at"] = now + 300
+            identity_state["deep_retreat_enabled"] = True
+            identity_state["deep_retreat_phase"] = "post_summary_wait"
+            identity_state["next_deep_retreat_time"] = now + 600
+
+        text = "【野外历练 · 灵机暗藏】\n@wild 在山涧残阵旁避开妖兽踪迹。\n获得修为 +1200，获得 【灵石】x8。"
+        reply_to = SimpleNamespace(id=12345, raw_text=wild_training.get_wild_training_command("谨慎"))
+        with state_module.use_identity(send_as_id), patch.object(wild_training, "send_audit_log", new=AsyncMock()), patch.object(wild_training, "save_state"):
+            handled = await wild_training.handle_wild_training_reply(text, now, reply_to=reply_to, current_msg_id=12346)
+
+        self.assertTrue(handled)
+        self.assertEqual(now + config.POST_SUMMARY_WAIT_SEC, state_module.state["next_deep_retreat_time"])
+
     async def test_scheduler_defers_for_running_deep_retreat_until_retreat_end(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
