@@ -1,6 +1,6 @@
 # MiniApp 辅助开发交接
 
-更新时间：2026-07-07 12:10 CST
+更新时间：2026-07-07 12:35 CST
 
 ## 边界
 
@@ -12,7 +12,7 @@
 
 本轮辅助任务已完成灵树 MiniApp 新框架、跳一跳/飞一飞 proof 候选、UI 目标分配置、mock 测试和审计文档。代码仍是候选 diff，未接生产运行入口。
 
-审计追加：发现跳一跳在目标 80 时可能因连击加分冲到 87/94，已改为接近上限时强制失误，确保 proof replay 分数不超过 80。
+审计追加：发现跳一跳在目标 80 时可能因连击加分冲到 87/94，已改为接近上限时强制失误，确保 proof replay 分数不超过 80。后续补强已完成：飞一飞规划参数加本地上限保护、UI 分数配置按身份隔离测试、`tree_miniapp_score_configs` 持久化重载测试。
 
 ## 灵树协议事实
 
@@ -31,6 +31,7 @@
   - `submit=False` 时只做到 `start + run_start + 本地 proof 准备`，不提交成绩。
   - `submit=True` 仅作为 mock/lab 候选路径；生产 wrapper 存在但未接 UI 手动运行、scheduler 或自动化。
   - 跳一跳/飞一飞目标分默认是几十：`jump 24-42`、`fly 24-45`；硬性夹到 `20-80`，避免个位数和异常高分。
+  - 飞一飞 beam search 加规划上限：`beam_width` 最大 640、规划时长最大 120000ms、规划帧数最大 7600，避免异常 profile 造成长时间 CPU 计算。
 - `model/state.py` / `model/persistence.py`
   - 新增 `tree_miniapp_score_configs` meta JSON，用于持久化 UI 分数配置。
 - `model/ui.py`
@@ -45,7 +46,10 @@
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_miniapp_protocol_flows.py tests/test_miniapp_entry_probe.py tests/test_webapp_core.py
-# 85 passed
+# 87 passed
+
+.venv/bin/python -m pytest -q tests/test_miniapp_protocol_flows.py tests/test_miniapp_entry_probe.py tests/test_webapp_core.py tests/test_persistence_runtime_flags.py
+# 110 passed
 
 .venv/bin/python -m py_compile \
   model/features/tree_miniapp.py model/ui.py model/state.py model/persistence.py \
@@ -59,7 +63,7 @@ git diff --check
 # passed
 
 .venv/bin/python -m pytest -q
-# 2583 passed, 368 subtests passed
+# 2586 passed, 368 subtests passed
 ```
 
 额外审计脚本覆盖 `jump/fly`、目标分 `20/30/50/80`、12 个 seed，共 96 组 proof replay；结果 `failure_count=0`。

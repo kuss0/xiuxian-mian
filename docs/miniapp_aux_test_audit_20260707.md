@@ -15,6 +15,7 @@
   - `jump` 按跳一跳平台/充能落点实现，proof 为 `charges/durationMs/clientScore`。
   - 默认目标分为几十，夹取范围为 `20-80`；测试覆盖 7 被夹到 20、999 被夹到 80。
   - 审计发现目标 80 时跳一跳连击可能冲到 87/94，已修复为接近上限时强制失误；新增回归测试锁定不超过 80。
+  - 飞一飞规划参数已加本地上限保护：`beam_width <= 640`、规划时长 `<= 120000ms`、规划帧数 `<= 7600`。
 - 灵树 lab flow：
   - `submit=False` mock 测试确认只调用 `start/run_start`，不会调用 `run_submit`。
   - `submit=True` 仅在 mock transport 中验证提交 payload 形状和脱敏结果。
@@ -22,6 +23,7 @@
   - `score_controls.tree` 已进入 MiniApp status snapshot。
   - `/api/miniapp-tree-score-config` 只保存 per-identity 目标分配置到 `tree_miniapp_score_configs`，不触发游戏。
   - 前端输入范围为 `20-80`。
+  - 新增身份隔离测试：不同 `send_as_id` 保存不同目标分，未配置身份回落默认几十区间。
 - 安全白名单：
   - `MINIAPP_ENTRY_PROBE_COMMANDS` 包含 `tree` 入口诊断。
   - `MINIAPP_MANUAL_RUN_COMMANDS` 不包含 `tree`、`fishing`、`world_boss`。
@@ -30,7 +32,10 @@
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_miniapp_protocol_flows.py tests/test_miniapp_entry_probe.py tests/test_webapp_core.py
-# 85 passed
+# 87 passed
+
+.venv/bin/python -m pytest -q tests/test_miniapp_protocol_flows.py tests/test_miniapp_entry_probe.py tests/test_webapp_core.py tests/test_persistence_runtime_flags.py
+# 110 passed
 
 .venv/bin/python -m py_compile \
   model/features/tree_miniapp.py model/ui.py model/state.py model/persistence.py \
@@ -44,7 +49,7 @@ git diff --check
 # passed
 
 .venv/bin/python -m pytest -q
-# 2583 passed, 368 subtests passed
+# 2586 passed, 368 subtests passed
 ```
 
 额外审计脚本覆盖 `jump/fly`、目标分 `20/30/50/80`、12 个 seed，共 96 组 proof replay；结果 `failure_count=0`，没有 replay mismatch、超分或 token 泄漏。
@@ -54,6 +59,7 @@ git diff --check
 - 未把灵树候选 flow 接入生产 scheduler、手动运行白名单或 reward claim 自动链。
 - 未保存 raw `tgWebAppData/initData/query_id/hash/user`，未把 raw token/runToken/seed 写入结果或文档。
 - `run_tree_miniapp_game_lab_flow()` 的返回数据只暴露 state、run 安全字段、proof summary 和目标分配置，不返回 `runToken/seed`。
+- `tree_miniapp_score_configs` 已有保存/重载 roundtrip 测试，确认服务重载后配置可恢复。
 - 测试环境由 `tests/conftest.py` 指向临时数据目录；本轮未设置 `XIUXIAN_ALLOW_LIVE_TEST_DB=1`。
 - 完整 pytest 已覆盖当前 state/persistence 改动，没有发现回归。
 
