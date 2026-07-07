@@ -357,7 +357,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         start_mock.assert_called_once_with([1003, 1004], now=now)
         fire_mock.assert_called_once()
 
-    async def test_miniapp_daily_scheduler_legacy_done_counts_as_first_wave(self):
+    async def test_miniapp_daily_scheduler_legacy_done_counts_as_both_waves(self):
         state_module._meta_state["miniapp_auto_config"] = {
             "trial_daily_enabled": True,
             "trial_daily_last_run_day": "2026-07-07",
@@ -370,9 +370,13 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
             result = await ui.run_miniapp_daily_scheduler(now)
 
-        self.assertEqual({"started": False, "reason": "wave1_done_today"}, result)
+        self.assertEqual({"started": False, "reason": "done_today"}, result)
         ids_mock.assert_not_called()
         start_mock.assert_not_called()
+        snapshot = ui.get_miniapp_auto_config_snapshot(datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp())
+        self.assertTrue(snapshot["trial_daily_done_today"])
+        self.assertTrue(snapshot["trial_daily_waves"][0]["done_today"])
+        self.assertTrue(snapshot["trial_daily_waves"][1]["done_today"])
 
     async def test_miniapp_daily_scheduler_does_not_start_outside_window(self):
         now = datetime(2026, 7, 7, 0, 30, tzinfo=ui.TZ_LOCAL).timestamp()

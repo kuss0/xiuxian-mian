@@ -368,11 +368,18 @@ def normalize_miniapp_auto_config(config=None):
             result[key] = float(result.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
             result[key] = 0
-    if result["trial_daily_last_run_day"] and not result["trial_daily_wave1_last_run_day"]:
+    legacy_run_day = result["trial_daily_last_run_day"]
+    had_wave1_day = bool(result["trial_daily_wave1_last_run_day"])
+    had_wave2_day = bool(result["trial_daily_wave2_last_run_day"])
+    if legacy_run_day and not had_wave1_day and not had_wave2_day:
         result["trial_daily_wave1_last_run_day"] = result["trial_daily_last_run_day"]
         result["trial_daily_wave1_last_batch_id"] = result["trial_daily_last_batch_id"]
         result["trial_daily_wave1_last_run_at"] = result["trial_daily_last_run_at"]
         result["trial_daily_wave1_last_result"] = result["trial_daily_last_result"]
+        result["trial_daily_wave2_last_run_day"] = result["trial_daily_last_run_day"]
+        result["trial_daily_wave2_last_batch_id"] = result["trial_daily_last_batch_id"]
+        result["trial_daily_wave2_last_run_at"] = result["trial_daily_last_run_at"]
+        result["trial_daily_wave2_last_result"] = result["trial_daily_last_result"]
     return result
 
 
