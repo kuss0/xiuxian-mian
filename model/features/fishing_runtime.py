@@ -858,32 +858,99 @@ def _format_fishing_daily_completion_summary(day_key, count, limit, raw_summary)
     return "｜".join(parts)
 
 
+def _enabled_fishing_daily_entries(now):
+    day_key = get_day_key(now)
+    entries = []
+    changed = False
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or not get_identity_enabled(identity_id):
+            continue
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if not identity_state.get("fishing_enabled"):
+            continue
+        entry_day, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(dict(identity_state), now)
+        if daily_updates:
+            identity_state.update(daily_updates)
+            changed = True
+        limit = _parse_int(limit, 0)
+        if limit <= 0:
+            continue
+        summary = _normalize_fishing_daily_catch_summary(identity_state.get("fishing_daily_catch_summary_json"))
+        phase = str(identity_state.get("fishing_phase") or "").strip()
+        active_followup = (
+            _parse_int(identity_state.get("fishing_reply_to_msg_id"), 0) > 0
+            or bool(str(identity_state.get("fishing_pending_action") or "").strip())
+            or phase not in {"", "idle"}
+        )
+        entries.append({
+            "identity_id": identity_id,
+            "name": get_identity_display_name(identity_id),
+            "day": str(entry_day or day_key),
+            "count": _parse_int(count, 0),
+            "limit": limit,
+            "summary": summary,
+            "summary_day": str(identity_state.get("fishing_daily_summary_day") or "").strip(),
+            "active_followup": active_followup,
+        })
+    return day_key, entries, changed
+
+
+def _format_fishing_all_daily_completion_summary(day_key, entries):
+    entries = list(entries or ())
+    total_count = sum(_parse_int(item.get("count"), 0) for item in entries)
+    total_limit = sum(_parse_int(item.get("limit"), 0) for item in entries)
+    lines = [f"🎣 灵溪垂钓日结｜全体｜{day_key}｜{total_count}/{total_limit}竿｜角色{len(entries)}"]
+    for item in entries:
+        summary = _normalize_fishing_daily_catch_summary(item.get("summary"))
+        fish_text = _format_count_map(summary.get("fish"))
+        reward_text = _format_count_map(summary.get("rewards"))
+        parts = [
+            f"- {item.get('name') or item.get('identity_id')}: {_parse_int(item.get('count'), 0)}/{_parse_int(item.get('limit'), 0)}竿",
+            f"渔获:{fish_text}",
+        ]
+        if reward_text != "无":
+            parts.append(f"奖励:{reward_text}")
+        lines.append("｜".join(parts))
+    return "\n".join(lines)
+
+
 async def _send_fishing_daily_completion_summary(now):
-    day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
-    if daily_updates:
-        _apply_updates(daily_updates)
+    day_key, entries, changed = _enabled_fishing_daily_entries(now)
+    if changed:
         mark_dirty()
-    if int(limit or 0) <= 0 or int(count or 0) < int(limit or 0):
+    if not entries:
         return False
-    if str(state.get("fishing_daily_summary_day") or "").strip() == str(day_key or "").strip():
+    if any(str(item.get("day") or "").strip() != str(day_key or "").strip() for item in entries):
         return False
-    summary = _normalize_fishing_daily_catch_summary(state.get("fishing_daily_catch_summary_json"))
-    if str(summary.get("day") or "").strip() != str(day_key or "").strip():
+    if any(item.get("active_followup") for item in entries):
         return False
-    if _parse_int(summary.get("rods"), 0) <= 0 and not summary.get("fish") and not summary.get("rewards"):
+    if any(_parse_int(item.get("count"), 0) < _parse_int(item.get("limit"), 0) for item in entries):
         return False
-    message = _format_fishing_daily_completion_summary(
-        day_key,
-        count,
-        limit,
-        summary,
-    )
-    ok = await send_audit_log(message, scope="identity", priority="normal", limit=260)
+    if all(str(item.get("summary_day") or "").strip() == str(day_key or "").strip() for item in entries):
+        return False
+    if not any(
+        _parse_int((item.get("summary") or {}).get("rods"), 0) > 0
+        or bool((item.get("summary") or {}).get("fish"))
+        or bool((item.get("summary") or {}).get("rewards"))
+        for item in entries
+    ):
+        return False
+    message = _format_fishing_all_daily_completion_summary(day_key, entries)
+    ok = await send_audit_log(message, scope="identity", priority="normal", limit=900)
     if not ok:
         state["fishing_last_error"] = "灵溪垂钓日结播报发送失败，稍后重试"
         mark_dirty()
         return True
-    state["fishing_daily_summary_day"] = str(day_key or "").strip()
+    for item in entries:
+        try:
+            identity_state = get_identity_state(int(item.get("identity_id") or 0))
+        except KeyError:
+            continue
+        identity_state["fishing_daily_summary_day"] = str(day_key or "").strip()
     state["fishing_last_error"] = ""
     save_state()
     return True

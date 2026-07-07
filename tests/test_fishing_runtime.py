@@ -801,6 +801,73 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("银须灵鲢x1", daily_texts[0])
             self.assertIn("灵石x28", daily_texts[0])
 
+    async def test_daily_completion_waits_for_all_enabled_fishing_identities(self):
+        identity_id = self._prepare_identity()
+        other_id = self._prepare_identity(10001)
+        now = self._local_ts(2026, 7, 6, 8, 0, 0)
+        day_key = fishing_runtime.get_day_key(now)
+
+        for target_id, count in ((identity_id, 5), (other_id, 4)):
+            with state_module.use_identity(target_id):
+                state_module.state["fishing_enabled"] = True
+                state_module.state["fishing_daily_limit"] = 5
+                state_module.state["fishing_daily_day"] = day_key
+                state_module.state["fishing_daily_count"] = count
+                state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                    "day": day_key,
+                    "rods": count,
+                    "fish": {"银须灵鲢": count},
+                    "rewards": {},
+                }, ensure_ascii=False)
+
+        with state_module.use_identity(identity_id):
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertFalse(sent)
+        audit_mock.assert_not_awaited()
+        self.assertEqual("", state_module.get_identity_state(identity_id)["fishing_daily_summary_day"])
+        self.assertEqual("", state_module.get_identity_state(other_id)["fishing_daily_summary_day"])
+
+    async def test_daily_completion_sends_one_all_identity_summary(self):
+        identity_id = self._prepare_identity()
+        other_id = self._prepare_identity(10001)
+        now = self._local_ts(2026, 7, 6, 8, 5, 0)
+        day_key = fishing_runtime.get_day_key(now)
+
+        for target_id, fish_name in ((identity_id, "银须灵鲢"), (other_id, "赤尾火鲤")):
+            with state_module.use_identity(target_id):
+                state_module.state["fishing_enabled"] = True
+                state_module.state["fishing_daily_limit"] = 5
+                state_module.state["fishing_daily_day"] = day_key
+                state_module.state["fishing_daily_count"] = 5
+                state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                    "day": day_key,
+                    "rods": 5,
+                    "fish": {fish_name: 5},
+                    "rewards": {"幸运符": 1},
+                }, ensure_ascii=False)
+
+        with state_module.use_identity(identity_id):
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertTrue(sent)
+        audit_mock.assert_awaited_once()
+        text = audit_mock.await_args.args[0]
+        self.assertIn("灵溪垂钓日结｜全体", text)
+        self.assertIn("10/10竿", text)
+        self.assertIn("银须灵鲢x5", text)
+        self.assertIn("赤尾火鲤x5", text)
+        self.assertEqual(day_key, state_module.get_identity_state(identity_id)["fishing_daily_summary_day"])
+        self.assertEqual(day_key, state_module.get_identity_state(other_id)["fishing_daily_summary_day"])
+
     async def test_miniapp_failure_backs_off_without_old_followup_chain(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 8, 50, 0)
