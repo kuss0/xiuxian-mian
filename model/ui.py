@@ -6127,7 +6127,8 @@ async def ui_send_miniapp_entry_probe(send_as_id, game_key):
     return True, "已发送 MiniApp 入口诊断命令，等待真实按钮/回包入库", extra
 
 
-async def ui_send_miniapp_manual_run(send_as_id, game_key):
+async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
+    payload = dict(payload or {})
     try:
         identity_id = int(send_as_id or 0)
     except (TypeError, ValueError):
@@ -6148,11 +6149,14 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key):
     if normalized_game_key == "stargazer":
         authorize_stargazer_miniapp_manual_run(identity_id)
     if normalized_game_key == "tree":
+        requested_mode = str(payload.get("mode") or payload.get("tree_mode") or "jump").strip().lower()
+        if requested_mode not in {"jump", "fly"}:
+            requested_mode = "jump"
         tree_score_config = get_tree_miniapp_score_config(identity_id)
         authorize_tree_miniapp_manual_run(
             identity_id,
-            mode="jump",
-            score_profile=(tree_score_config.get("jump") or {}),
+            mode=requested_mode,
+            score_profile=(tree_score_config.get(requested_mode) or {}),
             submit=True,
         )
     if normalized_game_key == "trial":
@@ -7165,7 +7169,7 @@ async def handle_ui_http(reader, writer):
                     if send_as_id in {None, ""} or not game_key:
                         _write_json_bad_request(writer, "缺少 send_as_id 或 game_key 参数", auth_headers)
                     else:
-                        ok, message, extra = await ui_send_miniapp_manual_run(send_as_id, game_key)
+                        ok, message, extra = await ui_send_miniapp_manual_run(send_as_id, game_key, payload=payload)
                         _write_json_result(
                             writer,
                             ok,

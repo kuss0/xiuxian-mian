@@ -390,6 +390,44 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)
 
+    def test_tree_game_lab_flow_reports_mode_exhausted_without_run_start(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "tree": {"gameplayMode": "council"},
+                    "council": {
+                        "daily": {
+                            "jump": {"used": 3, "limit": 3, "best": 21},
+                            "fly": {"used": 2, "limit": 3, "best": 0},
+                        },
+                        "season": {"seasonId": "lyz20260706", "status": "active"},
+                    },
+                }
+            raise AssertionError(f"{endpoint} must not be called when selected mode is exhausted")
+
+        result = tree_miniapp.run_tree_miniapp_game_lab_flow(
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            mode="jump",
+            submit=True,
+            transport=transport,
+            rng=random.Random(1),
+            sleeper=lambda _delay: None,
+            score_profile={"target_score": 126},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("mode_exhausted", result["status"])
+        self.assertEqual(["start"], calls)
+        self.assertEqual("jump", result["data"]["mode"])
+        self.assertEqual(0, result["data"]["state"]["jump"]["remaining"])
+        self.assertEqual(1, result["data"]["state"]["fly"]["remaining"])
+
     def test_tree_game_lab_flow_submit_uses_mock_proof_shape(self):
         calls = []
         submitted_payload = {}

@@ -97,10 +97,26 @@ def _tree_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+def _quota_text(state, mode):
+    state = state if isinstance(state, dict) else {}
+    quota = state.get(mode) if isinstance(state.get(mode), dict) else {}
+    try:
+        used = int(quota.get("used", 0) or 0)
+        limit = int(quota.get("limit", 0) or 0)
+        best = int(quota.get("best", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        used = limit = best = 0
+    label = "跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else str(mode or "")
+    if limit > 0:
+        return f"{label} {used}/{limit}" + (f" best={best}" if best > 0 else "")
+    return f"{label} 未开放"
+
+
 def _format_tree_summary(result):
     result = dict(result or {})
     status = str(result.get("status") or "unknown").strip() or "unknown"
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
     proof_summary = data.get("proof_summary") if isinstance(data.get("proof_summary"), dict) else {}
     submit = data.get("submit") if isinstance(data.get("submit"), dict) else {}
     mode = str(data.get("mode") or proof_summary.get("mode") or "").strip()
@@ -119,6 +135,12 @@ def _format_tree_summary(result):
         except (TypeError, ValueError, OverflowError):
             pass
         return "｜".join(parts)
+    if status == "mode_exhausted":
+        label = "跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else (mode or "当前模式")
+        return (
+            f"MiniApp mode_exhausted｜{label}次数已用完｜"
+            f"{_quota_text(state, 'jump')}｜{_quota_text(state, 'fly')}"
+        )
     error = str(result.get("error") or "").strip()
     return f"MiniApp {status}｜{error or '未完成'}"
 

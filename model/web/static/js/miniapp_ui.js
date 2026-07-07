@@ -67,7 +67,12 @@
       ? '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-probe="' + esc(key) + '">入口诊断</button>'
       : '';
     var runButton = runner
-      ? '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-run="' + esc(key) + '">手动执行</button>'
+      ? (
+        key === 'tree'
+          ? '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-run="' + esc(key) + '" data-miniapp-run-mode="jump">跳一跳</button>'
+            + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-run="' + esc(key) + '" data-miniapp-run-mode="fly">飞一飞</button>'
+          : '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-run="' + esc(key) + '">手动执行</button>'
+      )
       : '';
     var captureButton = '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-capture="' + esc(key) + '">协议摘要</button>';
     var stepText = steps.map(function (step) { return step.key || step.endpoint || ''; }).filter(Boolean).slice(0, 8).join(' → ');
@@ -243,7 +248,7 @@
     }
   }
 
-  async function runManualMiniApp(gameKey, button) {
+  async function runManualMiniApp(gameKey, button, mode) {
     var sendAsId = selectedIdentityId();
     if (!sendAsId) {
       flash('请选择身份', true);
@@ -251,10 +256,12 @@
     }
     if (button) button.disabled = true;
     try {
-      var data = await post('/api/miniapp-manual-run', {
+      var payload = {
         send_as_id: sendAsId,
         game_key: gameKey
-      });
+      };
+      if (gameKey === 'tree' && mode) payload.mode = mode;
+      var data = await post('/api/miniapp-manual-run', payload);
       flash(data.message || 'MiniApp 手动执行已发送', false);
       refreshMiniAppStatus();
     } catch (error) {
@@ -335,7 +342,11 @@
     }
     var runBtn = event.target.closest('[data-miniapp-run]');
     if (runBtn) {
-      runManualMiniApp(runBtn.getAttribute('data-miniapp-run'), runBtn);
+      runManualMiniApp(
+        runBtn.getAttribute('data-miniapp-run'),
+        runBtn,
+        runBtn.getAttribute('data-miniapp-run-mode') || ''
+      );
       return;
     }
     var captureBtn = event.target.closest('[data-miniapp-capture]');

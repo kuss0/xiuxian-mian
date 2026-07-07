@@ -264,6 +264,30 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("MiniApp手动", kwargs["source_module"])
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
+    async def test_manual_run_allows_tree_fly_mode_and_uses_fly_score_config(self):
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12354))
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_score_config", return_value={
+                    "jump": {"target_score_range": [126, 126]},
+                    "fly": {"target_score_range": [36, 36]},
+                }), \
+                patch.object(ui, "authorize_tree_miniapp_manual_run", return_value=123456.0) as auth_mock, \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree", payload={"mode": "fly"})
+
+        self.assertTrue(ok)
+        self.assertIn("手动执行", message)
+        self.assertEqual(".灵树", extra["command"])
+        auth_mock.assert_called_once_with(
+            1001,
+            mode="fly",
+            score_profile={"target_score_range": [36, 36]},
+            submit=True,
+        )
+        self.assertEqual("MiniApp手动", send_mock.await_args.kwargs["source_module"])
+
     async def test_manual_run_rejects_non_manual_game_key_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12349))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \

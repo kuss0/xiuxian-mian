@@ -936,7 +936,7 @@ def run_tree_miniapp_game_lab_flow(
     state = parse_tree_miniapp_state(start_result.data)
     quota = state.get(normalized_mode) if isinstance(state, dict) else {}
     if _int_value((quota or {}).get("remaining"), 0) <= 0:
-        return _flow_result(False, "daily_limit", data={"state": state}, events=events)
+        return _flow_result(False, "mode_exhausted", data={"state": state, "mode": normalized_mode}, events=events)
 
     run_start_request = build_tree_miniapp_request(
         "run_start",
