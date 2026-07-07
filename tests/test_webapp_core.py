@@ -278,6 +278,15 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("fish_SECRET999", sanitized)
         self.assertNotIn("farm_SECRET888", sanitized)
         self.assertNotIn("df_SECRET777", sanitized)
+
+    def test_sanitize_webapp_secret_text_preserves_miniapp_error_codes(self):
+        text = "finish failed: trial_invalid_proof trial_token_used token=trial_SECRET999 next=df_SECRET777"
+        sanitized = webapp_core.sanitize_webapp_secret_text(text)
+
+        self.assertIn("trial_invalid_proof", sanitized)
+        self.assertIn("trial_token_used", sanitized)
+        self.assertNotIn("trial_SECRET999", sanitized)
+        self.assertNotIn("df_SECRET777", sanitized)
         self.assertNotIn("secret", sanitized.lower())
 
     def test_safe_miniapp_event_detail_redacts_values_but_keeps_shape(self):

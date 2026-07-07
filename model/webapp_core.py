@@ -104,6 +104,17 @@ def _summarize_start_param(value):
     }
 
 
+def _redact_miniapp_start_token_match(match):
+    kind = str(match.group("kind") or "").lower()
+    raw_value = str(match.group(0) or "")
+    suffix = raw_value.split("_", 1)[1] if "_" in raw_value else ""
+    # MiniApp app errors use stable lowercase snake_case values such as
+    # trial_invalid_proof. Keep those visible so captures remain diagnosable.
+    if suffix and re.fullmatch(r"[a-z_]+", suffix):
+        return raw_value
+    return f"{kind}_<redacted>"
+
+
 def sanitize_webapp_secret_text(text, *, limit=220):
     raw_text = str(text or "")
     sanitized = RE_SECRET_HEADER_ASSIGNMENT.sub(
@@ -119,7 +130,7 @@ def sanitize_webapp_secret_text(text, *, limit=220):
         sanitized,
     )
     sanitized = RE_MINIAPP_START_TOKEN.sub(
-        lambda match: f"{match.group('kind').lower()}_<redacted>",
+        _redact_miniapp_start_token_match,
         sanitized,
     )
     return sanitized[: max(0, int(limit or 0))]
