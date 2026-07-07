@@ -1,12 +1,23 @@
 import unittest
 import json
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from model import ui
+from model import state as state_module
 
 
 class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+
     def test_miniapp_send_whitelists_are_exact(self):
         self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
         self.assertEqual({"cave_treasure", "stargazer", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
@@ -34,6 +45,31 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(20, tree["jump"]["min_target_score"])
         self.assertEqual(80, tree["fly"]["max_target_score"])
         save_mock.assert_called_once()
+
+    async def test_tree_score_config_is_scoped_by_identity(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "save_state", return_value=True):
+            ok_first, _message_first = await ui.ui_set_tree_miniapp_score_config(1001, {
+                "jump_target_score": 28,
+                "fly_target_score": 36,
+            })
+            ok_second, _message_second = await ui.ui_set_tree_miniapp_score_config(1002, {
+                "jump_target_score": 44,
+                "fly_target_score": 52,
+            })
+
+        first = ui.get_miniapp_status_snapshot(send_as_id=1001)["score_controls"]["tree"]
+        second = ui.get_miniapp_status_snapshot(send_as_id=1002)["score_controls"]["tree"]
+        default = ui.get_miniapp_status_snapshot(send_as_id=1003)["score_controls"]["tree"]
+
+        self.assertTrue(ok_first)
+        self.assertTrue(ok_second)
+        self.assertEqual([28, 28], first["jump"]["target_score_range"])
+        self.assertEqual([36, 36], first["fly"]["target_score_range"])
+        self.assertEqual([44, 44], second["jump"]["target_score_range"])
+        self.assertEqual([52, 52], second["fly"]["target_score_range"])
+        self.assertEqual([24, 42], default["jump"]["target_score_range"])
+        self.assertEqual([24, 45], default["fly"]["target_score_range"])
 
     async def test_tree_score_config_rejects_non_numeric_before_save(self):
         with patch.object(ui, "get_identity_ids", return_value=[1002]), \

@@ -94,6 +94,51 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
 
         self.assertEqual([301299112, 7538826434], state_module.get_game_listener_account_ids())
 
+    def test_tree_miniapp_score_configs_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                state_module.ensure_identity_registered(990030)
+                state_module.ensure_identity_registered(990031)
+                state_module.set_tree_miniapp_score_configs({
+                    "990030": {
+                        "jump": {"target_score_range": [28, 28]},
+                        "fly": {"target_score_range": [36, 36]},
+                    },
+                    "990031": {
+                        "jump": {"target_score_range": [44, 44]},
+                        "fly": {"target_score_range": [52, 52]},
+                    },
+                })
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key = ?",
+                    ("tree_miniapp_score_configs",),
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertIn("990030", row["value"])
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+
+        self.assertEqual(
+            {
+                "990030": {
+                    "jump": {"target_score_range": [28, 28]},
+                    "fly": {"target_score_range": [36, 36]},
+                },
+                "990031": {
+                    "jump": {"target_score_range": [44, 44]},
+                    "fly": {"target_score_range": [52, 52]},
+                },
+            },
+            state_module.get_tree_miniapp_score_configs(),
+        )
+
     def test_save_state_preserves_external_safety_watchdog_pause(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")
