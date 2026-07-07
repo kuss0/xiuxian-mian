@@ -107,6 +107,51 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1001, state_module.state["mulan_reply_to_msg_id"])
             self.assertEqual(now + mulan.MULAN_REPLY_TIMEOUT_SEC, state_module.state["mulan_reply_due_at"])
 
+    async def test_scheduler_respects_global_mulan_send_gate(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        state_module._meta_state[mulan.MULAN_GLOBAL_SEND_GATE_KEY] = {
+            "next_send_at": now + 60,
+            "last_identity_id": 123,
+            "last_command": ".搜集军报",
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan.random, "uniform", return_value=7),
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["mulan_phase"])
+            self.assertEqual(now + 67, state_module.state["next_mulan_time"])
+            self.assertEqual(".搜集军报", state_module.state["mulan_last_command"])
+            self.assertIn("全局错峰", state_module.state["mulan_last_result"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+
+    async def test_successful_send_updates_global_mulan_send_gate(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            fake_msg = SimpleNamespace(id=1001, sent_at=now)
+            with (
+                patch.object(mulan.random, "uniform", return_value=50),
+                patch.object(mulan, "send_game_command", new=AsyncMock(return_value=fake_msg)),
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            gate = state_module._meta_state[mulan.MULAN_GLOBAL_SEND_GATE_KEY]
+            self.assertEqual(now, gate["last_sent_at"])
+            self.assertEqual(now + 50, gate["next_send_at"])
+            self.assertEqual(identity_id, gate["last_identity_id"])
+            self.assertEqual(".搜集军报", gate["last_command"])
+
     def test_initial_recovery_uses_wide_stagger_to_avoid_midnight_queue_burst(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

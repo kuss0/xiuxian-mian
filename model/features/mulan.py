@@ -39,6 +39,11 @@ MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC = 120
 MULAN_SEND_QUEUE_RETRY_MIN_SEC = 10 * 60
 MULAN_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
 MULAN_SEND_UNKNOWN_BACKOFF_SEC = 10 * 60
+MULAN_GLOBAL_SEND_GAP_MIN_SEC = 45
+MULAN_GLOBAL_SEND_GAP_MAX_SEC = 75
+MULAN_GLOBAL_DEFER_JITTER_MIN_SEC = 5
+MULAN_GLOBAL_DEFER_JITTER_MAX_SEC = 30
+MULAN_GLOBAL_SEND_GATE_KEY = "mulan_global_send_gate"
 MULAN_PHASE_IDLE = "idle"
 MULAN_PHASE_COLLECT_PENDING = "collect_pending"
 MULAN_PHASE_READY_TO_JUDGE = "ready_to_judge"
@@ -556,6 +561,42 @@ def _defer_mulan_for_phaseful_summary(now, command):
     return True
 
 
+def _mulan_global_send_gate():
+    gate = _meta_state.get(MULAN_GLOBAL_SEND_GATE_KEY)
+    if not isinstance(gate, dict):
+        gate = {}
+        _meta_state[MULAN_GLOBAL_SEND_GATE_KEY] = gate
+    return gate
+
+
+def _defer_mulan_for_global_send_gate(now, command):
+    gate = _mulan_global_send_gate()
+    try:
+        next_send_at = float(gate.get("next_send_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_send_at = 0
+    if int(gate.get("last_identity_id") or 0) == int(get_current_identity_id() or 0):
+        return False
+    if next_send_at <= now:
+        return False
+    defer_until = next_send_at + random.uniform(MULAN_GLOBAL_DEFER_JITTER_MIN_SEC, MULAN_GLOBAL_DEFER_JITTER_MAX_SEC)
+    state["next_mulan_time"] = float(defer_until)
+    state["mulan_last_command"] = str(command or "").strip()
+    state["mulan_last_result"] = f"慕兰全局错峰，延后到 {fmt_abs_ts(defer_until)}"
+    state["mulan_last_error"] = ""
+    save_state()
+    return True
+
+
+def _record_mulan_global_send(now, command):
+    gate = _mulan_global_send_gate()
+    sent_at = float(now or time.time())
+    gate["last_sent_at"] = sent_at
+    gate["next_send_at"] = sent_at + random.uniform(MULAN_GLOBAL_SEND_GAP_MIN_SEC, MULAN_GLOBAL_SEND_GAP_MAX_SEC)
+    gate["last_identity_id"] = int(get_current_identity_id() or 0)
+    gate["last_command"] = str(command or "").strip()
+
+
 def _recover_mulan_unanswered_pending(now, phase, *, reply_to_msg_id=0):
     _clear_mulan_pending()
     if phase == MULAN_PHASE_JUDGE_PENDING:
@@ -688,6 +729,8 @@ async def _send_mulan_command(command, now, phase):
     identity_id = get_current_identity_id()
     if _defer_mulan_for_phaseful_summary(now, command):
         return False
+    if _defer_mulan_for_global_send_gate(now, command):
+        return False
 
     queue_timeout = MULAN_SEND_QUEUE_TIMEOUT_SEC
     if command.startswith(CMD_MULAN_PUBLISH) or command.startswith(CMD_MULAN_SUPPORT):
@@ -747,6 +790,7 @@ async def _send_mulan_command(command, now, phase):
     state["mulan_last_result"] = "已发送"
     state["mulan_last_error"] = ""
     state["next_mulan_time"] = state["mulan_reply_due_at"]
+    _record_mulan_global_send(sent_at, command)
     save_state()
     console_log(f"🕵️ 慕兰已发送：{command}，等待回复→{fmt_abs_ts(state['mulan_reply_due_at'])}", scope="identity", limit=180)
     return True

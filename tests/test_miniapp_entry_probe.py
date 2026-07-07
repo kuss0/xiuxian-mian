@@ -316,9 +316,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         fire_mock.assert_called_once()
         audit_mock.assert_awaited_once()
 
-    async def test_miniapp_daily_scheduler_starts_once_inside_window(self):
-        now = datetime(2026, 7, 7, 0, 30, tzinfo=ui.TZ_LOCAL).timestamp()
-        with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1003]) as ids_mock, \
+    async def test_miniapp_daily_scheduler_starts_first_wave_inside_window(self):
+        now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
                 patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch-auto") as start_mock, \
                 patch.object(ui, "_fire_and_forget", side_effect=lambda coro: coro.close()) as fire_mock, \
                 patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
@@ -329,18 +329,53 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["started"])
         self.assertEqual("batch-auto", result["batch_id"])
         self.assertEqual(2, result["count"])
-        self.assertEqual({"started": False, "reason": "done_today"}, second)
+        self.assertEqual("wave1", result["wave"])
+        self.assertEqual({"started": False, "reason": "wave1_done_today"}, second)
         ids_mock.assert_called_once_with({})
-        start_mock.assert_called_once_with([1001, 1003], now=now)
+        start_mock.assert_called_once_with([1001, 1002], now=now)
         fire_mock.assert_called_once()
         audit_mock.assert_awaited_once()
         save_mock.assert_called_once()
         snapshot = ui.get_miniapp_status_snapshot()["automation"]
-        self.assertTrue(snapshot["trial_daily_done_today"])
+        self.assertFalse(snapshot["trial_daily_done_today"])
         self.assertEqual("batch-auto", snapshot["trial_daily_last_batch_id"])
+        self.assertEqual("batch-auto", snapshot["trial_daily_wave1_last_batch_id"])
+
+    async def test_miniapp_daily_scheduler_starts_second_wave_inside_window(self):
+        now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
+                patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch-wave2") as start_mock, \
+                patch.object(ui, "_fire_and_forget", side_effect=lambda coro: coro.close()) as fire_mock, \
+                patch.object(ui, "send_audit_log", new=AsyncMock()), \
+                patch.object(ui, "save_state", return_value=True):
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertTrue(result["started"])
+        self.assertEqual("wave2", result["wave"])
+        self.assertEqual(2, result["count"])
+        ids_mock.assert_called_once_with({})
+        start_mock.assert_called_once_with([1003, 1004], now=now)
+        fire_mock.assert_called_once()
+
+    async def test_miniapp_daily_scheduler_legacy_done_counts_as_first_wave(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_last_run_day": "2026-07-07",
+            "trial_daily_last_batch_id": "old-batch",
+            "trial_daily_last_run_at": 1,
+            "trial_daily_last_result": "旧批次",
+        }
+        now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
+                patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual({"started": False, "reason": "wave1_done_today"}, result)
+        ids_mock.assert_not_called()
+        start_mock.assert_not_called()
 
     async def test_miniapp_daily_scheduler_does_not_start_outside_window(self):
-        now = datetime(2026, 7, 7, 8, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        now = datetime(2026, 7, 7, 0, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
                 patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
             result = await ui.run_miniapp_daily_scheduler(now)
@@ -383,7 +418,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snapshot["policy"]["raw_init_data_persisted"])
         self.assertFalse(snapshot["policy"]["raw_start_token_persisted"])
         self.assertTrue(snapshot["automation"]["trial_daily_enabled"])
-        self.assertEqual("00:20-03:00", snapshot["automation"]["trial_daily_window_text"])
+        self.assertEqual("01:00-04:00 / 05:00-08:00", snapshot["automation"]["trial_daily_window_text"])
         self.assertNotIn("tgWebAppData", text)
         self.assertNotIn("initData=", text)
         self.assertNotIn("hash=", text)

@@ -298,14 +298,26 @@ MINIAPP_UI_GROUPS = {
 }
 MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_enabled": True,
-    "trial_daily_start_hour_local": 0,
-    "trial_daily_start_minute_local": 20,
-    "trial_daily_end_hour_local": 3,
+    "trial_daily_start_hour_local": 1,
+    "trial_daily_start_minute_local": 0,
+    "trial_daily_end_hour_local": 4,
     "trial_daily_last_run_day": "",
     "trial_daily_last_batch_id": "",
     "trial_daily_last_run_at": 0,
     "trial_daily_last_result": "",
+    "trial_daily_wave1_last_run_day": "",
+    "trial_daily_wave1_last_batch_id": "",
+    "trial_daily_wave1_last_run_at": 0,
+    "trial_daily_wave1_last_result": "",
+    "trial_daily_wave2_last_run_day": "",
+    "trial_daily_wave2_last_batch_id": "",
+    "trial_daily_wave2_last_run_at": 0,
+    "trial_daily_wave2_last_result": "",
 }
+TRIAL_DAILY_BATCH_WAVES = (
+    {"key": "wave1", "label": "第一批", "start_hour": 1, "start_minute": 0, "end_hour": 4, "end_minute": 0},
+    {"key": "wave2", "label": "第二批", "start_hour": 5, "start_minute": 0, "end_hour": 8, "end_minute": 0},
+)
 
 
 def _miniapp_ui_group(game_key):
@@ -339,13 +351,68 @@ def normalize_miniapp_auto_config(config=None):
         else:
             value = max(0, min(59, value))
         result[key] = value
-    for key in ("trial_daily_last_run_day", "trial_daily_last_batch_id", "trial_daily_last_result"):
+    for key in (
+        "trial_daily_last_run_day",
+        "trial_daily_last_batch_id",
+        "trial_daily_last_result",
+        "trial_daily_wave1_last_run_day",
+        "trial_daily_wave1_last_batch_id",
+        "trial_daily_wave1_last_result",
+        "trial_daily_wave2_last_run_day",
+        "trial_daily_wave2_last_batch_id",
+        "trial_daily_wave2_last_result",
+    ):
         result[key] = str(result.get(key) or "")
-    try:
-        result["trial_daily_last_run_at"] = float(result.get("trial_daily_last_run_at", 0) or 0)
-    except (TypeError, ValueError, OverflowError):
-        result["trial_daily_last_run_at"] = 0
+    for key in ("trial_daily_last_run_at", "trial_daily_wave1_last_run_at", "trial_daily_wave2_last_run_at"):
+        try:
+            result[key] = float(result.get(key, 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            result[key] = 0
+    if result["trial_daily_last_run_day"] and not result["trial_daily_wave1_last_run_day"]:
+        result["trial_daily_wave1_last_run_day"] = result["trial_daily_last_run_day"]
+        result["trial_daily_wave1_last_batch_id"] = result["trial_daily_last_batch_id"]
+        result["trial_daily_wave1_last_run_at"] = result["trial_daily_last_run_at"]
+        result["trial_daily_wave1_last_result"] = result["trial_daily_last_result"]
     return result
+
+
+def _trial_daily_wave_window_text(wave):
+    return (
+        f"{int(wave['start_hour']):02d}:{int(wave['start_minute']):02d}-"
+        f"{int(wave['end_hour']):02d}:{int(wave['end_minute']):02d}"
+    )
+
+
+def _minute_in_local_window(current_minute, start_minute, end_minute):
+    if start_minute < end_minute:
+        return start_minute <= current_minute < end_minute
+    return current_minute >= start_minute or current_minute < end_minute
+
+
+def _trial_daily_wave_for_now(config, local_now):
+    current_minute = int(local_now.hour) * 60 + int(local_now.minute)
+    today = local_now.strftime("%Y-%m-%d")
+    for wave in TRIAL_DAILY_BATCH_WAVES:
+        start_minute = int(wave["start_hour"]) * 60 + int(wave["start_minute"])
+        end_minute = int(wave["end_hour"]) * 60 + int(wave["end_minute"])
+        if not _minute_in_local_window(current_minute, start_minute, end_minute):
+            continue
+        wave_key = str(wave["key"])
+        return {
+            **wave,
+            "done_today": config.get(f"trial_daily_{wave_key}_last_run_day") == today,
+        }
+    return None
+
+
+def _split_trial_daily_identity_ids(identity_ids, wave_key):
+    ids = list(identity_ids or [])
+    if not ids:
+        return []
+    split_at = (len(ids) + 1) // 2
+    if str(wave_key or "") == "wave2":
+        return ids[split_at:]
+    return ids[:split_at]
 
 
 def get_miniapp_auto_config_snapshot(now=None):
@@ -353,16 +420,26 @@ def get_miniapp_auto_config_snapshot(now=None):
     now = float(now or time.time())
     local_now = datetime.fromtimestamp(now, TZ_LOCAL)
     today = local_now.strftime("%Y-%m-%d")
-    start_minute = int(config["trial_daily_start_hour_local"]) * 60 + int(config["trial_daily_start_minute_local"])
-    end_minute = int(config["trial_daily_end_hour_local"]) * 60
-    current_minute = local_now.hour * 60 + local_now.minute
-    in_window = start_minute <= current_minute < end_minute if start_minute < end_minute else current_minute >= start_minute or current_minute < end_minute
+    active_wave = _trial_daily_wave_for_now(config, local_now)
+    wave_states = []
+    for wave in TRIAL_DAILY_BATCH_WAVES:
+        wave_key = str(wave["key"])
+        wave_states.append({
+            **wave,
+            "window_text": _trial_daily_wave_window_text(wave),
+            "done_today": config.get(f"trial_daily_{wave_key}_last_run_day") == today,
+            "last_batch_id": config.get(f"trial_daily_{wave_key}_last_batch_id") or "",
+            "last_result": config.get(f"trial_daily_{wave_key}_last_result") or "",
+        })
+    all_done = all(item["done_today"] for item in wave_states)
     return {
         **config,
         "today": today,
-        "trial_daily_done_today": config["trial_daily_last_run_day"] == today,
-        "trial_daily_in_window": in_window,
-        "trial_daily_window_text": f"{int(config['trial_daily_start_hour_local']):02d}:{int(config['trial_daily_start_minute_local']):02d}-{int(config['trial_daily_end_hour_local']):02d}:00",
+        "trial_daily_done_today": all_done,
+        "trial_daily_in_window": bool(active_wave and not active_wave.get("done_today")),
+        "trial_daily_active_wave": active_wave or {},
+        "trial_daily_waves": wave_states,
+        "trial_daily_window_text": " / ".join(_trial_daily_wave_window_text(wave) for wave in TRIAL_DAILY_BATCH_WAVES),
     }
 
 
@@ -6362,29 +6439,44 @@ async def run_miniapp_daily_scheduler(now):
         return {"started": False, "reason": "disabled"}
     if config.get("trial_daily_done_today"):
         return {"started": False, "reason": "done_today"}
-    if not config.get("trial_daily_in_window"):
+    active_wave = dict(config.get("trial_daily_active_wave") or {})
+    wave_key = str(active_wave.get("key") or "").strip()
+    wave_label = str(active_wave.get("label") or "").strip() or "批次"
+    if not active_wave:
         return {"started": False, "reason": "outside_window"}
-    identity_ids = list(_normalize_trial_batch_identity_ids({}) or [])
+    if active_wave.get("done_today"):
+        return {"started": False, "reason": f"{wave_key or 'wave'}_done_today"}
+    identity_ids = _split_trial_daily_identity_ids(_normalize_trial_batch_identity_ids({}) or [], wave_key)
     if not identity_ids:
-        return {"started": False, "reason": "no_enabled_identity"}
+        next_config = normalize_miniapp_auto_config()
+        next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
+        next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
+        next_config[f"trial_daily_{wave_key}_last_result"] = "本批无启用身份"
+        set_miniapp_auto_config(next_config)
+        save_state()
+        return {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
     batch_id = start_trial_miniapp_batch_run(identity_ids, now=now)
     if not batch_id:
         return {"started": False, "reason": "batch_create_failed"}
     next_config = normalize_miniapp_auto_config()
+    next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
+    next_config[f"trial_daily_{wave_key}_last_batch_id"] = batch_id
+    next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
+    next_config[f"trial_daily_{wave_key}_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
     next_config["trial_daily_last_run_day"] = str(config.get("today") or "")
     next_config["trial_daily_last_batch_id"] = batch_id
     next_config["trial_daily_last_run_at"] = float(now or time.time())
-    next_config["trial_daily_last_result"] = f"已启动 {len(identity_ids)} 个身份"
+    next_config["trial_daily_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
     set_miniapp_auto_config(next_config)
     save_state()
     _fire_and_forget(_run_trial_miniapp_batch(batch_id, identity_ids))
     await send_audit_log(
-        f"🧪 天机试炼每日自动批量启动：{len(identity_ids)} 个身份，完成后合并通报。batch={batch_id}",
+        f"🧪 天机试炼每日自动批量启动：{wave_label}｜{len(identity_ids)} 个身份，完成后合并通报。batch={batch_id}",
         scope="global",
         priority="normal",
         limit=320,
     )
-    return {"started": True, "batch_id": batch_id, "count": len(identity_ids)}
+    return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
 
 
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
