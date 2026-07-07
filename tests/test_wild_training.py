@@ -552,6 +552,54 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now, state_module.state["wild_training_last_completed_at"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
+    async def test_cleared_missing_edit_state_recovers_late_result_from_message_log(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_760.0
+        result_text = (
+            "【野外历练 · 妖兽遭遇】\n"
+            "@wild 遭遇 荒古鳞兽。\n"
+            "一番斗法后，妖兽伏诛。\n"
+            "获得修为 +12000，获得 【三级妖丹】x1。"
+        )
+        with tempfile.TemporaryDirectory() as log_dir:
+            self._write_message_log(
+                log_dir,
+                [
+                    {
+                        "ts": self._log_ts(now - 5),
+                        "event_type": "edit",
+                        "message_id": 201,
+                        "reply_to_msg_id": 101,
+                        "text": result_text,
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id) as identity_state:
+                identity_state["next_wild_training_time"] = now - 1
+                identity_state["wild_training_reply_to_msg_id"] = 0
+                identity_state["wild_training_reply_due_at"] = 0
+                identity_state["wild_training_retry_count"] = 0
+                identity_state["wild_training_last_msg_id"] = 201
+                identity_state["wild_training_last_result"] = "结果编辑未留存，已按正常周期恢复，原消息ID=201"
+                identity_state["wild_training_last_result_at"] = now - 60
+                identity_state["wild_training_last_completed_at"] = now - 60
+                identity_state["wild_training_last_error"] = ""
+
+            with state_module.use_identity(send_as_id), \
+                 patch.object(wild_training, "MESSAGES_DIR", log_dir), \
+                 patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+                await wild_training.run_wild_training_scheduler(now)
+
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(201, state_module.state["wild_training_last_msg_id"])
+        self.assertEqual("修为+12000 ｜ 奖励:三级妖丹x1", state_module.state["wild_training_last_result"])
+        self.assertEqual(now - 5, state_module.state["wild_training_last_completed_at"])
+        self.assertEqual(now - 5 + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        audit_mock.assert_awaited_once()
+
     async def test_sent_timeout_clears_stale_pending_before_retry(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

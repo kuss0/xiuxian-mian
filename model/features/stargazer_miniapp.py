@@ -16,6 +16,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
+    iter_webapp_button_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -112,19 +113,7 @@ def _requests_transport(request):
 
 
 def _iter_event_buttons(event):
-    message = getattr(event, "message", None) or event
-    for raw_row in getattr(message, "buttons", None) or ():
-        row = raw_row if isinstance(raw_row, (list, tuple)) else (raw_row,)
-        for button in row:
-            raw_button = getattr(button, "button", None) or button
-            text = str(getattr(button, "text", "") or getattr(raw_button, "text", "") or "").strip()
-            url = (
-                getattr(raw_button, "url", "")
-                or getattr(raw_button, "webview", "")
-                or getattr(raw_button, "web_view", "")
-                or ""
-            )
-            yield text, str(url or "").strip()
+    yield from iter_webapp_button_links(event)
 
 
 def extract_stargazer_miniapp_launch(event, *, message_text=""):
@@ -470,6 +459,7 @@ def run_stargazer_miniapp_lab_flow(
             action_request,
             transport,
             sleeper=sleeper,
+            backoff_sec=(),
             capture_sink=capture_sink,
             capture_source=capture_source,
             step_key=f"action_{action}",

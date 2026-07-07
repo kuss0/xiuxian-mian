@@ -172,6 +172,8 @@ _MANIFESTS = (
     ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], replay_modules=("stargazer",), reply_families=("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), replay_required=False, duplicate_guard="phase"),
     ModuleManifest("观星监控", MODULE_KEY_MAP["观星监控"], send_policy=SEND_POLICY_PASSIVE_FIRST, replay_required=False, duplicate_guard="passive_broadcast"),
     ModuleManifest("观星", MODULE_KEY_MAP["观星"], reply_families=("guanxing_query", "guanxing_shift"), replay_required=False, duplicate_guard="reply_msg_id"),
+    ModuleManifest("MiniApp合集", "", replay_modules=("miniapp",), send_policy=SEND_POLICY_OBSERVE_THEN_SEND, replay_required=False, duplicate_guard="control_plane"),
+    ModuleManifest("天机试炼", "", replay_modules=("trial",), send_policy=SEND_POLICY_OBSERVE_THEN_SEND, replay_required=False, duplicate_guard="batch_state"),
     ModuleManifest("周天星斗", MODULE_KEY_MAP["周天星斗"], replay_modules=("formation",), reply_families=("formation_start", "formation_assist"), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="run_state"),
     ModuleManifest("登天阶", MODULE_KEY_MAP["登天阶"], replay_modules=("tianti",), reply_families=("tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"), replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("玄骨考校", MODULE_KEY_MAP["玄骨考校"], replay_required=False, duplicate_guard="prompt_claim"),

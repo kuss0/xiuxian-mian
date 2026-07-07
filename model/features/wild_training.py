@@ -910,15 +910,21 @@ def _recover_unknown_wild_training_from_message_log(now):
 
 
 def _recover_cleared_wild_training_retry_from_message_log(now):
-    if int(state.get("wild_training_retry_count", 0) or 0) <= 0:
-        return ""
     last_error = str(state.get("wild_training_last_error") or "")
-    match = re.search(r"原消息ID=(\d+)", last_error)
+    last_result = str(state.get("wild_training_last_result") or "")
+    if int(state.get("wild_training_retry_count", 0) or 0) <= 0 and "结果编辑未留存" not in last_result:
+        return ""
+    match = re.search(r"原消息ID=(\d+)", last_error) or re.search(r"原消息ID=(\d+)", last_result)
     if not match:
         return ""
-    command_msg_id = int(match.group(1) or 0)
-    if command_msg_id <= 0:
+    original_msg_id = int(match.group(1) or 0)
+    if original_msg_id <= 0:
         return ""
+    result_entry = _find_logged_entry_by_msg_id(original_msg_id, now, result=True)
+    if result_entry:
+        _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
+        return "result"
+    command_msg_id = original_msg_id
     direct_reply = _find_logged_reply_for_command(command_msg_id, now)
     if direct_reply and direct_reply.get("kind") == "cooldown":
         _apply_wild_training_cooldown(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])

@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from model import listener_sidecar
 from model import state as state_module
@@ -24,6 +24,40 @@ class ListenerSidecarTests(unittest.TestCase):
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
+
+    async def _connect_saved_accounts_with(self, *, accounts, connected=False):
+        heartbeats = []
+
+        async def fake_connect(_account_id, _acct_info):
+            return connected
+
+        with (
+            patch.object(listener_sidecar, "load_state", return_value=True),
+            patch.object(listener_sidecar, "has_persisted_identity_rows", return_value=True),
+            patch.object(listener_sidecar, "get_accounts", return_value=accounts),
+            patch.object(listener_sidecar, "_connect_listener_account", new=AsyncMock(side_effect=fake_connect)),
+            patch.object(listener_sidecar, "_write_listener_heartbeat", side_effect=lambda extra=None: heartbeats.append(dict(extra or {}))),
+        ):
+            result = await listener_sidecar._connect_saved_accounts()
+        return result, heartbeats
+
+    def test_connect_saved_accounts_idles_without_accounts(self):
+        async def run_case():
+            return await self._connect_saved_accounts_with(accounts={})
+
+        result, heartbeats = __import__("asyncio").run(run_case())
+
+        self.assertEqual([], result)
+        self.assertIn({"status": "idle_no_accounts"}, heartbeats)
+
+    def test_connect_saved_accounts_degrades_when_all_accounts_fail(self):
+        async def run_case():
+            return await self._connect_saved_accounts_with(accounts={"301299112": {}}, connected=False)
+
+        result, heartbeats = __import__("asyncio").run(run_case())
+
+        self.assertEqual([], result)
+        self.assertIn({"status": "degraded_no_connected_accounts"}, heartbeats)
 
     def _write_session(self, path, auth_key):
         with sqlite3.connect(path) as conn:

@@ -16,6 +16,7 @@ from ..webapp_core import (
     build_miniapp_http_request,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
+    iter_webapp_button_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -100,19 +101,7 @@ def build_fishing_miniapp_request(endpoint, *, token, init_data_session=None, in
 
 
 def _iter_event_buttons(event):
-    message = getattr(event, "message", None) or event
-    for raw_row in getattr(message, "buttons", None) or ():
-        row = raw_row if isinstance(raw_row, (list, tuple)) else (raw_row,)
-        for button in row:
-            raw_button = getattr(button, "button", None) or button
-            text = str(getattr(button, "text", "") or getattr(raw_button, "text", "") or "").strip()
-            url = (
-                getattr(raw_button, "url", "")
-                or getattr(raw_button, "webview", "")
-                or getattr(raw_button, "web_view", "")
-                or ""
-            )
-            yield text, str(url or "").strip()
+    yield from iter_webapp_button_links(event)
 
 
 def extract_fishing_miniapp_launch(event, *, message_text=""):
@@ -695,6 +684,7 @@ def run_fishing_miniapp_lab_flow(
         finish_request,
         transport,
         sleeper=sleeper,
+        backoff_sec=(),
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="finish",
@@ -827,6 +817,7 @@ def run_fishing_miniapp_loop_lab_flow(
             next_request,
             transport,
             sleeper=sleeper,
+            backoff_sec=(),
             capture_sink=capture_sink,
             capture_source=capture_source,
             step_key="next",

@@ -700,6 +700,15 @@ def mark_bot_health_suspect(reason, reference_at=None, now=None):
     return _set_bot_health_state(BOT_HEALTH_SUSPECT, reason, now)
 
 
+def restore_bot_health_auto_pause(reason="恢复进程内天尊健康暂停态", now=None):
+    """Restore a persisted bot-health pause after service restart."""
+    global _bot_waiting_since, _bot_probe_sent_at
+    now = _now_ts(now)
+    _bot_waiting_since = 0.0
+    _bot_probe_sent_at = 0.0
+    return _set_bot_health_state(BOT_HEALTH_PAUSED, reason, now)
+
+
 def check_bot_health_timeout(now=None, silence_timeout_sec=600):
     global _bot_probe_sent_at
     now = _now_ts(now)

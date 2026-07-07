@@ -4,7 +4,7 @@ import sys
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +38,7 @@ IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
     "run_wendao_scheduler": {"wendao"},
     "run_fishing_scheduler": {"fishing"},
     "run_taiyi_scheduler": {"taiyi"},
+    "miniapp_daily": {"miniapp", "trial"},
     "divination": {"divination"},
     "world_boss": {"world_boss"},
 }
@@ -106,6 +107,7 @@ class AppSchedulerContractTests(unittest.TestCase):
                 "guanxing_monitor",
                 "guanxing",
                 "storage_bag_api_keepalive",
+                "miniapp_daily",
                 "storage_bag_transfer",
                 "divination",
                 "world_boss",
@@ -1253,6 +1255,136 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             await app._run_phaseful_scheduler_loop(stop_event)
 
         self.assertEqual([("phaseful", 300.0), ("sleep", 5)], seen)
+
+    def test_bot_health_pause_preserves_pending_tasks(self):
+        async def run_case():
+            stop_event = asyncio.Event()
+
+            async def fake_sleep(loop_stop_event, delay):
+                loop_stop_event.set()
+
+            with ExitStack() as stack:
+                clear_mock = stack.enter_context(patch.object(app, "clear_all_pending_tasks", create=True))
+                toggle_mock = stack.enter_context(patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))))
+                cancel_mock = stack.enter_context(patch.object(app, "_cancel_identity_schedulers"))
+                for ctx in (
+                    patch.object(app, "gc_my_msg_ids"),
+                    patch.object(app, "gc_ui_login_tokens"),
+                    patch.object(app, "gc_ui_sessions"),
+                    patch.object(app, "flush_if_dirty", return_value=True),
+                    patch.object(app, "has_persistence_write_failure", return_value=False),
+                    patch.object(app, "check_bot_health_timeout"),
+                    patch.object(app, "should_pause_for_bot_health", return_value=True),
+                    patch.object(app, "get_global_enabled", side_effect=[True, False]),
+                    patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
+                    patch.object(app.time, "time", return_value=400.0),
+                ):
+                    stack.enter_context(ctx)
+
+                await app.main_loop(stop_event)
+
+            toggle_mock.assert_awaited_once_with(False, source="bot_health_monitor")
+            self.assertGreaterEqual(cancel_mock.call_count, 1)
+            clear_mock.assert_not_called()
+
+        asyncio.run(run_case())
+
+    async def test_bot_health_auto_pause_recovers_global_after_probe_reply(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = True
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value="recover"),
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
+                patch.object(app, "mark_bot_health_recovered") as recovered_mock,
+            ):
+                await app._note_game_bot_activity()
+
+            toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
+            recovered_mock.assert_called_once_with("bot 恢复确认完成")
+            self.assertFalse(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_bot_health_recovery_event_recovers_when_pause_source_is_bot_health(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = False
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value="recover"),
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "get_global_pause_source", return_value="bot_health_monitor"),
+                patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
+                patch.object(app, "mark_bot_health_recovered") as recovered_mock,
+            ):
+                await app._note_game_bot_activity()
+
+            toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
+            recovered_mock.assert_called_once_with("bot 恢复确认完成")
+            self.assertFalse(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_persisted_bot_health_pause_restores_probe_before_recovery(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = False
+        probe_coro = object()
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", side_effect=[None, "probe"]),
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "get_global_pause_source", return_value="bot_health_monitor"),
+                patch.object(app, "restore_bot_health_auto_pause") as restore_mock,
+                patch.object(app, "_fire_and_forget") as fire_mock,
+                patch.object(app, "_send_bot_health_probe", new=MagicMock(return_value=probe_coro)) as probe_mock,
+            ):
+                await app._note_game_bot_activity()
+
+            restore_mock.assert_called_once_with("恢复持久化天尊健康暂停态")
+            probe_mock.assert_called_once()
+            fire_mock.assert_called_once_with(probe_coro)
+            self.assertTrue(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_manual_global_pause_does_not_auto_recover_on_ordinary_bot_reply(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = False
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value=None),
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "get_global_pause_source", return_value="ui"),
+                patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
+                patch.object(app, "mark_bot_health_recovered") as recovered_mock,
+            ):
+                await app._note_game_bot_activity()
+
+            toggle_mock.assert_not_awaited()
+            recovered_mock.assert_not_called()
+            self.assertFalse(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_manual_global_pause_does_not_auto_recover_on_recover_event(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = False
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value="recover"),
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "get_global_pause_source", return_value="ui"),
+                patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
+                patch.object(app, "mark_bot_health_recovered") as recovered_mock,
+            ):
+                await app._note_game_bot_activity()
+
+            toggle_mock.assert_not_awaited()
+            recovered_mock.assert_called_once_with("bot 恢复确认完成")
+            self.assertFalse(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
 
     async def test_small_world_scheduler_loop_runs_independently(self):
         stop_event = asyncio.Event()

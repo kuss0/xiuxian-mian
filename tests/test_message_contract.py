@@ -521,7 +521,7 @@ class MessageContractTests(unittest.TestCase):
         self.assertEqual(32, readiness["totals"]["sample_complete_modules"])
         self.assertEqual(2, readiness["totals"]["sample_partial_modules"])
         self.assertEqual(2, readiness["totals"]["sample_missing_modules"])
-        self.assertEqual(3, readiness["totals"]["contract_only_modules"])
+        self.assertEqual(5, readiness["totals"]["contract_only_modules"])
         self.assertEqual(1, readiness["totals"]["archived_modules"])
         self.assertTrue(rows["灵树"]["strict"])
         self.assertTrue(rows["灵树"]["archived"])

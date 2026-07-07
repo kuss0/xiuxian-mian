@@ -1,6 +1,12 @@
 # MiniApp 辅助开发交接
 
-更新时间：2026-07-07 12:35 CST
+更新时间：2026-07-08 01:57 CST
+
+## 2026-07-08 修复补记
+
+本文件保留 2026-07-07 灵树 MiniApp 辅助开发交接历史；主线交接请以最终合并版 `docs/miniapp_aux_fix_handoff_20260708.md` 为准。
+
+本次辅助修复已干完：天机试炼每日调度新增 `trial_daily_scheduler_confirmed` 二次确认，空配置默认关闭；主线复核后保留生产旧 `trial_daily_enabled=true` 配置的生效语义，避免静默停跑。`tree` 已保持不在 `MINIAPP_MANUAL_RUN_COMMANDS`，并删除 UI 手动提交死代码；灵树目标分上限为 `20-80`；MiniApp 非幂等动作 POST 已显式禁用默认重试。仍未上线、未重启、未发游戏命令、未做 live probe，交给主线审核处理。
 
 ## 边界
 
@@ -13,6 +19,8 @@
 本轮辅助任务已完成灵树 MiniApp 新框架、跳一跳/飞一飞 proof 候选、UI 目标分配置、mock 测试和审计文档。代码仍是候选 diff，未接生产运行入口。
 
 审计追加：发现跳一跳在目标 80 时可能因连击加分冲到 87/94，已改为接近上限时强制失误，确保 proof replay 分数不超过 80。后续补强已完成：飞一飞规划参数加本地上限保护、UI 分数配置按身份隔离测试、`tree_miniapp_score_configs` 持久化重载测试。
+
+13:01 CST 补充复核：未再改动代码；重新跑过 Python 编译、前端 JS 语法、`git diff --check` 和 MiniApp focused 测试，均通过。未执行上线、重启、新 live probe、生产 DB 访问或生产调度接入。
 
 ## 灵树协议事实
 
@@ -50,6 +58,8 @@
 
 .venv/bin/python -m pytest -q tests/test_miniapp_protocol_flows.py tests/test_miniapp_entry_probe.py tests/test_webapp_core.py tests/test_persistence_runtime_flags.py
 # 110 passed
+
+# 2026-07-07 13:01 CST 补充复核，同一 focused suite 仍为 110 passed
 
 .venv/bin/python -m py_compile \
   model/features/tree_miniapp.py model/ui.py model/state.py model/persistence.py \

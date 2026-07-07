@@ -17,6 +17,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
+    iter_webapp_button_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -46,8 +47,8 @@ TREE_MINIAPP_MIN_TARGET_SCORE = {
     "fly": 20,
 }
 TREE_MINIAPP_MAX_TARGET_SCORE = {
-    "jump": 150,
-    "fly": 150,
+    "jump": 80,
+    "fly": 80,
 }
 TREE_MINIAPP_FLY_GRAVITY = 560.0
 TREE_MINIAPP_FLY_IMPULSE = -255.0
@@ -114,19 +115,7 @@ def build_tree_miniapp_request(endpoint, *, token, init_data_session=None, init_
 
 
 def _iter_event_buttons(event):
-    message = getattr(event, "message", None) or event
-    for raw_row in getattr(message, "buttons", None) or ():
-        row = raw_row if isinstance(raw_row, (list, tuple)) else (raw_row,)
-        for button in row:
-            raw_button = getattr(button, "button", None) or button
-            text = str(getattr(button, "text", "") or getattr(raw_button, "text", "") or "").strip()
-            url = (
-                getattr(raw_button, "url", "")
-                or getattr(raw_button, "webview", "")
-                or getattr(raw_button, "web_view", "")
-                or ""
-            )
-            yield text, str(url or "").strip()
+    yield from iter_webapp_button_links(event)
 
 
 def summarize_tree_entry(url, *, button_text="", message_text=""):
@@ -952,6 +941,7 @@ def run_tree_miniapp_game_lab_flow(
         run_start_request,
         transport,
         sleeper=sleeper,
+        backoff_sec=(),
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="run_start",
@@ -1019,6 +1009,7 @@ def run_tree_miniapp_game_lab_flow(
         submit_request,
         transport,
         sleeper=sleeper,
+        backoff_sec=(),
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="run_submit",

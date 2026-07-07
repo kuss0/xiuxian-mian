@@ -16,6 +16,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
+    iter_webapp_button_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -77,19 +78,7 @@ def build_trial_miniapp_request(endpoint, *, token, init_data_session=None, init
 
 
 def _iter_event_buttons(event):
-    message = getattr(event, "message", None) or event
-    for raw_row in getattr(message, "buttons", None) or ():
-        row = raw_row if isinstance(raw_row, (list, tuple)) else (raw_row,)
-        for button in row:
-            raw_button = getattr(button, "button", None) or button
-            text = str(getattr(button, "text", "") or getattr(raw_button, "text", "") or "").strip()
-            url = (
-                getattr(raw_button, "url", "")
-                or getattr(raw_button, "webview", "")
-                or getattr(raw_button, "web_view", "")
-                or ""
-            )
-            yield text, str(url or "").strip()
+    yield from iter_webapp_button_links(event)
 
 
 def extract_trial_miniapp_launch(event, *, message_text=""):
@@ -257,6 +246,31 @@ def _trial_event_times(count, duration_ms, *, rng, start_ms=250):
     return times
 
 
+def _trial_challenge_id(challenge):
+    challenge = dict(challenge or {})
+    return str(challenge.get("challengeId") or challenge.get("id") or "").strip()
+
+
+def _iter_trial_items(value):
+    if isinstance(value, dict):
+        items = []
+        for item_key, item in value.items():
+            if isinstance(item, dict):
+                normalized = dict(item)
+                if not _trial_item_id(normalized):
+                    normalized["id"] = str(item_key)
+                items.append(normalized)
+            else:
+                items.append(item)
+        return items
+    return value or ()
+
+
+def _trial_item_id(item):
+    item = dict(item or {})
+    return str(item.get("id") or item.get("key") or item.get("name") or "").strip()
+
+
 def _lights_out_size(challenge):
     try:
         size = int(round(float(challenge.get("gridSize", challenge.get("grid_size", 4)) or 4)))
@@ -328,7 +342,7 @@ def solve_lights_out_moves(challenge):
 
 def _build_lights_out_proof(challenge, *, rng):
     challenge = dict(challenge or {})
-    challenge_id = str(challenge.get("challengeId") or "").strip()
+    challenge_id = _trial_challenge_id(challenge)
     if not challenge_id:
         raise ValueError("challengeId missing")
     moves, final_cells = solve_lights_out_moves(challenge)
@@ -359,10 +373,10 @@ def _memory_pair_key(card):
 
 def _build_memory_proof(challenge, *, rng):
     challenge = dict(challenge or {})
-    challenge_id = str(challenge.get("challengeId") or "").strip()
+    challenge_id = _trial_challenge_id(challenge)
     if not challenge_id:
         raise ValueError("challengeId missing")
-    cards = [dict(card) for card in (challenge.get("cards") or ()) if isinstance(card, dict)]
+    cards = [dict(card) for card in _iter_trial_items(challenge.get("cards")) if isinstance(card, dict)]
     pairs = {}
     for card in cards:
         key = _memory_pair_key(card)
@@ -376,9 +390,9 @@ def _build_memory_proof(challenge, *, rng):
         group.sort(key=lambda item: int(item.get("index", 0) or 0))
         ordered_cards.extend(group[:2])
     if len(ordered_cards) != len(cards):
-        seen = {str(card.get("id")) for card in ordered_cards}
+        seen = {_trial_item_id(card) for card in ordered_cards}
         for card in cards:
-            if str(card.get("id")) not in seen:
+            if _trial_item_id(card) not in seen:
                 ordered_cards.append(card)
 
     try:
@@ -390,7 +404,7 @@ def _build_memory_proof(challenge, *, rng):
     events = []
     for index, card in enumerate(ordered_cards):
         events.append({
-            "id": str(card.get("id") or ""),
+            "id": _trial_item_id(card),
             "index": index,
             "t": times[index] if index < len(times) else duration_ms,
         })
@@ -405,15 +419,15 @@ def _build_memory_proof(challenge, *, rng):
 
 def _build_stargaze_proof(challenge, *, rng):
     challenge = dict(challenge or {})
-    challenge_id = str(challenge.get("challengeId") or "").strip()
+    challenge_id = _trial_challenge_id(challenge)
     if not challenge_id:
         raise ValueError("challengeId missing")
     angles = {}
     moves = 0
-    for star in (challenge.get("stars") or ()):
+    for star in _iter_trial_items(challenge.get("stars")):
         if not isinstance(star, dict):
             continue
-        star_id = str(star.get("id") or "").strip()
+        star_id = _trial_item_id(star)
         if not star_id:
             continue
         target = star.get("targetAngle", star.get("target_angle", star.get("angle", 0)))
@@ -516,8 +530,17 @@ def _circle_positions(node_ids, *, radius=38, center=(50, 50)):
 
 
 def _build_planarity_positions(challenge, *, rng):
-    nodes = [dict(node) for node in (challenge.get("nodes") or ()) if isinstance(node, dict)]
-    edges = [dict(edge) for edge in (challenge.get("edges") or ()) if isinstance(edge, dict)]
+    nodes = []
+    for raw_node in _iter_trial_items(challenge.get("nodes")):
+        if not isinstance(raw_node, dict):
+            continue
+        node = dict(raw_node)
+        node_id = _trial_item_id(node)
+        if not node_id:
+            continue
+        node["id"] = node_id
+        nodes.append(node)
+    edges = [dict(edge) for edge in _iter_trial_items(challenge.get("edges")) if isinstance(edge, dict)]
     node_ids = [str(node.get("id") or "").strip() for node in nodes if str(node.get("id") or "").strip()]
     locked_ids = {str(item) for item in (challenge.get("lockedNodeIds") or challenge.get("locked_node_ids") or ())}
     locked_ids.update(str(node.get("id")) for node in nodes if node.get("locked"))
@@ -590,10 +613,12 @@ def _build_planarity_positions(challenge, *, rng):
 
 def _build_planarity_proof(challenge, *, rng):
     challenge = dict(challenge or {})
-    challenge_id = str(challenge.get("challengeId") or "").strip()
+    challenge_id = _trial_challenge_id(challenge)
     if not challenge_id:
         raise ValueError("challengeId missing")
     positions, crossing_count = _build_planarity_positions(challenge, rng=rng)
+    if not positions:
+        raise ValueError("planarity challenge has no valid nodes")
     if crossing_count:
         raise ValueError("planarity challenge unsolved")
     if not _planarity_positions_are_safe(positions):
@@ -603,7 +628,7 @@ def _build_planarity_proof(challenge, *, rng):
         for node_id, point in positions.items()
     }
     unlocked_count = len([
-        node for node in (challenge.get("nodes") or ())
+        node for node in _iter_trial_items(challenge.get("nodes"))
         if isinstance(node, dict) and not node.get("locked")
     ])
     return {
@@ -619,10 +644,10 @@ def _build_planarity_proof(challenge, *, rng):
 def build_trial_proof(challenge, *, rng=None):
     rng = rng or random
     challenge = dict(challenge or {})
-    challenge_id = str(challenge.get("challengeId") or "").strip()
+    challenge_id = _trial_challenge_id(challenge)
     if not challenge_id:
         raise ValueError("challengeId missing")
-    mode = str(challenge.get("mode") or "").strip()
+    mode = str(challenge.get("mode") or challenge.get("type") or "").strip()
     if mode == "tianjiLightsOutV1":
         return _build_lights_out_proof(challenge, rng=rng)
     if mode == "tianjiMemoryV1":
@@ -632,20 +657,28 @@ def build_trial_proof(challenge, *, rng=None):
     if mode == "tianjiPlanarityV1":
         return _build_planarity_proof(challenge, rng=rng)
 
-    sequence = list(challenge.get("sequence") or ())
-    points = list(challenge.get("points") or ())
+    sequence = list(challenge.get("sequence") or challenge.get("answer") or challenge.get("solution") or ())
+    raw_points = challenge.get("points") or ()
     trap_ids = {str(item) for item in (challenge.get("trapIds") or ())}
-    point_map = {str(point.get("id")): dict(point) for point in points if isinstance(point, dict)}
+    point_map = {}
+    for point in _iter_trial_items(raw_points):
+        if not isinstance(point, dict):
+            continue
+        point_id = str(point.get("id") or point.get("key") or point.get("name") or "").strip()
+        if point_id:
+            point_map[point_id] = dict(point)
     taps = []
     trap_hits = 0
     for raw_point_id in sequence:
-        point_id = str(raw_point_id)
+        point_id = str(raw_point_id).strip()
+        if not point_id:
+            continue
         point = point_map.get(point_id) or {}
         if point_id in trap_ids:
             trap_hits += 1
             continue
         taps.append({
-            "id": raw_point_id,
+            "id": point_id,
             "x": point.get("x", 50),
             "y": point.get("y", 50),
         })
@@ -653,7 +686,7 @@ def build_trial_proof(challenge, *, rng=None):
     duration_ms = _trial_duration_ms(challenge, rng=rng)
     event_times = _trial_event_times(len(taps), duration_ms, rng=rng)
     proof = {
-        "mode": str(challenge.get("mode") or "tianjiMeridianV1"),
+        "mode": mode or "tianjiMeridianV1",
         "challengeId": challenge_id,
         "durationMs": duration_ms,
         "events": [
@@ -694,8 +727,19 @@ def _append_http_event(events, step, result):
 
 def _challenge_from_start(data):
     data = dict(data or {})
-    challenge = data.get("challenge") if isinstance(data.get("challenge"), dict) else {}
     trial = data.get("trial") if isinstance(data.get("trial"), dict) else {}
+    for container in (data, data.get("data"), data.get("result"), trial):
+        if not isinstance(container, dict):
+            continue
+        nested_trial = container.get("trial") if isinstance(container.get("trial"), dict) else {}
+        if nested_trial and not trial:
+            trial = nested_trial
+        challenge = container.get("challenge") if isinstance(container.get("challenge"), dict) else {}
+        if challenge:
+            return challenge, trial or nested_trial
+        if nested_trial and isinstance(nested_trial.get("challenge"), dict):
+            return nested_trial["challenge"], nested_trial
+    challenge = data.get("challenge") if isinstance(data.get("challenge"), dict) else {}
     return challenge, trial
 
 
@@ -774,6 +818,7 @@ def run_trial_miniapp_lab_flow(
         finish_request,
         transport,
         sleeper=sleeper,
+        backoff_sec=(),
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="finish",
@@ -851,6 +896,7 @@ def run_trial_miniapp_loop_lab_flow(
             next_request,
             transport,
             sleeper=sleeper,
+            backoff_sec=(),
             capture_sink=capture_sink,
             capture_source=capture_source,
             step_key="next",

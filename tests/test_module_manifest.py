@@ -65,11 +65,13 @@ class ModuleManifestTests(unittest.TestCase):
                 "器灵试炼",
                 "布下剑阵",
                 "放养",
-                "野外历练",
-                "观星台",
-                "观星",
-                "登天阶",
-                "玄骨考校",
+            "野外历练",
+            "观星台",
+            "观星",
+            "MiniApp合集",
+            "天机试炼",
+            "登天阶",
+            "玄骨考校",
                 "极阴祖师",
                 "侍妾",
                 "天机代卜",
@@ -386,7 +388,7 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(39, summary["totals"]["active_modules"])
+        self.assertEqual(41, summary["totals"]["active_modules"])
         self.assertEqual(1, summary["totals"]["archived_modules"])
         self.assertEqual(104, summary["totals"]["reply_families"])
         self.assertEqual(4, summary["totals"]["archived_reply_families"])
@@ -395,7 +397,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual(32, summary["totals"]["sample_complete_modules"])
         self.assertEqual(2, summary["totals"]["sample_partial_modules"])
         self.assertEqual(2, summary["totals"]["sample_missing_modules"])
-        self.assertEqual(3, summary["totals"]["contract_only_modules"])
+        self.assertEqual(5, summary["totals"]["contract_only_modules"])
         self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["天星宗"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["深度闭关"]["readiness"])

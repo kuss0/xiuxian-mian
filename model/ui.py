@@ -96,7 +96,6 @@ from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manu
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_miniapp import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
-from .features.tree_runtime import authorize_tree_miniapp_manual_run, revoke_tree_miniapp_manual_run
 from .features.trial_runtime import (
     authorize_trial_miniapp_manual_run,
     maybe_finalize_trial_batch_run,
@@ -285,7 +284,6 @@ MINIAPP_ENTRY_PROBE_COMMANDS = {
 MINIAPP_MANUAL_RUN_COMMANDS = {
     "cave_treasure": ".洞府",
     "stargazer": CMD_STARGAZER_PANEL,
-    "tree": ".灵树",
     "trial": CMD_TIANJI_TRIAL,
 }
 MINIAPP_UI_GROUPS = {
@@ -297,7 +295,8 @@ MINIAPP_UI_GROUPS = {
     "world_boss": {"key": "miniapp", "label": "MiniApp合集"},
 }
 MINIAPP_AUTO_CONFIG_DEFAULT = {
-    "trial_daily_enabled": True,
+    "trial_daily_enabled": False,
+    "trial_daily_scheduler_confirmed": False,
     "trial_daily_start_hour_local": 1,
     "trial_daily_start_minute_local": 0,
     "trial_daily_end_hour_local": 4,
@@ -337,6 +336,13 @@ def normalize_miniapp_auto_config(config=None):
     result = dict(MINIAPP_AUTO_CONFIG_DEFAULT)
     result.update({key: raw.get(key, default) for key, default in MINIAPP_AUTO_CONFIG_DEFAULT.items()})
     result["trial_daily_enabled"] = bool(result.get("trial_daily_enabled"))
+    if "trial_daily_scheduler_confirmed" in raw:
+        result["trial_daily_scheduler_confirmed"] = bool(result.get("trial_daily_scheduler_confirmed"))
+    else:
+        result["trial_daily_scheduler_confirmed"] = bool(raw.get("trial_daily_enabled"))
+    result["trial_daily_effective_enabled"] = bool(
+        result["trial_daily_enabled"] and result["trial_daily_scheduler_confirmed"]
+    )
     for key, default in (
         ("trial_daily_start_hour_local", 0),
         ("trial_daily_start_minute_local", 20),
@@ -6307,17 +6313,6 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
         authorize_cave_treasure_miniapp_manual_run(identity_id)
     if normalized_game_key == "stargazer":
         authorize_stargazer_miniapp_manual_run(identity_id)
-    if normalized_game_key == "tree":
-        requested_mode = str(payload.get("mode") or payload.get("tree_mode") or "jump").strip().lower()
-        if requested_mode not in {"jump", "fly"}:
-            requested_mode = "jump"
-        tree_score_config = get_tree_miniapp_score_config(identity_id)
-        authorize_tree_miniapp_manual_run(
-            identity_id,
-            mode=requested_mode,
-            score_profile=(tree_score_config.get(requested_mode) or {}),
-            submit=True,
-        )
     if normalized_game_key == "trial":
         authorize_trial_miniapp_manual_run(identity_id)
 
@@ -6343,8 +6338,6 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
             revoke_cave_treasure_miniapp_manual_run(identity_id)
         if normalized_game_key == "stargazer":
             revoke_stargazer_miniapp_manual_run(identity_id)
-        if normalized_game_key == "tree":
-            revoke_tree_miniapp_manual_run(identity_id)
         if normalized_game_key == "trial":
             revoke_trial_miniapp_manual_run(identity_id)
         return False, "手动执行命令未发送，可能被全局暂停/安全锁/队列保护拦截", extra
@@ -6442,7 +6435,7 @@ async def ui_start_trial_miniapp_batch_run(payload=None):
 
 async def run_miniapp_daily_scheduler(now):
     config = get_miniapp_auto_config_snapshot(now)
-    if not config.get("trial_daily_enabled"):
+    if not config.get("trial_daily_effective_enabled"):
         return {"started": False, "reason": "disabled"}
     if config.get("trial_daily_done_today"):
         return {"started": False, "reason": "done_today"}

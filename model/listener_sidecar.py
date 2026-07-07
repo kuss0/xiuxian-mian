@@ -74,6 +74,16 @@ def _write_listener_heartbeat(extra=None):
         print(traceback.format_exc(), flush=True)
 
 
+def _listener_runtime_status():
+    registered = _listener_stats.get("registered_accounts") or []
+    targets = _listener_stats.get("target_accounts") or []
+    if registered:
+        return "running"
+    if targets:
+        return "degraded_no_connected_accounts"
+    return "idle_no_accounts"
+
+
 def _listener_account_ids(accounts):
     account_ids = {int(account_id) for account_id in accounts.keys() if str(account_id).isdigit()}
     configured_ids = set(get_game_listener_account_ids())
@@ -244,7 +254,11 @@ async def _connect_saved_accounts():
     account_ids = _listener_account_ids(accounts)
     connected = []
     if not accounts:
-        raise RuntimeError("未配置独立监听账号，listener 已阻止使用主 session 启动。")
+        _listener_stats["target_accounts"] = []
+        _listener_stats["registered_accounts"] = []
+        _write_listener_heartbeat({"status": _listener_runtime_status()})
+        print("listener sidecar idle: no independent listener accounts configured", flush=True)
+        return []
     else:
         for account_id in account_ids:
             acct_info = accounts.get(str(account_id)) or {}
@@ -253,9 +267,11 @@ async def _connect_saved_accounts():
 
     _listener_stats["target_accounts"] = account_ids
     _listener_stats["registered_accounts"] = connected
-    _write_listener_heartbeat({"status": "running"})
     if not connected:
-        raise RuntimeError("没有可用监听账号。")
+        _write_listener_heartbeat({"status": _listener_runtime_status()})
+        print(f"listener sidecar degraded: no connected accounts failed={_listener_stats.get('failed_accounts')}", flush=True)
+        return []
+    _write_listener_heartbeat({"status": _listener_runtime_status()})
     print(f"listener sidecar started: accounts={connected} failed={_listener_stats.get('failed_accounts')}", flush=True)
     return connected
 
@@ -273,12 +289,12 @@ async def _retry_failed_accounts_loop(stop_event, accounts):
             if account_id in registered:
                 continue
             await _connect_listener_account(account_id, accounts.get(str(account_id)) or {})
-        _write_listener_heartbeat({"status": "running"})
+        _write_listener_heartbeat({"status": _listener_runtime_status()})
 
 
 async def _heartbeat_loop(stop_event):
     while not stop_event.is_set():
-        _write_listener_heartbeat({"status": "running"})
+        _write_listener_heartbeat({"status": _listener_runtime_status()})
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=LISTENER_HEARTBEAT_INTERVAL_SEC)
         except asyncio.TimeoutError:

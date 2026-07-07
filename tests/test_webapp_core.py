@@ -11,6 +11,16 @@ from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_regis
 
 
 class WebAppCoreTests(unittest.TestCase):
+    def _reply_markup_webapp_event(self, *, url, text):
+        button = SimpleNamespace(
+            button=SimpleNamespace(
+                text=text,
+                web_app=SimpleNamespace(url=url),
+            ),
+        )
+        row = SimpleNamespace(buttons=[button])
+        return SimpleNamespace(message=SimpleNamespace(reply_markup=SimpleNamespace(rows=[row])))
+
     def test_summarize_webapp_url_redacts_start_param_and_init_data(self):
         summary = webapp_core.summarize_webapp_url(
             "https://example.com/app?startapp=stk_SECRET9999#tgWebAppData=query_id%3Dabc%26hash%3Dhidden",
@@ -101,6 +111,56 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("t.me", request.host)
         self.assertEqual("fanrenxiuxian_bot", request.bot_username)
         self.assertEqual("fish_ABC1", webapp_core.build_request_webview_args(adapter, request)["start_param"])
+
+    def test_miniapp_launch_extractors_read_reply_markup_web_app_urls(self):
+        cases = [
+            (
+                fishing_miniapp.extract_fishing_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot?startapp=fish_SECRET999",
+                "进入灵溪垂钓",
+                "点击下方进入灵溪垂钓",
+                "fish_SECRET999",
+            ),
+            (
+                trial_miniapp.extract_trial_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot?startapp=trial_SECRET999",
+                "进入天机试炼",
+                "【天机试炼台】点击按钮进入",
+                "trial_SECRET999",
+            ),
+            (
+                cave_treasure_miniapp.extract_cave_treasure_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                "进入洞府",
+                "【洞府】点击下方进入洞府寻宝",
+                "df_SECRET999",
+            ),
+            (
+                stargazer_miniapp.extract_stargazer_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot?startapp=farm_SECRET999",
+                "进入观星台",
+                "【星宫 · 观星台】点击按钮牵引星辰",
+                "farm_SECRET999",
+            ),
+            (
+                tree_miniapp.extract_tree_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999",
+                "进入灵树",
+                "【落云宗 · 灵眼之树】点击按钮进入灵树",
+                "tree_SECRET999",
+            ),
+        ]
+
+        for extractor, url, button_text, message_text, token in cases:
+            with self.subTest(token=token):
+                event = self._reply_markup_webapp_event(url=url, text=button_text)
+                extracted = extractor(event, message_text=message_text)
+                serialized = json.dumps(extracted.get("safe_summary", {}), ensure_ascii=False)
+
+                self.assertEqual(token, extracted["token"])
+                self.assertEqual(url, extracted["webview_url"])
+                self.assertEqual(button_text, extracted["button_text"])
+                self.assertNotIn(token, serialized)
 
     def test_init_data_store_keeps_raw_value_only_in_memory(self):
         now = [1000.0]

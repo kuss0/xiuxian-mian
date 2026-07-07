@@ -279,12 +279,14 @@ from .state import (
     get_identity_ids,
     get_identity_ui_display_name,
     get_global_enabled,
+    get_global_pause_source,
     get_guanxing_monitor_enabled,
     get_guanxing_shift_target,
     has_sect_membership,
     has_identity,
     remove_identity,
     set_global_enabled as set_global_enabled_state,
+    set_global_pause_source,
     get_module_window_hours,
     get_pending_command,
     get_replica_dispatch_group_ids,
@@ -5438,8 +5440,14 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
 async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
     enabled = _coerce_control_bool(enabled)
     if get_global_enabled() == enabled:
+        if not enabled:
+            normalized_source = str(source or "").strip()
+            if normalized_source and get_global_pause_source() != normalized_source:
+                set_global_pause_source(normalized_source)
+                save_state()
         return True, "全局状态未变化"
     set_global_enabled_state(enabled)
+    set_global_pause_source("" if enabled else str(source or "").strip())
     now = time.time()
     if enabled and get_guanxing_monitor_enabled():
         _restore_guanxing_monitor_runtime(now)

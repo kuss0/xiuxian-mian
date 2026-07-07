@@ -27,6 +27,7 @@ from .state import (
     get_forum_topics_updated_at,
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
+    get_global_pause_source,
     get_tiandao_judgement_enabled,
     get_dungeon_join_run_state,
     get_formation_run_state,
@@ -68,6 +69,7 @@ from .state import (
     set_formation_run_state,
     set_forum_topics,
     set_global_enabled,
+    set_global_pause_source,
     set_tiandao_judgement_enabled,
     set_game_bot_ids,
     set_game_listener_account_ids,
@@ -2363,6 +2365,11 @@ _META_STATE_CODEC = {
         get_global_enabled,
         lambda value: "1" if value else "0",
         lambda value: set_global_enabled(_decode_meta_bool_flag(value, True)),
+    ),
+    "global_pause_source": (
+        get_global_pause_source,
+        lambda value: str(value or ""),
+        lambda value: set_global_pause_source(str(value or "")),
     ),
     "tiandao_judgement_enabled": (
         get_tiandao_judgement_enabled,

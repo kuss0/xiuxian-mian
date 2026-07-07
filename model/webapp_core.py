@@ -617,6 +617,62 @@ def build_request_webview_args(adapter, launch_request):
     }
 
 
+def _flatten_webapp_buttons(value):
+    if value is None:
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _flatten_webapp_buttons(item)
+        return
+    for attr in ("rows", "buttons"):
+        child = getattr(value, attr, None)
+        if child is not None and child is not value:
+            yield from _flatten_webapp_buttons(child)
+            return
+    yield value
+
+
+def _button_text(button):
+    for source in (button, getattr(button, "button", None)):
+        if source is None:
+            continue
+        text = getattr(source, "text", "")
+        if text:
+            return _string(text)
+    return ""
+
+
+def _button_url(button):
+    for source in (button, getattr(button, "button", None)):
+        if source is None:
+            continue
+        for attr in ("url", "webview", "web_view"):
+            value = getattr(source, attr, "")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for attr in ("web_app", "webview", "web_view"):
+            nested = getattr(source, attr, None)
+            value = getattr(nested, "url", "") if nested is not None else ""
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def iter_webapp_button_links(event):
+    """Yield button text and raw URL from common Telegram button shapes."""
+    message = getattr(event, "message", None)
+    for source in (
+        getattr(message, "buttons", None),
+        getattr(event, "buttons", None),
+        getattr(message, "reply_markup", None),
+        getattr(event, "reply_markup", None),
+    ):
+        for button in _flatten_webapp_buttons(source):
+            url = _button_url(button)
+            if url:
+                yield _button_text(button), url
+
+
 def _path_allowed(path, allowed_prefixes):
     if not allowed_prefixes:
         return True

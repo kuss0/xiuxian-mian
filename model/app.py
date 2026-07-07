@@ -198,7 +198,6 @@ from .verified_event import from_telegram_event, is_new_delivery
 from .runtime import (
     _fire_and_forget,
     check_bot_health_timeout,
-    clear_all_pending_tasks,
     clear_pending_by_reply,
     console_log,
     gc_my_msg_ids,
@@ -214,6 +213,7 @@ from .runtime import (
     note_game_command_observed,
     note_identity_weakness,
     resolve_reply_family,
+    restore_bot_health_auto_pause,
     run_retry_scheduler,
     schedule_cleanup,
     send_game_command,
@@ -230,6 +230,7 @@ from .state import (
     get_game_group_id,
     get_game_listener_account_ids,
     get_global_enabled,
+    get_global_pause_source,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
@@ -641,11 +642,21 @@ async def _is_game_bot_event(event):
 async def _note_game_bot_activity():
     global _bot_silence_auto_paused
     bot_health_action = note_game_bot_message(time.time())
+    if (
+        bot_health_action is None
+        and not get_global_enabled()
+        and get_global_pause_source() == "bot_health_monitor"
+    ):
+        _bot_silence_auto_paused = True
+        restore_bot_health_auto_pause("恢复持久化天尊健康暂停态")
+        bot_health_action = note_game_bot_message(time.time())
     if bot_health_action == "probe":
-        if _bot_silence_auto_paused:
+        if _bot_silence_auto_paused or not get_global_enabled():
+            _bot_silence_auto_paused = True
             _fire_and_forget(_send_bot_health_probe())
     elif bot_health_action == "recover":
-        if _bot_silence_auto_paused and not get_global_enabled():
+        can_auto_recover = _bot_silence_auto_paused or get_global_pause_source() == "bot_health_monitor"
+        if not get_global_enabled() and can_auto_recover:
             await toggle_global_enabled(True, source="bot_health_recovery")
         _bot_silence_auto_paused = False
         mark_bot_health_recovered("bot 恢复确认完成")
@@ -2632,7 +2643,6 @@ async def main_loop(stop_event=None):
         if should_pause_for_bot_health() and get_global_enabled():
             _bot_silence_auto_paused = True
             _cancel_identity_schedulers()
-            clear_all_pending_tasks("天尊健康暂停")
             await toggle_global_enabled(False, source="bot_health_monitor")
         if not get_global_enabled():
             _cancel_identity_schedulers()

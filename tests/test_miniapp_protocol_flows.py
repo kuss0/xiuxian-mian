@@ -3,10 +3,141 @@ import random
 import unittest
 
 from model import webapp_core
-from model.features import cave_treasure_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
+from model.features import cave_treasure_miniapp, fishing_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class MiniAppProtocolFlowTests(unittest.TestCase):
+    def test_mutating_miniapp_steps_do_not_retry_transient_failures(self):
+        trial_calls = []
+
+        def trial_transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            trial_calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "challenge": {
+                        "challengeId": "trial-no-retry",
+                        "sequence": ["p1"],
+                        "points": [{"id": "p1", "x": 20, "y": 20}],
+                        "minDurationMs": 20,
+                        "maxDurationMs": 1000,
+                    },
+                }
+            raise RuntimeError("finish transient after server side may have applied")
+
+        trial_miniapp.run_trial_miniapp_lab_flow(
+            token="trial_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=trial_transport,
+            sleeper=lambda _delay: None,
+            rng=random.Random(11),
+        )
+        self.assertEqual(["start", "finish"], trial_calls)
+
+        fishing_calls = []
+
+        def fishing_transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            fishing_calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "session": {"phase": "bite", "serverNow": 0, "biteAt": 0},
+                    "challenge": {"challengeId": "fish-no-retry", "minDurationMs": 20, "maxDurationMs": 1000},
+                }
+            raise RuntimeError("finish transient after server side may have applied")
+
+        fishing_miniapp.run_fishing_miniapp_lab_flow(
+            token="fish_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=fishing_transport,
+            sleeper=lambda _delay: None,
+            rng=random.Random(12),
+        )
+        self.assertEqual(["start", "finish"], fishing_calls)
+
+        cave_calls = []
+
+        def cave_transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            cave_calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "huntRun": {
+                        "sessionId": "hunt-no-retry",
+                        "status": "active",
+                        "size": 2,
+                        "ap": 1,
+                        "maxAp": 1,
+                        "cells": [{"index": 0, "revealed": False}],
+                    },
+                }
+            raise RuntimeError("action transient after server side may have applied")
+
+        cave_treasure_miniapp.run_cave_treasure_miniapp_lab_flow(
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=cave_transport,
+            sleeper=lambda _delay: None,
+            rng=random.Random(13),
+        )
+        self.assertEqual(["start", "hunt_reveal"], cave_calls)
+
+        stargazer_calls = []
+
+        def stargazer_transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            stargazer_calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "domain": {
+                        "mode": "stars",
+                        "plots": [{"key": "slot1", "empty": False, "status": "可收集"}],
+                    },
+                }
+            raise RuntimeError("action transient after server side may have applied")
+
+        stargazer_miniapp.run_stargazer_miniapp_lab_flow(
+            token="farm_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            star_choice="",
+            transport=stargazer_transport,
+            sleeper=lambda _delay: None,
+        )
+        self.assertEqual(["start", "action"], stargazer_calls)
+
+        tree_calls = []
+
+        def tree_transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            tree_calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "council": {
+                        "daily": {
+                            "jump": {"used": 0, "limit": 3, "best": 0},
+                            "fly": {"used": 0, "limit": 3, "best": 0},
+                        },
+                        "season": {"seasonId": "lyz20260708", "status": "active"},
+                    },
+                }
+            raise RuntimeError("run/start transient after server side may have applied")
+
+        tree_miniapp.run_tree_miniapp_game_lab_flow(
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            mode="jump",
+            submit=True,
+            transport=tree_transport,
+            sleeper=lambda _delay: None,
+            rng=random.Random(14),
+        )
+        self.assertEqual(["start", "run_start"], tree_calls)
+
     def test_stargazer_ready_status_variants_are_collectable(self):
         farm_state = stargazer_miniapp.parse_stargazer_farm_state({
             "data": {
@@ -88,6 +219,205 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertFalse(result["events"][-1]["ok"])
         self.assertNotIn("trial_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
+
+    def test_trial_nested_challenge_accepts_wxjerry_field_aliases(self):
+        calls = []
+        submitted_proof = {}
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "data": {
+                        "trial": {
+                            "challenge": {
+                                "id": "alias-c1",
+                                "type": "tianjiMeridianV1",
+                                "answer": ["p1", "p2"],
+                                "points": {
+                                    "p1": {"key": "p1", "x": 12, "y": 34},
+                                    "p2": {"name": "p2", "x": 56, "y": 78},
+                                },
+                                "minDurationMs": 20,
+                                "maxDurationMs": 1000,
+                            },
+                        },
+                    },
+                }
+            if endpoint == "finish":
+                submitted_proof.update(request["payload"]["trialProof"])
+                return 200, {"ok": True, "result": {"ready": True, "reward": 1}}
+            raise AssertionError(f"unexpected endpoint {endpoint}")
+
+        result = trial_miniapp.run_trial_miniapp_lab_flow(
+            token="trial_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(17),
+            sleeper=lambda _delay: None,
+        )
+        text = json.dumps({"result": result, "proof": submitted_proof}, ensure_ascii=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("settled", result["status"])
+        self.assertEqual(["start", "finish"], calls)
+        self.assertEqual("alias-c1", submitted_proof["challengeId"])
+        self.assertEqual("tianjiMeridianV1", submitted_proof["mode"])
+        self.assertEqual(["p1", "p2"], submitted_proof["sequence"])
+        self.assertEqual([12, 56], [tap["x"] for tap in submitted_proof["taps"]])
+        self.assertNotIn("trial_SECRET999", text)
+        self.assertNotIn("VERY_SECRET", text)
+
+    def test_trial_meridian_accepts_dict_points_with_key_only_ids(self):
+        proof = trial_miniapp.build_trial_proof(
+            {
+                "id": "meridian-key-only-1",
+                "type": "tianjiMeridianV1",
+                "answer": ["p1"],
+                "points": {
+                    "p1": {"x": 12, "y": 34},
+                },
+                "minDurationMs": 20,
+                "maxDurationMs": 1000,
+            },
+            rng=random.Random(171),
+        )
+
+        self.assertEqual("meridian-key-only-1", proof["challengeId"])
+        self.assertEqual([{"id": "p1", "x": 12, "y": 34}], proof["taps"])
+
+    def test_trial_specialized_solvers_accept_wxjerry_id_type_aliases(self):
+        calls = []
+        submitted = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "challenge": {
+                        "id": "lights-alias-1",
+                        "type": "tianjiLightsOutV1",
+                        "gridSize": 4,
+                        "targetState": 1,
+                        "cells": [1] * 16,
+                        "minDurationMs": 20,
+                        "maxDurationMs": 1000,
+                    },
+                }
+            if endpoint == "finish":
+                submitted.append(dict(request["payload"]["trialProof"]))
+                return 200, {"ok": True}
+            raise AssertionError(f"unexpected endpoint {endpoint}")
+
+        result = trial_miniapp.run_trial_miniapp_lab_flow(
+            token="trial_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(18),
+            sleeper=lambda _delay: None,
+        )
+        text = json.dumps({"result": result, "proof": submitted}, ensure_ascii=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "finish"], calls)
+        self.assertEqual("lights-alias-1", submitted[0]["challengeId"])
+        self.assertEqual("tianjiLightsOutV1", submitted[0]["mode"])
+        self.assertNotIn("trial_SECRET999", text)
+        self.assertNotIn("VERY_SECRET", text)
+
+    def test_trial_planarity_accepts_dict_nodes_and_key_ids(self):
+        submitted_proof = {}
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "data": {
+                        "challenge": {
+                            "id": "planarity-alias-1",
+                            "type": "tianjiPlanarityV1",
+                            "nodes": {
+                                "a": {"key": "a", "x": 20, "y": 20},
+                                "b": {"key": "b", "x": 80, "y": 20},
+                                "c": {"key": "c", "x": 80, "y": 80},
+                                "d": {"key": "d", "x": 20, "y": 80},
+                            },
+                            "edges": {
+                                "ab": {"source": "a", "target": "b"},
+                                "bc": {"source": "b", "target": "c"},
+                                "cd": {"source": "c", "target": "d"},
+                                "da": {"source": "d", "target": "a"},
+                            },
+                            "minDurationMs": 20,
+                            "maxDurationMs": 1000,
+                        },
+                    },
+                }
+            if endpoint == "finish":
+                submitted_proof.update(request["payload"]["trialProof"])
+                return 200, {"ok": True}
+            raise AssertionError(f"unexpected endpoint {endpoint}")
+
+        result = trial_miniapp.run_trial_miniapp_lab_flow(
+            token="trial_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(19),
+            sleeper=lambda _delay: None,
+        )
+        text = json.dumps({"result": result, "proof": submitted_proof}, ensure_ascii=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("planarity-alias-1", submitted_proof["challengeId"])
+        self.assertEqual("tianjiPlanarityV1", submitted_proof["mode"])
+        self.assertEqual({"a", "b", "c", "d"}, set(submitted_proof["positions"]))
+        self.assertNotIn("trial_SECRET999", text)
+        self.assertNotIn("VERY_SECRET", text)
+
+    def test_trial_planarity_accepts_dict_nodes_with_key_only_ids(self):
+        proof = trial_miniapp.build_trial_proof(
+            {
+                "id": "planarity-key-only-1",
+                "type": "tianjiPlanarityV1",
+                "nodes": {
+                    "a": {"x": 20, "y": 20},
+                    "b": {"x": 80, "y": 20},
+                    "c": {"x": 80, "y": 80},
+                    "d": {"x": 20, "y": 80},
+                },
+                "edges": {
+                    "ab": {"source": "a", "target": "b"},
+                    "bc": {"source": "b", "target": "c"},
+                    "cd": {"source": "c", "target": "d"},
+                    "da": {"source": "d", "target": "a"},
+                },
+                "minDurationMs": 20,
+                "maxDurationMs": 1000,
+            },
+            rng=random.Random(191),
+        )
+
+        self.assertEqual("planarity-key-only-1", proof["challengeId"])
+        self.assertEqual({"a", "b", "c", "d"}, set(proof["positions"]))
+
+    def test_trial_planarity_empty_nodes_fails(self):
+        with self.assertRaisesRegex(ValueError, "no valid nodes"):
+            trial_miniapp.build_trial_proof(
+                {
+                    "id": "planarity-empty-1",
+                    "type": "tianjiPlanarityV1",
+                    "nodes": {},
+                    "edges": {},
+                    "minDurationMs": 20,
+                    "maxDurationMs": 1000,
+                },
+                rng=random.Random(192),
+            )
 
     def test_cave_treasure_daily_exhausted_start_does_not_hunt(self):
         calls = []
@@ -263,20 +593,20 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
 
         self.assertEqual(30, fly_summary["targetScore"])
         self.assertGreaterEqual(fly_summary["score"], 20)
-        self.assertLessEqual(fly_summary["score"], 150)
+        self.assertLessEqual(fly_summary["score"], 80)
         self.assertEqual(fly_proof["clientScore"], fly_replay["score"])
         self.assertTrue(all(isinstance(item, int) for item in fly_proof["flaps"]))
         self.assertGreater(fly_proof["durationMs"], 20_000)
 
         self.assertEqual(30, jump_summary["targetScore"])
         self.assertGreaterEqual(jump_summary["score"], 20)
-        self.assertLessEqual(jump_summary["score"], 150)
+        self.assertLessEqual(jump_summary["score"], 80)
         self.assertEqual(jump_proof["clientScore"], jump_replay["score"])
         self.assertTrue(all(isinstance(item, float) for item in jump_proof["charges"]))
 
     def test_tree_score_profile_clamps_to_tens_policy(self):
         self.assertEqual({"target_score_range": (20, 20)}, tree_miniapp.normalize_tree_score_profile("fly", {"target_score": 7}))
-        self.assertEqual({"target_score_range": (150, 150)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
+        self.assertEqual({"target_score_range": (80, 80)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
         self.assertEqual({"target_score_range": (24, 45)}, tree_miniapp.normalize_tree_score_profile("fly", {}))
 
     def test_tree_jump_proof_does_not_overshoot_score_cap(self):
@@ -294,7 +624,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             self.assertEqual(proof["clientScore"], replay["score"])
             self.assertLessEqual(replay["score"], 80)
 
-    def test_tree_jump_proof_can_target_126_for_manual_canary(self):
+    def test_tree_jump_proof_clamps_manual_canary_to_safe_cap(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
             "jump",
             {"seed": "luoyun-canary-seed-126", "runToken": "run-token-secret"},
@@ -303,9 +633,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         replay = tree_miniapp.simulate_tree_jump_run("luoyun-canary-seed-126", proof["charges"])
 
-        self.assertEqual(126, summary["targetScore"])
-        self.assertGreaterEqual(summary["score"], 126)
-        self.assertLessEqual(summary["score"], 150)
+        self.assertEqual(80, summary["targetScore"])
+        self.assertLessEqual(summary["score"], 80)
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertEqual(summary["score"], replay["score"])
 
@@ -332,7 +661,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertLessEqual(proof["durationMs"], tree_miniapp.TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS + 2_000)
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertGreaterEqual(replay["score"], 20)
-        self.assertLessEqual(replay["score"], 150)
+        self.assertLessEqual(replay["score"], 80)
 
     def test_tree_fly_proof_uses_server_validation_frame(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
@@ -436,7 +765,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             transport=transport,
             rng=random.Random(1),
             sleeper=lambda _delay: None,
-            score_profile={"target_score": 126},
+            score_profile={"target_score": 80},
         )
 
         self.assertFalse(result["ok"])

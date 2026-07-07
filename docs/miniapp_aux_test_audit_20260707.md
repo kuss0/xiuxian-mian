@@ -1,12 +1,20 @@
 # MiniApp 辅助测试审计
 
-日期：2026-07-07
+日期：2026-07-08
+
+## 2026-07-08 修复补记
+
+本文件保留 2026-07-07 测试审计历史；主线交接请以最终合并版 `docs/miniapp_aux_fix_handoff_20260708.md` 为准。
+
+本次辅助修复已干完：focused MiniApp 测试 `104 passed`，Python 编译、前端 JS 语法和 `git diff --check` 均通过。主线复核后补充旧生产配置兼容测试，focused MiniApp 测试为 `105 passed`。验证仍限离线/mock/静态范围；未上线、未重启、未发游戏命令、未做 live probe、未读写生产 DB。
 
 ## 边界
 
 本审计只覆盖当前工作树 MiniApp 相关候选 diff、离线/mock 测试、编译检查、JS 语法检查和静态风险扫描。未执行服务重启、上线、push、新 live probe、生产 DB 读写或生产调度接入。
 
 结论：辅助 agent 代码/测试任务已干完，交付仍为候选 diff，不构成上线授权。
+
+13:01 CST 补充复核：未再改动代码；重新跑过 Python 编译、前端 JS 语法、`git diff --check` 和 MiniApp focused 测试，均通过。未执行上线、重启、新 live probe、生产 DB 访问或生产调度接入。
 
 ## 本轮新增覆盖
 
@@ -36,6 +44,8 @@
 
 .venv/bin/python -m pytest -q tests/test_miniapp_protocol_flows.py tests/test_miniapp_entry_probe.py tests/test_webapp_core.py tests/test_persistence_runtime_flags.py
 # 110 passed
+
+# 2026-07-07 13:01 CST 补充复核，同一 focused suite 仍为 110 passed
 
 .venv/bin/python -m py_compile \
   model/features/tree_miniapp.py model/ui.py model/state.py model/persistence.py \

@@ -21,10 +21,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_miniapp_send_whitelists_are_exact(self):
         self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
-        self.assertEqual({"cave_treasure", "stargazer", "tree", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
+        self.assertEqual({"cave_treasure", "stargazer", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
         self.assertNotIn("world_boss", ui.MINIAPP_ENTRY_PROBE_COMMANDS)
         self.assertNotIn("world_boss", ui.MINIAPP_MANUAL_RUN_COMMANDS)
         self.assertNotIn("fishing", ui.MINIAPP_MANUAL_RUN_COMMANDS)
+        self.assertNotIn("tree", ui.MINIAPP_MANUAL_RUN_COMMANDS)
 
     async def test_tree_score_config_is_ui_adjustable_tens_policy(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -39,11 +40,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertIn("跳一跳 20", message)
-        self.assertIn("飞一飞 150", message)
+        self.assertIn("飞一飞 80", message)
         self.assertEqual([20, 20], tree["jump"]["target_score_range"])
-        self.assertEqual([150, 150], tree["fly"]["target_score_range"])
+        self.assertEqual([80, 80], tree["fly"]["target_score_range"])
         self.assertEqual(20, tree["jump"]["min_target_score"])
-        self.assertEqual(150, tree["fly"]["max_target_score"])
+        self.assertEqual(80, tree["fly"]["max_target_score"])
         save_mock.assert_called_once()
 
     async def test_tree_score_config_is_scoped_by_identity(self):
@@ -237,57 +238,17 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("MiniApp手动", kwargs["source_module"])
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
-    async def test_manual_run_allows_tree_and_authorizes_with_score_config_before_send(self):
+    async def test_manual_run_rejects_tree_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12353))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
-                patch.object(ui, "get_tree_miniapp_score_config", return_value={
-                    "jump": {"target_score_range": [126, 126]},
-                    "fly": {"target_score_range": [36, 36]},
-                }), \
-                patch.object(ui, "authorize_tree_miniapp_manual_run", return_value=123456.0) as auth_mock, \
-                patch.object(ui, "send_game_command", new=send_mock), \
-                patch.object(ui, "send_audit_log", new=AsyncMock()):
+                patch.object(ui, "send_game_command", new=send_mock):
             ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree")
 
-        self.assertTrue(ok)
-        self.assertIn("手动执行", message)
-        self.assertEqual(".灵树", extra["command"])
-        auth_mock.assert_called_once_with(
-            1001,
-            mode="jump",
-            score_profile={"target_score_range": [126, 126]},
-            submit=True,
-        )
-        kwargs = send_mock.await_args.kwargs
-        self.assertFalse(kwargs["track"])
-        self.assertEqual(0, kwargs["max_retry"])
-        self.assertEqual("MiniApp手动", kwargs["source_module"])
-        self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
-
-    async def test_manual_run_allows_tree_fly_mode_and_uses_fly_score_config(self):
-        send_mock = AsyncMock(return_value=SimpleNamespace(id=12354))
-        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
-                patch.object(ui, "get_identity_enabled", return_value=True), \
-                patch.object(ui, "get_tree_miniapp_score_config", return_value={
-                    "jump": {"target_score_range": [126, 126]},
-                    "fly": {"target_score_range": [36, 36]},
-                }), \
-                patch.object(ui, "authorize_tree_miniapp_manual_run", return_value=123456.0) as auth_mock, \
-                patch.object(ui, "send_game_command", new=send_mock), \
-                patch.object(ui, "send_audit_log", new=AsyncMock()):
-            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree", payload={"mode": "fly"})
-
-        self.assertTrue(ok)
-        self.assertIn("手动执行", message)
-        self.assertEqual(".灵树", extra["command"])
-        auth_mock.assert_called_once_with(
-            1001,
-            mode="fly",
-            score_profile={"target_score_range": [36, 36]},
-            submit=True,
-        )
-        self.assertEqual("MiniApp手动", send_mock.await_args.kwargs["source_module"])
+        self.assertFalse(ok)
+        self.assertIn("仅允许", message)
+        self.assertEqual({}, extra)
+        send_mock.assert_not_awaited()
 
     async def test_manual_run_rejects_non_manual_game_key_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12349))
@@ -317,6 +278,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         audit_mock.assert_awaited_once()
 
     async def test_miniapp_daily_scheduler_starts_first_wave_inside_window(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+        }
         now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
                 patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch-auto") as start_mock, \
@@ -342,6 +307,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("batch-auto", snapshot["trial_daily_wave1_last_batch_id"])
 
     async def test_miniapp_daily_scheduler_starts_second_wave_inside_window(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+        }
         now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
                 patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch-wave2") as start_mock, \
@@ -360,6 +329,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
     async def test_miniapp_daily_scheduler_legacy_done_counts_as_both_waves(self):
         state_module._meta_state["miniapp_auto_config"] = {
             "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
             "trial_daily_last_run_day": "2026-07-07",
             "trial_daily_last_batch_id": "old-batch",
             "trial_daily_last_run_at": 1,
@@ -378,7 +348,39 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["trial_daily_waves"][0]["done_today"])
         self.assertTrue(snapshot["trial_daily_waves"][1]["done_today"])
 
+    async def test_miniapp_daily_scheduler_preserves_legacy_enabled_config(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+        }
+        now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
+                patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual({"started": False, "reason": "no_enabled_identity", "wave": "wave1"}, result)
+        ids_mock.assert_called_once()
+        start_mock.assert_not_called()
+        snapshot = ui.get_miniapp_status_snapshot()["automation"]
+        self.assertTrue(snapshot["trial_daily_enabled"])
+        self.assertTrue(snapshot["trial_daily_scheduler_confirmed"])
+        self.assertTrue(snapshot["trial_daily_effective_enabled"])
+
+    async def test_miniapp_daily_scheduler_defaults_disabled_on_empty_config(self):
+        state_module._meta_state["miniapp_auto_config"] = {}
+        now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
+                patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual({"started": False, "reason": "disabled"}, result)
+        ids_mock.assert_not_called()
+        start_mock.assert_not_called()
+
     async def test_miniapp_daily_scheduler_does_not_start_outside_window(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+        }
         now = datetime(2026, 7, 7, 0, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
                 patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
@@ -407,7 +409,6 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".灵树", probe_commands["tree"])
         self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
-        self.assertEqual(".灵树", manual_run_commands["tree"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
         self.assertEqual(".天机试炼", batch_run_commands["trial"]["command"])
         self.assertEqual("/api/miniapp-trial-batch-run", batch_run_commands["trial"]["endpoint"])
@@ -421,7 +422,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["flow_plans"]["tree"]["manual_only"])
         self.assertFalse(snapshot["policy"]["raw_init_data_persisted"])
         self.assertFalse(snapshot["policy"]["raw_start_token_persisted"])
-        self.assertTrue(snapshot["automation"]["trial_daily_enabled"])
+        self.assertFalse(snapshot["automation"]["trial_daily_enabled"])
+        self.assertFalse(snapshot["automation"]["trial_daily_effective_enabled"])
         self.assertEqual("01:00-04:00 / 05:00-08:00", snapshot["automation"]["trial_daily_window_text"])
         self.assertNotIn("tgWebAppData", text)
         self.assertNotIn("initData=", text)
