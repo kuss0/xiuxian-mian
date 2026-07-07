@@ -334,6 +334,24 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertGreaterEqual(replay["score"], 20)
         self.assertLessEqual(replay["score"], 150)
 
+    def test_tree_fly_proof_uses_server_validation_frame(self):
+        proof, summary = tree_miniapp.build_tree_game_proof(
+            "fly",
+            {"seed": "42a9f208fdcd34c63db6", "runToken": "run-token-secret"},
+            rng=random.Random(3600),
+            profile={"target_score": 36, "beam_width": 640, "max_duration_ms": 90_000},
+        )
+        replay = tree_miniapp.simulate_tree_fly_run(
+            "42a9f208fdcd34c63db6",
+            proof["flaps"],
+            max_duration_ms=proof["durationMs"],
+        )
+
+        self.assertEqual(36, summary["targetScore"])
+        self.assertGreaterEqual(replay["score"], 36)
+        self.assertEqual(proof["clientScore"], replay["score"])
+        self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_FRAME_MS, summary["profile"]["frame_ms"])
+
     def test_tree_game_lab_flow_prepares_without_submit(self):
         calls = []
 

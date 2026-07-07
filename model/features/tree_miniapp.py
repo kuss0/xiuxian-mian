@@ -61,7 +61,9 @@ TREE_MINIAPP_FLY_BOTTOM_Y = 334.0
 TREE_MINIAPP_FLY_GATE_GAP = 112.0
 TREE_MINIAPP_FLY_GATE_WIDTH = 54.0
 TREE_MINIAPP_FLY_GATE_SPACING = 174.0
-TREE_MINIAPP_FLY_FRAME_MS = 16
+# Server verification behaves like the WebView's capped slow frame path rather
+# than a perfect 60 FPS replay. Plan against the conservative validation step.
+TREE_MINIAPP_FLY_FRAME_MS = 34
 TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH = 420
 TREE_MINIAPP_FLY_MAX_BEAM_WIDTH = 640
 TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS = 120000
@@ -528,6 +530,7 @@ def build_tree_fly_proof(run, *, rng=None, profile=None):
         "durationMs": proof["durationMs"],
         "gameOver": bool(replay["gameOver"]),
         "profile": {
+            "frame_ms": int(frame_ms),
             "beam_width": _int_between(
                 profile.get("beam_width"),
                 TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH,
