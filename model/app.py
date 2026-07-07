@@ -240,7 +240,7 @@ from .state import (
     use_identity,
 )
 from .timing import fmt_time_after
-from .ui import run_storage_bag_api_keepalive_scheduler, start_ui_server, stop_ui_server
+from .ui import run_miniapp_daily_scheduler, run_storage_bag_api_keepalive_scheduler, start_ui_server, stop_ui_server
 
 _bot_silence_auto_paused = False
 _identity_scheduler_task = None
@@ -320,6 +320,7 @@ _GLOBAL_SCHEDULERS = (
     ("guanxing_monitor", run_guanxing_monitor_scheduler),
     ("guanxing", run_guanxing_scheduler),
     ("storage_bag_api_keepalive", run_storage_bag_api_keepalive_scheduler),
+    ("miniapp_daily", run_miniapp_daily_scheduler),
     ("storage_bag_transfer", run_storage_bag_transfer_scheduler),
     ("divination", run_divination_scheduler),
     ("world_boss", run_world_boss_scheduler),
@@ -335,6 +336,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "guanxing_monitor": {"manifest_names": ("观星监控",), "helper": False},
     "guanxing": {"manifest_names": ("观星",), "helper": False},
     "storage_bag_api_keepalive": {"manifest_names": ("储物袋",), "helper": True},
+    "miniapp_daily": {"manifest_names": ("MiniApp合集", "天机试炼"), "helper": False},
     "storage_bag_transfer": {"manifest_names": ("储物袋",), "helper": False},
     "divination": {"manifest_names": ("卜筮问天",), "helper": False},
     "world_boss": {"manifest_names": ("真仙试锋",), "helper": False},

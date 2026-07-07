@@ -60,6 +60,7 @@ from .state import (
     get_storage_bag_item_rules,
     get_storage_bag_records,
     get_tianjige_dao_path_records,
+    get_miniapp_auto_config,
     get_tree_miniapp_score_configs,
     new_identity_state,
     set_auto_delete_sent_messages,
@@ -101,6 +102,7 @@ from .state import (
     set_storage_bag_item_rules,
     set_storage_bag_records,
     set_tianjige_dao_path_records,
+    set_miniapp_auto_config,
     set_tree_miniapp_score_configs,
     get_accounts,
     set_accounts,
@@ -1984,6 +1986,10 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("miniapp_auto_config", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("quiz_learning_watchers", "{}"),
     )
     conn.execute(
@@ -2582,6 +2588,11 @@ _META_STATE_CODEC = {
         get_tree_miniapp_score_configs,
         _encode_meta_json,
         lambda value: set_tree_miniapp_score_configs(_decode_meta_json(value, {})),
+    ),
+    "miniapp_auto_config": (
+        get_miniapp_auto_config,
+        _encode_meta_json,
+        lambda value: set_miniapp_auto_config(_decode_meta_json(value, {})),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,

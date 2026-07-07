@@ -180,6 +180,7 @@ from .state import (
     get_identity_account_map,
     get_identity_ui_display_name,
     get_identity_state,
+    get_miniapp_auto_config,
     get_divination_daily_limit,
     get_module_window_hours_local,
     get_pending_command,
@@ -231,6 +232,7 @@ from .state import (
     set_storage_bag_item_rules,
     set_storage_bag_records,
     set_tianjige_dao_path_records,
+    set_miniapp_auto_config,
     set_tree_miniapp_score_configs,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
@@ -294,6 +296,16 @@ MINIAPP_UI_GROUPS = {
     "tree": {"key": "sect", "label": "宗门玩法"},
     "world_boss": {"key": "miniapp", "label": "MiniApp合集"},
 }
+MINIAPP_AUTO_CONFIG_DEFAULT = {
+    "trial_daily_enabled": True,
+    "trial_daily_start_hour_local": 0,
+    "trial_daily_start_minute_local": 20,
+    "trial_daily_end_hour_local": 3,
+    "trial_daily_last_run_day": "",
+    "trial_daily_last_batch_id": "",
+    "trial_daily_last_run_at": 0,
+    "trial_daily_last_result": "",
+}
 
 
 def _miniapp_ui_group(game_key):
@@ -306,6 +318,52 @@ def _with_miniapp_ui_group(item):
     result["ui_group"] = group["key"]
     result["ui_group_label"] = group["label"]
     return result
+
+
+def normalize_miniapp_auto_config(config=None):
+    raw = dict(config or get_miniapp_auto_config() or {})
+    result = dict(MINIAPP_AUTO_CONFIG_DEFAULT)
+    result.update({key: raw.get(key, default) for key, default in MINIAPP_AUTO_CONFIG_DEFAULT.items()})
+    result["trial_daily_enabled"] = bool(result.get("trial_daily_enabled"))
+    for key, default in (
+        ("trial_daily_start_hour_local", 0),
+        ("trial_daily_start_minute_local", 20),
+        ("trial_daily_end_hour_local", 3),
+    ):
+        try:
+            value = int(result.get(key, default) or 0)
+        except (TypeError, ValueError, OverflowError):
+            value = default
+        if "hour" in key:
+            value = max(0, min(23, value))
+        else:
+            value = max(0, min(59, value))
+        result[key] = value
+    for key in ("trial_daily_last_run_day", "trial_daily_last_batch_id", "trial_daily_last_result"):
+        result[key] = str(result.get(key) or "")
+    try:
+        result["trial_daily_last_run_at"] = float(result.get("trial_daily_last_run_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        result["trial_daily_last_run_at"] = 0
+    return result
+
+
+def get_miniapp_auto_config_snapshot(now=None):
+    config = normalize_miniapp_auto_config()
+    now = float(now or time.time())
+    local_now = datetime.fromtimestamp(now, TZ_LOCAL)
+    today = local_now.strftime("%Y-%m-%d")
+    start_minute = int(config["trial_daily_start_hour_local"]) * 60 + int(config["trial_daily_start_minute_local"])
+    end_minute = int(config["trial_daily_end_hour_local"]) * 60
+    current_minute = local_now.hour * 60 + local_now.minute
+    in_window = start_minute <= current_minute < end_minute if start_minute < end_minute else current_minute >= start_minute or current_minute < end_minute
+    return {
+        **config,
+        "today": today,
+        "trial_daily_done_today": config["trial_daily_last_run_day"] == today,
+        "trial_daily_in_window": in_window,
+        "trial_daily_window_text": f"{int(config['trial_daily_start_hour_local']):02d}:{int(config['trial_daily_start_minute_local']):02d}-{int(config['trial_daily_end_hour_local']):02d}:00",
+    }
 
 
 def _miniapp_tree_score_config_key(send_as_id=None):
@@ -424,6 +482,7 @@ def get_miniapp_status_snapshot(send_as_id=None):
             "raw_init_data_persisted": False,
             "raw_start_token_persisted": False,
         },
+        "automation": get_miniapp_auto_config_snapshot(),
         "score_controls": {
             "tree": get_tree_miniapp_score_config(send_as_id),
         },
@@ -6297,6 +6356,37 @@ async def ui_start_trial_miniapp_batch_run(payload=None):
     }
 
 
+async def run_miniapp_daily_scheduler(now):
+    config = get_miniapp_auto_config_snapshot(now)
+    if not config.get("trial_daily_enabled"):
+        return {"started": False, "reason": "disabled"}
+    if config.get("trial_daily_done_today"):
+        return {"started": False, "reason": "done_today"}
+    if not config.get("trial_daily_in_window"):
+        return {"started": False, "reason": "outside_window"}
+    identity_ids = list(_normalize_trial_batch_identity_ids({}) or [])
+    if not identity_ids:
+        return {"started": False, "reason": "no_enabled_identity"}
+    batch_id = start_trial_miniapp_batch_run(identity_ids, now=now)
+    if not batch_id:
+        return {"started": False, "reason": "batch_create_failed"}
+    next_config = normalize_miniapp_auto_config()
+    next_config["trial_daily_last_run_day"] = str(config.get("today") or "")
+    next_config["trial_daily_last_batch_id"] = batch_id
+    next_config["trial_daily_last_run_at"] = float(now or time.time())
+    next_config["trial_daily_last_result"] = f"已启动 {len(identity_ids)} 个身份"
+    set_miniapp_auto_config(next_config)
+    save_state()
+    _fire_and_forget(_run_trial_miniapp_batch(batch_id, identity_ids))
+    await send_audit_log(
+        f"🧪 天机试炼每日自动批量启动：{len(identity_ids)} 个身份，完成后合并通报。batch={batch_id}",
+        scope="global",
+        priority="normal",
+        limit=320,
+    )
+    return {"started": True, "batch_id": batch_id, "count": len(identity_ids)}
+
+
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
     body_bytes = body if isinstance(body, bytes) else str(body).encode("utf-8")
     headers = [
@@ -7635,6 +7725,7 @@ __all__ = [
     "ui_set_tianti_feature_enabled",
     "get_miniapp_status_snapshot",
     "get_tree_miniapp_score_config",
+    "run_miniapp_daily_scheduler",
     "ui_send_miniapp_entry_probe",
     "ui_send_miniapp_manual_run",
     "ui_start_trial_miniapp_batch_run",

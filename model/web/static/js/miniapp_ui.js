@@ -188,7 +188,12 @@
     runners.forEach(function (item) { runByKey[item.game_key] = item; });
     var policy = miniapp.policy || {};
     var scoreControls = miniapp.score_controls || {};
+    var automation = miniapp.automation || {};
     var batchButtons = renderBatchButtons(miniapp.batch_run_commands);
+    var autoText = automation.trial_daily_enabled
+      ? '试炼自动 ' + (automation.trial_daily_window_text || '--')
+      : '试炼自动关闭';
+    var autoDoneText = automation.trial_daily_done_today ? '今日已跑' : (automation.trial_daily_in_window ? '窗口内待跑' : '等待窗口');
     body.innerHTML = ''
       + '<div class="miniapp-toolbar">'
       + '<div id="miniapp-status-line" class="form-label form-label-inline">身份：' + esc(selectedIdentityId() || '未选择') + '</div>'
@@ -198,6 +203,8 @@
       + '<div class="miniapp-policy">'
       + badge(policy.default_enabled ? '默认启用' : '默认关闭', policy.default_enabled ? 'warn' : 'ok')
       + badge(policy.manual_only ? '手动优先' : '允许调度', policy.manual_only ? 'ok' : 'warn')
+      + badge(autoText, automation.trial_daily_enabled ? 'ok' : 'neutral')
+      + badge(autoDoneText, automation.trial_daily_done_today ? 'ok' : 'neutral')
       + badge(policy.raw_init_data_persisted ? 'initData落盘' : 'initData不落盘', policy.raw_init_data_persisted ? 'warn' : 'ok')
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + '</div>'
