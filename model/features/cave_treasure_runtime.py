@@ -37,6 +37,7 @@ _TECHNICAL_KEYS = {
     "status",
     "phase",
     "mode",
+    "logs",
     "step",
     "steps",
     "events",
@@ -167,6 +168,7 @@ def _collect_from_text(text, *, rewards, gains):
     text = str(text or "")
     for match in _ITEM_TEXT_RE.finditer(text):
         name = str(match.group("bracket") or match.group("plain") or "").strip(" ：:，,。")
+        name = re.sub(r"^(?:获得|奖励|收获|掉落|战利品|材料)", "", name).strip(" ：:，,。")
         qty = _parse_int(match.group("count"), 0)
         if name and qty > 0 and name not in {"神识", "游戏", "次数"}:
             rewards[name] = int(rewards.get(name, 0) or 0) + qty

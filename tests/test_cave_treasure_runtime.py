@@ -116,6 +116,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         "loot": [{"name": "灵石", "quantity": 31}],
                         "rewards": [{"name": "玄晶", "qty": 2}],
                         "text": "获得灵石 +20，获得【古禁印痕】x1",
+                        "logs": ["获得灵石 x31。", "获得凝血草 x5。"],
                         "score": 99,
                         "sessionId": "secret-session",
                         "qualityBonus": 3,
