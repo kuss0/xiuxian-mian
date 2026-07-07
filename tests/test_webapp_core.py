@@ -42,6 +42,19 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertFalse(summary["has_start_param"])
         self.assertFalse(summary["has_sensitive_init_data"])
 
+    def test_summarize_webapp_url_detects_tree_and_redacts_token(self):
+        summary = webapp_core.summarize_webapp_url(
+            "https://t.me/fanrenxiuxian_bot/app?startapp=tree_SECRET9999",
+            button_text="进入灵树",
+            message_text="【落云宗 · 灵眼之树】",
+        )
+
+        self.assertEqual("tree", summary["game_hint"])
+        self.assertTrue(summary["has_start_param"])
+        self.assertEqual("tree", summary["start_param"]["kind"])
+        self.assertEqual("9999", summary["start_param"]["suffix"])
+        self.assertNotIn("tree_SECRET9999", json.dumps(summary, ensure_ascii=False))
+
     def test_launch_request_rejects_untrusted_host_and_bot(self):
         adapter = webapp_core.MiniAppAdapter(
             game_key="fishing",
@@ -269,7 +282,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertGreaterEqual(proof["samples"], 180)
 
     def test_sanitize_webapp_secret_text_redacts_start_tokens(self):
-        text = "failed initData=query_id%3Dabc&hash=secret token=fish_SECRET999 startapp=farm_SECRET888 next=df_SECRET777"
+        text = "failed initData=query_id%3Dabc&hash=secret token=fish_SECRET999 startapp=farm_SECRET888 next=df_SECRET777 tree_SECRET666"
         sanitized = webapp_core.sanitize_webapp_secret_text(text)
 
         self.assertIn("initData=<redacted>", sanitized)
@@ -278,6 +291,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("fish_SECRET999", sanitized)
         self.assertNotIn("farm_SECRET888", sanitized)
         self.assertNotIn("df_SECRET777", sanitized)
+        self.assertNotIn("tree_SECRET666", sanitized)
 
     def test_sanitize_webapp_secret_text_preserves_miniapp_error_codes(self):
         text = "finish failed: trial_invalid_proof trial_token_used token=trial_SECRET999 next=df_SECRET777"

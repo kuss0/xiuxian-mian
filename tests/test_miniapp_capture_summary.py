@@ -122,3 +122,50 @@ def test_miniapp_capture_summary_sanitizes_adversarial_error_and_source(tmp_path
     assert "df_SECRET777" not in text
     assert "VERY_SECRET" not in text
     assert "SUPERSECRET" not in text
+
+
+def test_miniapp_capture_summary_reports_latest_success_and_error_times(tmp_path):
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    path = capture_dir / "trial-2026-07-07.jsonl"
+    rows = [
+        {
+            "adapter_key": "trial",
+            "step_key": "finish",
+            "endpoint": "finish",
+            "method": "POST",
+            "url_path": "/api/miniapp/xianxia-trial/finish",
+            "status_code": 400,
+            "ok": False,
+            "elapsed_ms": 90,
+            "created_at": 1783354167.0,
+            "error": "trial_invalid_proof",
+            "request": {"summary": {"payload_keys": ["initData", "token", "trialProof"]}},
+            "response": {"data_keys": ["error", "ok"]},
+        },
+        {
+            "adapter_key": "trial",
+            "step_key": "finish",
+            "endpoint": "finish",
+            "method": "POST",
+            "url_path": "/api/miniapp/xianxia-trial/finish",
+            "status_code": 200,
+            "ok": True,
+            "elapsed_ms": 120,
+            "created_at": 1783383778.0,
+            "request": {"summary": {"payload_keys": ["initData", "token", "trialProof"]}},
+            "response": {"data_keys": ["event_id", "ok", "result"]},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+
+    summary = get_miniapp_capture_summary("trial", day="2026-07-07", capture_dir=capture_dir)
+    endpoint = summary["endpoints"][0]
+    rendered = format_miniapp_capture_summary(summary)
+
+    assert endpoint["ok_count"] == 1
+    assert endpoint["error_count"] == 1
+    assert endpoint["latest_success_at"] == 1783383778.0
+    assert endpoint["latest_error_at"] == 1783354167.0
+    assert "latest_ok_at:" in rendered
+    assert "latest_err_at:" in rendered

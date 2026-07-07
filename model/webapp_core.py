@@ -35,7 +35,7 @@ RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|startapp|start_param)=([^&#\s]+)",
     re.IGNORECASE,
 )
-RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|rpt|stk|trial|df)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
+RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|rpt|stk|trial|df|tree)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
 RE_SECRET_HEADER_ASSIGNMENT = re.compile(
     r"\b(?P<key>authorization|proxy-authorization|cookie|set-cookie|x-telegram-bot-api-secret-token)\s*[:=]\s*(?P<value>[^\s,;]+(?:\s+[^\s,;]+)?)",
     re.IGNORECASE,
@@ -1203,6 +1203,8 @@ def infer_webapp_game_hint(*, button_text="", message_text="", host=""):
         return "world_boss"
     if any(keyword in text for keyword in ("观星", "星台", "观星台", "stargazer")):
         return "stargazer"
+    if any(keyword in text for keyword in ("灵眼之树", "进入灵树", "灵树", "tree_")):
+        return "tree"
     if any(keyword in text for keyword in ("天道", "审判", "问心", "xianxia-verify", "fanrenxiuxian_bot")):
         return "tiandao_judgement"
     return ""

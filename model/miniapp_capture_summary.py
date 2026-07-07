@@ -169,6 +169,8 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
             "request_secret_keys": set(),
             "response_keys": set(),
             "latest": None,
+            "latest_ok": None,
+            "latest_error": None,
         })
         item["count"] += 1
         if row.get("ok"):
@@ -192,10 +194,20 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
         latest = item["latest"]
         if latest is None or float(row.get("created_at") or 0) >= float(latest.get("created_at") or 0):
             item["latest"] = row
+        if row.get("ok"):
+            latest_ok = item["latest_ok"]
+            if latest_ok is None or float(row.get("created_at") or 0) >= float(latest_ok.get("created_at") or 0):
+                item["latest_ok"] = row
+        else:
+            latest_error = item["latest_error"]
+            if latest_error is None or float(row.get("created_at") or 0) >= float(latest_error.get("created_at") or 0):
+                item["latest_error"] = row
 
     endpoint_items = []
     for item in groups.values():
         latest = item.get("latest") or {}
+        latest_ok = item.get("latest_ok") or {}
+        latest_error = item.get("latest_error") or {}
         request = latest.get("request") if isinstance(latest.get("request"), dict) else {}
         response = latest.get("response") if isinstance(latest.get("response"), dict) else {}
         count = int(item["count"] or 0)
@@ -219,6 +231,10 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
             "latest_source": _summary_text(latest.get("source"), limit=120),
             "latest_ok": bool(latest.get("ok")),
             "latest_error": _summary_text(latest.get("error"), limit=220),
+            "latest_success_at": float(latest_ok.get("created_at") or 0),
+            "latest_success_at_text": _latest_text(latest_ok.get("created_at")),
+            "latest_error_at": float(latest_error.get("created_at") or 0),
+            "latest_error_at_text": _latest_text(latest_error.get("created_at")),
         })
     endpoint_items.sort(key=lambda item: (item["url_path"], item["step_key"]))
 
@@ -284,6 +300,11 @@ def format_miniapp_capture_summary(summary):
             f"payload={','.join(item.get('request_payload_keys') or []) or '-'} "
             f"response={','.join(item.get('response_keys') or []) or '-'}"
         )
+        if item.get("latest_success_at_text") or item.get("latest_error_at_text"):
+            lines.append(
+                f"  latest_ok_at: {item.get('latest_success_at_text') or '-'} | "
+                f"latest_err_at: {item.get('latest_error_at_text') or '-'}"
+            )
         if item.get("latest_error"):
             lines.append(f"  latest_error: {item.get('latest_error')}")
     if not summary.get("endpoints"):
