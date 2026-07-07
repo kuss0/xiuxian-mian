@@ -809,6 +809,44 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertGreaterEqual(proof["events"][0]["t"], 1200)
         self.assertTrue(all(0 <= event["t"] <= proof["durationMs"] for event in proof["events"]))
 
+    def test_trial_proof_solves_advanced_memory_without_empty_taps_fallback(self):
+        challenge = {
+            "mode": "tianjiMemoryV1",
+            "challengeId": "memory-advanced-captured",
+            "difficulty": "advanced",
+            "gridSize": 4,
+            "pairCount": 8,
+            "previewMs": 5200,
+            "minDurationMs": 8000,
+            "maxDurationMs": 175000,
+            "cards": [
+                {"id": "card_0_1", "index": 0, "pair": "pair_0", "symbol": "memory_01"},
+                {"id": "card_6_1", "index": 1, "pair": "pair_6", "symbol": "memory_07"},
+                {"id": "card_4_0", "index": 2, "pair": "pair_4", "symbol": "memory_05"},
+                {"id": "card_3_1", "index": 3, "pair": "pair_3", "symbol": "memory_04"},
+                {"id": "card_7_1", "index": 4, "pair": "pair_7", "symbol": "memory_08"},
+                {"id": "card_0_0", "index": 5, "pair": "pair_0", "symbol": "memory_01"},
+                {"id": "card_6_0", "index": 6, "pair": "pair_6", "symbol": "memory_07"},
+                {"id": "card_2_0", "index": 7, "pair": "pair_2", "symbol": "memory_03"},
+                {"id": "card_4_1", "index": 8, "pair": "pair_4", "symbol": "memory_05"},
+                {"id": "card_7_0", "index": 9, "pair": "pair_7", "symbol": "memory_08"},
+                {"id": "card_5_0", "index": 10, "pair": "pair_5", "symbol": "memory_06"},
+                {"id": "card_2_1", "index": 11, "pair": "pair_2", "symbol": "memory_03"},
+                {"id": "card_3_0", "index": 12, "pair": "pair_3", "symbol": "memory_04"},
+                {"id": "card_1_0", "index": 13, "pair": "pair_1", "symbol": "memory_02"},
+                {"id": "card_1_1", "index": 14, "pair": "pair_1", "symbol": "memory_02"},
+                {"id": "card_5_1", "index": 15, "pair": "pair_5", "symbol": "memory_06"},
+            ],
+        }
+
+        proof = trial_miniapp.build_trial_proof(challenge, rng=__import__("random").Random(7))
+
+        self.assertEqual("tianjiMemoryV1", proof["mode"])
+        self.assertEqual(16, len(proof["events"]))
+        self.assertNotIn("sequence", proof)
+        self.assertNotIn("taps", proof)
+        self.assertEqual(["card_0_1", "card_0_0"], [event["id"] for event in proof["events"][:2]])
+
     def test_trial_proof_solves_planarity_preview_graph(self):
         challenge = {
             "mode": "tianjiPlanarityV1",
@@ -847,7 +885,51 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(set(node["id"] for node in challenge["nodes"]), set(proof["positions"]))
         positions = {node_id: (point["x"], point["y"]) for node_id, point in proof["positions"].items()}
         self.assertEqual(0, trial_miniapp._planarity_crossing_count(challenge["edges"], positions))
+        self.assertGreaterEqual(
+            trial_miniapp._planarity_min_node_distance(positions),
+            trial_miniapp.TRIAL_MINIAPP_PLANARITY_MIN_NODE_DISTANCE,
+        )
         self.assertEqual(0, proof["misses"])
+
+    def test_trial_planarity_avoids_captured_nodes_too_close_failure(self):
+        challenge = {
+            "mode": "tianjiPlanarityV1",
+            "challengeId": "planarity-nodes-too-close-captured",
+            "minDurationMs": 3200,
+            "maxDurationMs": 90000,
+            "nodes": [
+                {"id": "tianshu", "x": 16, "y": 30},
+                {"id": "tianxuan", "x": 50, "y": 10},
+                {"id": "tianji", "x": 16, "y": 70},
+                {"id": "tianquan", "x": 84, "y": 70},
+                {"id": "yuheng", "x": 84, "y": 30},
+                {"id": "kaiyang", "x": 50, "y": 90},
+                {"id": "yaoguang", "x": 50, "y": 50},
+            ],
+            "edges": [
+                {"from": "tianshu", "to": "tianxuan"},
+                {"from": "tianxuan", "to": "tianji"},
+                {"from": "tianji", "to": "tianquan"},
+                {"from": "tianquan", "to": "yuheng"},
+                {"from": "yuheng", "to": "kaiyang"},
+                {"from": "kaiyang", "to": "tianshu"},
+                {"from": "yaoguang", "to": "tianshu"},
+                {"from": "yaoguang", "to": "tianxuan"},
+                {"from": "yaoguang", "to": "tianji"},
+                {"from": "yaoguang", "to": "tianquan"},
+                {"from": "yaoguang", "to": "yuheng"},
+                {"from": "yaoguang", "to": "kaiyang"},
+            ],
+        }
+
+        for seed in range(20):
+            proof = trial_miniapp.build_trial_proof(challenge, rng=__import__("random").Random(seed))
+            positions = {node_id: (point["x"], point["y"]) for node_id, point in proof["positions"].items()}
+            self.assertEqual(0, trial_miniapp._planarity_crossing_count(challenge["edges"], positions))
+            self.assertGreaterEqual(
+                trial_miniapp._planarity_min_node_distance(positions),
+                trial_miniapp.TRIAL_MINIAPP_PLANARITY_MIN_NODE_DISTANCE,
+            )
 
     def test_trial_lab_flow_solves_and_finishes_without_secret_leak(self):
         calls = []

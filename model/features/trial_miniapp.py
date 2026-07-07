@@ -36,6 +36,7 @@ TRIAL_MINIAPP_DEFAULT_DURATION_PADDING_MS = (1_000, 15_000)
 TRIAL_MINIAPP_DEFAULT_MIN_DURATION_MS = 3_200
 TRIAL_MINIAPP_DEFAULT_MAX_DURATION_MS = 90_000
 TRIAL_MINIAPP_HTTP_TIMEOUT = (5, 20)
+TRIAL_MINIAPP_PLANARITY_MIN_NODE_DISTANCE = 10.0
 TRIAL_MINIAPP_STOP_ERROR_KEYWORDS = (
     "daily_limit",
     "no_remaining",
@@ -479,6 +480,27 @@ def _planarity_crossing_count(edges, positions):
     return count
 
 
+def _planarity_min_node_distance(positions):
+    import math
+
+    points = list((positions or {}).items())
+    if len(points) < 2:
+        return 999.0
+    best = 999.0
+    for index, (_left_id, left) in enumerate(points):
+        for _right_id, right in points[index + 1:]:
+            try:
+                distance = math.hypot(float(left[0]) - float(right[0]), float(left[1]) - float(right[1]))
+            except (TypeError, ValueError, OverflowError, IndexError):
+                distance = 0.0
+            best = min(best, distance)
+    return best
+
+
+def _planarity_positions_are_safe(positions):
+    return _planarity_min_node_distance(positions) >= TRIAL_MINIAPP_PLANARITY_MIN_NODE_DISTANCE
+
+
 def _circle_positions(node_ids, *, radius=38, center=(50, 50)):
     import math
 
@@ -521,7 +543,8 @@ def _build_planarity_positions(challenge, *, rng):
     unlocked = [node_id for node_id in node_ids if node_id not in locked_ids]
     best = dict(initial)
     best_count = _planarity_crossing_count(edges, best)
-    if best_count == 0:
+    best_distance = _planarity_min_node_distance(best)
+    if best_count == 0 and _planarity_positions_are_safe(best):
         return best, 0
 
     candidates = []
@@ -542,10 +565,12 @@ def _build_planarity_positions(challenge, *, rng):
             if center_id:
                 candidate[center_id] = (50.0, 50.0)
             count = _planarity_crossing_count(edges, candidate)
-            if count < best_count:
+            distance = _planarity_min_node_distance(candidate)
+            if count < best_count or (count == best_count and distance > best_distance):
                 best = candidate
                 best_count = count
-                if count == 0:
+                best_distance = distance
+                if count == 0 and _planarity_positions_are_safe(candidate):
                     return best, best_count
 
     for _attempt in range(800):
@@ -553,10 +578,12 @@ def _build_planarity_positions(challenge, *, rng):
         for node_id in unlocked:
             candidate[node_id] = (rng.uniform(8, 92), rng.uniform(8, 92))
         count = _planarity_crossing_count(edges, candidate)
-        if count < best_count:
+        distance = _planarity_min_node_distance(candidate)
+        if count < best_count or (count == best_count and distance > best_distance):
             best = candidate
             best_count = count
-            if count == 0:
+            best_distance = distance
+            if count == 0 and _planarity_positions_are_safe(candidate):
                 return best, best_count
     return best, best_count
 
@@ -569,6 +596,8 @@ def _build_planarity_proof(challenge, *, rng):
     positions, crossing_count = _build_planarity_positions(challenge, rng=rng)
     if crossing_count:
         raise ValueError("planarity challenge unsolved")
+    if not _planarity_positions_are_safe(positions):
+        raise ValueError("planarity nodes too close")
     serializable_positions = {
         node_id: {"x": round(float(point[0]), 3), "y": round(float(point[1]), 3)}
         for node_id, point in positions.items()
