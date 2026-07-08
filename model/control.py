@@ -287,6 +287,8 @@ from .state import (
     remove_identity,
     set_global_enabled as set_global_enabled_state,
     set_global_pause_source,
+    set_global_recovery_hold_until,
+    set_global_recovery_throttle_until,
     get_module_window_hours,
     get_pending_command,
     get_replica_dispatch_group_ids,
@@ -365,6 +367,8 @@ RECOVERY_SPREAD_MIN_SEC = 60
 RECOVERY_SPREAD_MAX_SEC = 1200
 RECOVERY_SPREAD_DUE_GRACE_SEC = 2
 RECOVERY_SHORT_WINDOW_SEC = 180
+BOT_HEALTH_RECOVERY_HOLD_SEC = 180
+BOT_HEALTH_RECOVERY_THROTTLE_SEC = 900
 RECOVERY_READY_MIN_SEC = 30
 RECOVERY_READY_MAX_SEC = 90
 RECOVERY_PHASEFUL_IDLE_MIN_SEC = 10 * 60
@@ -5439,16 +5443,38 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
 
 async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
     enabled = _coerce_control_bool(enabled)
+    normalized_source = str(source or "").strip()
+    previous_pause_source = get_global_pause_source()
     if get_global_enabled() == enabled:
         if not enabled:
-            normalized_source = str(source or "").strip()
             if normalized_source and get_global_pause_source() != normalized_source:
                 set_global_pause_source(normalized_source)
                 save_state()
         return True, "全局状态未变化"
     set_global_enabled_state(enabled)
-    set_global_pause_source("" if enabled else str(source or "").strip())
+    set_global_pause_source("" if enabled else normalized_source)
     now = time.time()
+    recovery_spread_window = None
+    use_recovery_ramp = enabled and (
+        normalized_source in {"bot_health_recovery", "safety_watchdog_recovery"}
+        or previous_pause_source == "safety_watchdog"
+    )
+    if use_recovery_ramp:
+        set_global_recovery_hold_until(now + BOT_HEALTH_RECOVERY_HOLD_SEC)
+        set_global_recovery_throttle_until(now + BOT_HEALTH_RECOVERY_THROTTLE_SEC)
+        recovery_spread_window = RECOVERY_SPREAD_MAX_SEC
+        console_log(
+            (
+                "🧯 天尊自动恢复保护："
+                f"静默至 {fmt_abs_ts(now + BOT_HEALTH_RECOVERY_HOLD_SEC)}，"
+                f"慢启动至 {fmt_abs_ts(now + BOT_HEALTH_RECOVERY_THROTTLE_SEC)}"
+            ),
+            scope="global",
+            limit=240,
+        )
+    else:
+        set_global_recovery_hold_until(0)
+        set_global_recovery_throttle_until(0)
     if enabled and get_guanxing_monitor_enabled():
         _restore_guanxing_monitor_runtime(now)
     for identity_id in get_identity_ids():
@@ -5460,7 +5486,7 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
                 _clear_startup_module_alerts()
     if enabled:
         clear_transient_send_failures_for_global_recovery(now)
-        spread_overdue_runtime_timers(now, reason="全局恢复")
+        spread_overdue_runtime_timers(now, reason="全局恢复", window_sec=recovery_spread_window)
         _reset_safety_watchdog_fuse_marker(now)
     save_state()
     action_text = "恢复运行" if enabled else "全局暂停"

@@ -13,7 +13,7 @@ from ..state import (
 )
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from .tree_miniapp import extract_tree_miniapp_launch, run_tree_miniapp_game_production_flow
+from .tree_miniapp import extract_tree_miniapp_launch, normalize_tree_score_profile, run_tree_miniapp_game_production_flow
 
 
 TREE_MINIAPP_MANUAL_AUTH_TTL_SEC = 10 * 60
@@ -45,10 +45,15 @@ def authorize_tree_miniapp_manual_run(
     if identity_id <= 0:
         return 0
     now = float(now or time.time())
+    normalized_mode = str(mode or TREE_MINIAPP_DEFAULT_MODE).strip().lower() or TREE_MINIAPP_DEFAULT_MODE
+    try:
+        normalized_score_profile = normalize_tree_score_profile(normalized_mode, score_profile)
+    except Exception:
+        normalized_score_profile = {}
     _MANUAL_AUTH[identity_id] = {
         "expires_at": now + max(30, float(ttl_sec or TREE_MINIAPP_MANUAL_AUTH_TTL_SEC)),
-        "mode": str(mode or TREE_MINIAPP_DEFAULT_MODE).strip().lower() or TREE_MINIAPP_DEFAULT_MODE,
-        "score_profile": dict(score_profile or {}),
+        "mode": normalized_mode,
+        "score_profile": normalized_score_profile,
         "submit": bool(submit),
     }
     return float(_MANUAL_AUTH[identity_id]["expires_at"])

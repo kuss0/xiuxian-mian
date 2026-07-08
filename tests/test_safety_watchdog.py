@@ -1778,9 +1778,11 @@ class SafetyWatchdogTests(unittest.TestCase):
 
             with sqlite3.connect(str(state_dir / "chaogu_state.db")) as conn:
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
+                source = conn.execute("SELECT value FROM meta WHERE key = 'global_pause_source'").fetchone()[0]
             payload = safety_watchdog.json.loads(marker.read_text(encoding="utf-8"))
 
         self.assertEqual("0", value)
+        self.assertEqual("safety_watchdog", source)
         self.assertEqual("new breach", payload["reason"])
         send_mock.assert_called_once()
         self.assertIn("tg://user?id=12345", send_mock.call_args.args[1])
@@ -1830,14 +1832,16 @@ class SafetyWatchdogTests(unittest.TestCase):
             cfg.dry_run = False
 
             with patch.object(safety_watchdog, "send_log_via_bot", return_value="sent") as send_mock, \
-                    patch("builtins.print") as print_mock:
+                 patch("builtins.print") as print_mock:
                 safety_watchdog.perform_fuse(cfg, {"ADMIN_ID": "12345"}, "same breach")
 
             with sqlite3.connect(str(state_dir / "chaogu_state.db")) as conn:
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
+                source = conn.execute("SELECT value FROM meta WHERE key = 'global_pause_source'").fetchone()[0]
             payload = safety_watchdog.json.loads(marker.read_text(encoding="utf-8"))
 
         self.assertEqual("0", value)
+        self.assertEqual("safety_watchdog", source)
         self.assertEqual("same breach", payload["reason"])
         self.assertEqual([], payload["actions"])
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)

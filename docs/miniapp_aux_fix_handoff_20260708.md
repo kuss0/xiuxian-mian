@@ -1,6 +1,8 @@
 # MiniApp 辅助最终交接（主线审核版）
 
-更新时间：2026-07-08 02:57 CST
+更新时间：2026-07-08 17:35 CST
+
+2026-07-08 17:35 主线复核补记：灵树已出现防作弊风险信号，主线把分数策略再次收紧为低分随机区间。UI 输入只作为区间中值保存，运行和持久化读取都会把固定值扩成至少 8 分宽区间；普通上限从 80 降为 45，旧 `[126,126]` / `[80,80]` 配置会归一化为安全区间。灵树仍不接生产 scheduler，也不在 `MINIAPP_MANUAL_RUN_COMMANDS`。
 
 合并来源：
 
@@ -27,9 +29,9 @@
 - 前端 MiniApp 状态徽标：按 `trial_daily_effective_enabled` 展示，避免旧状态残留 `trial_daily_enabled=true` 时误显示自动开启。
 - 非幂等 MiniApp POST：显式禁用默认重试，覆盖 `fishing finish/next`、`trial finish/next`、`cave_treasure action`、`stargazer action`、`tree run_start/run_submit`。
 - 灵树 MiniApp：保留入口诊断和分数配置，不接生产提交。`tree` 已从 `MINIAPP_MANUAL_RUN_COMMANDS` 移除，`ui_send_miniapp_manual_run()` 中灵树 `submit=True` 授权死代码已删除。
-- 灵树分数策略：目标分上限为 `20-80`，默认仍是几十：`jump 24-42`、`fly 24-45`；原 126/150 canary 路径已夹到 80。
-- 灵树小游戏 proof：`jump` 按跳一跳充能落点，`fly` 按 Flappy 式点击上冲；目标 80 时已修正连击超分风险，proof replay 不超过 80。
-- UI 分数配置：`score_controls.tree` 进入 MiniApp status snapshot，`/api/miniapp-tree-score-config` 只保存 per-identity 分数配置，不触发游戏。
+- 灵树分数策略：防作弊后目标改为低分随机区间，普通上限为 `20-45`，默认仍是几十：`jump 24-42`、`fly 24-45`；固定值和旧 126/150 canary 路径都会扩成安全区间。
+- 灵树小游戏 proof：`jump` 按跳一跳充能落点，`fly` 按 Flappy 式点击上冲；proof replay 不超过保守低分上限。
+- UI 分数配置：`score_controls.tree` 进入 MiniApp status snapshot，`/api/miniapp-tree-score-config` 只保存 per-identity 区间中值配置，不触发游戏。
 
 ## 主线阻断项处理记录
 

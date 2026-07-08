@@ -1546,8 +1546,9 @@ def disable_global_switch(project_root: Path) -> str:
         return f"state db missing: {db_path}"
     with sqlite3.connect(str(db_path), timeout=5) as conn:
         conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('global_enabled', '0')")
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('global_pause_source', 'safety_watchdog')")
         conn.commit()
-    return "global_enabled=0"
+    return "global_enabled=0, global_pause_source=safety_watchdog"
 
 
 def is_global_switch_enabled(project_root: Path) -> bool:

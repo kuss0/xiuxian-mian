@@ -211,6 +211,8 @@ from .state import (
     get_game_group_id,
     get_game_topic_id,
     get_global_enabled,
+    get_global_recovery_hold_until,
+    get_global_recovery_throttle_until,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
@@ -335,6 +337,9 @@ RETRY_SEND_GAP_MIN_SEC = 1.0
 RETRY_SEND_GAP_MAX_SEC = 3.0
 NORMAL_SEND_GAP_MIN_SEC = 12.0
 NORMAL_SEND_GAP_MAX_SEC = 18.0
+GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MIN_SEC = 24.0
+GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC = 32.0
+GLOBAL_RECOVERY_HOLD_BLOCK_LOG_INTERVAL_SEC = 120.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
@@ -351,6 +356,7 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "send_queue_timeout",
     "send_prepare_timeout",
     "global_disabled",
+    "global_recovery_cooldown",
     "dungeon_quiet",
     "account_offline",
     "account_client_missing",
@@ -587,6 +593,7 @@ _bot_waiting_since = 0.0
 _bot_last_seen_at = 0.0
 _bot_probe_sent_at = 0.0
 _bot_last_block_log_at = 0.0
+_global_recovery_hold_last_block_log_at = 0.0
 _ACCOUNT_FLOOD_WAIT_UNTIL = {}
 _ACCOUNT_FLOOD_WAIT_REASON = {}
 _ACCOUNT_FLOOD_WAIT_LAST_LOG_AT = {}
@@ -758,6 +765,40 @@ def _bot_health_blocks_send(priority):
     return _bot_health_state in {BOT_HEALTH_SUSPECT, BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}
 
 
+def _global_recovery_hold_until_for_priority(priority, now=None):
+    priority = _normalize_send_priority("", priority=priority)
+    if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+        return 0.0
+    now = _now_ts(now)
+    until = float(get_global_recovery_hold_until() or 0.0)
+    return until if until > now else 0.0
+
+
+def _global_recovery_throttle_active(priority, now=None):
+    priority = _normalize_send_priority("", priority=priority)
+    if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+        return False
+    now = _now_ts(now)
+    return float(get_global_recovery_throttle_until() or 0.0) > now
+
+
+async def _log_global_recovery_hold_blocked_send(command, send_as_id=None, until=0.0):
+    global _global_recovery_hold_last_block_log_at
+    now = time.time()
+    if now - _global_recovery_hold_last_block_log_at < GLOBAL_RECOVERY_HOLD_BLOCK_LOG_INTERVAL_SEC:
+        return
+    _global_recovery_hold_last_block_log_at = now
+    await send_audit_log(
+        (
+            f"⏸ 自动恢复冷却中，普通指令暂缓：{_truncate_log_text(command, limit=32)}"
+            f"｜恢复 {fmt_abs_ts(until)}"
+        ),
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=240,
+    )
+
+
 def _mark_account_flood_wait(account_id, seconds, now=None):
     try:
         account_id = int(account_id or 0)
@@ -838,16 +879,21 @@ def _get_send_gap_range(priority):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         return P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_URGENT_REACTIVE:
-        return URGENT_REACTIVE_SEND_GAP_MIN_SEC, URGENT_REACTIVE_SEND_GAP_MAX_SEC
-    if priority == SEND_PRIORITY_EVENT_BURST:
-        return EVENT_BURST_SEND_GAP_MIN_SEC, EVENT_BURST_SEND_GAP_MAX_SEC
-    if priority == SEND_PRIORITY_RETRY:
-        return RETRY_SEND_GAP_MIN_SEC, RETRY_SEND_GAP_MAX_SEC
-    if priority == SEND_PRIORITY_REACTIVE:
-        return REACTIVE_SEND_GAP_MIN_SEC, REACTIVE_SEND_GAP_MAX_SEC
-    if priority == SEND_PRIORITY_CHAIN:
-        return CHAIN_SEND_GAP_MIN_SEC, CHAIN_SEND_GAP_MAX_SEC
-    return NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
+        min_gap, max_gap = URGENT_REACTIVE_SEND_GAP_MIN_SEC, URGENT_REACTIVE_SEND_GAP_MAX_SEC
+    elif priority == SEND_PRIORITY_EVENT_BURST:
+        min_gap, max_gap = EVENT_BURST_SEND_GAP_MIN_SEC, EVENT_BURST_SEND_GAP_MAX_SEC
+    elif priority == SEND_PRIORITY_RETRY:
+        min_gap, max_gap = RETRY_SEND_GAP_MIN_SEC, RETRY_SEND_GAP_MAX_SEC
+    elif priority == SEND_PRIORITY_REACTIVE:
+        min_gap, max_gap = REACTIVE_SEND_GAP_MIN_SEC, REACTIVE_SEND_GAP_MAX_SEC
+    elif priority == SEND_PRIORITY_CHAIN:
+        min_gap, max_gap = CHAIN_SEND_GAP_MIN_SEC, CHAIN_SEND_GAP_MAX_SEC
+    else:
+        min_gap, max_gap = NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
+    if _global_recovery_throttle_active(priority):
+        min_gap = max(float(min_gap or 0), GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MIN_SEC)
+        max_gap = max(float(max_gap or 0), GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC)
+    return min_gap, max_gap
 
 
 def _send_gap_whitelist_allows(priority, command, intent=None):
@@ -906,7 +952,8 @@ def _build_send_not_before(priority):
 
 def _minimum_send_queue_timeout_sec(priority, command=None, send_as_id=None, intent=None):
     priority = _normalize_send_priority(command, priority=priority)
-    bypass_gap = _send_gap_whitelist_allows(priority, command, intent=intent)
+    recovery_throttled = _global_recovery_throttle_active(priority)
+    bypass_gap = (not recovery_throttled) and _send_gap_whitelist_allows(priority, command, intent=intent)
     _min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
     module_gap = _module_send_gap_min_sec(intent)
     try:
@@ -963,7 +1010,8 @@ def get_game_send_queue_snapshot():
 @asynccontextmanager
 async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue_timeout=None):
     global _GAME_LAST_SEND_AT, _GAME_SEND_QUEUE_SEQ
-    bypass_gap = _send_gap_whitelist_allows(priority, command, intent=intent)
+    recovery_throttled = _global_recovery_throttle_active(priority)
+    bypass_gap = (not recovery_throttled) and _send_gap_whitelist_allows(priority, command, intent=intent)
     min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
     module_gap = _module_send_gap_min_sec(intent)
     module_name = str(_compact_send_intent(intent).get("source_module") or "").strip()
@@ -2200,14 +2248,48 @@ _low_priority_audit_seq = 0
 
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
     source_module = str((item or {}).get("source_module") or "").strip()
-    return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗", "布下剑阵", "天星宗"} or str(family or "").strip() in {
+    return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗", "布下剑阵", "天星宗", "阴罗宗"} or str(family or "").strip() in {
         "divination",
         "world_boss",
         "small_world_query",
         "hehuan_dual",
+        "yinluo_blood_forest",
         "pet_formation",
         "tianxing_craft_farm",
     }
+
+
+def _recover_module_managed_timeout_state(identity_id, msg_id, item, family, now):
+    """Let high-risk module state machines reconcile timed-out no-retry sends."""
+    cmd = get_pending_command(item)
+    source_module = str((item or {}).get("source_module") or "").strip()
+    family = str(family or "").strip()
+    try:
+        sent_at = float((item or {}).get("sent_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        sent_at = 0.0
+    try:
+        with use_identity(identity_id):
+            if source_module == "天星宗" or family.startswith("tianxing_"):
+                from .features import tianxing
+
+                return bool(tianxing.reconcile_tianxing_timeout_from_pending(msg_id, cmd=cmd, now=now))
+            if source_module == "合欢宗" or family == "hehuan_dual":
+                from .features import hehuan
+
+                return bool(hehuan.reconcile_hehuan_timeout_from_pending(msg_id, now=now))
+            if source_module == "阴罗宗" or family.startswith("yinluo_"):
+                from .features import yinluo
+
+                return bool(yinluo.reconcile_yinluo_timeout_from_pending(msg_id, cmd=cmd, sent_at=sent_at, now=now))
+    except Exception as exc:
+        console_log(
+            f"⚠️ 模块托管超时恢复失败：{_truncate_log_text(cmd, limit=40)}｜{exc}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=180,
+        )
+    return False
 
 
 def _send_timeout_audit_priority(command, intent=None):
@@ -3301,6 +3383,17 @@ async def send_game_command(
             _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
             return None
 
+        recovery_hold_until = _global_recovery_hold_until_for_priority(send_priority)
+        if recovery_hold_until > 0:
+            await _log_global_recovery_hold_blocked_send(command, send_as_id=send_as_id, until=recovery_hold_until)
+            _record_game_send_block(
+                send_as_id,
+                command,
+                "global_recovery_cooldown",
+                f"自动恢复冷却至 {fmt_abs_ts(recovery_hold_until)}",
+            )
+            return None
+
         if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
             _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
             return None
@@ -3402,6 +3495,17 @@ async def send_game_command(
         async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=effective_queue_timeout):
             if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
                 _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
+                return None
+
+            recovery_hold_until = _global_recovery_hold_until_for_priority(send_priority)
+            if recovery_hold_until > 0:
+                await _log_global_recovery_hold_blocked_send(command, send_as_id=send_as_id, until=recovery_hold_until)
+                _record_game_send_block(
+                    send_as_id,
+                    command,
+                    "global_recovery_cooldown",
+                    f"自动恢复冷却至 {fmt_abs_ts(recovery_hold_until)}",
+                )
                 return None
 
             if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
@@ -3918,6 +4022,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                         continue
                     if retry_limit <= 0:
                         if _stateful_no_retry_timeout_is_module_managed(current_item, family):
+                            _recover_module_managed_timeout_state(identity_id, msg_id, current_item, family, now)
                             if family:
                                 action_guard_close_by_family(family, send_as_id=identity_id, reason="module_managed_timeout", now=now)
                             console_log(

@@ -7460,6 +7460,46 @@ def get_tianxing_status_text():
 register_game_command_pre_send_guard(tianxing_route_pre_send_guard)
 
 
+def reconcile_tianxing_timeout_from_pending(msg_id, cmd="", now=None):
+    """Reconcile a tracked Tianxing pending command after runtime reply timeout.
+
+    A timed-out Tianxing precursor is not proof that protection exists. Keep the
+    timeline blocked and require panel calibration instead of releasing
+    downstream exploration/rift actions.
+    """
+    now = float(now if now is not None else time.time())
+    try:
+        msg_id = int(msg_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg_id <= 0:
+        return False
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    active_step = dict(timeline.get("active_step") or {})
+    try:
+        active_msg_id = int(active_step.get("send_msg_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        active_msg_id = 0
+    if active_msg_id != msg_id:
+        return False
+    active_status = str(active_step.get("status") or "").strip()
+    if active_status not in {"sending", "sent_waiting_ack", "ack_timeout"}:
+        return False
+    config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    reason = "天星前置命令回复超时，等待查盘校准；不放行下游。"
+    timeline = _mark_tianxing_timeline_send_unknown(
+        timeline,
+        active_step,
+        now,
+        config,
+        reason=reason,
+        event="pending_reply_timeout_calibration_wait",
+    )
+    state["tianxing_timeline_state"] = timeline
+    save_state()
+    return True
+
+
 __all__ = [
     "apply_tianxing_passive",
     "build_tianxing_manual_plan",
@@ -7485,6 +7525,7 @@ __all__ = [
     "normalize_tianxing_observation",
     "normalize_tianxing_timeline_state",
     "parse_tianxing_text",
+    "reconcile_tianxing_timeout_from_pending",
     "run_tianxing_retreat_farm_scheduler",
     "run_tianxing_craft_farm_scheduler",
     "run_tianxing_consume_craft_prediction",

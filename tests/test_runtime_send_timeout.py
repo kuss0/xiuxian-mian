@@ -670,6 +670,57 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.is_game_send_status_unknown(send_as_id, ".慢返回"))
         self.assertTrue(runtime.is_game_send_definitely_unsent(send_as_id, ".没发出"))
 
+    async def test_global_recovery_hold_blocks_normal_send_as_unsent(self):
+        now = 1_700_000_000.0
+        send_as_id = 301299112
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_global_enabled(True)
+        state_module.set_global_recovery_hold_until(now + 180)
+        state_module.set_global_recovery_throttle_until(0)
+
+        with (
+            patch.object(runtime.time, "time", return_value=now),
+            patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            result = await runtime.send_game_command(
+                ".推命 探索",
+                send_as_id=send_as_id,
+                priority=runtime.SEND_PRIORITY_REACTIVE,
+            )
+
+        self.assertIsNone(result)
+        block = runtime.get_last_game_send_block(send_as_id, ".推命 探索", max_age_sec=1_000_000_000)
+        self.assertEqual("global_recovery_cooldown", block["code"])
+        self.assertEqual(
+            "unsent",
+            runtime.classify_game_send_block(send_as_id, ".推命 探索", max_age_sec=1_000_000_000)["status"],
+        )
+        audit_mock.assert_awaited_once()
+
+    def test_global_recovery_throttle_expands_non_probe_send_gap(self):
+        now = 1_700_000_000.0
+        state_module.set_global_recovery_throttle_until(now + 900)
+
+        with patch.object(runtime.time, "time", return_value=now):
+            self.assertEqual(
+                (
+                    runtime.GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MIN_SEC,
+                    runtime.GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC,
+                ),
+                runtime._get_send_gap_range(runtime.SEND_PRIORITY_RETRY),
+            )
+            self.assertEqual(
+                (
+                    runtime.GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MIN_SEC,
+                    runtime.GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC,
+                ),
+                runtime._get_send_gap_range(runtime.SEND_PRIORITY_URGENT_REACTIVE),
+            )
+            self.assertEqual(
+                (runtime.P0_SEND_GAP_MIN_SEC, runtime.P0_SEND_GAP_MAX_SEC),
+                runtime._get_send_gap_range(runtime.SEND_PRIORITY_P0),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

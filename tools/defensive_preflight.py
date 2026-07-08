@@ -339,7 +339,12 @@ def _hehuan_status(
     if active_cooldown_until <= now:
         return None
 
-    cooldown_start = max(last_observed_at, _epoch(obs.get("last_warm_success_at")), pending_sent_at)
+    cooldown_start = max(
+        last_observed_at,
+        _epoch(obs.get("last_warm_success_at")),
+        pending_sent_at,
+        _epoch(obs.get("auto_last_error_at")),
+    )
     recent_sends = _recent_script_sends(
         command=HEHUAN_WARM_COMMAND,
         sender_id=send_as_id,

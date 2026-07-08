@@ -8,6 +8,13 @@ from telethon import functions
 
 from ..config import TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
+from ..tree_score_policy import (
+    TREE_MINIAPP_DEFAULT_TARGET_SCORE,
+    TREE_MINIAPP_MAX_TARGET_SCORE,
+    TREE_MINIAPP_MIN_TARGET_SCORE,
+    TREE_MINIAPP_MODES,
+    normalize_tree_score_profile,
+)
 from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
@@ -37,19 +44,6 @@ TREE_MINIAPP_ENDPOINTS = {
 }
 TREE_MINIAPP_START_PARAM_PATTERN = r"(?:tree|spirittree|spirit_tree|lyz)[_-][A-Za-z0-9_-]{4,180}"
 TREE_MINIAPP_HTTP_TIMEOUT = (5, 20)
-TREE_MINIAPP_MODES = {"jump", "fly"}
-TREE_MINIAPP_DEFAULT_TARGET_SCORE = {
-    "jump": (24, 42),
-    "fly": (24, 45),
-}
-TREE_MINIAPP_MIN_TARGET_SCORE = {
-    "jump": 20,
-    "fly": 20,
-}
-TREE_MINIAPP_MAX_TARGET_SCORE = {
-    "jump": 80,
-    "fly": 80,
-}
 TREE_MINIAPP_FLY_GRAVITY = 560.0
 TREE_MINIAPP_FLY_IMPULSE = -255.0
 TREE_MINIAPP_FLY_BASE_SPEED = 112.0
@@ -283,11 +277,9 @@ def tree_miniapp_seed_hash(seed, index):
 
 
 def _target_score(mode, rng, profile=None):
-    profile = dict(profile or {})
+    profile = normalize_tree_score_profile(mode, profile)
     floor = int(TREE_MINIAPP_MIN_TARGET_SCORE.get(mode, 20))
-    cap = int(TREE_MINIAPP_MAX_TARGET_SCORE.get(mode, 80))
-    if "target_score" in profile:
-        return max(floor, min(cap, int(profile.get("target_score") or floor)))
+    cap = int(TREE_MINIAPP_MAX_TARGET_SCORE.get(mode, 45))
     raw_range = profile.get("target_score_range") or TREE_MINIAPP_DEFAULT_TARGET_SCORE.get(mode, (3, 7))
     try:
         low, high = raw_range
@@ -784,37 +776,6 @@ def classify_tree_miniapp_error(error):
     if any(keyword in lowered for keyword in TREE_MINIAPP_STOP_ERROR_KEYWORDS):
         return "daily_limit"
     return "failed"
-
-
-def normalize_tree_score_profile(mode, profile=None):
-    mode = str(mode or "").strip().lower()
-    if mode not in TREE_MINIAPP_MODES:
-        raise ValueError("tree miniapp mode must be jump or fly")
-    source = dict(profile or {})
-    default_low, default_high = TREE_MINIAPP_DEFAULT_TARGET_SCORE[mode]
-    low = default_low
-    high = default_high
-    if "target_score_range" in source:
-        try:
-            raw_low, raw_high = source.get("target_score_range") or ()
-            low = int(raw_low or default_low)
-            high = int(raw_high or default_high)
-        except (TypeError, ValueError):
-            low, high = default_low, default_high
-    if "target_score" in source:
-        try:
-            score = int(source.get("target_score") or default_low)
-        except (TypeError, ValueError):
-            score = default_low
-        low = high = score
-    floor = int(TREE_MINIAPP_MIN_TARGET_SCORE.get(mode, 20))
-    cap = int(TREE_MINIAPP_MAX_TARGET_SCORE.get(mode, 80))
-    low = max(floor, min(cap, low))
-    high = max(low, min(cap, high))
-    normalized = dict(source)
-    normalized["target_score_range"] = (low, high)
-    normalized.pop("target_score", None)
-    return normalized
 
 
 def build_tree_game_proof(mode, run, *, rng=None, profile=None):

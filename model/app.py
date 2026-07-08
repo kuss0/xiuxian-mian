@@ -604,6 +604,16 @@ def _entity_is_han_tianzun_bot(entity):
     return False
 
 
+async def _event_sender_is_bot(event):
+    sender = getattr(event, "sender", None)
+    if sender is None:
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+    return bool(getattr(sender, "bot", False))
+
+
 async def _learn_game_bot_id(sender_id, reason):
     sender_id = int(sender_id or 0)
     if sender_id <= 0 or sender_id in set(get_game_bot_ids()):
@@ -662,7 +672,7 @@ async def _note_game_bot_activity():
         mark_bot_health_recovered("bot 恢复确认完成")
 
 
-async def _record_suspected_game_bot(sender_id, family, text):
+async def _record_suspected_game_bot(sender_id, family, text, *, verified_bot=False):
     sender_id = int(sender_id or 0)
     if sender_id == 0 or sender_id in set(get_game_bot_ids()):
         return
@@ -683,12 +693,22 @@ async def _record_suspected_game_bot(sender_id, family, text):
 
     if int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_LEARN_THRESHOLD and not item.get("learned"):
         item["learned"] = True
-        await _learn_game_bot_id(sender_id, f"连续命中 {item['count']} 次")
+        if verified_bot:
+            await _learn_game_bot_id(sender_id, f"连续命中 {item['count']} 次")
+        else:
+            await send_audit_log(
+                f"🧩 未登记游戏 bot 候选命中 {item['count']} 次但 sender 非 bot，未写入 game_bot_ids：{sender_id}",
+                scope="global",
+                limit=260,
+            )
 
 
 async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
     sender_id = int(getattr(event, "sender_id", 0) or 0)
     if _resolve_identity_sender_id(sender_id):
+        return False
+    sender_is_bot = await _event_sender_is_bot(event)
+    if not sender_is_bot:
         return False
     reply_to, reply_context = await _resolve_event_reply(event)
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
@@ -716,7 +736,7 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
         event_kind="edit" if edited else "message",
     )
     if handled_reply:
-        await _record_suspected_game_bot(sender_id, matched_family, text)
+        await _record_suspected_game_bot(sender_id, matched_family, text, verified_bot=sender_is_bot)
     return handled_reply
 
 

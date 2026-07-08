@@ -24,6 +24,7 @@ from .config import (
     WILD_TRAINING_STRATEGIES,
 )
 from .module_manifest import is_module_archived
+from .tree_score_policy import normalize_tree_score_records
 
 _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
@@ -88,7 +89,7 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required", "explore_rift_rebirth_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
 REPLICA_KIND_KEYS = ("virtual_hall", "zhuimo", "huanglong", "cangkun", "kunwu", "luoyun")
 REPLICA_KIND_CONFIG_TEMPLATE = {
     "enabled": True,
@@ -823,6 +824,8 @@ GLOBAL_STATE_DEFAULTS = {
     "auto_delete_sent_messages": True,
     "global_enabled": True,
     "global_pause_source": "",
+    "global_recovery_hold_until": 0,
+    "global_recovery_throttle_until": 0,
     "tiandao_judgement_enabled": False,
     "tiandao_judgement_pending": {},
     "tianji_quiz_pending": {},
@@ -1334,11 +1337,14 @@ def set_dungeon_join_run_state(records):
 
 def get_tree_miniapp_score_configs():
     records = _meta_state.get("tree_miniapp_score_configs") or {}
-    return records if isinstance(records, dict) else {}
+    normalized = normalize_tree_score_records(records)
+    if records != normalized:
+        _meta_state["tree_miniapp_score_configs"] = normalized
+    return normalized
 
 
 def set_tree_miniapp_score_configs(records):
-    _meta_state["tree_miniapp_score_configs"] = records if isinstance(records, dict) else {}
+    _meta_state["tree_miniapp_score_configs"] = normalize_tree_score_records(records)
     return get_tree_miniapp_score_configs()
 
 
@@ -1992,6 +1998,38 @@ def get_global_pause_source():
 def set_global_pause_source(source):
     _meta_state["global_pause_source"] = str(source or "")
     return get_global_pause_source()
+
+
+def get_global_recovery_hold_until():
+    try:
+        return float(_meta_state.get("global_recovery_hold_until") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_global_recovery_hold_until(until):
+    try:
+        value = float(until or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    _meta_state["global_recovery_hold_until"] = max(0.0, value)
+    return get_global_recovery_hold_until()
+
+
+def get_global_recovery_throttle_until():
+    try:
+        return float(_meta_state.get("global_recovery_throttle_until") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_global_recovery_throttle_until(until):
+    try:
+        value = float(until or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    _meta_state["global_recovery_throttle_until"] = max(0.0, value)
+    return get_global_recovery_throttle_until()
 
 
 def get_guanxing_round_state():
@@ -2670,6 +2708,8 @@ __all__ = [
     "get_forum_topics",
     "get_forum_topics_updated_at",
     "get_global_enabled",
+    "get_global_recovery_hold_until",
+    "get_global_recovery_throttle_until",
     "get_tiandao_judgement_enabled",
     "get_guanxing_monitor_enabled",
     "get_guanxing_monitor_target_options",
@@ -2770,6 +2810,8 @@ __all__ = [
     "set_replica_virtual_hall_match_enabled_map",
     "set_forum_topics",
     "set_global_enabled",
+    "set_global_recovery_hold_until",
+    "set_global_recovery_throttle_until",
     "set_tiandao_judgement_enabled",
     "set_guanxing_monitor_enabled",
     "set_guanxing_monitor_targets",

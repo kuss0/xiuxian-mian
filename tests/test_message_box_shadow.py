@@ -404,7 +404,12 @@ class AppMessageBoxShadowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(control._message_box_shadow_payload_provider, app.get_message_box_shadow_payload)
 
     async def test_suspected_game_bot_shadow_failure_does_not_block_routing(self):
-        event = SimpleNamespace(id=9452531, sender_id=888001, chat_id=-1001680975844)
+        event = SimpleNamespace(
+            id=9452531,
+            sender_id=888001,
+            chat_id=-1001680975844,
+            sender=SimpleNamespace(bot=True, first_name="韩天尊"),
+        )
         reply_to = SimpleNamespace(id=7001, sender_id=3504367852, raw_text=".卜筮问天")
         reply_context = {
             "send_as_id": 3504367852,

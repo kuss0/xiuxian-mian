@@ -2396,6 +2396,44 @@ def get_yinluo_status_text():
     return "\n".join(lines)
 
 
+def reconcile_yinluo_timeout_from_pending(msg_id, cmd="", sent_at=0, now=None):
+    """Reconcile tracked Yinluo pending commands after runtime reply timeout."""
+    now = float(now if now is not None else time.time())
+    command = str(cmd or "").strip()
+    if command != CMD_YINLUO_BLOOD_FOREST:
+        return False
+    try:
+        sent_at = float(sent_at or 0)
+    except (TypeError, ValueError, OverflowError):
+        sent_at = 0.0
+    if sent_at <= 0:
+        sent_at = now
+    observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    cooldown_until = float(sent_at + YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC)
+    observed["last_observed_at"] = max(float(observed.get("last_observed_at", 0) or 0), float(sent_at))
+    observed["last_action"] = "血洗山林"
+    observed["last_result"] = "assumed_consumed"
+    observed["last_summary"] = "血洗山林已发送但回复未入库，按已消费冷却"
+    observed["last_error"] = "血洗山林回复超时，等待被动回复或下轮查幡校准"
+    observed["next_blood_forest_time"] = max(
+        float(observed.get("next_blood_forest_time", 0) or 0),
+        cooldown_until,
+    )
+    observed["auto_last_action"] = "blood_forest"
+    observed["auto_last_error"] = observed["last_error"]
+    observed["auto_next_time"] = _yinluo_next_after_action(observed, now)
+    observed["recent"].append({
+        "ts": float(now),
+        "action": "血洗山林",
+        "result": "assumed_consumed",
+        "summary": observed["last_summary"],
+    })
+    observed["recent"] = observed["recent"][-8:]
+    state["yinluo_observation"] = observed
+    save_state()
+    return True
+
+
 __all__ = [
     "apply_yinluo_passive",
     "build_yinluo_manual_plan",
@@ -2406,6 +2444,7 @@ __all__ = [
     "normalize_yinluo_observation",
     "normalize_yinluo_auto_config",
     "parse_yinluo_text",
+    "reconcile_yinluo_timeout_from_pending",
     "run_yinluo_scheduler",
     "set_yinluo_auto_config",
 ]

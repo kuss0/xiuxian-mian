@@ -95,7 +95,7 @@ from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manual_run, revoke_cave_treasure_miniapp_manual_run
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
-from .features.tree_miniapp import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
+from .tree_score_policy import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
 from .features.trial_runtime import (
     authorize_trial_miniapp_manual_run,
     maybe_finalize_trial_batch_run,
@@ -488,7 +488,7 @@ def get_tree_miniapp_score_config(send_as_id=None):
             "max_target_score": int(TREE_MINIAPP_MAX_TARGET_SCORE["fly"]),
         },
         "submit_default": False,
-        "note": "灵树跳一跳/飞一飞默认低分；手动执行可按身份配置目标分，不接定时自动跑分。",
+        "note": "灵树跳一跳/飞一飞默认低分；手动配置仅作为随机区间中值，不接定时自动跑分。",
     }
 
 
@@ -517,9 +517,9 @@ async def ui_set_tree_miniapp_score_config(send_as_id, payload=None):
     set_tree_miniapp_score_configs(records)
     save_state()
     refreshed = get_tree_miniapp_score_config(key)
-    jump_score = (refreshed["jump"]["target_score_range"] or [0])[0]
-    fly_score = (refreshed["fly"]["target_score_range"] or [0])[0]
-    return True, f"灵树目标分已更新：跳一跳 {jump_score}｜飞一飞 {fly_score}"
+    jump_range = refreshed["jump"]["target_score_range"] or [0, 0]
+    fly_range = refreshed["fly"]["target_score_range"] or [0, 0]
+    return True, f"灵树目标区间已更新：跳一跳 {jump_range[0]}-{jump_range[-1]}｜飞一飞 {fly_range[0]}-{fly_range[-1]}"
 
 
 def get_miniapp_status_snapshot(send_as_id=None):

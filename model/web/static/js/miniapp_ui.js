@@ -109,7 +109,9 @@
   function targetScoreValue(config, mode) {
     var item = (config && config[mode]) || {};
     var range = Array.isArray(item.target_score_range) ? item.target_score_range : [];
-    var value = Number(range[0] || 0);
+    var low = Number(range[0] || 0);
+    var high = Number(range[range.length - 1] || low || 0);
+    var value = Math.round((low + high) / 2);
     return Number.isFinite(value) && value > 0 ? value : 24;
   }
 
@@ -118,11 +120,11 @@
     if (!tree) return '';
     var jumpMin = Number((tree.jump && tree.jump.min_target_score) || 20);
     var flyMin = Number((tree.fly && tree.fly.min_target_score) || 20);
-    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 80);
-    var flyMax = Number((tree.fly && tree.fly.max_target_score) || 80);
+    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 45);
+    var flyMax = Number((tree.fly && tree.fly.max_target_score) || 45);
     return ''
       + '<section class="miniapp-score-config" data-miniapp-score-config="tree">'
-      + '<div class="miniapp-score-title"><strong>灵树目标分</strong><span>身份：' + esc(selectedIdentityId() || '-') + '</span></div>'
+      + '<div class="miniapp-score-title"><strong>灵树区间中值</strong><span>身份：' + esc(selectedIdentityId() || '-') + '</span></div>'
       + '<label><span>跳一跳</span><input type="number" min="' + esc(jumpMin) + '" max="' + esc(jumpMax) + '" step="1" data-tree-score-input="jump" value="' + esc(targetScoreValue(tree, 'jump')) + '"></label>'
       + '<label><span>飞一飞</span><input type="number" min="' + esc(flyMin) + '" max="' + esc(flyMax) + '" step="1" data-tree-score-input="fly" value="' + esc(targetScoreValue(tree, 'fly')) + '"></label>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-score-save="1">保存</button>'
@@ -321,11 +323,11 @@
         jump_target_score: jumpInput ? jumpInput.value : '',
         fly_target_score: flyInput ? flyInput.value : ''
       });
-      flash(data.message || '灵树目标分已保存', false);
+      flash(data.message || '灵树目标区间已保存', false);
       if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });
       else refreshMiniAppStatus();
     } catch (error) {
-      flash((error && error.message) || '灵树目标分保存失败', true);
+      flash((error && error.message) || '灵树目标区间保存失败', true);
     } finally {
       if (button) button.disabled = false;
     }

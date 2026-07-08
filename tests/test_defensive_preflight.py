@@ -205,6 +205,35 @@ def test_hehuan_cooldown_with_early_send_is_at_risk():
     assert "提前放行" in item["reason"]
 
 
+def test_hehuan_auto_backoff_does_not_reflag_triggering_send():
+    now = 1_700_000_000.0
+    calls = []
+
+    def fake_recent_script_sends(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    with patch.object(preflight, "_recent_script_sends", side_effect=fake_recent_script_sends):
+        item = preflight._hehuan_status(
+            label="ice",
+            username="iceeet1",
+            send_as_id=3943539390,
+            obs={
+                "last_observed_at": now - 7200,
+                "last_warm_success_at": now - 7200,
+                "next_hehuan_time": now - 3600,
+                "auto_next_time": now + 1800,
+                "auto_last_error_at": now - 20,
+                "last_result": "success",
+            },
+            now=now,
+        )
+
+    assert item is None
+    assert calls
+    assert calls[0]["after_ts"] == now - 20 + preflight.HEHUAN_EARLY_SEND_GRACE_SEC
+
+
 def test_hehuan_pending_past_deadline_is_at_risk():
     now = 1_700_000_000.0
     item = preflight._hehuan_status(

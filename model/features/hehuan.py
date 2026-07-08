@@ -1535,6 +1535,35 @@ async def execute_hehuan_manual_action(action="warm", *, send_as_id=None, now=No
     return True, f"已发送：{plan['command']}（msg_id={int(getattr(msg, 'id', 0) or 0)}）", plan
 
 
+def reconcile_hehuan_timeout_from_pending(msg_id, now=None):
+    """Reconcile a tracked Hehuan warm pending after runtime reply timeout."""
+    now = float(now if now is not None else time.time())
+    try:
+        msg_id = int(msg_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg_id <= 0:
+        return False
+    observed = normalize_hehuan_observation(state.get("hehuan_observation"))
+    if int(observed.get("auto_pending_msg_id", 0) or 0) != msg_id:
+        return False
+    if _recover_hehuan_pending_from_message_log(observed, now):
+        save_state()
+        return True
+    observed = normalize_hehuan_observation(state.get("hehuan_observation"))
+    if str(observed.get("last_result") or "").strip().lower() == "pending":
+        observed, _wait_for_cooldown = _assume_hehuan_pending_consumed(observed, now)
+    else:
+        observed["auto_last_action"] = "warm"
+        observed["auto_last_error"] = "温养命令已发送但未回捞到回复，退避等待被动回复；不立即重发"
+        observed["auto_last_error_at"] = float(now)
+        observed["auto_next_time"] = float(now + HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC)
+        _reset_hehuan_auto_pending(observed)
+    state["hehuan_observation"] = observed
+    save_state()
+    return True
+
+
 def _format_gain_map(gains):
     if not isinstance(gains, dict) or not gains:
         return "未记录"
@@ -1596,6 +1625,7 @@ __all__ = [
     "looks_like_hehuan_text",
     "normalize_hehuan_observation",
     "parse_hehuan_text",
+    "reconcile_hehuan_timeout_from_pending",
     "run_hehuan_scheduler",
     "set_hehuan_retry_max_interval_min",
 ]

@@ -466,6 +466,68 @@ class MessageLogButtonTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 
+    def test_suspected_non_bot_sender_is_not_routed_as_game_bot(self):
+        event = SimpleNamespace(
+            id=616161,
+            sender_id=8214307121,
+            sender=SimpleNamespace(bot=False, first_name="韩天尊"),
+        )
+
+        with patch.object(app, "_resolve_identity_sender_id", return_value=0), \
+                patch.object(app, "_resolve_event_reply", new=AsyncMock()) as resolve_mock:
+            handled = asyncio.run(app._handle_suspected_game_bot_reply(
+                event,
+                "【问道】天机不可频繁窥探",
+                1000.0,
+            ))
+
+        self.assertFalse(handled)
+        resolve_mock.assert_not_awaited()
+
+    def test_suspected_non_bot_candidate_is_not_learned_after_threshold(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        try:
+            state_module._meta_state["game_bot_ids"] = []
+            with patch("model.app.save_state") as save_mock, \
+                    patch("model.app.send_audit_log", new=AsyncMock()):
+                for _ in range(app.UNKNOWN_GAME_BOT_LEARN_THRESHOLD):
+                    asyncio.run(app._record_suspected_game_bot(
+                        8214307121,
+                        "wendao",
+                        "【问道】天机不可频繁窥探",
+                        verified_bot=False,
+                    ))
+
+            self.assertNotIn(8214307121, state_module.get_game_bot_ids())
+            save_mock.assert_not_called()
+        finally:
+            app._suspected_game_bot_hits.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_suspected_verified_bot_candidate_is_learned_after_threshold(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        try:
+            state_module._meta_state["game_bot_ids"] = []
+            with patch("model.app.save_state") as save_mock, \
+                    patch("model.app.send_audit_log", new=AsyncMock()):
+                for _ in range(app.UNKNOWN_GAME_BOT_LEARN_THRESHOLD):
+                    asyncio.run(app._record_suspected_game_bot(
+                        990990,
+                        "wendao",
+                        "【问道】天机不可频繁窥探",
+                        verified_bot=True,
+                    ))
+
+            self.assertIn(990990, state_module.get_game_bot_ids())
+            save_mock.assert_called_once()
+        finally:
+            app._suspected_game_bot_hits.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
     def test_negative_channel_identity_sender_resolves_known_identity(self):
         with patch("model.app.get_identity_ids", return_value=[3800619925]):
             self.assertEqual(3800619925, app._resolve_identity_sender_id(3800619925))

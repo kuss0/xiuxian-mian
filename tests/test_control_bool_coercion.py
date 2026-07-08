@@ -69,6 +69,72 @@ class ControlBoolCoercionTests(unittest.TestCase):
             payload = json.loads(reset_marker.read_text(encoding="utf-8"))
             self.assertGreater(payload["reset_at_epoch"], 0)
 
+    def test_bot_health_global_resume_sets_recovery_hold_and_throttle(self):
+        now = 1_700_000_000.0
+        state_module.set_global_enabled(False)
+        state_module.set_global_recovery_hold_until(0)
+        state_module.set_global_recovery_throttle_until(0)
+        state_module.ensure_identity_registered(990316)
+        state_module.update_send_as_profile(990316, enabled=True)
+
+        with (
+            patch.object(control.time, "time", return_value=now),
+            patch.object(control, "save_state"),
+            patch.object(control, "send_audit_log", new=AsyncMock()),
+            patch.object(control, "clear_transient_send_failures_for_global_recovery") as clear_mock,
+            patch.object(control, "spread_overdue_runtime_timers") as spread_mock,
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="bot_health_recovery"))
+
+        self.assertTrue(ok, message)
+        self.assertEqual(now + control.BOT_HEALTH_RECOVERY_HOLD_SEC, state_module.get_global_recovery_hold_until())
+        self.assertEqual(now + control.BOT_HEALTH_RECOVERY_THROTTLE_SEC, state_module.get_global_recovery_throttle_until())
+        clear_mock.assert_called_once_with(now)
+        spread_mock.assert_called_once_with(now, reason="全局恢复", window_sec=control.RECOVERY_SPREAD_MAX_SEC)
+
+    def test_manual_global_resume_clears_recovery_hold_and_throttle(self):
+        state_module.set_global_enabled(False)
+        state_module.set_global_pause_source("ui")
+        state_module.set_global_recovery_hold_until(1_700_000_180.0)
+        state_module.set_global_recovery_throttle_until(1_700_000_900.0)
+        state_module.ensure_identity_registered(990317)
+        state_module.update_send_as_profile(990317, enabled=True)
+
+        with (
+            patch.object(control, "save_state"),
+            patch.object(control, "send_audit_log", new=AsyncMock()),
+            patch.object(control, "clear_transient_send_failures_for_global_recovery"),
+            patch.object(control, "spread_overdue_runtime_timers"),
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="ui"))
+
+        self.assertTrue(ok, message)
+        self.assertEqual(0, state_module.get_global_recovery_hold_until())
+        self.assertEqual(0, state_module.get_global_recovery_throttle_until())
+
+    def test_manual_resume_after_safety_watchdog_uses_recovery_ramp(self):
+        now = 1_700_000_000.0
+        state_module.set_global_enabled(False)
+        state_module.set_global_pause_source("safety_watchdog")
+        state_module.set_global_recovery_hold_until(0)
+        state_module.set_global_recovery_throttle_until(0)
+        state_module.ensure_identity_registered(990318)
+        state_module.update_send_as_profile(990318, enabled=True)
+
+        with (
+            patch.object(control.time, "time", return_value=now),
+            patch.object(control, "save_state"),
+            patch.object(control, "send_audit_log", new=AsyncMock()),
+            patch.object(control, "clear_transient_send_failures_for_global_recovery"),
+            patch.object(control, "spread_overdue_runtime_timers") as spread_mock,
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="ui"))
+
+        self.assertTrue(ok, message)
+        self.assertEqual(now + control.BOT_HEALTH_RECOVERY_HOLD_SEC, state_module.get_global_recovery_hold_until())
+        self.assertEqual(now + control.BOT_HEALTH_RECOVERY_THROTTLE_SEC, state_module.get_global_recovery_throttle_until())
+        spread_mock.assert_called_once_with(now, reason="全局恢复", window_sec=control.RECOVERY_SPREAD_MAX_SEC)
+
     def test_global_resume_spreads_near_future_recovery_timers(self):
         now = 1_700_000_000.0
         send_as_id = 990314

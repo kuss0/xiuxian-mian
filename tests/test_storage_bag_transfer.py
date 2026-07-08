@@ -550,7 +550,12 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
     async def test_suspected_game_bot_edit_routes_as_edit_event(self):
-        event = SimpleNamespace(id=9452531, sender_id=888001, chat_id=-1001680975844)
+        event = SimpleNamespace(
+            id=9452531,
+            sender_id=888001,
+            chat_id=-1001680975844,
+            sender=SimpleNamespace(bot=True, first_name="韩天尊"),
+        )
         reply_to = SimpleNamespace(id=7001, raw_text=".卜筮问天")
         reply_context = {
             "send_as_id": self.target_id,
