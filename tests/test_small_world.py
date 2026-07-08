@@ -2696,6 +2696,52 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 600, state_module.state["next_small_world_time"])
             self.assertTrue(state_module.state["small_world_panel_snapshot"]["has_prayer"])
             self.assertEqual("江河决堤", state_module.state["small_world_panel_snapshot"]["prayer_name"])
+            sessions = state_module.state.get("action_guard_sessions") or {}
+            self.assertNotIn("small_world_manifest", sessions)
+            allowed, reason = action_guard.before_send(
+                small_world.CMD_SMALL_WORLD_MANIFEST,
+                send_as_id=send_as_id,
+                now=now + 1,
+            )
+            self.assertTrue(allowed, reason)
+
+    async def test_manifest_clears_local_unsent_guard_block_before_retry(self):
+        send_as_id = 8659059328
+        now = 7192.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "江河决堤",
+                "manifest_cost": "修为x800",
+                "updated_at": now,
+            }
+            action_guard.note_remote_block(
+                "small_world_manifest",
+                send_as_id=send_as_id,
+                block_until=now + 600,
+                reason="小世界显灵未发送，短退避重试",
+                kind="global_recovery_cooldown",
+                now=now - 5,
+                command=small_world.CMD_SMALL_WORLD_MANIFEST,
+            )
+            send_mock = AsyncMock(return_value=SimpleNamespace(id=7811, sent_at=now + 1))
+
+            with (
+                patch.object(small_world, "send_game_command", new=send_mock),
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_manifest(now)
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once()
+            self.assertEqual("manifest_pending", state_module.state["small_world_phase"])
+            self.assertEqual(7811, state_module.state["small_world_manifest_msg_id"])
+            session = (state_module.state.get("action_guard_sessions") or {}).get("small_world_manifest") or {}
+            self.assertFalse(session.get("remote_block_until"))
 
     async def test_query_unsent_runtime_block_does_not_wait_panel(self):
         send_as_id = 8659059319
