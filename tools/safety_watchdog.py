@@ -216,12 +216,12 @@ SOFT_CONFIRM_REASON_PREFIXES = (
     "sect teach over attempts:",
 )
 HARD_BREACH_REASON_PREFIXES = (
-    "send burst:",
     "hard-stop reply keyword:",
     "journal hard-stop keyword:",
     "world boss over attempts:",
 )
 WARN_ONLY_REASON_PREFIXES = (
+    "send burst:",
     "global lock breach:",
 )
 SOFT_BREACH_CONFIRM_HITS = 2

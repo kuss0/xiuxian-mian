@@ -403,7 +403,10 @@ def _listener_status(now: float) -> dict[str, Any]:
     updated_at = _epoch(payload.get("updated_at"))
     age = int(now - updated_at) if updated_at else 999999
     failed = payload.get("failed_accounts") or []
+    status = str(payload.get("status") or "")
     if service_inactive:
+        level = "watch"
+    elif status == "degraded_no_connected_accounts":
         level = "watch"
     elif age > 120 or failed:
         level = "at_risk"
@@ -423,6 +426,8 @@ def _listener_status(now: float) -> dict[str, Any]:
             if level == "healthy"
             else "listener sidecar inactive; using main runtime listener only"
             if service_inactive
+            else "listener sidecar has no independent accounts; main runtime listener remains primary"
+            if status == "degraded_no_connected_accounts"
             else "listener heartbeat stale or failed account present"
         ),
     }

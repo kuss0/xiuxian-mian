@@ -787,6 +787,9 @@ class SafetyWatchdogTests(unittest.TestCase):
         breach = safety_watchdog.find_send_breach(events, now, cfg)
 
         self.assertIn("send burst", breach)
+        self.assertTrue(safety_watchdog.is_warn_only_breach_reason(breach))
+        confirm = safety_watchdog.BreachConfirmationState()
+        self.assertFalse(safety_watchdog.should_fuse_breach(breach, confirm, now))
 
     def test_marked_world_boss_event_burst_is_not_send_burst_or_gap(self):
         now = time.time()
@@ -1915,10 +1918,16 @@ class SafetyWatchdogTests(unittest.TestCase):
         self.assertFalse(safety_watchdog.should_fuse_breach(reason, state, 1020.0))
         self.assertEqual(1, state.hits)
 
+    def test_send_burst_warns_without_fusing(self):
+        state = safety_watchdog.BreachConfirmationState()
+
+        self.assertFalse(safety_watchdog.should_fuse_breach("send burst: 8+ sends in 120s", state, 1000.0))
+        self.assertEqual(0, state.hits)
+
     def test_hard_breach_fuses_immediately(self):
         state = safety_watchdog.BreachConfirmationState()
 
-        self.assertTrue(safety_watchdog.should_fuse_breach("send burst: 8+ sends in 120s", state, 1000.0))
+        self.assertTrue(safety_watchdog.should_fuse_breach("hard-stop reply keyword: UserDeactivatedBan", state, 1000.0))
         self.assertEqual(0, state.hits)
 
     def test_reset_marker_without_epoch_falls_back_to_file_mtime(self):

@@ -39,7 +39,7 @@ BENIGN_HARD_CONTEXT_PATTERN = re.compile(
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
-    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|launching 超时，改用状态查询校准|共历心劫抉择无回合推进，已停止旧 prompt|续轮指令超时无确认，改用状态查询校准|准备补发一次|结果编辑未留存，已按正常周期恢复|交由模块状态机继续"
+    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|launching 超时，改用状态查询校准|共历心劫抉择无回合推进，已停止旧 prompt|续轮指令超时无确认，改用状态查询校准|准备补发一次|结果编辑未留存，已按正常周期恢复|交由模块状态机继续|安全锁拦截：.*短退避重试"
 )
 TELETHON_WRONG_SESSION_PATTERN = re.compile(
     r"Security error while unpacking a received message: Server replied with a wrong session ID",
@@ -781,9 +781,12 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
             )
 
     cooldown_replies = []
+    bot_replies = []
     for item in recent:
         if str(item.get("event_type") or "") not in {"message", "edit"}:
             continue
+        if item.get("sender_is_bot"):
+            bot_replies.append(item)
         if int(item.get("reply_to_msg_id", 0) or 0) not in sent_ids:
             continue
         text = str(item.get("text") or "")
@@ -798,6 +801,7 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         )
 
     last_sent_at = max((float(item.get("_epoch", 0) or 0) for item in sent), default=0.0)
+    last_bot_reply_at = max((float(item.get("_epoch", 0) or 0) for item in bot_replies), default=0.0)
     command_counts = Counter(command_key(str(item.get("text") or "")) for item in sent if str(item.get("text") or "").strip())
     module_counts = Counter(str(item.get("source_module") or item.get("family") or "").strip() for item in sent)
     module_counts = Counter({key: value for key, value in module_counts.items() if key})
@@ -807,12 +811,16 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         "sent_count": len(sent),
         "last_sent_at": last_sent_at,
         "last_sent_ts": local_ts(last_sent_at) if last_sent_at > 0 else "",
+        "bot_reply_count": len(bot_replies),
+        "last_bot_reply_at": last_bot_reply_at,
+        "last_bot_reply_ts": local_ts(last_bot_reply_at) if last_bot_reply_at > 0 else "",
         "active_status_counts": dict(active_counts),
         "active_status_identity_counts": {f"{identity_id}:{command}": count for (identity_id, command), count in active_by_identity.items()},
         "command_counts": dict(command_counts.most_common(12)),
         "module_counts": dict(module_counts.most_common(12)),
         "cooldown_reply_count": len(cooldown_replies),
         "last_sent_sample": [event_ref(item) for item in sent[-8:]],
+        "last_bot_reply_sample": [event_ref(item) for item in bot_replies[-8:]],
         "repeated_command_samples": repeated_command_samples[:12],
         "cooldown_reply_sample": [event_ref(item) for item in cooldown_replies[-8:]],
         "alerts": alerts,
@@ -1540,6 +1548,17 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
         risk_reasons.append(payload)
 
     services = snapshot.get("services") if isinstance(snapshot.get("services"), dict) else {}
+    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    try:
+        snapshot_epoch = float(snapshot.get("epoch") or time.time())
+    except Exception:
+        snapshot_epoch = time.time()
+    try:
+        last_bot_reply_at = float(message_state.get("last_bot_reply_at") or 0.0)
+    except Exception:
+        last_bot_reply_at = 0.0
+    main_runtime_listener_fresh = last_bot_reply_at > 0 and snapshot_epoch - last_bot_reply_at <= 180
     for service, info in services.items():
         if str(service).startswith("_") or not isinstance(info, dict):
             continue
@@ -1583,7 +1602,18 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
             elif age_value > 90:
                 add_risk("listener_heartbeat_lag", f"listener heartbeat lag: {age_value}s", "warn", 8, path=listener.get("path"))
             if listener_running and str(listener.get("status") or "") not in {"running", ""}:
-                add_risk("listener_status_not_running", f"listener heartbeat status: {listener.get('status')}", "warn", 8, path=listener.get("path"))
+                listener_status = str(listener.get("status") or "")
+                if listener_status == "degraded_no_connected_accounts" and main_runtime_listener_fresh:
+                    add_risk(
+                        "listener_sidecar_unbound",
+                        "listener sidecar has no independent accounts; main runtime bot replies are fresh",
+                        "info",
+                        0,
+                        path=listener.get("path"),
+                        last_bot_reply_ts=message_state.get("last_bot_reply_ts"),
+                    )
+                else:
+                    add_risk("listener_status_not_running", f"listener heartbeat status: {listener.get('status')}", "warn", 8, path=listener.get("path"))
 
     safety = snapshot.get("safety") if isinstance(snapshot.get("safety"), dict) else {}
     if safety.get("fused"):
@@ -1607,7 +1637,6 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
     if warn_total:
         add_risk("journal_warn", f"journal warn matches: {warn_total}", "warn", min(18, 4 + warn_total))
 
-    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
     for alert in business.get("alerts") or []:
         if not isinstance(alert, dict):
             continue
@@ -1621,7 +1650,6 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
             sample=alert.get("sample"),
         )
 
-    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
     sent_count = int(message_state.get("sent_count") or 0)
     window_min = max(1, int(int(message_state.get("window_sec") or 0) / 60))
     if sent_count >= 90:
@@ -1673,6 +1701,8 @@ def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
             "window_sec": message_state.get("window_sec"),
             "sent_count": message_state.get("sent_count"),
             "last_sent_ts": message_state.get("last_sent_ts"),
+            "bot_reply_count": message_state.get("bot_reply_count"),
+            "last_bot_reply_ts": message_state.get("last_bot_reply_ts"),
         })
     for item in message_state.get("repeated_command_samples") or []:
         if isinstance(item, dict):

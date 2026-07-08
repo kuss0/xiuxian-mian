@@ -194,6 +194,13 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_warn_line_ignores_safety_lock_short_backoff(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "[jfdffdddd] 🧯 安全锁拦截：.显灵｜小世界显灵 小世界显灵未发送，短退避重试，剩余约 1295s"
+            )
+        )
+
     def test_warn_line_ignores_expected_dungeon_join_miss(self):
         self.assertFalse(
             health_observer.is_warn_journal_line(
@@ -470,6 +477,98 @@ class HealthObserverTests(unittest.TestCase):
         self.assertIn("optional_service_inactive", codes)
         self.assertNotIn("service_not_running", codes)
         self.assertNotIn("listener_heartbeat_stale", codes)
+
+    def test_health_payload_downgrades_sidecar_without_accounts_when_main_replies_are_fresh(self):
+        now = 1_780_500_000.0
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service", "xiuxian-listener.service"),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-02 01:30:00",
+            "epoch": now,
+            "status": "ok",
+            "services": {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-listener.service": {"ActiveState": "active", "SubState": "running"},
+            },
+            "listener": {
+                "available": True,
+                "status": "degraded_no_connected_accounts",
+                "age_sec": 5,
+                "path": "/tmp/listener_heartbeat.json",
+            },
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {
+                "message_state": {
+                    "last_bot_reply_at": now - 30,
+                    "last_bot_reply_ts": "2026-07-02 01:29:30",
+                },
+                "db_state": {},
+                "alerts": [],
+            },
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        codes = {item["code"] for item in payload["risk_reasons"]}
+        self.assertIn("listener_sidecar_unbound", codes)
+        self.assertNotIn("listener_status_not_running", codes)
+        self.assertEqual(100, payload["score"])
+        self.assertEqual("ok", payload["level"])
+
+    def test_health_payload_keeps_sidecar_warning_when_main_replies_are_stale(self):
+        now = 1_780_500_000.0
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service", "xiuxian-listener.service"),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-02 01:30:00",
+            "epoch": now,
+            "status": "ok",
+            "services": {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-listener.service": {"ActiveState": "active", "SubState": "running"},
+            },
+            "listener": {
+                "available": True,
+                "status": "degraded_no_connected_accounts",
+                "age_sec": 5,
+                "path": "/tmp/listener_heartbeat.json",
+            },
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {
+                "message_state": {
+                    "last_bot_reply_at": now - 600,
+                    "last_bot_reply_ts": "2026-07-02 01:20:00",
+                },
+                "db_state": {},
+                "alerts": [],
+            },
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        codes = {item["code"] for item in payload["risk_reasons"]}
+        self.assertIn("listener_status_not_running", codes)
+        self.assertNotIn("listener_sidecar_unbound", codes)
 
     def test_business_message_analysis_flags_repeated_active_status_queries(self):
         now = 1_780_500_000.0

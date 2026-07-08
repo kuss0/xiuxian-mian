@@ -1,3 +1,5 @@
+import json
+
 from tools import defensive_preflight as preflight
 from unittest.mock import patch
 
@@ -177,6 +179,29 @@ def test_listener_inactive_without_heartbeat_is_watch(tmp_path):
     assert item["level"] == "watch"
     assert item["service_state"] == "inactive"
     assert "inactive" in item["reason"]
+
+
+def test_listener_sidecar_without_independent_accounts_is_watch(tmp_path):
+    heartbeat = tmp_path / "listener_heartbeat.json"
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "status": "degraded_no_connected_accounts",
+                "updated_at": 1_700_000_000.0,
+                "registered_accounts": [],
+                "failed_accounts": [{"account_id": 301299112, "error": "listener session 未独立授权"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with patch.object(preflight, "HEARTBEAT_PATH", heartbeat), patch.object(preflight, "_listener_service_state", return_value="active"):
+        item = preflight._listener_status(1_700_000_010.0)
+
+    assert item["level"] == "watch"
+    assert item["service_state"] == "active"
+    assert "independent accounts" in item["reason"]
 
 
 def test_hehuan_cooldown_with_early_send_is_at_risk():
