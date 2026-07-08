@@ -563,12 +563,13 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "_resolve_event_reply", new=AsyncMock(return_value=(reply_to, reply_context))), \
                 patch.object(app, "_looks_like_game_bot_reply", return_value=True), \
                 patch.object(app, "_handle_routed_reply_event", new=AsyncMock(return_value=True)) as routed_mock, \
-                patch.object(app, "_note_game_bot_activity", new=AsyncMock()), \
+                patch.object(app, "_note_game_bot_activity", new=AsyncMock()) as health_mock, \
                 patch.object(app, "_record_suspected_game_bot", new=AsyncMock()):
             handled = await app._handle_suspected_game_bot_reply(event, "【神物现世】", 1000.0, edited=True)
 
         self.assertTrue(handled)
         self.assertEqual("edit", routed_mock.await_args.kwargs["event_kind"])
+        health_mock.assert_not_awaited()
 
     async def test_routed_divination_final_edit_replays_after_start_notice_consumed(self):
         state_module.get_identity_state(self.target_id)["divination_enabled"] = True

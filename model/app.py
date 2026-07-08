@@ -716,7 +716,6 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
         event_kind="edit" if edited else "message",
     )
     if handled_reply:
-        await _note_game_bot_activity()
         await _record_suspected_game_bot(sender_id, matched_family, text)
     return handled_reply
 
