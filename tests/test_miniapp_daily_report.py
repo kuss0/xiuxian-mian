@@ -84,6 +84,89 @@ class MiniAppDailyReportTests(unittest.TestCase):
         self.assertNotIn("score", report)
         self.assertNotIn("最佳", report)
 
+    def test_report_counts_reused_capture_source_and_common_gain_aliases(self):
+        day = "2026-07-08"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, "trial", day, [
+                {
+                    "ok": True,
+                    "step_key": "finish",
+                    "source": "trial_runtime:1001:5001",
+                    "response": {"body": {"result": {
+                        "traceGain": 2,
+                        "expGain": 3,
+                        "items": {"灵脉砂": 1},
+                        "score": 91,
+                    }}},
+                },
+                {
+                    "ok": True,
+                    "step_key": "finish",
+                    "source": "trial_runtime:1001:5001",
+                    "response": {"body": {"result": {
+                        "traceGain": 4,
+                        "experienceGain": 5,
+                        "bonusLoot": [{"name": "玄晶", "qty": 2}],
+                        "sessionId": "same-entry-second-round",
+                    }}},
+                },
+            ])
+            self._write(root, "cave_treasure", day, [
+                {
+                    "ok": True,
+                    "step_key": "action:settle",
+                    "source": "cave_treasure_runtime:1001:6001",
+                    "response": {"body": {"huntResult": {
+                        "foundMain": True,
+                        "cultivationGain": 10,
+                        "lingshiGain": 20,
+                        "contributionGain": 1,
+                        "item_deltas": {"凝血草": 2},
+                        "score": 88,
+                    }}},
+                },
+                {
+                    "ok": True,
+                    "step_key": "action:settle",
+                    "source": "cave_treasure_runtime:1001:6001",
+                    "response": {"body": {"huntResult": {
+                        "foundMain": False,
+                        "xiuweiGain": 30,
+                        "stoneGain": 40,
+                        "contribution": 2,
+                        "loot": [{"name": "古禁印痕", "quantity": 1}],
+                        "score": 88,
+                    }}},
+                },
+            ])
+            self._write(root, "stargazer", day, [{
+                "ok": True,
+                "step_key": "action_collect",
+                "response": {"body": {"actionResult": {
+                    "item_deltas": {"星辰精华": 3},
+                    "score": 3,
+                }}},
+            }])
+
+            report = miniapp_daily_report.build_report(day, root)
+
+        self.assertIn("🧪 天机试炼：2次成功", report)
+        self.assertIn("天机残痕+6", report)
+        self.assertIn("经验+8", report)
+        self.assertIn("灵脉砂x1", report)
+        self.assertIn("玄晶x2", report)
+        self.assertIn("🕳️ 洞府寻宝：2局", report)
+        self.assertIn("主宝1", report)
+        self.assertIn("修为+40", report)
+        self.assertIn("灵石+60", report)
+        self.assertIn("洞府贡献+3", report)
+        self.assertIn("凝血草x2", report)
+        self.assertIn("古禁印痕x1", report)
+        self.assertIn("collect1次｜奖励:星辰精华x3", report)
+        self.assertNotIn("score", report)
+        self.assertNotIn("session", report)
+
 
 if __name__ == "__main__":
     unittest.main()

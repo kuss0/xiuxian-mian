@@ -66,12 +66,31 @@ def _add_item(counter: Counter, name: str, qty=1):
 
 
 def _add_loot(counter: Counter, items):
+    if isinstance(items, dict):
+        if any(key in items for key in ("name", "itemName", "item_name", "label", "title")):
+            name = items.get("name") or items.get("itemName") or items.get("item_name") or items.get("label") or items.get("title")
+            qty = items.get("quantity", items.get("qty", items.get("count", items.get("amount", 1))))
+            _add_item(counter, name, qty)
+            return
+        for name, qty in items.items():
+            _add_item(counter, name, qty)
+        return
     for item in items or ():
         if not isinstance(item, dict):
             continue
         name = item.get("name") or item.get("itemName") or item.get("label")
         qty = item.get("quantity", item.get("qty", item.get("count", 1)))
         _add_item(counter, name, qty)
+
+
+def _first_int_by_keys(source: dict, keys: tuple[str, ...]) -> int:
+    source = source if isinstance(source, dict) else {}
+    for key in keys:
+        if key in source:
+            amount = _int(source.get(key), 0)
+            if amount:
+                return amount
+    return 0
 
 
 def _format_counter(counter: Counter, empty: str = "无") -> str:
@@ -126,21 +145,21 @@ def summarize_trial(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
             errors += 1
             continue
         body = _body(record)
-        event_id = str(body.get("event_id") or record.get("source") or "")
+        event_id = str(body.get("event_id") or "")
         if event_id and event_id in seen_events:
             continue
         if event_id:
             seen_events.add(event_id)
         result = body.get("result") if isinstance(body.get("result"), dict) else {}
         count += 1
-        gains["天机残痕"] += _int(result.get("reward_trace"), 0)
-        gains["经验"] += _int(result.get("expGain"), 0)
-        _add_loot(rewards, result.get("rewards") or result.get("bonusLoot"))
+        gains["天机残痕"] += _first_int_by_keys(result, ("reward_trace", "rewardTrace", "traceGain", "trace_gain", "trace"))
+        gains["经验"] += _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience"))
+        for key in ("rewards", "reward", "bonusLoot", "loot", "drops", "items", "materials"):
+            _add_loot(rewards, result.get(key))
     return {"count": count, "errors": errors, "gains": gains, "rewards": rewards}
 
 
 def summarize_cave_treasure(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
-    seen_keys: set[str] = set()
     gains = Counter()
     rewards = Counter()
     count = 0
@@ -150,15 +169,15 @@ def summarize_cave_treasure(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
             continue
         body = _body(record)
         result = body.get("huntResult") if isinstance(body.get("huntResult"), dict) else {}
-        key = str(record.get("source") or result.get("score") or len(seen_keys))
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
         count += 1
         if result.get("foundMain"):
             found_main += 1
-        gains["洞府贡献"] += _int(result.get("contribution"), 0)
-        _add_loot(rewards, result.get("loot"))
+        gains["洞府贡献"] += _first_int_by_keys(result, ("contribution", "contributionGain", "contribution_gain"))
+        gains["修为"] += _first_int_by_keys(result, ("cultivationGain", "xiuweiGain", "xiuwei_gain"))
+        gains["灵石"] += _first_int_by_keys(result, ("lingshiGain", "spiritStoneGain", "stoneGain", "stone_gain"))
+        gains["经验"] += _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience"))
+        for key in ("loot", "rewards", "reward", "bonusLoot", "drops", "items", "materials", "item_deltas", "itemDeltas"):
+            _add_loot(rewards, result.get(key))
     return {"count": count, "found_main": found_main, "gains": gains, "rewards": rewards}
 
 
@@ -173,7 +192,8 @@ def summarize_stargazer(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
             action_counts[step.removeprefix("action_")] += 1
         result = _body(record).get("actionResult")
         if isinstance(result, dict):
-            _add_loot(rewards, result.get("rewards") or result.get("loot") or result.get("items"))
+            for key in ("rewards", "reward", "loot", "drops", "items", "materials", "item_deltas", "itemDeltas"):
+                _add_loot(rewards, result.get(key))
     return {"actions": action_counts, "rewards": rewards}
 
 
