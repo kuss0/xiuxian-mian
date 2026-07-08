@@ -6439,6 +6439,8 @@ async def run_miniapp_daily_scheduler(now):
         return {"started": False, "reason": "disabled"}
     if config.get("trial_daily_done_today"):
         return {"started": False, "reason": "done_today"}
+    if not get_global_enabled():
+        return {"started": False, "reason": "global_disabled"}
     active_wave = dict(config.get("trial_daily_active_wave") or {})
     wave_key = str(active_wave.get("key") or "").strip()
     wave_label = str(active_wave.get("label") or "").strip() or "批次"

@@ -326,6 +326,26 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         start_mock.assert_called_once_with([1003, 1004], now=now)
         fire_mock.assert_called_once()
 
+    async def test_miniapp_daily_scheduler_waits_when_global_disabled(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+        }
+        now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "get_global_enabled", return_value=False), \
+                patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
+                patch.object(ui, "start_trial_miniapp_batch_run") as start_mock, \
+                patch.object(ui, "save_state") as save_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual({"started": False, "reason": "global_disabled"}, result)
+        ids_mock.assert_not_called()
+        start_mock.assert_not_called()
+        save_mock.assert_not_called()
+        snapshot = ui.get_miniapp_status_snapshot()["automation"]
+        self.assertFalse(snapshot["trial_daily_done_today"])
+        self.assertFalse(snapshot["trial_daily_waves"][0]["done_today"])
+
     async def test_miniapp_daily_scheduler_legacy_done_counts_as_both_waves(self):
         state_module._meta_state["miniapp_auto_config"] = {
             "trial_daily_enabled": True,
