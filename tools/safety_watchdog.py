@@ -348,6 +348,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_verified_world_boss_action_event(prev)
         or is_safe_world_boss_status_gap_pair(prev, cur)
         or is_safe_storage_bag_retry_repeat(prev, cur, str(cur.get("text") or ""))
+        or is_safe_storage_bag_transfer_gap_pair(prev, cur)
         or is_controlled_retry_event(cur)
         or is_marked_heart_choice_event(cur)
         or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
@@ -669,6 +670,14 @@ def is_safe_storage_bag_retry_repeat(prev: dict, cur: dict, text: str) -> bool:
     if prev_chain != cur_chain or prev_family != cur_family:
         return False
     return cur_count == prev_count + 1
+
+
+def is_verified_storage_bag_transfer_event(item: dict) -> bool:
+    return parse_storage_bag_transfer_op(item, str(item.get("text") or "")) is not None
+
+
+def is_safe_storage_bag_transfer_gap_pair(prev: dict, cur: dict) -> bool:
+    return is_verified_storage_bag_transfer_event(prev) and is_verified_storage_bag_transfer_event(cur)
 
 
 def is_safe_storage_bag_retry_chain(items: list[dict], text: str) -> bool:
@@ -1121,6 +1130,7 @@ def is_send_burst_exempt_event(item: dict) -> bool:
         is_dungeon_fast_chain_command(text)
         or is_verified_world_boss_action_event(item)
         or is_fishing_short_window_event(item)
+        or is_verified_storage_bag_transfer_event(item)
     )
 
 

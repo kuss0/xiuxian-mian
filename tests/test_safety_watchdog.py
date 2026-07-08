@@ -2070,6 +2070,45 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
+    def test_storage_bag_transfer_batch_does_not_send_burst_or_gap(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        cfg.min_any_gap_sec = 12
+        events = []
+        for index in range(8):
+            sender_id = 3504367852 + index
+            family = "storage_bag_listing" if index % 2 == 0 else "storage_bag_buy"
+            command = f".上架 黄芽丹*4 换 灵石*{30000 + index}" if family == "storage_bag_listing" else f".购买 {24000 + index}"
+            chain_id = f"storage_bag:batch-{index}"
+            events.append(
+                _event(
+                    now - (7 - index) * 5,
+                    sender_id,
+                    command,
+                    family=family,
+                    source_module="储物袋",
+                    priority="chain",
+                    op_id=f"{chain_id}:{family}:send:0",
+                    chain_id=chain_id,
+                )
+            )
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_unmarked_storage_bag_batch_still_send_burst(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        events = [
+            _event(now - (5 - index) * 5, 3504367852 + index, f".购买 {24000 + index}")
+            for index in range(6)
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("send burst", breach)
+
     def test_storage_bag_retry_chain_skipped_try_still_fuses(self):
         now = time.time()
         sender_id = 3504367852
