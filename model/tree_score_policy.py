@@ -1,19 +1,19 @@
 TREE_MINIAPP_MODES = {"jump", "fly"}
 TREE_MINIAPP_DEFAULT_TARGET_SCORE = {
-    "jump": (24, 42),
-    "fly": (24, 45),
+    "jump": (8, 16),
+    "fly": (8, 18),
 }
 TREE_MINIAPP_MIN_TARGET_SCORE = {
+    "jump": 4,
+    "fly": 4,
+}
+TREE_MINIAPP_MAX_TARGET_SCORE = {
     "jump": 20,
     "fly": 20,
 }
-TREE_MINIAPP_MAX_TARGET_SCORE = {
-    "jump": 45,
-    "fly": 45,
-}
 TREE_MINIAPP_MIN_TARGET_SPREAD = {
-    "jump": 8,
-    "fly": 8,
+    "jump": 6,
+    "fly": 6,
 }
 
 

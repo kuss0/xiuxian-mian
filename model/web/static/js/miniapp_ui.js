@@ -118,10 +118,10 @@
   function renderTreeScoreControls(scoreControls) {
     var tree = scoreControls && scoreControls.tree;
     if (!tree) return '';
-    var jumpMin = Number((tree.jump && tree.jump.min_target_score) || 20);
-    var flyMin = Number((tree.fly && tree.fly.min_target_score) || 20);
-    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 45);
-    var flyMax = Number((tree.fly && tree.fly.max_target_score) || 45);
+    var jumpMin = Number((tree.jump && tree.jump.min_target_score) || 4);
+    var flyMin = Number((tree.fly && tree.fly.min_target_score) || 4);
+    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 20);
+    var flyMax = Number((tree.fly && tree.fly.max_target_score) || 20);
     return ''
       + '<section class="miniapp-score-config" data-miniapp-score-config="tree">'
       + '<div class="miniapp-score-title"><strong>灵树区间中值</strong><span>身份：' + esc(selectedIdentityId() || '-') + '</span></div>'

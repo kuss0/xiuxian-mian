@@ -39,12 +39,12 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         tree = snapshot["score_controls"]["tree"]
 
         self.assertTrue(ok)
-        self.assertIn("跳一跳 20-28", message)
-        self.assertIn("飞一飞 37-45", message)
-        self.assertEqual([20, 28], tree["jump"]["target_score_range"])
-        self.assertEqual([37, 45], tree["fly"]["target_score_range"])
-        self.assertEqual(20, tree["jump"]["min_target_score"])
-        self.assertEqual(45, tree["fly"]["max_target_score"])
+        self.assertIn("跳一跳 4-10", message)
+        self.assertIn("飞一飞 14-20", message)
+        self.assertEqual([4, 10], tree["jump"]["target_score_range"])
+        self.assertEqual([14, 20], tree["fly"]["target_score_range"])
+        self.assertEqual(4, tree["jump"]["min_target_score"])
+        self.assertEqual(20, tree["fly"]["max_target_score"])
         save_mock.assert_called_once()
 
     async def test_tree_score_config_is_scoped_by_identity(self):
@@ -65,12 +65,12 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok_first)
         self.assertTrue(ok_second)
-        self.assertEqual([24, 32], first["jump"]["target_score_range"])
-        self.assertEqual([32, 40], first["fly"]["target_score_range"])
-        self.assertEqual([37, 45], second["jump"]["target_score_range"])
-        self.assertEqual([37, 45], second["fly"]["target_score_range"])
-        self.assertEqual([24, 42], default["jump"]["target_score_range"])
-        self.assertEqual([24, 45], default["fly"]["target_score_range"])
+        self.assertEqual([14, 20], first["jump"]["target_score_range"])
+        self.assertEqual([14, 20], first["fly"]["target_score_range"])
+        self.assertEqual([14, 20], second["jump"]["target_score_range"])
+        self.assertEqual([14, 20], second["fly"]["target_score_range"])
+        self.assertEqual([8, 16], default["jump"]["target_score_range"])
+        self.assertEqual([8, 18], default["fly"]["target_score_range"])
 
     async def test_tree_score_config_rejects_non_numeric_before_save(self):
         with patch.object(ui, "get_identity_ids", return_value=[1002]), \

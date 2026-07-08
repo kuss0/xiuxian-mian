@@ -305,7 +305,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 identity_id,
                 token="fish_TEST1234",
                 webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
-                max_rounds=3,
+                max_rounds=fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS,
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
             )
@@ -350,7 +350,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 identity_id,
                 token="fish_TEST1234",
                 webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
-                max_rounds=4,
+                max_rounds=fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS,
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
             )
@@ -391,10 +391,43 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 identity_id,
                 token="fish_TEST1234",
                 webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
-                max_rounds=18,
+                max_rounds=fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS,
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
             )
+
+    async def test_miniapp_entry_does_not_cap_chain_by_stale_local_daily_limit(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 53, 35)
+        flow_result = {
+            "ok": True,
+            "status": "daily_limit",
+            "data": {"settled_count": 30, "next_status": "daily_limit"},
+            "events": [{"step": "next", "ok": False}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+        self.assertTrue(handled)
+        self.assertEqual(fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS, flow_mock.await_args.kwargs["max_rounds"])
+        send_mock.assert_not_awaited()
 
     async def test_miniapp_result_calibrates_daily_progress_from_api_payload(self):
         identity_id = self._prepare_identity()

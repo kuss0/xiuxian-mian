@@ -8,7 +8,7 @@
 
 本次辅助修复已干完：focused MiniApp 测试 `104 passed`，Python 编译、前端 JS 语法和 `git diff --check` 均通过。主线复核后补充旧生产配置兼容测试，focused MiniApp 测试为 `105 passed`。验证仍限离线/mock/静态范围；未上线、未重启、未发游戏命令、未做 live probe、未读写生产 DB。
 
-主线 2026-07-08 17:35 防作弊补记：灵树分数策略已从本历史审计的 `20-80` 收紧为 `20-45`，单点目标分改为区间中值并自动扩成至少 8 分宽随机区间；旧固定分配置只作为迁移测试样本。
+主线 2026-07-08 18:05 防作弊补记：灵树分数策略已从本历史审计的 `20-80` 继续收紧为 20 内低分随机区间，单点目标分改为区间中值并自动扩成随机区间；旧固定分配置只作为迁移测试样本。
 
 ## 边界
 
@@ -23,7 +23,7 @@
 - 灵树 `jump/fly` proof：
   - `fly` 按 WebView Flappy 式点击上冲物理实现，proof 为 `flaps/durationMs/clientScore`。
   - `jump` 按跳一跳平台/充能落点实现，proof 为 `charges/durationMs/clientScore`。
-  - 默认目标分为几十；主线防作弊复核后夹取范围为 `20-45`，固定值会扩成随机区间。
+  - 默认目标分为 20 内低分；主线防作弊复核后默认 `jump 8-16`、`fly 8-18`，固定高值会扩成 `14-20` 随机区间。
   - 审计发现高目标时跳一跳连击可能冲分，已修复为接近上限时强制失误；主线新增回归测试锁定不超过保守上限。
   - 飞一飞规划参数已加本地上限保护：`beam_width <= 640`、规划时长 `<= 120000ms`、规划帧数 `<= 7600`。
 - 灵树 lab flow：
@@ -32,7 +32,7 @@
 - UI 配置：
   - `score_controls.tree` 已进入 MiniApp status snapshot。
   - `/api/miniapp-tree-score-config` 只保存 per-identity 区间中值配置到 `tree_miniapp_score_configs`，不触发游戏。
-  - 前端输入范围为 `20-45`。
+  - 前端输入范围由主线统一策略下发，当前为 20 内低分区间。
   - 新增身份隔离测试：不同 `send_as_id` 保存不同目标分，未配置身份回落默认几十区间。
 - 安全白名单：
   - `MINIAPP_ENTRY_PROBE_COMMANDS` 包含 `tree` 入口诊断。

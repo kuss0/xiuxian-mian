@@ -608,7 +608,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("SUPERSECRET", text)
         self.assertIn("<redacted>", text)
 
-    def test_tree_game_proofs_use_tens_targets_and_replay(self):
+    def test_tree_game_proofs_use_low_anticheat_targets_and_replay(self):
         fly_proof, fly_summary = tree_miniapp.build_tree_fly_proof(
             {"seed": "shape-test-seed-001", "runToken": "run-token-secret"},
             rng=random.Random(1),
@@ -626,27 +626,27 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         jump_replay = tree_miniapp.simulate_tree_jump_run("shape-test-seed-001", jump_proof["charges"])
 
-        self.assertGreaterEqual(fly_summary["targetScore"], 26)
-        self.assertLessEqual(fly_summary["targetScore"], 34)
-        self.assertGreaterEqual(fly_summary["score"], 20)
-        self.assertLessEqual(fly_summary["score"], 45)
+        self.assertGreaterEqual(fly_summary["targetScore"], 14)
+        self.assertLessEqual(fly_summary["targetScore"], 20)
+        self.assertGreaterEqual(fly_summary["score"], 0)
+        self.assertLessEqual(fly_summary["score"], 20)
         self.assertEqual(fly_proof["clientScore"], fly_replay["score"])
         self.assertTrue(all(isinstance(item, int) for item in fly_proof["flaps"]))
         self.assertGreater(fly_proof["durationMs"], 20_000)
 
-        self.assertGreaterEqual(jump_summary["targetScore"], 26)
-        self.assertLessEqual(jump_summary["targetScore"], 34)
-        self.assertGreaterEqual(jump_summary["score"], 20)
-        self.assertLessEqual(jump_summary["score"], 45)
+        self.assertGreaterEqual(jump_summary["targetScore"], 14)
+        self.assertLessEqual(jump_summary["targetScore"], 20)
+        self.assertGreaterEqual(jump_summary["score"], 0)
+        self.assertLessEqual(jump_summary["score"], 20)
         self.assertEqual(jump_proof["clientScore"], jump_replay["score"])
         self.assertTrue(all(isinstance(item, float) for item in jump_proof["charges"]))
 
-    def test_tree_score_profile_clamps_to_tens_policy(self):
-        self.assertEqual({"target_score_range": (20, 28)}, tree_miniapp.normalize_tree_score_profile("fly", {"target_score": 7}))
-        self.assertEqual({"target_score_range": (37, 45)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
-        self.assertEqual({"target_score_range": (32, 40)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [36, 36]}))
-        self.assertEqual({"target_score_range": (37, 45)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [126, 126]}))
-        self.assertEqual({"target_score_range": (24, 45)}, tree_miniapp.normalize_tree_score_profile("fly", {}))
+    def test_tree_score_profile_clamps_to_low_anticheat_policy(self):
+        self.assertEqual({"target_score_range": (4, 10)}, tree_miniapp.normalize_tree_score_profile("fly", {"target_score": 7}))
+        self.assertEqual({"target_score_range": (14, 20)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
+        self.assertEqual({"target_score_range": (14, 20)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [36, 36]}))
+        self.assertEqual({"target_score_range": (14, 20)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [126, 126]}))
+        self.assertEqual({"target_score_range": (8, 18)}, tree_miniapp.normalize_tree_score_profile("fly", {}))
 
     def test_tree_jump_proof_does_not_overshoot_score_cap(self):
         for index in range(6):
@@ -659,10 +659,10 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             )
             replay = tree_miniapp.simulate_tree_jump_run(seed, proof["charges"])
 
-            self.assertLessEqual(summary["targetScore"], 45)
-            self.assertLessEqual(summary["score"], 45)
+            self.assertLessEqual(summary["targetScore"], 20)
+            self.assertLessEqual(summary["score"], 20)
             self.assertEqual(proof["clientScore"], replay["score"])
-            self.assertLessEqual(replay["score"], 45)
+            self.assertLessEqual(replay["score"], 20)
 
     def test_tree_jump_proof_clamps_manual_canary_to_safe_cap(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
@@ -673,9 +673,9 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         replay = tree_miniapp.simulate_tree_jump_run("luoyun-canary-seed-126", proof["charges"])
 
-        self.assertLessEqual(summary["targetScore"], 45)
-        self.assertGreaterEqual(summary["targetScore"], 37)
-        self.assertLessEqual(summary["score"], 45)
+        self.assertLessEqual(summary["targetScore"], 20)
+        self.assertGreaterEqual(summary["targetScore"], 14)
+        self.assertLessEqual(summary["score"], 20)
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertEqual(summary["score"], replay["score"])
 
@@ -689,8 +689,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 profile={"target_score": 126},
             )
             targets.add(summary["targetScore"])
-            self.assertGreaterEqual(summary["targetScore"], 37)
-            self.assertLessEqual(summary["targetScore"], 45)
+            self.assertGreaterEqual(summary["targetScore"], 14)
+            self.assertLessEqual(summary["targetScore"], 20)
 
         self.assertGreater(len(targets), 1)
 
@@ -716,8 +716,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS, summary["profile"]["max_duration_ms"])
         self.assertLessEqual(proof["durationMs"], tree_miniapp.TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS + 2_000)
         self.assertEqual(proof["clientScore"], replay["score"])
-        self.assertGreaterEqual(replay["score"], 20)
-        self.assertLessEqual(replay["score"], 45)
+        self.assertGreaterEqual(replay["score"], 0)
+        self.assertLessEqual(replay["score"], 20)
 
     def test_tree_fly_proof_uses_server_validation_frame(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
@@ -732,8 +732,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             max_duration_ms=proof["durationMs"],
         )
 
-        self.assertGreaterEqual(summary["targetScore"], 32)
-        self.assertLessEqual(summary["targetScore"], 40)
+        self.assertGreaterEqual(summary["targetScore"], 14)
+        self.assertLessEqual(summary["targetScore"], 20)
         self.assertGreaterEqual(replay["score"], summary["targetScore"])
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_FRAME_MS, summary["profile"]["frame_ms"])
@@ -788,8 +788,9 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual("prepared", result["status"])
         self.assertEqual(["start", "run_start"], calls)
         self.assertEqual("fly", result["data"]["mode"])
-        self.assertGreaterEqual(result["data"]["proof_summary"]["score"], 20)
-        self.assertEqual([26, 34], result["data"]["score_profile"]["target_score_range"])
+        self.assertGreaterEqual(result["data"]["proof_summary"]["score"], 0)
+        self.assertLessEqual(result["data"]["proof_summary"]["score"], 20)
+        self.assertEqual([14, 20], result["data"]["score_profile"]["target_score_range"])
         self.assertNotIn("tree_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)
@@ -888,7 +889,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual("jump", submitted_payload["mode"])
         self.assertEqual("run_SECRET999", submitted_payload["runToken"])
         self.assertEqual({"charges", "durationMs", "clientScore"}, set(submitted_payload["proof"]))
-        self.assertGreaterEqual(submitted_payload["proof"]["clientScore"], 20)
+        self.assertGreaterEqual(submitted_payload["proof"]["clientScore"], 0)
+        self.assertLessEqual(submitted_payload["proof"]["clientScore"], 20)
         self.assertNotIn("tree_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)

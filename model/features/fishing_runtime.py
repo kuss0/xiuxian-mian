@@ -90,6 +90,7 @@ FISHING_VALUABLE_KEYWORDS = (
     "至宝",
     "真仙试锋",
 )
+FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS = fishing_behavior.FISHING_MAX_DAILY_LIMIT
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
@@ -1067,8 +1068,10 @@ def _remaining_miniapp_chain_rounds(now):
     if daily_updates:
         _apply_updates(daily_updates)
         mark_dirty()
+    # Local daily counters are only a cached hint. The MiniApp /next response is
+    # the authoritative stop signal and can change before the basket is synced.
     remaining = max(1, int(limit or 0) - int(count or 0))
-    return max(1, remaining)
+    return max(remaining, FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS)
 
 
 def _fishing_miniapp_capture_store(now):

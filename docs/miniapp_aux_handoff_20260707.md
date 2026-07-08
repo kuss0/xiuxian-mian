@@ -6,9 +6,9 @@
 
 本文件保留 2026-07-07 灵树 MiniApp 辅助开发交接历史；主线交接请以最终合并版 `docs/miniapp_aux_fix_handoff_20260708.md` 为准。
 
-主线 2026-07-08 17:35 已基于灵树防作弊继续收紧：目标上限从 80 降到 45，固定目标分改为随机区间中值；不要再按本历史文档中的 20-80 旧口径实现。
+主线 2026-07-08 18:05 已基于灵树防作弊和小游戏上限变化继续收紧：目标分统一改为 20 内低分随机区间，固定高分配置会迁移到 `14-20`；不要再按本历史文档中的 20-80 或 20-45 旧口径实现。
 
-本次辅助修复已干完：天机试炼每日调度新增 `trial_daily_scheduler_confirmed` 二次确认，空配置默认关闭；主线复核后保留生产旧 `trial_daily_enabled=true` 配置的生效语义，避免静默停跑。`tree` 已保持不在 `MINIAPP_MANUAL_RUN_COMMANDS`，并删除 UI 手动提交死代码；灵树目标分旧上限为 `20-80`，主线已收紧到 `20-45` 随机区间；MiniApp 非幂等动作 POST 已显式禁用默认重试。仍未上线、未重启、未发游戏命令、未做 live probe，交给主线审核处理。
+本次辅助修复已干完：天机试炼每日调度新增 `trial_daily_scheduler_confirmed` 二次确认，空配置默认关闭；主线复核后保留生产旧 `trial_daily_enabled=true` 配置的生效语义，避免静默停跑。`tree` 已保持不在 `MINIAPP_MANUAL_RUN_COMMANDS`，并删除 UI 手动提交死代码；灵树目标分旧上限为 `20-80`，主线已收紧为 20 内低分随机区间；MiniApp 非幂等动作 POST 已显式禁用默认重试。仍未上线、未重启、未发游戏命令、未做 live probe，交给主线审核处理。
 
 ## 边界
 
@@ -40,7 +40,7 @@
   - 实现 `start` state parser、`run_start/run_submit` request 构造、`run_tree_miniapp_game_lab_flow()`。
   - `submit=False` 时只做到 `start + run_start + 本地 proof 准备`，不提交成绩。
   - `submit=True` 仅作为 mock/lab 候选路径；生产 wrapper 存在但未接 UI 手动运行、scheduler 或自动化。
-- 跳一跳/飞一飞目标分默认是几十：`jump 24-42`、`fly 24-45`；历史候选硬性夹到 `20-80`，主线防作弊复核已收紧为 `20-45` 随机区间。
+- 跳一跳/飞一飞目标分当前由主线统一策略控制：默认 `jump 8-16`、`fly 8-18`；历史候选 `20-80`/`20-45` 都已废弃。
   - 飞一飞 beam search 加规划上限：`beam_width` 最大 640、规划时长最大 120000ms、规划帧数最大 7600，避免异常 profile 造成长时间 CPU 计算。
 - `model/state.py` / `model/persistence.py`
   - 新增 `tree_miniapp_score_configs` meta JSON，用于持久化 UI 分数配置。
@@ -49,7 +49,7 @@
   - 新增 `/api/miniapp-tree-score-config` 保存 per-identity 目标分配置，只保存配置，不触发游戏。
   - `MINIAPP_MANUAL_RUN_COMMANDS` 仍不包含 `tree`。
 - `model/web/static/js/miniapp_ui.js` / `ui_fixes.css`
-- MiniApp 页面新增灵树目标分输入；历史候选范围 `20-80`，主线已收紧为 `20-45` 区间中值。
+- MiniApp 页面新增灵树目标分输入；历史候选范围 `20-80` 已废弃，主线会把输入归一化为 20 内随机区间。
 - 旧 `灵树` automation 已归档；不得重新启用旧钓鱼/观星台/世界 boss 自动化或旧灵树 scheduler。
 
 ## 已验证

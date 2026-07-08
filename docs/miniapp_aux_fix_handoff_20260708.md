@@ -2,7 +2,7 @@
 
 更新时间：2026-07-08 17:35 CST
 
-2026-07-08 17:35 主线复核补记：灵树已出现防作弊风险信号，主线把分数策略再次收紧为低分随机区间。UI 输入只作为区间中值保存，运行和持久化读取都会把固定值扩成至少 8 分宽区间；普通上限从 80 降为 45，旧 `[126,126]` / `[80,80]` 配置会归一化为安全区间。灵树仍不接生产 scheduler，也不在 `MINIAPP_MANUAL_RUN_COMMANDS`。
+2026-07-08 18:05 主线复核补记：灵树已出现防作弊和小游戏上限变化风险，主线把分数策略再次收紧为 20 内低分随机区间。UI 输入只作为区间中值保存，运行和持久化读取都会把固定值扩成随机区间；默认 `jump 8-16`、`fly 8-18`，旧 `[126,126]` / `[80,80]` / 高分配置会归一化为 `14-20`。灵树仍不接生产 scheduler，也不在 `MINIAPP_MANUAL_RUN_COMMANDS`。
 
 合并来源：
 
@@ -29,7 +29,7 @@
 - 前端 MiniApp 状态徽标：按 `trial_daily_effective_enabled` 展示，避免旧状态残留 `trial_daily_enabled=true` 时误显示自动开启。
 - 非幂等 MiniApp POST：显式禁用默认重试，覆盖 `fishing finish/next`、`trial finish/next`、`cave_treasure action`、`stargazer action`、`tree run_start/run_submit`。
 - 灵树 MiniApp：保留入口诊断和分数配置，不接生产提交。`tree` 已从 `MINIAPP_MANUAL_RUN_COMMANDS` 移除，`ui_send_miniapp_manual_run()` 中灵树 `submit=True` 授权死代码已删除。
-- 灵树分数策略：防作弊后目标改为低分随机区间，普通上限为 `20-45`，默认仍是几十：`jump 24-42`、`fly 24-45`；固定值和旧 126/150 canary 路径都会扩成安全区间。
+- 灵树分数策略：防作弊后目标改为 20 内低分随机区间，默认 `jump 8-16`、`fly 8-18`；固定值和旧 126/150 canary 路径都会扩成 20 内安全区间。
 - 灵树小游戏 proof：`jump` 按跳一跳充能落点，`fly` 按 Flappy 式点击上冲；proof replay 不超过保守低分上限。
 - UI 分数配置：`score_controls.tree` 进入 MiniApp status snapshot，`/api/miniapp-tree-score-config` 只保存 per-identity 区间中值配置，不触发游戏。
 
@@ -213,7 +213,7 @@ git diff --check
 - 确认“天机试炼 dict key-only 兼容缺口”已由主线修复并通过回归测试。
 - 确认 `miniapp_daily` 虽然仍在全局 scheduler 表里，但默认和空配置下不会启动；生产启用必须由主线显式设置 `trial_daily_enabled=true` 和 `trial_daily_scheduler_confirmed=true`。
 - 确认 `tree` 不在手动运行白名单；当前只保留入口诊断和分数配置，不提交小游戏成绩。
-- 确认灵树分数上限为 80，不再允许普通 UI 或测试 canary 到 126/150。
+- 确认灵树分数上限为 20，不再允许普通 UI、DB 旧配置或测试 canary 到 45/80/126/150。
 - 复核非幂等 MiniApp POST 禁用重试是否覆盖主线认为有风险的全部 endpoint；若主线确认某 endpoint 服务端幂等，可单独恢复重试。
 - 复核新增 `iter_webapp_button_links()` 是否覆盖生产 Telethon 按钮对象；当前 mock 已覆盖 `reply_markup.rows[].buttons[].button.web_app.url`，未执行 live probe。
 - 上线前由主线决定是否补跑更大范围 pytest；辅助未做生产探测。

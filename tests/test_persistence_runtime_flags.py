@@ -128,12 +128,12 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
         self.assertEqual(
             {
                 "990030": {
-                    "jump": {"target_score_range": (24, 32)},
-                    "fly": {"target_score_range": (32, 40)},
+                    "jump": {"target_score_range": (14, 20)},
+                    "fly": {"target_score_range": (14, 20)},
                 },
                 "990031": {
-                    "jump": {"target_score_range": (37, 45)},
-                    "fly": {"target_score_range": (37, 45)},
+                    "jump": {"target_score_range": (14, 20)},
+                    "fly": {"target_score_range": (14, 20)},
                 },
             },
             state_module.get_tree_miniapp_score_configs(),
