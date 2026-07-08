@@ -250,10 +250,16 @@ def test_ui_write_guard_blocks_stale_silent_refresh_snapshots():
 
     assert "writeInFlight" in body
     assert "lastWriteStartedAt" in body
+    assert "lastUserEditAt" in body
+    assert "unsavedUserEdit" in body
+    assert "function hasBlockingUserEdit()" in body
+    assert "document.addEventListener('input', markUserEdit, true)" in body
+    assert "document.addEventListener('change', markUserEdit, true)" in body
     assert "window.postJson = async function" in body
     assert "window.refreshState = async function" in body
     assert "window.applySnapshot = function" in body
-    assert "marker.silent && hasBlockingWrite(marker.startedAt)" in body
+    assert "marker.silent && (hasBlockingWrite(marker.startedAt) || hasBlockingUserEdit())" in body
+    assert "if(!marker || !marker.silent)" in body
 
 
 def test_new_static_asset_loader_serves_css_and_blocks_traversal():
