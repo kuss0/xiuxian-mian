@@ -103,12 +103,11 @@ def _quota_text(state, mode):
     try:
         used = int(quota.get("used", 0) or 0)
         limit = int(quota.get("limit", 0) or 0)
-        best = int(quota.get("best", 0) or 0)
     except (TypeError, ValueError, OverflowError):
-        used = limit = best = 0
+        used = limit = 0
     label = "跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else str(mode or "")
     if limit > 0:
-        return f"{label} {used}/{limit}" + (f" best={best}" if best > 0 else "")
+        return f"{label} {used}/{limit}"
     return f"{label} 未开放"
 
 
@@ -118,22 +117,12 @@ def _format_tree_summary(result):
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     state = data.get("state") if isinstance(data.get("state"), dict) else {}
     proof_summary = data.get("proof_summary") if isinstance(data.get("proof_summary"), dict) else {}
-    submit = data.get("submit") if isinstance(data.get("submit"), dict) else {}
     mode = str(data.get("mode") or proof_summary.get("mode") or "").strip()
-    score = submit.get("score", proof_summary.get("score"))
-    target = proof_summary.get("targetScore")
     if result.get("ok"):
         parts = [f"MiniApp {status}"]
         if mode:
             parts.append("跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else mode)
-        try:
-            parts.append(f"分数 {int(score)}")
-        except (TypeError, ValueError, OverflowError):
-            pass
-        try:
-            parts.append(f"目标 {int(target)}")
-        except (TypeError, ValueError, OverflowError):
-            pass
+        parts.append("已结算，未解析到新增物资")
         return "｜".join(parts)
     if status == "mode_exhausted":
         label = "跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else (mode or "当前模式")
