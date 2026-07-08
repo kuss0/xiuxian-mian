@@ -980,6 +980,36 @@ def _is_mulan_reply_log_entry(entry):
     )
 
 
+def _is_mulan_support_start_notice(raw_text):
+    raw_text = str(raw_text or "").strip()
+    if not raw_text:
+        return False
+    if "正赶往" not in raw_text and "领了【" not in raw_text:
+        return False
+    if any(keyword in raw_text for keyword in SUPPORT_RESULT_KEYWORDS):
+        return False
+    if _is_support_done_text(raw_text) or _is_daily_done_text(raw_text):
+        return False
+    return True
+
+
+def _is_mulan_terminal_recovery_text(phase, raw_text):
+    raw_text = str(raw_text or "").strip()
+    if not raw_text:
+        return False
+    if phase != MULAN_PHASE_SUPPORT_PENDING:
+        return True
+    if has_wait_time(raw_text) and any(keyword in raw_text for keyword in CD_KEYWORDS):
+        return True
+    if any(keyword in raw_text for keyword in SUPPORT_RESULT_KEYWORDS):
+        return True
+    if _is_support_done_text(raw_text) or _is_daily_done_text(raw_text):
+        return True
+    if _is_mulan_support_start_notice(raw_text):
+        return False
+    return "慕兰" in raw_text
+
+
 async def _recover_mulan_pending_from_message_log(now, phase, reply_to_msg_id):
     reply_to_msg_id = int(reply_to_msg_id or 0)
     if reply_to_msg_id <= 0:
@@ -999,8 +1029,11 @@ async def _recover_mulan_pending_from_message_log(now, phase, reply_to_msg_id):
     command = str(state.get("mulan_last_command") or "").strip()
     reply_to = SimpleNamespace(id=reply_to_msg_id, raw_text=command)
     for entry in replies:
+        raw_text = str(entry.get("text") or "")
+        if not _is_mulan_terminal_recovery_text(phase, raw_text):
+            continue
         handled = await handle_mulan_reply(
-            entry.get("text") or "",
+            raw_text,
             float(entry.get("ts_epoch") or now),
             reply_to=reply_to,
             matched_family=family,

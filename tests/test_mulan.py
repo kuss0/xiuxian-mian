@@ -512,6 +512,79 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["mulan_last_error"])
             self.assertGreater(state_module.state["next_mulan_time"], now)
 
+    async def test_support_timeout_does_not_recover_from_start_notice_only(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "support_pending"
+            state_module.state["mulan_reply_to_msg_id"] = 888
+            state_module.state["mulan_reply_due_at"] = now - 1
+            state_module.state["mulan_last_command"] = ".支援慕兰 斥候"
+            state_module.state["mulan_support_action"] = "斥候"
+            replies = [
+                {
+                    "ts_epoch": now - 120,
+                    "message_id": 889,
+                    "text": "【慕兰烽烟】\n@tutuerduoxiao 领了【斥候探草原】之令，正赶往天南边境...",
+                }
+            ]
+            with (
+                patch.object(mulan, "find_message_log_replies", return_value=replies),
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan.random, "uniform", return_value=0),
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
+            self.assertIn("支援结果超时", state_module.state["mulan_last_result"])
+            audit_text = str(audit_mock.await_args.args[0])
+            self.assertIn("支援结果无回复", audit_text)
+            self.assertNotIn("日志补偿", audit_text)
+
+    async def test_support_timeout_recovers_terminal_edit_after_start_notice(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "support_pending"
+            state_module.state["mulan_reply_to_msg_id"] = 888
+            state_module.state["mulan_reply_due_at"] = now - 1
+            state_module.state["mulan_last_command"] = ".支援慕兰 斥候"
+            state_module.state["mulan_support_action"] = "斥候"
+            replies = [
+                {
+                    "ts_epoch": now - 120,
+                    "message_id": 889,
+                    "text": "【慕兰烽烟】\n@tutuerduoxiao 领了【斥候探草原】之令，正赶往天南边境...",
+                },
+                {
+                    "ts_epoch": now - 115,
+                    "message_id": 889,
+                    "text": "【慕兰烽烟 · 斥候探草原】小胜\n获得修为 +415\n获得灵石 +207\n边境军功 +3，累计 5\n连续支援 1 天",
+                },
+            ]
+            with (
+                patch.object(mulan, "find_message_log_replies", return_value=replies),
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan.random, "uniform", return_value=0),
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
+            self.assertEqual("支援完成：斥候", state_module.state["mulan_last_result"])
+            self.assertEqual(889, state_module.state["mulan_last_msg_id"])
+            audit_texts = [str(call.args[0]) for call in audit_mock.await_args_list]
+            self.assertTrue(any("日志补偿" in item for item in audit_texts))
+
     async def test_ready_to_panel_from_legacy_support_timeout_finishes_cycle(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
