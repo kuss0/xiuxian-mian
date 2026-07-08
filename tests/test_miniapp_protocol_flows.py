@@ -446,6 +446,41 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("df_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
 
+    def test_cave_treasure_action_button_text_does_not_mean_treasure_found(self):
+        state = cave_treasure_miniapp.parse_cave_treasure_state({
+            "huntRun": {
+                "sessionId": "hunt-active",
+                "status": "active",
+                "size": 2,
+                "ap": 2,
+                "maxAp": 8,
+                "text": "可用操作：继续寻宝，或见好就收；若有收获可再来一次。",
+                "cells": [
+                    {"index": 0, "revealed": False},
+                    {"index": 1, "revealed": False},
+                ],
+            },
+        })
+        decision = cave_treasure_miniapp.choose_cave_treasure_action(state, rng=random.Random(5))
+
+        self.assertFalse(state["treasure_found"])
+        self.assertEqual("search", decision["action"])
+
+        found_state = cave_treasure_miniapp.parse_cave_treasure_state({
+            "huntRun": {
+                "sessionId": "hunt-found",
+                "status": "active",
+                "size": 2,
+                "ap": 2,
+                "maxAp": 8,
+                "text": "你发现宝光大盛，主宝已现，可见好就收。",
+            },
+        })
+        found_decision = cave_treasure_miniapp.choose_cave_treasure_action(found_state, rng=random.Random(5))
+
+        self.assertTrue(found_state["treasure_found"])
+        self.assertEqual("settle", found_decision["action"])
+
     def test_cave_treasure_reveal_app_error_is_sanitized_and_stops(self):
         calls = []
         capture = webapp_core.MiniAppCaptureStore()

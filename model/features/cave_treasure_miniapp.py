@@ -423,7 +423,7 @@ def parse_cave_treasure_state(data):
     )
     treasure_found = explicit_treasure_found or any(
         keyword in outcome_text
-        for keyword in ("发现宝", "命中宝", "主宝", "秘宝", "宝物到手", "见好就收", "再来一次")
+        for keyword in ("发现宝", "命中宝", "主宝", "秘宝", "宝物到手")
     )
     settled = bool(hunt_result) or _bool_from_any(treasure.get("settled"), treasure.get("finished")) or any(
         keyword in all_text for keyword in ("结算完成", "已结算", "今日寻宝已结算", "已收获")
