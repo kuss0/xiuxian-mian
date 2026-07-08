@@ -92,6 +92,42 @@ class ControlBoolCoercionTests(unittest.TestCase):
         clear_mock.assert_called_once_with(now)
         spread_mock.assert_called_once_with(now, reason="全局恢复", window_sec=control.RECOVERY_SPREAD_MAX_SEC)
 
+    def test_recovery_throttle_covers_spread_window(self):
+        self.assertGreaterEqual(
+            control.BOT_HEALTH_RECOVERY_THROTTLE_SEC,
+            control.RECOVERY_SPREAD_MAX_SEC + control.RECOVERY_THROTTLE_BUFFER_SEC,
+        )
+
+    def test_startup_recovery_extends_active_throttle_for_new_spread(self):
+        now = 1_700_000_000.0
+        state_module.set_global_recovery_throttle_until(now + 60)
+
+        with (
+            patch.object(control.time, "time", return_value=now),
+            patch.object(control, "console_log") as log_mock,
+            patch.object(control, "mark_dirty") as dirty_mock,
+        ):
+            changed = control.extend_global_recovery_throttle_for_spread(now, reason="启动恢复")
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            now + control.RECOVERY_SPREAD_MAX_SEC + control.RECOVERY_THROTTLE_BUFFER_SEC,
+            state_module.get_global_recovery_throttle_until(),
+        )
+        dirty_mock.assert_called_once()
+        log_mock.assert_called_once()
+
+    def test_startup_recovery_does_not_create_throttle_when_inactive(self):
+        now = 1_700_000_000.0
+        state_module.set_global_recovery_throttle_until(0)
+
+        with patch.object(control, "mark_dirty") as dirty_mock:
+            changed = control.extend_global_recovery_throttle_for_spread(now, reason="启动恢复")
+
+        self.assertFalse(changed)
+        self.assertEqual(0, state_module.get_global_recovery_throttle_until())
+        dirty_mock.assert_not_called()
+
     def test_manual_global_resume_clears_recovery_hold_and_throttle(self):
         state_module.set_global_enabled(False)
         state_module.set_global_pause_source("ui")
@@ -129,6 +165,36 @@ class ControlBoolCoercionTests(unittest.TestCase):
             patch.object(control, "spread_overdue_runtime_timers") as spread_mock,
         ):
             ok, message = asyncio.run(control.toggle_global_enabled(True, source="ui"))
+
+        self.assertTrue(ok, message)
+        self.assertEqual(now + control.BOT_HEALTH_RECOVERY_HOLD_SEC, state_module.get_global_recovery_hold_until())
+        self.assertEqual(now + control.BOT_HEALTH_RECOVERY_THROTTLE_SEC, state_module.get_global_recovery_throttle_until())
+        spread_mock.assert_called_once_with(now, reason="全局恢复", window_sec=control.RECOVERY_SPREAD_MAX_SEC)
+
+    def test_manual_resume_with_safety_marker_uses_recovery_ramp_even_if_source_missing(self):
+        now = 1_700_000_000.0
+        state_module.set_global_enabled(False)
+        state_module.set_global_pause_source("")
+        state_module.set_global_recovery_hold_until(0)
+        state_module.set_global_recovery_throttle_until(0)
+        state_module.ensure_identity_registered(990319)
+        state_module.update_send_as_profile(990319, enabled=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "safety_watchdog_fused.json").write_text(
+                json.dumps({"reason": "send burst"}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(control.time, "time", return_value=now),
+                patch.object(control, "STATE_DIR", str(state_dir)),
+                patch.object(control, "save_state"),
+                patch.object(control, "send_audit_log", new=AsyncMock()),
+                patch.object(control, "clear_transient_send_failures_for_global_recovery"),
+                patch.object(control, "spread_overdue_runtime_timers") as spread_mock,
+            ):
+                ok, message = asyncio.run(control.toggle_global_enabled(True, source="log_group"))
 
         self.assertTrue(ok, message)
         self.assertEqual(now + control.BOT_HEALTH_RECOVERY_HOLD_SEC, state_module.get_global_recovery_hold_until())

@@ -2681,15 +2681,20 @@ def save_quiz_ai_config_state():
 
 
 def _sync_external_safety_pause_before_save(conn):
-    if not get_global_enabled():
-        return
     if not os.path.exists(_safety_watchdog_fused_file()):
         return
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", ("global_enabled",)).fetchone()
-    if not row:
+    rows = conn.execute(
+        "SELECT key, value FROM meta WHERE key IN (?, ?)",
+        ("global_enabled", "global_pause_source"),
+    ).fetchall()
+    meta = {str(row["key"]): str(row["value"] or "") for row in rows}
+    db_enabled = meta.get("global_enabled")
+    if db_enabled is None:
         return
-    if str(row["value"] or "").strip() in {"0", "false", "False", ""}:
+    if str(db_enabled or "").strip() in {"0", "false", "False", ""}:
         set_global_enabled(False)
+        pause_source = str(meta.get("global_pause_source") or get_global_pause_source() or "").strip()
+        set_global_pause_source(pause_source or "safety_watchdog")
 
 
 def _save_meta_state(conn):

@@ -156,9 +156,38 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
 
                 self.assertTrue(persistence.save_state())
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()["value"]
+                source = conn.execute("SELECT value FROM meta WHERE key = 'global_pause_source'").fetchone()["value"]
 
         self.assertEqual("0", value)
+        self.assertEqual("safety_watchdog", source)
         self.assertFalse(state_module.get_global_enabled())
+        self.assertEqual("safety_watchdog", state_module.get_global_pause_source())
+
+    def test_save_state_preserves_existing_external_pause_source(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            state_dir = Path(db_path).parent
+            with patch.object(persistence, "DB_FILE", db_path):
+                persistence.init_db()
+                conn = persistence.get_db_conn()
+                conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('global_enabled', '0')")
+                conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('global_pause_source', 'bot_health_monitor')")
+                conn.commit()
+                (state_dir / "safety_watchdog_fused.json").write_text(
+                    '{"reason":"send burst"}',
+                    encoding="utf-8",
+                )
+                state_module.set_global_enabled(True)
+                state_module.set_global_pause_source("")
+
+                self.assertTrue(persistence.save_state())
+                value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()["value"]
+                source = conn.execute("SELECT value FROM meta WHERE key = 'global_pause_source'").fetchone()["value"]
+
+        self.assertEqual("0", value)
+        self.assertEqual("bot_health_monitor", source)
+        self.assertFalse(state_module.get_global_enabled())
+        self.assertEqual("bot_health_monitor", state_module.get_global_pause_source())
 
     def test_small_world_preach_legacy_default_normalization_is_one_time(self):
         with tempfile.TemporaryDirectory() as tmpdir:

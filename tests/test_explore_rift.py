@@ -1558,6 +1558,29 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未捞到反馈", state_module.state["explore_rift_last_error"])
         self.assertIn("暂停本轮", state_module.state["explore_rift_last_result"])
 
+    async def test_scheduler_does_not_reprocess_paused_unknown_send_result(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 0
+            state_module.state["explore_rift_reply_due_at"] = 0
+            state_module.state["next_explore_rift_time"] = now + explore_rift.RETRY_MAX_SEC
+            state_module.state["explore_rift_last_result"] = "发送状态未知且未捞到反馈，已暂停本轮"
+            state_module.state["explore_rift_last_error"] = "探寻裂缝发送状态未知，消息日志未捞到反馈"
+            state_module.state["tianxing_enabled"] = True
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(explore_rift, "save_state") as save_mock,
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_not_awaited()
+        save_mock.assert_not_called()
+
     async def test_scheduler_pulls_ready_tianxing_retry_forward_and_sends(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
         now = 1_700_000_000.0

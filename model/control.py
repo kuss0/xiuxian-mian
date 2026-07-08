@@ -280,6 +280,7 @@ from .state import (
     get_identity_ui_display_name,
     get_global_enabled,
     get_global_pause_source,
+    get_global_recovery_throttle_until,
     get_guanxing_monitor_enabled,
     get_guanxing_shift_target,
     has_sect_membership,
@@ -368,7 +369,8 @@ RECOVERY_SPREAD_MAX_SEC = 1200
 RECOVERY_SPREAD_DUE_GRACE_SEC = 2
 RECOVERY_SHORT_WINDOW_SEC = 180
 BOT_HEALTH_RECOVERY_HOLD_SEC = 180
-BOT_HEALTH_RECOVERY_THROTTLE_SEC = 900
+RECOVERY_THROTTLE_BUFFER_SEC = 300
+BOT_HEALTH_RECOVERY_THROTTLE_SEC = RECOVERY_SPREAD_MAX_SEC + RECOVERY_THROTTLE_BUFFER_SEC
 RECOVERY_READY_MIN_SEC = 30
 RECOVERY_READY_MAX_SEC = 90
 RECOVERY_PHASEFUL_IDLE_MIN_SEC = 10 * 60
@@ -877,6 +879,29 @@ def spread_overdue_runtime_timers(now=None, *, reason="recovery", window_sec=Non
             limit=220,
         )
     return changed_count
+
+
+def extend_global_recovery_throttle_for_spread(now=None, *, reason="recovery", window_sec=None):
+    """Keep recovery slow-start active long enough to cover freshly spread timers."""
+    if now is None:
+        now = time.time()
+    now = float(now)
+    current_until = float(get_global_recovery_throttle_until() or 0.0)
+    if current_until <= now:
+        return False
+    if window_sec is None:
+        window_sec = RECOVERY_SPREAD_MAX_SEC
+    target_until = now + max(0.0, float(window_sec or 0.0)) + RECOVERY_THROTTLE_BUFFER_SEC
+    if current_until >= target_until:
+        return False
+    set_global_recovery_throttle_until(target_until)
+    mark_dirty()
+    console_log(
+        f"🧯 {reason} 慢启动顺延至 {fmt_abs_ts(target_until)}，覆盖本轮恢复错峰窗口",
+        scope="global",
+        limit=220,
+    )
+    return True
 
 
 def clear_transient_send_failures_for_global_recovery(now=None):
@@ -5455,9 +5480,11 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
     set_global_pause_source("" if enabled else normalized_source)
     now = time.time()
     recovery_spread_window = None
+    safety_marker_present = (Path(STATE_DIR) / "safety_watchdog_fused.json").exists()
     use_recovery_ramp = enabled and (
         normalized_source in {"bot_health_recovery", "safety_watchdog_recovery"}
         or previous_pause_source == "safety_watchdog"
+        or safety_marker_present
     )
     if use_recovery_ramp:
         set_global_recovery_hold_until(now + BOT_HEALTH_RECOVERY_HOLD_SEC)
@@ -6548,6 +6575,7 @@ __all__ = [
     "scan_startup_timeout_tasks",
     "set_module_enabled",
     "set_module_window_config",
+    "extend_global_recovery_throttle_for_spread",
     "spread_overdue_runtime_timers",
     "toggle_global_enabled",
 ]

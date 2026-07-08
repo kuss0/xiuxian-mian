@@ -701,7 +701,7 @@ def is_explore_rift_reply_text(text):
 
 
 def _is_unknown_send_summary(value):
-    return str(value or "").strip().startswith("发送状态未知")
+    return str(value or "").strip().startswith("发送状态未知，等待被动回复")
 
 
 def _mark_explore_rift_send_unknown(now):

@@ -49,6 +49,7 @@ from model import state as state_module
 class MessageLogButtonTests(unittest.TestCase):
     def tearDown(self):
         app_runtime._runtime_log_claims.clear()
+        app._observed_game_commands.clear()
 
     def test_extract_message_log_buttons_records_text_type_and_host(self):
         callback_button = SimpleNamespace(text="稳固道心", button=SimpleNamespace(text="稳固道心", data=b"ok"))
@@ -525,6 +526,51 @@ class MessageLogButtonTests(unittest.TestCase):
             save_mock.assert_called_once()
         finally:
             app._suspected_game_bot_hits.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_external_player_command_evidence_learns_verified_game_bot(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        app._observed_game_commands.clear()
+        samples = [
+            (7001, 1101, ".野外历练", "【野外历练】\n@alpha 选择【均衡】策略，正向荒野深处行去..."),
+            (7002, 1102, ".闯塔", "【琉璃问心塔】\n今日塔相：镜花水月。"),
+            (7003, 1103, ".我的侍妾", "你的道心侍妾: 【妍丽】 (状态: 随行中)\n情缘值: 410"),
+            (7004, 1101, ".第二元神", "你的第二元神\n\n等级: 12 级\n状态: 窍中温养"),
+            (7005, 1102, ".世界boss", "【真仙试锋】\n青元子魔压翻涌，阵势正在变化。"),
+        ]
+        try:
+            state_module._meta_state["game_bot_ids"] = []
+            with patch("model.app.save_state") as save_mock, \
+                    patch("model.app.send_audit_log", new=AsyncMock()) as audit_mock:
+                for idx, (cmd_msg_id, player_id, command, reply_text) in enumerate(samples):
+                    app._observe_game_command_for_bot_evidence(
+                        player_id,
+                        command,
+                        cmd_msg_id,
+                        now=1000.0 + idx,
+                    )
+                    event = SimpleNamespace(
+                        id=8000 + idx,
+                        chat_id=-100910,
+                        sender_id=990991,
+                        sender=SimpleNamespace(bot=True, username="hantianzun_new_bot"),
+                        reply_to=SimpleNamespace(reply_to_msg_id=cmd_msg_id),
+                    )
+                    handled = asyncio.run(app._handle_suspected_game_bot_reply(
+                        event,
+                        reply_text,
+                        1000.0 + idx,
+                    ))
+                    self.assertFalse(handled)
+
+            self.assertIn(990991, state_module.get_game_bot_ids())
+            save_mock.assert_called_once()
+            self.assertTrue(any("自动识别到游戏 BOT" in str(call.args[0]) for call in audit_mock.await_args_list))
+        finally:
+            app._suspected_game_bot_hits.clear()
+            app._observed_game_commands.clear()
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 

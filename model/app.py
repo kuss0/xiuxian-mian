@@ -32,7 +32,7 @@ from .app_replica import (
     run_luoyun_cd_reminder_scheduler,
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
-from .control import clear_transient_send_failures_for_global_recovery, enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
+from .control import clear_transient_send_failures_for_global_recovery, enforce_identity_module_availability, extend_global_recovery_throttle_for_spread, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .module_manifest import is_module_archived
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
@@ -200,6 +200,9 @@ from .runtime import (
     check_bot_health_timeout,
     clear_pending_by_reply,
     console_log,
+    GAME_SEND_RPC_TIMEOUT_SEC,
+    GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC,
+    GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC,
     gc_my_msg_ids,
     gc_ui_login_tokens,
     gc_ui_sessions,
@@ -251,21 +254,37 @@ _log_bot_callback_task = None
 _phaseful_scheduler_task = None
 _small_world_scheduler_task = None
 _suspected_game_bot_hits = {}
+_observed_game_commands = {}
 _MESSAGE_BOX_SHADOW_CAP = 10000
 _message_box_shadow = MessageBox(cap=_MESSAGE_BOX_SHADOW_CAP)
 
 IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
 UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
 UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
+UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES = 5
+UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS = 3
+UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS = 3
+OBSERVED_GAME_COMMAND_TTL_SEC = 15 * 60
+OBSERVED_GAME_COMMAND_CAP = 2000
 HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANZUN_BOT_NAME_MARKER = "天尊"
 TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
 TIANXING_TIMELINE_FOLLOWUP_MAX_PER_TICK = 4
 DUE_WILD_TRAINING_MAX_PER_TICK = 5
 DUE_SCAN_TIMEOUT_MARGIN_SEC = 45
+DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC = (
+    GAME_SEND_RPC_TIMEOUT_SEC
+    + GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC
+    + GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC
+    + DUE_SCAN_TIMEOUT_MARGIN_SEC
+)
 DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC = WILD_TRAINING_SEND_TIMEOUT_SEC + DUE_SCAN_TIMEOUT_MARGIN_SEC
 DUE_WILD_TRAINING_DIAG_INTERVAL_SEC = 120
 _due_wild_training_last_diag_at = 0.0
+DUE_EXPLORE_RIFT_MAX_PER_TICK = 3
+DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC = max(90, DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC)
+DUE_EXPLORE_RIFT_DIAG_INTERVAL_SEC = 120
+_due_explore_rift_last_diag_at = 0.0
 DUE_CONCUBINE_MAX_PER_TICK = 1
 DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC = CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC + DUE_SCAN_TIMEOUT_MARGIN_SEC
 DUE_CONCUBINE_DIAG_INTERVAL_SEC = 180
@@ -275,7 +294,7 @@ DUE_STARGAZER_FOLLOWUP_SCHEDULER_TIMEOUT_SEC = 45
 DUE_STARGAZER_FOLLOWUP_DIAG_INTERVAL_SEC = 180
 _due_stargazer_followup_last_diag_at = 0.0
 DUE_TIANXING_MAX_PER_TICK = 2
-DUE_TIANXING_SCHEDULER_TIMEOUT_SEC = 90
+DUE_TIANXING_SCHEDULER_TIMEOUT_SEC = max(90, DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC)
 DUE_TIANXING_DIAG_INTERVAL_SEC = 180
 _due_tianxing_last_diag_at = 0.0
 
@@ -534,6 +553,126 @@ BOT_REPLY_FAMILY_HINTS = {
     "world_boss": ("真仙试锋", "讨伐青元子", "青元子", "魔压", "阵势", "世界Boss"),
 }
 
+OBSERVED_COMMAND_REPLY_HINTS = {
+    "万宝楼": ("万宝楼", "搜索结果", "挂单ID", "购买"),
+    "世界boss": ("真仙试锋", "世界Boss", "青元子", "魔压", "讨伐"),
+    "我的侍妾": ("侍妾", "道侣", "红尘", "情缘", "掩月心契"),
+    "第二元神": ("第二元神", "元神", "心魔", "魔染"),
+    "野外历练": ("野外历练", "荒野深处", "山中灵机未复", "妖兽", "负伤而归"),
+    "闯塔": ("琉璃问心塔", "试炼古塔", "塔相", "总收获", "塔印"),
+    "天机试炼": ("天机试炼台", "试炼已绑定", "进入天机试炼台"),
+}
+
+
+def _normalize_command_label(command):
+    raw_command = str(command or "").strip()
+    if raw_command.startswith("."):
+        raw_command = raw_command[1:]
+    if not raw_command:
+        return ""
+    return raw_command.split(maxsplit=1)[0].strip()
+
+
+def _prune_observed_game_commands(now=None):
+    now = float(now if now is not None else time.time())
+    expired = [
+        msg_id
+        for msg_id, item in _observed_game_commands.items()
+        if now - float((item or {}).get("at", now) or now) > OBSERVED_GAME_COMMAND_TTL_SEC
+    ]
+    for msg_id in expired:
+        _observed_game_commands.pop(msg_id, None)
+    if len(_observed_game_commands) <= OBSERVED_GAME_COMMAND_CAP:
+        return
+    overflow = len(_observed_game_commands) - OBSERVED_GAME_COMMAND_CAP
+    oldest = sorted(
+        _observed_game_commands,
+        key=lambda msg_id: float((_observed_game_commands.get(msg_id) or {}).get("at", 0) or 0),
+    )[:overflow]
+    for msg_id in oldest:
+        _observed_game_commands.pop(msg_id, None)
+
+
+def _observe_game_command_for_bot_evidence(sender_id, text, msg_id, *, now=None):
+    command = str(text or "").strip()
+    if not command.startswith("."):
+        return None
+    try:
+        msg_id = int(msg_id or 0)
+    except (TypeError, ValueError):
+        msg_id = 0
+    if msg_id <= 0:
+        return None
+    now = float(now if now is not None else time.time())
+    _prune_observed_game_commands(now)
+    item = {
+        "sender_id": int(sender_id or 0),
+        "command": command,
+        "family": resolve_reply_family(command) or "",
+        "command_label": _normalize_command_label(command),
+        "at": now,
+    }
+    _observed_game_commands[msg_id] = item
+    return item
+
+
+def _get_observed_game_command(reply_to_msg_id, *, now=None):
+    try:
+        reply_to_msg_id = int(reply_to_msg_id or 0)
+    except (TypeError, ValueError):
+        reply_to_msg_id = 0
+    if reply_to_msg_id <= 0:
+        return None
+    now = float(now if now is not None else time.time())
+    _prune_observed_game_commands(now)
+    item = _observed_game_commands.get(reply_to_msg_id)
+    if not item:
+        return None
+    if now - float(item.get("at", now) or now) > OBSERVED_GAME_COMMAND_TTL_SEC:
+        _observed_game_commands.pop(reply_to_msg_id, None)
+        return None
+    return item
+
+
+def _observed_command_reply_matches(text, command_record):
+    raw_text = str(text or "").strip()
+    if not raw_text or raw_text.startswith(".") or not command_record:
+        return False
+    family = str(command_record.get("family") or "").strip()
+    if family and _looks_like_game_bot_reply(raw_text, family):
+        return True
+    command_label = str(command_record.get("command_label") or "").strip()
+    hints = OBSERVED_COMMAND_REPLY_HINTS.get(command_label) or ()
+    if hints and any(hint in raw_text for hint in hints):
+        return True
+    return bool(command_label and len(command_label) >= 2 and command_label in raw_text)
+
+
+def _ensure_evidence_set(item, key):
+    value = (item or {}).get(key)
+    if isinstance(value, set):
+        return value
+    if isinstance(value, (list, tuple)):
+        normalized = {v for v in value if v}
+    elif value:
+        normalized = {value}
+    else:
+        normalized = set()
+    item[key] = normalized
+    return normalized
+
+
+def _build_game_bot_evidence(item, *, username=""):
+    commands = sorted(str(value) for value in _ensure_evidence_set(item, "commands") if str(value).strip())
+    families = sorted(str(value) for value in _ensure_evidence_set(item, "families") if str(value).strip())
+    players = _ensure_evidence_set(item, "players")
+    return {
+        "username": username,
+        "reply_count": int((item or {}).get("count", 0) or 0),
+        "player_count": len(players),
+        "commands": commands or families,
+    }
+
 
 def _track_manual_game_command(sender_id, text, msg_id):
     command = str(text or "").strip()
@@ -614,7 +753,7 @@ async def _event_sender_is_bot(event):
     return bool(getattr(sender, "bot", False))
 
 
-async def _learn_game_bot_id(sender_id, reason):
+async def _learn_game_bot_id(sender_id, reason, *, evidence=None):
     sender_id = int(sender_id or 0)
     if sender_id <= 0 or sender_id in set(get_game_bot_ids()):
         return False
@@ -622,11 +761,37 @@ async def _learn_game_bot_id(sender_id, reason):
     known_ids.add(sender_id)
     set_game_bot_ids(sorted(known_ids))
     save_state()
-    await send_audit_log(
-        f"🧩 识别到游戏 bot：{sender_id}｜{reason}，已加入 game_bot_ids。",
-        scope="global",
-        limit=220,
-    )
+    if evidence:
+        username = str((evidence or {}).get("username") or "").strip()
+        commands = [
+            str(value).strip()
+            for value in ((evidence or {}).get("commands") or [])
+            if str(value).strip()
+        ]
+        command_text = "、".join(commands[:8]) or "未记录"
+        reply_count = int((evidence or {}).get("reply_count", 0) or 0)
+        player_count = int((evidence or {}).get("player_count", 0) or 0)
+        bot_line = f"BOT: @{username}" if username else "BOT: 未知用户名"
+        await send_audit_log(
+            "\n".join(
+                [
+                    "🤖 自动识别到游戏 BOT",
+                    bot_line,
+                    f"ID: {sender_id}",
+                    f"证据: {reply_count} 条回复 / {player_count} 个玩家",
+                    f"指令: {command_text}",
+                    "状态: 已自动加入配置，已持久化",
+                ]
+            ),
+            scope="global",
+            limit=520,
+        )
+    else:
+        await send_audit_log(
+            f"🧩 识别到游戏 bot：{sender_id}｜{reason}，已加入 game_bot_ids。",
+            scope="global",
+            limit=220,
+        )
     return True
 
 
@@ -672,35 +837,120 @@ async def _note_game_bot_activity():
         mark_bot_health_recovered("bot 恢复确认完成")
 
 
-async def _record_suspected_game_bot(sender_id, family, text, *, verified_bot=False):
+def _game_bot_sender_username(event):
+    sender = getattr(event, "sender", None)
+    username = str(getattr(sender, "username", "") or "").strip()
+    if username:
+        return username
+    return str(getattr(event, "sender_username", "") or "").strip()
+
+
+async def _record_suspected_game_bot(
+    sender_id,
+    family,
+    text,
+    *,
+    verified_bot=False,
+    player_id=0,
+    command_label="",
+    reply_to_msg_id=0,
+    sender_username="",
+):
     sender_id = int(sender_id or 0)
     if sender_id == 0 or sender_id in set(get_game_bot_ids()):
         return
     now = time.time()
-    item = _suspected_game_bot_hits.get(sender_id) or {"count": 0, "first_seen": now, "notified": False, "learned": False}
+    item = _suspected_game_bot_hits.get(sender_id) or {
+        "count": 0,
+        "first_seen": now,
+        "notified": False,
+        "learned": False,
+        "players": set(),
+        "families": set(),
+        "commands": set(),
+        "reply_to_ids": set(),
+    }
     if now - float(item.get("first_seen", now) or now) > UNKNOWN_GAME_BOT_HIT_TTL_SEC:
-        item = {"count": 0, "first_seen": now, "notified": False, "learned": False}
+        item = {
+            "count": 0,
+            "first_seen": now,
+            "notified": False,
+            "learned": False,
+            "players": set(),
+            "families": set(),
+            "commands": set(),
+            "reply_to_ids": set(),
+        }
     item["count"] = int(item.get("count", 0) or 0) + 1
+    item["last_seen"] = now
+    if family:
+        _ensure_evidence_set(item, "families").add(str(family))
+    if command_label:
+        _ensure_evidence_set(item, "commands").add(str(command_label))
+    if player_id:
+        try:
+            _ensure_evidence_set(item, "players").add(int(player_id))
+        except (TypeError, ValueError):
+            pass
+    if reply_to_msg_id:
+        try:
+            _ensure_evidence_set(item, "reply_to_ids").add(int(reply_to_msg_id))
+        except (TypeError, ValueError):
+            pass
     _suspected_game_bot_hits[sender_id] = item
 
     if not item.get("notified"):
         item["notified"] = True
         await send_audit_log(
-            f"🧩 检测到未登记游戏 bot 回复，已临时放行：{sender_id}｜{family}｜{str(text or '')[:60]}",
+            f"🧩 检测到未登记游戏 bot 回复候选：{sender_id}｜{family or command_label}｜{str(text or '')[:60]}",
             scope="global",
             limit=260,
         )
 
-    if int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_LEARN_THRESHOLD and not item.get("learned"):
+    players = _ensure_evidence_set(item, "players")
+    commands = _ensure_evidence_set(item, "commands")
+    has_external_evidence = bool(players or commands)
+    ready_to_learn = int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_LEARN_THRESHOLD
+    if has_external_evidence:
+        ready_to_learn = (
+            int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES
+            and len(players) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS
+            and len(commands) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS
+        )
+
+    if ready_to_learn and not item.get("learned"):
         item["learned"] = True
         if verified_bot:
-            await _learn_game_bot_id(sender_id, f"连续命中 {item['count']} 次")
+            evidence = _build_game_bot_evidence(item, username=sender_username) if has_external_evidence else None
+            await _learn_game_bot_id(
+                sender_id,
+                f"连续命中 {item['count']} 次",
+                evidence=evidence,
+            )
         else:
             await send_audit_log(
                 f"🧩 未登记游戏 bot 候选命中 {item['count']} 次但 sender 非 bot，未写入 game_bot_ids：{sender_id}",
                 scope="global",
                 limit=260,
             )
+
+
+async def _record_external_game_bot_evidence(event, text, now, *, verified_bot=False):
+    reply_to_msg_id = _get_event_reply_header_msg_id(event)
+    command_record = _get_observed_game_command(reply_to_msg_id, now=now)
+    if not command_record or not _observed_command_reply_matches(text, command_record):
+        return False
+    await _record_suspected_game_bot(
+        int(getattr(event, "sender_id", 0) or 0),
+        command_record.get("family") or "",
+        text,
+        verified_bot=verified_bot,
+        player_id=int(command_record.get("sender_id", 0) or 0),
+        command_label=command_record.get("command_label") or "",
+        reply_to_msg_id=reply_to_msg_id,
+        sender_username=_game_bot_sender_username(event),
+    )
+    return True
 
 
 async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
@@ -710,7 +960,11 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
     sender_is_bot = await _event_sender_is_bot(event)
     if not sender_is_bot:
         return False
-    reply_to, reply_context = await _resolve_event_reply(event)
+    await _record_external_game_bot_evidence(event, text, now, verified_bot=sender_is_bot)
+    try:
+        reply_to, reply_context = await _resolve_event_reply(event)
+    except Exception:
+        return False
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
     matched_family = (reply_context or {}).get("family") or None
     if routed_identity_id <= 0 or not matched_family:
@@ -736,7 +990,13 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
         event_kind="edit" if edited else "message",
     )
     if handled_reply:
-        await _record_suspected_game_bot(sender_id, matched_family, text, verified_bot=sender_is_bot)
+        await _record_suspected_game_bot(
+            sender_id,
+            matched_family,
+            text,
+            verified_bot=sender_is_bot,
+            sender_username=_game_bot_sender_username(event),
+        )
     return handled_reply
 
 
@@ -1389,6 +1649,120 @@ def _record_due_wild_training_candidate_failure(action, *, now, reason):
             state["wild_training_reply_due_at"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
     else:
         state["next_wild_training_time"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
+    mark_dirty()
+
+
+async def _run_due_explore_rift_schedulers(now, *, limit=DUE_EXPLORE_RIFT_MAX_PER_TICK):
+    global _due_explore_rift_last_diag_at
+    candidates = []
+    for scan_index, identity_id in enumerate(get_identity_ids()):
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            scheduler_now = max(float(now or 0), time.time())
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            if not state.get("explore_rift_enabled"):
+                continue
+            pending_msg_id = int(state.get("explore_rift_reply_to_msg_id", 0) or 0)
+            pending_result_msg_id = int(state.get("explore_rift_pending_result_msg_id", 0) or 0)
+            try:
+                reply_due_at = float(state.get("explore_rift_reply_due_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                reply_due_at = 0.0
+            if (pending_msg_id > 0 or pending_result_msg_id > 0) and 0 < reply_due_at <= scheduler_now:
+                candidates.append((0, reply_due_at, scan_index, identity_id, scheduler_now, "cleanup"))
+                continue
+            if pending_msg_id > 0 or pending_result_msg_id > 0:
+                continue
+            try:
+                next_time = float(state.get("next_explore_rift_time", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                next_time = 0.0
+            if next_time <= 0:
+                continue
+            if next_time <= scheduler_now:
+                candidates.append((1, next_time, scan_index, identity_id, scheduler_now, "run"))
+                continue
+            if not state.get("tianxing_enabled"):
+                continue
+            try:
+                prepare_retry_at = float(state.get("explore_rift_tianxing_prepare_retry_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                prepare_retry_at = 0.0
+            if prepare_retry_at > scheduler_now:
+                continue
+            windows = build_tianxing_consume_window(
+                "探索",
+                now=scheduler_now,
+                due_at=next_time,
+                reason="探寻裂缝",
+                require_change_fate=True,
+            )
+            if windows:
+                candidates.append((2, next_time, scan_index, identity_id, scheduler_now, "prepare"))
+
+    if candidates and float(now or 0) - _due_explore_rift_last_diag_at >= DUE_EXPLORE_RIFT_DIAG_INTERVAL_SEC:
+        _due_explore_rift_last_diag_at = float(now or time.time())
+        preview = []
+        for _priority, due_at, _scan_index, identity_id, _scheduler_now, action in sorted(candidates)[:5]:
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
+            preview.append(f"@{username}:{action}/{overdue}s")
+        console_log(
+            f"🕳 到期探缝扫描候选 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
+            scope="global",
+        )
+
+    processed = 0
+    for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
+        if processed >= int(limit or 1):
+            break
+        try:
+            await asyncio.wait_for(
+                _run_due_explore_rift_candidate(identity_id, scheduler_now),
+                timeout=max(1, float(DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC or 0)),
+            )
+        except asyncio.TimeoutError:
+            with use_identity(identity_id):
+                _record_due_explore_rift_candidate_failure(
+                    action,
+                    now=time.time(),
+                    reason=f"到期探缝扫描执行超时（>{int(DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
+                )
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            console_log(f"🕳 到期探缝扫描超时：@{username} {action}", scope="global")
+        except Exception as exc:
+            with use_identity(identity_id):
+                _record_due_explore_rift_candidate_failure(
+                    action,
+                    now=time.time(),
+                    reason=f"到期探缝扫描异常：{str(exc)[:160]}",
+                )
+            print("due explore rift scheduler failed:")
+            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        processed += 1
+
+
+async def _run_due_explore_rift_candidate(identity_id, scheduler_now):
+    with use_identity(identity_id):
+        candidate_now = max(float(scheduler_now or 0), time.time())
+        await run_explore_rift_scheduler(candidate_now)
+
+
+def _record_due_explore_rift_candidate_failure(action, *, now, reason):
+    state["explore_rift_last_error"] = str(reason or "到期探缝扫描失败")
+    if action == "cleanup":
+        if int(state.get("explore_rift_reply_to_msg_id", 0) or 0) > 0:
+            state["explore_rift_reply_due_at"] = float(now) + 120
+    else:
+        state["next_explore_rift_time"] = float(now) + 120
     mark_dirty()
 
 
@@ -2230,6 +2604,8 @@ async def on_message(event):
     raw_text = (event.raw_text or "").strip()
     sender_id = int(event.sender_id or 0)
     identity_sender_id = _resolve_identity_sender_id(sender_id)
+    if raw_text.startswith(".") and not sender_is_game_bot:
+        _observe_game_command_for_bot_evidence(sender_id, raw_text, event.id, now=now)
     if raw_text.startswith(".") and identity_sender_id and get_global_enabled():
         note_game_command_observed(raw_text)
 
@@ -2585,16 +2961,20 @@ async def bootstrap():
     if not any_loaded:
         for identity_id in identity_ids:
             initialize_identity_runtime(identity_id, now)
-        clear_transient_send_failures_for_global_recovery(now)
-        spread_overdue_runtime_timers(now, reason="启动初始化")
+        cleared_count = clear_transient_send_failures_for_global_recovery(now)
+        spread_count = spread_overdue_runtime_timers(now, reason="启动初始化")
+        if cleared_count or spread_count:
+            extend_global_recovery_throttle_for_spread(now, reason="启动初始化")
         recover_divination_startup_timeouts(now)
         save_state()
     else:
         for identity_id in identity_ids:
             initialize_identity_runtime(identity_id, now)
             mark_dirty()
-        clear_transient_send_failures_for_global_recovery(now)
-        spread_overdue_runtime_timers(now, reason="启动恢复")
+        cleared_count = clear_transient_send_failures_for_global_recovery(now)
+        spread_count = spread_overdue_runtime_timers(now, reason="启动恢复")
+        if cleared_count or spread_count:
+            extend_global_recovery_throttle_for_spread(now, reason="启动恢复")
         recover_divination_startup_timeouts(now)
         save_state()
 
@@ -2673,6 +3053,7 @@ async def main_loop(stop_event=None):
         await _run_tianxing_timeline_followup_identity_schedulers(time.time())
         await _run_due_tianxing_schedulers(now)
         await _run_due_stargazer_followup_schedulers(now)
+        await _run_due_explore_rift_schedulers(now)
         await _run_due_wild_training_retry_schedulers(now)
         await _run_due_concubine_schedulers(now)
         await run_rare_daily_report_scheduler(now)

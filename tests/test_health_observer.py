@@ -245,6 +245,15 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(health_observer.is_hard_journal_line(line))
 
+    def test_listener_sidecar_unauthed_sessions_are_not_hard_journal_errors(self):
+        line = (
+            "Jul 08 21:00:52 pve python[3686429]: listener sidecar degraded: no connected accounts "
+            "failed=[{'account_id': 301299112, 'error': 'listener session 未独立授权: "
+            "/opt/xiuxian-main/data/session/listener_account_301299112.session；已禁止复制主 session，请先单独登录 listener_account_301299112。'}]"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+
     def test_hard_line_ignores_explore_rift_storm_result(self):
         self.assertFalse(
             health_observer.is_hard_journal_line(
@@ -1070,6 +1079,46 @@ class HealthObserverTests(unittest.TestCase):
                     "last_result": "success",
                     "last_summary": "温养双修成功",
                     "auto_last_error": "10分钟内没有吧唧发言，锚点发送失败或被安全策略拦截",
+                    "auto_last_error_at": now - 10,
+                    "auto_next_time": now + 300,
+                }, ensure_ascii=False),),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        hehuan = next(item for item in summary if item["module"] == "hehuan")
+        self.assertEqual("warn", hehuan["status"])
+
+    def test_module_summary_treats_scheduled_hehuan_anchor_failure_as_warn(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, hehuan_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    hehuan_observation TEXT NOT NULL DEFAULT '{}',
+                    concubine_partner_kind TEXT NOT NULL DEFAULT '',
+                    concubine_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_reply_due_at REAL NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, hehuan_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, hehuan_observation) VALUES(42, ?)",
+                (json.dumps({
+                    "last_observed_at": now - 3600,
+                    "last_action": "双修 温养",
+                    "last_result": "success",
+                    "last_summary": "温养双修成功",
+                    "auto_last_action": "warm",
+                    "auto_last_error": "同参对象 @jfdffdddd 发言锚点发送失败，暂不裸发温养双修。",
                     "auto_last_error_at": now - 10,
                     "auto_next_time": now + 300,
                 }, ensure_ascii=False),),

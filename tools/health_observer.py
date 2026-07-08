@@ -35,7 +35,7 @@ LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
-    r"already fused:|探寻裂缝结果：遭遇风暴|answerCallbackQuery failed:.*query is too old and response timeout expired|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
+    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
@@ -918,6 +918,11 @@ def module_error_is_retryable_warning(field: str, text: object, payload: dict[st
     if "补发已达" in raw or "上限" in raw:
         return False
     if "发送失败或被安全策略拦截" in raw and positive_epoch((payload or {}).get("auto_next_time")) > 0:
+        return True
+    if positive_epoch((payload or {}).get("auto_next_time")) > 0 and (
+        "锚点发送失败" in raw
+        or "暂不裸发" in raw
+    ):
         return True
     retry_count = positive_int((payload or {}).get("auto_retry_count"))
     pending_msg_id = positive_int((payload or {}).get("auto_pending_msg_id"))

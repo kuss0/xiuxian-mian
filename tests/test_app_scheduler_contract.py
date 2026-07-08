@@ -161,6 +161,14 @@ class AppSchedulerContractTests(unittest.TestCase):
             app.DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC,
             app.CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC + app.DUE_SCAN_TIMEOUT_MARGIN_SEC,
         )
+        self.assertGreaterEqual(
+            app.DUE_TIANXING_SCHEDULER_TIMEOUT_SEC,
+            app.DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC,
+        )
+        self.assertGreaterEqual(
+            app.DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC,
+            app.DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC,
+        )
 
     def test_bootstrap_and_helper_schedulers_are_explicitly_allowed(self):
         bridge = app.get_scheduler_manifest_bridge_contract()
@@ -514,6 +522,65 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(first_identity_id, now)], seen)
+
+    async def test_due_explore_rift_fast_scan_runs_tianxing_prepare_window(self):
+        identity_id = 991780
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 0
+            state_module.state["explore_rift_pending_result_msg_id"] = 0
+            state_module.state["next_explore_rift_time"] = now + 300
+            state_module.state["explore_rift_tianxing_prepare_retry_at"] = 0
+
+        seen = []
+
+        async def fake_explore_rift_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "build_tianxing_consume_window", return_value=[{"route": "探索"}]),
+            patch.object(app, "run_explore_rift_scheduler", new=AsyncMock(side_effect=fake_explore_rift_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_explore_rift_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+        self.assertEqual([(identity_id, now)], seen)
+
+    async def test_due_explore_rift_fast_scan_skips_prepare_before_retry_time(self):
+        identity_id = 991779
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 0
+            state_module.state["explore_rift_pending_result_msg_id"] = 0
+            state_module.state["next_explore_rift_time"] = now + 300
+            state_module.state["explore_rift_tianxing_prepare_retry_at"] = now + 60
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "build_tianxing_consume_window", return_value=[{"route": "探索"}]) as window_mock,
+            patch.object(app, "run_explore_rift_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_explore_rift_schedulers(now, limit=1)
+
+        window_mock.assert_not_called()
+        scheduler_mock.assert_not_awaited()
 
     async def test_due_wild_training_fast_scan_defaults_to_small_batch(self):
         identity_ids = [991790 + idx for idx in range(3)]
@@ -1173,6 +1240,9 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         async def fake_tianxing_due(now):
             seen.append(("tianxing_due", now))
 
+        async def fake_explore_rift_due(now):
+            seen.append(("explore_rift_due", now))
+
         async def fake_concubine_retry(now):
             seen.append(("concubine_retry", now))
 
@@ -1208,6 +1278,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(app, "run_identity_info_followup_scheduler", new=AsyncMock()),
                     patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock(side_effect=fake_phaseful)),
                     patch.object(app, "_run_due_tianxing_schedulers", new=AsyncMock(side_effect=fake_tianxing_due)),
+                    patch.object(app, "_run_due_explore_rift_schedulers", new=AsyncMock(side_effect=fake_explore_rift_due)),
                     patch.object(app, "_run_due_wild_training_retry_schedulers", new=AsyncMock(side_effect=fake_wild_retry)),
                     patch.object(app, "_run_due_concubine_schedulers", new=AsyncMock(side_effect=fake_concubine_retry)),
                     patch.object(app, "_start_identity_schedulers_if_idle", side_effect=fake_start_identity),
@@ -1224,6 +1295,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 ("phaseful", 200.0),
                 ("tianxing_due", 200.0),
                 ("stargazer_due", 200.0),
+                ("explore_rift_due", 200.0),
                 ("wild_retry", 200.0),
                 ("concubine_retry", 200.0),
                 ("rare", 200.0),
