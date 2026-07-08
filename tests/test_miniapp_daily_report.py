@@ -76,8 +76,10 @@ class MiniAppDailyReportTests(unittest.TestCase):
         self.assertIn("洞府贡献+3", report)
         self.assertIn("凝血草x5", report)
         self.assertIn("灵石x39", report)
-        self.assertIn("fly1次｜暂无物资入账", report)
-        self.assertIn("soothe1次｜暂无收集物资", report)
+        self.assertNotIn("fly1次", report)
+        self.assertNotIn("soothe1次", report)
+        self.assertNotIn("暂无物资入账", report)
+        self.assertNotIn("暂无收集物资", report)
         self.assertNotIn("secret-session", report)
         self.assertNotIn("HTTP", report)
         self.assertNotIn("session", report)
@@ -163,9 +165,44 @@ class MiniAppDailyReportTests(unittest.TestCase):
         self.assertIn("洞府贡献+3", report)
         self.assertIn("凝血草x2", report)
         self.assertIn("古禁印痕x1", report)
-        self.assertIn("collect1次｜奖励:星辰精华x3", report)
+        self.assertIn("🔭 观星台：奖励:星辰精华x3", report)
         self.assertNotIn("score", report)
         self.assertNotIn("session", report)
+
+    def test_tree_report_omits_score_only_runs_but_keeps_real_rewards(self):
+        day = "2026-07-08"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root, "tree", day, [
+                {
+                    "ok": True,
+                    "step_key": "run_submit",
+                    "response": {"body": {
+                        "run": {"mode": "fly", "score": 126},
+                        "score": 126,
+                        "verified": {"score": 126},
+                    }},
+                },
+                {
+                    "ok": True,
+                    "step_key": "run_submit",
+                    "response": {"body": {
+                        "run": {"mode": "jump"},
+                        "result": {
+                            "expGain": 7,
+                            "item_deltas": {"灵树枝": 2},
+                        },
+                    }},
+                },
+            ])
+
+            report = miniapp_daily_report.build_report(day, root)
+
+        self.assertIn("🌳 灵树：收益:经验+7｜奖励:灵树枝x2", report)
+        self.assertNotIn("fly1次", report)
+        self.assertNotIn("jump1次", report)
+        self.assertNotIn("score", report)
+        self.assertNotIn("verified", report)
 
 
 if __name__ == "__main__":

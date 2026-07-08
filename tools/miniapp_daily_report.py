@@ -65,6 +65,13 @@ def _add_item(counter: Counter, name: str, qty=1):
         counter[name] += amount
 
 
+def _add_gain(counter: Counter, name: str, amount=0):
+    name = str(name or "").strip()
+    value = _int(amount, 0)
+    if name and value > 0:
+        counter[name] += value
+
+
 def _add_loot(counter: Counter, items):
     if isinstance(items, dict):
         if any(key in items for key in ("name", "itemName", "item_name", "label", "title")):
@@ -127,7 +134,7 @@ def summarize_fishing(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
             _add_item(fish, fish_info.get("name") or "未知灵鱼", 1)
         else:
             empty += 1
-        gains["钓术经验"] += _int(result.get("expGain"), 0)
+        _add_gain(gains, "钓术经验", result.get("expGain"))
         _add_loot(rewards, result.get("bonusLoot"))
     return {"rods": rods, "caught": caught, "empty": empty, "fish": fish, "rewards": rewards, "gains": gains}
 
@@ -152,8 +159,8 @@ def summarize_trial(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
             seen_events.add(event_id)
         result = body.get("result") if isinstance(body.get("result"), dict) else {}
         count += 1
-        gains["天机残痕"] += _first_int_by_keys(result, ("reward_trace", "rewardTrace", "traceGain", "trace_gain", "trace"))
-        gains["经验"] += _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience"))
+        _add_gain(gains, "天机残痕", _first_int_by_keys(result, ("reward_trace", "rewardTrace", "traceGain", "trace_gain", "trace")))
+        _add_gain(gains, "经验", _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience")))
         for key in ("rewards", "reward", "bonusLoot", "loot", "drops", "items", "materials"):
             _add_loot(rewards, result.get(key))
     return {"count": count, "errors": errors, "gains": gains, "rewards": rewards}
@@ -172,10 +179,10 @@ def summarize_cave_treasure(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
         count += 1
         if result.get("foundMain"):
             found_main += 1
-        gains["洞府贡献"] += _first_int_by_keys(result, ("contribution", "contributionGain", "contribution_gain"))
-        gains["修为"] += _first_int_by_keys(result, ("cultivationGain", "xiuweiGain", "xiuwei_gain"))
-        gains["灵石"] += _first_int_by_keys(result, ("lingshiGain", "spiritStoneGain", "stoneGain", "stone_gain"))
-        gains["经验"] += _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience"))
+        _add_gain(gains, "洞府贡献", _first_int_by_keys(result, ("contribution", "contributionGain", "contribution_gain")))
+        _add_gain(gains, "修为", _first_int_by_keys(result, ("cultivationGain", "xiuweiGain", "xiuwei_gain")))
+        _add_gain(gains, "灵石", _first_int_by_keys(result, ("lingshiGain", "spiritStoneGain", "stoneGain", "stone_gain")))
+        _add_gain(gains, "经验", _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience")))
         for key in ("loot", "rewards", "reward", "bonusLoot", "drops", "items", "materials", "item_deltas", "itemDeltas"):
             _add_loot(rewards, result.get(key))
     return {"count": count, "found_main": found_main, "gains": gains, "rewards": rewards}
@@ -199,6 +206,8 @@ def summarize_stargazer(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
 
 def summarize_tree(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     runs = Counter()
+    gains = Counter()
+    rewards = Counter()
     for record in _iter_records("tree", day, capture_dir) or ():
         if record.get("step_key") != "run_submit" or not record.get("ok"):
             continue
@@ -206,7 +215,15 @@ def summarize_tree(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
         run = body.get("run") if isinstance(body.get("run"), dict) else {}
         mode = str(run.get("mode") or "unknown")
         runs[mode] += 1
-    return {"runs": runs}
+        result = body.get("result") if isinstance(body.get("result"), dict) else {}
+        for source in (body, run, result):
+            _add_gain(gains, "修为", _first_int_by_keys(source, ("cultivationGain", "xiuweiGain", "xiuwei_gain")))
+            _add_gain(gains, "灵石", _first_int_by_keys(source, ("lingshiGain", "spiritStoneGain", "stoneGain", "stone_gain")))
+            _add_gain(gains, "经验", _first_int_by_keys(source, ("expGain", "exp_gain", "experienceGain", "experience")))
+            _add_gain(gains, "贡献", _first_int_by_keys(source, ("contributionGain", "contribution_gain", "contribution")))
+            for key in ("rewards", "reward", "bonusLoot", "loot", "drops", "items", "materials", "item_deltas", "itemDeltas"):
+                _add_loot(rewards, source.get(key))
+    return {"runs": runs, "gains": gains, "rewards": rewards}
 
 
 def build_report(day: str, capture_dir: Path = CAPTURE_DIR) -> str:
@@ -241,11 +258,15 @@ def build_report(day: str, capture_dir: Path = CAPTURE_DIR) -> str:
         if cave["rewards"]:
             parts.append("奖励:" + _format_counter(cave["rewards"]))
         lines.append("🕳️ 洞府寻宝：" + "｜".join(parts))
-    if stargazer["actions"]:
-        lines.append("🔭 观星台：" + "、".join(f"{name}{count}次" for name, count in sorted(stargazer["actions"].items())) + ("｜奖励:" + _format_counter(stargazer["rewards"]) if stargazer["rewards"] else "｜暂无收集物资"))
-    if tree["runs"]:
-        run_text = "、".join(f"{name}{count}次" for name, count in sorted(tree["runs"].items()))
-        lines.append("🌳 灵树：" + run_text + "｜暂无物资入账")
+    if stargazer["rewards"]:
+        lines.append("🔭 观星台：奖励:" + _format_counter(stargazer["rewards"]))
+    if tree["gains"] or tree["rewards"]:
+        parts = []
+        if tree["gains"]:
+            parts.append("收益:" + _format_gains(tree["gains"]))
+        if tree["rewards"]:
+            parts.append("奖励:" + _format_counter(tree["rewards"]))
+        lines.append("🌳 灵树：" + "｜".join(parts))
     if len(lines) == 1:
         lines.append("暂无 MiniApp 结算成果。")
     lines.append("注：只统计 MiniApp 最终结算中的游戏收益/物资。")
