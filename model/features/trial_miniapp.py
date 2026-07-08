@@ -743,6 +743,142 @@ def _challenge_from_start(data):
     return challenge, trial
 
 
+def _trial_result_from_finish(data):
+    data = dict(data or {})
+    return data.get("result") if isinstance(data.get("result"), dict) else data
+
+
+def _challenge_from_finish(data):
+    data = dict(data or {})
+    for container in (data, data.get("data"), data.get("result")):
+        if not isinstance(container, dict):
+            continue
+        challenge = (
+            container.get("nextChallenge")
+            or container.get("next_challenge")
+            or container.get("challenge")
+        )
+        if isinstance(challenge, dict) and challenge:
+            trial = (
+                container.get("nextTrial")
+                or container.get("next_trial")
+                or container.get("trial")
+                or {}
+            )
+            return challenge, trial if isinstance(trial, dict) else {}
+    return {}, {}
+
+
+def _finish_remaining_count(data):
+    data = dict(data or {})
+    containers = (
+        data.get("dailyProgress"),
+        data.get("nextTrial"),
+        data.get("trial"),
+        data.get("result"),
+        data,
+    )
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "remaining",
+            "remainingToday",
+            "dailyRemaining",
+            "remaining_today",
+            "remainingCount",
+        ):
+            if key not in container:
+                continue
+            try:
+                value = int(float(container.get(key)))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if value >= 0:
+                return value
+    return None
+
+
+def _solve_and_finish_trial_challenge(
+    *,
+    challenge,
+    token,
+    init_data,
+    transport,
+    adapter,
+    rng,
+    sleeper,
+    capture_sink,
+    capture_source,
+    events,
+):
+    try:
+        proof = build_trial_proof(challenge, rng=rng)
+    except Exception as exc:
+        events.append({
+            "step": "solve",
+            "ok": False,
+            "mode": sanitize_webapp_secret_text(challenge.get("mode") or "", limit=80),
+            "error": sanitize_webapp_secret_text(exc),
+        })
+        return {
+            "ok": False,
+            "status": "solve_failed",
+            "error": sanitize_webapp_secret_text(exc),
+            "data": {"challenge_keys": sorted(str(key) for key in challenge)},
+            "proof": {},
+            "finish_data": {},
+        }
+    events.append({
+        "step": "solve",
+        "ok": True,
+        "mode": proof["mode"],
+        "sequence_len": len(proof.get("sequence") or ()),
+        "trapHits": proof.get("trapHits", 0),
+        "durationMs": proof["durationMs"],
+    })
+    if sleeper is not None:
+        sleeper(float(proof["durationMs"]) / 1000.0)
+
+    finish_request = build_trial_miniapp_request(
+        "finish",
+        token=token,
+        init_data=init_data,
+        payload={"trialProof": proof},
+        adapter=adapter,
+    )
+    finish_result = execute_miniapp_http_request(
+        finish_request,
+        transport,
+        sleeper=sleeper,
+        backoff_sec=(),
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="finish",
+    )
+    _append_http_event(events, "finish", finish_result)
+    if not finish_result.ok:
+        status = classify_trial_miniapp_error(finish_result.error)
+        return {
+            "ok": False,
+            "status": status,
+            "error": sanitize_webapp_secret_text(finish_result.error),
+            "data": {},
+            "proof": proof,
+            "finish_data": finish_result.data if isinstance(finish_result.data, dict) else {},
+        }
+
+    finish_data = finish_result.data if isinstance(finish_result.data, dict) else {}
+    return {
+        "ok": True,
+        "status": "settled",
+        "error": "",
+        "data": _trial_result_from_finish(finish_data),
+        "proof": proof,
+        "finish_data": finish_data,
+    }
+
+
 def run_trial_miniapp_lab_flow(
     *,
     token,
@@ -780,56 +916,26 @@ def run_trial_miniapp_lab_flow(
     challenge, trial = _challenge_from_start(start_result.data)
     if not challenge:
         return _flow_result(False, "not_ready", data={"trial_keys": sorted(trial)}, events=events)
-    try:
-        proof = build_trial_proof(challenge, rng=rng)
-    except Exception as exc:
-        events.append({
-            "step": "solve",
-            "ok": False,
-            "mode": sanitize_webapp_secret_text(challenge.get("mode") or "", limit=80),
-            "error": sanitize_webapp_secret_text(exc),
-        })
-        return _flow_result(
-            False,
-            "solve_failed",
-            error=exc,
-            data={"challenge_keys": sorted(str(key) for key in challenge)},
-            events=events,
-        )
-    events.append({
-        "step": "solve",
-        "ok": True,
-        "mode": proof["mode"],
-        "sequence_len": len(proof.get("sequence") or ()),
-        "trapHits": proof.get("trapHits", 0),
-        "durationMs": proof["durationMs"],
-    })
-    if sleeper is not None:
-        sleeper(float(proof["durationMs"]) / 1000.0)
-
-    finish_request = build_trial_miniapp_request(
-        "finish",
+    round_result = _solve_and_finish_trial_challenge(
+        challenge=challenge,
         token=token,
         init_data=init_data,
-        payload={"trialProof": proof},
+        transport=transport,
         adapter=adapter,
-    )
-    finish_result = execute_miniapp_http_request(
-        finish_request,
-        transport,
+        rng=rng,
         sleeper=sleeper,
-        backoff_sec=(),
         capture_sink=capture_sink,
         capture_source=capture_source,
-        step_key="finish",
+        events=events,
     )
-    _append_http_event(events, "finish", finish_result)
-    if not finish_result.ok:
-        status = classify_trial_miniapp_error(finish_result.error)
-        return _flow_result(False, status, error=finish_result.error, events=events, proof=proof)
-
-    data = finish_result.data.get("result") if isinstance(finish_result.data.get("result"), dict) else finish_result.data
-    return _flow_result(True, "settled", data=data, events=events, proof=proof)
+    return _flow_result(
+        round_result["ok"],
+        round_result["status"],
+        error=round_result.get("error", ""),
+        data=round_result.get("data") or {},
+        events=events,
+        proof=round_result.get("proof") or {},
+    )
 
 
 def _extract_next_trial_token(data):
@@ -862,8 +968,28 @@ def run_trial_miniapp_loop_lab_flow(
     results = []
     current_token = token
     max_rounds = max(1, int(max_rounds or 1))
+
+    start_request = build_trial_miniapp_request("start", token=current_token, init_data=init_data, adapter=adapter)
+    start_result = execute_miniapp_http_request(
+        start_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="start",
+    )
+    _append_http_event(events, "start", start_result)
+    if not start_result.ok:
+        status = classify_trial_miniapp_error(start_result.error)
+        return _flow_result(False, status, error=start_result.error, events=events)
+
+    challenge, trial = _challenge_from_start(start_result.data)
+    if not challenge:
+        return _flow_result(False, "not_ready", data={"trial_keys": sorted(trial)}, events=events)
+
     for round_index in range(1, max_rounds + 1):
-        round_result = run_trial_miniapp_lab_flow(
+        round_result = _solve_and_finish_trial_challenge(
+            challenge=challenge,
             token=current_token,
             init_data=init_data,
             transport=transport,
@@ -872,6 +998,7 @@ def run_trial_miniapp_loop_lab_flow(
             sleeper=sleeper,
             capture_sink=capture_sink,
             capture_source=capture_source,
+            events=events,
         )
         events.append({
             "step": "round",
@@ -886,6 +1013,15 @@ def run_trial_miniapp_loop_lab_flow(
             return _flow_result(bool(results), status if not results else "partial", error=round_result.get("error", ""), data=data, events=events)
 
         results.append(dict(round_result.get("data") or {}))
+        finish_data = dict(round_result.get("finish_data") or {})
+        remaining = _finish_remaining_count(finish_data)
+        if remaining == 0:
+            break
+        next_challenge, _next_trial = _challenge_from_finish(finish_data)
+        if next_challenge:
+            challenge = next_challenge
+            continue
+
         next_request = build_trial_miniapp_request(
             "next",
             token=current_token,
@@ -914,10 +1050,36 @@ def run_trial_miniapp_loop_lab_flow(
             return _flow_result(True, "next_unavailable", data=data, events=events)
 
         next_token = _extract_next_trial_token(next_result.data)
+        next_challenge, _next_trial = _challenge_from_start(next_result.data)
+        if next_challenge:
+            if next_token:
+                current_token = next_token
+            challenge = next_challenge
+            continue
         if not next_token:
             data = {"results": results, "settled_count": len(results)}
             return _flow_result(True, "next_unavailable", data=data, events=events)
         current_token = next_token
+        start_request = build_trial_miniapp_request("start", token=current_token, init_data=init_data, adapter=adapter)
+        start_result = execute_miniapp_http_request(
+            start_request,
+            transport,
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="start",
+        )
+        _append_http_event(events, "start", start_result)
+        if not start_result.ok:
+            status = classify_trial_miniapp_error(start_result.error)
+            if status == "daily_limit":
+                break
+            data = {"results": results, "settled_count": len(results)}
+            return _flow_result(True, "partial", error=start_result.error, data=data, events=events)
+        challenge, trial = _challenge_from_start(start_result.data)
+        if not challenge:
+            data = {"results": results, "settled_count": len(results)}
+            return _flow_result(True, "next_unavailable", data=data, events=events)
 
     data = {"results": results, "settled_count": len(results)}
     return _flow_result(True, "settled", data=data, events=events)

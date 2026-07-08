@@ -270,6 +270,73 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("trial_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
 
+    def test_trial_loop_uses_finish_embedded_next_challenge(self):
+        calls = []
+        submitted_ids = []
+
+        def challenge(challenge_id):
+            return {
+                "challengeId": challenge_id,
+                "mode": "tianjiMeridianV1",
+                "sequence": ["p1"],
+                "points": [{"id": "p1", "x": 12, "y": 34}],
+                "minDurationMs": 20,
+                "maxDurationMs": 1000,
+            }
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "challenge": challenge("trial-1"),
+                    "trial": {"dailyLimit": 3, "remainingToday": 3},
+                }
+            if endpoint == "finish":
+                challenge_id = request["payload"]["trialProof"]["challengeId"]
+                submitted_ids.append(challenge_id)
+                if challenge_id == "trial-1":
+                    return 200, {
+                        "ok": True,
+                        "dailyProgress": {"completed": 1, "limit": 3, "remaining": 2},
+                        "nextChallenge": challenge("trial-2"),
+                        "nextTrial": {"dailyLimit": 3, "remainingToday": 2},
+                        "result": {"traceGain": 3},
+                    }
+                if challenge_id == "trial-2":
+                    return 200, {
+                        "ok": True,
+                        "dailyProgress": {"completed": 2, "limit": 3, "remaining": 1},
+                        "nextChallenge": challenge("trial-3"),
+                        "nextTrial": {"dailyLimit": 3, "remainingToday": 1},
+                        "result": {"traceGain": 4},
+                    }
+                return 200, {
+                    "ok": True,
+                    "dailyProgress": {"completed": 3, "limit": 3, "remaining": 0},
+                    "result": {"traceGain": 5},
+                }
+            raise AssertionError(f"unexpected endpoint {endpoint}")
+
+        result = trial_miniapp.run_trial_miniapp_loop_lab_flow(
+            token="trial_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(172),
+            sleeper=lambda _delay: None,
+            max_rounds=99,
+        )
+        text = json.dumps(result, ensure_ascii=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("settled", result["status"])
+        self.assertEqual(["start", "finish", "finish", "finish"], calls)
+        self.assertEqual(["trial-1", "trial-2", "trial-3"], submitted_ids)
+        self.assertEqual(3, result["data"]["settled_count"])
+        self.assertNotIn("trial_SECRET999", text)
+        self.assertNotIn("VERY_SECRET", text)
+
     def test_trial_meridian_accepts_dict_points_with_key_only_ids(self):
         proof = trial_miniapp.build_trial_proof(
             {
