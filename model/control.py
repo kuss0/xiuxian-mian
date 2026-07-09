@@ -377,6 +377,7 @@ RECOVERY_PHASEFUL_IDLE_MIN_SEC = 10 * 60
 RECOVERY_PHASEFUL_IDLE_MAX_SEC = 30 * 60
 RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC = 120
 RECOVERY_PHASEFUL_POST_SUMMARY_MAX_FUTURE_SEC = 6 * 60
+RECOVERY_STALE_PENDING_GRACE_SEC = 15
 TIANTI_RECOVERY_STATUS_FRESH_SEC = 30 * 60
 TAIYI_PRESEND_RECOVERY_MAX_SEC = 300
 RECOVERY_SPREAD_TIMER_KEYS = (
@@ -904,6 +905,218 @@ def extend_global_recovery_throttle_for_spread(now=None, *, reason="recovery", w
     return True
 
 
+def _pending_is_stale_for_global_recovery(pending, now):
+    try:
+        sent_at = float((pending or {}).get("sent_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        sent_at = 0.0
+    try:
+        timeout = float((pending or {}).get("timeout", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 0.0
+    if sent_at <= 0:
+        return True
+    stale_after = sent_at + max(0.0, timeout) + RECOVERY_STALE_PENDING_GRACE_SEC
+    return float(now) >= stale_after
+
+
+def _command_matches_pending_prefix(command, prefix):
+    command = str(command or "").strip()
+    prefix = str(prefix or "").strip()
+    if not command or not prefix:
+        return False
+    return command == prefix or command.startswith(prefix + " ")
+
+
+def _resolve_pending_recovery_module(command, pending):
+    source_module = str((pending or {}).get("source_module") or "").strip()
+    if source_module:
+        return source_module
+    for prefix, module_name in PENDING_TASK_COMMAND_TO_MODULE.items():
+        if _command_matches_pending_prefix(command, prefix):
+            return str(module_name or "").strip()
+    return ""
+
+
+def _pending_msg_id_value(msg_id):
+    try:
+        return int(msg_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _reconcile_stale_pending_module_runtime(identity_id, msg_id, pending, command, now):
+    """Clear owning module runtime state when global recovery drops stale pending."""
+    msg_id_int = _pending_msg_id_value(msg_id)
+    source_module = str((pending or {}).get("source_module") or "").strip()
+    command = str(command or "").strip()
+    changed = False
+
+    if source_module == "天星宗" or command in {CMD_TIANXING_PANEL, CMD_TIANXING_PREDICT, CMD_TIANXING_CHANGE_FATE}:
+        try:
+            from .features import tianxing
+
+            changed = bool(tianxing.reconcile_tianxing_timeout_from_pending(msg_id_int, cmd=command, now=now)) or changed
+        except Exception as exc:
+            console_log(
+                f"⚠️ 天星旧 pending 恢复校准失败：{command or msg_id_int}｜{exc}",
+                scope="identity",
+                send_as_id=identity_id,
+                limit=180,
+            )
+
+    if source_module == "合欢宗" or _command_matches_pending_prefix(command, CMD_HEHUAN_DUAL):
+        try:
+            from .features import hehuan
+
+            changed = bool(hehuan.reconcile_hehuan_timeout_from_pending(msg_id_int, now=now)) or changed
+        except Exception as exc:
+            console_log(
+                f"⚠️ 合欢旧 pending 恢复校准失败：{command or msg_id_int}｜{exc}",
+                scope="identity",
+                send_as_id=identity_id,
+                limit=180,
+            )
+
+    if _command_matches_pending_prefix(command, CMD_SMALL_WORLD_QUERY):
+        if _pending_msg_id_value(state.get("small_world_query_msg_id")) == msg_id_int:
+            state["small_world_query_msg_id"] = 0
+            if str(state.get("small_world_phase") or "idle") == "query_pending":
+                state["small_world_phase"] = "idle"
+            state["small_world_last_error"] = "全局恢复清理旧小世界面板 pending，等待错峰重查。"
+            if float(state.get("next_small_world_time", 0) or 0) <= now:
+                state["next_small_world_time"] = _spread_recovery_timer_value(
+                    "next_small_world_time",
+                    now,
+                    now + RECOVERY_SPREAD_MAX_SEC,
+                )
+            changed = True
+
+    if _command_matches_pending_prefix(command, CMD_TIANTI_STATUS):
+        if _pending_msg_id_value(state.get("tianti_status_reply_to_msg_id")) == msg_id_int:
+            state["tianti_status_reply_to_msg_id"] = 0
+            state["tianti_last_error"] = "全局恢复清理旧天阶状态 pending，等待错峰重查。"
+            if float(state.get("next_tianti_status_time", 0) or 0) <= now:
+                state["next_tianti_status_time"] = _spread_recovery_timer_value(
+                    "next_tianti_status_time",
+                    now,
+                    now + RECOVERY_SPREAD_MAX_SEC,
+                )
+            changed = True
+
+    return changed
+
+
+def _clear_stale_pending_tasks_for_global_recovery(now):
+    """Drop expired pre-pause pending tasks so recovery does not replay old commands."""
+    removed_count = 0
+    affected_identity_ids = set()
+    module_close_requests = []
+    action_close_requests = []
+
+    for identity_id in get_identity_ids():
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
+            continue
+        current_removed = 0
+        current_modules = set()
+        current_actions = set()
+        with use_identity(identity_id):
+            pending_tasks = state.get("pending_tasks")
+            if not isinstance(pending_tasks, dict) or not pending_tasks:
+                continue
+            for msg_id, pending in list(pending_tasks.items()):
+                if not _pending_is_stale_for_global_recovery(pending, now):
+                    continue
+                command = get_pending_command(pending)
+                if _reconcile_stale_pending_module_runtime(identity_id, msg_id, pending, command, now):
+                    affected_identity_ids.add(int(identity_id))
+                pending_tasks.pop(msg_id, None)
+                current_removed += 1
+                module_name = _resolve_pending_recovery_module(command, pending)
+                if module_name:
+                    current_modules.add(module_name)
+                action_key = resolve_action_guard_key(command)
+                if action_key:
+                    current_actions.add(action_key)
+        if current_removed <= 0:
+            continue
+        removed_count += current_removed
+        affected_identity_ids.add(int(identity_id))
+        for module_name in current_modules:
+            module_close_requests.append((int(identity_id), module_name))
+        for action_key in current_actions:
+            action_close_requests.append((int(identity_id), action_key))
+
+    for identity_id, module_name in module_close_requests:
+        close_action_guard_by_module(module_name, send_as_id=identity_id, reason="stale_pending_global_recovery")
+    action_keys_by_identity = {}
+    for identity_id, action_key in action_close_requests:
+        action_keys_by_identity.setdefault(identity_id, set()).add(action_key)
+    for identity_id, action_keys in action_keys_by_identity.items():
+        close_action_guard_actions(action_keys, send_as_id=identity_id, reason="stale_pending_global_recovery")
+
+    if removed_count > 0:
+        mark_dirty()
+        console_log(
+            f"🧹 全局恢复清障：{len(affected_identity_ids)} 个身份 / {removed_count} 个过期 pending 已清理，避免恢复后盲重发",
+            scope="global",
+            limit=240,
+        )
+    return removed_count
+
+
+def _clear_stale_module_pendings_for_global_recovery(now):
+    """Clear module-owned pending anchors left without pending_tasks after a pause."""
+    removed_count = 0
+    affected_identity_ids = set()
+    action_close_requests = []
+
+    for identity_id in get_identity_ids():
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
+            continue
+        current_removed = 0
+        with use_identity(identity_id):
+            wild_msg_id = _pending_msg_id_value(state.get("wild_training_reply_to_msg_id"))
+            try:
+                wild_due_at = float(state.get("wild_training_reply_due_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                wild_due_at = 0.0
+            if wild_msg_id > 0 and wild_due_at > 0 and float(now) >= wild_due_at + RECOVERY_STALE_PENDING_GRACE_SEC:
+                state["wild_training_reply_to_msg_id"] = 0
+                state["wild_training_reply_due_at"] = 0
+                state["wild_training_retry_count"] = 0
+                state["wild_training_last_result"] = f"全局恢复清理：野外历练结果未确认，原消息ID={wild_msg_id}"
+                state["wild_training_last_result_at"] = float(now)
+                state["wild_training_last_error"] = "全局恢复清理旧野外历练等待，未确认结算，不补发旧命令。"
+                if float(state.get("next_wild_training_time", 0) or 0) <= now:
+                    state["next_wild_training_time"] = _spread_recovery_timer_value(
+                        "next_wild_training_time",
+                        now,
+                        now + RECOVERY_SPREAD_MAX_SEC,
+                    )
+                current_removed += 1
+        if current_removed <= 0:
+            continue
+        removed_count += current_removed
+        affected_identity_ids.add(int(identity_id))
+        action_close_requests.append((int(identity_id), "wild_training"))
+
+    action_keys_by_identity = {}
+    for identity_id, action_key in action_close_requests:
+        action_keys_by_identity.setdefault(identity_id, set()).add(action_key)
+    for identity_id, action_keys in action_keys_by_identity.items():
+        close_action_guard_actions(action_keys, send_as_id=identity_id, reason="stale_module_pending_global_recovery")
+
+    if removed_count > 0:
+        mark_dirty()
+        console_log(
+            f"🧹 全局恢复清障：{len(affected_identity_ids)} 个身份 / {removed_count} 个模块残留 pending 已清理，避免恢复后补旧命令",
+            scope="global",
+            limit=240,
+        )
+    return removed_count
+
+
 def clear_transient_send_failures_for_global_recovery(now=None):
     """全局熔断恢复前清掉暂停期造成的发送失败假状态，并错峰重试。"""
     if now is None:
@@ -942,6 +1155,8 @@ def clear_transient_send_failures_for_global_recovery(now=None):
                     state[timer_field] = _spread_recovery_timer_value(timer_field, now, now + RECOVERY_SPREAD_MAX_SEC)
                 changed_count += 1
                 affected_identity_ids.add(int(identity_id))
+    pending_removed = _clear_stale_pending_tasks_for_global_recovery(now)
+    module_pending_removed = _clear_stale_module_pendings_for_global_recovery(now)
     if changed_count > 0:
         mark_dirty()
         console_log(
@@ -949,7 +1164,7 @@ def clear_transient_send_failures_for_global_recovery(now=None):
             scope="global",
             limit=240,
         )
-    return changed_count
+    return changed_count + pending_removed + module_pending_removed
 
 
 def get_module_unavailable_reason(module_name, send_as_id=None):

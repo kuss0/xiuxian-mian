@@ -48,6 +48,9 @@ TELETHON_WRONG_SESSION_PATTERN = re.compile(
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
 )
+UNANCHORED_GAME_BROADCAST_PATTERN = re.compile(
+    r"【世界通告[｜】]|✨\s*(天道感应|元神回响)：|深度闭关总结|元神归窍总结|【深度闭关总结】"
+)
 MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
 BENIGN_MODULE_ERROR_PATTERN = re.compile(
     r"今日.*已达上限|今日.*已达\s*\d+\s*轮|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次|回到时间线重算|需重算时间线|不连续查盘|显灵失败，停止本轮"
@@ -785,11 +788,12 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
     for item in recent:
         if str(item.get("event_type") or "") not in {"message", "edit"}:
             continue
-        if item.get("sender_is_bot"):
-            bot_replies.append(item)
-        if int(item.get("reply_to_msg_id", 0) or 0) not in sent_ids:
-            continue
+        reply_to_msg_id = int(item.get("reply_to_msg_id", 0) or 0)
         text = str(item.get("text") or "")
+        if item.get("sender_is_bot") and reply_to_msg_id in sent_ids and not UNANCHORED_GAME_BROADCAST_PATTERN.search(text):
+            bot_replies.append(item)
+        if reply_to_msg_id not in sent_ids:
+            continue
         if COOLDOWN_REPLY_PATTERN.search(text):
             cooldown_replies.append(item)
     if len(cooldown_replies) >= 3:
@@ -858,6 +862,16 @@ def fetch_table_rows_by_identity(conn: sqlite3.Connection, table: str) -> dict[i
         if identity_id:
             result[identity_id] = mapping
     return result
+
+
+def read_meta_state(conn: sqlite3.Connection) -> dict[str, str]:
+    if not sqlite_table_exists(conn, "meta"):
+        return {}
+    try:
+        rows = conn.execute("SELECT key, value FROM meta").fetchall()
+    except sqlite3.Error:
+        return {}
+    return {str(row["key"]): str(row["value"]) for row in rows if row["key"] is not None}
 
 
 def short_value(value: object, limit: int = 120) -> str:
@@ -1099,7 +1113,13 @@ def summarize_json_state(field: str, payload: dict[str, object], now: float, det
     return warn, error
 
 
-def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 120) -> list[dict[str, object]]:
+def build_module_summary(
+    conn: sqlite3.Connection,
+    now: float,
+    *,
+    limit: int = 120,
+    global_paused: bool = False,
+) -> list[dict[str, object]]:
     identities = fetch_table_rows_by_identity(conn, "identities")
     runtime_rows = fetch_table_rows_by_identity(conn, "identity_runtime_state")
     timer_rows = fetch_table_rows_by_identity(conn, "identity_timers")
@@ -1212,6 +1232,7 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                     overdue_sec = int(now - epoch) if now > epoch else 0
                     lag_without_anchor = (
                         enabled
+                        and not global_paused
                         and monitors_next_lag(field_name)
                         and overdue_sec > NEXT_LAG_WARN_SEC
                         and not pending
@@ -1315,10 +1336,15 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     module_summary: list[dict[str, object]] = []
     module_pending_total = 0
     module_pending_samples: list[dict[str, object]] = []
+    global_paused = False
+    global_pause_source = ""
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
+            meta_state = read_meta_state(conn)
+            global_paused = str(meta_state.get("global_enabled") or "1").strip().lower() in {"0", "false", "off"}
+            global_pause_source = str(meta_state.get("global_pause_source") or "").strip()
             pending_rows = conn.execute(
                 """
                 SELECT send_as_id, cmd, sent_at, timeout, retry, max_retry, source_module
@@ -1366,7 +1392,12 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 username = str(row["username"] or "")
                 concubine_phase = str(row["concubine_phase"] or "")
                 next_concubine_time = float(row["next_concubine_time"] or 0)
-                if concubine_phase.endswith(PENDING_PHASE_SUFFIX) and next_concubine_time > 0 and now > next_concubine_time + 300:
+                if (
+                    not global_paused
+                    and concubine_phase.endswith(PENDING_PHASE_SUFFIX)
+                    and next_concubine_time > 0
+                    and now > next_concubine_time + 300
+                ):
                     stuck_phases.append({
                         "identity_id": identity_id,
                         "username": username,
@@ -1381,7 +1412,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 ):
                     phase = str(row[phase_key] or "")
                     next_time = float(row[next_key] or 0)
-                    if phase in PHASEFUL_ATTENTION_PHASES and next_time > 0 and now > next_time + 300:
+                    if not global_paused and phase in PHASEFUL_ATTENTION_PHASES and next_time > 0 and now > next_time + 300:
                         stuck_phases.append({
                             "identity_id": identity_id,
                             "username": username,
@@ -1399,7 +1430,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "phase": "reply_wait",
                         "overdue_sec": int(now - tower_due),
                     })
-            full_module_summary = build_module_summary(conn, now, limit=1000)
+            full_module_summary = build_module_summary(conn, now, limit=1000, global_paused=global_paused)
             module_pending_total, module_pending_samples = summarize_module_pending(full_module_summary)
             module_summary = full_module_summary[:120]
     except sqlite3.Error as exc:
@@ -1470,6 +1501,8 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "overdue_pending": overdue_pending[:20],
         "stuck_phases": stuck_phases[:20],
         "module_summary": module_summary,
+        "global_paused": global_paused,
+        "global_pause_source": global_pause_source,
         "alerts": alerts,
     }
 

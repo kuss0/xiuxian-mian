@@ -254,6 +254,234 @@ class ControlBoolCoercionTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
             self.assertEqual(now + 600, state_module.state["next_fishing_time"])
 
+    def test_global_resume_clears_stale_pending_without_resend(self):
+        now = 1_700_000_000.0
+        send_as_id = 990320
+        state_module.set_global_enabled(False)
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["pending_tasks"] = {
+                771: {
+                    "cmd": ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）",
+                    "sent_at": now - 120,
+                    "timeout": 30,
+                    "retry": 0,
+                    "max_retry": 1,
+                    "source_module": "法宝",
+                    "priority": "normal",
+                }
+            }
+
+        with (
+            patch.object(control.time, "time", return_value=now),
+            patch.object(control, "save_state"),
+            patch.object(control, "console_log"),
+            patch.object(control, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(control, "send_audit_log", new=AsyncMock()),
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="ui"))
+
+        self.assertTrue(ok, message)
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["pending_tasks"])
+
+    def test_global_recovery_clears_stale_small_world_query_runtime(self):
+        now = 1_700_000_000.0
+        send_as_id = 990323
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 773
+            state_module.state["next_small_world_time"] = 0
+            state_module.state["pending_tasks"] = {
+                773: {
+                    "cmd": config.CMD_SMALL_WORLD_QUERY,
+                    "sent_at": now - 120,
+                    "timeout": 30,
+                    "retry": 0,
+                    "max_retry": 0,
+                    "source_module": "小世界",
+                    "priority": "chain",
+                }
+            }
+
+        with (
+            patch.object(control.random, "uniform", return_value=600),
+            patch.object(control, "mark_dirty") as dirty_mock,
+            patch.object(control, "console_log"),
+        ):
+            changed = control.clear_transient_send_failures_for_global_recovery(now)
+
+        self.assertEqual(1, changed)
+        dirty_mock.assert_called()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["pending_tasks"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+            self.assertIn("全局恢复清理旧小世界面板", state_module.state["small_world_last_error"])
+
+    def test_global_recovery_clears_stale_tianti_status_runtime(self):
+        now = 1_700_000_000.0
+        send_as_id = 990324
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_status_reply_to_msg_id"] = 774
+            state_module.state["tianti_last_status_msg_id"] = 760
+            state_module.state["next_tianti_status_time"] = 0
+            state_module.state["pending_tasks"] = {
+                774: {
+                    "cmd": config.CMD_TIANTI_STATUS,
+                    "sent_at": now - 120,
+                    "timeout": 30,
+                    "retry": 0,
+                    "max_retry": 1,
+                    "source_module": "登天阶",
+                    "priority": "normal",
+                }
+            }
+
+        with (
+            patch.object(control.random, "uniform", return_value=600),
+            patch.object(control, "mark_dirty") as dirty_mock,
+            patch.object(control, "console_log"),
+        ):
+            changed = control.clear_transient_send_failures_for_global_recovery(now)
+
+        self.assertEqual(1, changed)
+        dirty_mock.assert_called()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["pending_tasks"])
+            self.assertEqual(0, state_module.state["tianti_status_reply_to_msg_id"])
+            self.assertEqual(760, state_module.state["tianti_last_status_msg_id"])
+            self.assertEqual(now + 600, state_module.state["next_tianti_status_time"])
+            self.assertIn("全局恢复清理旧天阶状态", state_module.state["tianti_last_error"])
+
+    def test_global_recovery_reconciles_stale_tianxing_pending_before_drop(self):
+        now = 1_700_000_000.0
+        send_as_id = 990325
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["pending_tasks"] = {
+                775: {
+                    "cmd": config.CMD_TIANXING_PREDICT,
+                    "sent_at": now - 120,
+                    "timeout": 30,
+                    "retry": 0,
+                    "max_retry": 0,
+                    "source_module": "天星宗",
+                    "priority": "chain",
+                }
+            }
+
+        with (
+            patch.object(control, "mark_dirty"),
+            patch.object(control, "console_log"),
+            patch("model.features.tianxing.reconcile_tianxing_timeout_from_pending", return_value=True) as reconcile_mock,
+        ):
+            changed = control.clear_transient_send_failures_for_global_recovery(now)
+
+        self.assertEqual(1, changed)
+        reconcile_mock.assert_called_once_with(775, cmd=config.CMD_TIANXING_PREDICT, now=now)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["pending_tasks"])
+
+    def test_global_recovery_reconciles_stale_hehuan_pending_before_drop(self):
+        now = 1_700_000_000.0
+        send_as_id = 990326
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["pending_tasks"] = {
+                776: {
+                    "cmd": f"{config.CMD_HEHUAN_DUAL} 温养",
+                    "sent_at": now - 120,
+                    "timeout": 30,
+                    "retry": 0,
+                    "max_retry": 0,
+                    "source_module": "合欢宗",
+                    "priority": "normal",
+                }
+            }
+
+        with (
+            patch.object(control, "mark_dirty"),
+            patch.object(control, "console_log"),
+            patch("model.features.hehuan.reconcile_hehuan_timeout_from_pending", return_value=True) as reconcile_mock,
+        ):
+            changed = control.clear_transient_send_failures_for_global_recovery(now)
+
+        self.assertEqual(1, changed)
+        reconcile_mock.assert_called_once_with(776, now=now)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["pending_tasks"])
+
+    def test_global_recovery_clears_orphan_wild_training_module_pending(self):
+        now = 1_700_000_000.0
+        send_as_id = 990327
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["wild_training_reply_to_msg_id"] = 777
+            state_module.state["wild_training_reply_due_at"] = now - 60
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["wild_training_last_msg_id"] = 777
+            state_module.state["wild_training_last_result"] = "已发送：谨慎"
+            state_module.state["wild_training_last_error"] = ""
+            state_module.state["next_wild_training_time"] = now - 30
+            state_module.state["pending_tasks"] = {}
+
+        with (
+            patch.object(control.random, "uniform", return_value=600),
+            patch.object(control, "mark_dirty") as dirty_mock,
+            patch.object(control, "console_log"),
+        ):
+            changed = control.clear_transient_send_failures_for_global_recovery(now)
+
+        self.assertEqual(1, changed)
+        dirty_mock.assert_called()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+            self.assertEqual(0, state_module.state["wild_training_retry_count"])
+            self.assertGreater(state_module.state["next_wild_training_time"], now)
+            self.assertIn("原消息ID=777", state_module.state["wild_training_last_result"])
+            self.assertIn("不补发旧命令", state_module.state["wild_training_last_error"])
+
+    def test_global_recovery_keeps_fresh_pending(self):
+        now = 1_700_000_000.0
+        send_as_id = 990322
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["pending_tasks"] = {
+                772: {
+                    "cmd": ".天机盘",
+                    "sent_at": now - 20,
+                    "timeout": 60,
+                    "retry": 0,
+                    "max_retry": 1,
+                    "source_module": "天星宗",
+                    "priority": "reactive",
+                }
+            }
+
+        with (
+            patch.object(control, "mark_dirty") as dirty_mock,
+            patch.object(control, "console_log"),
+        ):
+            changed = control.clear_transient_send_failures_for_global_recovery(now)
+
+        self.assertEqual(0, changed)
+        dirty_mock.assert_not_called()
+        with state_module.use_identity(send_as_id):
+            self.assertIn(772, state_module.state["pending_tasks"])
+
     def test_direct_identity_module_toggle_treats_form_false_string_as_disabled(self):
         send_as_id = 990321
         state_module.ensure_identity_registered(send_as_id)

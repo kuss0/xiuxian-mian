@@ -629,6 +629,52 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(3, result["cooldown_reply_count"])
         self.assertTrue(any("cooldown replies" in item["message"] for item in result["alerts"]))
 
+    def test_business_message_analysis_excludes_unanchored_broadcasts_from_bot_replies(self):
+        now = 1_780_500_000.0
+        events = [
+            {
+                "event_type": "message",
+                "_epoch": now - 30,
+                "message_id": 301,
+                "sender_is_bot": True,
+                "reply_to_msg_id": 7310786,
+                "text": "━━━━━━━━━━━━━━━\n【世界通告｜真仙试锋开启】\n点击下方按钮进入真仙战场。",
+            },
+            {
+                "event_type": "edit",
+                "_epoch": now - 20,
+                "message_id": 302,
+                "sender_is_bot": True,
+                "reply_to_msg_id": 7310786,
+                "text": "📜 修士 @foo 深度闭关总结\n【深度闭关总结】\n本次结算时长: 8.0 小时",
+            },
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertEqual(0, result["bot_reply_count"])
+        self.assertEqual(0.0, result["last_bot_reply_at"])
+        self.assertEqual([], result["last_bot_reply_sample"])
+
+    def test_business_message_analysis_counts_bot_reply_to_script_sent(self):
+        now = 1_780_500_000.0
+        events = [
+            {"event_type": "sent", "_epoch": now - 60, "message_id": 401, "sender_id": 10, "text": ".野外历练 谨慎"},
+            {
+                "event_type": "message",
+                "_epoch": now - 50,
+                "message_id": 402,
+                "sender_is_bot": True,
+                "reply_to_msg_id": 401,
+                "text": "【野外历练】\n@alpha 选择【谨慎】策略，正向荒野深处行去。",
+            },
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertEqual(1, result["bot_reply_count"])
+        self.assertEqual(now - 50, result["last_bot_reply_at"])
+
     def test_business_message_analysis_allows_marked_divination_query_chain(self):
         now = 1_780_500_000.0
         sender_id = 3777092103
@@ -1317,6 +1363,36 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("error", wild["status"])
         self.assertTrue(wild["next"][0]["lag_without_anchor"])
         self.assertTrue(any("调度滞后" in detail for detail in wild["details"]))
+
+    def test_module_summary_suppresses_overdue_next_time_when_global_paused(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, wild_training_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_wild_training_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+                    wild_training_last_result TEXT NOT NULL DEFAULT '',
+                    wild_training_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now - 700,))
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id) VALUES(42)")
+
+            summary = health_observer.build_module_summary(conn, now, global_paused=True)
+
+        wild = next(item for item in summary if item["module"] == "wild_training")
+        self.assertEqual("ok", wild["status"])
+        self.assertFalse(wild["next"][0]["lag_without_anchor"])
+        self.assertFalse(any("调度滞后" in detail for detail in wild["details"]))
 
     def test_module_summary_ignores_disabled_identity(self):
         now = 1_780_500_000.0
