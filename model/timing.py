@@ -47,7 +47,12 @@ def _save_if_available():
     _save_state()
 
 
+def _normalize_wait_time_text(text):
+    return str(text or "").replace("*", "")
+
+
 def parse_wait_time(text):
+    text = _normalize_wait_time_text(text)
     total_seconds = 0
     h = RE_HOURS.search(text)
     m = RE_MINUTES.search(text)
@@ -62,6 +67,7 @@ def parse_wait_time(text):
 
 
 def has_wait_time(text):
+    text = _normalize_wait_time_text(text)
     return any(pattern.search(text or "") for pattern in (RE_HOURS, RE_MINUTES, RE_SECONDS))
 
 

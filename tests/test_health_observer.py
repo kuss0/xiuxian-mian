@@ -307,6 +307,11 @@ class HealthObserverTests(unittest.TestCase):
                 "Jul 02 03:33:42 pve python[266008]: [xuruode6] 🧘 深度闭关 续轮指令超时无确认，改用状态查询校准。"
             )
         )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jul 10 04:02:15 pve python[187263]: [2026-07-10 04:02:15] 🚀 自动化系统启动：全局暂停中，仅加载状态与 UI，跳过启动恢复和普通调度。"
+            )
+        )
 
     def test_journal_since_is_not_before_current_service_start(self):
         start_epoch = health_observer.parse_local_ts("2026-06-06 14:38:55")
