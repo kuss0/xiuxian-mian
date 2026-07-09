@@ -252,6 +252,14 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(health_observer.is_hard_journal_line(line))
 
+    def test_log_bot_callback_connection_reset_is_not_hard(self):
+        line = (
+            "Jul 10 03:29:01 pve python[150823]: log bot callback poll failed: "
+            "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+
     def test_listener_sidecar_unauthed_sessions_are_not_hard_journal_errors(self):
         line = (
             "Jul 08 21:00:52 pve python[3686429]: listener sidecar degraded: no connected accounts "
