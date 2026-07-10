@@ -623,6 +623,30 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(1, result["active_status_identity_counts"]["2:.查看闭关"])
         self.assertFalse(any("active status query repeated" in item["message"] for item in result["alerts"]))
 
+    def test_business_message_analysis_allows_two_spaced_active_status_queries(self):
+        now = 1_780_500_000.0
+        events = [
+            {"event_type": "sent", "_epoch": now - 900, "message_id": 101, "sender_id": 1, "text": ".查看闭关"},
+            {"event_type": "sent", "_epoch": now - 100, "message_id": 102, "sender_id": 1, "text": ".查看闭关"},
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertEqual(2, result["active_status_identity_counts"]["1:.查看闭关"])
+        self.assertFalse(any("active status query repeated" in item["message"] for item in result["alerts"]))
+
+    def test_business_message_analysis_flags_three_spaced_active_status_queries(self):
+        now = 1_780_500_000.0
+        events = [
+            {"event_type": "sent", "_epoch": now - 1500, "message_id": 101, "sender_id": 1, "text": ".查看闭关"},
+            {"event_type": "sent", "_epoch": now - 800, "message_id": 102, "sender_id": 1, "text": ".查看闭关"},
+            {"event_type": "sent", "_epoch": now - 100, "message_id": 103, "sender_id": 1, "text": ".查看闭关"},
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertTrue(any("active status query repeated" in item["message"] for item in result["alerts"]))
+
     def test_business_message_analysis_flags_cooldown_replies_to_script_sends(self):
         now = 1_780_500_000.0
         events = []

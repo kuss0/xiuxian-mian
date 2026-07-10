@@ -56,6 +56,7 @@ BENIGN_MODULE_ERROR_PATTERN = re.compile(
     r"今日.*已达上限|今日.*已达\s*\d+\s*轮|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次|回到时间线重算|需重算时间线|不连续查盘|显灵失败，停止本轮"
 )
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
+ACTIVE_STATUS_REPEAT_CLOSE_GAP_SEC = 5 * 60
 GUARDED_COMMAND_REPEAT_ALERT_MIN = 4
 GUARDED_COMMAND_REPEAT_ALERT_MIN_BY_COMMAND = {
     # One small-world prayer refresh round can legitimately send:
@@ -733,18 +734,23 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         if command in ACTIVE_STATUS_COMMANDS:
             active_by_identity[(event_identity_id(item), command)] += 1
     for (identity_id, command), count in sorted(active_by_identity.items()):
-        if count >= 2:
+        matching_items = [
+            item
+            for item in sent
+            if event_identity_id(item) == identity_id and command_key(str(item.get("text") or "")) == command
+        ]
+        epochs = sorted(float(item.get("_epoch", 0) or 0) for item in matching_items if float(item.get("_epoch", 0) or 0) > 0)
+        gaps = [later - earlier for earlier, later in zip(epochs, epochs[1:])]
+        min_gap_sec = min(gaps) if gaps else 0.0
+        if count >= 3 or (count >= 2 and 0 < min_gap_sec <= ACTIVE_STATUS_REPEAT_CLOSE_GAP_SEC):
             identity_part = f"{identity_id}:" if identity_id else ""
-            sample = [
-                event_ref(item)
-                for item in sent
-                if event_identity_id(item) == identity_id and command_key(str(item.get("text") or "")) == command
-            ][-4:]
+            sample = [event_ref(item) for item in matching_items][-4:]
             repeated_command_samples.append({
                 "kind": "active_status",
                 "identity_id": identity_id,
                 "command": command,
                 "count": count,
+                "min_gap_sec": min_gap_sec,
                 "sample": sample,
             })
             alerts.append(
