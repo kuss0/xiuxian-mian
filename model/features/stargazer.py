@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, track_reply_chain_message
-from ..state import get_current_identity_id, get_global_enabled, get_identity_enabled, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from ..webapp_core import MiniAppCaptureStore
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -38,6 +38,10 @@ STARGAZER_PENDING_COMMANDS = (
     CMD_STARGAZER_COLLECT,
     CMD_STARGAZER_GUIDE,
 )
+
+
+def _miniapp_http_allowed_during_pause():
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 STARGAZER_GUIDE_RESOURCE_KEY = "stargazer_guide"
 STARGAZER_SOOTHE_RESOURCE_KEY = "stargazer_soothe"
 STARGAZER_MINIAPP_PAUSED_ACTION = "miniapp_entry_seen"
@@ -517,8 +521,9 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
         return True
 
     global_enabled = get_global_enabled()
+    maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
     identity_enabled = get_identity_enabled(identity_id)
-    if not global_enabled or not identity_enabled:
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
         revoke_stargazer_miniapp_manual_run(identity_id)
         reason = "全局暂停" if not global_enabled else "身份已停用"
         if not was_paused:
@@ -551,7 +556,8 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
     async with lock:
         if not was_paused:
             await send_audit_log(
-                "🔭 观星台 MiniApp 接管入口，开始 WebView/HTTP 流程。",
+                "🔭 观星台 MiniApp 接管入口，开始 WebView/HTTP 流程。"
+                + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
                 scope="identity",
                 priority="low",
                 limit=180,

@@ -4,14 +4,14 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import cave_treasure_runtime, deep_retreat
+from model.features import cave_treasure_miniapp, cave_treasure_runtime, deep_retreat, yuanying
 
 
 def _cave_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=df_SECRET999"):
@@ -100,6 +100,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)
         with state_module.use_identity(1001):
             with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
+                    patch.object(cave_treasure_runtime, "get_global_pause_source", return_value="safety_watchdog"), \
                     patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock()) as flow_mock, \
                     patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
                 handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
@@ -114,6 +115,26 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(1001, cave_treasure_runtime._MANUAL_AUTH_UNTIL)
         audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
         self.assertIn("全局暂停", audit_text)
+
+    async def test_cave_entry_allows_http_during_tianzun_maintenance_pause(self):
+        cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)
+        flow_result = {"ok": True, "status": "daily_limit", "data": {"state": {"games_used": 3, "games_limit": 3}}}
+        with state_module.use_identity(1001):
+            with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
+                    patch.object(cave_treasure_runtime, "get_global_pause_source", return_value="tianzun_maintenance"), \
+                    patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+                handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
+                    _cave_event(),
+                    "【洞府】点击进入洞府",
+                    1_700_000_001.0,
+                    result_msg_id=6001,
+                )
+
+        self.assertTrue(handled)
+        flow_mock.assert_awaited_once()
+        audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
+        self.assertIn("天尊维护暂停中，仅执行 MiniApp HTTP", audit_text)
 
     async def test_cave_result_reports_game_materials_not_technical_fields(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)
@@ -225,6 +246,268 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual({"灵石": 58}, cave_treasure_runtime._cave_treasure_inventory_items(flow_result))
 
+    async def test_public_entry_treasure_runs_directly_from_df_url(self):
+        flow_result = {
+            "ok": True,
+            "status": "daily_limit",
+            "data": {
+                "state": {"games_used": 3, "games_limit": 3},
+                "results": [{"logs": ["获得古禁印痕 x1。"]}],
+            },
+        }
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+            result = await cave_treasure_runtime.run_cave_public_treasure(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("洞府寻宝公共入口", result["message"])
+        flow_mock.assert_awaited_once()
+        self.assertEqual("df_SECRET999", flow_mock.await_args.kwargs["token"])
+        self.assertIn("古禁印痕", "\n".join(str(call.args[0]) for call in audit_mock.await_args_list))
+
+    async def test_public_entry_trial_reads_external_app_and_runs_trial(self):
+        cave_start = {
+            "ok": True,
+            "status": "ok",
+            "data": {
+                "overview": {"player_id": 8659059191},
+                "raw": {
+                    "account": {
+                        "playerId": 8659059191,
+                        "externalApps": {
+                            "groups": [{
+                                "key": "daily",
+                                "apps": [{
+                                    "key": "trial",
+                                    "title": "天机试炼",
+                                    "url": "https://t.me/fanrenxiuxian_bot?startapp=trial_SECRET999",
+                                }],
+                            }],
+                        },
+                    },
+                },
+            },
+        }
+        trial_result = {
+            "ok": True,
+            "status": "daily_limit",
+            "settled_count": 2,
+            "data": {"traceGain": 2},
+        }
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="dwelling_init_data")), \
+                patch.object(cave_treasure_runtime, "run_cave_dwelling_start_production_flow", new=AsyncMock(return_value=cave_start)) as start_mock, \
+                patch.object(cave_treasure_runtime, "run_trial_miniapp_production_flow", new=AsyncMock(return_value=trial_result)) as trial_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+            result = await cave_treasure_runtime.run_cave_public_trial(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("天机试炼", result["extra"]["trial_title"])
+        start_mock.assert_awaited_once()
+        trial_mock.assert_awaited_once()
+        self.assertEqual("trial_SECRET999", trial_mock.await_args.kwargs["token"])
+        self.assertEqual("dwelling_init_data", trial_mock.await_args.kwargs["init_data"])
+        self.assertNotIn("player_id", trial_mock.await_args.kwargs)
+        self.assertIn("天机残痕+2", "\n".join(str(call.args[0]) for call in audit_mock.await_args_list))
+
+    async def test_public_entry_trial_resolves_dynamic_external_action_with_player_id(self):
+        cave_start = {
+            "ok": True,
+            "status": "ok",
+            "data": {
+                "overview": {"player_id": 8659059191},
+                "raw": {
+                    "account": {
+                        "externalApps": {
+                            "groups": [{
+                                "apps": [{
+                                    "key": "tianji_trial",
+                                    "title": "天机试炼",
+                                    "available": True,
+                                    "action": "trial",
+                                    "url": "",
+                                }],
+                            }],
+                        },
+                    },
+                },
+            },
+        }
+        external_result = {
+            "ok": True,
+            "status": "ok",
+            "data": {"url": "/miniapp/xianxia-trial?startapp=trial_SECRET999"},
+        }
+        trial_result = {"ok": True, "status": "daily_limit", "settled_count": 0, "data": {}}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="dwelling_init_data")), \
+                patch.object(cave_treasure_runtime, "run_cave_dwelling_start_production_flow", new=AsyncMock(return_value=cave_start)), \
+                patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)) as external_mock, \
+                patch.object(cave_treasure_runtime, "run_trial_miniapp_production_flow", new=AsyncMock(return_value=trial_result)) as trial_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_trial(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertTrue(result["ok"])
+        external_mock.assert_awaited_once()
+        self.assertEqual("trial", external_mock.await_args.kwargs["action"])
+        self.assertEqual(8659059191, external_mock.await_args.kwargs["player_id"])
+        self.assertEqual("dwelling_init_data", external_mock.await_args.kwargs["init_data"])
+        trial_mock.assert_awaited_once()
+        self.assertEqual("trial_SECRET999", trial_mock.await_args.kwargs["token"])
+        self.assertNotIn("player_id", trial_mock.await_args.kwargs)
+
+    def test_public_entry_trial_finds_trial_url_without_leaking_token(self):
+        launch = cave_treasure_runtime._find_trial_launch_in_cave_payload({
+            "externalApps": {
+                "groups": [{
+                    "apps": [{
+                        "title": "天机试炼",
+                        "url": "https://t.me/fanrenxiuxian_bot?startapp=trial_SECRET999",
+                    }],
+                }],
+            },
+        })
+
+        self.assertEqual("trial_SECRET999", launch["token"])
+        self.assertEqual("天机试炼", launch["title"])
+        self.assertNotIn("trial_SECRET999", json.dumps(launch["safe_summary"], ensure_ascii=False))
+
+        relative = cave_treasure_runtime._find_trial_launch_in_cave_payload({
+            "key": "tianji_trial",
+            "title": "天机试炼",
+            "url": "/miniapp/xianxia-trial?startapp=trial_SECRET888",
+        })
+        self.assertEqual("trial_SECRET888", relative["token"])
+        self.assertTrue(relative["webview_url"].startswith("https://asc.aiopenai.app/"))
+
+        external = cave_treasure_runtime._find_trial_external_app_in_cave_payload({
+            "account": {
+                "commandCenter": {
+                    "entries": [{"key": "trial_help", "title": "天机试炼", "note": "同名说明项"}],
+                },
+                "externalApps": {
+                    "groups": [{
+                        "apps": [{
+                            "key": "tianji_trial",
+                            "title": "天机试炼",
+                            "available": True,
+                            "url": "#",
+                        }],
+                    }],
+                },
+            },
+        })
+        self.assertEqual("tianji_trial", external["action"])
+
+    async def test_public_yuanying_runs_tianjige_command_and_replays_success(self):
+        now = 1_700_000_000.0
+        result_data = {
+            "actionResult": {
+                "ok": True,
+                "rawMessage": "你心念一动，丹田中的元婴化作一道流光飞出，消失在天际。\n它将在外云游 8 小时，为你寻觅天地奇珍。",
+            },
+        }
+        flow_result = {"ok": True, "status": "ok", "data": result_data}
+        with state_module.use_identity(1001):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "idle"
+            state_module.state["next_yuanying_time"] = now - 1
+            with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                    patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                    patch.object(yuanying, "send_audit_log", new=AsyncMock()), \
+                    patch.object(yuanying, "save_state"), \
+                    patch.object(yuanying, "_note_yuanying_remote_block"):
+                result = await cave_treasure_runtime.run_cave_public_yuanying(
+                    1001,
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    now=now,
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(".元婴出窍", flow_mock.await_args.kwargs["command"])
+            self.assertEqual("cave_public_tianjige_yuanying:1001", flow_mock.await_args.kwargs["capture_source"])
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertGreater(state_module.state["next_yuanying_time"], now)
+            audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
+            self.assertIn("洞府天机阁元婴出窍", audit_text)
+
+    async def test_public_yuanying_respects_phaseful_gate_before_http(self):
+        now = 1_700_000_000.0
+        with state_module.use_identity(1001):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "running"
+            state_module.state["next_yuanying_time"] = now + 3600
+            with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                    patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock()) as flow_mock:
+                result = await cave_treasure_runtime.run_cave_public_yuanying(
+                    1001,
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    now=now,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("尚未到出窍窗口", result["message"])
+        flow_mock.assert_not_awaited()
+
+    async def test_public_yuanying_rejects_send_as_alias_before_http(self):
+        state_module.ensure_identity_registered(2001)
+        state_module.update_send_as_profile(2001, username="alias_role", label="别名角色")
+        state_module.set_identity_account(2001, 1001)
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock()) as flow_mock:
+            result = await cave_treasure_runtime.run_cave_public_yuanying(
+                2001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("绑定登录账号", result["message"])
+        flow_mock.assert_not_awaited()
+
+    async def test_tianjige_yuanying_sync_never_triggers_legacy_warm_retry(self):
+        with state_module.use_identity(1001):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "idle"
+            with patch.object(yuanying, "handle_yuanying_status_reply", new=AsyncMock()) as status_mock:
+                sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
+                    1001,
+                    {"actionResult": {"ok": False, "rawMessage": "窍中温养，暂不可再次出窍。"}},
+                    now=1_700_000_000.0,
+                )
+
+        self.assertFalse(sync["handled"])
+        status_mock.assert_not_awaited()
+
+    async def test_tianjige_command_flow_disables_http_retries(self):
+        http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已处理"}})
+        with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
+                patch.object(cave_treasure_miniapp, "execute_miniapp_http_request", new=Mock(return_value=http_result)) as execute_mock:
+            result = await cave_treasure_miniapp.run_cave_tianjige_command_production_flow(
+                1001,
+                token="df_SECRET999",
+                webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                command=".元婴出窍",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
+        self.assertEqual("command_center:.元婴出窍", execute_mock.call_args.kwargs["step_key"])
+
     async def test_deep_seclusion_settle_replays_summary_through_deep_retreat_state(self):
         now = 1_700_000_500.0
         text = (
@@ -293,6 +576,42 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 8 * 60 * 60 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
 
+    async def test_deep_seclusion_status_payload_replays_running_state(self):
+        now = 1_700_000_700.0
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "launching"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now + 8 * 60 * 60
+
+        with (
+            patch.object(deep_retreat, "save_state"),
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
+            patch("model.features.passive_inbox.record_passive_inbox_event"),
+        ):
+            result = await cave_treasure_runtime.sync_cave_deep_seclusion_action_result(
+                1001,
+                "status",
+                {
+                    "ok": True,
+                    "data": {
+                        "deep_seclusion": {
+                            "active": True,
+                            "remaining_seconds": 2128,
+                            "status_text": "闭关中，剩余 0小时35分。",
+                        },
+                    },
+                },
+                now=now,
+            )
+
+        self.assertTrue(result["handled"])
+        self.assertEqual("status", result["message_kind"])
+        with state_module.use_identity(1001):
+            self.assertEqual("running", state_module.state["deep_retreat_phase"])
+            self.assertFalse(state_module.state["deep_retreat_probe_pending"])
+            self.assertEqual(now + 35 * 60 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+
     async def test_expired_cave_authorization_does_not_run(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0, ttl_sec=60)
         with state_module.use_identity(1001):
@@ -336,6 +655,168 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         flow_mock.assert_awaited_once()
+
+    async def test_cave_public_small_world_blocks_non_maintenance_global_pause(self):
+        with state_module.use_identity(1001):
+            with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
+                    patch.object(cave_treasure_runtime, "get_global_pause_source", return_value="safety_watchdog"), \
+                    patch.object(cave_treasure_runtime, "run_cave_dwelling_start_production_flow", new=AsyncMock()) as flow_mock:
+                result = await cave_treasure_runtime.run_cave_public_small_world_sync(
+                    1001,
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    now=1_700_000_001.0,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("全局暂停来源", result["message"])
+        flow_mock.assert_not_awaited()
+
+    def test_cave_public_small_world_plans_manifest_then_sermon(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            manifest = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": True,
+                    "prayer_title": "江河决堤",
+                    "prayer_resources_ready": True,
+                    "can_manifest": True,
+                },
+            })
+            sermon = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "faith": 81,
+                    "faith_cap": 100,
+                    "edict_remaining_seconds": 0,
+                },
+            })
+
+        self.assertEqual("manifest", manifest["action"])
+        self.assertEqual("miracle_sermon", sermon["action"])
+
+    async def test_cave_public_small_world_executes_action_and_updates_legacy_snapshot(self):
+        flow_result = {
+            "ok": True,
+            "status": "acted",
+            "data": {
+                "action": "manifest",
+                "plan": {"action": "manifest", "reason": "处理祈愿 江河决堤"},
+                "action_result": {"rawMessage": "显灵成功，信仰 +3。"},
+                "overview": {
+                    "small_world": {
+                        "available": True,
+                        "has_world": True,
+                        "faith": 84,
+                        "faith_cap": 100,
+                        "stability": 95,
+                        "stability_cap": 100,
+                        "population": 900,
+                        "population_cap": 1000,
+                        "incense_stock": 500,
+                        "pending_incense": 0,
+                        "has_prayer": False,
+                    },
+                },
+            },
+        }
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
+                    patch.object(cave_treasure_runtime, "get_global_pause_source", return_value="tianzun_maintenance"), \
+                    patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                    patch.object(cave_treasure_runtime, "save_state"), \
+                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                result = await cave_treasure_runtime.run_cave_public_small_world_sync(
+                    1001,
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    now=1_700_000_001.0,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("manifest", result["extra"]["action"])
+        self.assertIn("已显灵", result["message"])
+        self.assertEqual(84, state_module.get_identity_state(1001)["small_world_faith_value"])
+        flow_mock.assert_awaited_once()
+
+    async def test_cave_public_small_world_skips_http_before_identity_due_time(self):
+        now = 1_700_000_001.0
+        with state_module.use_identity(1001):
+            state_module.state["next_small_world_time"] = now + 3600
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock()) as flow_mock:
+            result = await cave_treasure_runtime.run_cave_public_small_world_sync(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["extra"]["skipped"])
+        flow_mock.assert_not_awaited()
+
+    async def test_cave_public_small_world_fifth_refresh_returns_to_six_hour_cycle(self):
+        now = 1_700_000_001.0
+        flow_result = {
+            "ok": True,
+            "status": "noop",
+            "data": {
+                "plan": {"reason": "当前无已启用且可执行的小世界动作"},
+                "overview": {
+                    "small_world": {
+                        "available": True,
+                        "has_world": True,
+                        "has_prayer": False,
+                        "faith": 95,
+                        "stability": 100,
+                    },
+                },
+            },
+        }
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_refresh_count"] = 4
+            state_module.state["next_small_world_time"] = now - 1
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)), \
+                patch.object(cave_treasure_runtime, "save_state"), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_small_world_sync(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        with state_module.use_identity(1001):
+            self.assertEqual(0, state_module.state["small_world_refresh_count"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(now + 6 * 3600, state_module.state["next_small_world_time"])
+
+    async def test_cave_public_deep_retreat_allows_maintenance_pause_and_records(self):
+        flow_result = {"ok": True, "status": "status", "data": {"data": {"deep_seclusion": {"active": True, "remaining_seconds": 88}}}}
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
+                    patch.object(cave_treasure_runtime, "get_global_pause_source", return_value="tianzun_maintenance"), \
+                    patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                result = await cave_treasure_runtime.run_cave_public_deep_retreat_action(
+                    1001,
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    "status",
+                    now=1_700_000_001.0,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("洞府闭关 status 完成", result["message"])
+        flow_mock.assert_awaited_once()
+        self.assertIn("1001:cave_deep_retreat", state_module.get_miniapp_state_records())
 
 
 if __name__ == "__main__":

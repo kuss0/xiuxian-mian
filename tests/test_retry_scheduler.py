@@ -84,6 +84,25 @@ class _StateIsolationMixin:
 
 
 class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
+    def test_maintenance_passive_trigger_gate_is_exact(self):
+        with patch.object(runtime, "get_global_enabled", return_value=False), \
+                patch.object(runtime, "get_global_pause_source", return_value="tianzun_maintenance"):
+            self.assertTrue(runtime._allows_maintenance_passive_trigger(
+                "在",
+                allow_maintenance_pause=True,
+                intent={"source_module": "被动结算触发"},
+            ))
+            self.assertFalse(runtime._allows_maintenance_passive_trigger(
+                ".元婴状态",
+                allow_maintenance_pause=True,
+                intent={"source_module": "被动结算触发"},
+            ))
+            self.assertFalse(runtime._allows_maintenance_passive_trigger(
+                "在",
+                allow_maintenance_pause=True,
+                intent={"source_module": "元婴"},
+            ))
+
     def test_default_retry_limit_is_one_resend(self):
         self.assertEqual(1, config.RETRY_LIMIT)
         self.assertEqual(1, runtime.RETRY_LIMIT)
@@ -604,6 +623,38 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertEqual({}, identity_state["pending_tasks"])
             self.assertNotIn("tianxing_craft_farm", identity_state["action_guard_sessions"])
+
+    def test_tianxing_pending_with_default_retry_is_module_managed_without_resend(self):
+        send_as_id = 971015
+        now = 8600.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                407: {
+                    "cmd": config.CMD_TIANXING_PANEL,
+                    "sent_at": now - 200,
+                    "retry": 0,
+                    "timeout": 120,
+                    "reply_to_msg_id": 0,
+                    "priority": "reactive",
+                    "max_retry": 1,
+                    "source_module": "天星宗",
+                    "op_id": "wild-training-panel-calibration-test",
+                }
+            }
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(runtime, "console_log") as console_mock:
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_not_awaited()
+        self.assertIn("交由模块状态机继续", console_mock.call_args.args[0])
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
 
     def test_retry_priority_gap_is_one_to_three_seconds(self):
         self.assertEqual((1.0, 3.0), runtime._get_send_gap_range(runtime.SEND_PRIORITY_RETRY))

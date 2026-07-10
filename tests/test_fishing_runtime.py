@@ -244,6 +244,99 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handled)
         flow_mock.assert_not_awaited()
 
+    async def test_unclaimed_miniapp_entry_does_not_fall_back_to_text_followups(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 50, 30)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "fishing"
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+            state_module.state["fishing_reply_to_msg_id"] = 22027
+            state_module.state["fishing_reply_due_at"] = now + 5
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.hold_unclaimed_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】\n钓者：@WalterWA2000\n点击下方 进入灵溪垂钓，依水面变化稳住灵线，即可提竿。",
+                    now,
+                    result_msg_id=33001,
+                )
+                await fishing_runtime.run_fishing_scheduler(now + 60)
+
+        self.assertTrue(handled)
+        send_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertEqual("idle", state_module.state["fishing_phase"])
+        self.assertEqual("", state_module.state["fishing_pending_action"])
+        self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+        self.assertIn("本竿不回退", state_module.state["fishing_last_error"])
+        self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+
+    async def test_unclaimed_miniapp_entry_prompt_without_button_still_blocks_text_followups(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 50, 35)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "fishing"
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+            state_module.state["fishing_reply_to_msg_id"] = 22027
+            state_module.state["fishing_reply_due_at"] = now + 5
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.hold_unclaimed_fishing_miniapp_entry(
+                    SimpleNamespace(id=33003, message=SimpleNamespace(buttons=[])),
+                    "【灵溪垂钓】\n钓者：@WalterWA2000\n\n点击下方 进入灵溪垂钓，依水面变化稳住灵线，即可提竿。",
+                    now,
+                    result_msg_id=33003,
+                )
+                await fishing_runtime.run_fishing_scheduler(now + 60)
+
+        self.assertTrue(handled)
+        send_mock.assert_not_awaited()
+        self.assertEqual("idle", state_module.state["fishing_phase"])
+        self.assertEqual("", state_module.state["fishing_pending_action"])
+        self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+
+    async def test_plain_legacy_text_without_miniapp_button_still_uses_text_flow(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 50, 45)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "_schedule_fishing_followup", return_value=True) as followup_mock,
+            ):
+                held = await fishing_runtime.hold_unclaimed_fishing_miniapp_entry(
+                    SimpleNamespace(id=33002, message=SimpleNamespace(buttons=[])),
+                    FISHING_START_TEXT,
+                    now,
+                    result_msg_id=33002,
+                )
+                handled = await fishing_runtime.handle_fishing_reply(
+                    FISHING_START_TEXT,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".钓鱼 青溪浅滩 凡饵"),
+                    matched_family="fishing",
+                    result_msg_id=33002,
+                )
+
+        self.assertFalse(held)
+        self.assertTrue(handled)
+        self.assertEqual("waiting", state_module.state["fishing_phase"])
+        self.assertEqual(".钓鱼状态", state_module.state["fishing_pending_action"])
+        followup_mock.assert_called_once()
+
     async def test_miniapp_entry_respects_global_pause_before_http(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 7, 51, 0)
@@ -252,6 +345,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_enabled"] = True
             with (
                 patch.object(fishing_runtime, "get_global_enabled", return_value=False),
+                patch.object(fishing_runtime, "get_global_pause_source", return_value="safety_watchdog"),
                 patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock()) as flow_mock,
                 patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(fishing_runtime, "save_state"),
@@ -270,6 +364,38 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 600, state_module.state["next_fishing_time"])
             audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
             self.assertIn("全局暂停", audit_text)
+
+    async def test_miniapp_entry_allows_http_during_tianzun_maintenance_pause(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 10, 7, 51, 0)
+        flow_result = {
+            "ok": True,
+            "status": "settled",
+            "data": {"fish": "青鳞小鲫", "settled_count": 1},
+            "events": [{"step": "round", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            with (
+                patch.object(fishing_runtime, "get_global_enabled", return_value=False),
+                patch.object(fishing_runtime, "get_global_pause_source", return_value="tianzun_maintenance"),
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33001,
+                )
+
+            self.assertTrue(handled)
+            flow_mock.assert_awaited_once()
+            audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
+            self.assertIn("天尊维护暂停中，仅执行 MiniApp HTTP", audit_text)
 
     async def test_miniapp_entry_runs_flow_and_updates_daily_counter(self):
         identity_id = self._prepare_identity()
@@ -961,7 +1087,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["fishing_phase"])
             self.assertEqual("", state_module.state["fishing_pending_action"])
             self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
-            self.assertIn("旧文本钓鱼后续已禁用", state_module.state["fishing_last_error"])
+            self.assertIn("MiniApp 本竿文本后续已拦截", state_module.state["fishing_last_error"])
             self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
 
     async def test_miniapp_entry_rejects_other_angler(self):
@@ -2195,6 +2321,30 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual("灵米饵", state_module.state["fishing_forced_buy_bait"])
             self.assertEqual(8, state_module.state["fishing_forced_buy_count"])
+
+    async def test_known_chum_shortage_accepts_display_bait_name(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_auto_buy_bait_enabled"] = True
+            state_module.state["fishing_auto_buy_bait_count"] = 8
+            state_module.state["fishing_reply_to_msg_id"] = 22027
+            state_module.state["fishing_reply_due_at"] = now + 60
+            with patch.object(fishing_runtime, "save_state"):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    "打窝失败，资源不足：凡饵x2。",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".打窝 米糠小窝"),
+                    matched_family="fishing",
+                    result_msg_id=22031,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("凡饵", state_module.state["fishing_forced_buy_bait"])
+            self.assertEqual(8, state_module.state["fishing_forced_buy_count"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertLess(state_module.state["next_fishing_time"], now + 60)
 
     async def test_routed_manual_buy_updates_storage_when_module_disabled(self):
         identity_id = self._prepare_identity()

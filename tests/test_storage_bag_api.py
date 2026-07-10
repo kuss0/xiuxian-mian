@@ -39,6 +39,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
+from model import inventory_delta
 from model import storage_bag_api_client
 from model import storage_bag_api_runtime
 from model import ui
@@ -78,6 +79,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         state_module.ensure_identity_registered(self.identity_id)
         state_module.set_send_as_profile(self.identity_id, label="来源号", username="source", daohao="青源")
         state_module.set_storage_bag_records({})
+        state_module.set_inventory_delta_records({})
         state_module.set_tianjige_dao_path_records({})
         state_module.set_storage_bag_api_config({})
         ui._storage_bag_api_state.update({
@@ -101,6 +103,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         state_module.set_tianjige_dao_path_records({})
+        state_module.set_inventory_delta_records({})
         ui._storage_bag_api_state.update({
             "running": False,
             "running_kind": "",
@@ -252,6 +255,75 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         record = state_module.get_storage_bag_records()[str(self.identity_id)]
         self.assertEqual({"青竹蜂云剑": 1, "灵石": 5000, "木髓": 3}, record["items"])
         self.assertEqual("storage_bag_api_character", record["source"])
+
+    async def test_storage_bag_snapshot_exposes_fresh_miniapp_delta_without_overwriting_items(self):
+        state_module.set_storage_bag_records({
+            str(self.identity_id): {
+                "owner": "source",
+                "items": {"灵石": 100},
+                "sections": {"API": {"灵石": 100}},
+                "updated_at": 1_700_000_000.0,
+                "source": "storage_bag_api_character",
+            }
+        })
+        result = inventory_delta.record_inventory_delta(
+            self.identity_id,
+            source="cave_treasure_miniapp",
+            source_id="session-a",
+            items={"灵石": 20, "凝血草": 2},
+            now=1_700_000_100.0,
+        )
+
+        snapshot = ui.get_storage_bag_snapshot()
+        row = next(item for item in snapshot["rows"] if item["identity_id"] == self.identity_id)
+
+        self.assertTrue(result["changed"])
+        self.assertEqual({"灵石": 100}, row["items"])
+        self.assertEqual({"凝血草": 2, "灵石": 20}, row["pending_deltas"])
+        self.assertEqual(120, row["merged_items"]["灵石"]["quantity"])
+        self.assertEqual(2, row["merged_items"]["凝血草"]["quantity"])
+        self.assertEqual("cave_treasure_miniapp", row["merged_items"]["灵石"]["freshness_source"])
+        self.assertEqual("pending_inventory_confirm", row["merged_items"]["灵石"]["status"])
+        self.assertEqual("delta_newer_than_snapshot", row["merged_items"]["灵石"]["freshness"])
+        self.assertEqual(1, snapshot["inventory_freshness"]["pending_record_count"])
+
+    async def test_inventory_delta_duplicate_source_is_idempotent_and_old_delta_is_stale(self):
+        state_module.set_storage_bag_records({
+            str(self.identity_id): {
+                "owner": "source",
+                "items": {"灵石": 100},
+                "sections": {"API": {"灵石": 100}},
+                "updated_at": 1_700_000_000.0,
+                "source": "storage_bag_api_character",
+            }
+        })
+
+        first = inventory_delta.record_inventory_delta(
+            self.identity_id,
+            source="cave_treasure_miniapp",
+            source_id="session-a",
+            items={"灵石": 20},
+            now=1_699_999_900.0,
+        )
+        duplicate = inventory_delta.record_inventory_delta(
+            self.identity_id,
+            source="cave_treasure_miniapp",
+            source_id="session-a",
+            items={"灵石": 20},
+            now=1_700_000_100.0,
+        )
+        snapshot = ui.get_storage_bag_snapshot()
+        row = next(item for item in snapshot["rows"] if item["identity_id"] == self.identity_id)
+        records = [record for key, record in state_module.get_inventory_delta_records().items() if key != "_meta"]
+
+        self.assertTrue(first["changed"])
+        self.assertFalse(duplicate["changed"])
+        self.assertEqual(1, len(records))
+        self.assertEqual({}, row["pending_deltas"])
+        self.assertEqual({"灵石": 20}, row["inventory_freshness"]["stale_deltas"])
+        self.assertEqual(100, row["merged_items"]["灵石"]["quantity"])
+        self.assertEqual("storage_bag_api_character", row["merged_items"]["灵石"]["freshness_source"])
+        self.assertEqual(1, snapshot["inventory_freshness"]["stale_record_count"])
 
     async def test_manual_api_refresh_reports_content_unchanged(self):
         state_module.set_storage_bag_api_config({

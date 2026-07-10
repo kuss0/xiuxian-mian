@@ -40,12 +40,11 @@ SMALL_WORLD_PENDING_TIMEOUT_SEC = 20 * 60
 SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC = 3 * 60
 SMALL_WORLD_REFRESH_MIN_SEC = 10 * 60
 SMALL_WORLD_REFRESH_MAX_SEC = 10 * 60
-SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 7
-SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC = 10 * 60
-SMALL_WORLD_CYCLE_CD_SEC = 8 * 3600
+SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
+SMALL_WORLD_CYCLE_CD_SEC = 6 * 3600
 SMALL_WORLD_MANIFEST_CD_SEC = 6 * 3600
 SMALL_WORLD_MANIFEST_RESOURCE_PAUSE_SEC = 6 * 3600
-SMALL_WORLD_LONG_PAUSE_SEC = 8 * 3600
+SMALL_WORLD_LONG_PAUSE_SEC = 6 * 3600
 SMALL_WORLD_JITTER_MIN_SEC = 60
 SMALL_WORLD_JITTER_MAX_SEC = 20 * 60
 SMALL_WORLD_INITIAL_CHECK_MIN_SEC = 10 * 60
@@ -56,7 +55,7 @@ SMALL_WORLD_THEFT_CALIBRATION_MIN_SEC = 30
 SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC = 90
 SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
 SMALL_WORLD_DEFAULT_STATUS_MAX = 100
-SMALL_WORLD_GOD_FOLLOWUP_SEC = 3 * 3600
+SMALL_WORLD_GOD_FOLLOWUP_SEC = 6 * 3600
 SMALL_WORLD_GOD_RESEND_GUARD_SEC = 5 * 60
 SMALL_WORLD_GOD_PRIORITY_MAINTENANCE = 10
 SMALL_WORLD_GOD_PRIORITY_DISASTER = 100
@@ -1542,16 +1541,17 @@ async def _send_barrier(now, reason):
 
 def _schedule_refresh(now):
     current_count = int(state.get("small_world_refresh_count", 0) or 0)
-    if current_count >= SMALL_WORLD_MAX_REFRESH_ATTEMPTS:
+    next_count = current_count + 1
+    if next_count >= SMALL_WORLD_MAX_REFRESH_ATTEMPTS:
         _clear_chain_pending()
-        state["small_world_refresh_count"] = 1
-        _set_phase("refresh_wait")
-        _schedule_after(now, SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC, SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC)
-        state["small_world_last_error"] = f"祈愿刷新 {SMALL_WORLD_MAX_REFRESH_ATTEMPTS} 次未出现，10 分钟后继续刷新"
+        state["small_world_refresh_count"] = 0
+        _set_phase("idle")
+        _schedule_next_cycle(now)
+        state["small_world_last_error"] = f"祈愿刷新 {SMALL_WORLD_MAX_REFRESH_ATTEMPTS} 次未出现，已退避 6 小时"
         save_state()
         return False
 
-    state["small_world_refresh_count"] = current_count + 1
+    state["small_world_refresh_count"] = next_count
     _set_phase("refresh_wait")
     _schedule_after(now, SMALL_WORLD_REFRESH_MIN_SEC, SMALL_WORLD_REFRESH_MAX_SEC)
     state["small_world_last_error"] = ""
@@ -1577,7 +1577,7 @@ async def _finish_no_prayer_panel(now, panel, *, allow_refresh=True):
     if allow_refresh and state.get("small_world_refresh_enabled"):
         if not _schedule_refresh(now):
             await send_audit_log(
-                f"🌍 小世界祈愿刷新 {SMALL_WORLD_MAX_REFRESH_ATTEMPTS} 次仍未出现，10 分钟后继续下一轮刷新。",
+                f"🌍 小世界祈愿刷新 {SMALL_WORLD_MAX_REFRESH_ATTEMPTS} 次仍未出现，已退避 6 小时。",
                 scope="identity",
                 limit=240,
             )

@@ -16,7 +16,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
-    iter_webapp_button_links,
+    iter_webapp_entry_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -64,9 +64,20 @@ def build_trial_miniapp_adapter(*, api_base_url=TRIAL_MINIAPP_DEFAULT_API_BASE_U
     )
 
 
-def build_trial_miniapp_request(endpoint, *, token, init_data_session=None, init_data="", payload=None, adapter=None):
+def build_trial_miniapp_request(
+    endpoint,
+    *,
+    token,
+    init_data_session=None,
+    init_data="",
+    player_id=None,
+    payload=None,
+    adapter=None,
+):
     adapter = adapter or build_trial_miniapp_adapter()
     request_payload = {"token": str(token or "").strip()}
+    if player_id not in (None, ""):
+        request_payload["playerId"] = player_id
     request_payload.update(dict(payload or {}))
     return build_miniapp_http_request(
         adapter,
@@ -77,13 +88,13 @@ def build_trial_miniapp_request(endpoint, *, token, init_data_session=None, init
     )
 
 
-def _iter_event_buttons(event):
-    yield from iter_webapp_button_links(event)
+def _iter_event_buttons(event, *, message_text=""):
+    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def extract_trial_miniapp_launch(event, *, message_text=""):
     adapter = build_trial_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event):
+    for button_text, url in _iter_event_buttons(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_trial_entry(url, button_text=button_text, message_text=message_text)
@@ -147,6 +158,8 @@ def build_trial_miniapp_flow_plan():
         manual_only=True,
         default_enabled=False,
         note="lab-only trial declaration; production scheduler is not wired",
+        replaces_commands=(".天机试炼",),
+        state_outputs=("module_snapshot", "daily_counter", "reward_delta"),
         steps=(
             MiniAppFlowStep(
                 key="launch",
@@ -804,6 +817,7 @@ def _solve_and_finish_trial_challenge(
     challenge,
     token,
     init_data,
+    player_id,
     transport,
     adapter,
     rng,
@@ -844,6 +858,7 @@ def _solve_and_finish_trial_challenge(
         "finish",
         token=token,
         init_data=init_data,
+        player_id=player_id,
         payload={"trialProof": proof},
         adapter=adapter,
     )
@@ -883,6 +898,7 @@ def run_trial_miniapp_lab_flow(
     *,
     token,
     init_data,
+    player_id=None,
     transport,
     adapter=None,
     rng=None,
@@ -899,7 +915,13 @@ def run_trial_miniapp_lab_flow(
         return _flow_result(False, "failed", error="initData missing")
 
     events = []
-    start_request = build_trial_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+    start_request = build_trial_miniapp_request(
+        "start",
+        token=token,
+        init_data=init_data,
+        player_id=player_id,
+        adapter=adapter,
+    )
     start_result = execute_miniapp_http_request(
         start_request,
         transport,
@@ -920,6 +942,7 @@ def run_trial_miniapp_lab_flow(
         challenge=challenge,
         token=token,
         init_data=init_data,
+        player_id=player_id,
         transport=transport,
         adapter=adapter,
         rng=rng,
@@ -948,6 +971,7 @@ def run_trial_miniapp_loop_lab_flow(
     *,
     token,
     init_data,
+    player_id=None,
     transport,
     adapter=None,
     rng=None,
@@ -969,7 +993,13 @@ def run_trial_miniapp_loop_lab_flow(
     current_token = token
     max_rounds = max(1, int(max_rounds or 1))
 
-    start_request = build_trial_miniapp_request("start", token=current_token, init_data=init_data, adapter=adapter)
+    start_request = build_trial_miniapp_request(
+        "start",
+        token=current_token,
+        init_data=init_data,
+        player_id=player_id,
+        adapter=adapter,
+    )
     start_result = execute_miniapp_http_request(
         start_request,
         transport,
@@ -992,6 +1022,7 @@ def run_trial_miniapp_loop_lab_flow(
             challenge=challenge,
             token=current_token,
             init_data=init_data,
+            player_id=player_id,
             transport=transport,
             adapter=adapter,
             rng=rng,
@@ -1026,6 +1057,7 @@ def run_trial_miniapp_loop_lab_flow(
             "next",
             token=current_token,
             init_data=init_data,
+            player_id=player_id,
             adapter=adapter,
         )
         next_result = execute_miniapp_http_request(
@@ -1060,7 +1092,13 @@ def run_trial_miniapp_loop_lab_flow(
             data = {"results": results, "settled_count": len(results)}
             return _flow_result(True, "next_unavailable", data=data, events=events)
         current_token = next_token
-        start_request = build_trial_miniapp_request("start", token=current_token, init_data=init_data, adapter=adapter)
+        start_request = build_trial_miniapp_request(
+            "start",
+            token=current_token,
+            init_data=init_data,
+            player_id=player_id,
+            adapter=adapter,
+        )
         start_result = execute_miniapp_http_request(
             start_request,
             transport,
@@ -1090,6 +1128,8 @@ async def run_trial_miniapp_production_flow(
     *,
     token,
     webview_url,
+    init_data="",
+    player_id=None,
     max_rounds=1,
     transport=None,
     sleeper=None,
@@ -1101,11 +1141,17 @@ async def run_trial_miniapp_production_flow(
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_trial_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_trial_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
         runner = run_trial_miniapp_loop_lab_flow if int(max_rounds or 1) > 1 else run_trial_miniapp_lab_flow
         kwargs = {
             "token": token,
             "init_data": init_data,
+            "player_id": player_id,
             "transport": transport or _requests_transport,
             "adapter": adapter,
             "sleeper": sleeper or time.sleep,

@@ -23,6 +23,7 @@ from ..state import (
     REALM_SORT_INDEX,
     YUANYING_MIN_REALM_INDEX,
     get_current_identity_id,
+    get_identity_account,
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
@@ -74,6 +75,11 @@ WORLD_BOSS_STRONG_MIN_REALM = "元婴初期"
 WORLD_BOSS_STRONG_MIN_REALM_INDEX = YUANYING_MIN_REALM_INDEX
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
+WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT = 4
+WORLD_BOSS_LOCAL_USERNAME_ALIASES = {
+    8659059191: ("WalterWA2000", "wa2000"),
+    301299112: ("jfdffdddd",),
+}
 WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {WORLD_BOSS_STATUS_QUERY_COMMAND}
 WORLD_BOSS_EVENT_PRIORITY = "event_burst"
 WORLD_BOSS_STATUS_PRIORITY = "reactive"
@@ -97,6 +103,13 @@ RE_OWN_ACTIONS = re.compile(r"你的出手[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_EXHAUSTED = re.compile(r"本期真仙试锋出手已尽.*?(\d+)\s*/\s*(\d+)")
 RE_DAMAGE = re.compile(r"造成\s*([^\s。]+)\s*伤害")
 RE_PARTICIPANTS = re.compile(r"参战[:：]\s*(\d+)\s*人")
+RE_CONTRIBUTION_ROW = re.compile(
+    r"^\s*(?P<rank>\d+)\.\s*@(?P<username>[A-Za-z0-9_]+)\s*-\s*(?P<score>[\d,]+)\s*分"
+    r"(?:\s*｜\s*强攻\s*(?P<attacks>\d+))?"
+    r"(?:\s*｜\s*伤害\s*(?P<damage>[^\n\r]+))?",
+    re.M,
+)
+RE_SETTLEMENT_ROW = re.compile(r"^\s*-\s*@(?P<username>[A-Za-z0-9_]+)[:：](?P<rewards>[^\n\r]+)", re.M)
 
 _WORLD_BOSS_SCHEDULER_LOCK = asyncio.Lock()
 _WORLD_BOSS_ROUND_TASK = None
@@ -138,6 +151,8 @@ def _blank_run_state(now=None):
         "last_conclusion_at": 0,
         "last_result": "",
         "participants": 0,
+        "miniapp_only": False,
+        "miniapp_entry_identity_ids": [],
         "fallback_status_day": "",
         "fallback_status_at": 0,
         "last_priority_window_key": "",
@@ -198,6 +213,14 @@ def _normalize_run_state(raw=None, now=None):
     for key in ("hp_percent", "fanhun", "break_progress", "moya", "zhen", "last_status_msg_id", "last_summary_log_total", "participants"):
         record[key] = _coerce_int(record.get(key), -1 if key in {"hp_percent", "fanhun", "break_progress", "moya", "zhen"} else 0)
     record["summary"] = _normalize_summary(record.get("summary"))
+    raw_entry_ids = record.get("miniapp_entry_identity_ids") or []
+    if not isinstance(raw_entry_ids, (list, tuple)):
+        raw_entry_ids = []
+    record["miniapp_entry_identity_ids"] = [
+        int(identity_id)
+        for identity_id in raw_entry_ids
+        if _coerce_int(identity_id, 0) > 0
+    ]
     for key in (
         "event_key",
         "phase",
@@ -209,6 +232,7 @@ def _normalize_run_state(raw=None, now=None):
         "last_priority_window_key",
     ):
         record[key] = str(record.get(key) or "").strip()
+    record["miniapp_only"] = bool(record.get("miniapp_only"))
     if record["active"] and record["opened_at"] > 0 and now - record["opened_at"] > WORLD_BOSS_EVENT_TTL_SEC:
         record["active"] = False
         record["closed_at"] = record["closed_at"] or now
@@ -342,12 +366,48 @@ def _parse_action_text(raw_text):
     return parsed
 
 
+def _new_miniapp_world_boss_open(raw_text):
+    return (
+        "点击下方按钮进入真仙战场" in raw_text
+        or "进入真仙战场" in raw_text
+        or "本轮废弃破幡、镇魂、护阵" in raw_text
+        or "个人战斗：一次完整参战" in raw_text
+    )
+
+
+def _parse_contribution_rows(raw_text):
+    rows = []
+    for match in RE_CONTRIBUTION_ROW.finditer(str(raw_text or "")):
+        rows.append({
+            "rank": _coerce_int(match.group("rank"), 0),
+            "username": str(match.group("username") or "").strip(),
+            "score": _coerce_int(str(match.group("score") or "0").replace(",", ""), 0),
+            "attacks": _coerce_int(match.group("attacks"), 0),
+            "damage": str(match.group("damage") or "").strip(),
+        })
+    return rows
+
+
+def _parse_settlement_rows(raw_text):
+    rows = []
+    for match in RE_SETTLEMENT_ROW.finditer(str(raw_text or "")):
+        rows.append({
+            "username": str(match.group("username") or "").strip(),
+            "rewards": str(match.group("rewards") or "").strip(),
+        })
+    return rows
+
+
 def parse_world_boss_text(text, now=None):
     raw_text = str(text or "").strip()
     if not raw_text or raw_text.startswith("."):
         return None
     if RE_WORLD_BOSS_OPEN.search(raw_text):
-        return {"type": "open", "event_key": f"{get_day_key(now or time.time())}:{_event_hash(raw_text)}"}
+        return {
+            "type": "open",
+            "event_key": f"{get_day_key(now or time.time())}:{_event_hash(raw_text)}",
+            "miniapp_only": _new_miniapp_world_boss_open(raw_text),
+        }
     notice_match = RE_WORLD_BOSS_NOTICE.search(raw_text)
     if notice_match and "开启" not in notice_match.group("title"):
         title = notice_match.group("title").strip()
@@ -363,6 +423,9 @@ def parse_world_boss_text(text, now=None):
             "result": result,
             "title": title,
             "participants": _coerce_int(participants_match.group(1), 0) if participants_match else 0,
+            "participants_present": participants_match is not None,
+            "contributions": _parse_contribution_rows(raw_text),
+            "settlements": _parse_settlement_rows(raw_text),
             "key": _event_hash(raw_text),
         }
     if "当前没有进行中的【真仙试锋】" in raw_text:
@@ -801,6 +864,21 @@ def _enabled_identity_ids():
     return result
 
 
+def _miniapp_entry_candidate_identity_ids():
+    result = []
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        try:
+            get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if get_identity_account(identity_id) <= 0:
+            continue
+        result.append(int(identity_id))
+    return result
+
+
 def _opening_strategy_active(run_state):
     phase = str(run_state.get("phase") or "")
     return not phase or "第一阶段" in phase
@@ -846,6 +924,33 @@ def _strong_attacker_priority_key(identity_id):
     )
 
 
+def _miniapp_account_key(identity_id):
+    account_id = get_identity_account(identity_id)
+    if account_id > 0:
+        return f"account:{account_id}"
+    # Missing account binding is treated as a separate bucket so lab tests and
+    # partially configured identities stay conservative instead of collapsing.
+    return f"identity:{int(identity_id or 0)}"
+
+
+def select_world_boss_miniapp_entry_identities(limit=WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT):
+    """Pick at most one world-boss MiniApp entry identity per login account."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT
+    limit = max(0, limit)
+    if limit <= 0:
+        return []
+    best_by_account = {}
+    for identity_id in _miniapp_entry_candidate_identity_ids():
+        account_key = _miniapp_account_key(identity_id)
+        current = best_by_account.get(account_key)
+        if current is None or _strong_attacker_priority_key(identity_id) < _strong_attacker_priority_key(current):
+            best_by_account[account_key] = int(identity_id)
+    return sorted(best_by_account.values(), key=_strong_attacker_priority_key)[:limit]
+
+
 def _opening_identity_order():
     enabled_ids = _enabled_identity_ids()
     return sorted(enabled_ids, key=_strong_attacker_priority_key)
@@ -873,6 +978,15 @@ def _identity_label(identity_id):
 
 def _status_is_fresh(run_state, now):
     return bool(run_state.get("active")) and float(run_state.get("last_status_at") or 0) > 0 and now - float(run_state.get("last_status_at") or 0) <= WORLD_BOSS_STATUS_STALE_SEC
+
+
+def _miniapp_only_event_recent(run_state, now):
+    if not bool((run_state or {}).get("miniapp_only")):
+        return False
+    opened_at = _coerce_float((run_state or {}).get("opened_at"), 0)
+    if opened_at <= 0:
+        return False
+    return float(now) - opened_at <= WORLD_BOSS_EVENT_TTL_SEC
 
 
 def _event_chain_id(run_state, now=None):
@@ -1248,6 +1362,8 @@ async def _maybe_log_progress(run_state, now, *, force=False):
 
 
 async def _open_event(parsed, now, current_msg_id=0):
+    if bool(parsed.get("miniapp_only")):
+        return await _notify_world_boss_open_only(parsed, now, current_msg_id=current_msg_id)
     run_state = _get_run_state(now)
     event_key = _open_event_key(parsed, now, current_msg_id=current_msg_id)
     if run_state.get("active") and run_state.get("event_key") == event_key:
@@ -1284,18 +1400,81 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0):
     run_state["event_key"] = event_key
     run_state["opened_at"] = float(now)
     run_state["closed_at"] = 0
+    run_state["miniapp_only"] = bool(parsed.get("miniapp_only"))
+    entry_identity_ids = select_world_boss_miniapp_entry_identities()
+    run_state["miniapp_entry_identity_ids"] = entry_identity_ids if run_state["miniapp_only"] else []
     run_state["last_open_log_key"] = event_key
-    run_state["last_result"] = "小程序开打提醒"
+    run_state["last_result"] = "小程序开打提醒" if run_state["miniapp_only"] else "未启用提醒"
     run_state["next_status_query_at"] = 0
     run_state["next_action_at"] = 0
+    if run_state["miniapp_only"]:
+        labels = "、".join(_identity_label(identity_id) for identity_id in entry_identity_ids) or "无"
+        message = (
+            "🗡 真仙试锋已开打：世界 boss 已迁移到小程序，脚本默认不出手，请手动处理。"
+            f"\nMiniApp 入场候选按登录账号去重，最多 {WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT} 个：{labels}"
+        )
+    else:
+        message = "🗡 真仙试锋已开打：当前没有启用身份，脚本不出手。"
     await send_audit_log(
-        "🗡 真仙试锋已开打：世界 boss 已迁移到小程序，脚本默认不出手，请手动处理。",
+        message,
         scope="global",
         priority="high",
         limit=260,
     )
     _set_run_state(run_state)
     return True
+
+
+def _local_world_boss_usernames():
+    usernames = {}
+    for identity_id in get_identity_ids():
+        profile = _identity_profile(identity_id)
+        aliases = WORLD_BOSS_LOCAL_USERNAME_ALIASES.get(int(identity_id), ())
+        for value in (profile.get("username"), profile.get("label"), *aliases):
+            username = str(value or "").strip().lstrip("@")
+            if username:
+                usernames.setdefault(username.lower(), int(identity_id))
+    return usernames
+
+
+def _format_local_world_boss_result(parsed):
+    username_map = _local_world_boss_usernames()
+    if not username_map:
+        return ""
+    contributions = []
+    for item in parsed.get("contributions") or []:
+        username = str(item.get("username") or "").strip()
+        identity_id = username_map.get(username.lower())
+        if not identity_id:
+            continue
+        label = _identity_label(identity_id)
+        detail = f"{label} {item.get('score', 0)}分"
+        attacks = _coerce_int(item.get("attacks"), 0)
+        if attacks:
+            detail += f"｜强攻{attacks}"
+        damage = str(item.get("damage") or "").strip()
+        if damage:
+            detail += f"｜伤害{damage}"
+        rank = _coerce_int(item.get("rank"), 0)
+        if rank:
+            detail += f"｜第{rank}"
+        contributions.append(detail)
+    reward_by_user = {}
+    for item in parsed.get("settlements") or []:
+        username = str(item.get("username") or "").strip()
+        identity_id = username_map.get(username.lower())
+        if identity_id:
+            reward_by_user[_identity_label(identity_id)] = str(item.get("rewards") or "").strip()
+    if not contributions and not reward_by_user:
+        return ""
+    lines = []
+    if contributions:
+        lines.append("本方上榜：" + "；".join(contributions))
+    if reward_by_user:
+        reward_text = "；".join(f"{label}：{reward}" for label, reward in reward_by_user.items() if reward)
+        if reward_text:
+            lines.append("保底收获：" + reward_text)
+    return "\n".join(lines)
 
 
 def _start_world_boss_round_if_ready(now):
@@ -1320,7 +1499,7 @@ async def _close_event(parsed, now, *, log=True):
     run_state["last_conclusion_key"] = conclusion_key
     run_state["last_conclusion_at"] = float(now)
     participants = _coerce_int(parsed.get("participants"), 0)
-    if participants > 0:
+    if parsed.get("participants_present") or participants > 0:
         run_state["participants"] = participants
     for identity_id in get_identity_ids():
         try:
@@ -1332,11 +1511,23 @@ async def _close_event(parsed, now, *, log=True):
     if log and not duplicate:
         await _maybe_log_progress(run_state, now, force=True)
         summary = _normalize_summary(run_state.get("summary"))
+        local_result = _format_local_world_boss_result(parsed)
+        participant_display = (
+            run_state.get("participants")
+            if parsed.get("participants_present") or _coerce_int(run_state.get("participants"), 0) > 0
+            else "未知"
+        )
+        base = (
+            f"🗡 真仙试锋{result}：参战 {participant_display}"
+            f"｜本脚本确认 破幡 {summary['破幡']} / 镇魂 {summary['镇魂']} / 护阵 {summary['护阵']} / 强攻 {summary['强攻']}。"
+        )
+        if local_result:
+            base += "\n" + local_result
         await send_audit_log(
-            f"🗡 真仙试锋{result}：参战 {run_state.get('participants') or participants or '未知'}｜本脚本确认 破幡 {summary['破幡']} / 镇魂 {summary['镇魂']} / 护阵 {summary['护阵']} / 强攻 {summary['强攻']}。",
+            base,
             scope="global",
             priority="medium",
-            limit=320,
+            limit=700,
         )
     _set_run_state(run_state)
     return True
@@ -1464,6 +1655,15 @@ async def handle_world_boss_reply(text, now, reply_to=None, *, matched_family=No
     identity_id = _coerce_int((reply_context or {}).get("send_as_id"), 0) or get_current_identity_id()
     event_id = _coerce_int(current_msg_id or getattr(reply_to, "id", 0), 0)
     parsed_type = parsed.get("type")
+    run_state = _get_run_state(now)
+    if _miniapp_only_event_recent(run_state, now):
+        if parsed_type == "open":
+            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id)
+        if parsed_type == "conclusion":
+            return await _close_event(parsed, now)
+        if parsed_type == "inactive":
+            return await _mark_inactive(now)
+        return True
     if parsed_type == "open":
         return await _open_event(parsed, now, current_msg_id=event_id)
     if parsed_type == "conclusion":
@@ -1486,11 +1686,21 @@ async def handle_world_boss_broadcast(text, now, event=None):
     event_id = _coerce_int(getattr(event, "id", 0), 0)
     parsed_type = parsed.get("type")
     enabled = bool(_enabled_identity_ids())
-    if not enabled:
-        run_state = _get_run_state(now)
+    run_state = _get_run_state(now)
+    if _miniapp_only_event_recent(run_state, now):
         if parsed_type == "open":
             return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id)
-        if parsed_type == "conclusion" and run_state.get("active"):
+        if parsed_type == "conclusion":
+            return await _close_event(parsed, now)
+        if parsed_type == "inactive":
+            return await _mark_inactive(now)
+        # MiniApp status/action broadcasts are useful evidence, but they must
+        # not resurrect the deprecated text-command action chain.
+        return True
+    if not enabled:
+        if parsed_type == "open":
+            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id)
+        if parsed_type == "conclusion" and (run_state.get("active") or _miniapp_only_event_recent(run_state, now)):
             return await _close_event(parsed, now, log=False)
         if parsed_type == "inactive" and run_state.get("active"):
             return await _mark_inactive(now)
@@ -1896,4 +2106,5 @@ __all__ = [
     "looks_like_world_boss_text",
     "parse_world_boss_text",
     "run_world_boss_scheduler",
+    "select_world_boss_miniapp_entry_identities",
 ]

@@ -2781,6 +2781,52 @@ body {
   background: #0f172a;
 }
 
+.miniapp-cave-public {
+  grid-template-columns: minmax(140px, 0.9fr) minmax(220px, 1.8fr) minmax(96px, 128px) auto;
+}
+
+.miniapp-cave-switches,
+.miniapp-cave-batch-status,
+.miniapp-cave-single-actions {
+  grid-column: 1 / -1;
+}
+
+.miniapp-cave-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.miniapp-cave-public .miniapp-cave-switch {
+  display: inline-flex;
+  width: auto;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  color: #cbd5e1;
+}
+
+.miniapp-cave-public .miniapp-cave-switch input {
+  width: 14px;
+  min-height: 14px;
+  margin: 0;
+}
+
+.miniapp-cave-public .miniapp-cave-switch span {
+  color: #cbd5e1;
+}
+
+.miniapp-cave-batch-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
 .miniapp-empty {
   padding: 16px;
   text-align: center;

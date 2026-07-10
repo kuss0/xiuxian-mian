@@ -16,7 +16,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
-    iter_webapp_button_links,
+    iter_webapp_entry_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -112,13 +112,13 @@ def _requests_transport(request):
     )
 
 
-def _iter_event_buttons(event):
-    yield from iter_webapp_button_links(event)
+def _iter_event_buttons(event, *, message_text=""):
+    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def extract_stargazer_miniapp_launch(event, *, message_text=""):
     adapter = build_stargazer_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event):
+    for button_text, url in _iter_event_buttons(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_stargazer_entry(url, button_text=button_text, message_text=message_text)
@@ -143,6 +143,8 @@ def build_stargazer_miniapp_flow_plan():
         manual_only=True,
         default_enabled=False,
         note="lab-only farm protocol declaration; stargazer production actions are not wired",
+        replaces_commands=(".观星台",),
+        state_outputs=("module_snapshot", "inventory_delta"),
         steps=(
             MiniAppFlowStep(
                 key="launch",

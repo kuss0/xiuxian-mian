@@ -1,12 +1,250 @@
 import json
 import random
 import unittest
+from unittest.mock import patch
 
 from model import webapp_core
 from model.features import cave_treasure_miniapp, fishing_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class MiniAppProtocolFlowTests(unittest.TestCase):
+    def test_cave_small_world_parses_real_nested_dashboard_and_scoped_request(self):
+        parsed = cave_treasure_miniapp.parse_cave_dwelling_overview({
+            "ok": True,
+            "account": {
+                "smallWorld": {
+                    "hasWorld": True,
+                    "summary": {
+                        "population": 900,
+                        "populationCap": 1000,
+                        "faith": 81,
+                        "stability": 93,
+                        "incensePoints": 500,
+                        "uncollectedIncense": 12.5,
+                        "hourlyIncense": 3.5,
+                        "shenshiText": "8/8",
+                    },
+                    "actions": {
+                        "canCollect": True,
+                        "canManifest": True,
+                        "edictRemainingSeconds": 0,
+                        "barrierRemainingSeconds": 120,
+                        "barrierCost": 80,
+                    },
+                    "temple": {"level": 3, "name": "山河神庙"},
+                    "prayer": {
+                        "title": "江河决堤",
+                        "description": "洪水将至",
+                        "successRate": 88,
+                        "expiresInSeconds": 3600,
+                        "cost": [{"name": "修为", "owned": 900, "required": 800, "missing": 0}],
+                    },
+                },
+            },
+        })
+
+        world = parsed["small_world"]
+        self.assertEqual(81, world["faith"])
+        self.assertEqual(93, world["stability"])
+        self.assertEqual(500, world["incense_stock"])
+        self.assertEqual(12.5, world["pending_incense"])
+        self.assertEqual("江河决堤", world["prayer_title"])
+        self.assertTrue(world["prayer_resources_ready"])
+        self.assertTrue(world["can_manifest"])
+        self.assertTrue(world["barrier_active"])
+
+        request = cave_treasure_miniapp.build_cave_small_world_action_request(
+            "manifest",
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+        self.assertEqual("small_world", request["safe_summary"]["endpoint"])
+        self.assertEqual("manifest", request["payload"]["action"])
+        self.assertEqual({"action"}, set(request["payload"]) - {"token", "initData"})
+        self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
+
+        external_request = cave_treasure_miniapp.build_cave_external_action_request(
+            "trial",
+            token="df_SECRET999",
+            player_id=8659059191,
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+        self.assertEqual("external", external_request["safe_summary"]["endpoint"])
+        self.assertEqual("trial", external_request["payload"]["action"])
+        self.assertEqual("8659059191", external_request["payload"]["playerId"])
+        self.assertEqual({"action", "playerId"}, set(external_request["payload"]) - {"token", "initData"})
+
+    def test_cave_dwelling_overview_parses_new_dashboard_without_url_tokens(self):
+        parsed = cave_treasure_miniapp.parse_cave_dwelling_overview({
+            "ok": True,
+            "account": {
+                "playerId": 8659059191,
+                "username": "WalterWA2000",
+                "daoName": "清源子",
+                "sectName": "天星宗",
+                "cultivationLevel": "化神后期大圆满",
+                "commandCenter": {
+                    "security": {
+                        "mode": "whitelist_only",
+                        "directRawCommand": False,
+                        "maxInputLength": 80,
+                        "text": "天机阁只识别白名单指令，并映射到洞府内已有接口或入口；不会把任意文本直通给 bot。",
+                    },
+                    "entries": [{
+                        "key": "formation_self",
+                        "title": "阵法 / 隐修 / 御宝加持",
+                        "status": "integrated",
+                        "targetTab": "command",
+                        "buttonText": "到天机阁",
+                        "note": "个人阵法、隐修状态和临时御宝加持可直接在天机阁执行。",
+                        "commands": [".我的阵法", ".布阵", ".撤阵", ".吐纳养法", ".避世", ".入世"],
+                    }, {
+                        "key": "journey",
+                        "title": "钓鱼 / 天机试炼 / 赛事",
+                        "buttonText": "看外府",
+                        "commands": [".钓鱼", ".天机试炼", ".诸天杯"],
+                    }],
+                },
+                "externalApps": {
+                    "groups": [{
+                        "key": "sect_farm",
+                        "title": "宗门灵圃",
+                        "apps": [{
+                            "key": "sect_farm_locked",
+                            "title": "宗门灵圃",
+                            "buttonText": "查看灵圃",
+                            "status": "ready",
+                            "available": True,
+                            "url": "/miniapp/xianxia-sect-farm?startapp=farm_SECRET999",
+                        }, {
+                            "key": "tianji_trial",
+                            "title": "天机试炼",
+                            "buttonText": "进入试炼",
+                            "status": "ready",
+                            "available": True,
+                            "url": "https://t.me/fanrenxiuxian_bot?startapp=trial_SECRET999",
+                        }],
+                    }],
+                },
+                "smallWorld": {
+                    "level": 3,
+                    "templeLevel": 3,
+                    "population": 190000,
+                    "faith": 92,
+                    "faithCap": 100,
+                    "stability": 100,
+                    "stabilityCap": 100,
+                    "pendingIncense": 2103.34,
+                    "incenseStock": 20785,
+                    "prayer": {"title": "江河决堤", "status": "pending"},
+                    "barrier": {"active": True},
+                    "actions": {"canManifest": True, "canHarvest": False, "canBarrier": True},
+                },
+            },
+            "identity": {"selectedPlayerId": 8659059191},
+            "dwelling": {
+                "hasDwelling": True,
+                "lingqiPool": 503110.3,
+                "lingqiPct": 83.85,
+                "productionHint": 2975.0,
+                "visualCapacity": 600000.0,
+                "formation": {"active": True, "level": 5, "mode": "聚灵", "title": "聚灵阵势"},
+                "hunt": {"used": 0, "limit": 3, "remaining": 3, "actionPoints": 8},
+                "meditation": {
+                    "canSettle": True,
+                    "projectedGain": 9,
+                    "consumableLingqi": 2.0,
+                    "reason": "ready",
+                    "reasonText": "静室可结算本次灵气沉淀。",
+                    "deepSeclusion": {
+                        "active": True,
+                        "completed": False,
+                        "canStart": False,
+                        "canForceExit": True,
+                        "canSettle": False,
+                        "remainingSeconds": 107536,
+                        "endMs": 1783721290498,
+                        "statusText": "闭关中，剩余 29小时52分。",
+                    },
+                    "standardCultivation": {
+                        "canCultivate": False,
+                        "reason": "deep_seclusion_active",
+                        "cooldownRemainingSeconds": 0,
+                        "deepSeclusionActive": True,
+                    },
+                },
+            },
+        })
+        text = json.dumps(parsed, ensure_ascii=False)
+
+        self.assertTrue(parsed["ok"])
+        self.assertEqual(8659059191, parsed["player_id"])
+        self.assertEqual("WalterWA2000", parsed["username"])
+        self.assertEqual("天星宗", parsed["sect_name"])
+        self.assertTrue(parsed["has_dwelling"])
+        self.assertEqual(3, parsed["hunt"]["limit"])
+        self.assertEqual(8, parsed["hunt"]["action_points"])
+        self.assertTrue(parsed["meditation"]["can_settle"])
+        self.assertTrue(parsed["deep_seclusion"]["active"])
+        self.assertFalse(parsed["deep_seclusion"]["can_start"])
+        self.assertTrue(parsed["deep_seclusion"]["can_force_exit"])
+        self.assertFalse(parsed["standard_cultivation"]["can_cultivate"])
+        self.assertEqual(92, parsed["small_world"]["faith"])
+        self.assertEqual(100, parsed["small_world"]["stability"])
+        self.assertEqual("江河决堤", parsed["small_world"]["prayer_title"])
+        self.assertTrue(parsed["small_world"]["barrier_active"])
+        self.assertTrue(parsed["small_world"]["can_manifest"])
+        self.assertEqual("whitelist_only", parsed["command_center"]["security"]["mode"])
+        self.assertFalse(parsed["command_center"]["security"]["direct_raw_command"])
+        self.assertEqual(2, parsed["command_center"]["entry_count"])
+        self.assertEqual(["formation_self"], [item["key"] for item in parsed["command_center"]["tianjige_entries"]])
+        self.assertEqual(".布阵", parsed["command_center"]["tianjige_entries"][0]["commands"][1])
+        self.assertEqual(["farm", "trial"], [app["start_kind"] for app in parsed["external_apps"]])
+        self.assertNotIn("farm_SECRET999", text)
+        self.assertNotIn("trial_SECRET999", text)
+
+    def test_cave_deep_seclusion_action_request_is_scoped_to_action_only(self):
+        request = cave_treasure_miniapp.build_cave_deep_seclusion_action_request(
+            "settle",
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+
+        self.assertEqual("deep_seclusion", request["safe_summary"]["endpoint"])
+        self.assertEqual("df_SECRET999", request["payload"]["token"])
+        self.assertEqual("settle", request["payload"]["action"])
+        self.assertIn("initData", request["payload"])
+        self.assertEqual({"action"}, set(request["payload"]) - {"token", "initData"})
+        self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
+        with self.assertRaises(ValueError):
+            cave_treasure_miniapp.build_cave_deep_seclusion_action_request(
+                "unknown",
+                token="df_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+            )
+
+    def test_cave_tianjige_command_request_is_strictly_whitelisted(self):
+        request = cave_treasure_miniapp.build_cave_tianjige_command_request(
+            ".元婴出窍",
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+
+        self.assertEqual("command_center", request["safe_summary"]["endpoint"])
+        self.assertEqual(".元婴出窍", request["payload"]["command"])
+        self.assertEqual("df_SECRET999", request["payload"]["token"])
+        self.assertIn("initData", request["payload"])
+        self.assertEqual({"command"}, set(request["payload"]) - {"token", "initData"})
+        self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
+        self.assertNotIn("df_SECRET999", json.dumps(request["safe_summary"], ensure_ascii=False))
+
+        with self.assertRaises(ValueError):
+            cave_treasure_miniapp.build_cave_tianjige_command_request(
+                ".闭关修炼",
+                token="df_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+            )
+
     def test_mutating_miniapp_steps_do_not_retry_transient_failures(self):
         trial_calls = []
 
@@ -513,6 +751,60 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("df_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
 
+    def test_cave_treasure_huntrun_only_replies_keep_daily_counter_context(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {"ok": True, "dwelling": {"hunt": {"used": 0, "limit": 3, "remaining": 3, "actionPoints": 8}}}
+            if endpoint == "hunt":
+                return 200, {
+                    "ok": True,
+                    "dwelling": {"hunt": {"used": 1, "limit": 3, "remaining": 2, "actionPoints": 8}},
+                    "huntRun": {
+                        "sessionId": "hunt-context",
+                        "status": "active",
+                        "size": 2,
+                        "ap": 1,
+                        "maxAp": 8,
+                        "cells": [{"index": 0, "revealed": False}],
+                    },
+                }
+            if endpoint == "hunt_reveal":
+                return 200, {
+                    "ok": True,
+                    "huntRun": {
+                        "sessionId": "hunt-context",
+                        "status": "active",
+                        "size": 2,
+                        "ap": 0,
+                        "maxAp": 8,
+                        "foundMain": True,
+                    },
+                }
+            if endpoint == "hunt_settle":
+                return 200, {
+                    "ok": True,
+                    "dwelling": {"hunt": {"used": 1, "limit": 3, "remaining": 2, "actionPoints": 8}},
+                    "huntResult": {"loot": [{"name": "灵石", "quantity": 1}]},
+                }
+            return 404, {"ok": False}
+
+        result = cave_treasure_miniapp.run_cave_treasure_miniapp_lab_flow(
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(15),
+            max_steps=3,
+        )
+        games = [event.get("games") for event in result["events"] if event.get("step") == "decide"]
+
+        self.assertEqual(["start", "hunt", "hunt_reveal", "hunt_settle"], calls)
+        self.assertNotIn("0/0", games)
+        self.assertIn("1/3", games)
+
     def test_cave_treasure_action_button_text_does_not_mean_treasure_found(self):
         state = cave_treasure_miniapp.parse_cave_treasure_state({
             "huntRun": {
@@ -547,6 +839,69 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
 
         self.assertTrue(found_state["treasure_found"])
         self.assertEqual("settle", found_decision["action"])
+
+    def test_cave_treasure_latest_hint_skips_revealed_target(self):
+        state = cave_treasure_miniapp.parse_cave_treasure_state({
+            "huntRun": {
+                "sessionId": "hunt-hint",
+                "status": "active",
+                "size": 3,
+                "ap": 2,
+                "maxAp": 8,
+                "latestHint": {
+                    "markers": [
+                        {"index": 4, "kind": "treasure"},
+                        {"index": 5, "kind": "resource"},
+                    ],
+                },
+                "cells": [
+                    {"index": 4, "revealed": True},
+                    {"index": 5, "revealed": False},
+                    {"index": 6, "revealed": False},
+                ],
+            },
+        })
+        decision = cave_treasure_miniapp.choose_cave_treasure_action(state, rng=random.Random(5))
+        request = cave_treasure_miniapp.build_cave_treasure_action_request(
+            decision,
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+
+        self.assertEqual(6, state["hint_target"])
+        self.assertEqual("search", decision["action"])
+        self.assertEqual("hint_target", decision["reason"])
+        self.assertEqual(6, decision["targetIndex"])
+        self.assertEqual("hunt_reveal", request["safe_summary"]["endpoint"])
+        self.assertEqual(5, request["payload"]["index"])
+
+    def test_cave_treasure_latest_hint_prefers_available_treasure_marker(self):
+        state = cave_treasure_miniapp.parse_cave_treasure_state({
+            "huntRun": {
+                "sessionId": "hunt-priority",
+                "status": "active",
+                "size": 2,
+                "ap": 2,
+                "maxAp": 8,
+                "latestHint": {
+                    "markers": [
+                        {"index": 1, "kind": "resource"},
+                        {"index": 2, "kind": "treasure"},
+                    ],
+                },
+                "cells": [
+                    {"index": 1, "revealed": False},
+                    {"index": 2, "revealed": False},
+                    {"index": 3, "revealed": False},
+                ],
+            },
+        })
+        decision = cave_treasure_miniapp.choose_cave_treasure_action(state, rng=random.Random(6))
+
+        self.assertEqual(3, state["hint_target"])
+        self.assertEqual("search", decision["action"])
+        self.assertEqual("hint_target", decision["reason"])
+        self.assertEqual(3, decision["targetIndex"])
 
     def test_cave_treasure_reveal_app_error_is_sanitized_and_stops(self):
         calls = []
@@ -961,6 +1316,63 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("tree_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)
+
+    def test_tree_game_lab_flow_blocks_zero_score_submit(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "tree": {"gameplayMode": "council"},
+                    "council": {
+                        "daily": {
+                            "jump": {"used": 0, "limit": 3, "best": 0},
+                            "fly": {"used": 0, "limit": 3, "best": 0},
+                        },
+                        "season": {"seasonId": "lyz20260706", "status": "active"},
+                    },
+                }
+            if endpoint == "run_start":
+                return 200, {
+                    "ok": True,
+                    "run": {
+                        "mode": "jump",
+                        "runToken": "run_SECRET999",
+                        "seed": "zero-score-seed",
+                        "used": 1,
+                        "limit": 3,
+                        "runNo": 1,
+                        "seasonId": "lyz20260706",
+                    },
+                }
+            raise AssertionError(f"{endpoint} must not be called when local score is zero")
+
+        with patch.object(
+            tree_miniapp,
+            "build_tree_game_proof",
+            return_value=(
+                {"charges": [0.1], "durationMs": 1200, "clientScore": 0},
+                {"mode": "jump", "targetScore": 4, "score": 0, "durationMs": 1200},
+            ),
+        ):
+            result = tree_miniapp.run_tree_miniapp_game_lab_flow(
+                token="tree_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                mode="jump",
+                submit=True,
+                transport=transport,
+                rng=random.Random(1),
+                sleeper=lambda _delay: None,
+                score_profile={"target_score": 4},
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("unsafe_score", result["status"])
+        self.assertEqual(["start", "run_start"], calls)
+        self.assertEqual(0, result["data"]["proof_summary"]["score"])
 
     def test_capture_store_direct_raw_dict_append_is_sanitized(self):
         store = webapp_core.MiniAppCaptureStore()

@@ -181,6 +181,14 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual("item_fishing_bait_plain", cost.item_key)
         self.assertEqual(2, cost.count)
 
+    def test_parse_chum_shortage_accepts_display_bait_name(self):
+        cost = fishing.parse_chum_shortage("打窝失败，资源不足：凡饵x2。")
+
+        self.assertIsNotNone(cost)
+        self.assertEqual("凡饵", cost.item_key)
+        self.assertEqual(2, cost.count)
+        self.assertEqual("凡饵", fishing.fishing_bait_name_for_item_key(cost.item_key))
+
     def test_chum_shortage_keys_translate_to_bait_names(self):
         spirit_rice = fishing.parse_chum_shortage("打窝失败，资源不足：item_fishing_bait_spirit_ricex3。")
         demon_blood = fishing.parse_chum_shortage("打窝失败，资源不足：item_fishing_bait_demon_bloodx2。")
@@ -708,6 +716,93 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual(".买鱼饵 灵米饵 20", effect.command)
         self.assertIn("日切备饵", effect.updates["fishing_last_result"])
+
+    def test_fishing_behavior_missing_bait_without_auto_buy_blocks_next_cast(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 27, 1, 40)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 5,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 0,
+            "fishing_auto_buy_bait_enabled": False,
+            "fishing_forced_buy_bait": "凡饵",
+            "fishing_forced_buy_count": 20,
+        }
+
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertIn("缺少鱼饵：凡饵", effect.updates["fishing_last_error"])
+        self.assertGreater(effect.updates["next_fishing_time"], now)
+
+    def test_fishing_behavior_insufficient_bait_hint_buys_before_next_cast(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 27, 1, 40)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 5,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 0,
+            "fishing_auto_buy_bait_enabled": True,
+            "fishing_auto_buy_bait_count": 20,
+            "fishing_last_error": "insufficient_bait",
+        }
+
+        effect = fishing_behavior.decide_scheduler(snapshot, now, bait_inventory=None)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".买鱼饵 凡饵 20", effect.command)
+
+    def test_fishing_behavior_missing_bait_reply_clears_local_bait_stock(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 27, 1, 40)
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_auto_buy_bait_enabled": True,
+                "fishing_auto_buy_bait_count": 20,
+            },
+            "你的鱼篓中没有【凡饵】。可用 .买鱼饵 凡饵 购买。",
+            now,
+            result_msg_id=22031,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual({"凡饵": 0}, effect.storage_counts)
+        self.assertEqual("凡饵", effect.updates["fishing_forced_buy_bait"])
+
+    def test_fishing_behavior_missing_bait_gate_applies_in_reset_rush_window(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 28, 0, 1)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 5,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 0,
+            "fishing_auto_buy_bait_enabled": False,
+            "fishing_forced_buy_bait": "凡饵",
+            "fishing_forced_buy_count": 20,
+        }
+
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertIn("缺少鱼饵：凡饵", effect.updates["fishing_last_error"])
 
     def test_fishing_behavior_daily_full_waits_for_midnight_after_prep_when_bait_ready(self):
         from model.features import fishing_behavior

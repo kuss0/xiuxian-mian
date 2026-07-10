@@ -33,7 +33,7 @@ FISHING_BAIT_ITEM_KEYS = {
 }
 FISHING_ITEM_KEY_TO_BAIT = {item_key: bait for bait, item_key in FISHING_BAIT_ITEM_KEYS.items()}
 
-_RESOURCE_SHORTAGE_RE = re.compile(r"打窝失败，资源不足：(?P<item>[A-Za-z0-9_]+)x(?P<count>\d+)。")
+_RESOURCE_SHORTAGE_RE = re.compile(r"打窝失败，资源不足：(?P<item>[^x\s。]+)x(?P<count>\d+)。")
 _GENERIC_RESOURCE_SHORTAGE_KEYWORDS = ("灵石不足", "灵石不够", "妖丹不足", "资源不足", "材料不足", "数量不足")
 _BUY_BAIT_SUCCESS_RE = re.compile(r"【渔具铺】\s*你购得 【(?P<bait>[^】]+)】x(?P<count>\d+)", re.S)
 _MISSING_BAIT_RE = re.compile(r"你的鱼篓中没有【(?P<bait>[^】]+)】。可用 \.买鱼饵 (?P=bait) 购买。")
@@ -485,7 +485,7 @@ def parse_empty_fishing_result(text):
 
 
 def parse_chum_shortage(text):
-    """Return the internal resource key exposed by a real chum failure reply."""
+    """Return the missing resource from a real chum failure reply."""
     match = _RESOURCE_SHORTAGE_RE.search(str(text or ""))
     if not match:
         return None
@@ -508,7 +508,10 @@ def parse_generic_resource_shortage(text):
 
 
 def fishing_bait_name_for_item_key(item_key):
-    return FISHING_ITEM_KEY_TO_BAIT.get(str(item_key or "").strip(), "")
+    raw = str(item_key or "").strip()
+    if raw in FISHING_BAITS:
+        return raw
+    return FISHING_ITEM_KEY_TO_BAIT.get(raw, "")
 
 
 def get_known_chum_cost(chum_name):

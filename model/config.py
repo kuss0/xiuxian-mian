@@ -829,7 +829,7 @@ def create_account_client(account_id, *, api_id=None, api_hash=None):
 
 # ================= 预编译正则 =================
 RE_HOURS = re.compile(r'(\d+)\s*小时')
-RE_MINUTES = re.compile(r'(\d+)\s*分钟')
+RE_MINUTES = re.compile(r'(\d+)\s*分(?:钟)?')
 RE_SECONDS = re.compile(r'(\d+)\s*秒')
 RE_WHITESPACE = re.compile(r"\s+")
 RE_TREE_REMAINING = re.compile(r'剩余[：:]\s*([\s\S]+?)(?:\n|$)')

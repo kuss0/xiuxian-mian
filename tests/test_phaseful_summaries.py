@@ -498,7 +498,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 handled = await deep_retreat.handle_deep_retreat_status_reply(
                     "你并未处于深度闭关之中。",
                     now,
-                    reply_to=SimpleNamespace(raw_text="1"),
+                    reply_to=SimpleNamespace(raw_text="在"),
                     matched_family=None,
                 )
 
@@ -698,7 +698,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(state_module.state["yuanying_probe_pending"])
             probe_mock.assert_awaited_once()
 
-    async def test_yuanying_recovered_launch_replays_already_logged_running_reply(self):
+    async def test_yuanying_recovered_passive_trigger_replays_already_logged_running_reply(self):
         send_as_id = 8659059203
         now = 1_700_000_363.0
         started_at = now - yuanying.YUANYING_SPEC.summary_active_query_grace_sec - 1
@@ -747,7 +747,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await yuanying.run_yuanying_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                yuanying.CMD_YUANYING_SECT_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="元婴",
@@ -1300,7 +1300,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
-    async def test_deep_retreat_summary_due_launches_business_command_after_grace(self):
+    async def test_deep_retreat_summary_due_sends_passive_trigger_after_grace(self):
         send_as_id = 8659059202
         now = 1_700_000_450.0
         self._prepare_identity(send_as_id, "NoTaglessRetreat")
@@ -1320,7 +1320,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                deep_retreat.CMD_DEEP_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="深度闭关",
@@ -1356,7 +1356,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                deep_retreat.CMD_DEEP_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="深度闭关",
@@ -1389,7 +1389,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                deep_retreat.CMD_DEEP_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="深度闭关",
@@ -1432,7 +1432,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                deep_retreat.CMD_DEEP_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="深度闭关",
@@ -1475,7 +1475,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                deep_retreat.CMD_DEEP_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="深度闭关",
@@ -2344,7 +2344,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 30, state_module.state["next_yuanying_time"])
             self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
 
-    async def test_yuanying_summary_due_launches_business_command_after_grace(self):
+    async def test_yuanying_summary_due_sends_passive_trigger_after_grace(self):
         send_as_id = 8659059203
         now = 1_700_000_460.0
         self._prepare_identity(send_as_id, "NoTaglessSoul")
@@ -2364,7 +2364,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await yuanying.run_yuanying_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                yuanying.CMD_YUANYING,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="元婴",
@@ -2374,7 +2374,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(904, state_module.state["last_yuanying_summary_msg_id"])
             self.assertTrue(state_module.state["yuanying_probe_pending"])
 
-    async def test_yuanying_sect_summary_due_launches_retreat_command_after_grace(self):
+    async def test_yuanying_sect_summary_due_uses_same_passive_trigger_after_grace(self):
         send_as_id = 8659059204
         now = 1_700_000_460.0
         self._prepare_identity(send_as_id, "YuanyingSectLaunch")
@@ -2395,7 +2395,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 await yuanying.run_yuanying_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                yuanying.CMD_YUANYING_SECT_RETREAT,
+                "在",
                 track=False,
                 priority="chain",
                 source_module="元婴",

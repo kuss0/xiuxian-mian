@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
-from ..runtime import _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
+from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 
@@ -55,6 +55,7 @@ class PhasefulSpec:
     summary_received_console: str
     source_module: str = ""
     summary_trigger_command: str = "1"
+    summary_passive_trigger_command: str = ""
     summary_passive_triggers: tuple = ()
     summary_passive_timeout_sec: int = 90
     summary_due_delay_min_sec: int = 30 * 60
@@ -783,7 +784,11 @@ async def _extend_summary_due_wait(spec, now):
 
 def _summary_observation_commands(spec):
     commands = set()
-    for command in (spec.summary_trigger_command, *(spec.summary_passive_triggers or ())):
+    for command in (
+        spec.summary_trigger_command,
+        spec.summary_passive_trigger_command,
+        *(spec.summary_passive_triggers or ()),
+    ):
         command = str(command or "").strip()
         if command:
             commands.add(command)
@@ -824,6 +829,44 @@ async def _send_summary_trigger(spec, console_message):
         return False
 
     begin_summary_wait(spec, sent_at)
+    state[spec.last_summary_msg_id_key] = int(msg.id)
+    save_state()
+    return True
+
+
+async def _send_passive_summary_trigger(spec, console_message, *, now=None):
+    """Use one neutral group message to make the game emit an already-due summary."""
+    command = str(spec.summary_passive_trigger_command or "").strip()
+    if not command:
+        return False
+    state[spec.probe_pending_key] = False
+    console_log(console_message)
+    attempt_started_at = float(now if now is not None else time.time())
+    msg = await send_game_command(
+        command,
+        track=False,
+        priority="chain",
+        source_module=spec.source_module or None,
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        send_block = classify_game_send_block(get_current_identity_id(), command)
+        if send_block.get("status") == "unknown":
+            msg = _recover_phaseful_sent_from_message_log(command, attempt_started_at, sent_at)
+        if msg:
+            sent_at = float(getattr(msg, "sent_at", 0) or sent_at)
+            begin_summary_wait(spec, sent_at, launch_probe=True)
+            state[spec.last_summary_msg_id_key] = int(msg.id)
+            save_state()
+            replayed = await _replay_recovered_phaseful_replies(spec, command, msg, sent_at)
+            suffix = "，已回放既有回复" if replayed else ""
+            await send_audit_log(f"{spec.title} 被动结算触发发送超时，已从消息日志恢复{suffix}。", priority="low")
+            return True
+        _schedule_summary_trigger_retry(spec, sent_at, preserve_started_at=True)
+        await send_audit_log(f"{spec.title} 被动结算触发未发出，已延后重试。")
+        return False
+
+    begin_summary_wait(spec, sent_at, launch_probe=True)
     state[spec.last_summary_msg_id_key] = int(msg.id)
     save_state()
     return True
@@ -1114,7 +1157,14 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
             await _extend_summary_due_wait(spec, now)
             return
         if spec.summary_due_timeout_action == "wait_passive":
-            await _send_summary_launch(spec, launch_command, spec.cd_due_console, now=now)
+            if str(spec.summary_passive_trigger_command or "").strip():
+                await _send_passive_summary_trigger(
+                    spec,
+                    f"{spec.cd_due_console}，先用中性文本触发旧总结。",
+                    now=now,
+                )
+            else:
+                await _send_summary_launch(spec, launch_command, spec.cd_due_console, now=now)
             return
         await _send_summary_trigger(spec, spec.cd_due_console)
         return
@@ -1163,6 +1213,7 @@ __all__ = [
     "begin_queued_launch",
     "begin_summary_wait",
     "begin_summary_due",
+    "_send_passive_summary_trigger",
     "clear_summary_flags",
     "delete_summary_trigger_msg",
     "finalize_summary_broadcast",

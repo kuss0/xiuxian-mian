@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import quote, urlencode
 
 from model import webapp_core
@@ -64,6 +65,28 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("tree", summary["start_param"]["kind"])
         self.assertEqual("9999", summary["start_param"]["suffix"])
         self.assertNotIn("tree_SECRET9999", json.dumps(summary, ensure_ascii=False))
+
+    def test_launch_request_accepts_known_bot_username_patterns(self):
+        adapter = webapp_core.MiniAppAdapter(
+            game_key="cave_treasure",
+            label="洞府寻宝",
+            bot_username="fanrenxiuxian_bot",
+            allowed_bot_username_patterns=(r"hantianzun\d{2}_bot",),
+            start_param_pattern=r"df_[A-Z0-9]+",
+        )
+
+        shard = webapp_core.build_miniapp_launch_request(
+            adapter,
+            "https://t.me/hantianzun08_bot/app?startapp=df_ABC1",
+        )
+        evil = webapp_core.build_miniapp_launch_request(
+            adapter,
+            "https://t.me/evil_bot/app?startapp=df_ABC1",
+        )
+
+        self.assertTrue(shard.allowed)
+        self.assertEqual("hantianzun08_bot", webapp_core.build_request_webview_args(adapter, shard)["bot_username"])
+        self.assertFalse(evil.allowed)
 
     def test_launch_request_rejects_untrusted_host_and_bot(self):
         adapter = webapp_core.MiniAppAdapter(
@@ -161,6 +184,133 @@ class WebAppCoreTests(unittest.TestCase):
                 self.assertEqual(url, extracted["webview_url"])
                 self.assertEqual(button_text, extracted["button_text"])
                 self.assertNotIn(token, serialized)
+
+    def test_miniapp_launch_extractors_read_text_url_fallbacks(self):
+        cases = [
+            (
+                fishing_miniapp.extract_fishing_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEXT999",
+                "【灵溪垂钓】点击链接进入灵溪垂钓",
+                "fish_TEXT999",
+            ),
+            (
+                trial_miniapp.extract_trial_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot/app?startapp=trial_TEXT999",
+                "【天机试炼台】点击链接进入天机试炼",
+                "trial_TEXT999",
+            ),
+            (
+                cave_treasure_miniapp.extract_cave_treasure_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot/app?startapp=df_TEXT999",
+                "【洞府】点击链接进入洞府寻宝",
+                "df_TEXT999",
+            ),
+            (
+                stargazer_miniapp.extract_stargazer_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot/app?startapp=farm_TEXT999",
+                "【星宫 · 观星台】点击链接进入观星台",
+                "farm_TEXT999",
+            ),
+            (
+                tree_miniapp.extract_tree_miniapp_launch,
+                "https://t.me/fanrenxiuxian_bot/app?startapp=tree_TEXT999",
+                "【落云宗 · 灵眼之树】点击链接进入灵树",
+                "tree_TEXT999",
+            ),
+        ]
+
+        for extractor, url, message_text, token in cases:
+            with self.subTest(token=token):
+                event = SimpleNamespace(message=SimpleNamespace(buttons=[]))
+                extracted = extractor(event, message_text=f"{message_text}\n{url}")
+                serialized = json.dumps(extracted.get("safe_summary", {}), ensure_ascii=False)
+
+                self.assertEqual(token, extracted["token"])
+                self.assertEqual(url, extracted["webview_url"])
+                self.assertEqual("", extracted["button_text"])
+                self.assertNotIn(token, serialized)
+
+    def test_fishing_launch_accepts_adapter_valid_url_without_summary_hint(self):
+        url = "https://t.me/fanrenxiuxian_bot/app?startapp=fish_SECRET999"
+        event = self._reply_markup_webapp_event(url=url, text="进入灵溪垂钓")
+
+        with patch.object(fishing_miniapp, "summarize_webapp_url", return_value={}):
+            extracted = fishing_miniapp.extract_fishing_miniapp_launch(
+                event,
+                message_text="【灵溪垂钓】点击下方 进入灵溪垂钓",
+            )
+
+        self.assertEqual("fish_SECRET999", extracted["token"])
+        self.assertEqual(url, extracted["webview_url"])
+
+    def test_fishing_launch_accepts_tianzun_shard_bot_but_rejects_unknown_bot(self):
+        shard_url = "https://t.me/hantianzun05_bot?startapp=fish_SECRET999"
+        event = self._reply_markup_webapp_event(url=shard_url, text="进入灵溪垂钓")
+
+        extracted = fishing_miniapp.extract_fishing_miniapp_launch(
+            event,
+            message_text="【灵溪垂钓】点击下方 进入灵溪垂钓",
+        )
+
+        self.assertEqual("fish_SECRET999", extracted["token"])
+        self.assertEqual(shard_url, extracted["webview_url"])
+        self.assertEqual("hantianzun05_bot", extracted["safe_summary"]["bot_username"])
+
+        bad_event = self._reply_markup_webapp_event(
+            url="https://t.me/evil_bot?startapp=fish_SECRET999",
+            text="进入灵溪垂钓",
+        )
+        self.assertEqual(
+            {},
+            fishing_miniapp.extract_fishing_miniapp_launch(
+                bad_event,
+                message_text="【灵溪垂钓】点击下方 进入灵溪垂钓",
+            ),
+        )
+
+        lookalike_event = self._reply_markup_webapp_event(
+            url="https://t.me/hantianzz_bot?startapp=fish_SECRET999",
+            text="进入灵溪垂钓",
+        )
+        self.assertEqual(
+            {},
+            fishing_miniapp.extract_fishing_miniapp_launch(
+                lookalike_event,
+                message_text="【灵溪垂钓】点击下方 进入灵溪垂钓",
+            ),
+        )
+
+    def test_fishing_launch_extracts_from_dwelling_external_app_payload(self):
+        url = "https://t.me/fanrenxiuxian_bot/app?startapp=fish_SECRET999"
+        payload = {
+            "data": {
+                "account": {
+                    "externalApps": {
+                        "groups": [
+                            {
+                                "key": "journey",
+                                "apps": [
+                                    {
+                                        "key": "fishing",
+                                        "title": "灵溪垂钓",
+                                        "buttonText": "开竿",
+                                        "url": url,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+        extracted = fishing_miniapp.extract_fishing_miniapp_launch_from_dwelling_payload(payload)
+
+        self.assertEqual("fish_SECRET999", extracted["token"])
+        self.assertEqual(url, extracted["webview_url"])
+        self.assertEqual("journey", extracted["group_key"])
+        serialized = json.dumps(extracted.get("safe_summary", {}), ensure_ascii=False)
+        self.assertNotIn("fish_SECRET999", serialized)
 
     def test_init_data_store_keeps_raw_value_only_in_memory(self):
         now = [1000.0]
@@ -286,6 +436,22 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertFalse(registry.require("tree").default_enabled)
         self.assertTrue(registry.require("tree").manual_only)
         self.assertTrue(registry.require("world_boss").manual_only)
+        plans = miniapp_registry.build_known_miniapp_flow_plans()
+        self.assertEqual((".洞府",), plans["cave_treasure"].replaces_commands)
+        self.assertEqual((".钓鱼",), plans["fishing"].replaces_commands)
+        self.assertEqual((".观星台",), plans["stargazer"].replaces_commands)
+        self.assertEqual((".灵树",), plans["tree"].replaces_commands)
+        self.assertEqual((".天机试炼",), plans["trial"].replaces_commands)
+        self.assertEqual("single_identity_command_replacement", plans["cave_treasure"].read_scope)
+        self.assertEqual(("module_snapshot", "daily_counter", "inventory_delta"), plans["cave_treasure"].state_outputs)
+        self.assertEqual(("module_snapshot", "daily_counter", "inventory_delta"), plans["fishing"].state_outputs)
+        self.assertEqual(("module_snapshot", "inventory_delta"), plans["stargazer"].state_outputs)
+        self.assertEqual(("module_snapshot", "daily_counter", "score_policy"), plans["tree"].state_outputs)
+        self.assertEqual(("module_snapshot", "daily_counter", "reward_delta"), plans["trial"].state_outputs)
+        self.assertEqual(
+            ["module_snapshot", "daily_counter", "inventory_delta"],
+            plans["cave_treasure"].safe_summary()["state_outputs"],
+        )
         inferred = registry.infer(button_text="进入观星台", message_text="星台已迁入小程序")
         self.assertEqual("stargazer", inferred.game_key)
         inferred_trial = registry.infer(button_text="进入试炼", message_text="【天机试炼台】灵脉点穴")
@@ -470,8 +636,10 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("result", safe["step_key"])
         self.assertEqual("asc.aiopenai.app", safe["url_host"])
         self.assertIn("payload_shape", safe["request"])
+        self.assertNotIn("body", safe["response"])
+        self.assertIn("body_digest", safe["response"])
         self.assertEqual("object", safe["response"]["body_shape"]["type"])
-        self.assertIn("银须灵鲢", serialized)
+        self.assertNotIn("银须灵鲢", serialized)
         self.assertNotIn("fish_SECRET999", serialized)
         self.assertNotIn("fish_NEXT888", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
@@ -524,8 +692,51 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(stored, store.records[0])
         self.assertEqual(1, len(store.records))
         self.assertIn('"step_key": "next"', text)
+        self.assertNotIn('"body"', text)
         self.assertNotIn("fish_SECRET999", text)
         self.assertNotIn("fish_NEXT888", text)
+        self.assertNotIn("VERY_SECRET", text)
+
+    def test_miniapp_capture_store_does_not_write_nested_webapp_urls(self):
+        request = webapp_core.build_miniapp_http_request(
+            webapp_core.MiniAppAdapter(
+                game_key="cave_treasure",
+                label="洞府寻宝",
+                api_base_url="https://asc.aiopenai.app",
+                allowed_api_hosts=("asc.aiopenai.app",),
+                allowed_api_paths=("/api/miniapp/xianxia-dwelling/",),
+                endpoints={"start": "/api/miniapp/xianxia-dwelling/start"},
+                start_param_pattern=r"df_[A-Za-z0-9_-]+",
+            ),
+            "start",
+            {"token": "df_SECRET999"},
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+        body = {
+            "ok": True,
+            "account": {
+                "externalApps": {
+                    "groups": [{
+                        "apps": [{
+                            "title": "灵田",
+                            "url": "https://t.me/fanrenxiuxian_bot?startapp=farm_SECRET999",
+                        }],
+                    }],
+                },
+            },
+        }
+        record = webapp_core.build_miniapp_capture_record(request, (200, body), step_key="start")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/miniapp-capture.jsonl"
+            webapp_core.MiniAppCaptureStore(path).append(record)
+            text = open(path, encoding="utf-8").read()
+
+        self.assertIn('"body_shape"', text)
+        self.assertNotIn('"body"', text)
+        self.assertNotIn("startapp=", text)
+        self.assertNotIn("farm_SECRET999", text)
+        self.assertNotIn("df_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
 
     def test_flow_plan_validation_and_prepare_mode_are_safe(self):
@@ -1058,6 +1269,7 @@ class WebAppCoreTests(unittest.TestCase):
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             token = request["payload"]["token"]
+            self.assertEqual(8659059191, request["payload"]["playerId"])
             calls.append((endpoint, token))
             if endpoint == "start":
                 return 200, {
@@ -1084,6 +1296,7 @@ class WebAppCoreTests(unittest.TestCase):
         result = trial_miniapp.run_trial_miniapp_loop_lab_flow(
             token="trial_SECRET999",
             init_data="query_id=abc&hash=VERY_SECRET",
+            player_id=8659059191,
             transport=transport,
             rng=__import__("random").Random(5),
             sleeper=lambda _delay: None,
@@ -1184,6 +1397,52 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(["launch", "start", "decide_action", "hunt", "reveal", "settle"], [step.key for step in plan.steps])
         self.assertNotIn("df_SECRET999", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
+
+    def test_cave_treasure_entry_accepts_tianzun_shard_bot_but_rejects_unknown_bot(self):
+        shard_url = "https://t.me/hantianzun08_bot/app?startapp=df_SECRET999"
+        event = self._reply_markup_webapp_event(url=shard_url, text="进入洞府")
+
+        extracted = cave_treasure_miniapp.extract_cave_treasure_miniapp_launch(
+            event,
+            message_text="【洞府】点击下方 进入洞府，或前往外府石室寻宝。",
+        )
+        launch, args = cave_treasure_miniapp.build_cave_treasure_launch_args(shard_url)
+
+        self.assertEqual("df_SECRET999", extracted["token"])
+        self.assertEqual(shard_url, extracted["webview_url"])
+        self.assertEqual("hantianzun08_bot", extracted["safe_summary"]["bot_username"])
+        self.assertTrue(launch.allowed)
+        self.assertEqual("hantianzun08_bot", args["bot_username"])
+        self.assertEqual("df_SECRET999", args["start_param"])
+
+        bad_event = self._reply_markup_webapp_event(
+            url="https://t.me/evil_bot/app?startapp=df_SECRET999",
+            text="进入洞府",
+        )
+        bad_launch, bad_args = cave_treasure_miniapp.build_cave_treasure_launch_args(
+            "https://t.me/evil_bot/app?startapp=df_SECRET999",
+        )
+
+        self.assertEqual(
+            {},
+            cave_treasure_miniapp.extract_cave_treasure_miniapp_launch(
+                bad_event,
+                message_text="【洞府】点击下方 进入洞府，或前往外府石室寻宝。",
+            ),
+        )
+        lookalike_event = self._reply_markup_webapp_event(
+            url="https://t.me/hantianzz_bot/app?startapp=df_SECRET999",
+            text="进入洞府",
+        )
+        self.assertEqual(
+            {},
+            cave_treasure_miniapp.extract_cave_treasure_miniapp_launch(
+                lookalike_event,
+                message_text="【洞府】点击下方 进入洞府，或前往外府石室寻宝。",
+            ),
+        )
+        self.assertFalse(bad_launch.allowed)
+        self.assertEqual({}, bad_args)
 
     def test_tree_entry_state_and_flow_are_lab_only(self):
         url = "https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999"

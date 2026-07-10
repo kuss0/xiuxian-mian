@@ -39,6 +39,11 @@ from model import runtime
 
 
 class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        runtime._low_priority_audit_bucket.clear()
+        runtime._low_priority_audit_order.clear()
+        runtime._low_priority_audit_flush_task = None
+
     async def asyncTearDown(self):
         pending = [task for task in list(runtime._background_tasks) if not task.done()]
         for task in pending:

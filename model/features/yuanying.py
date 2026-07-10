@@ -18,7 +18,7 @@ from ..config import (
 from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..identity_levels import parse_yuanying_level_text, update_identity_level_record
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
+from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
@@ -85,7 +85,8 @@ YUANYING_SPEC = PhasefulSpec(
     summary_received_console="👶 收到归窍总结，短缓冲后继续。",
     source_module="元婴",
     summary_trigger_command=CMD_YUANYING_STATUS,
-    summary_passive_triggers=("元婴状态", "1"),
+    summary_passive_trigger_command=PHASEFUL_PASSIVE_TRIGGER_TEXT,
+    summary_passive_triggers=("元婴状态", PHASEFUL_PASSIVE_TRIGGER_TEXT),
     summary_passive_timeout_sec=45,
     summary_due_delay_min_sec=30,
     summary_due_delay_max_sec=90,

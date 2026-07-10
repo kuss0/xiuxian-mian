@@ -157,7 +157,7 @@ _MANIFESTS = (
     ModuleManifest(
         "灵树",
         MODULE_KEY_MAP["灵树"],
-        reply_families=("tree_panel", "tree_pulse", "tree_guard", "tree_harvest"),
+        reply_families=("tree_panel", "tree_miniapp", "tree_pulse", "tree_guard", "tree_harvest"),
         replay_required=False,
         duplicate_guard="action_guard",
         archived=True,

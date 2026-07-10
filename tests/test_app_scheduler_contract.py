@@ -1371,7 +1371,12 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
             ):
-                await app._note_game_bot_activity()
+                await app._note_game_bot_activity(
+                    "【野外历练】\n@alpha 选择【谨慎】策略。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "wild_training"},
+                    now=1000.0,
+                )
 
             toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
             recovered_mock.assert_called_once_with("bot 恢复确认完成")
@@ -1390,7 +1395,12 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
             ):
-                await app._note_game_bot_activity()
+                await app._note_game_bot_activity(
+                    "【野外历练】\n@alpha 选择【谨慎】策略。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "wild_training"},
+                    now=1000.0,
+                )
 
             toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
             recovered_mock.assert_called_once_with("bot 恢复确认完成")
@@ -1411,7 +1421,12 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "_fire_and_forget") as fire_mock,
                 patch.object(app, "_send_bot_health_probe", new=MagicMock(return_value=probe_coro)) as probe_mock,
             ):
-                await app._note_game_bot_activity()
+                await app._note_game_bot_activity(
+                    "【野外历练】\n@alpha 选择【谨慎】策略。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "wild_training"},
+                    now=1000.0,
+                )
 
             restore_mock.assert_called_once_with("恢复持久化天尊健康暂停态")
             probe_mock.assert_called_once()
@@ -1431,7 +1446,12 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
             ):
-                await app._note_game_bot_activity()
+                await app._note_game_bot_activity(
+                    "【野外历练】\n@alpha 选择【谨慎】策略。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "wild_training"},
+                    now=1000.0,
+                )
 
             toggle_mock.assert_not_awaited()
             recovered_mock.assert_not_called()
@@ -1450,11 +1470,64 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
             ):
-                await app._note_game_bot_activity()
+                await app._note_game_bot_activity(
+                    "【野外历练】\n@alpha 选择【谨慎】策略。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "wild_training"},
+                    now=1000.0,
+                )
 
             toggle_mock.assert_not_awaited()
             recovered_mock.assert_called_once_with("bot 恢复确认完成")
             self.assertFalse(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_bot_health_ignores_world_boss_broadcast_for_recovery(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = True
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value="recover") as health_mock,
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
+                patch.object(app, "mark_bot_health_recovered") as recovered_mock,
+            ):
+                await app._note_game_bot_activity(
+                    "━━━━━━━━━━━━━━━\n【世界通告｜真仙试锋开启】\n点击下方按钮进入真仙战场。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "world_boss"},
+                    now=1000.0,
+                )
+
+            health_mock.assert_not_called()
+            toggle_mock.assert_not_awaited()
+            recovered_mock.assert_not_called()
+            self.assertTrue(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_bot_health_ignores_phaseful_summary_broadcast_for_recovery(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = True
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value="recover") as health_mock,
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
+                patch.object(app, "mark_bot_health_recovered") as recovered_mock,
+            ):
+                await app._note_game_bot_activity(
+                    "📜 修士 @foo 深度闭关总结\n【深度闭关总结】\n本次结算时长: 8.0 小时",
+                    12345,
+                    {"send_as_id": 301299112, "family": "deep_retreat"},
+                    now=1000.0,
+                )
+
+            health_mock.assert_not_called()
+            toggle_mock.assert_not_awaited()
+            recovered_mock.assert_not_called()
+            self.assertTrue(app._bot_silence_auto_paused)
         finally:
             app._bot_silence_auto_paused = old_flag
 

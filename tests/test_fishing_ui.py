@@ -109,6 +109,30 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["fishing"]["plan"]["allow_start"])
         self.assertEqual([], [item for item in snapshot["fishing"]["plan"]["resource_requirements"] if item["missing_count"]])
 
+    async def test_set_fishing_config_clears_stale_forced_bait_when_bait_changes(self):
+        identity_state = state_module.get_identity_state(self.identity_id)
+        identity_state["fishing_forced_buy_bait"] = "凡饵"
+        identity_state["fishing_forced_buy_count"] = 20
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 0, "灵石": 1000, "凝血草": 10}, "sections": {}}})
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message = await ui.ui_set_fishing_config(
+                self.identity_id,
+                {
+                    "pond": "青溪浅滩",
+                    "bait": "灵米饵",
+                    "auto_buy_bait_enabled": True,
+                    "auto_buy_bait_count": 20,
+                },
+            )
+
+        self.assertTrue(ok)
+        self.assertNotIn(".买鱼饵 凡饵", message)
+        identity_state = state_module.get_identity_state(self.identity_id)
+        self.assertEqual("", identity_state["fishing_forced_buy_bait"])
+        self.assertEqual(0, identity_state["fishing_forced_buy_count"])
+        self.assertEqual([".买鱼饵 灵米饵 20"], ui.get_identity_ui_snapshot(self.identity_id)["fishing"]["plan"]["purchase_commands"])
+
     async def test_set_fishing_config_persists_transfer_target_and_rejects_invalid(self):
         target_id = 10002
         state_module.ensure_identity_registered(target_id)

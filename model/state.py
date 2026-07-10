@@ -89,7 +89,7 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required", "explore_rift_rebirth_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "inventory_delta_records", "miniapp_state_records", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
 REPLICA_KIND_KEYS = ("virtual_hall", "zhuimo", "huanglong", "cangkun", "kunwu", "luoyun")
 REPLICA_KIND_CONFIG_TEMPLATE = {
     "enabled": True,
@@ -864,6 +864,8 @@ GLOBAL_STATE_DEFAULTS = {
     "storage_bag_api_config": {},
     "storage_bag_records": {},
     "storage_bag_item_rules": {},
+    "inventory_delta_records": {},
+    "miniapp_state_records": {},
     "tianjige_dao_path_records": {},
     "dungeon_join_run_state": {},
     "dungeon_quiet_until": 0,
@@ -1323,6 +1325,26 @@ def get_storage_bag_item_rules():
 def set_storage_bag_item_rules(records):
     _meta_state["storage_bag_item_rules"] = records if isinstance(records, dict) else {}
     return get_storage_bag_item_rules()
+
+
+def get_inventory_delta_records():
+    records = _meta_state.get("inventory_delta_records") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_inventory_delta_records(records):
+    _meta_state["inventory_delta_records"] = records if isinstance(records, dict) else {}
+    return get_inventory_delta_records()
+
+
+def get_miniapp_state_records():
+    records = _meta_state.get("miniapp_state_records") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_miniapp_state_records(records):
+    _meta_state["miniapp_state_records"] = records if isinstance(records, dict) else {}
+    return get_miniapp_state_records()
 
 
 def get_dungeon_join_run_state():
@@ -2772,6 +2794,8 @@ __all__ = [
     "get_storage_bag_api_config",
     "get_storage_bag_records",
     "get_storage_bag_item_rules",
+    "get_inventory_delta_records",
+    "get_miniapp_state_records",
     "get_tianjige_dao_path_records",
     "get_stargazer_total_slots",
     "get_tianti_rank_choice",
@@ -2837,6 +2861,8 @@ __all__ = [
     "set_storage_bag_api_config",
     "set_storage_bag_records",
     "set_storage_bag_item_rules",
+    "set_inventory_delta_records",
+    "set_miniapp_state_records",
     "set_tianjige_dao_path_records",
     "set_stargazer_total_slots",
     "set_tianti_rank_choice",

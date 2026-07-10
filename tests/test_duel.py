@@ -380,6 +380,29 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
+    async def test_reply_timeout_uses_random_long_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 2
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now - 1
+            with (
+                patch.object(duel, "find_message_log_replies", return_value=[]),
+                patch.object(duel.random, "uniform", return_value=40 * 60),
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual("斗法回复超时", state_module.state["duel_last_error"])
+            self.assertEqual(now + 40 * 60 + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
+
     async def test_end_broadcast_counts_completion_and_disables_at_total(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -467,7 +490,14 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual(now + duel.DUEL_NORMAL_COOLDOWN_SEC + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
+            self.assertGreaterEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_NORMAL_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+            )
+            self.assertLessEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_NORMAL_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
+            )
             self.assertEqual("", state_module.state["duel_last_error"])
 
     async def test_batch_result_adds_stagger_after_normal_cooldown(self):
@@ -480,7 +510,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
             with (
                 patch.object(duel, "send_audit_log", new=AsyncMock()),
-                patch.object(duel.random, "uniform", return_value=45),
+                patch.object(duel.random, "uniform", side_effect=[20 * 60, 5 * 60]),
                 patch.object(duel, "save_state"),
             ):
                 handled = await duel.handle_duel_reply(
@@ -491,7 +521,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual(now + duel.DUEL_NORMAL_COOLDOWN_SEC + duel.CD_BUFFER_SEC + 45, state_module.state["next_duel_time"])
+            self.assertEqual(now + 20 * 60 + duel.CD_BUFFER_SEC + 5 * 60, state_module.state["next_duel_time"])
 
     async def test_winner_not_self_without_loser_line_uses_long_cooldown(self):
         identity_id = self._prepare_identity()
@@ -513,7 +543,14 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual(now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
+            self.assertGreaterEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+            )
+            self.assertLessEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
+            )
             self.assertEqual("斗法结束，胜者 @cupaopao", state_module.state["duel_last_error"])
 
     async def test_failure_reply_uses_long_cooldown(self):
@@ -536,8 +573,154 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual(now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
+            self.assertGreaterEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+            )
+            self.assertLessEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
+            )
             self.assertEqual("元神尚未平复，无法再次斗法。", state_module.state["duel_last_error"])
+
+    async def test_escape_reply_counts_attempt_and_disables_at_total(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = "面对境界压制，@walterwa2000 凭借神通侥幸逃脱！(成功率: 19%)"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 1
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @cupaopao"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertFalse(state_module.state["duel_enabled"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual(text, state_module.state["duel_last_result"])
+            self.assertEqual(text, state_module.state["duel_last_error"])
+            audit_mock.assert_awaited_once_with("✅ 斗法完成：1/1", scope="identity", limit=180)
+
+    async def test_lock_failure_reply_counts_attempt_and_uses_long_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = "锁定目标时遭遇天机反噬，失败了: Could not find the input entity for PeerUser(user_id=8155156921)"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "8155156921"
+            state_module.state["duel_total_count"] = 2
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 8155156921"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual("目标锁定失败：天机反噬", state_module.state["duel_last_result"])
+            self.assertEqual("目标锁定失败：天机反噬", state_module.state["duel_last_error"])
+            self.assertGreaterEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+            )
+            self.assertLessEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
+            )
+
+    async def test_per_target_limit_reply_counts_attempt_and_uses_long_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = "天道不公，但亦有其则！你今日对 @cupaopao 出手次数过多，已被法则限制！"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 1
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @cupaopao"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(2, state_module.state["duel_completed_count"])
+            self.assertEqual(text, state_module.state["duel_last_result"])
+            self.assertEqual(text, state_module.state["duel_last_error"])
+            self.assertGreaterEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+            )
+            self.assertLessEqual(
+                state_module.state["next_duel_time"],
+                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
+            )
+
+    async def test_message_log_recovery_accepts_terminal_non_report_reply(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = "对方尚未踏入仙途，此番出手恐有失身份。"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 1
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(
+                    duel,
+                    "find_message_log_replies",
+                    return_value=[{"text": text, "ts_epoch": now - 1, "message_id": 22029}],
+                ) as recovery_mock,
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel._recover_duel_pending_from_message_log(now, 22027)
+
+            self.assertTrue(handled)
+            recovery_mock.assert_called_once()
+            self.assertFalse(state_module.state["duel_enabled"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual(text, state_module.state["duel_last_result"])
+            self.assertEqual(text, state_module.state["duel_last_error"])
+
+    def test_terminal_non_report_texts_are_recognized_for_log_recovery(self):
+        samples = [
+            "面对境界压制，@fanrenxiuxian_06 凭借神通侥幸逃脱！(成功率: 19%)",
+            "锁定目标时遭遇天机反噬，失败了: Could not find the input entity for PeerUser(user_id=8155156921)",
+            "天道不公，但亦有其则！你今日对 @real 出手次数过多，已被法则限制！",
+            "对方尚未踏入仙途，此番出手恐有失身份。",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(duel.is_duel_reply_text(sample))
 
 
 if __name__ == "__main__":

@@ -211,6 +211,7 @@ from .state import (
     get_game_group_id,
     get_game_topic_id,
     get_global_enabled,
+    get_global_pause_source,
     get_global_recovery_hold_until,
     get_global_recovery_throttle_until,
     get_identity_account,
@@ -301,6 +302,12 @@ SEND_PRIORITY_EVENT_BURST = "event_burst"
 SEND_PRIORITY_RETRY = "retry"
 SEND_PRIORITY_PROBE = "probe"
 SEND_PRIORITY_NORMAL = "normal"
+
+# A maintenance-only, non-command text used to let the game settle an already
+# due 元婴/深度闭关 result.  It deliberately stays outside normal automation.
+PHASEFUL_PASSIVE_TRIGGER_TEXT = "在"
+PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE = "被动结算触发"
+MAINTENANCE_PAUSE_SOURCE = "tianzun_maintenance"
 
 P0_COMMAND_PREFIXES = (".验证", CMD_TIANDAO_JUDGEMENT_PROVE, CMD_QUIZ_ANSWER)
 SEND_GAP_WHITELIST_PREFIXES = (
@@ -774,6 +781,26 @@ def _global_recovery_hold_until_for_priority(priority, now=None):
     return until if until > now else 0.0
 
 
+def _allows_maintenance_passive_trigger(command, *, allow_maintenance_pause=False, intent=None):
+    """Permit one fixed human-like settlement trigger while maintenance pauses automation.
+
+    This is intentionally narrower than a priority bypass: it only permits the
+    fixed text emitted by the authenticated UI endpoint, with ordinary queueing
+    and every non-global send guard still in effect.
+    """
+    if not allow_maintenance_pause:
+        return False
+    if str(command or "").strip() != PHASEFUL_PASSIVE_TRIGGER_TEXT:
+        return False
+    compact_intent = _compact_send_intent(intent)
+    if compact_intent.get("source_module") != PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE:
+        return False
+    return (
+        not get_global_enabled()
+        and get_global_pause_source() == MAINTENANCE_PAUSE_SOURCE
+    )
+
+
 def _global_recovery_throttle_active(priority, now=None):
     priority = _normalize_send_priority("", priority=priority)
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
@@ -1112,6 +1139,7 @@ REPLY_FAMILY_COMMANDS = {
     "ranch": {CMD_RANCH},
     "wild_training": {CMD_WILD_TRAINING},
     "tree_panel": {CMD_TREE_WATER, CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS},
+    "tree_miniapp": {".灵树"},
     "tree_pulse": {CMD_TREE_PULSE},
     "tree_guard": {CMD_TREE_GUARD},
     "tree_harvest": {CMD_TREE_HARVEST},
@@ -2292,6 +2320,25 @@ def _recover_module_managed_timeout_state(identity_id, msg_id, item, family, now
     return False
 
 
+def _handoff_module_managed_pending_timeout(identity_id, msg_id, item, family, now):
+    if not _stateful_no_retry_timeout_is_module_managed(item, family):
+        return False
+    cmd = get_pending_command(item)
+    _recover_module_managed_timeout_state(identity_id, msg_id, item, family, now)
+    if family:
+        action_guard_close_by_family(family, send_as_id=identity_id, reason="module_managed_timeout", now=now)
+    with use_identity(identity_id) as identity_state:
+        if msg_id in identity_state.get("pending_tasks", {}):
+            identity_state["pending_tasks"].pop(msg_id, None)
+            mark_dirty()
+    console_log(
+        f"🧯 指令 {_truncate_log_text(cmd, limit=40)} 超时无响应，交由模块状态机继续。",
+        scope="identity",
+        send_as_id=identity_id,
+    )
+    return True
+
+
 def _send_timeout_audit_priority(command, intent=None):
     module = str(_compact_send_intent(intent).get("source_module") or "").strip()
     family = resolve_reply_family(command) or ""
@@ -3361,6 +3408,7 @@ async def send_game_command(
     chain_id=None,
     delete_policy=None,
     queue_timeout=None,
+    allow_maintenance_pause=False,
 ):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
@@ -3377,9 +3425,18 @@ async def send_game_command(
         chain_id=chain_id,
         delete_policy=delete_policy,
     )
+    maintenance_passive_trigger_allowed = _allows_maintenance_passive_trigger(
+        command,
+        allow_maintenance_pause=allow_maintenance_pause,
+        intent=send_intent,
+    )
 
     try:
-        if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+        if (
+            not get_global_enabled()
+            and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}
+            and not maintenance_passive_trigger_allowed
+        ):
             _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
             return None
 
@@ -3493,7 +3550,16 @@ async def send_game_command(
             queue_timeout=queue_timeout,
         )
         async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=effective_queue_timeout):
-            if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+            maintenance_passive_trigger_allowed = _allows_maintenance_passive_trigger(
+                command,
+                allow_maintenance_pause=allow_maintenance_pause,
+                intent=send_intent,
+            )
+            if (
+                not get_global_enabled()
+                and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}
+                and not maintenance_passive_trigger_allowed
+            ):
                 _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
                 return None
 
@@ -4002,6 +4068,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                         mark_dirty()
                 continue
 
+            module_managed_timeout_item = None
             with use_identity(identity_id) as identity_state:
                 current_item = identity_state["pending_tasks"].get(msg_id)
                 if not current_item:
@@ -4015,27 +4082,19 @@ async def run_retry_scheduler(now, send_as_id=None):
                 saved_priority = current_item.get("priority") or None
 
                 retry_limit = max(0, int(current_item.get("max_retry", RETRY_LIMIT) or 0))
-                if retry >= retry_limit:
+                if _stateful_no_retry_timeout_is_module_managed(current_item, family):
+                    module_managed_timeout_item = dict(current_item)
+                elif retry >= retry_limit:
                     if family == "deep_retreat":
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                         continue
                     if retry_limit <= 0:
-                        if _stateful_no_retry_timeout_is_module_managed(current_item, family):
-                            _recover_module_managed_timeout_state(identity_id, msg_id, current_item, family, now)
-                            if family:
-                                action_guard_close_by_family(family, send_as_id=identity_id, reason="module_managed_timeout", now=now)
-                            console_log(
-                                f"🧯 指令 {_truncate_log_text(cmd, limit=40)} 超时无响应，交由模块状态机继续。",
-                                scope="identity",
-                                send_as_id=identity_id,
-                            )
-                        else:
-                            await send_audit_log(
-                                f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 超时无响应，已停补发。",
-                                scope="identity",
-                                send_as_id=identity_id,
-                            )
+                        await send_audit_log(
+                            f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 超时无响应，已停补发。",
+                            scope="identity",
+                            send_as_id=identity_id,
+                        )
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                         continue
@@ -4051,6 +4110,10 @@ async def run_retry_scheduler(now, send_as_id=None):
                         identity_state["identity_info_last_error"] = IDENTITY_INFO_REFRESH_ERROR_TEXT
                     identity_state["pending_tasks"].pop(msg_id, None)
                     mark_dirty()
+                    continue
+
+            if module_managed_timeout_item is not None:
+                if _handoff_module_managed_pending_timeout(identity_id, msg_id, module_managed_timeout_item, family, now):
                     continue
 
             console_log(

@@ -158,6 +158,15 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法']" in script
     assert "renderModuleToggle('卜筮问天','开关')" in script
     assert "renderModuleToggle('斗法','开关')" in script
+    assert "renderDuelConfig(identity)" in script
+    assert "data-duel-config=\"target\"" in script
+    assert "data-duel-config=\"total_count\"" in script
+    assert "data-duel-config=\"reset_progress\"" in script
+    assert "data-save-duel-config" in script
+    assert "/api/duel-config" in script
+    assert "submitDuelConfig" in script
+    assert "identity.duel_next_time" in script
+    assert "identity.duel_last_error" in script
     assert "data-divination-daily-limit" in script
     assert "windowInlineConfig('点卯', checkinWin)" in script
     assert "windowInlineConfig('闯塔', towerWin)" in script

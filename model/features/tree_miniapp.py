@@ -24,7 +24,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
-    iter_webapp_button_links,
+    iter_webapp_entry_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -108,8 +108,8 @@ def build_tree_miniapp_request(endpoint, *, token, init_data_session=None, init_
     )
 
 
-def _iter_event_buttons(event):
-    yield from iter_webapp_button_links(event)
+def _iter_event_buttons(event, *, message_text=""):
+    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def summarize_tree_entry(url, *, button_text="", message_text=""):
@@ -123,7 +123,7 @@ def summarize_tree_entry(url, *, button_text="", message_text=""):
 
 def extract_tree_miniapp_launch(event, *, message_text=""):
     adapter = build_tree_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event):
+    for button_text, url in _iter_event_buttons(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_tree_entry(url, button_text=button_text, message_text=message_text)
@@ -192,6 +192,8 @@ def build_tree_miniapp_flow_plan():
         manual_only=True,
         default_enabled=False,
         note="lab-only spirit-tree declaration;旧灵树 scheduler 已归档，不接生产自动跑分",
+        replaces_commands=(".灵树",),
+        state_outputs=("module_snapshot", "daily_counter", "score_policy"),
         steps=(
             MiniAppFlowStep(
                 key="launch",
@@ -949,6 +951,22 @@ def run_tree_miniapp_game_lab_flow(
             "target_score_range": list(score_profile.get("target_score_range") or ()),
         },
     }
+    proof_score = _int_value(proof_summary.get("score"), 0)
+    if submit and proof_score <= 0:
+        events.append({
+            "step": "submit_guard",
+            "ok": False,
+            "mode": normalized_mode,
+            "score": proof_score,
+            "error": "local proof score <= 0; submit blocked",
+        })
+        return _flow_result(
+            False,
+            "unsafe_score",
+            data=data,
+            events=events,
+            error="local proof score <= 0; submit blocked",
+        )
     if not submit:
         return _flow_result(True, "prepared", data=data, events=events)
 

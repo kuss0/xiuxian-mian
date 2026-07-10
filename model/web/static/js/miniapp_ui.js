@@ -1,5 +1,8 @@
 (function () {
   var currentMiniAppSnapshot = null;
+  // The public URL contains a short-lived token. Keep it only in this page's
+  // memory so status refreshes do not discard it, but never persist it.
+  var cavePublicUrlDraft = '';
 
   function esc(value) {
     if (typeof escapeHtml === 'function') return escapeHtml(value);
@@ -171,6 +174,51 @@
     }).join('');
   }
 
+  function renderCavePublicControls(automation, batch) {
+    automation = automation || {};
+    batch = batch || {};
+    var running = !!batch.running;
+    var completed = Number(batch.completed || 0);
+    var total = Number(batch.total || 0);
+    var succeeded = Number(batch.succeeded || 0);
+    var failed = Number(batch.failed || 0);
+    var status = running
+      ? '运行中 ' + completed + '/' + total + (batch.current ? '｜' + batch.current : '')
+      : (batch.batch_id ? '最近完成 ' + completed + '/' + total : '未启动');
+    var result = batch.last_result || '';
+    return ''
+      + '<section class="miniapp-score-config miniapp-cave-public" data-cave-public-entry="1">'
+      + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜按登录账号串行</span></div>'
+      + '<label><span>公共 URL</span><input type="url" data-cave-public-url="1" value="' + esc(cavePublicUrlDraft) + '" autocomplete="off"></label>'
+      + '<label><span>动作间隔</span><input type="number" min="10" max="120" step="5" data-cave-public-delay="1" value="' + esc(automation.cave_public_delay_sec || 20) + '"></label>'
+      + '<div class="miniapp-item-actions">'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-config-save="1">保存设置</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-batch-run="1"' + (running ? ' disabled' : '') + '>串行跑启用项</button>'
+      + '</div>'
+      + '<div class="miniapp-cave-switches">'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="small_world"' + (automation.cave_public_small_world_enabled ? ' checked' : '') + '><span>小世界</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="deep_status"' + (automation.cave_public_deep_status_enabled ? ' checked' : '') + '><span>闭关状态</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="treasure"' + (automation.cave_public_treasure_enabled ? ' checked' : '') + '><span>洞府寻宝</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="trial"' + (automation.cave_public_trial_enabled ? ' checked' : '') + '><span>天机试炼</span></label>'
+      + '</div>'
+      + '<div class="miniapp-cave-batch-status">'
+      + badge(status, running ? 'warn' : 'neutral')
+      + badge('成功 ' + succeeded, 'ok')
+      + (failed ? badge('失败 ' + failed, 'warn') : '')
+      + (result ? '<span>' + esc(result) + '</span>' : '')
+      + '</div>'
+      + '<div class="miniapp-item-actions miniapp-cave-single-actions">'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world">小世界处理</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="treasure">洞府寻宝</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="trial">天机试炼</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_status">闭关状态</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_start">开始深闭</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_settle">结算深闭</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yuanying">元婴出窍</button>'
+      + '</div>'
+      + '</section>';
+  }
+
   function renderMiniAppStatus(snapshot) {
     var body = document.getElementById('miniapp-modal-body');
     if (!body) return;
@@ -211,6 +259,7 @@
       + badge(policy.raw_init_data_persisted ? 'initData落盘' : 'initData不落盘', policy.raw_init_data_persisted ? 'warn' : 'ok')
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + '</div>'
+      + renderCavePublicControls(automation, miniapp.cave_public_batch || {})
       + renderTreeScoreControls(scoreControls)
       + '<div class="miniapp-list">'
       + (adapters.length ? groups.map(function (group) {
@@ -333,6 +382,112 @@
     }
   }
 
+  async function runCavePublicEntry(button) {
+    var sendAsId = selectedIdentityId();
+    if (!sendAsId) {
+      flash('请选择身份', true);
+      return;
+    }
+    var action = button && button.getAttribute('data-cave-public-action');
+    var panel = document.querySelector('[data-cave-public-entry="1"]');
+    var input = panel && panel.querySelector('[data-cave-public-url="1"]');
+    var publicUrl = input ? input.value : '';
+    cavePublicUrlDraft = publicUrl;
+    if (!publicUrl) {
+      flash('缺少洞府公共入口 URL', true);
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      var data = await post('/api/cave-public-entry-run', {
+        send_as_id: sendAsId,
+        action: action,
+        public_entry_url: publicUrl
+      });
+      flash(data.message || '洞府公共入口已执行', false);
+      refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || '洞府公共入口执行失败', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function cavePublicConfigPayload(panel) {
+    function enabled(key) {
+      var input = panel && panel.querySelector('[data-cave-public-switch="' + key + '"]');
+      return !!(input && input.checked);
+    }
+    var delayInput = panel && panel.querySelector('[data-cave-public-delay="1"]');
+    return {
+      small_world_enabled: enabled('small_world'),
+      deep_status_enabled: enabled('deep_status'),
+      treasure_enabled: enabled('treasure'),
+      trial_enabled: enabled('trial'),
+      delay_sec: delayInput ? delayInput.value : ''
+    };
+  }
+
+  function cavePublicEnabledActions(panel) {
+    var config = cavePublicConfigPayload(panel);
+    var actions = [];
+    if (config.small_world_enabled) actions.push('small_world');
+    if (config.deep_status_enabled) actions.push('deep_status');
+    if (config.treasure_enabled) actions.push('treasure');
+    if (config.trial_enabled) actions.push('trial');
+    return actions;
+  }
+
+  async function saveCavePublicConfig(button) {
+    var panel = document.querySelector('[data-cave-public-entry="1"]');
+    if (!panel) return;
+    if (button) button.disabled = true;
+    try {
+      var data = await post('/api/cave-public-config', cavePublicConfigPayload(panel));
+      flash(data.message || '洞府公共入口设置已保存', false);
+      if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });
+      else refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || '洞府公共入口设置保存失败', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function runCavePublicBatch(button) {
+    var panel = document.querySelector('[data-cave-public-entry="1"]');
+    var input = panel && panel.querySelector('[data-cave-public-url="1"]');
+    var publicUrl = input ? input.value : '';
+    cavePublicUrlDraft = publicUrl;
+    if (!publicUrl) {
+      flash('缺少洞府公共入口 URL', true);
+      return;
+    }
+    var config = cavePublicConfigPayload(panel);
+    var actions = cavePublicEnabledActions(panel);
+    if (!actions.length) {
+      flash('请至少开启一个洞府公共入口动作', true);
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      // Persist the independent toggles first so this run and later UI refreshes
+      // have the same source of truth. The URL remains browser-memory only.
+      await post('/api/cave-public-config', config);
+      var data = await post('/api/cave-public-entry-batch-run', {
+        public_entry_url: publicUrl,
+        actions: actions,
+        delay_sec: config.delay_sec
+      });
+      flash(data.message || '洞府公共入口串行批次已启动', false);
+      refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || '洞府公共入口串行批次启动失败', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function loadCaptureSummary(gameKey, button) {
     if (!gameKey) return;
     if (button) button.disabled = true;
@@ -375,6 +530,21 @@
       saveTreeScoreConfig(scoreSaveBtn);
       return;
     }
+    var caveConfigSaveBtn = event.target.closest('[data-cave-public-config-save]');
+    if (caveConfigSaveBtn) {
+      saveCavePublicConfig(caveConfigSaveBtn);
+      return;
+    }
+    var caveBatchBtn = event.target.closest('[data-cave-public-batch-run]');
+    if (caveBatchBtn) {
+      runCavePublicBatch(caveBatchBtn);
+      return;
+    }
+    var cavePublicBtn = event.target.closest('[data-cave-public-action]');
+    if (cavePublicBtn) {
+      runCavePublicEntry(cavePublicBtn);
+      return;
+    }
     var probeBtn = event.target.closest('[data-miniapp-probe]');
     if (probeBtn) {
       runEntryProbe(probeBtn.getAttribute('data-miniapp-probe'), probeBtn);
@@ -397,5 +567,11 @@
 
   document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape') closeMiniAppModal();
+  });
+
+  document.addEventListener('input', function (event) {
+    if (event.target && event.target.matches('[data-cave-public-url="1"]')) {
+      cavePublicUrlDraft = event.target.value || '';
+    }
   });
 })();

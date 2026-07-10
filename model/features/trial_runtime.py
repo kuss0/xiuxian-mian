@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from ..runtime import send_audit_log
-from ..state import get_current_identity_id, get_global_enabled, get_identity_display_name, get_identity_enabled, get_send_as_profile
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_display_name, get_identity_enabled, get_send_as_profile
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from .trial_miniapp import extract_trial_miniapp_launch, run_trial_miniapp_production_flow
@@ -32,6 +32,10 @@ _TRIAL_GAIN_KEYS = {
     "lingshigain": "灵石",
     "spiritstonegain": "灵石",
 }
+
+
+def _miniapp_http_allowed_during_pause():
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 _TRIAL_REWARD_CONTAINER_KEYS = {"rewards", "reward", "bonusloot", "loot", "drops", "items", "materials"}
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_]{3,64})")
 
@@ -373,8 +377,9 @@ async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_fa
     if not launch:
         return False
     global_enabled = get_global_enabled()
+    maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
     identity_enabled = get_identity_enabled(identity_id)
-    if not global_enabled or not identity_enabled:
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
         revoke_trial_miniapp_manual_run(identity_id)
         reason = "全局暂停" if not global_enabled else "身份已停用"
         await send_audit_log(f"🧪 天机试炼 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)
@@ -390,7 +395,8 @@ async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_fa
         revoke_trial_miniapp_manual_run(identity_id)
         if not batch_id:
             await send_audit_log(
-                "🧪 天机试炼 MiniApp 接管入口，开始 WebView/HTTP 流程。",
+                "🧪 天机试炼 MiniApp 接管入口，开始 WebView/HTTP 流程。"
+                + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
                 scope="identity",
                 priority="low",
                 limit=180,

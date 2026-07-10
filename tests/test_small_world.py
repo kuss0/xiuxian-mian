@@ -798,7 +798,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, state_module.state["small_world_refresh_count"])
             self.assertEqual(now + small_world.SMALL_WORLD_REFRESH_MIN_SEC, state_module.state["next_small_world_time"])
 
-    async def test_manifest_refresh_round_pauses_ten_minutes_then_continues(self):
+    async def test_manifest_refresh_limit_returns_to_six_hour_cycle(self):
         send_as_id = 8659059195
         now = 3055.0
         state_module.ensure_identity_registered(send_as_id)
@@ -814,7 +814,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_enabled"] = True
             state_module.state["small_world_manifest_enabled"] = True
             state_module.state["small_world_refresh_enabled"] = True
-            state_module.state["small_world_refresh_count"] = small_world.SMALL_WORLD_MAX_REFRESH_ATTEMPTS
+            state_module.state["small_world_refresh_count"] = small_world.SMALL_WORLD_MAX_REFRESH_ATTEMPTS - 1
             with (
                 patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
                 patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
@@ -824,13 +824,10 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             audit_mock.assert_awaited_once()
-            self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
-            self.assertEqual(1, state_module.state["small_world_refresh_count"])
-            self.assertEqual(
-                now + small_world.SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC,
-                state_module.state["next_small_world_time"],
-            )
-            self.assertIn("10 分钟后继续刷新", state_module.state["small_world_last_error"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_refresh_count"])
+            self.assertEqual(now + small_world.SMALL_WORLD_CYCLE_CD_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC, state_module.state["next_small_world_time"])
+            self.assertIn("已退避 6 小时", state_module.state["small_world_last_error"])
 
     async def test_manifest_refresh_preempts_daily_preach_maintenance(self):
         send_as_id = 8659059196
@@ -2216,7 +2213,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_phase"] = "query_pending"
             state_module.state["small_world_query_msg_id"] = 0
             state_module.state["small_world_refresh_count"] = 3
-            state_module.state["small_world_last_error"] = "祈愿刷新 3/7已发起，等待小世界面板"
+            state_module.state["small_world_last_error"] = f"祈愿刷新 3/{small_world.SMALL_WORLD_MAX_REFRESH_ATTEMPTS}已发起，等待小世界面板"
             state_module.state["next_small_world_time"] = now + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC
 
         with (

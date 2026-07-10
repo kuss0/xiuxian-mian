@@ -6,7 +6,7 @@ import time
 import requests
 from telethon import functions
 
-from ..config import TG_REQUESTS_PROXIES
+from ..config import CMD_YUANYING, TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
@@ -17,7 +17,7 @@ from ..webapp_core import (
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
-    iter_webapp_button_links,
+    iter_webapp_entry_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -27,9 +27,16 @@ CAVE_TREASURE_MINIAPP_GAME_KEY = "cave_treasure"
 CAVE_TREASURE_MINIAPP_LABEL = "洞府寻宝"
 CAVE_TREASURE_MINIAPP_DEFAULT_API_BASE_URL = "https://asc.aiopenai.app"
 CAVE_TREASURE_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
+CAVE_TREASURE_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (
+    r"hantianzun\d{2}_bot",
+)
 CAVE_TREASURE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-dwelling/"
 CAVE_TREASURE_MINIAPP_ENDPOINTS = {
     "start": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}start",
+    "external": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}external",
+    "command_center": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}command-center",
+    "deep_seclusion": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}deep-seclusion",
+    "small_world": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}small-world",
     "hunt": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt",
     "hunt_reveal": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt/reveal",
     "hunt_settle": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt/settle",
@@ -41,6 +48,26 @@ CAVE_TREASURE_SENDABLE_ACTIONS = {
     "search",
     "settle",
 }
+CAVE_DEEP_SECLUSION_ACTIONS = {
+    "status",
+    "settle",
+    "start",
+    "force",
+}
+CAVE_SMALL_WORLD_ACTIONS = frozenset({
+    "collect",
+    "manifest",
+    "soothe",
+    "miracle_relief",
+    "miracle_sermon",
+    "barrier",
+    "refine_shenshi",
+    "upgrade_temple",
+    "foster_beast",
+    "recall_beast",
+})
+CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({CMD_YUANYING})
+CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial"})
 
 _RATIO_RE = re.compile(r"(?P<label>神识|出手|次数|游戏|局数)?\s*[:：]?\s*(?P<a>\d+)\s*/\s*(?P<b>\d+)")
 _TARGET_RE = re.compile(r"(?:第|#)?\s*(?P<target>\d{1,2})\s*(?:个|号|处|位)")
@@ -55,6 +82,7 @@ def build_cave_treasure_miniapp_adapter(
         game_key=CAVE_TREASURE_MINIAPP_GAME_KEY,
         label=CAVE_TREASURE_MINIAPP_LABEL,
         bot_username=bot_username,
+        allowed_bot_username_patterns=CAVE_TREASURE_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS,
         api_base_url=api_base_url,
         allowed_web_hosts=("t.me", "telegram.me", "asc.aiopenai.app"),
         allowed_api_hosts=("asc.aiopenai.app",),
@@ -79,8 +107,86 @@ def build_cave_treasure_miniapp_request(endpoint, *, token, init_data_session=No
     )
 
 
-def _iter_event_buttons(event):
-    yield from iter_webapp_button_links(event)
+def normalize_cave_tianjige_command(command):
+    normalized = re.sub(r"\s+", " ", str(command or "").strip())
+    if normalized not in CAVE_TIANJIGE_ALLOWED_COMMANDS:
+        raise ValueError("洞府天机阁自动化仅允许 .元婴出窍")
+    return normalized
+
+
+def build_cave_tianjige_command_request(command, *, token, init_data_session=None, init_data="", adapter=None):
+    """Build a strictly whitelisted Tianjige command-center request."""
+    normalized_command = normalize_cave_tianjige_command(command)
+    return build_cave_treasure_miniapp_request(
+        "command_center",
+        token=token,
+        init_data_session=init_data_session,
+        init_data=init_data,
+        payload={"command": normalized_command},
+        adapter=adapter,
+    )
+
+
+def normalize_cave_external_action(action):
+    normalized = re.sub(r"\s+", "_", str(action or "").strip().lower())
+    if normalized not in CAVE_EXTERNAL_ACTIONS:
+        raise ValueError("洞府外府动作不在白名单")
+    return normalized
+
+
+def build_cave_external_action_request(
+    action,
+    *,
+    token,
+    player_id,
+    init_data_session=None,
+    init_data="",
+    adapter=None,
+):
+    return build_cave_treasure_miniapp_request(
+        "external",
+        token=token,
+        init_data_session=init_data_session,
+        init_data=init_data,
+        payload={
+            "action": normalize_cave_external_action(action),
+            "playerId": str(player_id or "").strip(),
+        },
+        adapter=adapter,
+    )
+
+
+def normalize_cave_small_world_action(action):
+    normalized = re.sub(r"\s+", "_", str(action or "").strip().lower())
+    if normalized not in CAVE_SMALL_WORLD_ACTIONS:
+        raise ValueError("洞府小世界动作不在白名单")
+    return normalized
+
+
+def build_cave_small_world_action_request(
+    action,
+    *,
+    token,
+    init_data_session=None,
+    init_data="",
+    payload=None,
+    adapter=None,
+):
+    normalized_action = normalize_cave_small_world_action(action)
+    action_payload = {"action": normalized_action}
+    action_payload.update(dict(payload or {}))
+    return build_cave_treasure_miniapp_request(
+        "small_world",
+        token=token,
+        init_data_session=init_data_session,
+        init_data=init_data,
+        payload=action_payload,
+        adapter=adapter,
+    )
+
+
+def _iter_event_buttons(event, *, message_text=""):
+    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def summarize_cave_treasure_entry(url, *, button_text="", message_text=""):
@@ -94,7 +200,7 @@ def summarize_cave_treasure_entry(url, *, button_text="", message_text=""):
 
 def extract_cave_treasure_miniapp_launch(event, *, message_text=""):
     adapter = build_cave_treasure_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event):
+    for button_text, url in _iter_event_buttons(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_cave_treasure_entry(url, button_text=button_text, message_text=message_text)
@@ -163,6 +269,8 @@ def build_cave_treasure_miniapp_flow_plan():
         manual_only=True,
         default_enabled=False,
         note="lab-only cave treasure declaration; endpoint names are capture candidates and production scheduler is not wired",
+        replaces_commands=(".洞府",),
+        state_outputs=("module_snapshot", "daily_counter", "inventory_delta"),
         steps=(
             MiniAppFlowStep(
                 key="launch",
@@ -239,6 +347,13 @@ def _coerce_int(value, default=0):
         return default
 
 
+def _coerce_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+
+
 def _ratio_from_value(value):
     if isinstance(value, dict):
         for first_key, second_key in (
@@ -302,6 +417,274 @@ def _extract_hint_target(text):
     return 0
 
 
+def _iter_cave_hint_markers(*sources):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for marker in source.get("markers") or ():
+            if isinstance(marker, dict):
+                yield marker
+        hint = source.get("hint") if isinstance(source.get("hint"), dict) else {}
+        for marker in hint.get("markers") or ():
+            if isinstance(marker, dict):
+                yield marker
+        latest_hint = source.get("latestHint") if isinstance(source.get("latestHint"), dict) else {}
+        for marker in latest_hint.get("markers") or ():
+            if isinstance(marker, dict):
+                yield marker
+
+
+def _cave_marker_target(marker):
+    if not isinstance(marker, dict):
+        return 0
+    for key in ("index", "cellIndex"):
+        if key in marker:
+            target = _coerce_int(marker.get(key), -1)
+            return target + 1 if target >= 0 else 0
+    for key in ("target", "targetIndex"):
+        if key in marker:
+            return max(1, _coerce_int(marker.get(key), 0))
+    return 0
+
+
+def _cave_marker_priority(marker):
+    kind = str((marker or {}).get("kind") or "").strip().lower()
+    if kind in {"treasure", "main", "main_treasure", "chest"}:
+        return 30
+    if kind in {"loot", "resource", "reward", "item", "material"}:
+        return 20
+    if kind in {"safe", "hint", "candidate", "mark"}:
+        return 10
+    return 0
+
+
+def _safe_external_app_summary(app):
+    if not isinstance(app, dict):
+        return {}
+    url_summary = summarize_webapp_url(
+        app.get("url") or "",
+        button_text=app.get("buttonText") or app.get("title") or "",
+        message_text=app.get("description") or app.get("subtitle") or "",
+    )
+    return {
+        "key": str(app.get("key") or "").strip(),
+        "title": sanitize_webapp_secret_text(app.get("title") or "", limit=80),
+        "status": str(app.get("status") or "").strip(),
+        "available": bool(app.get("available")),
+        "button_text": sanitize_webapp_secret_text(app.get("buttonText") or "", limit=40),
+        "action": sanitize_webapp_secret_text(app.get("action") or "", limit=80),
+        "game_hint": url_summary.get("game_hint", ""),
+        "start_kind": ((url_summary.get("start_param") or {}).get("kind") or ""),
+        "has_url": bool(app.get("url")),
+    }
+
+
+def _parse_external_apps(account):
+    account = account if isinstance(account, dict) else {}
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    apps = []
+    for group in external.get("groups") or ():
+        if not isinstance(group, dict):
+            continue
+        group_key = str(group.get("key") or "").strip()
+        group_title = sanitize_webapp_secret_text(group.get("title") or "", limit=80)
+        for app in group.get("apps") or ():
+            app_summary = _safe_external_app_summary(app)
+            if not app_summary:
+                continue
+            app_summary["group_key"] = group_key
+            app_summary["group_title"] = group_title
+            apps.append(app_summary)
+    return apps
+
+
+def _safe_command_center_entry(entry):
+    if not isinstance(entry, dict):
+        return {}
+    commands = []
+    for command in entry.get("commands") or ():
+        if not isinstance(command, str):
+            continue
+        safe_command = sanitize_webapp_secret_text(command, limit=80)
+        if safe_command:
+            commands.append(safe_command)
+    return {
+        "key": str(entry.get("key") or "").strip(),
+        "title": sanitize_webapp_secret_text(entry.get("title") or "", limit=80),
+        "status": str(entry.get("status") or "").strip(),
+        "target_tab": str(entry.get("targetTab") or "").strip(),
+        "button_text": sanitize_webapp_secret_text(entry.get("buttonText") or "", limit=40),
+        "note": sanitize_webapp_secret_text(entry.get("note") or "", limit=140),
+        "commands": commands,
+    }
+
+
+def _parse_command_center(account):
+    account = account if isinstance(account, dict) else {}
+    center = account.get("commandCenter") if isinstance(account.get("commandCenter"), dict) else {}
+    entries = []
+    for entry in center.get("entries") or ():
+        summary = _safe_command_center_entry(entry)
+        if summary:
+            entries.append(summary)
+    security = center.get("security") if isinstance(center.get("security"), dict) else {}
+    tianjige_entries = [
+        entry
+        for entry in entries
+        if "天机阁" in (entry.get("button_text") or "")
+        or "天机阁" in (entry.get("note") or "")
+        or entry.get("target_tab") == "command"
+    ]
+    return {
+        "entry_count": len(entries),
+        "security": {
+            "mode": sanitize_webapp_secret_text(security.get("mode") or "", limit=60),
+            "direct_raw_command": bool(security.get("directRawCommand")),
+            "max_input_length": _coerce_int(security.get("maxInputLength"), 0),
+            "text": sanitize_webapp_secret_text(security.get("text") or "", limit=180),
+        },
+        "entries": entries,
+        "tianjige_entries": tianjige_entries,
+    }
+
+
+def parse_cave_dwelling_overview(data):
+    """Normalize the new dwelling MiniApp dashboard without leaking WebApp URLs."""
+
+    if not isinstance(data, dict):
+        return {}
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    account = root.get("account") if isinstance(root.get("account"), dict) else {}
+    dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
+    identity = root.get("identity") if isinstance(root.get("identity"), dict) else {}
+    small_world = account.get("smallWorld") if isinstance(account.get("smallWorld"), dict) else {}
+    hunt_panel = dwelling.get("hunt") if isinstance(dwelling.get("hunt"), dict) else {}
+    meditation = dwelling.get("meditation") if isinstance(dwelling.get("meditation"), dict) else {}
+    deep = meditation.get("deepSeclusion") if isinstance(meditation.get("deepSeclusion"), dict) else {}
+    standard = meditation.get("standardCultivation") if isinstance(meditation.get("standardCultivation"), dict) else {}
+    formation = dwelling.get("formation") if isinstance(dwelling.get("formation"), dict) else {}
+    hunt_used = _coerce_int(hunt_panel.get("used"), 0)
+    hunt_limit = _coerce_int(hunt_panel.get("limit"), 0)
+    hunt_remaining = _coerce_int(hunt_panel.get("remaining"), max(0, hunt_limit - hunt_used) if hunt_limit else 0)
+    return {
+        "ok": bool(root.get("ok", data.get("ok", False))),
+        "player_id": _coerce_int(account.get("playerId") or identity.get("selectedPlayerId"), 0),
+        "username": sanitize_webapp_secret_text(account.get("username") or "", limit=80),
+        "dao_name": sanitize_webapp_secret_text(account.get("daoName") or "", limit=80),
+        "sect_name": sanitize_webapp_secret_text(account.get("sectName") or "", limit=80),
+        "cultivation_level": sanitize_webapp_secret_text(account.get("cultivationLevel") or "", limit=80),
+        "has_dwelling": bool(dwelling.get("hasDwelling")),
+        "lingqi_pool": _coerce_float(dwelling.get("lingqiPool"), 0.0),
+        "lingqi_pct": _coerce_float(dwelling.get("lingqiPct"), 0.0),
+        "production_hint": _coerce_float(dwelling.get("productionHint"), 0.0),
+        "visual_capacity": _coerce_float(dwelling.get("visualCapacity"), 0.0),
+        "formation": {
+            "active": bool(formation.get("active")),
+            "level": _coerce_int(formation.get("level"), 0),
+            "mode": sanitize_webapp_secret_text(formation.get("mode") or "", limit=40),
+            "title": sanitize_webapp_secret_text(formation.get("title") or "", limit=80),
+        },
+        "hunt": {
+            "used": hunt_used,
+            "limit": hunt_limit,
+            "remaining": hunt_remaining,
+            "action_points": _coerce_int(hunt_panel.get("actionPoints"), 0),
+        },
+        "meditation": {
+            "can_settle": bool(meditation.get("canSettle")),
+            "projected_gain": _coerce_int(meditation.get("projectedGain"), 0),
+            "consumable_lingqi": _coerce_float(meditation.get("consumableLingqi"), 0.0),
+            "reason": sanitize_webapp_secret_text(meditation.get("reason") or "", limit=80),
+            "reason_text": sanitize_webapp_secret_text(meditation.get("reasonText") or "", limit=120),
+        },
+        "deep_seclusion": {
+            "active": bool(deep.get("active")),
+            "completed": bool(deep.get("completed")),
+            "can_start": bool(deep.get("canStart")),
+            "can_force_exit": bool(deep.get("canForceExit")),
+            "can_settle": bool(deep.get("canSettle")),
+            "remaining_seconds": _coerce_int(deep.get("remainingSeconds"), 0),
+            "end_ms": _coerce_int(deep.get("endMs"), 0),
+            "status_text": sanitize_webapp_secret_text(deep.get("statusText") or "", limit=120),
+        },
+        "standard_cultivation": {
+            "can_cultivate": bool(standard.get("canCultivate")),
+            "reason": sanitize_webapp_secret_text(standard.get("reason") or "", limit=80),
+            "cooldown_remaining_seconds": _coerce_int(standard.get("cooldownRemainingSeconds"), 0),
+            "deep_seclusion_active": bool(standard.get("deepSeclusionActive")),
+        },
+        "small_world": _parse_cave_small_world_overview(small_world),
+        "external_apps": _parse_external_apps(account),
+        "command_center": _parse_command_center(account),
+    }
+
+
+def _parse_cave_small_world_overview(small_world):
+    if not isinstance(small_world, dict):
+        return {}
+    summary = small_world.get("summary") if isinstance(small_world.get("summary"), dict) else {}
+    prayer = small_world.get("prayer") if isinstance(small_world.get("prayer"), dict) else {}
+    actions = small_world.get("actions") if isinstance(small_world.get("actions"), dict) else {}
+    temple = small_world.get("temple") if isinstance(small_world.get("temple"), dict) else {}
+    prayer_cost = prayer.get("cost") if isinstance(prayer.get("cost"), list) else []
+    missing_resources = []
+    for item in prayer_cost:
+        if not isinstance(item, dict):
+            continue
+        missing = _coerce_int(item.get("missing"), 0)
+        if missing <= 0:
+            owned = _coerce_int(item.get("owned"), 0)
+            required = _coerce_int(item.get("required"), 0)
+            missing = max(0, required - owned)
+        if missing > 0:
+            missing_resources.append({
+                "name": sanitize_webapp_secret_text(item.get("name") or item.get("itemId") or "资源", limit=60),
+                "missing": missing,
+            })
+    faith_cap = _coerce_int(summary.get("faithCap"), 100 if summary else 0)
+    stability_cap = _coerce_int(summary.get("stabilityCap"), 100 if summary else 0)
+    barrier_remaining = _coerce_int(actions.get("barrierRemainingSeconds"), 0)
+    return {
+        "available": bool(small_world) and not bool(small_world.get("locked")),
+        "has_world": bool(small_world.get("hasWorld", bool(summary) or bool(small_world))),
+        "level": _coerce_int(temple.get("level") or small_world.get("level"), 0),
+        "temple_level": _coerce_int(temple.get("level") or small_world.get("templeLevel") or small_world.get("temple_level"), 0),
+        "temple_name": sanitize_webapp_secret_text(temple.get("name") or "", limit=80),
+        "population": _coerce_int(summary.get("population") or small_world.get("population"), 0),
+        "population_cap": _coerce_int(summary.get("populationCap"), 0),
+        "faith": _coerce_int(summary.get("faith") if summary else small_world.get("faith"), 0),
+        "faith_cap": faith_cap,
+        "stability": _coerce_int(summary.get("stability") if summary else small_world.get("stability"), 0),
+        "stability_cap": stability_cap,
+        "incense_stock": _coerce_int(summary.get("incensePoints") or small_world.get("incenseStock") or small_world.get("incense_stock"), 0),
+        "pending_incense": _coerce_float(summary.get("uncollectedIncense") or small_world.get("pendingIncense") or small_world.get("pending_incense"), 0.0),
+        "hourly_incense": _coerce_float(summary.get("hourlyIncense"), 0.0),
+        "shenshi_text": sanitize_webapp_secret_text(summary.get("shenshiText") or "", limit=80),
+        "has_prayer": bool(prayer),
+        "prayer_title": sanitize_webapp_secret_text(prayer.get("title") or prayer.get("name") or "", limit=80),
+        "prayer_description": sanitize_webapp_secret_text(prayer.get("description") or "", limit=180),
+        "prayer_success_rate": _coerce_float(prayer.get("successRate"), 0.0),
+        "prayer_expires_in_seconds": _coerce_int(prayer.get("expiresInSeconds"), 0),
+        "prayer_missing_resources": missing_resources,
+        "prayer_resources_ready": bool(prayer) and not missing_resources,
+        "barrier_active": barrier_remaining > 0 or bool((small_world.get("barrier") or {}).get("active")),
+        "barrier_remaining_seconds": barrier_remaining,
+        "barrier_cost": _coerce_int(actions.get("barrierCost"), 0),
+        "edict_remaining_seconds": _coerce_int(actions.get("edictRemainingSeconds"), 0),
+        "prayer_remaining_seconds": _coerce_int(actions.get("prayerRemainingSeconds"), 0),
+        "can_manifest": bool(actions.get("canManifest")),
+        "can_harvest": bool(actions.get("canCollect") or actions.get("canHarvest")),
+        "can_barrier": bool(actions.get("canBarrier")) or (
+            barrier_remaining <= 0
+            and _coerce_int(summary.get("incensePoints"), 0) >= _coerce_int(actions.get("barrierCost"), 0)
+        ),
+        "status_text": sanitize_webapp_secret_text(
+            small_world.get("statusText") or small_world.get("status_text") or small_world.get("message") or actions.get("reasonText") or "",
+            limit=160,
+        ),
+    }
+
+
 def parse_cave_treasure_state(data):
     """Normalize cave treasure MiniApp payloads into decision state.
 
@@ -313,9 +696,11 @@ def parse_cave_treasure_state(data):
     if not isinstance(data, dict):
         return {}
     root = data.get("data") if isinstance(data.get("data"), dict) else data
+    overview = parse_cave_dwelling_overview(root)
     dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
     hunt_panel = dwelling.get("hunt") if isinstance(dwelling.get("hunt"), dict) else {}
     hunt_run = root.get("huntRun") if isinstance(root.get("huntRun"), dict) else {}
+    latest_hint = hunt_run.get("latestHint") if isinstance(hunt_run.get("latestHint"), dict) else {}
     hunt_result = root.get("huntResult") if isinstance(root.get("huntResult"), dict) else {}
     treasure = _find_nested_dict(
         root,
@@ -365,9 +750,10 @@ def parse_cave_treasure_state(data):
         ("games", "gameCount", "rounds", "dailyGames", "playCount", "plays"),
     )
     if hunt_panel:
+        overview_hunt = overview.get("hunt") if isinstance(overview.get("hunt"), dict) else {}
         games_ratio = (
-            _coerce_int(hunt_panel.get("used"), games_ratio[0]),
-            _coerce_int(hunt_panel.get("limit"), games_ratio[1]),
+            _coerce_int(overview_hunt.get("used"), games_ratio[0]),
+            _coerce_int(overview_hunt.get("limit"), games_ratio[1]),
         )
     text_ratios = _ratios_from_text(all_text)
     if sense_ratio == (0, 0):
@@ -394,10 +780,10 @@ def parse_cave_treasure_state(data):
     available_targets = []
     revealed_targets = set()
     if raw_cells:
-        for cell in raw_cells:
+        for fallback_index, cell in enumerate(raw_cells):
             if not isinstance(cell, dict):
                 continue
-            cell_index = _coerce_int(cell.get("index"), len(available_targets)) + 1
+            cell_index = _coerce_int(cell.get("index"), fallback_index) + 1
             if _bool_from_any(cell.get("revealed")):
                 revealed_targets.add(cell_index)
                 continue
@@ -429,23 +815,27 @@ def parse_cave_treasure_state(data):
         keyword in all_text for keyword in ("结算完成", "已结算", "今日寻宝已结算", "已收获")
     )
 
-    hint_text = str(treasure.get("hint") or treasure.get("tips") or treasure.get("message") or treasure.get("text") or "").strip()
+    hint_text = str(
+        treasure.get("hint")
+        or treasure.get("tips")
+        or treasure.get("message")
+        or treasure.get("text")
+        or latest_hint.get("hint")
+        or latest_hint.get("tips")
+        or latest_hint.get("message")
+        or latest_hint.get("text")
+        or ""
+    ).strip()
     hint_target = _coerce_int(treasure.get("hintTarget") or treasure.get("answer") or treasure.get("targetIndex"), 0)
-    if hint_target <= 0 and raw_cells:
+    if hint_target <= 0:
         marker_targets = []
-        for cell in raw_cells:
-            if not isinstance(cell, dict):
-                continue
-            hint = cell.get("hint") if isinstance(cell.get("hint"), dict) else {}
-            for marker in hint.get("markers") or ():
-                if not isinstance(marker, dict):
-                    continue
-                if str(marker.get("kind") or "").strip() == "treasure":
-                    marker_target = _coerce_int(marker.get("index"), -1) + 1
-                    if marker_target > 0:
-                        marker_targets.append(marker_target)
+        for marker in _iter_cave_hint_markers(hunt_run, treasure, *raw_cells):
+            marker_priority = _cave_marker_priority(marker)
+            marker_target = _cave_marker_target(marker)
+            if marker_priority > 0 and marker_target > 0:
+                marker_targets.append((marker_priority, marker_target))
         available_set = set(available_targets)
-        for marker_target in reversed(marker_targets):
+        for _marker_priority, marker_target in sorted(marker_targets, reverse=True):
             if marker_target in revealed_targets:
                 continue
             if available_set and marker_target not in available_set:
@@ -536,6 +926,31 @@ def build_cave_treasure_action_request(decision, *, token, init_data_session=Non
     )
 
 
+def build_cave_deep_seclusion_action_request(action, *, token, init_data_session=None, init_data="", adapter=None):
+    action = str(action or "").strip()
+    if action not in CAVE_DEEP_SECLUSION_ACTIONS:
+        raise ValueError(f"cave deep seclusion action not allowed: {action or 'missing'}")
+    return build_cave_treasure_miniapp_request(
+        "deep_seclusion",
+        token=token,
+        init_data_session=init_data_session,
+        init_data=init_data,
+        payload={"action": action},
+        adapter=adapter,
+    )
+
+
+def _carry_cave_treasure_context(state, previous_state):
+    state = dict(state or {})
+    previous_state = dict(previous_state or {})
+    if _coerce_int(state.get("games_limit"), 0) <= 0 and _coerce_int(previous_state.get("games_limit"), 0) > 0:
+        state["games_used"] = previous_state.get("games_used", 0)
+        state["games_limit"] = previous_state.get("games_limit", 0)
+    if _coerce_int(state.get("action_limit"), 0) <= 0 and _coerce_int(previous_state.get("action_limit"), 0) > 0:
+        state["action_limit"] = previous_state.get("action_limit", 0)
+    return state
+
+
 def _flow_result(ok, status, *, error="", data=None, events=None):
     return {
         "ok": bool(ok),
@@ -596,7 +1011,7 @@ def run_cave_treasure_miniapp_lab_flow(
     last_state = {}
     results = []
     for _step_index in range(max(1, int(max_steps or 1))):
-        state = parse_cave_treasure_state(current_data)
+        state = _carry_cave_treasure_context(parse_cave_treasure_state(current_data), last_state)
         last_state = state
         decision = choose_cave_treasure_action(state, rng=rng)
         events.append({
@@ -694,9 +1109,265 @@ async def run_cave_treasure_miniapp_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_cave_dwelling_start_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    init_data="",
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        start_request = build_cave_treasure_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+        start_result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            start_request,
+            transport or _requests_transport,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="dwelling_start",
+        )
+        if not start_result.ok:
+            return _flow_result(False, "failed", error=start_result.error, events=[{"step": "dwelling_start", "ok": False}])
+        return _flow_result(
+            True,
+            "ok",
+            data={"overview": parse_cave_dwelling_overview(start_result.data), "raw": start_result.data},
+            events=[{"step": "dwelling_start", "ok": True}],
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
+async def run_cave_small_world_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    action_planner,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    """Read the dwelling once and execute at most one planned small-world action."""
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        start_request = build_cave_treasure_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+        start_result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            start_request,
+            transport or _requests_transport,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="small_world:start",
+        )
+        if not start_result.ok:
+            return _flow_result(False, "failed", error=start_result.error, data={"raw": start_result.data})
+
+        before_overview = parse_cave_dwelling_overview(start_result.data)
+        plan = dict(action_planner(before_overview) or {})
+        action = str(plan.get("action") or "").strip()
+        if not action:
+            return _flow_result(
+                True,
+                "noop",
+                data={"overview": before_overview, "before_overview": before_overview, "plan": plan, "raw": start_result.data},
+                events=[{"step": "small_world:start", "ok": True}, {"step": "small_world:noop", "ok": True}],
+            )
+
+        action_request = build_cave_small_world_action_request(
+            action,
+            token=token,
+            init_data=init_data,
+            payload=plan.get("payload") or {},
+            adapter=adapter,
+        )
+        action_result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            action_request,
+            transport or _requests_transport,
+            backoff_sec=(),
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"small_world:{normalize_cave_small_world_action(action)}",
+        )
+        after_overview = parse_cave_dwelling_overview(action_result.data) or before_overview
+        data = {
+            "overview": after_overview,
+            "before_overview": before_overview,
+            "plan": plan,
+            "action": normalize_cave_small_world_action(action),
+            "action_result": dict(action_result.data.get("actionResult") or {}) if isinstance(action_result.data, dict) else {},
+            "raw": action_result.data,
+        }
+        return _flow_result(
+            bool(action_result.ok),
+            "acted" if action_result.ok else "action_failed",
+            error=action_result.error,
+            data=data,
+            events=[{"step": "small_world:start", "ok": True}, {"step": f"small_world:{action}", "ok": bool(action_result.ok)}],
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
+async def run_cave_tianjige_command_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    command,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    """Execute one verified Tianjige command without HTTP retries.
+
+    Command-center actions are state-changing. A transport timeout therefore has
+    an unknown outcome and must be surfaced to the caller instead of replayed.
+    """
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        request = build_cave_tianjige_command_request(
+            command,
+            token=token,
+            init_data=init_data,
+            adapter=adapter,
+        )
+        result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            transport or _requests_transport,
+            backoff_sec=(),
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"command_center:{normalize_cave_tianjige_command(command)}",
+        )
+        if not result.ok:
+            return _flow_result(False, "failed", error=result.error, events=[{"step": "command_center", "ok": False}])
+        return _flow_result(True, "ok", data=result.data, events=[{"step": "command_center", "ok": True}])
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
+async def run_cave_external_action_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    action,
+    player_id,
+    init_data="",
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        request = build_cave_external_action_request(
+            action,
+            token=token,
+            player_id=player_id,
+            init_data=init_data,
+            adapter=adapter,
+        )
+        result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            transport or _requests_transport,
+            backoff_sec=(),
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"external:{normalize_cave_external_action(action)}",
+        )
+        if not result.ok:
+            return _flow_result(False, "failed", error=result.error, data=result.data, events=[{"step": "external", "ok": False}])
+        return _flow_result(True, "ok", data=result.data, events=[{"step": "external", "ok": True}])
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
+async def run_cave_deep_seclusion_action_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    action,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    action = str(action or "").strip()
+    try:
+        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        request = build_cave_deep_seclusion_action_request(action, token=token, init_data=init_data, adapter=adapter)
+        action_result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            transport or _requests_transport,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"deep_seclusion:{action}",
+        )
+        if not action_result.ok:
+            return _flow_result(False, "failed", error=action_result.error, events=[{"step": f"deep_seclusion:{action}", "ok": False}])
+        return _flow_result(True, action, data=action_result.data, events=[{"step": f"deep_seclusion:{action}", "ok": True}])
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 __all__ = [
     "CAVE_TREASURE_MINIAPP_GAME_KEY",
     "CAVE_TREASURE_MINIAPP_ENDPOINTS",
+    "CAVE_EXTERNAL_ACTIONS",
+    "CAVE_TIANJIGE_ALLOWED_COMMANDS",
+    "build_cave_deep_seclusion_action_request",
+    "build_cave_external_action_request",
+    "build_cave_tianjige_command_request",
     "build_cave_treasure_action_request",
     "build_cave_treasure_launch_args",
     "build_cave_treasure_miniapp_adapter",
@@ -704,8 +1375,18 @@ __all__ = [
     "build_cave_treasure_miniapp_request",
     "choose_cave_treasure_action",
     "extract_cave_treasure_miniapp_launch",
+    "normalize_cave_tianjige_command",
+    "normalize_cave_external_action",
+    "parse_cave_dwelling_overview",
     "parse_cave_treasure_state",
+    "build_cave_small_world_action_request",
+    "normalize_cave_small_world_action",
     "request_cave_treasure_miniapp_init_data",
+    "run_cave_deep_seclusion_action_production_flow",
+    "run_cave_dwelling_start_production_flow",
+    "run_cave_external_action_production_flow",
+    "run_cave_small_world_production_flow",
+    "run_cave_tianjige_command_production_flow",
     "run_cave_treasure_miniapp_lab_flow",
     "run_cave_treasure_miniapp_production_flow",
     "summarize_cave_treasure_entry",

@@ -165,7 +165,13 @@ from .features.yuanying import (
 )
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
 from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
-from .features.fishing_runtime import handle_fishing_miniapp_entry, handle_fishing_reply, is_fishing_reply_text, run_fishing_scheduler
+from .features.fishing_runtime import (
+    handle_fishing_miniapp_entry,
+    handle_fishing_reply,
+    hold_unclaimed_fishing_miniapp_entry,
+    is_fishing_reply_text,
+    run_fishing_scheduler,
+)
 from .features.wild_training import (
     WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RETRY_MAX_SEC,
@@ -721,6 +727,48 @@ def _looks_like_game_bot_reply(text, family):
     return any(hint in raw_text for hint in hints)
 
 
+BOT_HEALTH_BROADCAST_MARKERS = (
+    "【世界通告｜",
+    "✨ 天道感应：",
+    "✨ 元神回响：",
+    "深度闭关总结",
+    "元神归窍总结",
+    "【深度闭关总结】",
+    "【世界通告",
+)
+
+
+def _looks_like_unanchored_game_broadcast(text):
+    raw_text = str(text or "").strip()
+    if not raw_text or raw_text.startswith("."):
+        return False
+    return any(marker in raw_text for marker in BOT_HEALTH_BROADCAST_MARKERS)
+
+
+def _is_bot_health_reply_evidence(text, reply_to=None, reply_context=None, *, now=None):
+    """Return true only for command-linked bot replies, not passive broadcasts."""
+    raw_text = str(text or "").strip()
+    if not raw_text or raw_text.startswith("."):
+        return False
+    if _looks_like_unanchored_game_broadcast(raw_text):
+        return False
+    try:
+        reply_to = int(reply_to or 0)
+    except (TypeError, ValueError):
+        reply_to = 0
+    reply_context = reply_context or {}
+
+    routed_identity_id = int(reply_context.get("send_as_id") or 0)
+    if routed_identity_id > 0 and reply_to > 0:
+        return True
+
+    command_record = _get_observed_game_command(reply_to, now=now)
+    if command_record and _observed_command_reply_matches(raw_text, command_record):
+        return True
+
+    return False
+
+
 def _normalize_sender_display_name(text):
     return "".join(str(text or "").split())
 
@@ -814,9 +862,12 @@ async def _is_game_bot_event(event):
     return False
 
 
-async def _note_game_bot_activity():
+async def _note_game_bot_activity(text=None, reply_to=None, reply_context=None, *, now=None):
     global _bot_silence_auto_paused
-    bot_health_action = note_game_bot_message(time.time())
+    now = float(now if now is not None else time.time())
+    if not _is_bot_health_reply_evidence(text, reply_to, reply_context, now=now):
+        return
+    bot_health_action = note_game_bot_message(now)
     if (
         bot_health_action is None
         and not get_global_enabled()
@@ -824,7 +875,7 @@ async def _note_game_bot_activity():
     ):
         _bot_silence_auto_paused = True
         restore_bot_health_auto_pause("恢复持久化天尊健康暂停态")
-        bot_health_action = note_game_bot_message(time.time())
+        bot_health_action = note_game_bot_message(now)
     if bot_health_action == "probe":
         if _bot_silence_auto_paused or not get_global_enabled():
             _bot_silence_auto_paused = True
@@ -1334,6 +1385,18 @@ async def _handle_cave_treasure_miniapp_broadcast_entry(text, now, event):
     )
 
 
+async def _handle_tree_miniapp_broadcast_entry(text, now, event):
+    return await handle_tree_miniapp_entry(
+        event,
+        text,
+        now,
+        reply_to=None,
+        matched_family=None,
+        result_msg_id=getattr(event, "id", 0),
+        require_identity_match=True,
+    )
+
+
 async def _dispatch_miniapp_broadcast_fallbacks(event, text, now):
     raw_text = str(text or "")
     if "天机试炼台" in raw_text and _claim_runtime_event(event, scope="trial_miniapp_orphan_entry"):
@@ -1341,6 +1404,9 @@ async def _dispatch_miniapp_broadcast_fallbacks(event, text, now):
             return True
     if "洞府" in raw_text and _claim_runtime_event(event, scope="cave_treasure_miniapp_orphan_entry"):
         if await _run_until_handled_for_enabled_identities(_handle_cave_treasure_miniapp_broadcast_entry, raw_text, now, event):
+            return True
+    if ("灵眼之树" in raw_text or "进入灵树" in raw_text) and _claim_runtime_event(event, scope="tree_miniapp_orphan_entry"):
+        if await _handle_tree_miniapp_broadcast_entry(raw_text, now, event):
             return True
     return False
 
@@ -2473,6 +2539,14 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             )
             handled_any = fishing_miniapp_handled or handled_any
             if not fishing_miniapp_handled:
+                fishing_miniapp_held = await hold_unclaimed_fishing_miniapp_entry(
+                    event,
+                    text,
+                    now,
+                    result_msg_id=event.id,
+                )
+                handled_any = fishing_miniapp_held or handled_any
+            if not fishing_miniapp_handled and not fishing_miniapp_held:
                 handled_any = await handle_fishing_reply(
                     text,
                     now,
@@ -2631,9 +2705,6 @@ async def on_message(event):
             print(traceback.format_exc())
         return
 
-    # bot 健康监测：bot 有发言后，暂停态先探测，再恢复
-    await _note_game_bot_activity()
-
     text = event.raw_text or ""
     observe_dungeon_quiet_text(text, now=now)
 
@@ -2648,6 +2719,8 @@ async def on_message(event):
             is_game_bot=sender_is_game_bot,
             is_game_group=True,
         )
+        # bot 健康证据必须来自指令关联回复；广播/通告仍解析，但不触发恢复。
+        await _note_game_bot_activity(text, reply_to, reply_context, now=now)
 
         await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to, reply_context=reply_context)
         await handle_huanglong_conscription_text(text, now)
@@ -2674,12 +2747,12 @@ async def on_message(event):
                 )
                 return
 
-        if await _dispatch_fishing_swallowed_reply_fallback(event, text, now, event_kind="message"):
-            await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "fishing"}, event_kind="message"), now)
-            return
-
         if await _dispatch_miniapp_broadcast_fallbacks(event, text, now):
             await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "miniapp"}, event_kind="message"), now)
+            return
+
+        if await _dispatch_fishing_swallowed_reply_fallback(event, text, now, event_kind="message"):
+            await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "fishing"}, event_kind="message"), now)
             return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
@@ -2740,8 +2813,6 @@ async def on_message_edited(event):
             print(traceback.format_exc())
         return
 
-    await _note_game_bot_activity()
-
     now = time.time()
     text = event.raw_text or ""
     observe_dungeon_quiet_text(text, now=now)
@@ -2757,6 +2828,8 @@ async def on_message_edited(event):
             is_game_bot=sender_is_game_bot,
             is_game_group=True,
         )
+        # bot 健康证据必须来自指令关联回复；广播/通告仍解析，但不触发恢复。
+        await _note_game_bot_activity(text, reply_to, reply_context, now=now)
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
         await _dispatch_message_edited_concubine_loss(event, text, now)

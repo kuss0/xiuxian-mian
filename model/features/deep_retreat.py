@@ -18,7 +18,7 @@ from ..action_guard import (
     note_remote_block as note_action_guard_remote_block,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
+from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
@@ -104,7 +104,8 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     summary_received_console="🧘 收到闭关总结，30 秒后继续。",
     source_module="深度闭关",
     summary_trigger_command=CMD_DEEP_RETREAT_QUERY,
-    summary_passive_triggers=("查看闭关", "1"),
+    summary_passive_trigger_command=PHASEFUL_PASSIVE_TRIGGER_TEXT,
+    summary_passive_triggers=("查看闭关", PHASEFUL_PASSIVE_TRIGGER_TEXT),
     summary_passive_timeout_sec=120,
     summary_due_delay_min_sec=5 * 60,
     summary_due_delay_max_sec=15 * 60,
@@ -400,7 +401,10 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         await send_audit_log(f"⏳ 深闭短冷却→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
 
-    if "预计还需" in text and "即可功成圆满" in text:
+    if (
+        ("预计还需" in text and "即可功成圆满" in text)
+        or ("闭关中" in text and "剩余" in text)
+    ):
         wait_sec = parse_wait_time(text)
         if not has_wait_time(text):
             return False

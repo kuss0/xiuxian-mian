@@ -59,6 +59,8 @@ from .state import (
     get_replica_success_cooldown_hours,
     get_replica_virtual_hall_match_enabled_map,
     get_send_as_profile,
+    get_inventory_delta_records,
+    get_miniapp_state_records,
     get_storage_bag_api_config,
     get_storage_bag_item_rules,
     get_storage_bag_records,
@@ -104,6 +106,8 @@ from .state import (
     set_replica_success_cooldown_hours,
     set_replica_virtual_hall_match_enabled_map,
     set_send_as_profile,
+    set_inventory_delta_records,
+    set_miniapp_state_records,
     set_storage_bag_api_config,
     set_storage_bag_item_rules,
     set_storage_bag_records,
@@ -1988,6 +1992,14 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("inventory_delta_records", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("miniapp_state_records", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("tree_miniapp_score_configs", "{}"),
     )
     conn.execute(
@@ -2574,6 +2586,16 @@ _META_STATE_CODEC = {
         get_storage_bag_item_rules,
         _encode_meta_json,
         lambda value: set_storage_bag_item_rules(_decode_meta_json(value, {})),
+    ),
+    "inventory_delta_records": (
+        get_inventory_delta_records,
+        _encode_meta_json,
+        lambda value: set_inventory_delta_records(_decode_meta_json(value, {})),
+    ),
+    "miniapp_state_records": (
+        get_miniapp_state_records,
+        _encode_meta_json,
+        lambda value: set_miniapp_state_records(_decode_meta_json(value, {})),
     ),
     "tianjige_dao_path_records": (
         get_tianjige_dao_path_records,

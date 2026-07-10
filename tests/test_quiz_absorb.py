@@ -384,6 +384,51 @@ class QuizAiAssistTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1_700_000_300.0, state_module.state["quiz_deadline_at"])
             self.assertIn("AI已排队作答", audit_mock.await_args.args[0])
 
+    async def test_global_pause_skips_ai_and_does_not_queue_auto_answer(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "auto_answer_enabled": True,
+            "provider": "claude",
+            "model": "test-model",
+            "confidence_threshold": 0.8,
+        })
+        with state_module.use_identity(self.identity_id):
+            state_module.state["quiz_enabled"] = True
+            with (
+                patch.object(quiz, "get_global_enabled", return_value=False),
+                patch.object(quiz, "suggest_quiz_answer_multi", new=AsyncMock()) as suggest_mock,
+                patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                handled = await quiz.handle_quiz_prompt(self._prompt(), 1_700_000_000.0, SimpleNamespace(id=457, chat_id=-100))
+
+            self.assertFalse(handled)
+            self.assertEqual("", state_module.state["quiz_answer"])
+            self.assertEqual("", state_module.state["quiz_phase"])
+            suggest_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+
+    async def test_global_pause_clears_queued_answer_before_any_send(self):
+        now = 1_700_000_100.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["quiz_enabled"] = True
+            state_module.state["quiz_question"] = "暂停测试题"
+            state_module.state["quiz_options"] = {"A": "甲", "B": "乙"}
+            state_module.state["quiz_answer"] = "A"
+            state_module.state["quiz_phase"] = quiz.QUIZ_PHASE_QUEUED_ANSWER
+            state_module.state["quiz_reply_to_msg_id"] = 999
+            state_module.state["next_quiz_time"] = now - 1
+            with (
+                patch.object(quiz, "get_global_enabled", return_value=False),
+                patch.object(quiz, "_send_quiz_answer_with_fallback", new=AsyncMock()) as send_mock,
+                patch.object(quiz, "save_state"),
+            ):
+                await quiz.run_quiz_scheduler(now)
+
+            self.assertEqual(0, state_module.state["quiz_reply_to_msg_id"])
+            self.assertEqual("", state_module.state["quiz_phase"])
+            self.assertEqual("全局暂停，已取消自动作答", state_module.state["quiz_last_error"])
+            send_mock.assert_not_awaited()
+
     async def test_ai_auto_mode_caps_delay_to_safety_window_after_ai_wait(self):
         state_module.set_quiz_ai_config({
             "enabled": True,

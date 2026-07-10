@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 import json
 import copy
@@ -181,6 +182,51 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, extra)
         send_mock.assert_not_awaited()
 
+    async def test_phaseful_passive_trigger_is_fixed_maintenance_only_and_untracked(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        state_module.set_global_enabled(False)
+        state_module.set_global_pause_source("tianzun_maintenance")
+        with state_module.use_identity(identity_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "summary_due"
+
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12354))
+        with patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message, extra = await ui.ui_send_phaseful_passive_trigger(identity_id)
+
+        self.assertTrue(ok)
+        self.assertIn("普通触发文本", message)
+        self.assertEqual("在", extra["text"])
+        self.assertEqual(12354, extra["msg_id"])
+        self.assertEqual(["元婴:summary_due"], extra["targets"])
+        kwargs = send_mock.await_args.kwargs
+        self.assertEqual("在", send_mock.await_args.args[0])
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(0, kwargs["max_retry"])
+        self.assertEqual("normal", kwargs["priority"])
+        self.assertTrue(kwargs["allow_maintenance_pause"])
+        self.assertEqual("被动结算触发", kwargs["source_module"])
+
+    async def test_phaseful_passive_trigger_refuses_when_global_automation_is_running(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        state_module.set_global_enabled(True)
+        state_module.set_global_pause_source("")
+        with state_module.use_identity(identity_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "summary_due"
+
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=12355))
+        with patch.object(ui, "send_game_command", new=send_mock):
+            ok, message, extra = await ui.ui_send_phaseful_passive_trigger(identity_id)
+
+        self.assertFalse(ok)
+        self.assertIn("天尊维护", message)
+        self.assertEqual({}, extra)
+        send_mock.assert_not_awaited()
+
     async def test_manual_run_allows_trial_and_authorizes_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12348))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -243,7 +289,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "send_game_command", new=send_mock):
-            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree")
+            ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree", {"mode": "fly"})
 
         self.assertFalse(ok)
         self.assertIn("仅允许", message)
@@ -261,6 +307,262 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("仅允许", message)
         self.assertEqual({}, extra)
         send_mock.assert_not_awaited()
+
+    async def test_cave_public_entry_small_world_uses_http_runner_without_sending_command(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_small_world_sync", new=AsyncMock(return_value={
+                    "ok": True,
+                    "message": "洞府小世界同步：信仰 92｜稳定 100｜江河决堤",
+                    "extra": {"record_key": "1001:cave_small_world"},
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "small_world",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("洞府小世界同步", message)
+        self.assertEqual("1001:cave_small_world", extra["record_key"])
+        run_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
+
+    async def test_cave_public_entry_deep_retreat_action_uses_http_runner_without_sending_command(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_deep_retreat_action", new=AsyncMock(return_value={
+                    "ok": True,
+                    "message": "洞府闭关 status 完成：已同步｜阶段 running",
+                    "extra": {"record_key": "1001:cave_deep_retreat"},
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "deep_status",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("洞府闭关 status", message)
+        self.assertEqual("1001:cave_deep_retreat", extra["record_key"])
+        run_mock.assert_awaited_once_with(1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999", "status")
+        send_mock.assert_not_awaited()
+
+    async def test_cave_public_entry_treasure_uses_http_runner_without_sending_command(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_treasure", new=AsyncMock(return_value={
+                    "ok": True,
+                    "message": "洞府寻宝公共入口：MiniApp daily_limit｜游戏 3/3｜奖励:古禁印痕x1",
+                    "extra": {"state_record_key": "1001:cave_treasure"},
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "treasure",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("洞府寻宝公共入口", message)
+        self.assertEqual("1001:cave_treasure", extra["state_record_key"])
+        run_mock.assert_awaited_once_with(1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999")
+        send_mock.assert_not_awaited()
+
+    async def test_cave_public_entry_trial_uses_http_runner_without_sending_command(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
+                    "ok": True,
+                    "message": "洞府天机试炼公共入口：MiniApp daily_limit｜2次｜收益:天机残痕+2",
+                    "extra": {"trial_title": "天机试炼"},
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "trial",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("洞府天机试炼公共入口", message)
+        self.assertEqual("天机试炼", extra["trial_title"])
+        run_mock.assert_awaited_once_with(1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999")
+        send_mock.assert_not_awaited()
+
+    async def test_cave_public_entry_yuanying_uses_http_runner_without_sending_command(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_yuanying", new=AsyncMock(return_value={
+                    "ok": True,
+                    "message": "洞府天机阁元婴出窍：元婴已出窍。",
+                    "extra": {"sync": {"phase": "running"}},
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "yuanying",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("洞府天机阁元婴出窍", message)
+        self.assertEqual("running", extra["sync"]["phase"])
+        run_mock.assert_awaited_once_with(1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999")
+        send_mock.assert_not_awaited()
+
+    async def test_cave_public_config_is_independent_from_legacy_module_switches(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "cave_public_small_world_enabled": False,
+            "cave_public_deep_status_enabled": False,
+            "cave_public_treasure_enabled": False,
+            "cave_public_trial_enabled": False,
+        }
+
+        with patch.object(ui, "save_state", return_value=True) as save_mock:
+            ok, message = await ui.ui_set_cave_public_config({
+                "small_world_enabled": True,
+                "deep_status_enabled": False,
+                "treasure_enabled": True,
+                "trial_enabled": False,
+                "delay_sec": 7,
+            })
+
+        automation = ui.get_miniapp_status_snapshot()["automation"]
+        self.assertTrue(ok)
+        self.assertIn("small_world", message)
+        self.assertIn("treasure", message)
+        self.assertTrue(automation["cave_public_small_world_enabled"])
+        self.assertFalse(automation["cave_public_deep_status_enabled"])
+        self.assertTrue(automation["cave_public_treasure_enabled"])
+        self.assertFalse(automation["cave_public_trial_enabled"])
+        self.assertEqual(10, automation["cave_public_delay_sec"])
+        self.assertNotIn("small_world_enabled", state_module.get_miniapp_auto_config())
+        self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
+        save_mock.assert_called_once()
+
+    async def test_cave_public_batch_claims_slot_before_background_task(self):
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        ui._cave_public_batch_state.clear()
+        ui._cave_public_batch_state.update(batch_snapshot)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_small_world_enabled": True,
+            "cave_public_deep_status_enabled": False,
+            "cave_public_treasure_enabled": False,
+            "cave_public_trial_enabled": False,
+        }
+        scheduled = []
+
+        def close_scheduled(coro):
+            scheduled.append(coro)
+            coro.close()
+
+        try:
+            with patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
+                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "_fire_and_forget", side_effect=close_scheduled) as fire_mock:
+                ok, _message, extra = await ui.ui_start_cave_public_entry_batch({
+                    "public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                })
+                second_ok, second_message, _second_extra = await ui.ui_start_cave_public_entry_batch({
+                    "public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                })
+
+            self.assertTrue(ok)
+            self.assertEqual(["small_world"], extra["actions"])
+            self.assertEqual(2, extra["count"])
+            self.assertTrue(ui._cave_public_batch_state["running"])
+            self.assertEqual("等待启动", ui._cave_public_batch_state["current"])
+            self.assertNotIn("df_SECRET", json.dumps(ui._cave_public_batch_state, ensure_ascii=False))
+            self.assertFalse(second_ok)
+            self.assertIn("正在运行", second_message)
+            fire_mock.assert_called_once()
+            self.assertEqual(1, len(scheduled))
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
+
+    def test_cave_public_batch_deduplicates_twenty_four_send_as_identities_to_four_login_accounts(self):
+        account_ids = [1001, 1002, 1003, 1004]
+        identity_ids = []
+        account_by_identity = {}
+        for account_id in account_ids:
+            identity_ids.append(account_id)
+            account_by_identity[account_id] = account_id
+            for offset in range(1, 6):
+                alias_id = account_id * 100 + offset
+                identity_ids.append(alias_id)
+                account_by_identity[alias_id] = account_id
+
+        self.assertEqual(24, len(identity_ids))
+        with patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "get_identity_account", side_effect=lambda identity_id: account_by_identity[identity_id]):
+            selected = ui._cave_public_batch_identity_ids_for_action("small_world", identity_ids)
+            steps = ui._build_cave_public_batch_steps(identity_ids, ["small_world"])
+
+        self.assertEqual(account_ids, selected)
+        self.assertEqual([(account_id, "small_world") for account_id in account_ids], steps)
+
+    def test_cave_public_batch_skips_aliases_when_login_account_identity_is_disabled(self):
+        identity_ids = [1001, 100101, 100102, 1002, 100201, 100202]
+        account_by_identity = {
+            1001: 1001,
+            100101: 1001,
+            100102: 1001,
+            1002: 1002,
+            100201: 1002,
+            100202: 1002,
+        }
+
+        with patch.object(ui, "get_identity_enabled", side_effect=lambda identity_id: identity_id != 1002), \
+                patch.object(ui, "get_identity_account", side_effect=lambda identity_id: account_by_identity[identity_id]):
+            selected = ui._cave_public_batch_identity_ids_for_action("small_world", identity_ids)
+
+        self.assertEqual([1001], selected)
+
+    async def test_cave_public_batch_runs_actions_strictly_serially(self):
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        active = 0
+        max_active = 0
+        calls = []
+
+        async def run_entry(identity_id, action, _url):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            calls.append((identity_id, action))
+            await asyncio.sleep(0)
+            active -= 1
+            return True, f"{action} 完成", {}
+
+        try:
+            with patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "get_identity_display_name", side_effect=lambda identity_id: f"角色{identity_id}"), \
+                    patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
+                    patch.object(ui, "send_audit_log", new=AsyncMock()):
+                await ui._run_cave_public_entry_batch(
+                    "cave_public_test",
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    [1001, 1002],
+                    ["small_world", "trial"],
+                    0,
+                )
+
+            self.assertEqual(1, max_active)
+            self.assertEqual(
+                [(1001, "small_world"), (1002, "small_world"), (1001, "trial"), (1002, "trial")],
+                calls,
+            )
+            self.assertFalse(ui._cave_public_batch_state["running"])
+            self.assertEqual(4, ui._cave_public_batch_state["completed"])
+            self.assertEqual(4, ui._cave_public_batch_state["succeeded"])
+            self.assertEqual(0, ui._cave_public_batch_state["failed"])
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
 
     async def test_trial_batch_run_uses_enabled_identities_and_background_task(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001, 1002, 1003]), \
@@ -434,16 +736,29 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("/api/miniapp-trial-batch-run", batch_run_commands["trial"]["endpoint"])
         self.assertIn("全号批量", batch_run_commands["trial"]["label"])
         self.assertNotIn("fishing", manual_run_commands)
+        self.assertNotIn("tree", manual_run_commands)
         self.assertIn("cave_treasure", snapshot["flow_plans"])
         self.assertIn("tree", snapshot["flow_plans"])
         self.assertFalse(snapshot["flow_plans"]["cave_treasure"]["default_enabled"])
         self.assertFalse(snapshot["flow_plans"]["tree"]["default_enabled"])
         self.assertTrue(snapshot["flow_plans"]["cave_treasure"]["manual_only"])
         self.assertTrue(snapshot["flow_plans"]["tree"]["manual_only"])
+        self.assertEqual([".洞府"], snapshot["flow_plans"]["cave_treasure"]["replaces_commands"])
+        self.assertEqual([".灵树"], snapshot["flow_plans"]["tree"]["replaces_commands"])
+        self.assertEqual("single_identity_command_replacement", snapshot["flow_plans"]["cave_treasure"]["read_scope"])
+        self.assertEqual(["module_snapshot", "daily_counter", "inventory_delta"], snapshot["flow_plans"]["cave_treasure"]["state_outputs"])
+        self.assertIn("state_records", snapshot)
+        self.assertEqual(0, snapshot["state_records"]["record_count"])
         self.assertFalse(snapshot["policy"]["raw_init_data_persisted"])
         self.assertFalse(snapshot["policy"]["raw_start_token_persisted"])
         self.assertFalse(snapshot["automation"]["trial_daily_enabled"])
         self.assertFalse(snapshot["automation"]["trial_daily_effective_enabled"])
+        self.assertTrue(snapshot["automation"]["cave_public_small_world_enabled"])
+        self.assertTrue(snapshot["automation"]["cave_public_deep_status_enabled"])
+        self.assertTrue(snapshot["automation"]["cave_public_treasure_enabled"])
+        self.assertTrue(snapshot["automation"]["cave_public_trial_enabled"])
+        self.assertEqual(20, snapshot["automation"]["cave_public_delay_sec"])
+        self.assertIn("cave_public_batch", snapshot)
         self.assertEqual("01:00-04:00 / 05:00-08:00", snapshot["automation"]["trial_daily_window_text"])
         self.assertNotIn("tgWebAppData", text)
         self.assertNotIn("initData=", text)

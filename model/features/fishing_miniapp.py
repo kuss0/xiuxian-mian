@@ -16,7 +16,7 @@ from ..webapp_core import (
     build_miniapp_http_request,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
-    iter_webapp_button_links,
+    iter_webapp_entry_links,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -26,6 +26,9 @@ FISHING_MINIAPP_GAME_KEY = "fishing"
 FISHING_MINIAPP_LABEL = "灵溪垂钓"
 FISHING_MINIAPP_DEFAULT_API_BASE_URL = "https://asc.aiopenai.app"
 FISHING_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
+FISHING_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (
+    r"hantianzun\d{2}_bot",
+)
 FISHING_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-fishing/"
 FISHING_MINIAPP_ENDPOINTS = {
     "start": f"{FISHING_MINIAPP_API_PATH_PREFIX}start",
@@ -76,6 +79,7 @@ def build_fishing_miniapp_adapter(*, api_base_url=FISHING_MINIAPP_DEFAULT_API_BA
         game_key=FISHING_MINIAPP_GAME_KEY,
         label=FISHING_MINIAPP_LABEL,
         bot_username=bot_username,
+        allowed_bot_username_patterns=FISHING_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS,
         api_base_url=api_base_url,
         allowed_web_hosts=("t.me", "telegram.me", "asc.aiopenai.app"),
         allowed_api_hosts=("asc.aiopenai.app",),
@@ -100,17 +104,51 @@ def build_fishing_miniapp_request(endpoint, *, token, init_data_session=None, in
     )
 
 
-def _iter_event_buttons(event):
-    yield from iter_webapp_button_links(event)
+def _iter_event_buttons(event, *, message_text=""):
+    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def extract_fishing_miniapp_launch(event, *, message_text=""):
     adapter = build_fishing_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event):
+    for button_text, url in _iter_event_buttons(event, message_text=message_text):
         if not url:
             continue
+        launch = build_miniapp_launch_request(adapter, url)
+        if not launch.allowed or not launch.start_param:
+            continue
         summary = summarize_webapp_url(url, button_text=button_text, message_text=message_text)
-        if summary.get("game_hint") != FISHING_MINIAPP_GAME_KEY:
+        return {
+            "token": launch.start_param,
+            "webview_url": url,
+            "button_text": button_text,
+            "safe_summary": launch.safe_summary(),
+        }
+    return {}
+
+
+def _iter_dwelling_external_apps(data):
+    if not isinstance(data, dict):
+        return
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    account = root.get("account") if isinstance(root.get("account"), dict) else {}
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    for group in external.get("groups") or ():
+        if not isinstance(group, dict):
+            continue
+        for app in group.get("apps") or ():
+            if isinstance(app, dict):
+                yield group, app
+
+
+def extract_fishing_miniapp_launch_from_dwelling_payload(data):
+    adapter = build_fishing_miniapp_adapter()
+    for group, app in _iter_dwelling_external_apps(data):
+        app_key = str(app.get("key") or app.get("action") or "").strip().lower()
+        title = str(app.get("title") or "").strip()
+        if app_key not in {"fishing", "fish"} and "钓" not in title:
+            continue
+        url = str(app.get("url") or app.get("webviewUrl") or app.get("webview_url") or "").strip()
+        if not url:
             continue
         launch = build_miniapp_launch_request(adapter, url)
         if not launch.allowed or not launch.start_param:
@@ -118,7 +156,9 @@ def extract_fishing_miniapp_launch(event, *, message_text=""):
         return {
             "token": launch.start_param,
             "webview_url": url,
-            "button_text": button_text,
+            "button_text": str(app.get("buttonText") or app.get("title") or "").strip(),
+            "group_key": str(group.get("key") or "").strip(),
+            "app_key": app_key,
             "safe_summary": launch.safe_summary(),
         }
     return {}
@@ -197,6 +237,71 @@ async def run_fishing_miniapp_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_fishing_miniapp_from_cave_entry_production_flow(
+    identity_id,
+    *,
+    cave_token,
+    cave_webview_url,
+    max_rounds=1,
+    cave_transport=None,
+    fishing_transport=None,
+    sleeper=None,
+    adapter=None,
+    capture_sink=None,
+    capture_source="",
+):
+    try:
+        from .cave_treasure_miniapp import (
+            _requests_transport as cave_requests_transport,
+            build_cave_treasure_miniapp_adapter,
+            build_cave_treasure_miniapp_request,
+            request_cave_treasure_miniapp_init_data,
+        )
+
+        cave_adapter = build_cave_treasure_miniapp_adapter()
+        cave_token = str(cave_token or "").strip()
+        cave_webview_url = str(cave_webview_url or "").strip()
+        cave_init_data = await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=cave_token,
+            webview_url=cave_webview_url,
+            adapter=cave_adapter,
+        )
+        start_request = build_cave_treasure_miniapp_request(
+            "start",
+            token=cave_token,
+            init_data=cave_init_data,
+            adapter=cave_adapter,
+        )
+        start_result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            start_request,
+            cave_transport or cave_requests_transport,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="dwelling_start_for_fishing",
+        )
+        if not start_result.ok:
+            return _flow_result(False, "cave_start_failed", error=start_result.error)
+        launch = extract_fishing_miniapp_launch_from_dwelling_payload(start_result.data)
+        if not launch:
+            return _flow_result(False, "fishing_entry_missing", error="dwelling fishing entry missing")
+        return await run_fishing_miniapp_production_flow(
+            identity_id,
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            max_rounds=max_rounds,
+            transport=fishing_transport,
+            sleeper=sleeper,
+            adapter=adapter,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 def build_fishing_miniapp_flow_plan():
     return MiniAppFlowPlan(
         adapter_key=FISHING_MINIAPP_GAME_KEY,
@@ -204,6 +309,8 @@ def build_fishing_miniapp_flow_plan():
         manual_only=True,
         default_enabled=False,
         note="lab-only flow declaration; production fishing scheduler is not wired",
+        replaces_commands=(".钓鱼",),
+        state_outputs=("module_snapshot", "daily_counter", "inventory_delta"),
         steps=(
             MiniAppFlowStep(
                 key="launch",
@@ -883,8 +990,10 @@ __all__ = [
     "classify_fishing_miniapp_error",
     "extract_fishing_miniapp_launch",
     "extract_fishing_miniapp_catches",
+    "extract_fishing_miniapp_launch_from_dwelling_payload",
     "request_fishing_miniapp_init_data",
     "run_fishing_miniapp_lab_flow",
     "run_fishing_miniapp_loop_lab_flow",
+    "run_fishing_miniapp_from_cave_entry_production_flow",
     "run_fishing_miniapp_production_flow",
 ]

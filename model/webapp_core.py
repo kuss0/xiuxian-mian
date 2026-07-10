@@ -25,6 +25,10 @@ START_PARAM_QUERY_KEYS = (
 DEFAULT_TELEGRAM_WEBAPP_HOSTS = ("t.me", "telegram.me")
 DEFAULT_MINIAPP_INIT_DATA_TTL_SEC = 10 * 60
 DEFAULT_MINIAPP_HTTP_BACKOFF_SEC = (1.0, 2.0, 4.0)
+DEFAULT_MINIAPP_REQUEST_MIN_INTERVAL_SEC = 1.0
+DEFAULT_MINIAPP_REQUEST_MAX_PER_RUN = 32
+DEFAULT_MINIAPP_REQUEST_MAX_ATTEMPTS = 2
+DEFAULT_MINIAPP_REQUEST_MAX_CONSECUTIVE_FAILURES = 2
 MINIAPP_CAPTURE_MAX_TEXT = 400
 MINIAPP_CAPTURE_SHAPE_MAX_DEPTH = 4
 MINIAPP_CAPTURE_LIST_SAMPLE_LIMIT = 2
@@ -36,6 +40,10 @@ RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     re.IGNORECASE,
 )
 RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|rpt|stk|trial|df|tree)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
+RE_WEBAPP_URL = re.compile(
+    r"(?:https?|tg)://[^\s<>'\"）)]+|(?:t\.me|telegram\.me)/[^\s<>'\"）)]+",
+    re.IGNORECASE,
+)
 RE_SECRET_HEADER_ASSIGNMENT = re.compile(
     r"\b(?P<key>authorization|proxy-authorization|cookie|set-cookie|x-telegram-bot-api-secret-token)\s*[:=]\s*(?P<value>[^\s,;]+(?:\s+[^\s,;]+)?)",
     re.IGNORECASE,
@@ -289,11 +297,76 @@ def extract_miniapp_init_data_from_url(url):
     return ""
 
 
+@dataclass(frozen=True)
+class MiniAppRequestPolicy:
+    min_interval_sec: float = DEFAULT_MINIAPP_REQUEST_MIN_INTERVAL_SEC
+    max_requests_per_run: int = DEFAULT_MINIAPP_REQUEST_MAX_PER_RUN
+    max_attempts_per_request: int = DEFAULT_MINIAPP_REQUEST_MAX_ATTEMPTS
+    max_consecutive_failures: int = DEFAULT_MINIAPP_REQUEST_MAX_CONSECUTIVE_FAILURES
+
+    def __post_init__(self):
+        object.__setattr__(self, "min_interval_sec", max(0.0, float(self.min_interval_sec or 0)))
+        object.__setattr__(self, "max_requests_per_run", max(1, int(self.max_requests_per_run or 1)))
+        object.__setattr__(self, "max_attempts_per_request", max(1, int(self.max_attempts_per_request or 1)))
+        object.__setattr__(self, "max_consecutive_failures", max(1, int(self.max_consecutive_failures or 1)))
+
+    def safe_summary(self):
+        return {
+            "min_interval_sec": self.min_interval_sec,
+            "max_requests_per_run": self.max_requests_per_run,
+            "max_attempts_per_request": self.max_attempts_per_request,
+            "max_consecutive_failures": self.max_consecutive_failures,
+        }
+
+
+class MiniAppRequestBudget:
+    """Per-flow request budget; callers create one budget for one identity run."""
+
+    def __init__(self, policy=None, *, clock=None, sleeper=None):
+        self.policy = policy if isinstance(policy, MiniAppRequestPolicy) else MiniAppRequestPolicy(**dict(policy or {}))
+        self.clock = clock or time.monotonic
+        self.sleeper = sleeper or time.sleep
+        self.request_count = 0
+        self.consecutive_failures = 0
+        self.last_request_at = None
+
+    def acquire(self):
+        if self.request_count >= self.policy.max_requests_per_run:
+            return False, 0.0, "request_budget_exhausted"
+        if self.consecutive_failures >= self.policy.max_consecutive_failures:
+            return False, 0.0, "consecutive_failure_limit"
+
+        now = float(self.clock())
+        delay = 0.0
+        if self.last_request_at is not None:
+            delay = max(0.0, self.policy.min_interval_sec - (now - self.last_request_at))
+        if delay > 0:
+            self.sleeper(delay)
+            now = float(self.clock())
+        self.request_count += 1
+        self.last_request_at = now
+        return True, delay, ""
+
+    def note_result(self, result):
+        if bool(getattr(result, "ok", False)):
+            self.consecutive_failures = 0
+        else:
+            self.consecutive_failures += 1
+
+    def safe_summary(self):
+        return {
+            **self.policy.safe_summary(),
+            "request_count": int(self.request_count),
+            "consecutive_failures": int(self.consecutive_failures),
+        }
+
+
 @dataclass
 class MiniAppAdapter:
     game_key: str
     label: str
     bot_username: str = ""
+    allowed_bot_username_patterns: tuple[str, ...] = ()
     webview_url: str = ""
     api_base_url: str = ""
     allowed_web_hosts: tuple[str, ...] = DEFAULT_TELEGRAM_WEBAPP_HOSTS
@@ -304,11 +377,13 @@ class MiniAppAdapter:
     platform: str = "android"
     default_enabled: bool = False
     manual_only: bool = True
+    request_policy: MiniAppRequestPolicy = field(default_factory=MiniAppRequestPolicy)
 
     def __post_init__(self):
         self.game_key = _string(self.game_key)
         self.label = _string(self.label)
         self.bot_username = _string(self.bot_username).lstrip("@")
+        self.allowed_bot_username_patterns = tuple(_string(item) for item in (self.allowed_bot_username_patterns or ()) if _string(item))
         self.webview_url = _string(self.webview_url)
         self.api_base_url = _string(self.api_base_url).rstrip("/")
         self.allowed_web_hosts = tuple(_string(item).lower() for item in (self.allowed_web_hosts or ()) if _string(item))
@@ -317,6 +392,7 @@ class MiniAppAdapter:
         self.endpoints = {str(key): _string(value) for key, value in dict(self.endpoints or {}).items() if _string(key) and _string(value)}
         self.start_param_pattern = _string(self.start_param_pattern)
         self.platform = _string(self.platform) or "android"
+        self.request_policy = self.request_policy if isinstance(self.request_policy, MiniAppRequestPolicy) else MiniAppRequestPolicy(**dict(self.request_policy or {}))
 
     def api_endpoint(self, key_or_path):
         raw = _string(key_or_path)
@@ -327,11 +403,13 @@ class MiniAppAdapter:
             "game_key": self.game_key,
             "label": self.label,
             "bot_username": self.bot_username,
+            "bot_pattern_count": len(self.allowed_bot_username_patterns),
             "web_host_count": len(self.allowed_web_hosts),
             "api_hosts": list(self.allowed_api_hosts),
             "endpoint_keys": sorted(self.endpoints),
             "manual_only": bool(self.manual_only),
             "default_enabled": bool(self.default_enabled),
+            "request_policy": self.request_policy.safe_summary(),
         }
 
 
@@ -379,12 +457,18 @@ class MiniAppFlowPlan:
     manual_only: bool = True
     default_enabled: bool = False
     note: str = ""
+    replaces_commands: tuple[str, ...] = ()
+    read_scope: str = "single_identity_command_replacement"
+    state_outputs: tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "adapter_key", _string(self.adapter_key))
         object.__setattr__(self, "label", _string(self.label))
         object.__setattr__(self, "steps", tuple(step if isinstance(step, MiniAppFlowStep) else MiniAppFlowStep(**dict(step)) for step in (self.steps or ())))
         object.__setattr__(self, "note", sanitize_webapp_secret_text(self.note, limit=180))
+        object.__setattr__(self, "replaces_commands", tuple(_string(item) for item in (self.replaces_commands or ()) if _string(item)))
+        object.__setattr__(self, "read_scope", _string(self.read_scope) or "single_identity_command_replacement")
+        object.__setattr__(self, "state_outputs", tuple(_string(item) for item in (self.state_outputs or ()) if _string(item)))
 
     def safe_summary(self):
         return {
@@ -392,6 +476,9 @@ class MiniAppFlowPlan:
             "label": self.label,
             "manual_only": bool(self.manual_only),
             "default_enabled": bool(self.default_enabled),
+            "replaces_commands": list(self.replaces_commands),
+            "read_scope": self.read_scope,
+            "state_outputs": list(self.state_outputs),
             "step_count": len(self.steps),
             "steps": [step.safe_summary() for step in self.steps],
             "note": self.note,
@@ -571,6 +658,24 @@ def _webapp_path_bot_username(parsed):
     return parts[0].lstrip("@") if parts else ""
 
 
+def _bot_username_allowed(adapter, actual_bot):
+    actual = _string(actual_bot).lstrip("@")
+    restricted = bool(adapter.bot_username or adapter.allowed_bot_username_patterns)
+    if not restricted:
+        return True
+    if not actual:
+        return False
+    if adapter.bot_username and actual.lower() == adapter.bot_username.lower():
+        return True
+    for pattern in adapter.allowed_bot_username_patterns:
+        try:
+            if re.fullmatch(pattern, actual, flags=re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+
 def build_miniapp_launch_request(adapter, url="", *, start_param="", bot_username=""):
     adapter = adapter if isinstance(adapter, MiniAppAdapter) else MiniAppAdapter(**dict(adapter or {}))
     raw_url = _string(url) or adapter.webview_url
@@ -584,7 +689,7 @@ def build_miniapp_launch_request(adapter, url="", *, start_param="", bot_usernam
     path_bot = _webapp_path_bot_username(parsed) if host in DEFAULT_TELEGRAM_WEBAPP_HOSTS else ""
     expected_bot = adapter.bot_username
     actual_bot = _string(bot_username).lstrip("@") or path_bot or expected_bot
-    if expected_bot and actual_bot.lower() != expected_bot.lower():
+    if not _bot_username_allowed(adapter, actual_bot):
         return MiniAppLaunchRequest(adapter.game_key, actual_bot, host, raw_url, allowed=False, reason="bot username not allowed")
 
     start_key, found_start = _first_query_value(parsed)
@@ -671,6 +776,41 @@ def iter_webapp_button_links(event):
             url = _button_url(button)
             if url:
                 yield _button_text(button), url
+
+
+def _event_text_candidates(event, message_text=""):
+    seen = set()
+    message = getattr(event, "message", None)
+    for value in (
+        message_text,
+        getattr(event, "raw_text", ""),
+        getattr(event, "text", ""),
+        getattr(message, "message", ""),
+        getattr(message, "text", ""),
+        getattr(message, "raw_text", ""),
+    ):
+        text = str(value or "")
+        if text and text not in seen:
+            seen.add(text)
+            yield text
+
+
+def iter_webapp_entry_links(event, *, message_text=""):
+    """Yield MiniApp entry URLs from buttons first, then text URL fallbacks."""
+    seen_urls = set()
+    for button_text, url in iter_webapp_button_links(event):
+        raw_url = _string(url)
+        if not raw_url or raw_url in seen_urls:
+            continue
+        seen_urls.add(raw_url)
+        yield button_text, raw_url
+    for text in _event_text_candidates(event, message_text):
+        for match in RE_WEBAPP_URL.finditer(text):
+            raw_url = match.group(0).rstrip("，。,.、；;：:")
+            if not raw_url or raw_url in seen_urls:
+                continue
+            seen_urls.add(raw_url)
+            yield "", raw_url
 
 
 def _path_allowed(path, allowed_prefixes):
@@ -841,6 +981,14 @@ def _safe_capture_body(value):
     return sanitize_webapp_secret_text(value, limit=MINIAPP_CAPTURE_MAX_TEXT)
 
 
+def _capture_body_digest(value):
+    try:
+        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        payload = str(value)
+    return _digest(payload)
+
+
 def _response_status_and_body(response):
     if isinstance(response, tuple) and len(response) == 2:
         return int(response[0] or 0), response[1]
@@ -1007,8 +1155,8 @@ def build_miniapp_capture_record(
     method = _string((request or {}).get("method") or safe_request.get("method") or "POST").upper()
     request_payload = dict((request or {}).get("payload") or {})
     response_detail = {
-        "body": _safe_capture_body(safe_body),
         "body_shape": summarize_miniapp_json_shape(safe_body),
+        "body_digest": _capture_body_digest(safe_body),
         "parse_error": parse_error,
         "data_keys": sorted(str(key) for key in data) if isinstance(data, dict) else [],
     }
@@ -1056,15 +1204,43 @@ def execute_miniapp_http_request(
     capture_sink=None,
     capture_source="",
     step_key="",
+    request_budget=None,
 ):
     if transport is None:
         raise ValueError("miniapp transport missing")
     delays = tuple(float(delay) for delay in (backoff_sec or ()))
+    if request_budget is not None:
+        max_retries = max(0, int(request_budget.policy.max_attempts_per_request) - 1)
+        delays = delays[:max_retries]
     attempts_total = len(delays) + 1
     last_result = None
     for attempt in range(1, attempts_total + 1):
         started = time.time()
         response_for_capture = None
+        if request_budget is not None:
+            allowed, _delay, reason = request_budget.acquire()
+            if not allowed:
+                result = MiniAppHttpResult(
+                    ok=False,
+                    error=reason,
+                    error_type="request_budget",
+                    retryable=False,
+                    attempts=max(0, attempt - 1),
+                )
+                _emit_miniapp_capture(
+                    capture_sink,
+                    build_miniapp_capture_record(
+                        request,
+                        (0, {"ok": False, "error": reason}),
+                        result=result,
+                        step_key=step_key,
+                        source=capture_source,
+                        started_at=started,
+                        ended_at=time.time(),
+                        attempt=attempt,
+                    ),
+                )
+                return result
         try:
             response = transport(request)
             status_code, body = _response_status_and_body(response)
@@ -1080,6 +1256,8 @@ def execute_miniapp_http_request(
             )
             response_for_capture = (0, {"ok": False, "error": str(exc)})
         last_result = result
+        if request_budget is not None:
+            request_budget.note_result(result)
         _emit_miniapp_capture(
             capture_sink,
             build_miniapp_capture_record(

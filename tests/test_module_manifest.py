@@ -96,7 +96,9 @@ class ModuleManifestTests(unittest.TestCase):
 
     def test_reply_family_maps_to_source_module(self):
         self.assertEqual("灵树", module_manifest.get_module_name_for_reply_family("tree_panel"))
+        self.assertEqual("灵树", module_manifest.get_module_name_for_reply_family("tree_miniapp"))
         self.assertTrue(module_manifest.is_reply_family_archived("tree_panel"))
+        self.assertTrue(module_manifest.is_reply_family_archived("tree_miniapp"))
         self.assertEqual("太一", module_manifest.get_module_name_for_reply_family("taiyi_yindao"))
         self.assertEqual("深度闭关", module_manifest.get_module_name_for_reply_family("deep_retreat"))
         self.assertEqual("储物袋", module_manifest.get_module_name_for_reply_family("storage_bag_buy"))
@@ -391,7 +393,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual(41, summary["totals"]["active_modules"])
         self.assertEqual(1, summary["totals"]["archived_modules"])
         self.assertEqual(104, summary["totals"]["reply_families"])
-        self.assertEqual(4, summary["totals"]["archived_reply_families"])
+        self.assertEqual(5, summary["totals"]["archived_reply_families"])
         self.assertEqual(88, summary["totals"]["covered_sample_families"])
         self.assertEqual(16, summary["totals"]["missing_sample_families"])
         self.assertEqual(32, summary["totals"]["sample_complete_modules"])

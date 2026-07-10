@@ -8,8 +8,12 @@ from ..runtime import send_audit_log
 from ..state import (
     get_current_identity_id,
     get_global_enabled,
+    get_global_pause_source,
+    get_identity_ids,
     get_identity_enabled,
     get_send_as_profile,
+    has_active_identity_context,
+    use_identity,
 )
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
@@ -23,6 +27,10 @@ TREE_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state
 _MANUAL_AUTH = {}
 _RUN_LOCKS = {}
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_]{3,64})")
+
+
+def _miniapp_http_allowed_during_pause():
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 
 def _identity_id(value=None):
@@ -84,7 +92,7 @@ def _run_lock(identity_id):
     return lock
 
 
-def _entry_mentions_current_identity(text):
+def _entry_mentions_identity(text, identity_id):
     usernames = {
         str(match.group(1) or "").strip().lower()
         for match in _MENTION_RE.finditer(str(text or ""))
@@ -92,8 +100,15 @@ def _entry_mentions_current_identity(text):
     usernames.discard("")
     if not usernames:
         return False
-    profile_username = str((get_send_as_profile() or {}).get("username") or "").strip().lstrip("@").lower()
+    profile_username = str((get_send_as_profile(identity_id) or {}).get("username") or "").strip().lstrip("@").lower()
     return bool(profile_username and profile_username in usernames)
+
+
+def _entry_mentioned_identity_id(text):
+    for identity_id in get_identity_ids():
+        if _entry_mentions_identity(text, identity_id):
+            return int(identity_id)
+    return 0
 
 
 def _tree_miniapp_capture_store(now):
@@ -148,26 +163,53 @@ async def handle_tree_miniapp_entry(
     result_msg_id=0,
     require_identity_match=False,
 ):
-    identity_id = _identity_id()
+    identity_id = _identity_id() if has_active_identity_context() else 0
     auth = _manual_auth(identity_id, now)
+    if not auth:
+        mentioned_identity_id = _entry_mentioned_identity_id(text)
+        if mentioned_identity_id > 0:
+            identity_id = mentioned_identity_id
+            auth = _manual_auth(identity_id, now)
     if identity_id <= 0 or not auth:
         return False
-    if require_identity_match and not _entry_mentions_current_identity(text):
+    if require_identity_match and not _entry_mentions_identity(text, identity_id):
         return False
     launch = extract_tree_miniapp_launch(event, message_text=text)
     if not launch:
         return False
+    if not has_active_identity_context():
+        with use_identity(identity_id):
+            return await handle_tree_miniapp_entry(
+                event,
+                text,
+                now,
+                reply_to=reply_to,
+                matched_family=matched_family,
+                result_msg_id=result_msg_id,
+                require_identity_match=require_identity_match,
+            )
     global_enabled = get_global_enabled()
+    maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
     identity_enabled = get_identity_enabled(identity_id)
-    if not global_enabled or not identity_enabled:
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
         revoke_tree_miniapp_manual_run(identity_id)
         reason = "全局暂停" if not global_enabled else "身份已停用"
-        await send_audit_log(f"🌳 灵树 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)
+        await send_audit_log(
+            f"🌳 灵树 MiniApp {reason}，已跳过 WebView/HTTP 接管。",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=180,
+        )
         return True
 
     lock = _run_lock(identity_id)
     if lock.locked():
-        await send_audit_log("🌳 灵树 MiniApp 已在执行，重复入口忽略。", scope="identity", limit=160)
+        await send_audit_log(
+            "🌳 灵树 MiniApp 已在执行，重复入口忽略。",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=160,
+        )
         return True
 
     async with lock:
@@ -176,8 +218,10 @@ async def handle_tree_miniapp_entry(
         score_profile = dict(auth.get("score_profile") or {})
         submit = bool(auth.get("submit", True))
         await send_audit_log(
-            f"🌳 灵树 MiniApp 接管入口，开始 WebView/HTTP 流程：{mode}。",
+            f"🌳 灵树 MiniApp 接管入口，开始 WebView/HTTP 流程：{mode}。"
+            + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
             scope="identity",
+            send_as_id=identity_id,
             priority="low",
             limit=200,
         )
@@ -193,7 +237,13 @@ async def handle_tree_miniapp_entry(
         )
         summary = html.escape(_format_tree_summary(result), quote=False)
         priority = "low" if dict(result or {}).get("ok") else "normal"
-        await send_audit_log(f"🌳 灵树结果｜{summary}", scope="identity", priority=priority, limit=220)
+        await send_audit_log(
+            f"🌳 灵树结果｜{summary}",
+            scope="identity",
+            send_as_id=identity_id,
+            priority=priority,
+            limit=220,
+        )
         return True
 
 

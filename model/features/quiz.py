@@ -9,6 +9,7 @@ from ..runtime import _get_identity_client_with_account as _runtime_get_identity
 from ..runtime import account_rpc_slot, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_global_enabled,
     get_identity_enabled,
     get_identity_ids,
     get_quiz_ai_config,
@@ -1316,6 +1317,10 @@ async def _handle_quiz_ai_assist(parsed, identity_id, reply_to_msg_id, now, chat
 
 
 async def handle_quiz_prompt(text, now, event):
+    # A global pause is a hard boundary for automatic answers.  Do not spend an
+    # AI call or create a queued answer that would later be blocked by runtime.
+    if not get_global_enabled():
+        return False
     if not state.get("quiz_enabled"):
         return False
     if _has_active_quiz_pending(now):
@@ -1392,6 +1397,12 @@ async def run_quiz_learning_scheduler(now):
 
 
 async def run_quiz_scheduler(now):
+    if not get_global_enabled():
+        reply_to_msg_id, _next_quiz_time = _get_quiz_pending_state()
+        if reply_to_msg_id > 0:
+            state["quiz_last_error"] = "全局暂停，已取消自动作答"
+            clear_quiz_state(persist=True, keep_last_error=True)
+        return
     if not state.get("quiz_enabled"):
         return
     reply_to_msg_id, next_quiz_time = _get_quiz_pending_state()

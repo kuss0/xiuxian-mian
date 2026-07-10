@@ -89,10 +89,20 @@ from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
+from .inventory_delta import build_inventory_freshness_snapshot
+from .miniapp_state import get_miniapp_state_snapshot
 from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
-from .features.cave_treasure_runtime import authorize_cave_treasure_miniapp_manual_run, revoke_cave_treasure_miniapp_manual_run
+from .features.cave_treasure_runtime import (
+    authorize_cave_treasure_miniapp_manual_run,
+    revoke_cave_treasure_miniapp_manual_run,
+    run_cave_public_deep_retreat_action,
+    run_cave_public_small_world_sync,
+    run_cave_public_treasure,
+    run_cave_public_trial,
+    run_cave_public_yuanying,
+)
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .tree_score_policy import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
@@ -121,7 +131,7 @@ from .features.fishing import (
     normalize_fishing_config,
     plan_fishing_commands,
 )
-from .features.fishing_behavior import parse_chum_usage_counts, parse_pending_open_fish
+from .features.fishing_behavior import next_planned_command as next_fishing_planned_command, parse_chum_usage_counts, parse_pending_open_fish
 from .features.yuanying import get_yuanying_phase_text
 from .features.wanxin import get_wanxin_ui_state, set_wanxin_config
 from .official_schedule import (
@@ -132,7 +142,7 @@ from .official_schedule import (
     replace_planned_batch as replace_official_schedule_planned_batch,
 )
 from .persistence import save_state
-from .runtime import _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .storage_bag_api_client import (
     REFRESH_PATH as STORAGE_BAG_API_REFRESH_PATH,
     VERIFY_PATH as STORAGE_BAG_API_VERIFY_PATH,
@@ -153,6 +163,7 @@ from .state import (
     get_game_group_id,
     get_game_topic_id,
     get_global_enabled,
+    get_global_pause_source,
     get_dungeon_join_run_state,
     get_replica_dispatch_group_ids,
     get_replica_dispatch_listener_account_map,
@@ -274,6 +285,20 @@ UI_STATIC_CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
 }
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
+_cave_public_batch_state = {
+    "running": False,
+    "batch_id": "",
+    "started_at": 0,
+    "finished_at": 0,
+    "total": 0,
+    "completed": 0,
+    "succeeded": 0,
+    "failed": 0,
+    "current": "",
+    "last_result": "",
+    "delay_sec": 20,
+}
+_cave_public_ui_run_lock = asyncio.Lock()
 MINIAPP_ENTRY_PROBE_COMMANDS = {
     "cave_treasure": ".洞府",
     "fishing": CMD_FISHING,
@@ -312,6 +337,11 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave2_last_batch_id": "",
     "trial_daily_wave2_last_run_at": 0,
     "trial_daily_wave2_last_result": "",
+    "cave_public_small_world_enabled": True,
+    "cave_public_deep_status_enabled": True,
+    "cave_public_treasure_enabled": True,
+    "cave_public_trial_enabled": True,
+    "cave_public_delay_sec": 20,
 }
 TRIAL_DAILY_BATCH_WAVES = (
     {"key": "wave1", "label": "第一批", "start_hour": 1, "start_minute": 0, "end_hour": 4, "end_minute": 0},
@@ -343,6 +373,18 @@ def normalize_miniapp_auto_config(config=None):
     result["trial_daily_effective_enabled"] = bool(
         result["trial_daily_enabled"] and result["trial_daily_scheduler_confirmed"]
     )
+    for key in (
+        "cave_public_small_world_enabled",
+        "cave_public_deep_status_enabled",
+        "cave_public_treasure_enabled",
+        "cave_public_trial_enabled",
+    ):
+        result[key] = bool(result.get(key))
+    try:
+        result["cave_public_delay_sec"] = int(float(result.get("cave_public_delay_sec", 20) or 20))
+    except (TypeError, ValueError, OverflowError):
+        result["cave_public_delay_sec"] = 20
+    result["cave_public_delay_sec"] = max(10, min(120, result["cave_public_delay_sec"]))
     for key, default in (
         ("trial_daily_start_hour_local", 0),
         ("trial_daily_start_minute_local", 20),
@@ -387,6 +429,20 @@ def normalize_miniapp_auto_config(config=None):
         result["trial_daily_wave2_last_run_at"] = result["trial_daily_last_run_at"]
         result["trial_daily_wave2_last_result"] = result["trial_daily_last_result"]
     return result
+
+
+def _cave_public_actions_from_config(config=None):
+    config = normalize_miniapp_auto_config(config)
+    actions = []
+    if config.get("cave_public_small_world_enabled"):
+        actions.append("small_world")
+    if config.get("cave_public_deep_status_enabled"):
+        actions.append("deep_status")
+    if config.get("cave_public_treasure_enabled"):
+        actions.append("treasure")
+    if config.get("cave_public_trial_enabled"):
+        actions.append("trial")
+    return actions
 
 
 def _trial_daily_wave_window_text(wave):
@@ -573,6 +629,8 @@ def get_miniapp_status_snapshot(send_as_id=None):
             "raw_start_token_persisted": False,
         },
         "automation": get_miniapp_auto_config_snapshot(),
+        "cave_public_batch": dict(_cave_public_batch_state),
+        "state_records": get_miniapp_state_snapshot(send_as_id=send_as_id),
         "score_controls": {
             "tree": get_tree_miniapp_score_config(send_as_id),
         },
@@ -3186,10 +3244,17 @@ async def ui_cancel_storage_bag_transfer():
 
 def get_storage_bag_snapshot():
     records = get_storage_bag_records()
+    identity_ids = [int(identity_id) for identity_id in get_identity_ids()]
+    freshness_snapshot = build_inventory_freshness_snapshot(identity_ids, records)
+    freshness_rows = {
+        int(row.get("identity_id") or 0): row
+        for row in freshness_snapshot.get("rows") or []
+        if isinstance(row, dict)
+    }
     rows = []
     item_names = set()
     totals = {}
-    for identity_id in get_identity_ids():
+    for identity_id in identity_ids:
         identity_id = int(identity_id)
         profile = get_send_as_profile(identity_id)
         record = records.get(str(identity_id)) or {}
@@ -3209,6 +3274,9 @@ def get_storage_bag_snapshot():
             "updated_at_raw": float((record or {}).get("updated_at") or 0),
             "items": normalized_items,
             "empty": bool((record or {}).get("empty")),
+            "inventory_freshness": freshness_rows.get(identity_id) or {},
+            "pending_deltas": (freshness_rows.get(identity_id) or {}).get("pending_deltas") or {},
+            "merged_items": (freshness_rows.get(identity_id) or {}).get("merged_items") or {},
         })
     rows.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
     sorted_item_names = sorted(item_names, key=_storage_bag_item_sort_key)
@@ -3229,6 +3297,11 @@ def get_storage_bag_snapshot():
         "rule_methods": ["basic", "gift", "blocked", "unknown"],
         "default_tags": list(_STORAGE_BAG_DEFAULT_TAGS),
         "transfer_identities": _format_storage_bag_identity_options(rows),
+        "inventory_freshness": {
+            "pending_record_count": int(freshness_snapshot.get("pending_record_count") or 0),
+            "stale_record_count": int(freshness_snapshot.get("stale_record_count") or 0),
+            "record_count": int(freshness_snapshot.get("record_count") or 0),
+        },
     }
 
 
@@ -3260,6 +3333,23 @@ def _format_fishing_command_plan(plan):
     if plan.purchase_commands:
         return "需先补鱼饵：" + " -> ".join(plan.purchase_commands)
     return plan.blocked_reason or "未生成"
+
+
+def _fishing_runtime_command_plan(plan, identity_state, bait_inventory):
+    command, runtime_plan = next_fishing_planned_command(dict(identity_state or {}), bait_inventory=bait_inventory)
+    if command:
+        commands = list((plan.commands if plan else ()) or ())
+        if commands and commands[0] == command:
+            return commands, plan
+        return [command] + [item for item in commands if item != command], runtime_plan or plan
+    return [], runtime_plan or plan
+
+
+def _format_fishing_runtime_command_plan(plan, identity_state, bait_inventory):
+    commands, runtime_plan = _fishing_runtime_command_plan(plan, identity_state, bait_inventory)
+    if commands:
+        return " -> ".join(commands)
+    return _format_fishing_command_plan(runtime_plan)
 
 
 def _parse_fishing_daily_catch_summary(value):
@@ -3380,6 +3470,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
             transfer_target_label = f"未知身份 {transfer_target_id}"
     caught_fish = parse_pending_open_fish(identity_state.get("fishing_caught_fish_json"))
     daily_catch_summary = _parse_fishing_daily_catch_summary(identity_state.get("fishing_daily_catch_summary_json"))
+    runtime_commands, runtime_plan = _fishing_runtime_command_plan(plan, identity_state, bait_inventory)
     return {
         "pond": config.pond,
         "bait": config.bait,
@@ -3411,11 +3502,11 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "bait_inventory": bait_inventory if bait_inventory is not None else {},
         "bait_inventory_known": bait_inventory is not None,
         "plan": {
-            "allow_start": bool(plan.allow_start),
-            "commands": list(plan.commands or ()),
+            "allow_start": bool((runtime_plan or plan).allow_start),
+            "commands": runtime_commands,
             "purchase_commands": list(plan.purchase_commands or ()),
-            "blocked_reason": plan.blocked_reason or "",
-            "summary": _format_fishing_command_plan(plan),
+            "blocked_reason": (runtime_plan or plan).blocked_reason or "",
+            "summary": _format_fishing_runtime_command_plan(plan, identity_state, bait_inventory),
             "requirements": requirements,
             "resource_requirements": resource_requirements,
         },
@@ -5056,6 +5147,10 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_auto_open_fish_enabled"] = bool(auto_open_fish_enabled)
         state["fishing_cancel_after_sec"] = int(cancel_after_sec)
         state["fishing_transfer_target_id"] = int(transfer_target_id)
+        forced_bait = str(state.get("fishing_forced_buy_bait") or "").strip()
+        if forced_bait and forced_bait != config.bait:
+            state["fishing_forced_buy_bait"] = ""
+            state["fishing_forced_buy_count"] = 0
         save_state()
         saved_identity_state = dict(state.items())
     plan = plan_fishing_commands(
@@ -5065,6 +5160,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         active_chum_name=saved_identity_state.get("fishing_active_chum_name") or "",
         active_chum_rods_remaining=int(saved_identity_state.get("fishing_chum_rods_remaining", 0) or 0),
     )
+    plan_summary = _format_fishing_runtime_command_plan(plan, saved_identity_state, _get_fishing_bait_inventory(send_as_id))
     await send_audit_log(
         "🎣 已更新灵溪垂钓配置："
         f"{config.pond}/{config.bait}｜"
@@ -5075,12 +5171,12 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         f"开鱼={'开' if auto_open_fish_enabled else '关'}｜"
         f"收竿={cancel_after_sec}秒｜"
         f"鱼获赠送={get_identity_display_name(transfer_target_id) if transfer_target_id else '关'}｜"
-        f"计划={_format_fishing_command_plan(plan)}",
+        f"计划={plan_summary}",
         scope="identity",
         send_as_id=send_as_id,
         limit=260,
     )
-    return True, f"已更新灵溪垂钓[{get_identity_display_name(send_as_id)}]：{daily_limit}/日｜买饵{config.auto_buy_bait_count}｜{_format_fishing_command_plan(plan)}"
+    return True, f"已更新灵溪垂钓[{get_identity_display_name(send_as_id)}]：{daily_limit}/日｜买饵{config.auto_buy_bait_count}｜{plan_summary}"
 
 
 async def ui_set_stargazer_star_choice(send_as_id, choice):
@@ -6292,6 +6388,82 @@ async def ui_send_miniapp_entry_probe(send_as_id, game_key):
     return True, "已发送 MiniApp 入口诊断命令，等待真实按钮/回包入库", extra
 
 
+def _phaseful_passive_trigger_targets(identity_id, now=None):
+    """Return only phases where a harmless text can reveal a stuck settlement."""
+    now = float(now if now is not None else time.time())
+    targets = []
+    with use_identity(identity_id):
+        for label, enabled_key, phase_key, next_time_key in (
+            ("元婴", "yuanying_enabled", "yuanying_phase", "next_yuanying_time"),
+            ("深度闭关", "deep_retreat_enabled", "deep_retreat_phase", "next_deep_retreat_time"),
+        ):
+            if not state.get(enabled_key):
+                continue
+            phase = str(state.get(phase_key) or "idle").strip()
+            try:
+                next_time = float(state.get(next_time_key, 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                next_time = 0.0
+            if phase in {"summary_due", "post_summary_wait"}:
+                targets.append(f"{label}:{phase}")
+            elif phase == "running" and next_time > 0 and next_time <= now:
+                targets.append(f"{label}:running_due")
+    return targets
+
+
+async def ui_send_phaseful_passive_trigger(send_as_id):
+    """Send the fixed ordinary-text trigger during a Tianzun maintenance pause.
+
+    No raw text is accepted, it never retries, and it remains subject to the
+    normal queue, per-account cooldown, health, and safety checks.
+    """
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    if identity_id not in get_identity_ids():
+        return False, "身份不存在", {}
+    if not get_identity_enabled(identity_id):
+        return False, "身份已停用", {}
+    if get_global_enabled() or get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
+        return False, "仅允许在天尊维护导致的全局暂停期间执行", {}
+
+    targets = _phaseful_passive_trigger_targets(identity_id)
+    if not targets:
+        return False, "当前没有到期或待结算的元婴/深度闭关状态，不发送普通触发文本", {}
+
+    op_id = f"phaseful_passive_trigger:{identity_id}:{int(time.time())}"
+    msg = await send_game_command(
+        PHASEFUL_PASSIVE_TRIGGER_TEXT,
+        track=False,
+        send_as_id=identity_id,
+        priority="normal",
+        max_retry=0,
+        source_module=PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE,
+        op_id=op_id,
+        chain_id="phaseful_passive_trigger",
+        delete_policy="keep",
+        queue_timeout=120,
+        allow_maintenance_pause=True,
+    )
+    extra = {
+        "text": PHASEFUL_PASSIVE_TRIGGER_TEXT,
+        "targets": targets,
+    }
+    if not msg:
+        return False, "普通触发文本未发送，仍受队列、账号、天尊健康和安全保护约束", extra
+
+    extra["msg_id"] = int(getattr(msg, "id", 0) or 0)
+    await send_audit_log(
+        f"🧩 被动结算触发已发送：{PHASEFUL_PASSIVE_TRIGGER_TEXT}｜目标={'、'.join(targets)}｜msg_id={extra['msg_id']}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=220,
+        priority="low",
+    )
+    return True, "已发送普通触发文本，等待真实游戏结算回包", extra
+
+
 async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
     payload = dict(payload or {})
     try:
@@ -6315,7 +6487,6 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
         authorize_stargazer_miniapp_manual_run(identity_id)
     if normalized_game_key == "trial":
         authorize_trial_miniapp_manual_run(identity_id)
-
     op_id = f"miniapp_manual_run:{normalized_game_key}:{identity_id}:{int(time.time())}"
     msg = await send_game_command(
         command,
@@ -6351,6 +6522,264 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
         priority="low",
     )
     return True, "已发送 MiniApp 手动执行命令，等待入口按钮接管", extra
+
+
+async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    if identity_id not in get_identity_ids():
+        return False, "身份不存在", {}
+    if not get_identity_enabled(identity_id):
+        return False, "身份已停用", {}
+    url = str(public_entry_url or "").strip()
+    if not url:
+        return False, "缺少洞府公共入口 URL", {}
+    if _cave_public_ui_run_lock.locked():
+        return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {}
+    async with _cave_public_ui_run_lock:
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action == "small_world":
+            result = await run_cave_public_small_world_sync(identity_id, url)
+        elif normalized_action in {"treasure", "hunt", "cave_treasure"}:
+            result = await run_cave_public_treasure(identity_id, url)
+        elif normalized_action in {"trial", "tianji_trial"}:
+            result = await run_cave_public_trial(identity_id, url)
+        elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
+            result = await run_cave_public_yuanying(identity_id, url)
+        elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
+            deep_action = normalized_action.replace("deep_", "", 1)
+            result = await run_cave_public_deep_retreat_action(identity_id, url, deep_action)
+        else:
+            return False, "洞府公共入口动作无效", {}
+        return bool(result.get("ok")), str(result.get("message") or ""), dict(result.get("extra") or {})
+
+
+def _normalize_cave_public_batch_delay(value):
+    try:
+        delay = float(value)
+    except (TypeError, ValueError, OverflowError):
+        delay = 20.0
+    return max(10.0, min(120.0, delay))
+
+
+def _normalize_cave_public_batch_actions(payload):
+    payload = dict(payload or {})
+    raw_actions = payload.get("actions")
+    if raw_actions in (None, "", []):
+        raw_actions = _cave_public_actions_from_config()
+    if isinstance(raw_actions, str):
+        raw_actions = [item for item in re.split(r"[\s,，]+", raw_actions) if item]
+    aliases = {
+        "deep": "deep_status",
+        "deep_retreat": "deep_status",
+        "cave_treasure": "treasure",
+        "hunt": "treasure",
+        "tianji_trial": "trial",
+    }
+    allowed = {"small_world", "deep_status", "treasure", "trial"}
+    actions = []
+    seen = set()
+    for raw in raw_actions or ():
+        action = aliases.get(str(raw or "").strip().lower(), str(raw or "").strip().lower())
+        if action in allowed and action not in seen:
+            actions.append(action)
+            seen.add(action)
+    return actions
+
+
+def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
+    # Telegram WebApp initData is bound to the physical login account. A channel
+    # or other send-as identity under that account cannot select its own player.
+    # Prefer the account's own identity and run it at most once per batch.
+    enabled_ids = []
+    for raw_identity_id in all_identity_ids:
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if identity_id > 0 and get_identity_enabled(identity_id):
+            enabled_ids.append(identity_id)
+
+    enabled_set = set(enabled_ids)
+    result = []
+    seen_accounts = set()
+    for identity_id in enabled_ids:
+        try:
+            account_id = int(get_identity_account(identity_id) or 0)
+        except (TypeError, ValueError, OverflowError):
+            account_id = 0
+        account_id = account_id if account_id > 0 else identity_id
+        if account_id in seen_accounts:
+            continue
+        seen_accounts.add(account_id)
+        # WebApp initData belongs to the physical Telegram account.  Never
+        # fall back to a channel/send-as identity when its account identity is
+        # absent or disabled: runtime will correctly reject that alias, and a
+        # queued HTTP attempt would only add noise.
+        if account_id != identity_id and account_id not in enabled_set:
+            continue
+        canonical_identity_id = account_id if account_id in enabled_set else identity_id
+        result.append(canonical_identity_id)
+    return result
+
+
+def _build_cave_public_batch_steps(identity_ids, actions):
+    steps = []
+    for action in actions:
+        for identity_id in _cave_public_batch_identity_ids_for_action(action, identity_ids):
+            steps.append((int(identity_id), action))
+    return steps
+
+
+def _set_cave_public_batch_state(**updates):
+    _cave_public_batch_state.update(updates)
+
+
+async def ui_set_cave_public_config(payload=None):
+    payload = dict(payload or {})
+    config = normalize_miniapp_auto_config()
+    mapping = {
+        "small_world_enabled": "cave_public_small_world_enabled",
+        "deep_status_enabled": "cave_public_deep_status_enabled",
+        "treasure_enabled": "cave_public_treasure_enabled",
+        "trial_enabled": "cave_public_trial_enabled",
+    }
+    for payload_key, config_key in mapping.items():
+        if payload_key in payload:
+            config[config_key] = _coerce_ui_bool(payload.get(payload_key))
+    if "delay_sec" in payload:
+        config["cave_public_delay_sec"] = int(_normalize_cave_public_batch_delay(payload.get("delay_sec")))
+    set_miniapp_auto_config(config)
+    save_state()
+    actions = _cave_public_actions_from_config(config)
+    action_text = "、".join(actions) if actions else "无"
+    return True, f"已保存洞府公共入口独立开关：{action_text}｜间隔 {config['cave_public_delay_sec']}s"
+
+
+async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids, actions, delay_sec):
+    steps = _build_cave_public_batch_steps(identity_ids, actions)
+    total = len(steps)
+    _set_cave_public_batch_state(
+        running=True,
+        batch_id=batch_id,
+        started_at=time.time(),
+        finished_at=0,
+        total=total,
+        completed=0,
+        succeeded=0,
+        failed=0,
+        current="",
+        last_result="",
+        delay_sec=delay_sec,
+    )
+    await send_audit_log(
+        f"🧩 洞府公共入口串行批次启动：batch={batch_id}｜动作={','.join(actions)}｜步骤 {total}｜间隔 {int(delay_sec)}s。",
+        scope="global",
+        priority="normal",
+        limit=360,
+    )
+    if total <= 0:
+        _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result="无可执行步骤")
+        await send_audit_log("🧩 洞府公共入口串行批次结束：无可执行步骤。", scope="global", priority="low", limit=220)
+        return
+
+    try:
+        succeeded = 0
+        failed = 0
+        for index, (identity_id, action) in enumerate(steps, start=1):
+            display = get_identity_display_name(identity_id)
+            current = f"{index}/{total} {display} {action}"
+            _set_cave_public_batch_state(current=current)
+            ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
+            result_text = f"{display} {action}: {'ok' if ok else 'fail'} {message}"
+            if ok:
+                succeeded += 1
+            else:
+                failed += 1
+            _set_cave_public_batch_state(
+                completed=index,
+                succeeded=succeeded,
+                failed=failed,
+                last_result=result_text,
+            )
+            if (index % 5 == 0) or (not ok) or index == total:
+                await send_audit_log(
+                    f"🧩 洞府公共入口串行进度：batch={batch_id}｜{index}/{total}｜最近：{result_text}",
+                    scope="global",
+                    priority="low" if ok else "normal",
+                    limit=420,
+                )
+            if index < total:
+                await asyncio.sleep(delay_sec)
+    except Exception as exc:
+        message = f"批次异常：{type(exc).__name__}: {exc}"
+        _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result=message)
+        await send_audit_log(
+            f"🧩 洞府公共入口串行批次中止：batch={batch_id}｜{message}",
+            scope="global",
+            priority="normal",
+            limit=420,
+        )
+        return
+
+    _set_cave_public_batch_state(running=False, finished_at=time.time(), current="")
+    await send_audit_log(
+        f"🧩 洞府公共入口串行批次完成：batch={batch_id}｜完成 {total}/{total}｜成功 {succeeded}｜失败 {failed}。",
+        scope="global",
+        priority="normal",
+        limit=260,
+    )
+
+
+async def ui_start_cave_public_entry_batch(payload=None):
+    payload = dict(payload or {})
+    if _cave_public_batch_state.get("running"):
+        return False, "已有洞府公共入口串行批次正在运行", dict(_cave_public_batch_state)
+    public_entry_url = str(payload.get("public_entry_url") or "").strip()
+    if not public_entry_url:
+        return False, "缺少洞府公共入口 URL", {}
+    identity_ids = _normalize_trial_batch_identity_ids(payload)
+    if not identity_ids:
+        return False, "没有可执行的启用身份", {}
+    actions = _normalize_cave_public_batch_actions(payload)
+    if not actions:
+        return False, "洞府公共入口独立开关未开启任何动作", {}
+    delay_sec = _normalize_cave_public_batch_delay(payload.get("delay_sec"))
+    steps = _build_cave_public_batch_steps(identity_ids, actions)
+    if not steps:
+        return False, "没有匹配本批动作的启用身份", {}
+    batch_id = f"cave_public_{int(time.time())}_{len(steps)}"
+    account_identity_ids = _cave_public_batch_identity_ids_for_action("", identity_ids)
+    # Claim the batch before creating the background task. Without this, two quick UI
+    # clicks can both observe `running=False` and start concurrent HTTP batches.
+    _set_cave_public_batch_state(
+        running=True,
+        batch_id=batch_id,
+        started_at=time.time(),
+        finished_at=0,
+        total=len(steps),
+        completed=0,
+        succeeded=0,
+        failed=0,
+        current="等待启动",
+        last_result="",
+        delay_sec=delay_sec,
+    )
+    try:
+        _fire_and_forget(_run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids, actions, delay_sec))
+    except Exception as exc:
+        message = f"创建洞府公共入口批次失败：{type(exc).__name__}: {exc}"
+        _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
+        return False, message, dict(_cave_public_batch_state)
+    return True, f"已启动洞府公共入口串行批次：{len(account_identity_ids)} 个登录账号｜{len(steps)} 步，间隔 {int(delay_sec)}s", {
+        "batch_id": batch_id,
+        "count": len(steps),
+        "account_count": len(account_identity_ids),
+        "actions": actions,
+        "delay_sec": delay_sec,
+    }
 
 
 def _normalize_trial_batch_identity_ids(payload):
@@ -7438,6 +7867,26 @@ async def handle_ui_http(reader, writer):
                             extra=extra,
                             include_snapshot=False,
                         )
+            elif path == "/api/phaseful-passive-trigger":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message, extra = await ui_send_phaseful_passive_trigger(send_as_id)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            extra=extra,
+                            include_snapshot=False,
+                        )
             elif path == "/api/miniapp-manual-run":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -7459,6 +7908,60 @@ async def handle_ui_http(reader, writer):
                             extra=extra,
                             include_snapshot=False,
                         )
+            elif path == "/api/cave-public-entry-run":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    action = payload.get("action")
+                    public_entry_url = payload.get("public_entry_url")
+                    if send_as_id in {None, ""} or not action or not public_entry_url:
+                        _write_json_bad_request(writer, "缺少 send_as_id、action 或 public_entry_url 参数", auth_headers)
+                    else:
+                        ok, message, extra = await ui_run_cave_public_entry(send_as_id, action, public_entry_url)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            extra=extra,
+                            include_snapshot=False,
+                        )
+            elif path == "/api/cave-public-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = await ui_set_cave_public_config(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"miniapp": get_miniapp_status_snapshot()},
+                        include_snapshot=False,
+                    )
+            elif path == "/api/cave-public-entry-batch-run":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, extra = await ui_start_cave_public_entry_batch(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra=extra,
+                        include_snapshot=False,
+                    )
             elif path == "/api/miniapp-trial-batch-run":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -7822,6 +8325,9 @@ __all__ = [
     "run_miniapp_daily_scheduler",
     "ui_send_miniapp_entry_probe",
     "ui_send_miniapp_manual_run",
+    "ui_run_cave_public_entry",
+    "ui_set_cave_public_config",
+    "ui_start_cave_public_entry_batch",
     "ui_start_trial_miniapp_batch_run",
     "ui_set_tree_miniapp_score_config",
 ]

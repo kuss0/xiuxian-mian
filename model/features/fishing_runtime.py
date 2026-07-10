@@ -32,6 +32,7 @@ from ..webapp_core import MiniAppCaptureStore
 from ..state import (
     get_current_identity_id,
     get_global_enabled,
+    get_global_pause_source,
     get_identity_enabled,
     get_identity_display_name,
     get_identity_ids,
@@ -99,6 +100,10 @@ FISHING_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 FISHING_LOG_REPLAY_LOOKAHEAD_SEC = 30
 FISHING_SEND_UNKNOWN_WAIT_SEC = 90
 FISHING_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+
+
+def _miniapp_http_allowed_during_pause():
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 
 def _parse_int(value, default=0):
@@ -420,6 +425,15 @@ def _is_open_fish_reply_to_command(reply_to=None):
 def _looks_like_fishing_miniapp_entry(text):
     raw = str(text or "")
     return "灵溪垂钓" in raw or "钓鱼" in raw
+
+
+def _looks_like_fishing_miniapp_entry_prompt(text):
+    raw = str(text or "")
+    return (
+        "灵溪垂钓" in raw
+        and "点击下方" in raw
+        and "进入灵溪垂钓" in raw
+    )
 
 
 _MINIAPP_REWARD_CONTAINER_KEYS = {
@@ -1080,7 +1094,7 @@ def _fishing_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
-def _is_deprecated_fishing_followup_command(command):
+def _is_miniapp_rod_text_followup_blocked(command):
     raw = str(command or "").strip()
     if not raw.startswith((CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_CANCEL)):
         return False
@@ -1088,6 +1102,37 @@ def _is_deprecated_fishing_followup_command(command):
     last_result = str(state.get("fishing_last_result") or "")
     last_error = str(state.get("fishing_last_error") or "")
     return phase == "miniapp" or "MiniApp" in last_result or "MiniApp" in last_error
+
+
+async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_id=0):
+    if not state.get("fishing_enabled"):
+        return False
+    launch = extract_fishing_miniapp_launch(event, message_text=text)
+    if not launch and not _looks_like_fishing_miniapp_entry_prompt(text):
+        return False
+    explicit_angler = _explicit_fishing_angler(text)
+    current_username = _current_identity_username()
+    if explicit_angler and current_username and explicit_angler != current_username:
+        return False
+    updates = fishing_behavior.clear_pending_updates()
+    updates.update({
+        "fishing_started_at": 0,
+        "fishing_last_msg_id": int(result_msg_id or getattr(event, "id", 0) or 0),
+        "fishing_last_result": "MiniApp 钓鱼入口未接管，本竿停止文本后续",
+        "fishing_last_error": "MiniApp 钓鱼入口未接管：未进入 HTTP 流程，本竿不回退 .钓鱼状态/.提竿",
+        "next_fishing_time": _miniapp_failure_backoff(now),
+    })
+    _apply_updates(updates)
+    _cancel_fishing_followup(get_current_identity_id())
+    _cancel_fishing_recovery(get_current_identity_id())
+    save_state()
+    await send_audit_log(
+        "🎣 灵溪垂钓 MiniApp 入口未接管，已停止本竿文本后续；等待下一轮入口，不回退 .钓鱼状态/.提竿。",
+        scope="identity",
+        priority="low",
+        limit=240,
+    )
+    return True
 
 
 async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
@@ -1105,8 +1150,9 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
         return False
     identity_id = int(get_current_identity_id() or 0)
     global_enabled = get_global_enabled()
+    maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
     identity_enabled = get_identity_enabled(identity_id)
-    if not global_enabled or not identity_enabled:
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
         reason = "全局暂停" if not global_enabled else "身份已停用"
         state["fishing_last_result"] = f"{reason}，MiniApp HTTP 接管已跳过"
         state["fishing_last_error"] = ""
@@ -1133,7 +1179,8 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
         state["next_fishing_time"] = float(now + FISHING_REPLY_TIMEOUT_SEC * max_rounds)
         save_state()
         await send_audit_log(
-            "🎣 灵溪垂钓 MiniApp 接管入口，开始 WebView/HTTP 流程。",
+            "🎣 灵溪垂钓 MiniApp 接管入口，开始 WebView/HTTP 流程。"
+            + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
             scope="identity",
             priority="low",
             limit=180,
@@ -1683,18 +1730,18 @@ async def _send_fishing_command(command, now):
 
 async def _send_fishing_command_locked(command, now):
     phase = fishing_behavior.command_phase(command)
-    if _is_deprecated_fishing_followup_command(command):
+    if _is_miniapp_rod_text_followup_blocked(command):
         updates = fishing_behavior.clear_pending_updates()
         updates.update({
             "fishing_started_at": 0,
-            "fishing_last_result": "MiniApp 钓鱼模式：旧文本提竿链已停止",
-            "fishing_last_error": f"旧文本钓鱼后续已禁用：{command}",
+            "fishing_last_result": "MiniApp 钓鱼本竿：文本提竿后续已停止",
+            "fishing_last_error": f"MiniApp 本竿文本后续已拦截：{command}",
             "next_fishing_time": _miniapp_failure_backoff(now),
         })
         _apply_updates(updates)
         save_state()
         await send_audit_log(
-            f"🎣 灵溪垂钓旧文本后续已拦截：{command}；等待 MiniApp 入口/HTTP 流程，不再自动提竿。",
+            f"🎣 灵溪垂钓 MiniApp 本竿文本后续已拦截：{command}；旧钓鱼配置/鱼篓/买饵/打窝/开鱼仍保留。",
             scope="identity",
             priority="low",
             limit=220,
@@ -1850,6 +1897,7 @@ __all__ = [
     "is_fishing_reply_text",
     "handle_fishing_miniapp_entry",
     "handle_fishing_reply",
+    "hold_unclaimed_fishing_miniapp_entry",
     "run_fishing_scheduler",
     "schedule_fishing_initial_check",
     "TZ_LOCAL",

@@ -20,18 +20,39 @@ from .tianxing import (
 DUEL_MIN_REALM = "元婴后期"
 DUEL_MIN_XIUWEI = 600_000
 DUEL_REPLY_TIMEOUT_SEC = 120
-DUEL_NORMAL_COOLDOWN_SEC = 310
-DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC = 610
+DUEL_NORMAL_COOLDOWN_MIN_SEC = 18 * 60
+DUEL_NORMAL_COOLDOWN_MAX_SEC = 32 * 60
+DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC = 30 * 60
+DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC = 55 * 60
+DUEL_NORMAL_COOLDOWN_SEC = DUEL_NORMAL_COOLDOWN_MIN_SEC
+DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC = DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC
 DUEL_RECOVERY_MIN_SEC = 60
 DUEL_RECOVERY_MAX_SEC = 180
 DUEL_RESULT_GRACE_SEC = 30
-DUEL_BATCH_STAGGER_MIN_SEC = 30
-DUEL_BATCH_STAGGER_MAX_SEC = 180
+DUEL_BATCH_STAGGER_MIN_SEC = 3 * 60
+DUEL_BATCH_STAGGER_MAX_SEC = 8 * 60
 DUEL_WAITING_PREFIX = "正在锁定对手天机，请稍候"
 DUEL_READY_PREFIX = "⚔️ 法宝齐出！"
 DUEL_REPORT_PREFIX = "【天道战报·文字版】"
 DUEL_FINAL_PREFIX = "【斗法终局】"
 DUEL_SETTLING_TEXT = "战斗结束，正在整理天道战报"
+DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
+    "凭借神通侥幸逃脱",
+    "侥幸逃脱",
+    "锁定目标时遭遇天机反噬",
+    "出手次数过多",
+    "神念不足",
+    "神念已耗尽",
+    "神念耗尽",
+    "无法再次斗法",
+    "元神尚未平复",
+    "虚弱",
+    "无法锁定对手",
+    "尚未踏入仙途",
+    "对方正在斗法",
+    "你已在斗法",
+    "小隐于野",
+)
 RE_DUEL_WINNER = re.compile(r"(?:胜者[:：]\s*|胜者：)(@[^\s|]+)")
 RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
@@ -184,14 +205,7 @@ def is_duel_reply_text(text):
         or raw.startswith(DUEL_REPORT_PREFIX)
         or raw.startswith(DUEL_FINAL_PREFIX)
         or raw.startswith(DUEL_SETTLING_TEXT)
-        or "无法再次斗法" in raw
-        or "元神尚未平复" in raw
-        or "虚弱" in raw
-        or "无法锁定对手" in raw
-        or "尚未踏入仙途" in raw
-        or "对方正在斗法" in raw
-        or "你已在斗法" in raw
-        or "小隐于野" in raw
+        or _has_duel_terminal_attempt_keyword(raw)
     )
 
 
@@ -220,6 +234,12 @@ def _is_weak_or_unknown_result(text):
         for keyword in (
             "虚弱",
             "逃跑",
+            "逃脱",
+            "天机反噬",
+            "出手次数过多",
+            "神念不足",
+            "神念已耗尽",
+            "神念耗尽",
             "无法再次斗法",
             "元神尚未平复",
             "无法锁定对手",
@@ -231,11 +251,26 @@ def _is_weak_or_unknown_result(text):
     )
 
 
+def _is_duel_report_text(text):
+    raw = str(text or "").strip()
+    return raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX)
+
+
+def _has_duel_terminal_attempt_keyword(text):
+    raw = str(text or "")
+    return any(keyword in raw for keyword in DUEL_TERMINAL_ATTEMPT_KEYWORDS)
+
+
+def _duel_counts_as_attempt(text):
+    raw = str(text or "").strip()
+    return _is_duel_report_text(raw) or _has_duel_terminal_attempt_keyword(raw)
+
+
 def parse_duel_result_summary(text):
     raw = str(text or "").strip()
     if not raw:
         return "未知"
-    if raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX):
+    if _is_duel_report_text(raw):
         match = RE_DUEL_WINNER.search(raw)
         return f"斗法结束，胜者 {match.group(1)}" if match else "斗法结束"
     if raw.startswith(DUEL_READY_PREFIX):
@@ -244,6 +279,14 @@ def parse_duel_result_summary(text):
         return "战斗结束，等待战报"
     if raw.startswith(DUEL_WAITING_PREFIX):
         return "正在锁定对手"
+    if "锁定目标时遭遇天机反噬" in raw:
+        return "目标锁定失败：天机反噬"
+    if "出手次数过多" in raw:
+        return _first_line(raw)[:80] or "斗法出手次数受限"
+    if "凭借神通侥幸逃脱" in raw or "侥幸逃脱" in raw:
+        return _first_line(raw)[:80] or "目标侥幸逃脱"
+    if "神念不足" in raw or "神念已耗尽" in raw or "神念耗尽" in raw:
+        return _first_line(raw)[:80] or "神念不足"
     return _first_line(raw)[:80] or "未知"
 
 
@@ -251,6 +294,12 @@ def _duel_batch_stagger_sec():
     if len(_target_tokens()) <= 1:
         return 0
     return random.uniform(DUEL_BATCH_STAGGER_MIN_SEC, DUEL_BATCH_STAGGER_MAX_SEC)
+
+
+def _duel_result_cooldown_sec(weak_or_unknown):
+    if weak_or_unknown:
+        return random.uniform(DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC, DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC)
+    return random.uniform(DUEL_NORMAL_COOLDOWN_MIN_SEC, DUEL_NORMAL_COOLDOWN_MAX_SEC)
 
 
 def _duel_next_time_blocks(now):
@@ -353,7 +402,7 @@ def get_duel_status_text():
         f"- 待回复命令ID：{int(state.get('duel_reply_to_msg_id', 0) or 0) or '无'}",
         f"- 斗法消息ID：{int(state.get('duel_open_msg_id', 0) or 0) or '无'}",
         f"- 回复超时：{fmt_abs_ts(state.get('duel_reply_due_at', 0))}（{fmt_remaining(state.get('duel_reply_due_at', 0))}）",
-        f"- 冷却：正常/无虚弱 {DUEL_NORMAL_COOLDOWN_SEC}s；虚弱/逃跑/未知 {DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC}s",
+        "- 冷却：正常/无虚弱 18-32分钟随机；虚弱/逃脱/未知 30-55分钟随机；多目标额外3-8分钟随机",
         f"- 最近结果：{state.get('duel_last_result') or '无'}",
     ]
     if state.get("duel_last_error"):
@@ -420,7 +469,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     state["duel_last_msg_id"] = int(result_msg_id or 0)
     state["duel_last_result"] = summary
     state["duel_last_error"] = "" if not weak_or_unknown else summary
-    if raw_text.startswith(DUEL_REPORT_PREFIX) or raw_text.startswith(DUEL_FINAL_PREFIX):
+    if _duel_counts_as_attempt(raw_text):
         state["duel_completed_count"] = int(state.get("duel_completed_count", 0) or 0) + 1
         total_count = int(state.get("duel_total_count", 0) or 0)
         if total_count > 0 and int(state.get("duel_completed_count", 0) or 0) >= total_count:
@@ -429,7 +478,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
             save_state()
             await send_audit_log(f"✅ 斗法完成：{state['duel_completed_count']}/{total_count}", scope="identity", limit=180)
             return True
-    cooldown = DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC if weak_or_unknown else DUEL_NORMAL_COOLDOWN_SEC
+    cooldown = _duel_result_cooldown_sec(weak_or_unknown)
     _schedule_next_duel(now, cooldown + CD_BUFFER_SEC + _duel_batch_stagger_sec())
     save_state()
     await send_audit_log(f"🗡️ 斗法结果：{summary}", scope="identity", limit=220)
@@ -512,7 +561,7 @@ async def run_duel_scheduler(now):
             return
         _clear_duel_pending()
         state["duel_last_error"] = "斗法回复超时"
-        _schedule_next_duel(now, DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC)
+        _schedule_next_duel(now, _duel_result_cooldown_sec(True) + CD_BUFFER_SEC)
         save_state()
         await send_audit_log(f"⚠️ 斗法回复超时，消息ID={reply_to_msg_id}，进入长冷却。", scope="identity", limit=220)
         return

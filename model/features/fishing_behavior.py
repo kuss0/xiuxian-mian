@@ -32,6 +32,7 @@ from .fishing import (
     FISHING_DEFAULT_DAILY_LIMIT,
     FISHING_BAIT_COSTS,
     FISHING_MAX_DAILY_LIMIT,
+    FishingCommandPlan,
     clamp_fishing_cancel_after_sec,
     clamp_fishing_buy_bait_count,
     clamp_fishing_daily_limit,
@@ -413,10 +414,12 @@ def active_chum_plan_kwargs(snapshot):
 
 
 def next_planned_command(snapshot, *, bait_inventory=None):
-    bait = str(snapshot.get("fishing_forced_buy_bait") or "").strip()
-    count = max(1, _parse_int(snapshot.get("fishing_forced_buy_count", 0), 1))
-    if bait and snapshot.get("fishing_auto_buy_bait_enabled"):
-        return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+    bait = _pending_missing_bait(snapshot)
+    count = _pending_missing_bait_buy_count(snapshot)
+    if bait:
+        if snapshot.get("fishing_auto_buy_bait_enabled"):
+            return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+        return "", _forced_bait_block_plan(snapshot, bait)
 
     config = current_fishing_config(snapshot)
     plan = plan_fishing_commands(
@@ -437,10 +440,12 @@ def cast_command_from_config(snapshot):
 
 
 def next_prep_purchase_command(snapshot, *, bait_inventory=None):
-    bait = str(snapshot.get("fishing_forced_buy_bait") or "").strip()
-    count = max(1, _parse_int(snapshot.get("fishing_forced_buy_count", 0), 1))
-    if bait and snapshot.get("fishing_auto_buy_bait_enabled"):
-        return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+    bait = _pending_missing_bait(snapshot)
+    count = _pending_missing_bait_buy_count(snapshot)
+    if bait:
+        if snapshot.get("fishing_auto_buy_bait_enabled"):
+            return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+        return "", _forced_bait_block_plan(snapshot, bait)
 
     config = current_fishing_config(snapshot)
     plan = plan_fishing_commands(
@@ -456,10 +461,12 @@ def next_prep_purchase_command(snapshot, *, bait_inventory=None):
 
 
 def reset_rush_command(snapshot, *, bait_inventory=None):
-    bait = str(snapshot.get("fishing_forced_buy_bait") or "").strip()
-    count = max(1, _parse_int(snapshot.get("fishing_forced_buy_count", 0), 1))
-    if bait and snapshot.get("fishing_auto_buy_bait_enabled"):
-        return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+    bait = _pending_missing_bait(snapshot)
+    count = _pending_missing_bait_buy_count(snapshot)
+    if bait:
+        if snapshot.get("fishing_auto_buy_bait_enabled"):
+            return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+        return "", _forced_bait_block_plan(snapshot, bait)
 
     config = current_fishing_config(snapshot)
     inventory = bait_inventory if isinstance(bait_inventory, dict) else None
@@ -467,6 +474,40 @@ def reset_rush_command(snapshot, *, bait_inventory=None):
         buy_count = max(1, int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT))
         return f"{CMD_FISHING_BUY_BAIT} {config.bait} {buy_count}", None
     return f"{CMD_FISHING} {config.pond} {config.bait}", None
+
+
+def _pending_missing_bait(snapshot):
+    forced = str(snapshot.get("fishing_forced_buy_bait") or "").strip()
+    if forced:
+        return forced
+    last_error = str(snapshot.get("fishing_last_error") or "").strip()
+    last_result = str(snapshot.get("fishing_last_result") or "").strip()
+    combined = f"{last_result}\n{last_error}"
+    parsed = parse_missing_bait_reply(combined)
+    if parsed:
+        return parsed
+    if "insufficient_bait" in combined:
+        return str(snapshot.get("fishing_bait") or "").strip()
+    return ""
+
+
+def _pending_missing_bait_buy_count(snapshot):
+    return max(1, _parse_int(
+        snapshot.get("fishing_forced_buy_count", 0),
+        fishing_buy_bait_count(snapshot),
+    ))
+
+
+def _forced_bait_block_plan(snapshot, bait):
+    config = current_fishing_config(snapshot)
+    return FishingCommandPlan(
+        allow_start=False,
+        commands=(),
+        purchase_commands=(f"{CMD_FISHING_BUY_BAIT} {bait} {fishing_buy_bait_count(snapshot)}",),
+        bait_requirements=(),
+        blocked_reason=f"缺少鱼饵：{bait}，缺饵购买未开启",
+        config=config,
+    )
 
 
 def daily_limit_wait_effect(snapshot, now, *, count, limit, daily_updates=None, bait_inventory=None, next_day_jitter_sec=0, last_result=""):
@@ -829,7 +870,13 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
         )
 
     if count == 0 and is_fishing_reset_rush_window(now):
-        command, _plan = reset_rush_command(planning_snapshot, bait_inventory=bait_inventory)
+        command, plan = reset_rush_command(planning_snapshot, bait_inventory=bait_inventory)
+        if not command:
+            reason = (plan.blocked_reason if plan else "") or "计划不可执行"
+            return FishingEffect(
+                handled=True,
+                updates=_with_next_delay({"fishing_last_error": reason}, now, FISHING_BLOCKED_RETRY_SEC),
+            )
         return FishingEffect(handled=True, command=command, updates=daily_updates)
 
     command, plan = next_planned_command(planning_snapshot, bait_inventory=bait_inventory)
@@ -928,7 +975,11 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
         else:
             updates["fishing_last_error"] = f"缺少鱼饵：{missing_bait}"
             delay = FISHING_BLOCKED_RETRY_SEC
-        return FishingEffect(handled=True, updates=_with_next_delay(updates, now, delay))
+        return FishingEffect(
+            handled=True,
+            updates=_with_next_delay(updates, now, delay),
+            storage_counts={missing_bait: 0},
+        )
 
     shortage = parse_chum_shortage(raw_text)
     if shortage:

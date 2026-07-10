@@ -28,6 +28,23 @@ OPEN_TEXT = (
     "- .讨伐青元子 护阵 稳住天机阵势\n"
 )
 
+MINIAPP_OPEN_TEXT = (
+    "━━━━━━━━━━━━━━━\n"
+    "【世界通告｜真仙试锋开启】\n"
+    "━━━━━━━━━━━━━━━\n"
+    "万魂幡主·阴罗真影 青元子 降下阴罗法身，七焰扇开，玄天剑鸣。\n\n"
+    "Boss 资料\n"
+    "- 修士：青元子 (@iosdo7)\n"
+    "- 入场时间：60 秒，过时无法加入\n"
+    "- 开战条件：至少 10 人入场\n"
+    "- 个人战斗：一次完整参战，不再反复入阵\n\n"
+    "参战\n"
+    "点击下方按钮进入真仙战场，入场期结束后开始攻打青元子。\n"
+    ".世界boss 可查看战况，.世界boss榜 可查看贡献榜。\n\n"
+    "贡献提示\n"
+    "- 本轮废弃破幡、镇魂、护阵，强攻即为主要攻击。\n"
+)
+
 STATUS_TEXT = (
     "【真仙试锋 · 青元子】\n"
     "法身：万魂幡主·阴罗真影\n"
@@ -95,6 +112,41 @@ CONCLUSION_TEXT = (
     "战果\n"
     "- 结果：天道败退\n"
     "- 参战：66 人\n"
+)
+
+MINIAPP_CONCLUSION_TEXT = (
+    "━━━━━━━━━━━━━━━\n"
+    "【世界通告｜真仙试锋败退】\n"
+    "━━━━━━━━━━━━━━━\n"
+    "讨伐时间耗尽，青元真影仍未被撼落。\n\n"
+    "战果\n"
+    "- 结果：天道败退\n"
+    "- 参战：11 人\n\n"
+    "贡献榜\n"
+    "1. @iosdo7 - 1360 分｜强攻 1｜伤害 14.61亿亿\n"
+    "3. @WalterWA2000 - 607 分｜强攻 1｜伤害 2.69亿亿\n"
+    "4. @jfdffdddd - 528 分｜强攻 1｜伤害 2.21亿亿\n\n"
+    "保底结算\n"
+    "- @iosdo7：伐仙功 +5，修为 +3360，灵石 +57，贡献 +27\n"
+    "- @WalterWA2000：伐仙功 +4，修为 +2607，灵石 +42，贡献 +17\n"
+    "- @jfdffdddd：伐仙功 +4，修为 +2528，灵石 +40，贡献 +16\n"
+    "━━━━━━━━━━━━━━━"
+)
+
+MINIAPP_ZERO_PARTICIPANT_CONCLUSION_TEXT = (
+    "━━━━━━━━━━━━━━━\n"
+    "【世界通告｜真仙试锋败退】\n"
+    "━━━━━━━━━━━━━━━\n"
+    "入场人数不足，未能开战（0/10）。\n"
+    "青元真影未被彻底撼落，天机阵暂退三十里。\n\n"
+    "战果\n"
+    "- 结果：天道败退\n"
+    "- 参战：0 人\n\n"
+    "贡献榜\n"
+    "暂无有效排名\n\n"
+    "保底结算\n"
+    "暂无奖励记录\n"
+    "━━━━━━━━━━━━━━━"
 )
 
 
@@ -174,6 +226,24 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("败退", conclusion["result"])
         self.assertEqual(66, conclusion["participants"])
         self.assertIsNone(world_boss.parse_world_boss_text("荣誉称号: 【真仙试锋】"))
+
+    def test_parse_miniapp_world_boss_open_and_conclusion_rewards(self):
+        opened = world_boss.parse_world_boss_text(MINIAPP_OPEN_TEXT, now=1_781_318_000.0)
+        conclusion = world_boss.parse_world_boss_text(MINIAPP_CONCLUSION_TEXT, now=1_781_318_200.0)
+        zero_conclusion = world_boss.parse_world_boss_text(MINIAPP_ZERO_PARTICIPANT_CONCLUSION_TEXT, now=1_781_318_220.0)
+
+        self.assertEqual("open", opened["type"])
+        self.assertTrue(opened["miniapp_only"])
+        self.assertEqual("conclusion", conclusion["type"])
+        self.assertEqual(11, conclusion["participants"])
+        self.assertEqual("conclusion", zero_conclusion["type"])
+        self.assertEqual(0, zero_conclusion["participants"])
+        self.assertTrue(zero_conclusion["participants_present"])
+        self.assertEqual("WalterWA2000", conclusion["contributions"][1]["username"])
+        self.assertEqual(607, conclusion["contributions"][1]["score"])
+        self.assertEqual("2.69亿亿", conclusion["contributions"][1]["damage"])
+        self.assertEqual("jfdffdddd", conclusion["settlements"][2]["username"])
+        self.assertIn("修为 +2528", conclusion["settlements"][2]["rewards"])
 
     def test_dangerous_phase_two_blocks_strong_attack_and_rescues_closest_failure_edge(self):
         now = 1_781_318_607.0
@@ -1246,10 +1316,130 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(opened)
         self.assertFalse(status)
         audit_mock.assert_awaited_once()
-        self.assertIn("小程序", audit_mock.await_args.args[0])
+        self.assertIn("没有启用身份", audit_mock.await_args.args[0])
         self.assertEqual("high", audit_mock.await_args.kwargs["priority"])
         send_mock.assert_not_awaited()
         self.assertFalse(state_module.get_world_boss_run_state().get("active"))
+
+    async def test_miniapp_open_broadcast_does_not_restore_deprecated_text_actions_when_enabled(self):
+        now = 1_781_319_100.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=True)
+        self._register(301299112, label="jfdffdddd", world_boss_enabled=True)
+        state_module.set_identity_account(8659059191, 101)
+        state_module.set_identity_account(301299112, 102)
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            opened = await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=SimpleNamespace(id=12001))
+            status = await world_boss.handle_world_boss_broadcast(STATUS_TEXT, now + 10, event=SimpleNamespace(id=12002))
+            await world_boss.run_world_boss_scheduler(now + 20)
+
+        self.assertTrue(opened)
+        self.assertTrue(status)
+        audit_mock.assert_awaited_once()
+        self.assertIn("小程序", audit_mock.await_args.args[0])
+        self.assertIn("最多 4 个", audit_mock.await_args.args[0])
+        self.assertIn("WalterWA2000", audit_mock.await_args.args[0])
+        self.assertIn("jfdffdddd", audit_mock.await_args.args[0])
+        send_mock.assert_not_awaited()
+        run_state = state_module.get_world_boss_run_state()
+        self.assertFalse(run_state.get("active"))
+        self.assertTrue(run_state.get("miniapp_only"))
+        self.assertEqual({8659059191, 301299112}, set(run_state.get("miniapp_entry_identity_ids")))
+        self.assertEqual(0, run_state.get("next_action_at"))
+
+    async def test_miniapp_entry_candidates_ignore_legacy_world_boss_switch(self):
+        now = 1_781_319_100.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=False)
+        self._register(301299112, label="jfdffdddd", world_boss_enabled=False)
+        state_module.set_identity_account(8659059191, 101)
+        state_module.set_identity_account(301299112, 102)
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            opened = await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=SimpleNamespace(id=12003))
+            await world_boss.run_world_boss_scheduler(now + 20)
+
+        self.assertTrue(opened)
+        audit_mock.assert_awaited_once()
+        self.assertIn("WalterWA2000", audit_mock.await_args.args[0])
+        self.assertIn("jfdffdddd", audit_mock.await_args.args[0])
+        send_mock.assert_not_awaited()
+        self.assertEqual({8659059191, 301299112}, set(state_module.get_world_boss_run_state().get("miniapp_entry_identity_ids")))
+
+    def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
+        # Same login account can only enter one MiniApp role. Pick the strongest
+        # role per account, then cap total simultaneous entries to four accounts.
+        same_account_weak = 3_900_000_001
+        same_account_strong = 3_900_000_002
+        extra_ids = [3_900_000_003, 3_900_000_004, 3_900_000_005, 3_900_000_006]
+        self._register(same_account_weak, label="同账号结丹", realm="结丹后期", battle_power_value=100)
+        self._register(same_account_strong, label="同账号元婴", realm="元婴初期", battle_power_value=1_000_000)
+        state_module.set_identity_account(same_account_weak, 201)
+        state_module.set_identity_account(same_account_strong, 201)
+        for offset, identity_id in enumerate(extra_ids, start=1):
+            self._register(identity_id, label=f"账号{offset}", realm="结丹后期", battle_power_value=offset)
+            state_module.set_identity_account(identity_id, 201 + offset)
+
+        selected = world_boss.select_world_boss_miniapp_entry_identities()
+
+        self.assertEqual(4, len(selected))
+        self.assertIn(same_account_strong, selected)
+        self.assertNotIn(same_account_weak, selected)
+        self.assertEqual(len(selected), len({state_module.get_identity_account(identity_id) for identity_id in selected}))
+
+    async def test_miniapp_conclusion_logs_local_contribution_and_rewards(self):
+        now = 1_781_319_200.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=True)
+        self._register(301299112, label="吧唧", world_boss_enabled=True)
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=SimpleNamespace(id=12011))
+            await world_boss.handle_world_boss_broadcast(MINIAPP_CONCLUSION_TEXT, now + 180, event=SimpleNamespace(id=12012))
+
+        send_mock.assert_not_awaited()
+        self.assertGreaterEqual(audit_mock.await_count, 2)
+        conclusion_log = audit_mock.await_args_list[-1].args[0]
+        self.assertIn("本方上榜", conclusion_log)
+        self.assertIn("WalterWA2000 607分", conclusion_log)
+        self.assertIn("吧唧 528分", conclusion_log)
+        self.assertIn("保底收获", conclusion_log)
+        self.assertIn("修为 +2607", conclusion_log)
+        self.assertIn("贡献 +16", conclusion_log)
+        self.assertFalse(state_module.get_world_boss_run_state()["active"])
+
+    async def test_zero_participant_conclusion_overwrites_stale_participants(self):
+        now = 1_781_319_200.0
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=SimpleNamespace(id=12012))
+            stale_state = state_module.get_world_boss_run_state()
+            stale_state["participants"] = 11
+            state_module.set_world_boss_run_state(stale_state)
+            await world_boss.handle_world_boss_broadcast(
+                MINIAPP_ZERO_PARTICIPANT_CONCLUSION_TEXT,
+                now + 60,
+                event=SimpleNamespace(id=12013),
+            )
+
+        send_mock.assert_not_awaited()
+        conclusion_log = audit_mock.await_args.args[0]
+        self.assertIn("参战 0", conclusion_log)
+        self.assertEqual(0, state_module.get_world_boss_run_state().get("participants"))
 
     async def test_inactive_broadcast_closes_stale_event_and_clears_pending_without_enabled_identities(self):
         identity_id = 8659059191

@@ -151,6 +151,18 @@
     '</label>';
   }
 
+  function renderDuelConfig(identity){
+    return ''+
+      '<label class="module-setting-field module-setting-field-wide"><span>目标池</span><input class="text-input module-name-input" type="text" value="'+esc(identity.duel_target || '')+'" placeholder="@target1 @target2" data-duel-config="target"></label>'+
+      '<label class="module-setting-field"><span>总次数</span><input class="text-input module-hour-input" type="number" min="1" max="200" step="1" value="'+esc(identity.duel_total_count || '')+'" data-duel-config="total_count"></label>'+
+      '<label class="checkbox-inline checkbox-inline-small module-setting-checkbox"><input type="checkbox" data-duel-config="reset_progress" /> 重置进度</label>'+
+      currentChoiceText('当前进度', String(identity.duel_completed_count || 0)+'/'+String(identity.duel_total_count || 0))+
+      currentChoiceText('下次执行', identity.duel_next_time || '未设置')+
+      currentChoiceText('最近结果', identity.duel_last_result || '无')+
+      currentChoiceText('最近异常', identity.duel_last_error || '无')+
+      '<button type="button" class="btn btn-secondary" data-save-duel-config="1">保存斗法设置</button>';
+  }
+
   function wanxinCheckbox(key, label, checked){
     return '<label class="checkbox-inline checkbox-inline-small module-setting-checkbox">'+
       '<input type="checkbox" data-wanxin-config="'+esc(key)+'"'+checkedAttr(checked)+' /> '+esc(label)+
@@ -381,8 +393,7 @@
             '斗法',
             '目标池可填单个或多个目标，多个目标用空格或逗号分隔；批量执行会轮转目标并追加随机错峰。',
             renderModuleToggle('斗法','开关')+
-            currentChoiceText('目标池', identity.duel_target || '未配置')+
-            currentChoiceText('进度', String(identity.duel_completed_count || 0)+'/'+String(identity.duel_total_count || 0))
+            renderDuelConfig(identity)
           );
         return renderModuleCard('日常', moduleNote, primaryTools, settingsTools, compactDetails(dailyNames), null);
       }else if(module.name === '元婴'){
@@ -921,6 +932,51 @@
     return config;
   }
 
+  function collectDuelConfig(){
+    var config = {};
+    var controls = document.querySelectorAll('[data-duel-config]');
+    controls.forEach(function(control){
+      var key = control.getAttribute('data-duel-config') || '';
+      if(!key){
+        return;
+      }
+      if(control.type === 'checkbox'){
+        config[key] = !!control.checked;
+      }else{
+        config[key] = control.value || '';
+      }
+    });
+    return config;
+  }
+
+  async function submitDuelConfig(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var config = collectDuelConfig();
+    try{
+      var data = await postJson('/api/duel-config', {
+        send_as_id: appState.selectedId,
+        target: config.target || '',
+        total_count: config.total_count || '',
+        reset_progress: !!config.reset_progress
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新斗法设置', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '斗法设置更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   async function submitWanxinConfig(){
     if(typeof postJson !== 'function' || typeof appState === 'undefined'){
       return;
@@ -999,6 +1055,10 @@
     }
     if(event.target.closest('[data-save-wanxin-config]')){
       submitWanxinConfig();
+      return;
+    }
+    if(event.target.closest('[data-save-duel-config]')){
+      submitDuelConfig();
       return;
     }
     var openBtn = event.target.closest('[data-open-module-settings]');
