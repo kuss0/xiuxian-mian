@@ -1106,7 +1106,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             f"🌏 {message}",
             scope="identity",
             send_as_id=identity_id,
-            priority="high" if resource_blocked else "low",
+            priority="high" if resource_blocked else ("normal" if action or not result.get("ok") else "low"),
             limit=300,
         )
         return {
@@ -1164,7 +1164,15 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
         state_record = _record_cave_treasure_miniapp_state(identity_id, result, now=now)
         summary = _format_cave_treasure_summary(result)
         message = f"洞府寻宝公共入口：{summary}"
-        await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="low" if result.get("ok") else "normal", limit=260)
+        settled_count = _parse_int((result.get("data") or {}).get("settled_count"), 0)
+        changed = bool(inventory_record.get("changed")) or settled_count > 0
+        await send_audit_log(
+            f"🕳️ {message}",
+            scope="identity",
+            send_as_id=identity_id,
+            priority="normal" if changed or not result.get("ok") else "low",
+            limit=260,
+        )
         return {
             "ok": bool(result.get("ok")),
             "message": message,
@@ -1355,7 +1363,7 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
             f"👶 {message}",
             scope="identity",
             send_as_id=identity_id,
-            priority="low" if action_ok and sync_result.get("handled") else "normal",
+            priority="normal",
             limit=320,
         )
         return {

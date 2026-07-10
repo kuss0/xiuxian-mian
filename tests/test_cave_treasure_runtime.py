@@ -277,6 +277,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
         self.assertIn("古禁印痕", "\n".join(str(call.args[0]) for call in audit_mock.await_args_list))
+        self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
 
     async def test_public_treasure_and_small_world_fail_closed_when_identity_selection_fails(self):
         public_url = "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"
@@ -610,6 +611,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(state_module.state["next_yuanying_time"], now)
             audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
             self.assertIn("洞府天机阁元婴出窍", audit_text)
+            self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
 
     async def test_public_yuanying_respects_phaseful_gate_before_http(self):
         now = 1_700_000_000.0
@@ -1009,7 +1011,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     })), \
                     patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
                     patch.object(cave_treasure_runtime, "save_state"), \
-                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
                 result = await cave_treasure_runtime.run_cave_public_small_world_sync(
                     1001,
                     "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -1023,6 +1025,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         flow_mock.assert_awaited_once()
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
+        self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
 
     async def test_cave_public_small_world_skips_http_before_identity_due_time(self):
         now = 1_700_000_001.0

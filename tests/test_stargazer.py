@@ -178,6 +178,29 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(state_module.state["stargazer_collect_ready"])
             self.assertNotIn(identity_id, stargazer._MINIAPP_MANUAL_AUTH_UNTIL)
 
+    async def test_miniapp_actions_without_item_delta_are_realtime_audit(self):
+        now = 1000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        result = {
+            "ok": True,
+            "status": "wait",
+            "data": {
+                "farm_state": {"max_wait": 60, "plots": []},
+                "action_counts": {"soothe": 8, "collect": 1, "pull": 8},
+                "item_deltas": {},
+            },
+        }
+
+        with state_module.use_identity(identity_id), \
+                patch.object(stargazer, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                patch.object(stargazer, "save_state"):
+            handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice="天雷星")
+
+        self.assertTrue(handled)
+        self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
+        self.assertIn("安抚 8 座", audit_mock.await_args.args[0])
+
     async def test_miniapp_entry_without_manual_auth_pauses_legacy_chain_without_http(self):
         now = 1000.0
         identity_id = 3756719391
