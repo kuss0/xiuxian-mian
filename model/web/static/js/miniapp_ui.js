@@ -188,8 +188,8 @@
     var result = batch.last_result || '';
     return ''
       + '<section class="miniapp-score-config miniapp-cave-public" data-cave-public-entry="1">'
-      + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜按登录账号串行</span></div>'
-      + '<label><span>公共 URL</span><input type="url" data-cave-public-url="1" value="' + esc(cavePublicUrlDraft) + '" autocomplete="off"></label>'
+      + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜按动作身份策略串行</span></div>'
+      + '<label><span>公共 URL</span><input type="url" data-cave-public-url="1" value="' + esc(cavePublicUrlDraft) + '" placeholder="' + (automation.cave_public_entry_url_configured ? '已配置，可留空沿用' : '粘贴洞府公共入口') + '" autocomplete="off"></label>'
       + '<label><span>动作间隔</span><input type="number" min="10" max="120" step="5" data-cave-public-delay="1" value="' + esc(automation.cave_public_delay_sec || 20) + '"></label>'
       + '<div class="miniapp-item-actions">'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-config-save="1">保存设置</button>'
@@ -200,6 +200,8 @@
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="deep_status"' + (automation.cave_public_deep_status_enabled ? ' checked' : '') + '><span>闭关状态</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="treasure"' + (automation.cave_public_treasure_enabled ? ' checked' : '') + '><span>洞府寻宝</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="trial"' + (automation.cave_public_trial_enabled ? ' checked' : '') + '><span>天机试炼</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="stargazer"' + (automation.cave_public_stargazer_enabled ? ' checked' : '') + '><span>观星台</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="yuanying"' + (automation.cave_public_yuanying_enabled ? ' checked' : '') + '><span>元婴</span></label>'
       + '</div>'
       + '<div class="miniapp-cave-batch-status">'
       + badge(status, running ? 'warn' : 'neutral')
@@ -211,6 +213,8 @@
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world">小世界处理</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="treasure">洞府寻宝</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="trial">天机试炼</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="stargazer">观星台</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yuanying">元婴状态/出窍</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_status">闭关状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_start">开始深闭</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_settle">结算深闭</button>'
@@ -393,7 +397,8 @@
     var input = panel && panel.querySelector('[data-cave-public-url="1"]');
     var publicUrl = input ? input.value : '';
     cavePublicUrlDraft = publicUrl;
-    if (!publicUrl) {
+    var configured = !!(((currentMiniAppSnapshot || {}).automation || {}).cave_public_entry_url_configured);
+    if (!publicUrl && !configured) {
       flash('缺少洞府公共入口 URL', true);
       return;
     }
@@ -424,6 +429,9 @@
       deep_status_enabled: enabled('deep_status'),
       treasure_enabled: enabled('treasure'),
       trial_enabled: enabled('trial'),
+      stargazer_enabled: enabled('stargazer'),
+      yuanying_enabled: enabled('yuanying'),
+      public_entry_url: (panel && panel.querySelector('[data-cave-public-url="1"]') || {}).value || '',
       delay_sec: delayInput ? delayInput.value : ''
     };
   }
@@ -435,6 +443,8 @@
     if (config.deep_status_enabled) actions.push('deep_status');
     if (config.treasure_enabled) actions.push('treasure');
     if (config.trial_enabled) actions.push('trial');
+    if (config.stargazer_enabled) actions.push('stargazer');
+    if (config.yuanying_enabled) actions.push('yuanying');
     return actions;
   }
 
@@ -459,7 +469,8 @@
     var input = panel && panel.querySelector('[data-cave-public-url="1"]');
     var publicUrl = input ? input.value : '';
     cavePublicUrlDraft = publicUrl;
-    if (!publicUrl) {
+    var configured = !!(((currentMiniAppSnapshot || {}).automation || {}).cave_public_entry_url_configured);
+    if (!publicUrl && !configured) {
       flash('缺少洞府公共入口 URL', true);
       return;
     }

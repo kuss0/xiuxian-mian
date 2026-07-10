@@ -542,6 +542,36 @@ def _circle_positions(node_ids, *, radius=38, center=(50, 50)):
     return result
 
 
+def _order_planarity_outer_nodes(outer_ids, edges, center_id):
+    outer_ids = list(outer_ids or [])
+    outer_index = {node_id: index for index, node_id in enumerate(outer_ids)}
+    outer_set = set(outer_ids)
+    adjacency = {node_id: [] for node_id in outer_ids}
+    for edge in edges:
+        left = str(edge.get("from") or edge.get("source") or "").strip()
+        right = str(edge.get("to") or edge.get("target") or "").strip()
+        if center_id in {left, right}:
+            continue
+        if left in outer_set and right in outer_set:
+            adjacency[left].append(right)
+            adjacency[right].append(left)
+    if not outer_ids or not all(len(adjacency[node_id]) == 2 for node_id in outer_ids):
+        return outer_ids
+    start = outer_ids[0]
+    order = [start]
+    previous = ""
+    current = start
+    while len(order) < len(outer_ids):
+        candidates = [node_id for node_id in adjacency[current] if node_id != previous]
+        candidates.sort(key=lambda node_id: outer_index.get(node_id, len(outer_ids)))
+        next_id = candidates[0] if candidates else ""
+        if not next_id or next_id in order:
+            break
+        previous, current = current, next_id
+        order.append(current)
+    return order if set(order) == outer_set else outer_ids
+
+
 def _build_planarity_positions(challenge, *, rng):
     nodes = []
     for raw_node in _iter_trial_items(challenge.get("nodes")):
@@ -582,6 +612,28 @@ def _build_planarity_positions(challenge, *, rng):
     best_distance = _planarity_min_node_distance(best)
     if best_count == 0 and _planarity_positions_are_safe(best):
         return best, 0
+
+    # Wheel-like graphs are common in live trials. Preserve the actual outer
+    # cycle order instead of sorting by degree/id, which can create crossings
+    # and leave the random fallback with a zero-crossing but too-close layout.
+    for center_id, center_degree in sorted(degree.items(), key=lambda item: item[1], reverse=True):
+        if center_degree < 3 or center_id in locked_ids:
+            continue
+        outer_ids = [node_id for node_id in node_ids if node_id != center_id]
+        outer_order = _order_planarity_outer_nodes(outer_ids, edges, center_id)
+        candidate = dict(initial)
+        for node_id, position in _circle_positions(outer_order, radius=36).items():
+            if node_id not in locked_ids:
+                candidate[node_id] = position
+        candidate[center_id] = (50.0, 50.0)
+        count = _planarity_crossing_count(edges, candidate)
+        distance = _planarity_min_node_distance(candidate)
+        if count < best_count or (count == best_count and distance > best_distance):
+            best = candidate
+            best_count = count
+            best_distance = distance
+        if count == 0 and _planarity_positions_are_safe(candidate):
+            return candidate, 0
 
     candidates = []
     if unlocked:

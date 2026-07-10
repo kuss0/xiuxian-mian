@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, track_reply_chain_message
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, is_cave_public_auto_enabled, set_stargazer_total_slots, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from ..webapp_core import MiniAppCaptureStore
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -858,6 +858,8 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
 
 async def run_stargazer_scheduler(now):
     if not state.get("stargazer_enabled"):
+        return
+    if is_cave_public_auto_enabled("stargazer"):
         return
 
     if _is_stargazer_miniapp_paused():

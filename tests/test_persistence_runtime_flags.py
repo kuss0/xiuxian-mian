@@ -80,6 +80,24 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.load_state())
                 self.assertEqual(9, state_module.get_divination_daily_limit(identity_id))
 
+    def test_small_world_public_request_guard_roundtrips(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990004
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    state_module.state["small_world_last_public_request_at"] = 1_700_000_123.0
+
+                self.assertTrue(persistence.save_state())
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                persistence.load_state()
+
+                with state_module.use_identity(identity_id):
+                    self.assertEqual(1_700_000_123.0, state_module.state["small_world_last_public_request_at"])
+
     def test_game_listener_account_ids_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

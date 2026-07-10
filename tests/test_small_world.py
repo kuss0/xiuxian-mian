@@ -2973,5 +2973,13 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
 
 
+class SmallWorldPublicMiniAppGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_cave_automation_suppresses_legacy_scheduler(self):
+        with patch.object(small_world, "is_cave_public_auto_enabled", return_value=True), \
+                patch.object(small_world, "_run_small_world_scheduler", new=AsyncMock()) as scheduler_mock:
+            await small_world.run_small_world_scheduler(1000.0)
+        scheduler_mock.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

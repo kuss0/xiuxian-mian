@@ -2746,5 +2746,23 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertIn(other_msg_id, state_module.state["pending_tasks"])
 
 
+class YuanyingPublicMiniAppGateTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_public_cave_automation_suppresses_legacy_scheduler(self):
+        with patch.object(yuanying, "is_cave_public_auto_enabled", return_value=True), \
+                patch.object(yuanying, "run_phaseful_scheduler", new=AsyncMock()) as scheduler_mock:
+            await yuanying.run_yuanying_scheduler(1000.0)
+        scheduler_mock.assert_not_awaited()
+
+
+class DeepRetreatPublicMiniAppGateTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_public_cave_automation_suppresses_legacy_scheduler(self):
+        with patch.object(deep_retreat, "is_cave_public_auto_enabled", return_value=True), \
+                patch.object(deep_retreat, "run_phaseful_scheduler", new=AsyncMock()) as scheduler_mock, \
+                patch.object(deep_retreat, "_calibrate_orphan_deep_retreat_summary_due", new=AsyncMock()) as calibrate_mock:
+            await deep_retreat.run_deep_retreat_scheduler(1000.0)
+        scheduler_mock.assert_not_awaited()
+        calibrate_mock.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

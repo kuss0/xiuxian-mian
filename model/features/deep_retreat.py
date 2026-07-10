@@ -19,7 +19,7 @@ from ..action_guard import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -797,6 +797,8 @@ def _defer_post_summary_relaunch_for_due_wild_training(now):
 
 
 async def run_deep_retreat_scheduler(now):
+    if is_cave_public_auto_enabled("deep_retreat"):
+        return
     if state.get("deep_retreat_phase") == "post_summary_wait":
         _clear_deep_retreat_remote_block_after_summary(now)
     if await _calibrate_orphan_deep_retreat_summary_due(now):

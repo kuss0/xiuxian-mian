@@ -95,10 +95,12 @@ from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_mini
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import (
+    _parse_public_cave_entry_url,
     authorize_cave_treasure_miniapp_manual_run,
     revoke_cave_treasure_miniapp_manual_run,
     run_cave_public_deep_retreat_action,
     run_cave_public_small_world_sync,
+    run_cave_public_stargazer,
     run_cave_public_treasure,
     run_cave_public_trial,
     run_cave_public_yuanying,
@@ -191,6 +193,7 @@ from .state import (
     get_identity_ui_display_name,
     get_identity_state,
     get_miniapp_auto_config,
+    get_miniapp_state_records,
     get_divination_daily_limit,
     get_module_window_hours_local,
     get_pending_command,
@@ -299,6 +302,13 @@ _cave_public_batch_state = {
     "delay_sec": 20,
 }
 _cave_public_ui_run_lock = asyncio.Lock()
+_cave_public_background_state = {
+    "next_run_at": 0,
+    "cursor": 0,
+    "last_action": "",
+    "last_result": "",
+}
+_cave_public_background_retry_at = {}
 MINIAPP_ENTRY_PROBE_COMMANDS = {
     "cave_treasure": ".洞府",
     "fishing": CMD_FISHING,
@@ -341,6 +351,9 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_deep_status_enabled": True,
     "cave_public_treasure_enabled": True,
     "cave_public_trial_enabled": True,
+    "cave_public_stargazer_enabled": False,
+    "cave_public_yuanying_enabled": False,
+    "cave_public_entry_url": "",
     "cave_public_delay_sec": 20,
 }
 TRIAL_DAILY_BATCH_WAVES = (
@@ -378,6 +391,8 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_deep_status_enabled",
         "cave_public_treasure_enabled",
         "cave_public_trial_enabled",
+        "cave_public_stargazer_enabled",
+        "cave_public_yuanying_enabled",
     ):
         result[key] = bool(result.get(key))
     try:
@@ -385,6 +400,7 @@ def normalize_miniapp_auto_config(config=None):
     except (TypeError, ValueError, OverflowError):
         result["cave_public_delay_sec"] = 20
     result["cave_public_delay_sec"] = max(10, min(120, result["cave_public_delay_sec"]))
+    result["cave_public_entry_url"] = str(result.get("cave_public_entry_url") or "").strip()
     for key, default in (
         ("trial_daily_start_hour_local", 0),
         ("trial_daily_start_minute_local", 20),
@@ -442,6 +458,10 @@ def _cave_public_actions_from_config(config=None):
         actions.append("treasure")
     if config.get("cave_public_trial_enabled"):
         actions.append("trial")
+    if config.get("cave_public_stargazer_enabled"):
+        actions.append("stargazer")
+    if config.get("cave_public_yuanying_enabled"):
+        actions.append("yuanying")
     return actions
 
 
@@ -501,8 +521,11 @@ def get_miniapp_auto_config_snapshot(now=None):
             "last_result": config.get(f"trial_daily_{wave_key}_last_result") or "",
         })
     all_done = all(item["done_today"] for item in wave_states)
+    safe_config = dict(config)
+    safe_config.pop("cave_public_entry_url", None)
     return {
-        **config,
+        **safe_config,
+        "cave_public_entry_url_configured": bool(config.get("cave_public_entry_url")),
         "today": today,
         "trial_daily_done_today": all_done,
         "trial_daily_in_window": bool(active_wave and not active_wave.get("done_today")),
@@ -630,6 +653,7 @@ def get_miniapp_status_snapshot(send_as_id=None):
         },
         "automation": get_miniapp_auto_config_snapshot(),
         "cave_public_batch": dict(_cave_public_batch_state),
+        "cave_public_background": dict(_cave_public_background_state),
         "state_records": get_miniapp_state_snapshot(send_as_id=send_as_id),
         "score_controls": {
             "tree": get_tree_miniapp_score_config(send_as_id),
@@ -6533,7 +6557,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         return False, "身份不存在", {}
     if not get_identity_enabled(identity_id):
         return False, "身份已停用", {}
-    url = str(public_entry_url or "").strip()
+    url = str(public_entry_url or normalize_miniapp_auto_config().get("cave_public_entry_url") or "").strip()
     if not url:
         return False, "缺少洞府公共入口 URL", {}
     if _cave_public_ui_run_lock.locked():
@@ -6546,6 +6570,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             result = await run_cave_public_treasure(identity_id, url)
         elif normalized_action in {"trial", "tianji_trial"}:
             result = await run_cave_public_trial(identity_id, url)
+        elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
+            result = await run_cave_public_stargazer(identity_id, url)
         elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
             result = await run_cave_public_yuanying(identity_id, url)
         elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
@@ -6577,8 +6603,12 @@ def _normalize_cave_public_batch_actions(payload):
         "cave_treasure": "treasure",
         "hunt": "treasure",
         "tianji_trial": "trial",
+        "sect_farm": "stargazer",
+        "star_farm": "stargazer",
+        "yuan_ying": "yuanying",
+        "yuanying_launch": "yuanying",
     }
-    allowed = {"small_world", "deep_status", "treasure", "trial"}
+    allowed = {"small_world", "deep_status", "treasure", "trial", "stargazer", "yuanying"}
     actions = []
     seen = set()
     for raw in raw_actions or ():
@@ -6603,6 +6633,8 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
             enabled_ids.append(identity_id)
 
     enabled_set = set(enabled_ids)
+    if str(action or "").strip().lower() in {"trial", "stargazer", "yuanying"}:
+        return enabled_ids
     result = []
     seen_accounts = set()
     for identity_id in enabled_ids:
@@ -6645,12 +6677,21 @@ async def ui_set_cave_public_config(payload=None):
         "deep_status_enabled": "cave_public_deep_status_enabled",
         "treasure_enabled": "cave_public_treasure_enabled",
         "trial_enabled": "cave_public_trial_enabled",
+        "stargazer_enabled": "cave_public_stargazer_enabled",
+        "yuanying_enabled": "cave_public_yuanying_enabled",
     }
     for payload_key, config_key in mapping.items():
         if payload_key in payload:
             config[config_key] = _coerce_ui_bool(payload.get(payload_key))
     if "delay_sec" in payload:
         config["cave_public_delay_sec"] = int(_normalize_cave_public_batch_delay(payload.get("delay_sec")))
+    if "public_entry_url" in payload:
+        public_entry_url = str(payload.get("public_entry_url") or "").strip()
+        if public_entry_url:
+            _token, _webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+            if error:
+                return False, f"洞府公共入口 URL 无效：{error}"
+            config["cave_public_entry_url"] = public_entry_url
     set_miniapp_auto_config(config)
     save_state()
     actions = _cave_public_actions_from_config(config)
@@ -6737,7 +6778,7 @@ async def ui_start_cave_public_entry_batch(payload=None):
     payload = dict(payload or {})
     if _cave_public_batch_state.get("running"):
         return False, "已有洞府公共入口串行批次正在运行", dict(_cave_public_batch_state)
-    public_entry_url = str(payload.get("public_entry_url") or "").strip()
+    public_entry_url = str(payload.get("public_entry_url") or normalize_miniapp_auto_config().get("cave_public_entry_url") or "").strip()
     if not public_entry_url:
         return False, "缺少洞府公共入口 URL", {}
     identity_ids = _normalize_trial_batch_identity_ids(payload)
@@ -6862,52 +6903,163 @@ async def ui_start_trial_miniapp_batch_run(payload=None):
     }
 
 
+def _cave_public_background_action_due(action, identity_id, now):
+    action = str(action or "").strip().lower()
+    if int(identity_id or 0) not in get_identity_ids():
+        return False
+    with use_identity(identity_id):
+        if action == "small_world":
+            return bool(state.get("small_world_enabled")) and float(state.get("next_small_world_time", 0) or 0) <= now
+        if action == "deep_status":
+            return bool(state.get("deep_retreat_enabled")) and float(state.get("next_deep_retreat_time", 0) or 0) <= now
+        if action == "treasure":
+            record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
+            record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
+            updated_at = float(record.get("updated_at", 0) or 0)
+            if updated_at > 0 and get_day_key(updated_at) == get_day_key(now):
+                games_used = int(record_state.get("games_used", 0) or 0)
+                games_limit = int(record_state.get("games_limit", 0) or 0)
+                if games_limit > 0 and games_used >= games_limit:
+                    return False
+            return True
+        if action == "stargazer":
+            if not state.get("stargazer_enabled"):
+                return False
+            next_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+            followup_time = float(state.get("stargazer_followup_due_at", 0) or 0)
+            due_times = [item for item in (next_time, followup_time) if item > 0]
+            return not due_times or min(due_times) <= now
+        if action == "yuanying":
+            if not state.get("yuanying_enabled"):
+                return False
+            next_time = float(state.get("next_yuanying_time", 0) or 0)
+            phase = str(state.get("yuanying_phase") or "idle")
+            return next_time <= now and phase in {
+                "idle",
+                "running",
+                "summary_due",
+                "observing_summary",
+                "waiting_summary",
+                "post_summary_wait",
+            }
+    return False
+
+
+async def _run_cave_public_background_scheduler(now, config):
+    now = float(now or time.time())
+    public_entry_url = str(config.get("cave_public_entry_url") or "").strip()
+    if not public_entry_url:
+        return {"started": False, "reason": "public_entry_url_missing"}
+    if _cave_public_batch_state.get("running") or _cave_public_ui_run_lock.locked():
+        return {"started": False, "reason": "cave_public_busy"}
+    if now < float(_cave_public_background_state.get("next_run_at", 0) or 0):
+        return {"started": False, "reason": "background_throttled"}
+
+    action_flags = (
+        ("small_world", "cave_public_small_world_enabled"),
+        ("deep_status", "cave_public_deep_status_enabled"),
+        ("treasure", "cave_public_treasure_enabled"),
+        ("yuanying", "cave_public_yuanying_enabled"),
+        ("stargazer", "cave_public_stargazer_enabled"),
+    )
+    enabled_action_flags = [(action, flag) for action, flag in action_flags if config.get(flag)]
+    if not enabled_action_flags:
+        return {"started": False, "reason": "background_disabled"}
+    identity_ids = _normalize_trial_batch_identity_ids({})
+    candidates = []
+    for action, flag in enabled_action_flags:
+        for identity_id in _cave_public_batch_identity_ids_for_action(action, identity_ids):
+            retry_key = (action, int(identity_id))
+            if now < float(_cave_public_background_retry_at.get(retry_key, 0) or 0):
+                continue
+            if _cave_public_background_action_due(action, identity_id, now):
+                candidates.append((int(identity_id), action))
+    if not candidates:
+        _cave_public_background_state["next_run_at"] = now + 60
+        return {"started": False, "reason": "no_due_public_action"}
+
+    cursor = int(_cave_public_background_state.get("cursor", 0) or 0) % len(candidates)
+    identity_id, action = candidates[cursor]
+    _cave_public_background_state["cursor"] = (cursor + 1) % max(1, len(candidates))
+    ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
+    delay_sec = _normalize_cave_public_batch_delay(config.get("cave_public_delay_sec"))
+    _cave_public_background_state.update({
+        "next_run_at": time.time() + delay_sec,
+        "last_action": f"{identity_id}:{action}",
+        "last_result": str(message or "")[:240],
+    })
+    _cave_public_background_retry_at[(action, identity_id)] = time.time() + (60 if ok else 30 * 60)
+    return {
+        "started": True,
+        "kind": "background",
+        "identity_id": identity_id,
+        "action": action,
+        "ok": bool(ok),
+    }
+
+
 async def run_miniapp_daily_scheduler(now):
+    raw_config = normalize_miniapp_auto_config()
     config = get_miniapp_auto_config_snapshot(now)
+    if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
+        return {"started": False, "reason": "global_disabled"}
+
+    active_wave = dict(config.get("trial_daily_active_wave") or {})
+    wave_key = str(active_wave.get("key") or "").strip()
+    wave_label = str(active_wave.get("label") or "").strip() or "批次"
+    trial_ready = bool(
+        config.get("trial_daily_effective_enabled")
+        and raw_config.get("cave_public_trial_enabled")
+        and raw_config.get("cave_public_entry_url")
+        and active_wave
+        and not active_wave.get("done_today")
+    )
+    if trial_ready and not _cave_public_batch_state.get("running"):
+        identity_ids = _split_trial_daily_identity_ids(_normalize_trial_batch_identity_ids({}) or [], wave_key)
+        if not identity_ids:
+            next_config = normalize_miniapp_auto_config()
+            next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
+            next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
+            next_config[f"trial_daily_{wave_key}_last_result"] = "本批无启用身份"
+            set_miniapp_auto_config(next_config)
+            save_state()
+            return {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
+        ok, message, extra = await ui_start_cave_public_entry_batch({
+            "public_entry_url": raw_config.get("cave_public_entry_url"),
+            "send_as_ids": identity_ids,
+            "actions": ["trial"],
+            "delay_sec": raw_config.get("cave_public_delay_sec"),
+        })
+        if not ok:
+            return {"started": False, "reason": "public_batch_create_failed", "message": message}
+        batch_id = str(extra.get("batch_id") or "")
+        next_config = normalize_miniapp_auto_config()
+        next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
+        next_config[f"trial_daily_{wave_key}_last_batch_id"] = batch_id
+        next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
+        next_config[f"trial_daily_{wave_key}_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
+        next_config["trial_daily_last_run_day"] = str(config.get("today") or "")
+        next_config["trial_daily_last_batch_id"] = batch_id
+        next_config["trial_daily_last_run_at"] = float(now or time.time())
+        next_config["trial_daily_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
+        set_miniapp_auto_config(next_config)
+        save_state()
+        return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
+
+    background = await _run_cave_public_background_scheduler(now, raw_config)
+    if background.get("started"):
+        return background
     if not config.get("trial_daily_effective_enabled"):
         return {"started": False, "reason": "disabled"}
     if config.get("trial_daily_done_today"):
         return {"started": False, "reason": "done_today"}
-    if not get_global_enabled():
-        return {"started": False, "reason": "global_disabled"}
-    active_wave = dict(config.get("trial_daily_active_wave") or {})
-    wave_key = str(active_wave.get("key") or "").strip()
-    wave_label = str(active_wave.get("label") or "").strip() or "批次"
     if not active_wave:
         return {"started": False, "reason": "outside_window"}
     if active_wave.get("done_today"):
         return {"started": False, "reason": f"{wave_key or 'wave'}_done_today"}
-    identity_ids = _split_trial_daily_identity_ids(_normalize_trial_batch_identity_ids({}) or [], wave_key)
-    if not identity_ids:
-        next_config = normalize_miniapp_auto_config()
-        next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
-        next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
-        next_config[f"trial_daily_{wave_key}_last_result"] = "本批无启用身份"
-        set_miniapp_auto_config(next_config)
-        save_state()
-        return {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
-    batch_id = start_trial_miniapp_batch_run(identity_ids, now=now)
-    if not batch_id:
-        return {"started": False, "reason": "batch_create_failed"}
-    next_config = normalize_miniapp_auto_config()
-    next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
-    next_config[f"trial_daily_{wave_key}_last_batch_id"] = batch_id
-    next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
-    next_config[f"trial_daily_{wave_key}_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
-    next_config["trial_daily_last_run_day"] = str(config.get("today") or "")
-    next_config["trial_daily_last_batch_id"] = batch_id
-    next_config["trial_daily_last_run_at"] = float(now or time.time())
-    next_config["trial_daily_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
-    set_miniapp_auto_config(next_config)
-    save_state()
-    _fire_and_forget(_run_trial_miniapp_batch(batch_id, identity_ids))
-    await send_audit_log(
-        f"🧪 天机试炼每日自动批量启动：{wave_label}｜{len(identity_ids)} 个身份，完成后合并通报。batch={batch_id}",
-        scope="global",
-        priority="normal",
-        limit=320,
-    )
-    return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
+    if not raw_config.get("cave_public_entry_url"):
+        return {"started": False, "reason": "public_entry_url_missing"}
+    return {"started": False, "reason": "cave_public_busy"}
 
 
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
@@ -7917,8 +8069,8 @@ async def handle_ui_http(reader, writer):
                     send_as_id = payload.get("send_as_id")
                     action = payload.get("action")
                     public_entry_url = payload.get("public_entry_url")
-                    if send_as_id in {None, ""} or not action or not public_entry_url:
-                        _write_json_bad_request(writer, "缺少 send_as_id、action 或 public_entry_url 参数", auth_headers)
+                    if send_as_id in {None, ""} or not action:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 action 参数", auth_headers)
                     else:
                         ok, message, extra = await ui_run_cave_public_entry(send_as_id, action, public_entry_url)
                         _write_json_result(

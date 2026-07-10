@@ -12,7 +12,7 @@ from ..runtime import send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_send_as_profile, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from . import deep_retreat, yuanying
+from . import deep_retreat, stargazer, yuanying
 from .cave_treasure_miniapp import (
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
@@ -26,6 +26,7 @@ from .cave_treasure_miniapp import (
 )
 from .trial_miniapp import build_trial_launch_args
 from .trial_runtime import _format_trial_summary, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
+from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 
 
 CAVE_TREASURE_MANUAL_AUTH_TTL_SEC = 10 * 60
@@ -35,6 +36,9 @@ CAVE_SMALL_WORLD_RESOURCE_PAUSE_SEC = 6 * 3600
 CAVE_SMALL_WORLD_CYCLE_SEC = 6 * 3600
 CAVE_SMALL_WORLD_REFRESH_SEC = 10 * 60
 CAVE_SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
+CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
+CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
+CAVE_YUANYING_STATUS_RECHECK_SEC = 30 * 60
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
@@ -208,6 +212,146 @@ def _find_trial_external_app_in_cave_payload(value):
                 "available": bool(item.get("available", True)),
             }
     return {}
+
+
+def _find_stargazer_external_app_in_cave_payload(value):
+    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    for group in external.get("groups") or ():
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("apps") or ():
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()
+            title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
+            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+            is_stargazer = (
+                key in {"sect_farm", "stargazer", "star_palace", "star_farm"}
+                or "观星台" in title
+                or "星宫" in title
+                or "xianxia-sect-farm" in url
+                or "startapp=farm_" in url
+            )
+            if not is_stargazer:
+                continue
+            return {
+                "url": url,
+                "title": title or key,
+                "available": bool(item.get("available", True)),
+                "key": key,
+            }
+    return {}
+
+
+def _stargazer_launch_from_external_app(external_app):
+    url = str((external_app or {}).get("url") or "").strip()
+    if not url:
+        return {}
+    if url.startswith("/"):
+        url = urljoin("https://asc.aiopenai.app/", url)
+    launch, _args = build_stargazer_launch_args(url)
+    if not launch.allowed or not launch.start_param:
+        return {}
+    return {
+        "token": launch.start_param,
+        "webview_url": launch.webview_url,
+        "title": str((external_app or {}).get("title") or "").strip(),
+        "safe_summary": launch.safe_summary(),
+    }
+
+
+def _selected_player_error(overview, identity_id):
+    selected_player_id = _parse_int((overview or {}).get("player_id"), 0)
+    if not selected_player_id:
+        return "洞府回包缺少 playerId"
+    if _normalize_dwelling_identity_id(selected_player_id) != _normalize_dwelling_identity_id(identity_id):
+        return f"洞府身份校验失败：期望 {int(identity_id or 0)}，实际 {selected_player_id}"
+    return ""
+
+
+def _normalize_dwelling_identity_id(player_id):
+    player_id = _parse_int(player_id, 0)
+    if player_id <= -1_000_000_000_000:
+        return -player_id - 1_000_000_000_000
+    return player_id
+
+
+def _resolve_dwelling_player_id(payload, identity_id):
+    root = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+    identity = root.get("identity") if isinstance(root, dict) and isinstance(root.get("identity"), dict) else {}
+    target_identity_id = _normalize_dwelling_identity_id(identity_id)
+    for choice in identity.get("choices") or ():
+        if not isinstance(choice, dict):
+            continue
+        player_id = _parse_int(choice.get("playerId"), 0)
+        if player_id and _normalize_dwelling_identity_id(player_id) == target_identity_id:
+            return player_id
+    return 0
+
+
+async def _load_cave_public_identity_session(identity_id, token, webview_url, *, now, capture_source):
+    try:
+        init_data = await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"会话初始化失败：{type(exc).__name__}: {exc}"}
+
+    initial_result = await run_cave_dwelling_start_production_flow(
+        identity_id,
+        token=token,
+        webview_url=webview_url,
+        init_data=init_data,
+        capture_sink=_capture_store(now),
+        capture_source=f"{capture_source}:initial",
+    )
+    if not initial_result.get("ok"):
+        return {
+            "ok": False,
+            "error": initial_result.get("error") or initial_result.get("status") or "initial_start_failed",
+        }
+    initial_data = dict(initial_result.get("data") or {})
+    initial_overview = initial_data.get("overview") if isinstance(initial_data.get("overview"), dict) else {}
+    initial_player_id = _parse_int(initial_overview.get("player_id"), 0)
+    if initial_player_id and _normalize_dwelling_identity_id(initial_player_id) == _normalize_dwelling_identity_id(identity_id):
+        return {
+            "ok": True,
+            "init_data": init_data,
+            "player_id": initial_player_id,
+            "result": initial_result,
+        }
+
+    selected_player_id = _resolve_dwelling_player_id(initial_data.get("raw") or {}, identity_id)
+    if not selected_player_id:
+        return {"ok": False, "error": "洞府公共入口不包含目标身份"}
+    selected_result = await run_cave_dwelling_start_production_flow(
+        identity_id,
+        token=token,
+        webview_url=webview_url,
+        init_data=init_data,
+        player_id=selected_player_id,
+        capture_sink=_capture_store(now),
+        capture_source=f"{capture_source}:selected",
+    )
+    if not selected_result.get("ok"):
+        return {
+            "ok": False,
+            "error": selected_result.get("error") or selected_result.get("status") or "selected_start_failed",
+        }
+    selected_data = dict(selected_result.get("data") or {})
+    player_error = _selected_player_error(selected_data.get("overview") or {}, identity_id)
+    if player_error:
+        return {"ok": False, "error": player_error}
+    return {
+        "ok": True,
+        "init_data": init_data,
+        "player_id": selected_player_id,
+        "result": selected_result,
+    }
 
 
 def _entry_mentions_current_identity(text):
@@ -421,12 +565,10 @@ def extract_cave_tianjige_command_message(data):
 def _cave_tianjige_action_succeeded(data):
     data = data if isinstance(data, dict) else {}
     action_result = data.get("actionResult") if isinstance(data.get("actionResult"), dict) else {}
-    if "ok" in action_result:
-        return bool(action_result.get("ok"))
-    return True
+    return action_result.get("ok") is True
 
 
-async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now):
+async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=None):
     """Replay only safe Tianjige YuanYing outcomes into the existing state machine.
 
     The normal status handler can emit a legacy group command for `窍中温养`.
@@ -438,8 +580,52 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now):
     if identity_id <= 0 or not message:
         return {"handled": False, "reason": "missing_identity_or_message", "message": "", "phase": ""}
 
+    command = str(command or yuanying.CMD_YUANYING).strip()
     with use_identity(identity_id):
-        reply_to = SimpleNamespace(raw_text=yuanying.CMD_YUANYING, id=0)
+        if not _cave_tianjige_action_succeeded(data):
+            return {
+                "handled": False,
+                "ready": False,
+                "reason": "action_rejected",
+                "message": message,
+                "phase": str(state.get("yuanying_phase") or ""),
+            }
+
+        plain_message = re.sub(r"[*_`]+", "", message)
+        status_ready = bool(
+            command == yuanying.CMD_YUANYING_STATUS
+            and re.search(r"状态\s*[:：]\s*窍中温养", plain_message)
+            and not any(token in plain_message for token in ("不可", "不能", "暂不", "尚未", "冷却", "等待", "休息", "不足"))
+        )
+        if status_ready:
+            state["yuanying_probe_pending"] = False
+            yuanying.clear_yuanying_summary_flags()
+            yuanying.set_yuanying_phase("idle")
+            state["next_yuanying_time"] = float(now)
+            save_state()
+            return {
+                "handled": True,
+                "ready": True,
+                "reason": "",
+                "message": message,
+                "phase": str(state.get("yuanying_phase") or ""),
+            }
+
+        if command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*元婴闭关", plain_message):
+            state["yuanying_probe_pending"] = False
+            yuanying.clear_yuanying_summary_flags()
+            yuanying.set_yuanying_phase("running")
+            state["next_yuanying_time"] = float(now) + CAVE_YUANYING_STATUS_RECHECK_SEC
+            save_state()
+            return {
+                "handled": True,
+                "ready": False,
+                "reason": "active_yuanying_retreat",
+                "message": message,
+                "phase": str(state.get("yuanying_phase") or ""),
+            }
+
+        reply_to = SimpleNamespace(raw_text=command, id=0)
         handled = await yuanying.handle_yuanying_success_reply(
             message,
             now,
@@ -449,6 +635,7 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now):
         if handled:
             return {
                 "handled": True,
+                "ready": False,
                 "reason": "",
                 "message": message,
                 "phase": str(state.get("yuanying_phase") or ""),
@@ -464,6 +651,7 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now):
             )
         return {
             "handled": bool(handled),
+            "ready": False,
             "reason": "" if handled else "unrecognized_or_nonterminal_message",
             "message": message,
             "phase": str(state.get("yuanying_phase") or ""),
@@ -798,15 +986,41 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 "message": "洞府小世界尚未到检查时间，已跳过请求",
                 "extra": {"skipped": True, "next_time": next_time},
             }
+        last_request_at = float(state.get("small_world_last_public_request_at", 0) or 0)
+        if last_request_at > 0 and now < last_request_at + CAVE_SMALL_WORLD_MIN_REQUEST_SEC:
+            next_time = last_request_at + CAVE_SMALL_WORLD_MIN_REQUEST_SEC
+            state["next_small_world_time"] = max(float(state.get("next_small_world_time", 0) or 0), next_time)
+            save_state()
+            return {
+                "ok": True,
+                "message": "洞府小世界请求仍在最小间隔内，已跳过请求",
+                "extra": {"skipped": True, "next_time": next_time},
+            }
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
         with use_identity(identity_id):
+            state["small_world_last_public_request_at"] = float(now)
+            save_state()
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_small_world_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府小世界身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🌏 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
+        with use_identity(identity_id):
             result = await run_cave_small_world_production_flow(
                 identity_id,
                 token=token,
                 webview_url=webview_url,
+                init_data=session.get("init_data") or "",
+                player_id=session.get("player_id"),
                 action_planner=_plan_cave_public_small_world_action,
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_small_world:{identity_id}",
@@ -925,10 +1139,23 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_treasure_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府寻宝身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
         result = await run_cave_treasure_miniapp_production_flow(
             identity_id,
             token=token,
             webview_url=webview_url,
+            init_data=session.get("init_data") or "",
+            player_id=session.get("player_id"),
             max_steps=CAVE_TREASURE_MANUAL_MAX_STEPS,
             capture_sink=_capture_store(now),
             capture_source=f"cave_public_treasure:{identity_id}",
@@ -955,9 +1182,6 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not get_identity_enabled(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
-    identity_error = _public_entry_account_identity_error(identity_id)
-    if identity_error:
-        return {"ok": False, "message": identity_error, "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
@@ -967,34 +1191,25 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
-        try:
-            dwelling_init_data = await request_cave_treasure_miniapp_init_data(
-                identity_id,
-                token=token,
-                webview_url=webview_url,
-            )
-        except Exception as exc:
-            message = f"洞府天机试炼会话初始化失败：{type(exc).__name__}: {exc}"
-            await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-            return {"ok": False, "message": message, "extra": {}}
-        cave_result = await run_cave_dwelling_start_production_flow(
+        session = await _load_cave_public_identity_session(
             identity_id,
-            token=token,
-            webview_url=webview_url,
-            init_data=dwelling_init_data,
-            capture_sink=_capture_store(now),
+            token,
+            webview_url,
+            now=now,
             capture_source=f"cave_public_trial_start:{identity_id}",
         )
+        if not session.get("ok"):
+            message = f"洞府天机试炼入口读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
+            return {"ok": False, "message": message, "extra": {}}
+        dwelling_init_data = session.get("init_data") or ""
+        selected_player_id = session.get("player_id")
+        cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
         raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
         overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
         if not cave_result.get("ok"):
             message = f"洞府天机试炼入口读取失败：{cave_result.get('error') or cave_result.get('status') or 'unknown'}"
-            await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
-            return {"ok": False, "message": message, "extra": {}}
-        player_id = int(overview.get("player_id", 0) or 0)
-        if player_id <= 0:
-            message = "洞府天机试炼入口读取完成，但回包缺少 playerId"
             await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
             return {"ok": False, "message": message, "extra": {}}
         external_app = _find_trial_external_app_in_cave_payload(raw)
@@ -1009,7 +1224,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
                 token=token,
                 webview_url=webview_url,
                 action=external_app["action"],
-                player_id=player_id,
+                player_id=selected_player_id,
                 init_data=dwelling_init_data,
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_trial_external:{identity_id}",
@@ -1030,14 +1245,16 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             token=launch.get("token"),
             webview_url=launch.get("webview_url"),
             init_data=dwelling_init_data,
+            player_id=selected_player_id,
             max_rounds=99,
             capture_sink=_trial_miniapp_capture_store(now),
             capture_source=f"cave_public_trial:{identity_id}",
         )
         summary = _format_trial_summary(result)
         message = f"洞府天机试炼公共入口：{summary}"
-        await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="low" if result.get("ok") else "normal", limit=260)
-        return {"ok": bool(result.get("ok")), "message": message, "extra": {"trial_title": launch.get("title", "")}}
+        completed_ok = bool(result.get("ok")) or str(result.get("status") or "") == "daily_limit"
+        await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="low" if completed_ok else "normal", limit=260)
+        return {"ok": completed_ok, "message": message, "extra": {"trial_title": launch.get("title", "")}}
 
 
 async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
@@ -1048,33 +1265,82 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not get_identity_enabled(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
-    identity_error = _public_entry_account_identity_error(identity_id)
-    if identity_error:
-        return {"ok": False, "message": identity_error, "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    with use_identity(identity_id):
+        if not state.get("yuanying_enabled"):
+            return {"ok": False, "message": "元婴模块已关闭", "extra": {}}
+        next_yuanying_time = float(state.get("next_yuanying_time", 0) or 0)
+        block_reason = yuanying.get_yuanying_block_reason(now)
+    if next_yuanying_time > now:
+        return {"ok": False, "message": f"元婴尚未到出窍窗口：{block_reason or '等待中'}", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
-    with use_identity(identity_id):
-        block_reason = yuanying.get_yuanying_block_reason(now)
-    block_text = str(block_reason or "").strip()
-    if block_text and block_text not in {"无", "-", "none", "None"}:
-        return {"ok": False, "message": f"元婴尚未到出窍窗口：{block_text}", "extra": {}}
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_tianjige_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            reason = session.get("error") or "unknown"
+            message = f"洞府天机阁身份读取失败：{reason}"
+            await send_audit_log(f"👶 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
+            return {"ok": False, "message": message, "extra": {}}
+        init_data = session.get("init_data") or ""
+        selected_player_id = session.get("player_id")
+
+        status_result = await run_cave_tianjige_command_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            command=yuanying.CMD_YUANYING_STATUS,
+            init_data=init_data,
+            player_id=selected_player_id,
+            capture_sink=_capture_store(now),
+            capture_source=f"cave_public_tianjige_yuanying_status:{identity_id}",
+        )
+        status_data = status_result.get("data") if isinstance(status_result.get("data"), dict) else {}
+        status_sync = await sync_cave_tianjige_yuanying_result(
+            identity_id,
+            status_data,
+            now=now,
+            command=yuanying.CMD_YUANYING_STATUS,
+        )
+        status_ok = bool(status_result.get("ok")) and _cave_tianjige_action_succeeded(status_data)
+        if not status_ok or not status_sync.get("handled"):
+            reply_message = str(status_sync.get("message") or "").strip()
+            message = f"洞府天机阁元婴状态未确认：{reply_message or status_result.get('error') or status_result.get('status') or 'unknown'}"
+            await send_audit_log(f"👶 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=320)
+            return {"ok": False, "message": message, "extra": {"status_sync": status_sync}}
+        if not status_sync.get("ready"):
+            message = f"洞府天机阁元婴状态：{status_sync.get('message') or '已同步，当前无需出窍'}"
+            await send_audit_log(f"👶 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=320)
+            return {"ok": True, "message": message, "extra": {"status_sync": status_sync, "launched": False}}
+
         result = await run_cave_tianjige_command_production_flow(
             identity_id,
             token=token,
             webview_url=webview_url,
             command=yuanying.CMD_YUANYING,
+            init_data=init_data,
+            player_id=selected_player_id,
             capture_sink=_capture_store(now),
             capture_source=f"cave_public_tianjige_yuanying:{identity_id}",
         )
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        sync_result = await sync_cave_tianjige_yuanying_result(identity_id, data, now=now)
+        sync_result = await sync_cave_tianjige_yuanying_result(
+            identity_id,
+            data,
+            now=now,
+            command=yuanying.CMD_YUANYING,
+        )
         action_ok = bool(result.get("ok")) and _cave_tianjige_action_succeeded(data)
         reply_message = str(sync_result.get("message") or "").strip()
         if not result.get("ok"):
@@ -1095,7 +1361,67 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
         return {
             "ok": bool(action_ok and sync_result.get("handled")),
             "message": message,
-            "extra": {"sync": sync_result},
+            "extra": {"status_sync": status_sync, "sync": sync_result, "launched": True},
+        }
+
+
+async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not get_identity_enabled(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    with use_identity(identity_id):
+        if not state.get("stargazer_enabled"):
+            return {"ok": False, "message": "观星台模块已关闭", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_stargazer_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            return {"ok": False, "message": f"洞府观星台身份读取失败：{session.get('error') or 'unknown'}", "extra": {}}
+        init_data = session.get("init_data") or ""
+        selected_player_id = session.get("player_id")
+        cave_result = dict(session.get("result") or {})
+        cave_data = dict(cave_result.get("data") or {})
+        overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
+        external_app = _find_stargazer_external_app_in_cave_payload(cave_data.get("raw") or {})
+        if not external_app or not external_app.get("available"):
+            return {"ok": False, "message": "洞府宗门灵圃入口未开放观星台", "extra": {}}
+        launch = _stargazer_launch_from_external_app(external_app)
+        if not launch:
+            return {"ok": False, "message": "洞府观星台入口未返回可用 URL", "extra": {}}
+        with use_identity(identity_id):
+            star_choice = stargazer.get_stargazer_star_choice()
+        result = await run_stargazer_miniapp_production_flow(
+            identity_id,
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            star_choice=star_choice,
+            init_data=init_data,
+            player_id=selected_player_id,
+            capture_sink=stargazer._stargazer_miniapp_capture_store(now),
+            capture_source=f"cave_public_stargazer:{identity_id}",
+        )
+        with use_identity(identity_id):
+            handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
+        return {
+            "ok": bool(handled and result.get("ok")),
+            "message": f"洞府观星台：{result.get('status') or ('完成' if handled else '未处理')}",
+            "extra": {"title": launch.get("title", "")},
         }
 
 
@@ -1121,22 +1447,42 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_deep_retreat_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府闭关身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
         result = await run_cave_deep_seclusion_action_production_flow(
             identity_id,
             token=token,
             webview_url=webview_url,
             action=action,
+            init_data=session.get("init_data") or "",
             capture_sink=_capture_store(now),
             capture_source=f"cave_public_deep_retreat:{identity_id}:{action}",
         )
         sync_result = await sync_cave_deep_seclusion_action_result(identity_id, action, result.get("data") or {}, now=now)
+        if action == "status" and result.get("ok") and not sync_result.get("handled"):
+            with use_identity(identity_id):
+                state["next_deep_retreat_time"] = max(
+                    float(state.get("next_deep_retreat_time", 0) or 0),
+                    now + CAVE_DEEP_STATUS_RECHECK_SEC,
+                )
+                save_state()
         record = _record_cave_deep_retreat_state(identity_id, action, result, sync_result, now=now)
         if not result.get("ok"):
             message = f"洞府闭关 {action} 失败：{result.get('error') or result.get('status') or 'unknown'}"
         else:
             phase = (sync_result or {}).get("phase") or "-"
             handled = "已同步" if (sync_result or {}).get("handled") else "未改状态"
-            message = f"洞府闭关 {action} 完成：{handled}｜阶段 {phase}"
+            recheck = "｜30 分钟后保守复查" if action == "status" and not (sync_result or {}).get("handled") else ""
+            message = f"洞府闭关 {action} 完成：{handled}｜阶段 {phase}{recheck}"
         await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=240)
         return {"ok": bool(result.get("ok")), "message": message, "extra": {"record_key": record.get("record_key", ""), "sync": sync_result}}
 
@@ -1209,6 +1555,7 @@ __all__ = [
     "revoke_cave_treasure_miniapp_manual_run",
     "run_cave_public_deep_retreat_action",
     "run_cave_public_small_world_sync",
+    "run_cave_public_stargazer",
     "run_cave_public_treasure",
     "run_cave_public_trial",
     "run_cave_public_yuanying",

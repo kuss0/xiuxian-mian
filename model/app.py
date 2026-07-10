@@ -202,6 +202,7 @@ from .message_box import (
 )
 from .verified_event import from_telegram_event, is_new_delivery
 from .runtime import (
+    MAINTENANCE_PAUSE_SOURCE,
     _fire_and_forget,
     check_bot_health_timeout,
     clear_pending_by_reply,
@@ -3118,6 +3119,8 @@ async def main_loop(stop_event=None):
             await toggle_global_enabled(False, source="bot_health_monitor")
         if not get_global_enabled():
             _cancel_identity_schedulers()
+            if get_global_pause_source() == MAINTENANCE_PAUSE_SOURCE:
+                await run_miniapp_daily_scheduler(now)
             await _sleep_or_stop(stop_event, 5)
             continue
 

@@ -22,7 +22,7 @@ from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, state
+from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, is_cave_public_auto_enabled, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_text_delta
 
@@ -2223,6 +2223,8 @@ async def handle_small_world_refine_reply(text, now, reply_to, matched_family=No
 
 
 async def run_small_world_scheduler(now):
+    if is_cave_public_auto_enabled("small_world"):
+        return
     if _SMALL_WORLD_SCHEDULER_LOCK.locked():
         return
     async with _SMALL_WORLD_SCHEDULER_LOCK:

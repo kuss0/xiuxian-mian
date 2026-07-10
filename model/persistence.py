@@ -939,6 +939,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_panel_snapshot TEXT NOT NULL DEFAULT '{}' ")
     if "small_world_last_panel_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_panel_at REAL NOT NULL DEFAULT 0")
+    if "small_world_last_public_request_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_public_request_at REAL NOT NULL DEFAULT 0")
     if "small_world_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_error TEXT NOT NULL DEFAULT ''")
     if "resource_shortage_backoffs" not in runtime_columns:
@@ -1677,6 +1679,7 @@ def init_db():
             small_world_faith_value INTEGER NOT NULL DEFAULT 0,
             small_world_panel_snapshot TEXT NOT NULL DEFAULT '{}',
             small_world_last_panel_at REAL NOT NULL DEFAULT 0,
+            small_world_last_public_request_at REAL NOT NULL DEFAULT 0,
             small_world_last_error TEXT NOT NULL DEFAULT '',
             resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}',
             action_guard_sessions TEXT NOT NULL DEFAULT '{}',

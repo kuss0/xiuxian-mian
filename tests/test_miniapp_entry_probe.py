@@ -501,9 +501,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "get_identity_account", side_effect=lambda identity_id: account_by_identity[identity_id]):
             selected = ui._cave_public_batch_identity_ids_for_action("small_world", identity_ids)
+            trial_selected = ui._cave_public_batch_identity_ids_for_action("trial", identity_ids)
             steps = ui._build_cave_public_batch_steps(identity_ids, ["small_world"])
 
         self.assertEqual(account_ids, selected)
+        self.assertEqual(identity_ids, trial_selected)
         self.assertEqual([(account_id, "small_world") for account_id in account_ids], steps)
 
     def test_cave_public_batch_skips_aliases_when_login_account_identity_is_disabled(self):
@@ -583,12 +585,17 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["miniapp_auto_config"] = {
             "trial_daily_enabled": True,
             "trial_daily_scheduler_confirmed": True,
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            "cave_public_small_world_enabled": False,
+            "cave_public_deep_status_enabled": False,
+            "cave_public_treasure_enabled": False,
+            "cave_public_trial_enabled": True,
+            "cave_public_stargazer_enabled": False,
+            "cave_public_yuanying_enabled": False,
         }
         now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
-                patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch-auto") as start_mock, \
-                patch.object(ui, "_fire_and_forget", side_effect=lambda coro: coro.close()) as fire_mock, \
-                patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {"batch_id": "batch-auto"}))) as start_mock, \
                 patch.object(ui, "save_state", return_value=True) as save_mock:
             result = await ui.run_miniapp_daily_scheduler(now)
             second = await ui.run_miniapp_daily_scheduler(now + 60)
@@ -599,9 +606,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wave1", result["wave"])
         self.assertEqual({"started": False, "reason": "wave1_done_today"}, second)
         ids_mock.assert_called_once_with({})
-        start_mock.assert_called_once_with([1001, 1002], now=now)
-        fire_mock.assert_called_once()
-        audit_mock.assert_awaited_once()
+        self.assertEqual([1001, 1002], start_mock.await_args.args[0]["send_as_ids"])
+        self.assertEqual(["trial"], start_mock.await_args.args[0]["actions"])
         save_mock.assert_called_once()
         snapshot = ui.get_miniapp_status_snapshot()["automation"]
         self.assertFalse(snapshot["trial_daily_done_today"])
@@ -612,12 +618,14 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["miniapp_auto_config"] = {
             "trial_daily_enabled": True,
             "trial_daily_scheduler_confirmed": True,
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            "cave_public_small_world_enabled": False,
+            "cave_public_treasure_enabled": False,
+            "cave_public_trial_enabled": True,
         }
         now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
-                patch.object(ui, "start_trial_miniapp_batch_run", return_value="batch-wave2") as start_mock, \
-                patch.object(ui, "_fire_and_forget", side_effect=lambda coro: coro.close()) as fire_mock, \
-                patch.object(ui, "send_audit_log", new=AsyncMock()), \
+                patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {"batch_id": "batch-wave2"}))) as start_mock, \
                 patch.object(ui, "save_state", return_value=True):
             result = await ui.run_miniapp_daily_scheduler(now)
 
@@ -625,8 +633,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wave2", result["wave"])
         self.assertEqual(2, result["count"])
         ids_mock.assert_called_once_with({})
-        start_mock.assert_called_once_with([1003, 1004], now=now)
-        fire_mock.assert_called_once()
+        self.assertEqual([1003, 1004], start_mock.await_args.args[0]["send_as_ids"])
 
     async def test_miniapp_daily_scheduler_waits_when_global_disabled(self):
         state_module._meta_state["miniapp_auto_config"] = {
@@ -647,6 +654,27 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         snapshot = ui.get_miniapp_status_snapshot()["automation"]
         self.assertFalse(snapshot["trial_daily_done_today"])
         self.assertFalse(snapshot["trial_daily_waves"][0]["done_today"])
+
+    async def test_miniapp_daily_scheduler_allows_public_trial_during_maintenance_pause(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            "cave_public_small_world_enabled": False,
+            "cave_public_treasure_enabled": False,
+            "cave_public_trial_enabled": True,
+        }
+        now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "get_global_enabled", return_value=False), \
+                patch.object(ui, "get_global_pause_source", return_value="tianzun_maintenance"), \
+                patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {"batch_id": "maintenance-batch"}))) as start_mock, \
+                patch.object(ui, "save_state", return_value=True):
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertTrue(result["started"])
+        self.assertEqual("maintenance-batch", result["batch_id"])
+        start_mock.assert_awaited_once()
 
     async def test_miniapp_daily_scheduler_legacy_done_counts_as_both_waves(self):
         state_module._meta_state["miniapp_auto_config"] = {
@@ -670,7 +698,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["trial_daily_waves"][0]["done_today"])
         self.assertTrue(snapshot["trial_daily_waves"][1]["done_today"])
 
-    async def test_miniapp_daily_scheduler_preserves_legacy_enabled_config(self):
+    async def test_miniapp_daily_scheduler_requires_public_entry_url(self):
         state_module._meta_state["miniapp_auto_config"] = {
             "trial_daily_enabled": True,
         }
@@ -679,8 +707,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(ui, "start_trial_miniapp_batch_run") as start_mock:
             result = await ui.run_miniapp_daily_scheduler(now)
 
-        self.assertEqual({"started": False, "reason": "no_enabled_identity", "wave": "wave1"}, result)
-        ids_mock.assert_called_once()
+        self.assertEqual({"started": False, "reason": "public_entry_url_missing"}, result)
+        ids_mock.assert_not_called()
         start_mock.assert_not_called()
         snapshot = ui.get_miniapp_status_snapshot()["automation"]
         self.assertTrue(snapshot["trial_daily_enabled"])
@@ -713,11 +741,16 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         start_mock.assert_not_called()
 
     def test_miniapp_status_snapshot_is_safe_and_includes_cave_treasure(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+        }
         snapshot = ui.get_miniapp_status_snapshot()
         text = json.dumps(snapshot, ensure_ascii=False)
         adapters = {item["game_key"]: item for item in snapshot["adapters"]}
         probe_commands = {item["game_key"]: item["command"] for item in snapshot["entry_probe_commands"]}
         manual_run_commands = {item["game_key"]: item["command"] for item in snapshot["manual_run_commands"]}
+        self.assertTrue(snapshot["automation"]["cave_public_entry_url_configured"])
+        self.assertNotIn("df_SECRET999", text)
         batch_run_commands = {item["game_key"]: item for item in snapshot["batch_run_commands"]}
 
         self.assertIn("cave_treasure", adapters)
@@ -764,6 +797,19 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("initData=", text)
         self.assertNotIn("hash=", text)
         self.assertNotIn("df_SECRET", text)
+
+    def test_cave_public_deep_status_is_due_only_for_enabled_due_identity(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            self.assertTrue(ui._cave_public_background_action_due("deep_status", 1001, now))
+            state_module.state["next_deep_retreat_time"] = now + 3600
+            self.assertFalse(ui._cave_public_background_action_due("deep_status", 1001, now))
+            state_module.state["deep_retreat_enabled"] = False
+            state_module.state["next_deep_retreat_time"] = now - 1
+            self.assertFalse(ui._cave_public_background_action_due("deep_status", 1001, now))
 
 
 if __name__ == "__main__":

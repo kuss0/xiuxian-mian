@@ -238,6 +238,15 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
         self.assertNotIn("df_SECRET999", json.dumps(request["safe_summary"], ensure_ascii=False))
 
+        status_request = cave_treasure_miniapp.build_cave_tianjige_command_request(
+            ".元婴状态",
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            player_id=8659059191,
+        )
+        self.assertEqual(".元婴状态", status_request["payload"]["command"])
+        self.assertEqual(8659059191, status_request["payload"]["playerId"])
+
         with self.assertRaises(ValueError):
             cave_treasure_miniapp.build_cave_tianjige_command_request(
                 ".闭关修炼",
@@ -750,6 +759,26 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual("daily_games_exhausted", result["events"][-1]["reason"])
         self.assertNotIn("df_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
+
+    def test_cave_treasure_start_carries_explicit_selected_player_id(self):
+        start_payloads = []
+
+        def transport(request):
+            start_payloads.append(dict(request["payload"]))
+            return 200, {
+                "ok": True,
+                "dwelling": {"hunt": {"used": 3, "limit": 3, "remaining": 0, "actionPoints": 0}},
+            }
+
+        result = cave_treasure_miniapp.run_cave_treasure_miniapp_lab_flow(
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            player_id=-1003820064579,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(-1003820064579, start_payloads[0]["playerId"])
 
     def test_cave_treasure_huntrun_only_replies_keep_daily_counter_context(self):
         calls = []

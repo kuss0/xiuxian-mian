@@ -61,9 +61,20 @@ def build_stargazer_miniapp_adapter(
     )
 
 
-def build_stargazer_miniapp_request(endpoint, *, token, init_data_session=None, init_data="", payload=None, adapter=None):
+def build_stargazer_miniapp_request(
+    endpoint,
+    *,
+    token,
+    init_data_session=None,
+    init_data="",
+    player_id=None,
+    payload=None,
+    adapter=None,
+):
     adapter = adapter or build_stargazer_miniapp_adapter()
     request_payload = {"token": str(token or "").strip()}
+    if player_id not in (None, ""):
+        request_payload["playerId"] = int(player_id)
     request_payload.update(dict(payload or {}))
     return build_miniapp_http_request(
         adapter,
@@ -306,7 +317,15 @@ def choose_stargazer_farm_action(farm_state, *, star_choice=""):
     return {"action": "inspect", "plotKey": "", "reason": "unknown"}
 
 
-def build_stargazer_farm_action_request(decision, *, token, init_data_session=None, init_data="", adapter=None):
+def build_stargazer_farm_action_request(
+    decision,
+    *,
+    token,
+    init_data_session=None,
+    init_data="",
+    player_id=None,
+    adapter=None,
+):
     decision = dict(decision or {})
     action = str(decision.get("action") or "").strip()
     if action not in STARGAZER_MINIAPP_ACTIONS:
@@ -319,6 +338,7 @@ def build_stargazer_farm_action_request(decision, *, token, init_data_session=No
         token=token,
         init_data_session=init_data_session,
         init_data=init_data,
+        player_id=player_id,
         payload=payload,
         adapter=adapter,
     )
@@ -399,6 +419,7 @@ def run_stargazer_miniapp_lab_flow(
     *,
     token,
     init_data,
+    player_id=None,
     star_choice="",
     transport,
     adapter=None,
@@ -418,7 +439,13 @@ def run_stargazer_miniapp_lab_flow(
     action_counts = {"soothe": 0, "collect": 0, "pull": 0}
     item_deltas = {}
 
-    start_request = build_stargazer_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+    start_request = build_stargazer_miniapp_request(
+        "start",
+        token=token,
+        init_data=init_data,
+        player_id=player_id,
+        adapter=adapter,
+    )
     start_result = execute_miniapp_http_request(
         start_request,
         transport,
@@ -455,6 +482,7 @@ def run_stargazer_miniapp_lab_flow(
             decision,
             token=token,
             init_data=init_data,
+            player_id=player_id,
             adapter=adapter,
         )
         action_result = execute_miniapp_http_request(
@@ -495,6 +523,8 @@ async def run_stargazer_miniapp_production_flow(
     token,
     webview_url,
     star_choice="",
+    init_data="",
+    player_id=None,
     transport=None,
     adapter=None,
     sleeper=None,
@@ -505,11 +535,17 @@ async def run_stargazer_miniapp_production_flow(
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_stargazer_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_stargazer_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
         return await asyncio.to_thread(
             run_stargazer_miniapp_lab_flow,
             token=token,
             init_data=init_data,
+            player_id=player_id,
             star_choice=star_choice,
             transport=transport or _requests_transport,
             adapter=adapter,

@@ -6,7 +6,7 @@ import time
 import requests
 from telethon import functions
 
-from ..config import CMD_YUANYING, TG_REQUESTS_PROXIES
+from ..config import CMD_YUANYING, CMD_YUANYING_STATUS, TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
@@ -66,7 +66,7 @@ CAVE_SMALL_WORLD_ACTIONS = frozenset({
     "foster_beast",
     "recall_beast",
 })
-CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({CMD_YUANYING})
+CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({CMD_YUANYING, CMD_YUANYING_STATUS})
 CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial"})
 
 _RATIO_RE = re.compile(r"(?P<label>神识|出手|次数|游戏|局数)?\s*[:：]?\s*(?P<a>\d+)\s*/\s*(?P<b>\d+)")
@@ -110,11 +110,19 @@ def build_cave_treasure_miniapp_request(endpoint, *, token, init_data_session=No
 def normalize_cave_tianjige_command(command):
     normalized = re.sub(r"\s+", " ", str(command or "").strip())
     if normalized not in CAVE_TIANJIGE_ALLOWED_COMMANDS:
-        raise ValueError("洞府天机阁自动化仅允许 .元婴出窍")
+        raise ValueError("洞府天机阁自动化仅允许 .元婴状态 / .元婴出窍")
     return normalized
 
 
-def build_cave_tianjige_command_request(command, *, token, init_data_session=None, init_data="", adapter=None):
+def build_cave_tianjige_command_request(
+    command,
+    *,
+    token,
+    init_data_session=None,
+    init_data="",
+    player_id=None,
+    adapter=None,
+):
     """Build a strictly whitelisted Tianjige command-center request."""
     normalized_command = normalize_cave_tianjige_command(command)
     return build_cave_treasure_miniapp_request(
@@ -122,7 +130,10 @@ def build_cave_tianjige_command_request(command, *, token, init_data_session=Non
         token=token,
         init_data_session=init_data_session,
         init_data=init_data,
-        payload={"command": normalized_command},
+        payload={
+            "command": normalized_command,
+            **({"playerId": int(player_id)} if player_id not in (None, "") else {}),
+        },
         adapter=adapter,
     )
 
@@ -984,6 +995,7 @@ def run_cave_treasure_miniapp_lab_flow(
     max_steps=32,
     capture_sink=None,
     capture_source="",
+    player_id=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -994,7 +1006,13 @@ def run_cave_treasure_miniapp_lab_flow(
         return _flow_result(False, "failed", error="initData missing")
 
     events = []
-    start_request = build_cave_treasure_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+    start_request = build_cave_treasure_miniapp_request(
+        "start",
+        token=token,
+        init_data=init_data,
+        payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
+        adapter=adapter,
+    )
     start_result = execute_miniapp_http_request(
         start_request,
         transport,
@@ -1087,12 +1105,19 @@ async def run_cave_treasure_miniapp_production_flow(
     max_steps=32,
     capture_sink=None,
     capture_source="",
+    init_data="",
+    player_id=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
         return await asyncio.to_thread(
             run_cave_treasure_miniapp_lab_flow,
             token=token,
@@ -1104,6 +1129,7 @@ async def run_cave_treasure_miniapp_production_flow(
             max_steps=max_steps,
             capture_sink=capture_sink,
             capture_source=capture_source,
+            player_id=player_id,
         )
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
@@ -1115,6 +1141,7 @@ async def run_cave_dwelling_start_production_flow(
     token,
     webview_url,
     init_data="",
+    player_id=None,
     transport=None,
     adapter=None,
     sleeper=None,
@@ -1131,7 +1158,13 @@ async def run_cave_dwelling_start_production_flow(
             webview_url=webview_url,
             adapter=adapter,
         )
-        start_request = build_cave_treasure_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+        start_request = build_cave_treasure_miniapp_request(
+            "start",
+            token=token,
+            init_data=init_data,
+            payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
+            adapter=adapter,
+        )
         start_result = await asyncio.to_thread(
             execute_miniapp_http_request,
             start_request,
@@ -1164,14 +1197,27 @@ async def run_cave_small_world_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    init_data="",
+    player_id=None,
 ):
     """Read the dwelling once and execute at most one planned small-world action."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
-        start_request = build_cave_treasure_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        start_request = build_cave_treasure_miniapp_request(
+            "start",
+            token=token,
+            init_data=init_data,
+            payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
+            adapter=adapter,
+        )
         start_result = await asyncio.to_thread(
             execute_miniapp_http_request,
             start_request,
@@ -1238,6 +1284,8 @@ async def run_cave_tianjige_command_production_flow(
     token,
     webview_url,
     command,
+    init_data="",
+    player_id=None,
     transport=None,
     adapter=None,
     sleeper=None,
@@ -1253,11 +1301,17 @@ async def run_cave_tianjige_command_production_flow(
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
         request = build_cave_tianjige_command_request(
             command,
             token=token,
             init_data=init_data,
+            player_id=player_id,
             adapter=adapter,
         )
         result = await asyncio.to_thread(
@@ -1336,13 +1390,19 @@ async def run_cave_deep_seclusion_action_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    init_data="",
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     action = str(action or "").strip()
     try:
-        init_data = await request_cave_treasure_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
         request = build_cave_deep_seclusion_action_request(action, token=token, init_data=init_data, adapter=adapter)
         action_result = await asyncio.to_thread(
             execute_miniapp_http_request,

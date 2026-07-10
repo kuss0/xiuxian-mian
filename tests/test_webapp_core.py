@@ -1202,6 +1202,38 @@ class WebAppCoreTests(unittest.TestCase):
                 trial_miniapp.TRIAL_MINIAPP_PLANARITY_MIN_NODE_DISTANCE,
             )
 
+    def test_trial_planarity_preserves_outer_cycle_for_arbitrary_live_node_ids(self):
+        outer = ["node_a1", "node_b22", "node_c333", "node_d4", "node_e55", "node_f666"]
+        center = "hub_live"
+        challenge = {
+            "mode": "tianjiPlanarityV1",
+            "challengeId": "live-wheel-arbitrary-ids",
+            "minDurationMs": 3200,
+            "maxDurationMs": 90000,
+            "nodes": [
+                {"id": outer[3], "x": 50, "y": 50},
+                {"id": outer[0], "x": 50, "y": 50},
+                {"id": center, "x": 50, "y": 50},
+                {"id": outer[5], "x": 50, "y": 50},
+                {"id": outer[2], "x": 50, "y": 50},
+                {"id": outer[1], "x": 50, "y": 50},
+                {"id": outer[4], "x": 50, "y": 50},
+            ],
+            "edges": [
+                *({"from": outer[index], "to": outer[(index + 1) % len(outer)]} for index in range(len(outer))),
+                *({"from": center, "to": node_id} for node_id in reversed(outer)),
+            ],
+        }
+
+        proof = trial_miniapp.build_trial_proof(challenge, rng=__import__("random").Random(3))
+        positions = {node_id: (point["x"], point["y"]) for node_id, point in proof["positions"].items()}
+
+        self.assertEqual(0, trial_miniapp._planarity_crossing_count(challenge["edges"], positions))
+        self.assertGreaterEqual(
+            trial_miniapp._planarity_min_node_distance(positions),
+            trial_miniapp.TRIAL_MINIAPP_PLANARITY_MIN_NODE_DISTANCE,
+        )
+
     def test_trial_lab_flow_solves_and_finishes_without_secret_leak(self):
         calls = []
         sleeps = []

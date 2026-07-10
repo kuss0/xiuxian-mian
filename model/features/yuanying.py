@@ -19,7 +19,7 @@ from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..identity_levels import parse_yuanying_level_text, update_identity_level_record
 from ..persistence import mark_dirty, save_state
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_profile, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -389,6 +389,8 @@ async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None
 
 
 async def run_yuanying_scheduler(now):
+    if is_cave_public_auto_enabled("yuanying"):
+        return
     await run_phaseful_scheduler(
         YUANYING_SPEC,
         now,

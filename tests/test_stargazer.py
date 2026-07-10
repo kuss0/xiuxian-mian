@@ -635,5 +635,17 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(130, record["items"]["灵石"])
 
 
+class StargazerPublicMiniAppGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_cave_automation_suppresses_legacy_scheduler(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            with patch.object(stargazer, "is_cave_public_auto_enabled", return_value=True), \
+                    patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock()) as queue_mock:
+                await stargazer.run_stargazer_scheduler(1000.0)
+        queue_mock.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()
