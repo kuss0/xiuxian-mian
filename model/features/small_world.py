@@ -93,6 +93,7 @@ RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
 RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇\s*【([^】]+)】")
 RE_SMALL_WORLD_FAITH_DAMAGE = re.compile(r"惨重代价\s*[:：]\s*信仰(?:崩塌|动摇)\s*-\s*\d+\s*点")
 RE_SMALL_WORLD_RELIEF_DAMAGE = re.compile(r"惨重代价\s*[:：].*(?:人口|稳定|瘟疫|王朝更迭)")
+RE_SMALL_WORLD_EXPLICIT_RELIEF = re.compile(r"(?:请|需|建议|应|立即|速速).{0,12}(?:使用\s*)?\.?\s*神迹\s+赈灾")
 RE_SMALL_WORLD_INCENSE_LOSS = re.compile(r"惨重代价\s*[:：]\s*库存香火损失\s*(\d+)\s*点")
 RE_SMALL_WORLD_PREACH_PANEL = re.compile(r"【神音浩荡】")
 RE_SMALL_WORLD_RELIEF_PANEL = re.compile(r"【天降甘霖】")
@@ -1793,6 +1794,14 @@ def restore_small_world_runtime(now, *, persist=False):
     if not isinstance(pending_tasks, dict):
         pending_tasks = {}
 
+    pending_action = str(state.get("small_world_pending_god_action") or "")
+    pending_reason = str(state.get("small_world_pending_god_reason") or "")
+    if pending_action == "relief" and pending_reason.startswith("灾害:") and pending_reason.endswith("，赈灾安抚"):
+        state["small_world_pending_god_action"] = "preach"
+        state["small_world_pending_god_reason"] = pending_reason.removesuffix("，赈灾安抚") + "，布道安抚"
+        state["small_world_last_error"] = "灾害神迹已按默认布道策略校正"
+        mark_dirty()
+
     query_msg_id = int(state.get("small_world_query_msg_id", 0) or 0)
     if phase == "query_pending" and query_msg_id > 0 and query_msg_id not in pending_tasks:
         _clear_chain_pending()
@@ -1821,9 +1830,14 @@ def _disaster_kind(raw_text):
 def _disaster_god_action(raw_text):
     raw_text = str(raw_text or "")
     kind = _disaster_kind(raw_text)
-    if RE_SMALL_WORLD_RELIEF_DAMAGE.search(raw_text) or kind in {"灭世瘟疫", "王朝更迭"}:
+    if RE_SMALL_WORLD_EXPLICIT_RELIEF.search(raw_text):
         return "relief", f"灾害: {kind or '小世界'}，赈灾安抚"
-    if "邪神" in raw_text or RE_SMALL_WORLD_FAITH_DAMAGE.search(raw_text):
+    if (
+        "邪神" in raw_text
+        or RE_SMALL_WORLD_FAITH_DAMAGE.search(raw_text)
+        or RE_SMALL_WORLD_RELIEF_DAMAGE.search(raw_text)
+        or kind in {"灭世瘟疫", "王朝更迭"}
+    ):
         return "preach", f"灾害: {kind or '信仰异常'}，布道安抚"
     return "", ""
 

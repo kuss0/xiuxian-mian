@@ -1839,6 +1839,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_god_cooldown_until"] = now + 600
 
             with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
                 patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
                 patch.object(small_world.random, "uniform", return_value=60),
                 patch.object(small_world, "save_state"),
@@ -1854,14 +1855,36 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
+            preach_mock.assert_not_awaited()
             relief_mock.assert_not_awaited()
-            self.assertEqual("relief", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
             self.assertEqual(
                 small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
                 state_module.state["small_world_pending_god_priority"],
             )
             self.assertIn("地脉翻身", state_module.state["small_world_pending_god_reason"])
             self.assertEqual(now + 600 + 60, state_module.state["next_small_world_time"])
+
+    async def test_restore_converts_legacy_inferred_disaster_relief_to_default_preach(self):
+        send_as_id = 8659059311
+        now = 4400.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_pending_god_action"] = "relief"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 王朝更迭，赈灾安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["next_small_world_time"] = now + 600
+
+            with patch.object(small_world, "mark_dirty") as dirty_mock:
+                changed = small_world.restore_small_world_runtime(now)
+
+            self.assertFalse(changed)
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("灾害: 王朝更迭，布道安抚", state_module.state["small_world_pending_god_reason"])
+            self.assertIn("默认布道", state_module.state["small_world_last_error"])
+            dirty_mock.assert_called_once()
 
     async def test_evil_god_incense_loss_queues_disaster_preach(self):
         send_as_id = 8659059195
