@@ -4,6 +4,7 @@ import sys
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -68,6 +69,28 @@ def _behavior_coverage_tokens(spec):
 
 
 class AppSchedulerContractTests(unittest.TestCase):
+    def test_bot_health_accepts_observed_command_reply_message_object(self):
+        command_msg_id = 13567
+        app._observed_game_commands.clear()
+        try:
+            app._observe_game_command_for_bot_evidence(
+                123456,
+                ".点卯",
+                command_msg_id,
+                now=1000.0,
+            )
+
+            self.assertTrue(
+                app._is_bot_health_reply_evidence(
+                    "点卯成功！你获得了 100 点宗门贡献。",
+                    SimpleNamespace(id=command_msg_id),
+                    {},
+                    now=1001.0,
+                )
+            )
+        finally:
+            app._observed_game_commands.clear()
+
     def test_phaseful_identity_schedulers_are_before_ordinary_schedulers(self):
         contract = app.get_identity_scheduler_order_contract()
 

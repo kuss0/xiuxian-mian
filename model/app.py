@@ -746,6 +746,15 @@ def _looks_like_unanchored_game_broadcast(text):
     return any(marker in raw_text for marker in BOT_HEALTH_BROADCAST_MARKERS)
 
 
+def _bot_health_reply_to_msg_id(reply_to):
+    """Normalize either a Telegram message object or a raw message id."""
+    raw_value = getattr(reply_to, "id", reply_to)
+    try:
+        return int(raw_value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _is_bot_health_reply_evidence(text, reply_to=None, reply_context=None, *, now=None):
     """Return true only for command-linked bot replies, not passive broadcasts."""
     raw_text = str(text or "").strip()
@@ -753,10 +762,7 @@ def _is_bot_health_reply_evidence(text, reply_to=None, reply_context=None, *, no
         return False
     if _looks_like_unanchored_game_broadcast(raw_text):
         return False
-    try:
-        reply_to = int(reply_to or 0)
-    except (TypeError, ValueError):
-        reply_to = 0
+    reply_to = _bot_health_reply_to_msg_id(reply_to)
     reply_context = reply_context or {}
 
     routed_identity_id = int(reply_context.get("send_as_id") or 0)
