@@ -6945,6 +6945,38 @@ def _cave_public_background_action_due(action, identity_id, now):
     return False
 
 
+def _cave_public_background_candidate_sort_key(action, identity_id, now):
+    action = str(action or "").strip().lower()
+    priority = {
+        "yuanying": 0,
+        "deep_status": 1,
+        "small_world": 2,
+        "stargazer": 3,
+        "treasure": 4,
+    }.get(action, 9)
+    due_at = 0.0
+    with use_identity(identity_id):
+        if action == "yuanying":
+            due_at = float(state.get("next_yuanying_time", 0) or 0)
+        elif action == "deep_status":
+            due_at = float(state.get("next_deep_retreat_time", 0) or 0)
+        elif action == "small_world":
+            due_at = float(state.get("next_small_world_time", 0) or 0)
+        elif action == "stargazer":
+            due_times = [
+                float(item)
+                for item in (
+                    state.get("next_stargazer_panel_time", 0),
+                    state.get("stargazer_followup_due_at", 0),
+                )
+                if float(item or 0) > 0
+            ]
+            due_at = min(due_times) if due_times else float(now)
+    if due_at <= 0:
+        due_at = float(now)
+    return priority, due_at, int(identity_id)
+
+
 async def _run_cave_public_background_scheduler(now, config):
     now = float(now or time.time())
     public_entry_url = str(config.get("cave_public_entry_url") or "").strip()
@@ -6956,11 +6988,11 @@ async def _run_cave_public_background_scheduler(now, config):
         return {"started": False, "reason": "background_throttled"}
 
     action_flags = (
-        ("small_world", "cave_public_small_world_enabled"),
-        ("deep_status", "cave_public_deep_status_enabled"),
-        ("treasure", "cave_public_treasure_enabled"),
         ("yuanying", "cave_public_yuanying_enabled"),
+        ("deep_status", "cave_public_deep_status_enabled"),
+        ("small_world", "cave_public_small_world_enabled"),
         ("stargazer", "cave_public_stargazer_enabled"),
+        ("treasure", "cave_public_treasure_enabled"),
     )
     enabled_action_flags = [(action, flag) for action, flag in action_flags if config.get(flag)]
     if not enabled_action_flags:
@@ -6978,9 +7010,9 @@ async def _run_cave_public_background_scheduler(now, config):
         _cave_public_background_state["next_run_at"] = now + 60
         return {"started": False, "reason": "no_due_public_action"}
 
-    cursor = int(_cave_public_background_state.get("cursor", 0) or 0) % len(candidates)
-    identity_id, action = candidates[cursor]
-    _cave_public_background_state["cursor"] = (cursor + 1) % max(1, len(candidates))
+    candidates.sort(key=lambda item: _cave_public_background_candidate_sort_key(item[1], item[0], now))
+    identity_id, action = candidates[0]
+    _cave_public_background_state["cursor"] = 0
     ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
     delay_sec = _normalize_cave_public_batch_delay(config.get("cave_public_delay_sec"))
     _cave_public_background_state.update({

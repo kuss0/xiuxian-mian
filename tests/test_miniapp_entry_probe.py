@@ -811,6 +811,24 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["next_deep_retreat_time"] = now - 1
             self.assertFalse(ui._cave_public_background_action_due("deep_status", 1001, now))
 
+    def test_cave_public_background_prioritizes_oldest_phaseful_actions(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        state_module.ensure_identity_registered(1002)
+        with state_module.use_identity(1001):
+            state_module.state["next_yuanying_time"] = now - 60
+            state_module.state["next_deep_retreat_time"] = now - 600
+        with state_module.use_identity(1002):
+            state_module.state["next_yuanying_time"] = now - 300
+
+        candidates = [(1001, "treasure"), (1001, "deep_status"), (1001, "yuanying"), (1002, "yuanying")]
+        candidates.sort(key=lambda item: ui._cave_public_background_candidate_sort_key(item[1], item[0], now))
+
+        self.assertEqual((1002, "yuanying"), candidates[0])
+        self.assertEqual((1001, "yuanying"), candidates[1])
+        self.assertEqual((1001, "deep_status"), candidates[2])
+        self.assertEqual((1001, "treasure"), candidates[3])
+
 
 if __name__ == "__main__":
     unittest.main()
