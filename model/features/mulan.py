@@ -862,16 +862,19 @@ async def _send_mulan_command(command, now, phase):
         return False
 
     queue_timeout = MULAN_SEND_QUEUE_TIMEOUT_SEC
-    if command.startswith(CMD_MULAN_PUBLISH) or command.startswith(CMD_MULAN_SUPPORT):
+    is_critical_chain = command.startswith(CMD_MULAN_PUBLISH) or command.startswith(CMD_MULAN_SUPPORT)
+    if is_critical_chain:
         queue_timeout = MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC
 
-    msg = await send_game_command(
-        command,
-        track=False,
-        max_retry=0,
-        source_module="慕兰烽烟",
-        queue_timeout=queue_timeout,
-    )
+    send_kwargs = {
+        "track": False,
+        "max_retry": 0,
+        "source_module": "慕兰烽烟",
+        "queue_timeout": queue_timeout,
+    }
+    if is_critical_chain:
+        send_kwargs["priority"] = "chain"
+    msg = await send_game_command(command, **send_kwargs)
     if not msg:
         if was_last_game_send_blocked_by_global(identity_id, command):
             state["next_mulan_time"] = float(now + random.uniform(10 * 60, 30 * 60))

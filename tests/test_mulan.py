@@ -997,6 +997,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once()
             self.assertEqual(".公开军报 2", send_mock.await_args.args[0])
             self.assertEqual(mulan.MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC, send_mock.await_args.kwargs["queue_timeout"])
+            self.assertEqual("chain", send_mock.await_args.kwargs["priority"])
 
     async def test_cd_reply_uses_real_wait_text(self):
         identity_id = self._prepare_identity()
