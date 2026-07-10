@@ -619,6 +619,38 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertGreater(state_module.state["next_tianti_climb_time"], now)
             audit_mock.assert_awaited_once()
 
+    def test_climb_result_clears_obsolete_gangfeng_pending_retry(self):
+        send_as_id = 95023
+        now = 23_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        reply_to = SimpleNamespace(id=16898, raw_text=".登天阶")
+        text = (
+            "【凌霄云阶】\n"
+            "你消耗了 510 点修为，踏上了第 8 阶云阶。\n"
+            "九天罡风迎面如刀，你却借势淬体，反而一鼓作气更进一步。\n"
+            "本次获得 190 点修为、51 点宗门贡献。\n"
+            "当前云阶进度: 8 / 12，罡风淬体: 12 / 12。"
+        )
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti.random, "randint", return_value=0), \
+                patch.object(tianti, "send_audit_log", new=AsyncMock()), \
+                patch.object(tianti, "save_state"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["pending_tasks"] = {
+                16711: {"cmd": tianti.CMD_TIANTI_GANGFENG, "sent_at": now - 600},
+            }
+
+            handled = asyncio.run(tianti.handle_tianti_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="tianti_climb",
+            ))
+
+            self.assertTrue(handled)
+            self.assertEqual({}, state_module.state["pending_tasks"])
+
     def test_passive_climb_no_progress_reply_updates_state(self):
         send_as_id = 95022
         now = 22_000.0

@@ -17,7 +17,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_pending_command, get_tianti_rank_choice, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -801,6 +801,18 @@ def _apply_tianti_climb_result(climb_result_match):
     state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
 
 
+def _clear_obsolete_gangfeng_pending_after_climb():
+    removed_ids = clear_pending_tasks_by_commands(
+        {CMD_TIANTI_GANGFENG},
+        send_as_id=get_current_identity_id(),
+    )
+    if removed_ids:
+        console_log(
+            f"🌪️ 登阶结果已落地，清理上一登阶窗口的罡风待办：{','.join(str(item) for item in removed_ids)}"
+        )
+    return removed_ids
+
+
 def get_tianti_status_text():
     now = datetime.now(TZ_LOCAL).timestamp()
     lines = [
@@ -928,6 +940,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         if climb_cycle_match:
             state["tianti_cycle_count"] = int(climb_cycle_match.group(1) or 0)
         _apply_tianti_climb_result(climb_result_match)
+        _clear_obsolete_gangfeng_pending_after_climb()
         state["tianti_last_error"] = ""
         reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
         _schedule_tianti_climb_retry(now, persist=False)
@@ -945,6 +958,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         state["tianti_last_gain_xiuwei"] = 0
         state["tianti_last_gain_contrib"] = 0
         _apply_tianti_climb_result(climb_result_match)
+        _clear_obsolete_gangfeng_pending_after_climb()
         reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
         _schedule_tianti_climb_retry(now, persist=False)
         _calc_tianti_wenxin_plan(now)

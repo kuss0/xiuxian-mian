@@ -1377,7 +1377,8 @@ def get_miniapp_auto_config():
     return records if isinstance(records, dict) else {}
 
 
-def is_cave_public_auto_enabled(action):
+def is_cave_public_auto_enabled(action, identity_id=None):
+    normalized_action = str(action or "").strip().lower()
     flag_by_action = {
         "small_world": "cave_public_small_world_enabled",
         "deep_retreat": "cave_public_deep_status_enabled",
@@ -1387,11 +1388,20 @@ def is_cave_public_auto_enabled(action):
         "stargazer": "cave_public_stargazer_enabled",
         "yuanying": "cave_public_yuanying_enabled",
     }
-    flag = flag_by_action.get(str(action or "").strip().lower())
+    flag = flag_by_action.get(normalized_action)
     if not flag:
         return False
     config = get_miniapp_auto_config()
-    return bool(str(config.get("cave_public_entry_url") or "").strip() and config.get(flag))
+    if not bool(str(config.get("cave_public_entry_url") or "").strip() and config.get(flag)):
+        return False
+    if normalized_action not in {"small_world", "deep_retreat", "deep_status"}:
+        return True
+    try:
+        current_identity_id = int(identity_id or get_current_identity_id() or 0)
+        account_id = int(get_identity_account(current_identity_id) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return current_identity_id > 0 and account_id == current_identity_id
 
 
 def set_miniapp_auto_config(records):

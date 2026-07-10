@@ -24,6 +24,7 @@ TIANXING_TIMELINE_SEND_TIMEOUT_SEC = 75
 TIANXING_TIMELINE_QUEUE_RETRY_MAX_SEC = 45
 TIANXING_CHANGE_ROUTE_PREPARE_MIN_SEC = 10 * 60
 TIANXING_TIME_BUFFER_SEC = 60
+WILD_TRAINING_DEEP_RETREAT_GUARD_SEC = 5 * 60
 DEEP_RETREAT_BUSY_PHASES = {
     "launching",
     "queued_launch",
@@ -259,10 +260,13 @@ def _tianxing_action_status(
     prior_will_consume = bool(prior_consume_at > now and prior_consume_at < due_at)
     deep_phase = str(deep_retreat_phase or "").strip()
     deep_until = _epoch(next_deep_retreat_time)
-    wild_blocked_by_deep_retreat = (
-        action == "野外历练"
-        and deep_phase in DEEP_RETREAT_BUSY_PHASES
-        and (deep_until <= 0 or due_at < deep_until + TIANXING_TIME_BUFFER_SEC)
+    wild_blocked_by_deep_retreat = action == "野外历练" and (
+        deep_phase in (DEEP_RETREAT_BUSY_PHASES - {"running"})
+        or (
+            deep_phase == "running"
+            and deep_until > 0
+            and deep_until <= due_at + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC
+        )
     )
     if wild_blocked_by_deep_retreat:
         level = "watch"

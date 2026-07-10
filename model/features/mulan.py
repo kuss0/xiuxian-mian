@@ -403,8 +403,12 @@ def _invalidate_stale_mulan_report_pool(now):
         return False
     if str(state.get("mulan_report_day") or "") == _mulan_day_key(now):
         return False
+    phase = str(state.get("mulan_phase") or MULAN_PHASE_IDLE).strip()
+    next_time = float(state.get("next_mulan_time", 0) or 0)
     _clear_mulan_pending()
     _clear_mulan_report_pool()
+    if phase == MULAN_PHASE_COOLDOWN and next_time > float(now or 0):
+        return True
     state["mulan_phase"] = MULAN_PHASE_IDLE
     state["next_mulan_time"] = float(now or 0)
     state["mulan_last_result"] = "旧日军报已失效，重新搜集"
@@ -772,11 +776,7 @@ def _recover_mulan_unanswered_pending(now, phase, *, reply_to_msg_id=0):
 def _finish_mulan_cycle(now, result, *, delay_sec=None, error=""):
     _clear_mulan_pending()
     state["mulan_phase"] = MULAN_PHASE_COOLDOWN
-    state["mulan_pending_ids"] = ""
-    state["mulan_current_id"] = 0
-    state["mulan_public_id"] = 0
-    state["mulan_public_text"] = ""
-    state["mulan_support_action"] = ""
+    _clear_mulan_report_pool()
     state["mulan_last_result"] = str(result or "").strip()
     state["mulan_last_error"] = str(error or "").strip()
     state["mulan_cycle_count"] = int(state.get("mulan_cycle_count", 0) or 0) + 1

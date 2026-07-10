@@ -1160,6 +1160,22 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         self.assertIn("1001:cave_deep_retreat", state_module.get_miniapp_state_records())
 
+    def test_cave_public_deep_status_only_replaces_account_identity_scheduler(self):
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            "cave_public_deep_status_enabled": True,
+            "cave_public_yuanying_enabled": True,
+        })
+        state_module.set_identity_account(1001, 2001)
+
+        with state_module.use_identity(1001):
+            self.assertFalse(state_module.is_cave_public_auto_enabled("deep_retreat"))
+            self.assertTrue(state_module.is_cave_public_auto_enabled("yuanying"))
+
+        state_module.set_identity_account(1001, 1001)
+        with state_module.use_identity(1001):
+            self.assertTrue(state_module.is_cave_public_auto_enabled("deep_retreat"))
+
     async def test_cave_public_deep_status_unrecognized_reply_defers_thirty_minutes(self):
         now = 1_700_000_001.0
         flow_result = {"ok": True, "status": "status", "data": {"actionResult": {"ok": True, "rawMessage": "状态读取完成"}}}

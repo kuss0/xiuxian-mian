@@ -813,7 +813,8 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_local_punishment_mentions_identity_and_uses_high_priority(self):
         identity_id = self._prepare_identity(username="march_7777")
-        state_module.state["pending_tasks"] = {123: {"command": ".野外历练"}}
+        with state_module.use_identity(identity_id):
+            state_module.state["pending_tasks"] = {123: {"command": ".野外历练"}}
         state_module.state["tiandao_judgement_pending"] = {
             "1:10": {"identity_id": identity_id, "target": "march_7777"}
         }
@@ -831,7 +832,8 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertFalse(state_module.get_identity_enabled(identity_id))
-        self.assertEqual({}, state_module.state["pending_tasks"])
+        with state_module.use_identity(identity_id):
+            self.assertEqual({}, state_module.state["pending_tasks"])
         self.assertEqual({}, state_module.state["tiandao_judgement_pending"])
         audit_mock.assert_awaited_once()
         self.assertIn("天道裁决命中本地身份", audit_mock.await_args.args[0])

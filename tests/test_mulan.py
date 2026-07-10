@@ -742,6 +742,44 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("collect_pending", state_module.state["mulan_phase"])
             self.assertEqual({}, state_module.state["mulan_report_texts"])
 
+    async def test_scheduler_clears_legacy_report_pool_without_releasing_future_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        next_time = now + 8 * 3600
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = mulan.MULAN_PHASE_COOLDOWN
+            state_module.state["mulan_report_texts"] = {"2": "法士营北帐换防"}
+            state_module.state["mulan_report_day"] = ""
+            state_module.state["mulan_last_result"] = "支援完成：奇袭"
+            state_module.state["next_mulan_time"] = next_time
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(mulan.MULAN_PHASE_COOLDOWN, state_module.state["mulan_phase"])
+            self.assertEqual(next_time, state_module.state["next_mulan_time"])
+            self.assertEqual("支援完成：奇袭", state_module.state["mulan_last_result"])
+            self.assertEqual({}, state_module.state["mulan_report_texts"])
+            self.assertEqual("", state_module.state["mulan_report_day"])
+
+    async def test_finish_cycle_discards_per_identity_report_pool(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_report_texts"] = {"3": "法士营北帐换防"}
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now)
+            state_module.state["mulan_support_action"] = "奇袭"
+
+            mulan._finish_mulan_cycle(now, "支援完成：奇袭")
+
+            self.assertEqual({}, state_module.state["mulan_report_texts"])
+            self.assertEqual("", state_module.state["mulan_report_day"])
+            self.assertEqual("", state_module.state["mulan_support_action"])
+
     async def test_timeout_clears_pending_and_schedules_retry(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
