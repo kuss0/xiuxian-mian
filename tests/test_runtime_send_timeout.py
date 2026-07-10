@@ -80,9 +80,11 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             copy.deepcopy(runtime._GAME_SEND_QUEUE_ITEMS),
             copy.deepcopy(runtime._GAME_SEND_BLOCK_LAST),
             dict(runtime._ACCOUNT_RPC_LOCKS),
+            runtime.is_game_send_quiesced(),
         )
         runtime._GAME_SEND_LOCK = asyncio.Lock()
         runtime._ACCOUNT_RPC_LOCKS.clear()
+        runtime.set_game_send_quiesced(False)
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
@@ -102,9 +104,23 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._GAME_SEND_BLOCK_LAST.update(copy.deepcopy(self._queue_snapshot[6]))
         runtime._ACCOUNT_RPC_LOCKS.clear()
         runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[7])
+        runtime.set_game_send_quiesced(self._queue_snapshot[8])
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
+
+    async def test_supervisor_quiesce_blocks_new_game_commands_as_unsent(self):
+        send_as_id = 301299112
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.state["global_enabled"] = True
+        runtime.set_game_send_quiesced(True)
+
+        result = await runtime.send_game_command(".观星台", track=False, send_as_id=send_as_id)
+
+        self.assertIsNone(result)
+        block = runtime.classify_game_send_block(send_as_id, ".观星台")
+        self.assertEqual("supervisor_quiesce", block["code"])
+        self.assertEqual("unsent", block["status"])
 
     async def test_idle_global_slot_sends_without_artificial_wait(self):
         send_as_id = 301299112

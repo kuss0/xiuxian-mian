@@ -804,7 +804,7 @@ def _is_summary_observation_text(spec, text, *, reply_to=0):
     return _is_replayable_summary_consumed_command(spec, text, reply_to=reply_to)
 
 
-async def _send_summary_trigger(spec, console_message):
+async def _send_summary_trigger_unlocked(spec, console_message):
     state[spec.probe_pending_key] = False
     console_log(console_message)
     command = spec.summary_trigger_command
@@ -834,7 +834,7 @@ async def _send_summary_trigger(spec, console_message):
     return True
 
 
-async def _send_passive_summary_trigger(spec, console_message, *, now=None):
+async def _send_passive_summary_trigger_unlocked(spec, console_message, *, now=None):
     """Use one neutral group message to make the game emit an already-due summary."""
     command = str(spec.summary_passive_trigger_command or "").strip()
     if not command:
@@ -879,6 +879,20 @@ def _get_phaseful_launch_lock(spec):
         lock = asyncio.Lock()
         _PHASEFUL_LAUNCH_LOCKS[key] = lock
     return lock
+
+
+async def _send_summary_trigger(spec, console_message):
+    async with _get_phaseful_launch_lock(spec):
+        if _phase(spec) != "summary_due":
+            return False
+        return await _send_summary_trigger_unlocked(spec, console_message)
+
+
+async def _send_passive_summary_trigger(spec, console_message, *, now=None):
+    async with _get_phaseful_launch_lock(spec):
+        if _phase(spec) != "summary_due":
+            return False
+        return await _send_passive_summary_trigger_unlocked(spec, console_message, now=now)
 
 
 async def _send_summary_launch(spec, launch_command, console_message, now=None):

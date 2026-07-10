@@ -359,6 +359,7 @@ _GAME_COMMAND_SENT_OBSERVERS = []
 _GAME_COMMAND_PRE_SEND_GUARDS = []
 _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _GAME_SEND_BLOCK_LAST = {}
+_GAME_SEND_QUIESCED = False
 GAME_SEND_UNKNOWN_BLOCK_CODES = {"send_timeout", "send_exception"}
 GAME_SEND_UNSENT_BLOCK_CODES = {
     "send_queue_timeout",
@@ -374,6 +375,7 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "identity_weak",
     "pre_send_guard",
     "action_guard",
+    "supervisor_quiesce",
 }
 _LOG_BOT_UPDATE_OFFSET = None
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
@@ -483,6 +485,16 @@ def _clear_game_send_block(send_as_id, command):
     latest = _GAME_SEND_BLOCK_LAST.get((identity_id, ""))
     if latest and str(latest.get("command") or "") == raw_command:
         _GAME_SEND_BLOCK_LAST.pop((identity_id, ""), None)
+
+
+def set_game_send_quiesced(enabled=True):
+    global _GAME_SEND_QUIESCED
+    _GAME_SEND_QUIESCED = bool(enabled)
+    return _GAME_SEND_QUIESCED
+
+
+def is_game_send_quiesced():
+    return bool(_GAME_SEND_QUIESCED)
 
 
 def get_last_game_send_block(send_as_id=None, command=None, *, max_age_sec=300):
@@ -3445,6 +3457,9 @@ async def send_game_command(
     )
 
     try:
+        if is_game_send_quiesced():
+            _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
+            return None
         if (
             not get_global_enabled()
             and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}
@@ -4249,6 +4264,7 @@ __all__ = [
     "get_reply_family_commands",
     "is_account_session_error",
     "is_game_send_definitely_unsent",
+    "is_game_send_quiesced",
     "is_game_send_status_unknown",
     "is_identity_weak",
     "is_reply_to_identity_message",
@@ -4269,6 +4285,7 @@ __all__ = [
     "schedule_cleanup",
     "send_audit_log",
     "send_game_command",
+    "set_game_send_quiesced",
     "should_pause_for_bot_health",
     "touch_ui_session",
     "track_reply_chain_message",

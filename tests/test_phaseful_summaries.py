@@ -2257,6 +2257,43 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(0, float(session.get("remote_block_until", 0) or 0))
             self.assertEqual("", session.get("remote_block_reason", ""))
 
+    async def test_concurrent_passive_summary_trigger_sends_only_once(self):
+        send_as_id = 8659059299
+        now = 1_700_000_000.0
+        self._prepare_identity(send_as_id, "PhasefulLock")
+        sent_msg = SimpleNamespace(id=9912991, sent_at=now + 1)
+
+        async def fake_send(*args, **kwargs):
+            await asyncio.sleep(0)
+            return sent_msg
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["next_deep_retreat_time"] = now - 1
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(side_effect=fake_send)) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                results = await asyncio.gather(
+                    _phaseful._send_passive_summary_trigger(
+                        deep_retreat.DEEP_RETREAT_SPEC,
+                        "first",
+                        now=now,
+                    ),
+                    _phaseful._send_passive_summary_trigger(
+                        deep_retreat.DEEP_RETREAT_SPEC,
+                        "second",
+                        now=now,
+                    ),
+                )
+
+            self.assertEqual(1, send_mock.await_count)
+            self.assertEqual([True, False], results)
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(sent_msg.id, state_module.state["last_deep_retreat_summary_msg_id"])
+
     async def test_deep_retreat_already_running_reply_keeps_estimate_without_status_probe(self):
         send_as_id = 8659059214
         now = 1_700_000_490.0

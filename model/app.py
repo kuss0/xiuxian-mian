@@ -227,6 +227,7 @@ from .runtime import (
     run_retry_scheduler,
     schedule_cleanup,
     send_game_command,
+    set_game_send_quiesced,
     should_pause_for_bot_health,
     track_reply_chain_message,
     mono,
@@ -3098,8 +3099,12 @@ async def _sleep_or_stop(stop_event, delay):
         pass
 
 
-async def main_loop(stop_event=None):
+async def main_loop(stop_event=None, quiesce_event=None):
     while stop_event is None or not stop_event.is_set():
+        if quiesce_event is not None and quiesce_event.is_set():
+            _cancel_identity_schedulers()
+            await _sleep_or_stop(stop_event, 1)
+            continue
         now = time.time()
 
         gc_my_msg_ids(now)
@@ -3154,16 +3159,28 @@ async def main_loop(stop_event=None):
 async def main():
     global _log_bot_callback_task, _phaseful_scheduler_task, _small_world_scheduler_task
     stop_event = asyncio.Event()
+    quiesce_event = asyncio.Event()
     loop = asyncio.get_running_loop()
+    set_game_send_quiesced(False)
 
     def request_stop():
         stop_event.set()
+
+    def request_quiesce():
+        set_game_send_quiesced(True)
+        quiesce_event.set()
+        _cancel_identity_schedulers()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, request_stop)
         except (NotImplementedError, RuntimeError):
             signal.signal(sig, lambda _signum, _frame: request_stop())
+    if hasattr(signal, "SIGUSR1"):
+        try:
+            loop.add_signal_handler(signal.SIGUSR1, request_quiesce)
+        except (NotImplementedError, RuntimeError):
+            signal.signal(signal.SIGUSR1, lambda _signum, _frame: request_quiesce())
 
     try:
         await bootstrap()
@@ -3172,7 +3189,7 @@ async def main():
         )
         _phaseful_scheduler_task = asyncio.create_task(_run_phaseful_scheduler_loop(stop_event))
         _small_world_scheduler_task = asyncio.create_task(_run_small_world_scheduler_loop(stop_event))
-        await main_loop(stop_event)
+        await main_loop(stop_event, quiesce_event)
     finally:
         await shutdown()
 

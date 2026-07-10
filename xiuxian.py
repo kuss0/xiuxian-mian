@@ -323,6 +323,20 @@ def _stop_worker(worker):
         worker.wait()
 
 
+def _quiesce_worker(worker):
+    if worker is None or worker.poll() is not None or not hasattr(signal, "SIGUSR1"):
+        return False
+    try:
+        os.kill(worker.pid, signal.SIGUSR1)
+        print("已通知 worker 停止新发送，保留监听等待 pending 回包。", flush=True)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception as exc:
+        print(f"通知 worker 停止新发送失败：{exc}", flush=True)
+        return False
+
+
 def _run_supervisor():
     stop_requested = False
 
@@ -376,6 +390,7 @@ def _run_supervisor():
                             continue
                         if _code_syntax_ok():
                             print("代码已稳定且语法检查通过，准备重启 worker。", flush=True)
+                            _quiesce_worker(worker)
                             _wait_for_pending_drain("代码热重载前", RELOAD_PENDING_DRAIN_MAX_SEC)
                             print("重启 worker。", flush=True)
                             _stop_worker(worker)
@@ -392,6 +407,7 @@ def _run_supervisor():
 
             time.sleep(SCAN_INTERVAL_SEC)
     finally:
+        _quiesce_worker(worker)
         _wait_for_pending_drain("停止 worker 前", STOP_PENDING_DRAIN_MAX_SEC)
         _stop_worker(worker)
 

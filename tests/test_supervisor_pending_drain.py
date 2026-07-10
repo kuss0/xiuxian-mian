@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,13 @@ class SupervisorPendingDrainTests(unittest.TestCase):
     def test_hot_reload_is_explicit_opt_in(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(xiuxian._hot_reload_enabled())
+
+    def test_quiesce_worker_signals_worker_before_pending_drain(self):
+        worker = SimpleNamespace(pid=12345, poll=lambda: None)
+        with patch.object(xiuxian.os, "kill") as kill_mock:
+            self.assertTrue(xiuxian._quiesce_worker(worker))
+
+        kill_mock.assert_called_once_with(12345, xiuxian.signal.SIGUSR1)
         with patch.dict(os.environ, {"XIUXIAN_HOT_RELOAD": "1"}):
             self.assertTrue(xiuxian._hot_reload_enabled())
         with patch.dict(os.environ, {"XIUXIAN_HOT_RELOAD": "0"}):
