@@ -386,6 +386,37 @@ def _get_report_text(report_id):
     return str(report_texts.get(str(report_id)) or report_texts.get(report_id) or "").strip()
 
 
+def _clear_mulan_report_pool():
+    state["mulan_pending_ids"] = ""
+    state["mulan_report_texts"] = {}
+    state["mulan_report_day"] = ""
+    state["mulan_current_id"] = 0
+    state["mulan_public_id"] = 0
+    state["mulan_public_text"] = ""
+    state["mulan_support_action"] = ""
+
+
+def _invalidate_stale_mulan_report_pool(now):
+    report_texts = state.get("mulan_report_texts")
+    has_report_state = bool(report_texts) or bool(state.get("mulan_pending_ids")) or int(state.get("mulan_public_id", 0) or 0) > 0
+    if not has_report_state:
+        return False
+    if str(state.get("mulan_report_day") or "") == _mulan_day_key(now):
+        return False
+    _clear_mulan_pending()
+    _clear_mulan_report_pool()
+    state["mulan_phase"] = MULAN_PHASE_IDLE
+    state["next_mulan_time"] = float(now or 0)
+    state["mulan_last_result"] = "旧日军报已失效，重新搜集"
+    state["mulan_last_error"] = ""
+    return True
+
+
+def _is_mulan_reports_missing_text(text):
+    raw_text = str(text or "")
+    return "今日尚未搜集军报" in raw_text or "先用 .搜集军报" in raw_text
+
+
 def _normalize_mulan_intel_state(now):
     day_key = _mulan_day_key(now)
     intel_state = _meta_state.get("mulan_intel_state")
@@ -1075,6 +1106,17 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
         await send_audit_log(f"🕵️ 慕兰 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity", limit=180)
         return True
 
+    if family in {"mulan_judge", "mulan_publish", "mulan_panel"} and _is_mulan_reports_missing_text(raw_text):
+        _clear_mulan_pending()
+        _clear_mulan_report_pool()
+        state["mulan_phase"] = MULAN_PHASE_IDLE
+        state["next_mulan_time"] = float(now)
+        state["mulan_last_result"] = "游戏确认今日尚未搜集军报，退回搜集"
+        state["mulan_last_error"] = ""
+        save_state()
+        await send_audit_log("🕵️ 慕兰旧军报已失效，退回重新搜集；本轮不直接支援。", scope="identity", limit=220)
+        return True
+
     if family in {"mulan_collect", "mulan_panel"}:
         report_texts = parse_mulan_report_texts(raw_text)
         is_report_panel = bool(report_texts) and ("军报匣" in raw_text or "慕兰谍影" in raw_text or "辨报" in raw_text)
@@ -1114,6 +1156,7 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
         state["mulan_phase"] = MULAN_PHASE_READY_TO_JUDGE
         state["mulan_pending_ids"] = _encode_ids(ids)
         state["mulan_report_texts"] = report_texts
+        state["mulan_report_day"] = _mulan_day_key(now)
         state["mulan_current_id"] = 0
         state["mulan_public_id"] = 0
         state["mulan_public_text"] = ""
@@ -1172,6 +1215,7 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
         if not report_text:
             report_text = state.get("mulan_public_text") or _get_report_text(public_id)
         if publish_verdict == "true":
+            state["mulan_report_day"] = _mulan_day_key(now)
             _record_mulan_intel(
                 report_text,
                 "reliable",
@@ -1192,6 +1236,7 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
             )
             return True
         if publish_verdict == "false":
+            state["mulan_report_day"] = _mulan_day_key(now)
             _record_mulan_intel(report_text, "suspicious", now, report_id=public_id)
             _clear_mulan_pending()
             pending_ids = _decode_ids(state.get("mulan_pending_ids")) or list(MULAN_DEFAULT_IDS)
@@ -1199,6 +1244,7 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
             save_state()
             return True
         if publish_verdict == "done":
+            state["mulan_report_day"] = _mulan_day_key(now)
             _clear_mulan_pending()
             pending_ids = _decode_ids(state.get("mulan_pending_ids")) or list(MULAN_DEFAULT_IDS)
             action = _support_action_from_known_reliable(now, pending_ids)
@@ -1248,6 +1294,9 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
 async def run_mulan_scheduler(now):
     if not state.get("mulan_enabled"):
         return
+
+    if _invalidate_stale_mulan_report_pool(now):
+        save_state()
 
     reply_to_msg_id = int(state.get("mulan_reply_to_msg_id", 0) or 0)
     reply_due_at = float(state.get("mulan_reply_due_at", 0) or 0)
@@ -1366,6 +1415,7 @@ def schedule_mulan_initial_check(now, *, persist=False, keep_last_error=True):
     state["mulan_reply_due_at"] = 0
     state["mulan_pending_ids"] = ""
     state["mulan_report_texts"] = {}
+    state["mulan_report_day"] = ""
     state["mulan_current_id"] = 0
     state["mulan_public_id"] = 0
     state["mulan_public_text"] = ""

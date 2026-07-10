@@ -971,6 +971,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_pending_ids TEXT NOT NULL DEFAULT ''")
     if "mulan_report_texts" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_report_texts TEXT NOT NULL DEFAULT '{}'")
+    if "mulan_report_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_report_day TEXT NOT NULL DEFAULT ''")
     if "mulan_current_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_current_id INTEGER NOT NULL DEFAULT 0")
     if "mulan_public_id" not in runtime_columns:
@@ -1724,6 +1726,7 @@ def init_db():
             mulan_reply_due_at REAL NOT NULL DEFAULT 0,
             mulan_pending_ids TEXT NOT NULL DEFAULT '',
             mulan_report_texts TEXT NOT NULL DEFAULT '{}',
+            mulan_report_day TEXT NOT NULL DEFAULT '',
             mulan_current_id INTEGER NOT NULL DEFAULT 0,
             mulan_public_id INTEGER NOT NULL DEFAULT 0,
             mulan_public_text TEXT NOT NULL DEFAULT '',

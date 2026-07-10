@@ -354,6 +354,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["mulan_phase"] = "ready_to_judge"
             state_module.state["mulan_pending_ids"] = "1,2"
             state_module.state["mulan_report_texts"] = {"1": "有小股法士借草沟绕行，似在寻找黄龙山外阵缺口。", "2": "南营无人防守。"}
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now)
             mulan._record_mulan_intel(
                 "有小股法士借草沟绕行，似在寻找黄龙山外阵缺口。",
                 "reliable",
@@ -391,6 +392,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 "1": "圣灯已熄，只需正面冲阵便可夺灯。",
                 "2": "法士营北帐换防，附灵蛇胆与妖丹暂存在同一灵袋。",
             }
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now)
             with (
                 patch.object(mulan, "send_game_command", new=fake_send),
                 patch.object(mulan, "save_state"),
@@ -419,6 +421,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["mulan_phase"] = "ready_to_judge"
             state_module.state["mulan_pending_ids"] = "1,2"
             state_module.state["mulan_report_texts"] = {"1": "南营无人防守。", "2": "圣灯已熄，只需正面冲阵便可夺灯。"}
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now)
             mulan._record_mulan_intel("南营无人防守。", "suspicious", now, report_id=1)
             mulan._record_mulan_intel("圣灯已熄，只需正面冲阵便可夺灯。", "suspicious", now, report_id=2)
             with (
@@ -451,6 +454,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 "1": "圣灯已熄，只需正面冲阵便可夺灯。",
                 "2": "南营无人防守，所有法士都在主帐议事。",
             }
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now)
             with (
                 patch.object(mulan, "send_game_command", new=fake_send),
                 patch.object(mulan, "save_state"),
@@ -686,6 +690,58 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("cooldown", state_module.state["mulan_phase"])
             self.assertEqual("", state_module.state["mulan_last_error"])
 
+    async def test_publish_missing_reports_returns_to_collect_without_support(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "publish_pending"
+            state_module.state["mulan_public_id"] = 2
+            state_module.state["mulan_public_text"] = "法士营北帐换防"
+            state_module.state["mulan_report_texts"] = {"2": "法士营北帐换防"}
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now - 86400)
+            with (
+                patch.object(mulan, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                handled = await mulan.handle_mulan_reply(
+                    "今日尚未搜集军报。先用 .搜集军报。",
+                    now,
+                    reply_to=SimpleNamespace(id=15882, raw_text=".公开军报 2"),
+                    matched_family="mulan_publish",
+                    result_msg_id=15883,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["mulan_phase"])
+            self.assertEqual({}, state_module.state["mulan_report_texts"])
+            self.assertEqual("", state_module.state["mulan_support_action"])
+            self.assertEqual(now, state_module.state["next_mulan_time"])
+            self.assertIn("不直接支援", audit_mock.await_args.args[0])
+
+    async def test_scheduler_invalidates_previous_day_report_before_publish(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        fake_msg = SimpleNamespace(id=2001, sent_at=now)
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "ready_to_publish"
+            state_module.state["mulan_public_id"] = 3
+            state_module.state["mulan_public_text"] = "法士营北帐换防"
+            state_module.state["mulan_report_texts"] = {"3": "法士营北帐换防"}
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now - 86400)
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(".搜集军报", send_mock.await_args.args[0])
+            self.assertEqual("collect_pending", state_module.state["mulan_phase"])
+            self.assertEqual({}, state_module.state["mulan_report_texts"])
+
     async def test_timeout_clears_pending_and_schedules_retry(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -892,6 +948,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["mulan_enabled"] = True
             state_module.state["mulan_phase"] = mulan.MULAN_PHASE_READY_TO_PUBLISH
             state_module.state["mulan_public_id"] = 2
+            state_module.state["mulan_report_day"] = mulan._mulan_day_key(now)
             state_module.state["next_mulan_time"] = now - 1
             with (
                 patch.object(mulan, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
