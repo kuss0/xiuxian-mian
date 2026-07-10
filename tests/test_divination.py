@@ -1174,16 +1174,31 @@ class DivinationTests(unittest.TestCase):
                     matched_family="divination",
                     reply_context={"send_as_id": identity_id},
                 )
+                handled_again = await divination.handle_divination_reply(
+                    TREASURE_TEXT,
+                    1000.0,
+                    event=event,
+                    matched_family="divination",
+                    reply_context={"send_as_id": identity_id},
+                )
                 result_audit = next(
                     call
                     for call in audit_mock.await_args_list
                     if "卜筮问天结果" in call.args[0]
                 )
-                return handled, send_mock.await_args, result_audit
+                result_audits = [
+                    call
+                    for call in audit_mock.await_args_list
+                    if "卜筮问天结果" in call.args[0]
+                ]
+                return handled, handled_again, send_mock.await_args, send_mock.await_count, result_audit, result_audits
 
-        handled, send_args, result_audit = asyncio.run(run_test())
+        handled, handled_again, send_args, send_count, result_audit, result_audits = asyncio.run(run_test())
         self.assertTrue(handled)
+        self.assertTrue(handled_again)
         self.assertEqual(".换取", send_args.args[0])
+        self.assertEqual(1, send_count)
+        self.assertEqual(1, len(result_audits))
         self.assertEqual(identity_id, send_args.kwargs["send_as_id"])
         self.assertEqual(7001, send_args.kwargs["reply_to"])
         self.assertEqual("medium", result_audit.kwargs["priority"])

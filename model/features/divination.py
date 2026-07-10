@@ -212,6 +212,7 @@ def _blank_run_record(now):
         "exchange_success_day": "",
         "exchange_success_target": "",
         "exchange_success_at": 0,
+        "last_result_audit_key": "",
     }
 
 
@@ -956,12 +957,17 @@ def _format_divination_result_summary(text):
     return _compact_result_text(raw_text, limit=180)
 
 
-async def _send_divination_result_audit(identity_id, now, text):
+async def _send_divination_result_audit(identity_id, now, text, *, result_msg_id=0):
     identity_id = int(identity_id or 0)
     if identity_id <= 0:
         return False
-    record = (_run_records().get(_run_key(identity_id)) or {})
+    records = _run_records()
+    record = (records.get(_run_key(identity_id)) or {})
     record = record if isinstance(record, dict) else {}
+    digest = hashlib.blake2s(str(text or "").encode("utf-8", "surrogatepass"), digest_size=8).hexdigest()
+    audit_key = f"{get_day_key(now)}:{int(result_msg_id or 0)}:{digest}"
+    if str(record.get("last_result_audit_key") or "") == audit_key:
+        return False
     limit = get_divination_daily_limit(identity_id)
     count = _clamp_daily_count(record.get("count") or 0, limit)
     treasure = parse_divination_treasure_text(text)
@@ -971,14 +977,16 @@ async def _send_divination_result_audit(identity_id, now, text):
         day_key = get_day_key(now)
         if str(record.get("completion_audit_day") or "") == day_key:
             return False
-        records = _run_records()
         key, latest, _changed = _get_run_record(identity_id, now, records=records, schedule_missing=False)
         _normalize_record_count_to_limit(latest, limit)
         count = max(count, _clamp_daily_count(latest.get("count") or 0, limit))
         latest["completion_audit_day"] = day_key
         latest["completion_audit_count"] = count
-        records[key] = latest
-        _set_run_records(records)
+    else:
+        key, latest, _changed = _get_run_record(identity_id, now, records=records, schedule_missing=False)
+    latest["last_result_audit_key"] = audit_key
+    records[key] = latest
+    _set_run_records(records)
     await send_audit_log(
         (
             f"🔮 卜筮问天结果：{_format_identity(identity_id)}｜{_format_divination_result_summary(text)}｜已确认 {count}/{limit}"
@@ -1215,12 +1223,22 @@ async def handle_divination_reply(text, now, event=None, reply_to=None, matched_
         if identity_id > 0 and _is_divination_enabled(identity_id):
             if _extract_daily_count(raw_text) > 0 or is_pending_query_reply:
                 _note_query_reply(identity_id, now, raw_text, event=event, final=True)
-                await _send_divination_result_audit(identity_id, now, raw_text)
+                await _send_divination_result_audit(
+                    identity_id,
+                    now,
+                    raw_text,
+                    result_msg_id=int(getattr(event, "id", 0) or 0),
+                )
                 return True
         return False
     if identity_id > 0 and _is_divination_enabled(identity_id):
         _note_query_reply(identity_id, now, raw_text, event=event, final=True)
-        await _send_divination_result_audit(identity_id, now, raw_text)
+        await _send_divination_result_audit(
+            identity_id,
+            now,
+            raw_text,
+            result_msg_id=int(getattr(event, "id", 0) or 0),
+        )
     if not _is_supported_auto_exchange_target(treasure.get("target_item")):
         return True
     if identity_id <= 0:

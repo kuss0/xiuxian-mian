@@ -404,7 +404,7 @@ async def _defer_wild_training_for_deep_retreat_summary_window(now):
     blocking_phases = {"summary_due", "observing_summary", "waiting_summary", "queued_launch", "launching"}
     should_defer = phase in blocking_phases
     if not should_defer and phase == "running":
-        should_defer = True
+        should_defer = 0 < next_deep_time <= float(now or 0) + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC
     if not should_defer:
         return False
 
@@ -423,6 +423,30 @@ async def _defer_wild_training_for_deep_retreat_summary_window(now):
     state["wild_training_last_error"] = f"野外历练避让深度闭关结算窗口：phase={phase or 'idle'}，延后至 {fmt_abs_ts(next_time)}"
     save_state()
     console_log(f"🏞️ {state['wild_training_last_error']}", scope="identity")
+    return True
+
+
+def _repair_far_running_deep_retreat_deferral(now):
+    if str(state.get("deep_retreat_phase") or "").strip() != "running":
+        return False
+    try:
+        next_deep_time = float(state.get("next_deep_retreat_time", 0) or 0)
+        next_wild_time = float(state.get("next_wild_training_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if next_deep_time <= float(now or 0) + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
+        return False
+    if next_wild_time <= float(now or 0):
+        return False
+    if state.get("wild_training_last_result") != "深闭结算窗口避让，未发送":
+        return False
+    if "phase=running" not in str(state.get("wild_training_last_error") or ""):
+        return False
+    state["next_wild_training_time"] = float(now or 0)
+    state["wild_training_last_result"] = "已解除远期深闭误阻断，重新排队"
+    state["wild_training_last_error"] = ""
+    save_state()
+    console_log("🏞️ 已解除远期深度闭关对野外历练的误阻断，恢复当前调度。", scope="identity")
     return True
 
 
@@ -1240,6 +1264,8 @@ async def _run_wild_training_scheduler_unlocked(now):
         return
     if _has_active_wild_training_pending(now):
         return
+
+    _repair_far_running_deep_retreat_deferral(now)
 
     try:
         next_wild_training_time = float(state.get("next_wild_training_time", 0) or 0)

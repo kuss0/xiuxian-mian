@@ -329,6 +329,7 @@ MODULE_SEND_GAP_MIN_SEC = {
 }
 IDENTITY_SEND_GAP_MIN_SEC = 10.0
 SEND_QUEUE_TIMEOUT_MARGIN_SEC = 5.0
+SEND_QUEUE_DEPTH_BUDGET_CAP = 8
 
 P0_SEND_GAP_MIN_SEC = 12.0
 P0_SEND_GAP_MAX_SEC = 16.0
@@ -1007,7 +1008,19 @@ def _effective_send_queue_timeout(priority, command=None, send_as_id=None, inten
         timeout_value = 0.0
     if timeout_value <= 0:
         return None
-    return max(timeout_value, _minimum_send_queue_timeout_sec(priority, command=command, send_as_id=send_as_id, intent=intent))
+    minimum_timeout = _minimum_send_queue_timeout_sec(
+        priority,
+        command=command,
+        send_as_id=send_as_id,
+        intent=intent,
+    )
+    _min_gap, max_gap = _get_send_gap_range(priority)
+    queue_ahead = min(
+        len(_GAME_SEND_QUEUE_ITEMS),
+        SEND_QUEUE_DEPTH_BUDGET_CAP,
+    )
+    minimum_timeout += float(max_gap or 0.0) * queue_ahead
+    return max(timeout_value, minimum_timeout)
 
 
 def get_game_send_queue_snapshot():

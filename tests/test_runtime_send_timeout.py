@@ -655,6 +655,63 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             + runtime.SEND_QUEUE_TIMEOUT_MARGIN_SEC,
         )
 
+    async def test_recovery_queue_timeout_covers_commands_already_ahead(self):
+        now = 1_700_000_000.0
+        state_module.set_global_recovery_throttle_until(now + 900)
+        runtime._GAME_SEND_QUEUE_ITEMS.update({
+            1: {"status": "sending"},
+            2: {"status": "waiting"},
+            3: {"status": "waiting"},
+        })
+
+        with patch.object(runtime.time, "time", return_value=now):
+            timeout = runtime._effective_send_queue_timeout(
+                runtime.SEND_PRIORITY_NORMAL,
+                command=".搜集军报",
+                send_as_id=3504367852,
+                intent={"source_module": "慕兰烽烟"},
+                queue_timeout=90,
+            )
+
+        base_timeout = runtime._minimum_send_queue_timeout_sec(
+            runtime.SEND_PRIORITY_NORMAL,
+            command=".搜集军报",
+            send_as_id=3504367852,
+            intent={"source_module": "慕兰烽烟"},
+        )
+        self.assertGreaterEqual(
+            timeout,
+            base_timeout + 3 * runtime.GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC,
+        )
+
+    async def test_normal_queue_timeout_covers_commands_already_ahead(self):
+        state_module.set_global_recovery_throttle_until(0)
+        runtime._GAME_SEND_QUEUE_ITEMS.update({
+            1: {"status": "sending"},
+            2: {"status": "waiting"},
+            3: {"status": "waiting"},
+            4: {"status": "waiting"},
+        })
+
+        timeout = runtime._effective_send_queue_timeout(
+            runtime.SEND_PRIORITY_NORMAL,
+            command=".公开军报 3",
+            send_as_id=301299112,
+            intent={"source_module": "慕兰烽烟"},
+            queue_timeout=120,
+        )
+
+        base_timeout = runtime._minimum_send_queue_timeout_sec(
+            runtime.SEND_PRIORITY_NORMAL,
+            command=".公开军报 3",
+            send_as_id=301299112,
+            intent={"source_module": "慕兰烽烟"},
+        )
+        self.assertGreaterEqual(
+            timeout,
+            base_timeout + 4 * runtime.NORMAL_SEND_GAP_MAX_SEC,
+        )
+
     def test_classify_game_send_block_distinguishes_unknown_from_unsent(self):
         send_as_id = 301299112
         runtime._record_game_send_block(send_as_id, ".慢返回", "send_timeout", ">60s")
