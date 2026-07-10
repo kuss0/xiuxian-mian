@@ -243,6 +243,17 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("fish_SECRET999", extracted["token"])
         self.assertEqual(url, extracted["webview_url"])
 
+    def test_fishing_launch_rejects_explicit_cave_entry(self):
+        url = "https://t.me/hantianzun19_bot?startapp=df_SECRET999"
+        event = self._reply_markup_webapp_event(url=url, text="进入洞府")
+
+        extracted = fishing_miniapp.extract_fishing_miniapp_launch(
+            event,
+            message_text="【洞府】点击下方进入洞府，查看洞天布置。",
+        )
+
+        self.assertEqual({}, extracted)
+
     def test_fishing_launch_accepts_tianzun_shard_bot_but_rejects_unknown_bot(self):
         shard_url = "https://t.me/hantianzun05_bot?startapp=fish_SECRET999"
         event = self._reply_markup_webapp_event(url=shard_url, text="进入灵溪垂钓")

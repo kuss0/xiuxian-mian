@@ -117,6 +117,9 @@ def extract_fishing_miniapp_launch(event, *, message_text=""):
         if not launch.allowed or not launch.start_param:
             continue
         summary = summarize_webapp_url(url, button_text=button_text, message_text=message_text)
+        game_hint = str(summary.get("game_hint") or "").strip()
+        if game_hint and game_hint != FISHING_MINIAPP_GAME_KEY:
+            continue
         return {
             "token": launch.start_param,
             "webview_url": url,

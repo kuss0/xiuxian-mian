@@ -277,6 +277,34 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("本竿不回退", state_module.state["fishing_last_error"])
         self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
 
+    async def test_cave_entry_does_not_hold_or_mutate_fishing(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 11, 0, 23, 25)
+        cave_event = self._miniapp_event(
+            "https://t.me/hantianzun19_bot?startapp=df_SECRET999"
+        )
+        cave_event.message.buttons[0][0].text = "进入洞府"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "idle"
+            state_module.state["fishing_last_result"] = "existing"
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(fishing_runtime, "save_state") as save_mock,
+            ):
+                held = await fishing_runtime.hold_unclaimed_fishing_miniapp_entry(
+                    cave_event,
+                    "【洞府】点击下方进入洞府，查看洞天布置。",
+                    now,
+                    result_msg_id=14484,
+                )
+
+        self.assertFalse(held)
+        audit_mock.assert_not_awaited()
+        save_mock.assert_not_called()
+        self.assertEqual("existing", state_module.state["fishing_last_result"])
+
     async def test_unclaimed_miniapp_entry_prompt_without_button_still_blocks_text_followups(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 7, 50, 35)
