@@ -278,8 +278,9 @@ def _set_explore_rift_pending_result(result_msg_id, now=None):
     if int(state.get("explore_rift_last_msg_id", 0) or 0) != result_msg_id:
         state["explore_rift_last_msg_id"] = result_msg_id
         changed = True
-    if float(state.get("explore_rift_reply_due_at", 0) or 0) != 0:
-        state["explore_rift_reply_due_at"] = 0
+    result_due_at = now + EXPLORE_RIFT_REPLY_TIMEOUT_SEC
+    if float(state.get("explore_rift_reply_due_at", 0) or 0) != result_due_at:
+        state["explore_rift_reply_due_at"] = result_due_at
         changed = True
     fallback_next_time = now + _resolve_cd_sec()
     if float(state.get("next_explore_rift_time", 0) or 0) < fallback_next_time:
@@ -824,7 +825,11 @@ async def _recover_pending_explore_rift_result_from_message_log(now):
         return ""
     reply_entry = _find_logged_explore_rift_result_message(result_msg_id, now)
     if not reply_entry:
-        return ""
+        retry_at = float(now or 0) + 60
+        if float(state.get("explore_rift_reply_due_at", 0) or 0) != retry_at:
+            state["explore_rift_reply_due_at"] = retry_at
+            save_state()
+        return "pending"
     if _explore_rift_final_title(reply_entry["text"]):
         reply_to = SimpleNamespace(id=0, raw_text=CMD_EXPLORE_RIFT)
         handled = await handle_explore_rift_reply(
@@ -837,6 +842,10 @@ async def _recover_pending_explore_rift_result_from_message_log(now):
         if handled:
             return "result"
     if float(now or 0) - float(reply_entry["ts"] or 0) < EXPLORE_RIFT_PENDING_RESULT_STALE_SEC:
+        retry_at = float(reply_entry["ts"] or now) + EXPLORE_RIFT_PENDING_RESULT_STALE_SEC
+        if float(state.get("explore_rift_reply_due_at", 0) or 0) != retry_at:
+            state["explore_rift_reply_due_at"] = retry_at
+            save_state()
         return "pending"
 
     if state.get("tianxing_enabled"):

@@ -1741,6 +1741,9 @@ async def _run_due_explore_rift_schedulers(now, *, limit=DUE_EXPLORE_RIFT_MAX_PE
                 reply_due_at = float(state.get("explore_rift_reply_due_at", 0) or 0)
             except (TypeError, ValueError, OverflowError):
                 reply_due_at = 0.0
+            if pending_result_msg_id > 0 and reply_due_at <= 0:
+                candidates.append((0, scheduler_now, scan_index, identity_id, scheduler_now, "cleanup"))
+                continue
             if (pending_msg_id > 0 or pending_result_msg_id > 0) and 0 < reply_due_at <= scheduler_now:
                 candidates.append((0, reply_due_at, scan_index, identity_id, scheduler_now, "cleanup"))
                 continue

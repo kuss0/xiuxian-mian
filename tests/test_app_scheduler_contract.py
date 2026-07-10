@@ -582,6 +582,36 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         window_mock.assert_not_called()
         scheduler_mock.assert_not_awaited()
 
+    async def test_due_explore_rift_fast_scan_recovers_legacy_pending_result_without_due_at(self):
+        identity_id = 991778
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 0
+            state_module.state["explore_rift_reply_due_at"] = 0
+            state_module.state["explore_rift_pending_result_msg_id"] = 22028
+            state_module.state["next_explore_rift_time"] = now + 12 * 3600
+
+        seen = []
+
+        async def fake_explore_rift_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_explore_rift_scheduler", new=AsyncMock(side_effect=fake_explore_rift_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_explore_rift_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+        self.assertEqual([(identity_id, now)], seen)
+
     async def test_due_wild_training_fast_scan_defaults_to_small_batch(self):
         identity_ids = [991790 + idx for idx in range(3)]
         now = 1_700_000_000.0

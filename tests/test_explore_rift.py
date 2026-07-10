@@ -628,6 +628,60 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("探索", timeline["released_routes"])
         audit_mock.assert_awaited()
 
+    async def test_scheduler_recovers_terminal_edit_for_legacy_pending_result_without_due_at(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        state_module.set_storage_bag_records({})
+        with tempfile.TemporaryDirectory() as log_dir:
+            self._write_message_log(
+                log_dir,
+                [
+                    {
+                        "ts": self._log_ts(now - 8),
+                        "event_type": "message",
+                        "message_id": 22028,
+                        "chat_id": -1001680975844,
+                        "sender_id": 8400307678,
+                        "topic_id": 7310786,
+                        "reply_to_msg_id": 22027,
+                        "text": "你运转全身法力，撕开一道漆黑的空间裂缝，将元婴送入其中探寻机缘...",
+                    },
+                    {
+                        "ts": self._log_ts(now - 1),
+                        "event_type": "edit",
+                        "message_id": 22028,
+                        "chat_id": -1001680975844,
+                        "sender_id": 8400307678,
+                        "topic_id": 7310786,
+                        "reply_to_msg_id": 22027,
+                        "text": "【改命回天】\n你虽无大获，却平安带回了 【四级妖丹】x2，且 本次未损修为。",
+                    },
+                ],
+                now,
+            )
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["explore_rift_reply_to_msg_id"] = 0
+                state_module.state["explore_rift_reply_due_at"] = 0
+                state_module.state["explore_rift_pending_result_msg_id"] = 22028
+                state_module.state["explore_rift_last_result"] = "探寻中"
+
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", log_dir),
+                    patch.object(explore_rift.random, "uniform", return_value=0),
+                    patch.object(explore_rift, "save_state"),
+                    patch.object(storage_bag, "save_state"),
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+
+        self.assertEqual(0, state_module.state["explore_rift_pending_result_msg_id"])
+        self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
+        self.assertEqual("修为未损 ｜ 奖励：四级妖丹x2", state_module.state["explore_rift_last_result"])
+        records = state_module.get_storage_bag_records()
+        self.assertEqual(2, records[str(identity_id)]["items"]["四级妖丹"])
+        self.assertTrue(any("日志补偿" in str(call.args[0]) for call in audit_mock.await_args_list))
+
     async def test_tianxing_explore_result_reports_high_priority_before_normal_audit(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -1234,7 +1288,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
 
-    async def test_pending_reply_clears_initial_timeout_and_waits_default_cd(self):
+    async def test_pending_reply_keeps_result_timeout_and_waits_default_cd(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -1253,7 +1307,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
-            self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_REPLY_TIMEOUT_SEC,
+                state_module.state["explore_rift_reply_due_at"],
+            )
             self.assertEqual(10425944, state_module.state["explore_rift_pending_result_msg_id"])
             self.assertEqual("探寻中", state_module.state["explore_rift_last_result"])
             self.assertGreaterEqual(state_module.state["next_explore_rift_time"], now + explore_rift.EXPLORE_RIFT_CD)
@@ -1268,6 +1325,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             audit_mock.assert_not_awaited()
             self.assertNotIn("超时", state_module.state["explore_rift_last_error"])
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_REPLY_TIMEOUT_SEC + 61,
+                state_module.state["explore_rift_reply_due_at"],
+            )
 
     async def test_scheduler_blocks_auto_high_xiuwei_without_sending(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
