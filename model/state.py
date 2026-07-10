@@ -1394,7 +1394,7 @@ def is_cave_public_auto_enabled(action, identity_id=None):
     config = get_miniapp_auto_config()
     if not bool(str(config.get("cave_public_entry_url") or "").strip() and config.get(flag)):
         return False
-    if normalized_action not in {"small_world", "deep_retreat", "deep_status"}:
+    if normalized_action not in {"small_world"}:
         return True
     try:
         current_identity_id = int(identity_id or get_current_identity_id() or 0)

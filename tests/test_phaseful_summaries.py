@@ -2800,6 +2800,21 @@ class DeepRetreatPublicMiniAppGateTests(_StateIsolationMixin, unittest.IsolatedA
         scheduler_mock.assert_not_awaited()
         calibrate_mock.assert_not_awaited()
 
+    async def test_recent_public_cave_failure_allows_legacy_fallback(self):
+        now = 1000.0
+        send_as_id = 8659059399
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="DeepPublicFallback")
+        with state_module.use_identity(send_as_id):
+            with patch.object(deep_retreat, "is_cave_public_auto_enabled", return_value=True), \
+                    patch.object(deep_retreat, "_cave_public_deep_legacy_fallback_ready", return_value=True), \
+                    patch.object(deep_retreat, "_calibrate_orphan_deep_retreat_summary_due", new=AsyncMock(return_value=False)), \
+                    patch.object(deep_retreat, "_defer_post_summary_relaunch_for_due_wild_training", return_value=False), \
+                    patch.object(deep_retreat, "_run_deep_retreat_tianxing_gate", new=AsyncMock(return_value=True)), \
+                    patch.object(deep_retreat, "run_phaseful_scheduler", new=AsyncMock()) as scheduler_mock:
+                await deep_retreat.run_deep_retreat_scheduler(now)
+        scheduler_mock.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

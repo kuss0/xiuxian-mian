@@ -970,9 +970,6 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not get_identity_enabled(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
-    identity_error = _public_entry_account_identity_error(identity_id)
-    if identity_error:
-        return {"ok": False, "message": identity_error, "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
@@ -1464,6 +1461,13 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
         )
         if not session.get("ok"):
             message = f"洞府闭关身份读取失败：{session.get('error') or 'unknown'}"
+            _record_cave_deep_retreat_state(
+                identity_id,
+                action,
+                {"ok": False, "status": "session_failed", "error": session.get("error") or "unknown", "data": {}},
+                {"handled": False, "reason": "session_failed", "phase": ""},
+                now=now,
+            )
             await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
             return {"ok": False, "message": message, "extra": {}}
         result = await run_cave_deep_seclusion_action_production_flow(

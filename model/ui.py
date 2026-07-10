@@ -6633,7 +6633,8 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
             enabled_ids.append(identity_id)
 
     enabled_set = set(enabled_ids)
-    if str(action or "").strip().lower() in {"trial", "stargazer", "yuanying"}:
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action in {"trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
         return enabled_ids
     result = []
     seen_accounts = set()
@@ -6910,7 +6911,7 @@ def _cave_public_background_action_due(action, identity_id, now):
     with use_identity(identity_id):
         if action == "small_world":
             return bool(state.get("small_world_enabled")) and float(state.get("next_small_world_time", 0) or 0) <= now
-        if action == "deep_status":
+        if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             return bool(state.get("deep_retreat_enabled")) and float(state.get("next_deep_retreat_time", 0) or 0) <= now
         if action == "treasure":
             record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
@@ -6945,11 +6946,24 @@ def _cave_public_background_action_due(action, identity_id, now):
     return False
 
 
+def _cave_public_background_deep_action(identity_id, now):
+    with use_identity(identity_id):
+        phase = str(state.get("deep_retreat_phase") or "idle")
+    if phase in {"running", "summary_due", "observing_summary", "waiting_summary"}:
+        return "deep_settle"
+    if phase in {"idle", "post_summary_wait"}:
+        return "deep_start"
+    return "deep_status"
+
+
 def _cave_public_background_candidate_sort_key(action, identity_id, now):
     action = str(action or "").strip().lower()
     priority = {
         "yuanying": 0,
         "deep_status": 1,
+        "deep_settle": 1,
+        "deep_start": 1,
+        "deep_force": 1,
         "small_world": 2,
         "stargazer": 3,
         "treasure": 4,
@@ -6958,7 +6972,7 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
     with use_identity(identity_id):
         if action == "yuanying":
             due_at = float(state.get("next_yuanying_time", 0) or 0)
-        elif action == "deep_status":
+        elif action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             due_at = float(state.get("next_deep_retreat_time", 0) or 0)
         elif action == "small_world":
             due_at = float(state.get("next_small_world_time", 0) or 0)
@@ -7004,8 +7018,9 @@ async def _run_cave_public_background_scheduler(now, config):
             retry_key = (action, int(identity_id))
             if now < float(_cave_public_background_retry_at.get(retry_key, 0) or 0):
                 continue
-            if _cave_public_background_action_due(action, identity_id, now):
-                candidates.append((int(identity_id), action))
+            resolved_action = _cave_public_background_deep_action(identity_id, now) if action == "deep_status" else action
+            if _cave_public_background_action_due(resolved_action, identity_id, now):
+                candidates.append((int(identity_id), resolved_action))
     if not candidates:
         _cave_public_background_state["next_run_at"] = now + 60
         return {"started": False, "reason": "no_due_public_action"}
@@ -7020,7 +7035,8 @@ async def _run_cave_public_background_scheduler(now, config):
         "last_action": f"{identity_id}:{action}",
         "last_result": str(message or "")[:240],
     })
-    _cave_public_background_retry_at[(action, identity_id)] = time.time() + (60 if ok else 30 * 60)
+    retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
+    _cave_public_background_retry_at[(retry_action, identity_id)] = time.time() + (60 if ok else 30 * 60)
     return {
         "started": True,
         "kind": "background",

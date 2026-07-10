@@ -19,7 +19,7 @@ from ..action_guard import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_miniapp_state_records, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -60,6 +60,7 @@ DEEP_RETREAT_TIANXING_RETRY_MIN_SEC = 2 * 60
 DEEP_RETREAT_TIANXING_RETRY_MAX_SEC = 5 * 60
 DEEP_RETREAT_WILD_INSERT_LOOKAHEAD_SEC = 60
 DEEP_RETREAT_WILD_INSERT_HOLD_SEC = 120
+CAVE_PUBLIC_DEEP_LEGACY_FALLBACK_WINDOW_SEC = 10 * 60
 
 DEEP_RETREAT_SPEC = PhasefulSpec(
     enabled_key="deep_retreat_enabled",
@@ -797,7 +798,7 @@ def _defer_post_summary_relaunch_for_due_wild_training(now):
 
 
 async def run_deep_retreat_scheduler(now):
-    if is_cave_public_auto_enabled("deep_retreat"):
+    if is_cave_public_auto_enabled("deep_retreat") and not _cave_public_deep_legacy_fallback_ready(now):
         return
     if state.get("deep_retreat_phase") == "post_summary_wait":
         _clear_deep_retreat_remote_block_after_summary(now)
@@ -812,6 +813,17 @@ async def run_deep_retreat_scheduler(now):
         now,
         launch_command=CMD_DEEP_RETREAT,
         schedule_probe=schedule_deep_retreat_status_probe,
+    )
+
+
+def _cave_public_deep_legacy_fallback_ready(now):
+    record = dict(get_miniapp_state_records().get(f"{get_current_identity_id()}:cave_deep_retreat") or {})
+    updated_at = float(record.get("updated_at", 0) or 0)
+    payload = record.get("state") if isinstance(record.get("state"), dict) else {}
+    return bool(
+        updated_at > 0
+        and 0 <= float(now) - updated_at <= CAVE_PUBLIC_DEEP_LEGACY_FALLBACK_WINDOW_SEC
+        and payload.get("ok") is False
     )
 
 

@@ -829,6 +829,19 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((1001, "deep_status"), candidates[2])
         self.assertEqual((1001, "treasure"), candidates[3])
 
+    def test_cave_public_background_selects_deep_action_from_phase(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+        self.assertEqual("deep_settle", ui._cave_public_background_deep_action(1001, now))
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+        self.assertEqual("deep_start", ui._cave_public_background_deep_action(1001, now))
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_phase"] = "launching"
+        self.assertEqual("deep_status", ui._cave_public_background_deep_action(1001, now))
+
 
 if __name__ == "__main__":
     unittest.main()
