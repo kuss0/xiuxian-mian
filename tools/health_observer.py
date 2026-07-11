@@ -1742,7 +1742,12 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
             value = int(count or 0)
         except Exception:
             value = 0
-        if value >= 20:
+        threshold = 20
+        if key == "灵溪垂钓:入口":
+            threshold = 12
+        elif key == "灵溪垂钓:后处理":
+            threshold = 32
+        if value >= threshold:
             add_risk("module_send_density", f"module send density: {key} x{value}/{window_min}m", "warn", 8, module=key)
             break
 

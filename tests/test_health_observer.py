@@ -491,6 +491,40 @@ class HealthObserverTests(unittest.TestCase):
         self.assertNotIn("service_not_running", codes)
         self.assertNotIn("listener_heartbeat_stale", codes)
 
+    def test_health_payload_uses_fishing_business_density_thresholds(self):
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service",),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-12 00:15:00",
+            "epoch": 1_780_500_000.0,
+            "status": "ok",
+            "services": {"xiuxian.service": {"ActiveState": "active", "SubState": "running"}},
+            "listener": {"available": False},
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {
+                "message_state": {
+                    "window_sec": 1800,
+                    "sent_count": 25,
+                    "module_counts": {"灵溪垂钓:入口": 8, "灵溪垂钓:后处理": 22},
+                },
+                "db_state": {},
+            },
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        self.assertFalse(any(item["code"] == "module_send_density" for item in payload["risk_reasons"]))
+
     def test_health_payload_downgrades_sidecar_without_accounts_when_main_replies_are_fresh(self):
         now = 1_780_500_000.0
         cfg = health_observer.ObserverConfig(
