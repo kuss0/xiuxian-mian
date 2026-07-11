@@ -40,6 +40,7 @@ from ..config import (
     CONCUBINE_STATUS_STALE_SEC,
     CONCUBINE_TIANJI_CD_SEC,
     CONCUBINE_VOYAGE_DEFAULT_ROUTE,
+    CONCUBINE_VOYAGE_MOON_ROUTE,
     CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC,
     MESSAGES_DIR,
     RE_WHITESPACE,
@@ -118,6 +119,7 @@ RE_PUZZLE_MISSING = re.compile(r"(?:仍缺|缺失残纹)[：:]\s*([^\n。]+)")
 RE_NEW_SECT_PARTNER = re.compile(r"新的道心侍妾\s*【(?P<name>[^】]+)】\s*已被指派")
 RE_NEW_ROMANCE_PARTNER = re.compile(r"名为\s*【(?P<name>[^】]+)】\s*的女子[\s\S]*成为你的侍妾")
 RE_LOST_PARTNER_NAME = re.compile(r"侍妾【(?P<name>[^】]+)】(?:掳走|与南陇侯交换)")
+RE_MOON_CONTRACT = re.compile(r"【月殿因果\s*·\s*南宫婉入世】[\s\S]*?道友\s+@(?P<owner>[\w\d_]+)[\s\S]*?初始情缘[：:]\s*(?P<affinity>[\d,]+)")
 RE_IDENTITY_TAG = re.compile(rf"@({IDENTITY_TAG_PATTERN})")
 RE_VOYAGE_PANEL = re.compile(r"远航状态[：:]\s*(?P<route>[^航线\n。]+)航线(?P<state>进行中|已归航)(?:，(?P<tail>[^\n。]+))?")
 RE_VOYAGE_STATUS_SAILING = re.compile(r"侍妾【(?P<name>[^】]+)】正在执行【(?P<route>[^】]+)】远航[\s\S]*?预计归航还需\s*(?P<wait>[^。\n]+)")
@@ -128,6 +130,7 @@ RE_VOYAGE_RETURN_WAIT = re.compile(r"(?:远航|归航)[\s\S]{0,80}?(?:还需|尚
 RE_VOYAGE_LOCK_WAIT = re.compile(r"远航(?:中|途中)[\s\S]{0,80}?请在\s*(?P<wait>[^。\n]+?)\s*后再试")
 RE_VOYAGE_AFFINITY_LOSS = re.compile(r"情缘减少\s*(?P<amount>[\d,]+)\s*点")
 RE_VOYAGE_SPIRIT_RESERVE = re.compile(r"蓄灵\s*(?P<amount>[\d,]+)\s*点")
+RE_VOYAGE_AFFINITY_REQUIREMENT = re.compile(r"此航线至少需要\s*(?P<amount>[\d,]+)\s*情缘值")
 
 CONCUBINE_DREAM_RESOURCE_KEY = "concubine_dream"
 CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
@@ -150,6 +153,7 @@ CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_VOYAGE_MIN_AFFINITY = 120
+CONCUBINE_VOYAGE_MOON_MIN_AFFINITY = 160
 CONCUBINE_STATUS_REUSE_DEFER_MIN_SEC = 30
 CONCUBINE_STATUS_REUSE_DEFER_MAX_SEC = 90
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
@@ -586,8 +590,28 @@ def _is_star_palace_identity():
     return str(profile.get("sect_name") or "").strip() == "星宫"
 
 
-def _voyage_command():
-    return f"{CMD_CONCUBINE_VOYAGE} {CONCUBINE_VOYAGE_DEFAULT_ROUTE}"
+def _is_moon_voyage_partner():
+    return str(state.get("concubine_name") or "").strip() == "南宫婉·月影"
+
+
+def _preferred_voyage_route():
+    if _is_moon_voyage_partner():
+        return CONCUBINE_VOYAGE_MOON_ROUTE
+    return CONCUBINE_VOYAGE_DEFAULT_ROUTE
+
+
+def _voyage_min_affinity(route=None):
+    route = str(route or _preferred_voyage_route()).strip()
+    if route == CONCUBINE_VOYAGE_MOON_ROUTE:
+        return CONCUBINE_VOYAGE_MOON_MIN_AFFINITY
+    return CONCUBINE_VOYAGE_MIN_AFFINITY
+
+
+def _voyage_command(*, is_retry=False):
+    route = ""
+    if is_retry:
+        route = str(state.get("concubine_voyage_route") or "").strip()
+    return f"{CMD_CONCUBINE_VOYAGE} {route or _preferred_voyage_route()}"
 
 
 def _voyage_return_at_from_wait(wait_text, now):
@@ -725,6 +749,19 @@ def _parse_voyage_text(text, now):
     if "开启远航需要" in raw_text or ("远航" in raw_text and ("灵石不足" in raw_text or "修为不足" in raw_text or "资源不足" in raw_text)):
         return {"status": "idle", "route": "", "partner": "", "return_at": 0.0, "result": "", "error": raw_text.strip()}
 
+    affinity_requirement = RE_VOYAGE_AFFINITY_REQUIREMENT.search(raw_text)
+    if affinity_requirement:
+        required = _parse_count(affinity_requirement.group("amount"))
+        return {
+            "status": "idle",
+            "route": str(state.get("concubine_voyage_route") or _preferred_voyage_route()).strip(),
+            "partner": "",
+            "return_at": 0.0,
+            "result": "",
+            "error": raw_text.strip(),
+            "affinity_cap": max(0, required - 1),
+        }
+
     return None
 
 
@@ -802,6 +839,11 @@ def _apply_voyage_snapshot(parsed, now):
         affinity_loss = int(parsed.get("affinity_loss", 0) or 0)
         if affinity_loss > 0:
             _apply_affinity_loss(affinity_loss, now)
+        if "affinity_cap" in parsed:
+            state["concubine_affinity"] = min(
+                int(state.get("concubine_affinity", 0) or 0),
+                int(parsed.get("affinity_cap", 0) or 0),
+            )
         state["concubine_voyage_retry_count"] = 0
         if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
             _set_phase("idle")
@@ -1025,8 +1067,8 @@ def _schedule_voyage_wait(now):
     return state["next_concubine_time"]
 
 
-def _is_voyage_affinity_eligible():
-    return int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_VOYAGE_MIN_AFFINITY
+def _is_voyage_affinity_eligible(route=None):
+    return int(state.get("concubine_affinity", 0) or 0) >= _voyage_min_affinity(route)
 
 
 def _is_voyage_eligible(now):
@@ -1037,7 +1079,9 @@ def _is_voyage_eligible(now):
         return False
     if not _is_voyage_affinity_eligible():
         affinity = int(state.get("concubine_affinity", 0) or 0)
-        state["concubine_voyage_last_error"] = f"情缘不足（{affinity}/{CONCUBINE_VOYAGE_MIN_AFFINITY}），暂不远航"
+        route = _preferred_voyage_route()
+        minimum = _voyage_min_affinity(route)
+        state["concubine_voyage_last_error"] = f"{route}情缘不足（{affinity}/{minimum}），暂不远航"
         return False
     if _is_voyage_sailing(now) or _is_voyage_return_due(now):
         return False
@@ -2603,6 +2647,11 @@ def _current_partner_matches(name):
     return bool(expected_name and actual_name and expected_name == actual_name)
 
 
+def _is_permanent_moon_partner(name=None):
+    partner_name = str(name if name is not None else state.get("concubine_name") or "").strip()
+    return partner_name == "南宫婉" or partner_name.startswith("南宫婉·")
+
+
 def _parse_gift_success(text):
     matched = RE_CONCUBINE_GIFT_SUCCESS.search(str(text or ""))
     if not matched:
@@ -2648,6 +2697,8 @@ def _parse_selfless_partner_name(text):
 
 def is_concubine_affinity_event_candidate(text):
     raw_text = str(text or "")
+    if "【月殿因果" in raw_text and "南宫婉入世" in raw_text and "初始情缘" in raw_text:
+        return True
     return "侍妾" in raw_text and "情缘" in raw_text and (
         "情缘增加了" in raw_text or _is_selfless_affinity_depletion_text(raw_text)
     )
@@ -2934,6 +2985,14 @@ def _schedule_no_partner_check(now, *, allow_reacquire=True):
 
 
 def _mark_no_partner(now, reason, *, allow_reacquire=True):
+    if _is_permanent_moon_partner():
+        _set_availability("available")
+        _set_phase("idle")
+        _clear_pending_msg_ids()
+        state["concubine_last_error"] = f"南宫婉永久契约忽略失去判定：{str(reason or '暂无侍妾')}"
+        _schedule_status_recheck(now)
+        mark_dirty()
+        return
     _clear_partner_snapshot()
     _set_availability("no_partner")
     _set_phase("no_partner")
@@ -2964,11 +3023,11 @@ def _freeze_no_partner_until(until, reason):
     mark_dirty()
 
 
-def _apply_partner_acquired(name, now, *, kind="侍妾"):
+def _apply_partner_acquired(name, now, *, kind="侍妾", affinity=0):
     state["concubine_name"] = str(name or "").strip()
     state["concubine_kind"] = kind
     state["concubine_location"] = "待确认"
-    state["concubine_affinity"] = 0
+    state["concubine_affinity"] = max(0, int(affinity or 0))
     state["concubine_oath"] = ""
     state["concubine_dream_due_at"] = 0
     state["concubine_tianji_due_at"] = 0
@@ -3821,7 +3880,7 @@ async def _send_voyage_command(now, *, is_retry=False):
         return False
     if not is_retry:
         state["concubine_voyage_retry_count"] = 0
-    command = _voyage_command()
+    command = _voyage_command(is_retry=is_retry)
     send_kwargs = _voyage_retry_send_kwargs(command) if is_retry else {"priority": "chain"}
     msg = await _send_concubine_game_command(command, track=False, **send_kwargs)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
@@ -4989,6 +5048,20 @@ async def handle_concubine_affinity_event(text, now, event=None, matched_family=
     if require_identity_hint and not _text_matches_current_identity(raw_text):
         return False
 
+    moon_contract = RE_MOON_CONTRACT.search(raw_text)
+    if moon_contract:
+        _apply_partner_acquired(
+            "南宫婉",
+            now,
+            kind="红尘道侣",
+            affinity=_parse_count(moon_contract.group("affinity")),
+        )
+        state["concubine_auto_reacquire"] = False
+        state["concubine_last_error"] = ""
+        save_state()
+        await send_audit_log("🌙 南宫婉月殿契约已记录：永久道侣，不再进入安置/召回或自动补领链路。", scope="identity")
+        return True
+
     if _is_selfless_affinity_depletion_text(raw_text):
         partner_name = _parse_selfless_partner_name(raw_text)
         if partner_name and not _current_partner_matches(partner_name):
@@ -5037,6 +5110,12 @@ async def handle_concubine_loss_broadcast(text, now, event):
 
     matched = RE_LOST_PARTNER_NAME.search(raw_text)
     partner_name = matched.group("name") if matched else (state.get("concubine_name") or "")
+    if _is_permanent_moon_partner(partner_name):
+        state["concubine_last_error"] = ""
+        _set_availability("available")
+        save_state()
+        await send_audit_log("🌙 南宫婉受月殿契约保护，已忽略侍妾丢失广播。", scope="identity")
+        return True
     if "选择将侍妾" in raw_text:
         from .nanlong import is_nanlong_protected_trade_active
 

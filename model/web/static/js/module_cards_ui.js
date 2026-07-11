@@ -652,6 +652,17 @@
             currentChoiceText('协助方', wxCommission.helper_username ? '@'+wxCommission.helper_username : (wxAssist.send_as_label || '未记录'))
           )+
           settingSection(
+            '月影同参',
+            '婉影问安每日一次；同参封魂消耗24情缘，仅在情缘至少184时自动执行，确保保留月殿寻痕所需160。月下合参需先解除封魂咒，因此后两项默认关闭。月殿寻痕由侍妾卡片的远航开关控制。',
+            currentChoiceText('婉影共鸣', wanxin.moon_awakened ? '已觉醒' : '未确认')+
+            wanxinCheckbox('moon_greet_enabled', '婉影问安', wxConfig.moon_greet_enabled)+
+            wanxinCheckbox('moon_seal_enabled', '同参封魂', wxConfig.moon_seal_enabled)+
+            wanxinCheckbox('moon_join_enabled', '月下合参', wxConfig.moon_join_enabled)+
+            currentChoiceText('下次问安', wanxin.next_moon_greet_time || '未设置')+
+            currentChoiceText('下次同参', wanxin.next_moon_seal_time || '未设置')+
+            currentChoiceText('下次合参', wanxin.next_moon_join_time || '未设置')
+          )+
+          settingSection(
             '阴罗协助动作',
             '剥离咒源真实成功文案尚未稳定，默认关闭；打开后仍按冷却、锚点和安全锁执行。',
             wanxinCheckbox('identify_enabled', '辨认咒纹', wxAssist.identify_enabled)+

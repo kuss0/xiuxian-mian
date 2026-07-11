@@ -278,7 +278,9 @@ def _is_reply_to_nanlong_last_msg(reply_to):
 
 
 def _nanlong_exchange_requires_protection(choice):
-    return normalize_nanlong_choice(choice) in NANLONG_CONFIRM_CHOICES
+    partner_name = str(state.get("concubine_name") or "").strip()
+    permanent_moon_partner = partner_name == "南宫婉" or partner_name.startswith("南宫婉·")
+    return not permanent_moon_partner and normalize_nanlong_choice(choice) in NANLONG_CONFIRM_CHOICES
 
 
 def _get_nanlong_cave_status(send_as_id=None):
@@ -490,7 +492,9 @@ async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
 
 async def _handle_nanlong_trade_confirmed(text, now, audit_text):
     await _send_nanlong_reward_audit(text)
-    if _get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING and _is_nanlong_trade_success_reply(text):
+    partner_name = str(state.get("concubine_name") or "").strip()
+    permanent_moon_partner = partner_name == "南宫婉" or partner_name.startswith("南宫婉·")
+    if not permanent_moon_partner and _get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING and _is_nanlong_trade_success_reply(text):
         return await _send_nanlong_recall_after_trade(now)
     await _finalize_nanlong_success(audit_text)
     return True

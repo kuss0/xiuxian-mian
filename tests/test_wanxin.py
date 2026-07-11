@@ -55,7 +55,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             now=1_800_000_000.0,
         )
 
-        self.assertEqual("awakened", parsed["type"])
+        self.assertEqual("moon_awakened", parsed["type"])
         self.assertEqual("月殿余咒（封魂未解）", parsed["values"]["stage"])
         self.assertEqual(82, parsed["values"]["wanxin"])
         self.assertEqual(25, parsed["values"]["soul_seal"])
@@ -115,6 +115,74 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wanxin_assist_identify", action_guard.resolve_action_key(".辨认咒纹"))
         self.assertEqual("wanxin_assist_banner", action_guard.resolve_action_key(".借幡镇魂"))
         self.assertEqual("wanxin_assist_strip", action_guard.resolve_action_key(".剥离咒源"))
+        self.assertEqual("wanxin_moon_panel", action_guard.resolve_action_key(".婉影"))
+        self.assertEqual("wanxin_moon_greet", action_guard.resolve_action_key(".婉影问安"))
+        self.assertEqual("wanxin_moon_seal", action_guard.resolve_action_key(".同参封魂"))
+        self.assertEqual("wanxin_moon_join", action_guard.resolve_action_key(".月下合参"))
+
+    def test_parse_real_moon_actions_and_safe_defaults(self):
+        greet = wanxin.parse_wanxin_text(
+            "【婉影问安】\n你与【南宫婉·月影】于月下静坐片刻。\n情缘 +9。\n"
+            "婉心 +1，魂封 -1。\n婉心 115 | 魂封 0 | 月魄 38 | 咒源 120"
+        )
+        seal = wanxin.parse_wanxin_text(
+            "【同参封魂】\n你与【南宫婉·月影】合坐月下。\n消耗：500修为、24情缘。\n"
+            "魂封 -6，月魄 +2，咒源 +4。"
+        )
+        cooldown = wanxin.parse_wanxin_text("婉影神念尚未平复，请在 6小时15分钟49秒 后再同参封魂。")
+        blocked = wanxin.parse_wanxin_text("封魂咒尚未解除，月下合参不可贸然施展。需先完成 .解除封魂咒。")
+        config = wanxin.normalize_wanxin_auto_config()
+
+        self.assertEqual(("moon_greet_success", 9), (greet["type"], greet["affinity_gain"]))
+        self.assertEqual(("moon_seal_success", 24), (seal["type"], seal["affinity_cost"]))
+        self.assertEqual(("cooldown", "moon_seal"), (cooldown["type"], cooldown["cooldown_action"]))
+        self.assertEqual("moon_join_blocked", blocked["type"])
+        self.assertTrue(config["moon_greet_enabled"])
+        self.assertFalse(config["moon_seal_enabled"])
+        self.assertFalse(config["moon_join_enabled"])
+
+    async def test_moon_greet_reply_updates_shared_affinity_and_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["concubine_affinity"] = 120
+            state_module.state["wanxin_observation"] = {
+                "moon_awakened": True,
+                "pending": {
+                    "action": "moon_greet",
+                    "family": "wanxin_moon_greet",
+                    "msg_id": 7008,
+                    "send_as_id": identity_id,
+                    "reply_due_at": now + 90,
+                },
+            }
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "【婉影问安】\n你与【南宫婉·月影】于月下静坐片刻。\n情缘 +9。\n"
+                    "婉心 +1，魂封 -1。\n婉心 115 | 魂封 0 | 月魄 38 | 咒源 120",
+                    now,
+                    reply_to=SimpleNamespace(id=7008, raw_text=".婉影问安"),
+                    matched_family="wanxin_moon_greet",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(129, state_module.state["concubine_affinity"])
+            observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
+            self.assertTrue(observed["moon_awakened"])
+            self.assertGreater(observed["next_moon_greet_time"], now)
+
+    def test_moon_seal_reserves_160_affinity_for_voyage(self):
+        identity_id = self._prepare_identity()
+        with state_module.use_identity(identity_id):
+            observed = wanxin.normalize_wanxin_observation({
+                "moon_awakened": True,
+                "auto_config": {"moon_seal_enabled": True},
+            })
+            state_module.state["concubine_affinity"] = 183
+            self.assertFalse(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_MOON_SEAL))
+            state_module.state["concubine_affinity"] = 184
+            self.assertTrue(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_MOON_SEAL))
 
     async def test_scheduler_default_off_does_not_send(self):
         identity_id = self._prepare_identity()

@@ -153,6 +153,11 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼','布下剑阵']), null)" in script
     assert "renderModuleToggle('法宝','开关')" in script
     assert "renderModuleToggle('温养器灵','开关')" in script
+    assert "wanxinCheckbox('moon_greet_enabled', '婉影问安'" in script
+    assert "wanxinCheckbox('moon_seal_enabled', '同参封魂'" in script
+    assert "wanxinCheckbox('moon_join_enabled', '月下合参'" in script
+    assert "月殿寻痕由侍妾卡片的远航开关控制" in script
+    assert "情缘至少184" in script
     assert "renderModuleToggle('器灵试炼','开关')" in script
     assert "renderModuleToggle('布下剑阵','开关')" in script
     assert "['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法']" in script

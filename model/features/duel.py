@@ -7,8 +7,8 @@ from ..config import CD_BUFFER_SEC, CMD_DUEL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_send_as_profile, state
-from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining
+from ..state import get_current_identity_id, get_send_as_profile, state, update_send_as_profile
+from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
@@ -18,7 +18,9 @@ from .tianxing import (
 
 
 DUEL_MIN_REALM = "元婴后期"
-DUEL_MIN_XIUWEI = 600_000
+DUEL_RESERVE_XIUWEI = 600_000
+DUEL_MAX_LOSS_XIUWEI = 60_000
+DUEL_MIN_XIUWEI = DUEL_RESERVE_XIUWEI + DUEL_MAX_LOSS_XIUWEI
 DUEL_REPLY_TIMEOUT_SEC = 120
 DUEL_NORMAL_COOLDOWN_MIN_SEC = 18 * 60
 DUEL_NORMAL_COOLDOWN_MAX_SEC = 32 * 60
@@ -55,6 +57,8 @@ DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
 )
 RE_DUEL_WINNER = re.compile(r"(?:胜者[:：]\s*|胜者：)(@[^\s|]+)")
 RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
+RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|分钟|秒)(?:\d+\s*(?:小时|分钟|秒))*)")
+RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>万)?")
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 
@@ -143,9 +147,9 @@ def _profile_gate_reason():
     xiuwei_current = _parse_int(profile.get("xiuwei_current", 0))
     if realm != DUEL_MIN_REALM:
         return f"境界需为{DUEL_MIN_REALM}，当前={realm or '未知'}"
-    if xiuwei_current <= DUEL_MIN_XIUWEI:
+    if xiuwei_current < DUEL_MIN_XIUWEI:
         current_text = xiuwei_current if xiuwei_current > 0 else "未知"
-        return f"修为需 >{DUEL_MIN_XIUWEI}，当前={current_text}"
+        return f"斗法前需至少 {DUEL_MIN_XIUWEI} 修为（保留 {DUEL_RESERVE_XIUWEI} + 单场风险 {DUEL_MAX_LOSS_XIUWEI}），当前={current_text}"
     return ""
 
 
@@ -291,7 +295,9 @@ def parse_duel_result_summary(text):
 
 
 def _duel_batch_stagger_sec():
-    if len(_target_tokens()) <= 1:
+    total = max(0, int(state.get("duel_total_count", 0) or 0))
+    completed = max(0, int(state.get("duel_completed_count", 0) or 0))
+    if len(_target_tokens()) <= 1 and total - completed <= 0:
         return 0
     return random.uniform(DUEL_BATCH_STAGGER_MIN_SEC, DUEL_BATCH_STAGGER_MAX_SEC)
 
@@ -300,6 +306,41 @@ def _duel_result_cooldown_sec(weak_or_unknown):
     if weak_or_unknown:
         return random.uniform(DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC, DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC)
     return random.uniform(DUEL_NORMAL_COOLDOWN_MIN_SEC, DUEL_NORMAL_COOLDOWN_MAX_SEC)
+
+
+def _duel_next_delay_from_result(text, weak_or_unknown):
+    raw = str(text or "")
+    stagger = _duel_batch_stagger_sec()
+    if _is_duel_report_text(raw):
+        weakness = RE_DUEL_WEAKNESS.search(raw)
+        if weakness and weak_or_unknown:
+            return parse_wait_time(weakness.group("wait")) + CD_BUFFER_SEC + stagger
+        if not weak_or_unknown:
+            return stagger
+    if has_wait_time(raw):
+        return parse_wait_time(raw) + CD_BUFFER_SEC
+    return _duel_result_cooldown_sec(weak_or_unknown) + CD_BUFFER_SEC
+
+
+def _apply_duel_xiuwei_loss(text):
+    raw = str(text or "")
+    loser = RE_DUEL_LOSER.search(raw)
+    loss = RE_DUEL_XIUWEI_LOSS.search(raw)
+    if not loser or not loss:
+        return 0
+    profile = get_send_as_profile(get_current_identity_id()) or {}
+    username = str(profile.get("username") or "").strip().lstrip("@").casefold()
+    if not username or loser.group(1).strip().lstrip("@").casefold() != username:
+        return 0
+    amount = float(loss.group("amount") or 0)
+    if loss.group("unit"):
+        amount *= 10_000
+    amount = max(0, int(round(amount)))
+    current = _parse_int(profile.get("xiuwei_current", 0))
+    if amount <= 0 or current <= 0:
+        return 0
+    update_send_as_profile(get_current_identity_id(), xiuwei_current=max(0, current - amount))
+    return amount
 
 
 def _duel_next_time_blocks(now):
@@ -314,7 +355,10 @@ async def _prepare_duel_tianxing_route(now, *, due_at=0):
 
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
-        state["next_duel_time"] = blocked_until + CD_BUFFER_SEC
+        state["next_duel_time"] = min(
+            blocked_until + CD_BUFFER_SEC,
+            now + random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC),
+        )
         state["duel_last_error"] = str(preflight.get("reason") or "斗法天星预检阻断")
         save_state()
         return False
@@ -465,9 +509,12 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
 
     summary = parse_duel_result_summary(raw_text)
     weak_or_unknown = _is_weak_or_unknown_result(raw_text)
+    xiuwei_loss = _apply_duel_xiuwei_loss(raw_text)
     _clear_duel_pending()
     state["duel_last_msg_id"] = int(result_msg_id or 0)
     state["duel_last_result"] = summary
+    if xiuwei_loss > 0:
+        state["duel_last_result"] = f"{summary}｜修为-{xiuwei_loss}"
     state["duel_last_error"] = "" if not weak_or_unknown else summary
     if _duel_counts_as_attempt(raw_text):
         state["duel_completed_count"] = int(state.get("duel_completed_count", 0) or 0) + 1
@@ -478,8 +525,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
             save_state()
             await send_audit_log(f"✅ 斗法完成：{state['duel_completed_count']}/{total_count}", scope="identity", limit=180)
             return True
-    cooldown = _duel_result_cooldown_sec(weak_or_unknown)
-    _schedule_next_duel(now, cooldown + CD_BUFFER_SEC + _duel_batch_stagger_sec())
+    _schedule_next_duel(now, _duel_next_delay_from_result(raw_text, weak_or_unknown))
     save_state()
     await send_audit_log(f"🗡️ 斗法结果：{summary}", scope="identity", limit=220)
     return True

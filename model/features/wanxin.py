@@ -14,6 +14,10 @@ from ..config import (
     CMD_WANXIN_ASSIST_STRIP,
     CMD_WANXIN_DEDUCE,
     CMD_WANXIN_HELP,
+    CMD_WANXIN_MOON_GREET,
+    CMD_WANXIN_MOON_JOIN,
+    CMD_WANXIN_MOON_SEAL,
+    CMD_WANXIN_MOON_STATUS,
     CMD_WANXIN_PROTECT,
     CMD_WANXIN_PUBLISH_COMMISSION,
     CMD_WANXIN_STATUS,
@@ -54,6 +58,12 @@ WANXIN_DEDUCE_CD_SEC = 8 * 3600
 WANXIN_IDENTIFY_CD_SEC = 4 * 3600
 WANXIN_BANNER_CD_SEC = 6 * 3600
 WANXIN_STRIP_CD_SEC = 8 * 3600
+WANXIN_MOON_GREET_CD_SEC = 24 * 3600
+WANXIN_MOON_SEAL_CD_SEC = 8 * 3600
+WANXIN_MOON_JOIN_CD_SEC = 24 * 3600
+WANXIN_MOON_VOYAGE_AFFINITY_RESERVE = 160
+WANXIN_MOON_SEAL_AFFINITY_COST = 24
+WANXIN_MOON_SEAL_MIN_AFFINITY = WANXIN_MOON_VOYAGE_AFFINITY_RESERVE + WANXIN_MOON_SEAL_AFFINITY_COST
 WANXIN_ANCHOR_MAX_AGE_SEC = 24 * 3600
 WANXIN_UNAVAILABLE_BACKOFF_SEC = 24 * 3600
 WANXIN_PHASEFUL_DEFER_SEC = 5 * 60
@@ -67,8 +77,19 @@ WANXIN_ACTION_IDENTIFY = "identify"
 WANXIN_ACTION_BANNER = "banner"
 WANXIN_ACTION_STRIP = "strip"
 WANXIN_ACTION_STATUS = "status"
+WANXIN_ACTION_MOON_STATUS = "moon_status"
+WANXIN_ACTION_MOON_GREET = "moon_greet"
+WANXIN_ACTION_MOON_SEAL = "moon_seal"
+WANXIN_ACTION_MOON_JOIN = "moon_join"
 
-WANXIN_SELF_ACTIONS = (WANXIN_ACTION_VISIT, WANXIN_ACTION_PROTECT, WANXIN_ACTION_DEDUCE)
+WANXIN_SELF_ACTIONS = (
+    WANXIN_ACTION_MOON_GREET,
+    WANXIN_ACTION_VISIT,
+    WANXIN_ACTION_PROTECT,
+    WANXIN_ACTION_DEDUCE,
+    WANXIN_ACTION_MOON_SEAL,
+    WANXIN_ACTION_MOON_JOIN,
+)
 WANXIN_ASSIST_ACTIONS = (WANXIN_ACTION_IDENTIFY, WANXIN_ACTION_BANNER, WANXIN_ACTION_STRIP)
 
 WANXIN_ACTION_COMMANDS = {
@@ -81,6 +102,10 @@ WANXIN_ACTION_COMMANDS = {
     WANXIN_ACTION_IDENTIFY: CMD_WANXIN_ASSIST_IDENTIFY,
     WANXIN_ACTION_BANNER: CMD_WANXIN_ASSIST_BANNER,
     WANXIN_ACTION_STRIP: CMD_WANXIN_ASSIST_STRIP,
+    WANXIN_ACTION_MOON_STATUS: CMD_WANXIN_MOON_STATUS,
+    WANXIN_ACTION_MOON_GREET: CMD_WANXIN_MOON_GREET,
+    WANXIN_ACTION_MOON_SEAL: CMD_WANXIN_MOON_SEAL,
+    WANXIN_ACTION_MOON_JOIN: CMD_WANXIN_MOON_JOIN,
 }
 
 WANXIN_ACTION_LABELS = {
@@ -93,6 +118,10 @@ WANXIN_ACTION_LABELS = {
     WANXIN_ACTION_IDENTIFY: "辨认咒纹",
     WANXIN_ACTION_BANNER: "借幡镇魂",
     WANXIN_ACTION_STRIP: "剥离咒源",
+    WANXIN_ACTION_MOON_STATUS: "婉影状态",
+    WANXIN_ACTION_MOON_GREET: "婉影问安",
+    WANXIN_ACTION_MOON_SEAL: "同参封魂",
+    WANXIN_ACTION_MOON_JOIN: "月下合参",
 }
 
 WANXIN_ACTION_FAMILIES = {
@@ -105,6 +134,10 @@ WANXIN_ACTION_FAMILIES = {
     WANXIN_ACTION_IDENTIFY: "wanxin_assist_identify",
     WANXIN_ACTION_BANNER: "wanxin_assist_banner",
     WANXIN_ACTION_STRIP: "wanxin_assist_strip",
+    WANXIN_ACTION_MOON_STATUS: "wanxin_moon_panel",
+    WANXIN_ACTION_MOON_GREET: "wanxin_moon_greet",
+    WANXIN_ACTION_MOON_SEAL: "wanxin_moon_seal",
+    WANXIN_ACTION_MOON_JOIN: "wanxin_moon_join",
 }
 
 WANXIN_ACTION_COOLDOWN_SEC = {
@@ -114,6 +147,9 @@ WANXIN_ACTION_COOLDOWN_SEC = {
     WANXIN_ACTION_IDENTIFY: WANXIN_IDENTIFY_CD_SEC,
     WANXIN_ACTION_BANNER: WANXIN_BANNER_CD_SEC,
     WANXIN_ACTION_STRIP: WANXIN_STRIP_CD_SEC,
+    WANXIN_ACTION_MOON_GREET: WANXIN_MOON_GREET_CD_SEC,
+    WANXIN_ACTION_MOON_SEAL: WANXIN_MOON_SEAL_CD_SEC,
+    WANXIN_ACTION_MOON_JOIN: WANXIN_MOON_JOIN_CD_SEC,
 }
 
 RE_WANXIN_STAGE = re.compile(r"阶段[:：]\s*(?P<stage>[^\n]+)")
@@ -127,6 +163,8 @@ RE_SOURCE_GAIN = re.compile(r"咒源\s*\+(?P<gain>\d+)")
 RE_SEAL_DOWN = re.compile(r"魂封\s*-(?P<down>\d+)")
 RE_MOON_GAIN = re.compile(r"月魄\s*\+(?P<gain>\d+)")
 RE_CONTRIB_GAIN = re.compile(r"咒师贡献\s*\+(?P<gain>\d+)")
+RE_MOON_AFFINITY_GAIN = re.compile(r"情缘\s*\+(?P<gain>\d+)")
+RE_MOON_AFFINITY_COST = re.compile(r"消耗[：:]?[^\n]*?(?P<cost>\d+)\s*情缘")
 
 
 def _entry_ts(value):
@@ -189,6 +227,10 @@ def _default_wanxin_observation():
         "next_visit_time": 0,
         "next_protect_time": 0,
         "next_deduce_time": 0,
+        "moon_awakened": False,
+        "next_moon_greet_time": 0,
+        "next_moon_seal_time": 0,
+        "next_moon_join_time": 0,
         "last_visit_day": "",
         "auto_next_time": 0,
         "auto_last_action": "",
@@ -209,6 +251,9 @@ def _default_wanxin_auto_config():
         "deduce_enabled": True,
         "publish_enabled": False,
         "assist_enabled": True,
+        "moon_greet_enabled": True,
+        "moon_seal_enabled": False,
+        "moon_join_enabled": False,
         "reward_lingshi": 1,
     }
 
@@ -263,7 +308,10 @@ def normalize_wanxin_auto_config(value=None):
     config = _default_wanxin_auto_config()
     if isinstance(value, dict):
         config.update(value)
-    for key in ("visit_enabled", "protect_enabled", "deduce_enabled", "publish_enabled", "assist_enabled"):
+    for key in (
+        "visit_enabled", "protect_enabled", "deduce_enabled", "publish_enabled", "assist_enabled",
+        "moon_greet_enabled", "moon_seal_enabled", "moon_join_enabled",
+    ):
         config[key] = _normalize_bool(config.get(key), _default_wanxin_auto_config()[key])
     reward = _safe_int(config.get("reward_lingshi"), 1)
     config["reward_lingshi"] = max(1, min(1_000_000, reward))
@@ -289,9 +337,13 @@ def normalize_wanxin_observation(value=None):
         "next_visit_time",
         "next_protect_time",
         "next_deduce_time",
+        "next_moon_greet_time",
+        "next_moon_seal_time",
+        "next_moon_join_time",
         "auto_next_time",
     ):
         observed[key] = max(0.0, _safe_float(observed.get(key), 0))
+    observed["moon_awakened"] = _normalize_bool(observed.get("moon_awakened"), False)
 
     observed["auto_config"] = normalize_wanxin_auto_config(observed.get("auto_config"))
 
@@ -424,6 +476,11 @@ def looks_like_wanxin_text(text):
         "阴罗咒源",
         "玄冰丹方",
         "婉影觉醒",
+        "婉影共鸣",
+        "月影同参",
+        "婉影问安",
+        "同参封魂",
+        "月下合参",
         "北冥小极宫",
         "北冥寒令",
         "封魂咒纹变化极慢",
@@ -488,6 +545,12 @@ def _cooldown_action_from_text(text):
         return WANXIN_ACTION_PROTECT
     if "探望南宫婉" in raw:
         return WANXIN_ACTION_VISIT
+    if "婉影问安" in raw:
+        return WANXIN_ACTION_MOON_GREET
+    if "同参封魂" in raw:
+        return WANXIN_ACTION_MOON_SEAL
+    if "月下合参" in raw:
+        return WANXIN_ACTION_MOON_JOIN
     return ""
 
 
@@ -524,7 +587,37 @@ def parse_wanxin_text(text, now=None, family=""):
         parsed.update({"type": "panel", "available": "yes", "summary": "婉心状态"})
         return parsed
     if "【婉影觉醒】" in raw:
-        parsed.update({"type": "awakened", "available": "yes", "summary": "婉影觉醒"})
+        parsed.update({"type": "moon_awakened", "available": "yes", "summary": "婉影觉醒"})
+        return parsed
+    if "【月影同参】" in raw or "婉影共鸣: 已觉醒" in raw or "婉影共鸣：已觉醒" in raw:
+        parsed.update({"type": "moon_panel", "available": "yes", "summary": "婉影状态"})
+        return parsed
+    if "【婉影问安】" in raw:
+        gain = RE_MOON_AFFINITY_GAIN.search(raw)
+        parsed.update({
+            "type": "moon_greet_success",
+            "available": "yes",
+            "affinity_gain": _safe_int(gain.group("gain"), 0) if gain else 0,
+            "summary": "婉影问安成功",
+        })
+        return parsed
+    if "【同参封魂】" in raw:
+        cost = RE_MOON_AFFINITY_COST.search(raw)
+        parsed.update({
+            "type": "moon_seal_success",
+            "available": "yes",
+            "affinity_cost": _safe_int(cost.group("cost"), 0) if cost else 0,
+            "summary": "同参封魂成功",
+        })
+        return parsed
+    if "【月下合参】" in raw:
+        parsed.update({"type": "moon_join_success", "available": "yes", "summary": "月下合参成功"})
+        return parsed
+    if "封魂咒尚未解除" in raw and "月下合参" in raw:
+        parsed.update({"type": "moon_join_blocked", "available": "yes", "summary": "封魂未解，月下合参暂缓"})
+        return parsed
+    if "婉影尚未觉醒" in raw or "并非【南宫婉】一系" in raw:
+        parsed.update({"type": "moon_unavailable", "available": "yes", "summary": "婉影玩法尚不可用"})
         return parsed
     if "你没有【北冥寒令】" in raw or "无法开启北冥小极宫" in raw:
         parsed.update({"type": "beiming_blocked", "available": "yes", "summary": "缺少北冥寒令"})
@@ -918,6 +1011,12 @@ def _due_time_for_action(observed, action):
         return float(observed.get("next_protect_time", 0) or 0)
     if action == WANXIN_ACTION_DEDUCE:
         return float(observed.get("next_deduce_time", 0) or 0)
+    if action == WANXIN_ACTION_MOON_GREET:
+        return float(observed.get("next_moon_greet_time", 0) or 0)
+    if action == WANXIN_ACTION_MOON_SEAL:
+        return float(observed.get("next_moon_seal_time", 0) or 0)
+    if action == WANXIN_ACTION_MOON_JOIN:
+        return float(observed.get("next_moon_join_time", 0) or 0)
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     if action == WANXIN_ACTION_IDENTIFY:
         return float(assist.get("next_identify_time", 0) or 0)
@@ -936,6 +1035,12 @@ def _set_next_time_for_action(observed, action, next_time):
         observed["next_protect_time"] = next_time
     elif action == WANXIN_ACTION_DEDUCE:
         observed["next_deduce_time"] = next_time
+    elif action == WANXIN_ACTION_MOON_GREET:
+        observed["next_moon_greet_time"] = next_time
+    elif action == WANXIN_ACTION_MOON_SEAL:
+        observed["next_moon_seal_time"] = next_time
+    elif action == WANXIN_ACTION_MOON_JOIN:
+        observed["next_moon_join_time"] = next_time
     elif action == WANXIN_ACTION_IDENTIFY:
         observed["assist"]["next_identify_time"] = next_time
     elif action == WANXIN_ACTION_BANNER:
@@ -953,6 +1058,16 @@ def _action_enabled(observed, action):
         return bool(config.get("protect_enabled"))
     if action == WANXIN_ACTION_DEDUCE:
         return bool(config.get("deduce_enabled"))
+    if action == WANXIN_ACTION_MOON_GREET:
+        return bool(observed.get("moon_awakened") and config.get("moon_greet_enabled"))
+    if action == WANXIN_ACTION_MOON_SEAL:
+        return bool(
+            observed.get("moon_awakened")
+            and config.get("moon_seal_enabled")
+            and int(state.get("concubine_affinity", 0) or 0) >= WANXIN_MOON_SEAL_MIN_AFFINITY
+        )
+    if action == WANXIN_ACTION_MOON_JOIN:
+        return bool(observed.get("moon_awakened") and config.get("moon_join_enabled"))
     if action == WANXIN_ACTION_IDENTIFY:
         return bool(config.get("assist_enabled") and assist.get("identify_enabled"))
     if action == WANXIN_ACTION_BANNER:
@@ -1258,6 +1373,12 @@ def _apply_success_cooldown(observed, action, now, parsed=None):
         observed["next_protect_time"] = now + WANXIN_PROTECT_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_DEDUCE:
         observed["next_deduce_time"] = now + WANXIN_DEDUCE_CD_SEC + CD_BUFFER_SEC
+    elif action == WANXIN_ACTION_MOON_GREET:
+        observed["next_moon_greet_time"] = _next_daily_after(now)
+    elif action == WANXIN_ACTION_MOON_SEAL:
+        observed["next_moon_seal_time"] = now + WANXIN_MOON_SEAL_CD_SEC + CD_BUFFER_SEC
+    elif action == WANXIN_ACTION_MOON_JOIN:
+        observed["next_moon_join_time"] = now + WANXIN_MOON_JOIN_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_IDENTIFY:
         observed["assist"]["next_identify_time"] = now + WANXIN_IDENTIFY_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_BANNER:
@@ -1315,7 +1436,9 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         observed["auto_last_error"] = "" if commission["id"] else "委托存在但未解析到ID"
         observed["auto_next_time"] = float(now)
         _clear_pending(observed)
-    elif ptype in {"panel", "help"}:
+    elif ptype in {"panel", "help", "moon_panel", "moon_awakened"}:
+        if ptype in {"moon_panel", "moon_awakened"}:
+            observed["moon_awakened"] = True
         observed["auto_last_result"] = parsed.get("summary") or "已校准"
         observed["auto_last_error"] = ""
         _clear_pending(observed)
@@ -1329,18 +1452,50 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         observed["auto_last_error"] = ""
         _clear_pending(observed)
         _schedule_next(observed, now)
-    elif ptype in {"visit_success", "visit_already", "protect_success", "deduce_success"}:
+    elif ptype in {
+        "visit_success", "visit_already", "protect_success", "deduce_success",
+        "moon_greet_success", "moon_seal_success", "moon_join_success",
+    }:
         if ptype in {"visit_success", "visit_already"}:
             action = WANXIN_ACTION_VISIT
         elif ptype == "protect_success":
             action = WANXIN_ACTION_PROTECT
-        else:
+        elif ptype == "deduce_success":
             action = WANXIN_ACTION_DEDUCE
+        elif ptype == "moon_greet_success":
+            action = WANXIN_ACTION_MOON_GREET
+            observed["moon_awakened"] = True
+            state["concubine_affinity"] = max(
+                0,
+                int(state.get("concubine_affinity", 0) or 0) + int(parsed.get("affinity_gain", 0) or 0),
+            )
+        elif ptype == "moon_seal_success":
+            action = WANXIN_ACTION_MOON_SEAL
+            observed["moon_awakened"] = True
+            state["concubine_affinity"] = max(
+                0,
+                int(state.get("concubine_affinity", 0) or 0) - int(parsed.get("affinity_cost", 0) or 0),
+            )
+        else:
+            action = WANXIN_ACTION_MOON_JOIN
+            observed["moon_awakened"] = True
         _apply_success_cooldown(observed, action, now, parsed)
         observed["auto_last_result"] = parsed.get("summary") or "成功"
         observed["auto_last_error"] = ""
         _clear_pending(observed)
         _schedule_next(observed, now)
+    elif ptype == "moon_join_blocked":
+        observed["next_moon_join_time"] = now + WANXIN_MOON_JOIN_CD_SEC
+        observed["auto_last_result"] = parsed.get("summary") or "封魂未解"
+        observed["auto_last_error"] = ""
+        _clear_pending(observed)
+        _schedule_next(observed, now)
+    elif ptype == "moon_unavailable":
+        observed["moon_awakened"] = False
+        observed["auto_last_result"] = parsed.get("summary") or "婉影玩法尚不可用"
+        observed["auto_last_error"] = ""
+        _clear_pending(observed)
+        _schedule_next(observed, now, 24 * 3600)
     else:
         if ptype == "unknown":
             return False
@@ -1467,7 +1622,10 @@ def set_wanxin_config(config):
     observed = normalize_wanxin_observation(state.get("wanxin_observation"))
     auto_config = normalize_wanxin_auto_config(observed.get("auto_config"))
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else _default_wanxin_assist()
-    for key in ("visit_enabled", "protect_enabled", "deduce_enabled", "publish_enabled", "assist_enabled"):
+    for key in (
+        "visit_enabled", "protect_enabled", "deduce_enabled", "publish_enabled", "assist_enabled",
+        "moon_greet_enabled", "moon_seal_enabled", "moon_join_enabled",
+    ):
         if key in config:
             auto_config[key] = _normalize_bool(config.get(key), auto_config.get(key, True))
     if "reward_lingshi" in config:
@@ -1505,6 +1663,10 @@ def get_wanxin_ui_state(now=None):
         "next_visit_time": fmt_abs_ts(observed.get("next_visit_time", 0) or 0),
         "next_protect_time": fmt_abs_ts(observed.get("next_protect_time", 0) or 0),
         "next_deduce_time": fmt_abs_ts(observed.get("next_deduce_time", 0) or 0),
+        "moon_awakened": bool(observed.get("moon_awakened")),
+        "next_moon_greet_time": fmt_abs_ts(observed.get("next_moon_greet_time", 0) or 0),
+        "next_moon_seal_time": fmt_abs_ts(observed.get("next_moon_seal_time", 0) or 0),
+        "next_moon_join_time": fmt_abs_ts(observed.get("next_moon_join_time", 0) or 0),
         "commission": {
             "id": int(commission.get("id", 0) or 0),
             "accepted": bool(commission.get("accepted")),
