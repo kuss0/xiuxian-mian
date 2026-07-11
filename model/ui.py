@@ -2393,6 +2393,15 @@ async def ui_refresh_storage_bag_from_api(payload=None, *, notify_log_group=Fals
         me_payload = me_result.payload
         if isinstance(me_payload, dict) and me_payload.get("ok") is False:
             raise StorageBagApiError(str(me_payload.get("error") or "储物袋 API 返回失败"))
+        # A successful authenticated /api/me response proves the same session
+        # validity as the explicit verify action. Keep the UI/auth state aligned
+        # with the data path instead of showing "未验证" after a real refresh.
+        _storage_bag_api_store_verified_result({
+            "cookie": me_result.cookie,
+            "api_token": me_result.api_token,
+            "item_name_map": {},
+        }, time.time())
+        active_config = get_storage_bag_api_config()
         me_result_data = _storage_bag_api_apply_payload(me_payload if isinstance(me_payload, dict) else {})
         updated_identity_ids.update(me_result_data.get("updated_identity_ids") or [])
         total_updated += int(me_result_data.get("updated_count") or 0)

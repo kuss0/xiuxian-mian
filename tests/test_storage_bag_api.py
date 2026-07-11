@@ -257,6 +257,11 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         config = state_module.get_storage_bag_api_config()
         self.assertEqual("session=rotated", config["cookie"])
         self.assertEqual("token-from-html", config["api_token"])
+        self.assertTrue(config["verified_at"])
+        self.assertTrue(config["keepalive_enabled"])
+        self.assertTrue(config["last_keepalive_ok"])
+        self.assertTrue(snapshot["verified"])
+        self.assertTrue(snapshot["keepalive_enabled"])
         record = state_module.get_storage_bag_records()[str(self.identity_id)]
         self.assertEqual({"青竹蜂云剑": 1, "灵石": 5000, "木髓": 3}, record["items"])
         self.assertEqual("storage_bag_api_character", record["source"])
