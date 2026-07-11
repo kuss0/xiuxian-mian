@@ -710,7 +710,7 @@ def _mark_explore_rift_send_unknown(now):
     _clear_explore_rift_pending()
     state["explore_rift_last_result"] = "发送状态未知，等待被动回复或冷却校准"
     state["explore_rift_last_error"] = "探寻裂缝发送状态未知，先等待被动结果，避免重复消耗"
-    state["next_explore_rift_time"] = wait_until
+    state["next_explore_rift_time"] = max(float(state.get("next_explore_rift_time", 0) or 0), wait_until)
     state["explore_rift_reply_due_at"] = wait_until
     return wait_until
 
@@ -1457,6 +1457,11 @@ async def run_explore_rift_scheduler(now):
     if not await _prepare_explore_rift_tianxing_route(now, due_at=now):
         return
 
+    # Reply/edit handlers can confirm a long real cooldown while the route
+    # preflight coroutine is awaiting. Never send from that stale snapshot.
+    if _explore_rift_next_time_blocks(now):
+        return
+
     msg = await send_game_command(CMD_EXPLORE_RIFT, track=False, max_retry=0, source_module="探寻裂缝")
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), CMD_EXPLORE_RIFT)
@@ -1471,7 +1476,10 @@ async def run_explore_rift_scheduler(now):
             )
             return
         if _is_explore_rift_unsent_block(send_block):
-            state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+            state["next_explore_rift_time"] = max(
+                float(state.get("next_explore_rift_time", 0) or 0),
+                float(now + RETRY_MAX_SEC),
+            )
             state["explore_rift_last_result"] = "探寻裂缝未发送，等待运行层恢复"
             state["explore_rift_last_error"] = f"探寻裂缝未发送: {_explore_rift_block_label(send_block)}"
             state["explore_rift_reply_to_msg_id"] = 0
@@ -1484,7 +1492,10 @@ async def run_explore_rift_scheduler(now):
                 limit=220,
             )
             return
-        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+        state["next_explore_rift_time"] = max(
+            float(state.get("next_explore_rift_time", 0) or 0),
+            float(now + RETRY_MAX_SEC),
+        )
         state["explore_rift_last_error"] = "探寻裂缝发送失败"
         save_state()
         await send_audit_log("❌ 探寻裂缝发送失败，稍后重试。", scope="identity", limit=180)

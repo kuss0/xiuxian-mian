@@ -1460,6 +1460,57 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("send_queue_timeout", state_module.state["explore_rift_last_error"])
             self.assertNotIn("发送状态未知", state_module.state["explore_rift_last_result"])
 
+    async def test_scheduler_rechecks_real_cd_after_async_preflight(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        real_cd_until = now + 11 * 3600
+
+        async def preflight_with_concurrent_reply(_now, *, due_at=0):
+            state_module.state["next_explore_rift_time"] = real_cd_until
+            state_module.state["explore_rift_last_result"] = "冷却中"
+            return True
+
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            with (
+                patch.object(explore_rift, "_prepare_explore_rift_tianxing_route", new=preflight_with_concurrent_reply),
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(real_cd_until, state_module.state["next_explore_rift_time"])
+            self.assertEqual("冷却中", state_module.state["explore_rift_last_result"])
+
+    async def test_unsent_guard_cannot_shorten_concurrent_real_cd(self):
+        identity_id = self._prepare_identity(xiuwei_current=1000)
+        now = 1_700_000_000.0
+        real_cd_until = now + 11 * 3600
+
+        async def send_with_concurrent_reply(*_args, **_kwargs):
+            state_module.state["next_explore_rift_time"] = real_cd_until
+            state_module.state["explore_rift_last_result"] = "冷却中"
+            return None
+
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["tianxing_enabled"] = False
+            with (
+                patch.object(explore_rift, "_prepare_explore_rift_tianxing_route", new=AsyncMock(return_value=True)),
+                patch.object(explore_rift, "send_game_command", new=AsyncMock(side_effect=send_with_concurrent_reply)),
+                patch.object(explore_rift, "classify_game_send_block", return_value={"status": "unsent", "code": "action_guard", "reason": "短窗保护"}),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            self.assertEqual(real_cd_until, state_module.state["next_explore_rift_time"])
+            self.assertIn("未发送", state_module.state["explore_rift_last_result"])
+
     async def test_scheduler_short_retries_timeout_when_tianxing_explore_ready(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
         now = 1_700_000_000.0
