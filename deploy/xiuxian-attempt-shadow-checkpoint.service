@@ -1,0 +1,10 @@
+[Unit]
+Description=Xiuxian CommandAttempt read-only shadow checkpoint
+After=xiuxian.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/xiuxian-main
+ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/tools/attempt_shadow_checkpoint.py
+Nice=10
+

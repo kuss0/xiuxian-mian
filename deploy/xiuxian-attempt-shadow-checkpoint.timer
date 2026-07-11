@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Xiuxian CommandAttempt shadow checkpoint every 12 hours
+
+[Timer]
+OnCalendar=*-*-* 00,12:15:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=xiuxian-attempt-shadow-checkpoint.service
+
+[Install]
+WantedBy=timers.target

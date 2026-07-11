@@ -68,3 +68,58 @@ source. `message_index` is a bounded recent-message index and may legitimately
 evict older root IDs; it is only a fast-path check. At the 03:09 checkpoint,
 82/82 sent Attempts were present in persisted sent logs even though the bounded
 index had already evicted the earliest rows.
+
+## 5.7-Hour Checkpoint
+
+Checkpoint: 2026-07-12 07:47 UTC+8.
+
+- Attempt rows: 289.
+- Transport/business distribution: 289 `sent/open`.
+- Persisted sent-log parity: 289/289.
+- Evidence rows: 387.
+- Bind reason: 387 `exact_reply_to_root`.
+- Bind anchor: 387 `reply_to_msg_id`.
+- Non-strong or guessed written bindings: 0.
+- Stale created/queued/sending rows over five minutes: 0.
+- Attempt `last_error` rows: 0.
+- Production blocked samples: 0.
+- Production send-unknown samples: 0.
+- Observation rate: about 50.65 attempts/hour.
+- 72-hour projection: about 3,647 attempts and 0.84 MB of
+  Attempt/Evidence JSON payload.
+
+The production absence of blocked/send-unknown samples is not being forced.
+Lab coverage verifies both paths:
+
+- `global_disabled` before send-slot entry records `blocked` with
+  `definitely_unsent=true`;
+- queued `send_timeout` records `send_unknown` with
+  `definitely_unsent=false`;
+- both preserve the legacy return value and do not take control.
+
+Validation command:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_command_attempt_runtime_shadow.py \
+  -k 'pre_send_block or queued_send_timeout'
+```
+
+Result: 2 passed.
+
+## Periodic Checkpoint
+
+`tools/attempt_shadow_checkpoint.py` produces the read-only aggregate used for
+the observation gate. It reads the SQLite ledger and persisted message logs,
+then writes JSON reports under:
+
+```text
+data/state/command_attempt_checkpoints/
+```
+
+The accompanying systemd timer runs at 00:15 and 12:15 UTC+8 with up to five
+minutes randomized delay. It has no send, retry, cooldown, recovery, reducer,
+scheduler, or business-control authority.
+
+Capacity and future archive constraints are defined in
+`docs/audit/command-attempt-shadow-retention-20260712.md`. No archive or delete
+job is approved during the 72-hour evidence window.
