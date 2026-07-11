@@ -319,19 +319,24 @@ def _has_duel_terminal_attempt_keyword(text):
 
 def _duel_counts_as_attempt(text):
     raw = str(text or "").strip()
+    if _is_target_named_cooldown(raw):
+        return False
     return _is_duel_report_text(raw) or _has_duel_terminal_attempt_keyword(raw)
 
 
-def _target_cooldown_confirmed_by_text(text):
+def _is_target_named_cooldown(text):
     raw = str(text or "")
-    if _is_duel_report_text(raw) or "对方正在斗法" in raw:
-        return True
     target = _target_token().lstrip("@")
     return bool(
         target
         and _tag_in_text(raw, target)
         and ("元神尚未平复" in raw or "无法再次斗法" in raw)
     )
+
+
+def _target_cooldown_confirmed_by_text(text):
+    raw = str(text or "")
+    return _is_duel_report_text(raw) or "对方正在斗法" in raw or _is_target_named_cooldown(raw)
 
 
 def _target_cooldown_delay_from_text(text):
