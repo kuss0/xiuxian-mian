@@ -31,8 +31,6 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             realm=realm,
             xiuwei_current=xiuwei_current,
         )
-        with state_module.use_identity(identity_id):
-            state_module.state["duel_unequip_prepared"] = True
         return identity_id
 
     def test_target_normalization_and_command(self):
@@ -110,7 +108,6 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_enabled"] = True
             state_module.state["duel_target"] = "cupaopao"
             state_module.state["duel_total_count"] = 5
-            state_module.state["duel_unequip_prepared"] = True
             state_module.state["next_duel_time"] = now - 1
             fake_msg = SimpleNamespace(id=22027, sent_at=now)
             with (
@@ -123,27 +120,6 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
             self.assertEqual(now + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
             self.assertEqual("已发送", state_module.state["duel_last_result"])
-
-    async def test_scheduler_unequips_once_before_duel_chain(self):
-        identity_id = self._prepare_identity()
-        now = 1_700_000_000.0
-        fake_msg = SimpleNamespace(id=22020, sent_at=now)
-        with state_module.use_identity(identity_id):
-            state_module.state["duel_enabled"] = True
-            state_module.state["duel_target"] = "@cupaopao"
-            state_module.state["duel_total_count"] = 5
-            state_module.state["duel_unequip_prepared"] = False
-            state_module.state["next_duel_time"] = now - 1
-            with (
-                patch.object(duel, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
-                patch.object(duel.random, "uniform", return_value=90),
-                patch.object(duel, "save_state"),
-            ):
-                await duel.run_duel_scheduler(now)
-
-            send_mock.assert_awaited_once_with(".卸下法宝", track=False, max_retry=0, source_module="斗法")
-            self.assertTrue(state_module.state["duel_unequip_prepared"])
-            self.assertEqual(now + 90, state_module.state["next_duel_time"])
 
     async def test_same_target_cooldown_is_shared_across_identities(self):
         first_id = self._prepare_identity(8659059191)
@@ -218,6 +194,37 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertNotIn("@cupaopao", state_module.get_duel_target_cooldowns())
+
+    async def test_target_named_cooldown_reply_confirms_shared_target_lock(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            duel._set_target_cooldown(
+                "@ccahen",
+                now + duel.DUEL_TARGET_RESERVATION_SEC,
+                confirmed=False,
+                command_msg_id=22027,
+            )
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    "道友 @ccahen 元神尚未平复，5分钟内无法再次斗法。",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @ccahen"),
+                    result_msg_id=22029,
+                )
+
+        self.assertTrue(handled)
+        record = state_module.get_duel_target_cooldowns()["@ccahen"]
+        self.assertTrue(record["confirmed"])
+        self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, record["until"])
 
     async def test_scheduler_rotates_batch_targets_by_completed_count(self):
         identity_id = self._prepare_identity()
