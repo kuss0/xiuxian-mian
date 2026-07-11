@@ -1214,7 +1214,7 @@ def _apply_wild_training_passive(text, now, family, *, reply_context=None, curre
         if float(state.get("wild_training_reply_due_at", 0) or 0) <= now:
             state["wild_training_reply_due_at"] = float(now + wild_training_mod.WILD_TRAINING_REPLY_TIMEOUT_SEC)
         return True
-    if not any(marker in raw_text for marker in wild_training_mod.WILD_TRAINING_RESULT_MARKERS):
+    if not wild_training_mod._is_result_notice(raw_text):
         return False
     msg_id = int(current_msg_id or 0) or _context_msg_id(reply_context, "reply_to_msg_id")
     if wild_training_mod._is_duplicate_wild_training_result(raw_text, msg_id):

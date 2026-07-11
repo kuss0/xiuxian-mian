@@ -118,6 +118,30 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(201, state_module.state["wild_training_last_msg_id"])
         self.assertEqual("已出发：谨慎", state_module.state["wild_training_last_result"])
 
+    async def test_phaseful_settlement_reply_does_not_clear_wild_training_pending(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_005.0
+        text = (
+            "【元婴闭关结算】\n"
+            "你的元婴在过去 8 小时内为你增加了 10400 点修为！\n"
+            "- 二级妖丹x3\n- 养魂木x1"
+        )
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 谨慎", id=101)
+
+        with state_module.use_identity(send_as_id), patch.object(wild_training, "save_state"):
+            handled = await wild_training.handle_wild_training_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="wild_training",
+                current_msg_id=201,
+            )
+
+        self.assertFalse(handled)
+        self.assertEqual(101, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(1_700_000_600.0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+
     async def test_pending_command_waits_without_resending_before_timeout(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_010.0
@@ -2422,6 +2446,19 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(101, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(1_700_000_600.0, state_module.state["wild_training_reply_due_at"])
         self.assertEqual("已出发：谨慎", state_module.state["wild_training_last_result"])
+
+    async def test_passive_phaseful_settlement_does_not_clear_pending(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_005.0
+        text = "【元婴闭关结算】\n修为 +10400\n获得 二级妖丹x3"
+
+        with state_module.use_identity(send_as_id):
+            handled = passive_inbox._apply_wild_training_passive(text, now, "wild_training")
+
+        self.assertFalse(handled)
+        self.assertEqual(101, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(1_700_000_600.0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 
     async def test_passive_result_without_identity_context_does_not_mutate_current_identity(self):
         send_as_id = self._prepare_identity()

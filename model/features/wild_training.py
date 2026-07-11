@@ -541,7 +541,7 @@ def _is_start_notice(text):
 
 def _is_result_notice(text):
     raw_text = str(text or "").strip()
-    return not _is_start_notice(raw_text) and any(marker in raw_text for marker in WILD_TRAINING_RESULT_MARKERS)
+    return bool(_extract_result_title(raw_text))
 
 
 def _start_summary(text):
