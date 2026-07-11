@@ -62,3 +62,9 @@ Keep shadow mode active for 24-72 hours. Each checkpoint must verify:
 
 Gate 4 requires a separate review after the evidence window. No module takeover
 is authorized by this document.
+
+Send parity must use persisted `event_type=sent` message logs as the durable
+source. `message_index` is a bounded recent-message index and may legitimately
+evict older root IDs; it is only a fast-path check. At the 03:09 checkpoint,
+82/82 sent Attempts were present in persisted sent logs even though the bounded
+index had already evicted the earliest rows.
