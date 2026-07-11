@@ -79,6 +79,7 @@ from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_t
 from .features.passive_inbox import handle_passive_module_card, record_passive_inbox_event
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.rare_daily_report import run_rare_daily_report_scheduler
+from .features.duel_daily_report import run_duel_daily_report_scheduler
 from .features.jiyin import handle_jiyin_delayed_action_result, handle_jiyin_prompt, run_jiyin_scheduler
 from .features.join_dungeon import handle_dungeon_join_bot_message, handle_dungeon_join_mention, record_game_group_message
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
@@ -3142,6 +3143,7 @@ async def main_loop(stop_event=None, quiesce_event=None):
         await _run_due_wild_training_retry_schedulers(now)
         await _run_due_concubine_schedulers(now)
         await run_rare_daily_report_scheduler(now)
+        await run_duel_daily_report_scheduler(now)
         await _run_global_schedulers(now)
         await run_quiz_learning_scheduler(now)
         await run_retry_scheduler(now)
