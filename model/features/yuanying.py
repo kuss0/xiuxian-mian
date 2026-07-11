@@ -278,9 +278,16 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
 
     compact_text = RE_WHITESPACE.sub("", text or "").replace("：", ":")
     if "状态:元婴闭关" in compact_text:
+        phase_before = str(state.get("yuanying_phase") or "")
         previous_next_time = float(state.get("next_yuanying_time", 0) or 0)
         retry_after = max(60.0, float(YUANYING_SPEC.summary_active_query_grace_sec or 0))
-        next_time = previous_next_time if previous_next_time > now else now + retry_after
+        is_summary_calibration = phase_before in {
+            "summary_due",
+            "observing_summary",
+            "waiting_summary",
+            "post_summary_wait",
+        }
+        next_time = now + retry_after if is_summary_calibration else max(previous_next_time, now + retry_after)
         clear_yuanying_summary_flags()
         set_yuanying_phase("running")
         state["yuanying_probe_pending"] = False

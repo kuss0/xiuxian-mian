@@ -950,7 +950,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         with state_module.use_identity(send_as_id):
             state_module.state["yuanying_enabled"] = True
-            state_module.state["yuanying_phase"] = "waiting_summary"
+            state_module.state["yuanying_phase"] = "launching"
             state_module.state["next_yuanying_time"] = future_next_time
 
             with (
@@ -1149,6 +1149,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 source_module="深度闭关",
             )
             self.assertEqual(1, sum("续轮指令超时无确认" in str(call.args[0]) for call in audit_mock.await_args_list))
+            self.assertFalse(any("按正常CD兜底" in str(call.args[0]) for call in audit_mock.await_args_list))
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(910, state_module.state["last_deep_retreat_summary_msg_id"])
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
 
     async def test_deep_retreat_launching_timeout_queries_status(self):

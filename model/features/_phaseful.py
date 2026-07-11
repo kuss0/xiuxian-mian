@@ -1052,6 +1052,10 @@ async def _calibrate_probe_timeout_once(spec, now):
         if now - state[spec.summary_sent_at_key] < spec.summary_timeout_sec:
             return False
         state[spec.probe_pending_key] = False
+        # Reserve a fresh calibration window before awaiting the query send.
+        # Concurrent scheduler ticks must not see the old expired timestamp and
+        # fall back to a full normal CD while this status query is in flight.
+        state[spec.summary_sent_at_key] = float(now)
         save_state()
         await send_audit_log(f"{spec.title} 续轮指令超时无确认，改用状态查询校准。")
         await _send_active_summary_query(spec, now, probe_reserved=True)
