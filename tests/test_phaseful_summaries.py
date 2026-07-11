@@ -908,6 +908,66 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         identity_snapshot = ui.get_identity_ui_snapshot(send_as_id)
         self.assertEqual("13级", identity_snapshot["yuanying_level_text"])
 
+    async def test_yuanying_status_active_retreat_clears_stale_summary_wait_without_relaunch(self):
+        send_as_id = 7538826434
+        now = 1_700_000_370.0
+        self._prepare_identity(send_as_id, "YuanyingActiveRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "waiting_summary"
+            state_module.state["yuanying_probe_pending"] = True
+            state_module.state["yuanying_summary_sent_at"] = now - 90
+            state_module.state["last_yuanying_summary_msg_id"] = 49664
+            state_module.state["next_yuanying_time"] = now - 900
+
+            with (
+                patch.object(yuanying, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(yuanying, "save_state"),
+                patch.object(yuanying, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                handled = await yuanying.handle_yuanying_status_reply(
+                    "你的本命元婴\n等级: 26 级\n经验: 5808 / 13000\n五行: 木\n状态：元婴闭关\n已积累修为: 约 8634 点",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_STATUS),
+                    matched_family="yuanying",
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertFalse(state_module.state["yuanying_probe_pending"])
+            self.assertEqual(0, state_module.state["yuanying_summary_sent_at"])
+            self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
+            self.assertEqual(now + yuanying.YUANYING_SPEC.summary_active_query_grace_sec, state_module.state["next_yuanying_time"])
+            self.assertIn("仍在闭关", audit_mock.await_args.args[0])
+
+    async def test_yuanying_active_retreat_preserves_future_estimate(self):
+        send_as_id = 7538826435
+        now = 1_700_000_371.0
+        future_next_time = now + 3600
+        self._prepare_identity(send_as_id, "YuanyingActiveFuture")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "waiting_summary"
+            state_module.state["next_yuanying_time"] = future_next_time
+
+            with (
+                patch.object(yuanying, "save_state"),
+                patch.object(yuanying, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await yuanying.handle_yuanying_status_reply(
+                    "【元婴状态】\n状态: 元婴闭关\n已积累修为: 约 1000 点",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_STATUS),
+                    matched_family="yuanying",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(future_next_time, state_module.state["next_yuanying_time"])
+
     async def test_yuanying_sect_qiaozhong_relaunches_retreat_command(self):
         send_as_id = 8659059238
         now = 1_700_000_371.0

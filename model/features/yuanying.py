@@ -242,7 +242,7 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
     is_status_reply = matched_family == "yuanying" or CMD_YUANYING_STATUS in orig_cmd
     is_yuanying_cmd_status_like = (
         matched_family == "yuanying"
-        or (_is_yuanying_launch_command(orig_cmd) and any(k in text for k in ["归来倒计时", "窍中温养", "尚未恢复", "冷却", "等待", "不足", "休息"]))
+        or (_is_yuanying_launch_command(orig_cmd) and any(k in text for k in ["归来倒计时", "窍中温养", "元婴闭关", "尚未恢复", "冷却", "等待", "不足", "休息"]))
     )
     if not (is_status_reply or is_yuanying_cmd_status_like):
         return False
@@ -274,6 +274,20 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
         _note_yuanying_remote_block(now, now + wait_sec + CD_BUFFER_SEC, "游戏提示冷却/归来倒计时", "cooldown")
         target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
         await send_audit_log(f"⏳ 元婴 CD→{target_time}")
+        return True
+
+    compact_text = RE_WHITESPACE.sub("", text or "").replace("：", ":")
+    if "状态:元婴闭关" in compact_text:
+        previous_next_time = float(state.get("next_yuanying_time", 0) or 0)
+        retry_after = max(60.0, float(YUANYING_SPEC.summary_active_query_grace_sec or 0))
+        next_time = previous_next_time if previous_next_time > now else now + retry_after
+        clear_yuanying_summary_flags()
+        set_yuanying_phase("running")
+        state["yuanying_probe_pending"] = False
+        state["next_yuanying_time"] = next_time
+        save_state()
+        _note_yuanying_remote_block(now, next_time, "游戏状态确认元婴仍在闭关", "running")
+        await send_audit_log(f"👶 元婴仍在闭关，已清理陈旧结算等待→{fmt_time_after(next_time - now)}", priority="low")
         return True
 
     if "窍中温养" in text:
