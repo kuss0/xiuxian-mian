@@ -145,6 +145,52 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("斗法", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
 
+    async def test_scheduler_reconciles_final_report_after_batch_disabled(self):
+        identity_id = self._prepare_identity()
+        now = 1_780_000_100.0
+        report_at = now - 30
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = False
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_last_msg_id"] = 29411
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_set_at": now - 120,
+                "current_prediction_until": now + 7200,
+                "prediction_consumed_route": "",
+                "prediction_consumed_at": 0,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step_index": 0,
+                "active_step": {"action": "release_downstream", "route": "斗法", "status": "released"},
+                "released_routes": {"斗法": {"released_at": now - 90, "basis": "prediction"}},
+            }
+            report = {
+                "message_id": 29411,
+                "ts_epoch": report_at,
+                "text": "【天道战报·文字版】\n攻方：@walterwa2000\n【推命命中】司命演算吻合\n🏁 终局结算",
+            }
+            with (
+                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+                patch.object(duel, "console_log"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        send_mock.assert_not_awaited()
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("斗法", observed["prediction_consumed_route"])
+        self.assertEqual(report_at, observed["prediction_consumed_at"])
+        self.assertNotIn("斗法", timeline["released_routes"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+
     async def test_scheduler_sends_duel_command_when_gate_passes(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
