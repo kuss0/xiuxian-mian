@@ -1023,9 +1023,10 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["wild_training_last_result_at"])
         self.assertIn("同命令短窗保护", state_module.state["wild_training_last_error"])
 
-    async def test_scheduler_defers_when_deep_retreat_summary_window_is_due(self):
+    async def test_scheduler_ignores_deep_retreat_summary_window(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
+        sent = SimpleNamespace(id=12344, sent_at=now)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["wild_training_reply_to_msg_id"] = 0
             identity_state["wild_training_reply_due_at"] = 0
@@ -1036,25 +1037,51 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             identity_state["next_deep_retreat_time"] = now + 30
 
         with state_module.use_identity(send_as_id), \
-             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC), \
-             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
-             patch.object(wild_training, "console_log") as console_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent)) as send_mock, \
              patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
 
-        send_mock.assert_not_awaited()
-        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
-        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
-        self.assertEqual(
-            now + 30 + wild_training.WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC,
-            state_module.state["next_wild_training_time"],
+        send_mock.assert_awaited_once_with(
+            ".野外历练 谨慎",
+            track=False,
+            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
         )
-        self.assertIn("深度闭关结算窗口", state_module.state["wild_training_last_error"])
-        console_mock.assert_called_once()
+        self.assertEqual(sent.id, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 
-    async def test_scheduler_deep_retreat_launching_uses_short_resume_not_next_retreat_end(self):
+    async def test_scheduler_ignores_deep_retreat_window_for_tianxing_preflight(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
+        sent = SimpleNamespace(id=12345, sent_at=now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["wild_training_strategy"] = "谨慎"
+            identity_state["tianxing_enabled"] = True
+            identity_state["deep_retreat_enabled"] = True
+            identity_state["deep_retreat_phase"] = "waiting_summary"
+            identity_state["next_deep_retreat_time"] = now + 180
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent)) as send_mock, \
+             patch.object(wild_training, "_prepare_wild_training_tianxing_route", new=AsyncMock(return_value=True)), \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_awaited_once_with(
+            ".野外历练 谨慎",
+            track=False,
+            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
+        )
+        self.assertEqual(sent.id, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+
+    async def test_scheduler_ignores_deep_retreat_launching_phase(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        sent = SimpleNamespace(id=12346, sent_at=now)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["wild_training_reply_to_msg_id"] = 0
             identity_state["wild_training_reply_due_at"] = 0
@@ -1065,23 +1092,12 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             identity_state["next_deep_retreat_time"] = now + 8 * 3600
 
         with state_module.use_identity(send_as_id), \
-             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC), \
-             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
-             patch.object(wild_training, "console_log") as console_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent)) as send_mock, \
              patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
 
-        send_mock.assert_not_awaited()
-        self.assertEqual(
-            now + wild_training.WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC,
-            state_module.state["next_wild_training_time"],
-        )
-        self.assertLess(
-            state_module.state["next_wild_training_time"],
-            now + wild_training.WILD_TRAINING_DEEP_RETREAT_GUARD_SEC,
-        )
-        self.assertIn("phase=launching", state_module.state["wild_training_last_error"])
-        console_mock.assert_called_once()
+        send_mock.assert_awaited_once()
+        self.assertEqual(sent.id, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_allows_due_wild_training_during_deep_retreat_post_summary_wait(self):
         send_as_id = self._prepare_identity()
@@ -1147,7 +1163,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(12345, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 
-    async def test_scheduler_repairs_persisted_far_running_deep_retreat_deferral(self):
+    async def test_scheduler_repairs_persisted_legacy_deep_retreat_deferral(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
         with state_module.use_identity(send_as_id) as identity_state:
@@ -1156,8 +1172,6 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             identity_state["wild_training_retry_count"] = 0
             identity_state["next_wild_training_time"] = now + 8 * 3600 + 60
             identity_state["deep_retreat_enabled"] = True
-            identity_state["deep_retreat_phase"] = "running"
-            identity_state["next_deep_retreat_time"] = now + 8 * 3600
             identity_state["tianxing_enabled"] = False
             identity_state["wild_training_last_result"] = "深闭结算窗口避让，未发送"
             identity_state["wild_training_last_error"] = "野外历练避让深度闭关结算窗口：phase=running，延后至 later"
@@ -1173,7 +1187,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(12346, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
-        self.assertTrue(any("解除远期深度闭关" in str(call) for call in console_mock.call_args_list))
+        self.assertTrue(any("解除深度闭关" in str(call) for call in console_mock.call_args_list))
 
     async def test_scheduler_routes_tianxing_set_star_through_timeline_before_wild_training(self):
         send_as_id = self._prepare_identity()

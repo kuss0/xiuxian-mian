@@ -52,9 +52,6 @@ WILD_TRAINING_SEND_UNKNOWN_RETRY_MAX_SEC = 3 * 60
 WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC = 45
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
-WILD_TRAINING_DEEP_RETREAT_GUARD_SEC = 5 * 60
-WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC = 90
-WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC = 180
 WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC = 30
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
@@ -412,60 +409,22 @@ async def _defer_wild_training_for_dungeon_quiet(now, *, action):
     return True
 
 
-async def _defer_wild_training_for_deep_retreat_summary_window(now):
-    if not state.get("deep_retreat_enabled"):
-        return False
-    phase = str(state.get("deep_retreat_phase") or "idle").strip()
+def _repair_legacy_deep_retreat_deferral(now):
     try:
-        next_deep_time = float(state.get("next_deep_retreat_time", 0) or 0)
-    except (TypeError, ValueError, OverflowError):
-        next_deep_time = 0.0
-    blocking_phases = {"summary_due", "observing_summary", "waiting_summary", "queued_launch", "launching"}
-    should_defer = phase in blocking_phases
-    if not should_defer and phase == "running":
-        should_defer = 0 < next_deep_time <= float(now or 0) + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC
-    if not should_defer:
-        return False
-
-    anchor = float(now or 0)
-    if phase == "running" and next_deep_time > 0:
-        anchor = max(anchor, next_deep_time)
-    elif 0 < next_deep_time <= anchor + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
-        anchor = max(anchor, next_deep_time)
-    next_time = anchor + random.uniform(WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC, WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC)
-    state["next_wild_training_time"] = float(next_time)
-    state["wild_training_reply_to_msg_id"] = 0
-    state["wild_training_reply_due_at"] = 0
-    state["wild_training_retry_count"] = 0
-    state["wild_training_last_result"] = "深闭结算窗口避让，未发送"
-    state["wild_training_last_result_at"] = 0
-    state["wild_training_last_error"] = f"野外历练避让深度闭关结算窗口：phase={phase or 'idle'}，延后至 {fmt_abs_ts(next_time)}"
-    save_state()
-    console_log(f"🏞️ {state['wild_training_last_error']}", scope="identity")
-    return True
-
-
-def _repair_far_running_deep_retreat_deferral(now):
-    if str(state.get("deep_retreat_phase") or "").strip() != "running":
-        return False
-    try:
-        next_deep_time = float(state.get("next_deep_retreat_time", 0) or 0)
         next_wild_time = float(state.get("next_wild_training_time", 0) or 0)
     except (TypeError, ValueError, OverflowError):
-        return False
-    if next_deep_time <= float(now or 0) + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
         return False
     if next_wild_time <= float(now or 0):
         return False
     if state.get("wild_training_last_result") != "深闭结算窗口避让，未发送":
         return False
-    if "phase=running" not in str(state.get("wild_training_last_error") or ""):
+    if "野外历练避让深度闭关结算窗口" not in str(state.get("wild_training_last_error") or ""):
         return False
     state["next_wild_training_time"] = float(now or 0)
-    state["wild_training_last_result"] = "已解除远期深闭误阻断，重新排队"
+    state["wild_training_last_result"] = "已解除深闭旧阻断，重新排队"
     state["wild_training_last_error"] = ""
     save_state()
-    console_log("🏞️ 已解除远期深度闭关对野外历练的误阻断，恢复当前调度。", scope="identity")
+    console_log("🏞️ 已解除深度闭关对野外历练的旧阻断，恢复当前调度。", scope="identity")
     return True
 
 
@@ -1291,7 +1250,7 @@ async def _run_wild_training_scheduler_unlocked(now):
 
     _repair_tianji_shortage_cautious_deferral(now)
 
-    _repair_far_running_deep_retreat_deferral(now)
+    _repair_legacy_deep_retreat_deferral(now)
 
     try:
         next_wild_training_time = float(state.get("next_wild_training_time", 0) or 0)
@@ -1320,9 +1279,6 @@ async def _run_wild_training_scheduler_unlocked(now):
         action="补发" if retry_count > 0 else "发送",
     ):
         return
-    if await _defer_wild_training_for_deep_retreat_summary_window(now):
-        return
-
     if not await _prepare_wild_training_tianxing_route(now, due_at=now):
         return
 
