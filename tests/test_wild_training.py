@@ -1551,7 +1551,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         prepare_mock.assert_awaited_once()
         send_mock.assert_not_awaited()
 
-    async def test_scheduler_defers_tianxing_wild_training_to_craft_when_change_fate_lacks_tianji(self):
+    async def test_scheduler_downgrades_to_cautious_when_change_fate_lacks_tianji(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
         with state_module.use_identity(send_as_id) as identity_state:
@@ -1566,8 +1566,13 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
                 "available_stars": ["贪狼"],
                 "fixed_star": "贪狼",
                 "current_change": "",
-                "current_prediction": "",
-                "tianji_value": 2,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 60,
+                "tianji_value": 0,
+                "last_action": "改命",
+                "last_result": "blocked",
+                "last_error": "你的天机值不足，施展改命至少需要 3 点天机值。",
             }
             identity_state["tianxing_auto_config"] = {
                 "auto_change_fate_enabled": True,
@@ -1579,7 +1584,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(send_as_id), \
              patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "need_tianji_for_change", "changed": False})) as timeline_mock, \
-             patch.object(wild_training, "run_tianxing_craft_farm_scheduler", new=AsyncMock(return_value={"stage": "sent_waiting_reply", "takeover": True, "next_time": now + 60})) as craft_mock, \
+             patch.object(wild_training, "run_tianxing_craft_farm_scheduler", new=AsyncMock()) as craft_mock, \
              patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock, \
              patch.object(wild_training, "console_log"), \
              patch.object(wild_training, "save_state"):
@@ -1588,10 +1593,41 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         timeline_mock.assert_awaited_once()
         self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
         self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
-        craft_mock.assert_awaited_once()
-        send_mock.assert_not_awaited()
-        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
-        self.assertEqual("天星缺探索改命，转炼制攒点：sent_waiting_reply", state_module.state["wild_training_last_result"])
+        craft_mock.assert_not_awaited()
+        send_mock.assert_awaited_once()
+        self.assertEqual(".野外历练 谨慎", send_mock.await_args.args[0])
+        self.assertEqual(sent_msg.id, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertIn("已发送：谨慎", state_module.state["wild_training_last_result"])
+
+    def test_repairs_stale_craft_target_deferral_after_real_tianji_shortage(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["next_wild_training_time"] = now + 600
+            state_module.state["wild_training_tianxing_prepare_retry_at"] = now + 600
+            state_module.state["wild_training_last_result"] = "天星缺探索改命，转炼制攒点：target_reached"
+            state_module.state["wild_training_last_error"] = "天机值 60 已达到目标 42。"
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 10,
+                "last_action": "改命",
+                "last_result": "blocked",
+                "last_error": "你的天机值不足，施展改命至少需要 3 点天机值。",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 60,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 0,
+            }
+            with patch.object(wild_training, "save_state") as save_mock:
+                repaired = wild_training._repair_tianji_shortage_cautious_deferral(now)
+
+            self.assertTrue(repaired)
+            self.assertEqual(now, state_module.state["next_wild_training_time"])
+            self.assertEqual(0, state_module.state["wild_training_tianxing_prepare_retry_at"])
+            self.assertIn("谨慎野外补点", state_module.state["wild_training_last_result"])
+            save_mock.assert_called_once()
 
     async def test_scheduler_sends_wild_training_directly_when_tianxing_timeline_released(self):
         send_as_id = self._prepare_identity()

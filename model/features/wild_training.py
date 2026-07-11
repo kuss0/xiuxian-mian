@@ -156,6 +156,25 @@ def _has_active_tianxing_explore_prediction(now):
     return consumed_at <= 0 or consumed_at < set_at
 
 
+def _repair_tianji_shortage_cautious_deferral(now):
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if not (
+        str(observed.get("last_action") or "").strip() == "改命"
+        and str(observed.get("last_result") or "").strip() == "blocked"
+        and "天机值不足" in str(observed.get("last_error") or "")
+        and _has_active_tianxing_explore_prediction(now)
+        and not _has_active_tianxing_explore_change(now)
+        and str(state.get("wild_training_last_result") or "").startswith("天星缺探索改命，转炼制攒点：")
+    ):
+        return False
+    state["next_wild_training_time"] = float(now)
+    state["wild_training_tianxing_prepare_retry_at"] = 0.0
+    state["wild_training_last_result"] = "天机不足，已改为谨慎野外补点"
+    state["wild_training_last_error"] = ""
+    save_state()
+    return True
+
+
 def _effective_wild_training_strategy(now):
     if state.get("tianxing_enabled"):
         return "深入" if _has_active_tianxing_explore_change(now) else "谨慎"
@@ -1076,10 +1095,15 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
             return True
         phase = str(timeline_result.get("phase") or "").strip()
         if due_at <= now and phase == "need_tianji_for_change":
-            await _defer_wild_training_to_tianxing_craft(
-                now,
-                "天星天机不足且无探索改命，野外历练不降级谨慎，改走炼制攒点。",
-            )
+            if _has_active_tianxing_explore_prediction(now):
+                _clear_tianxing_prepare_retry()
+                state["wild_training_last_result"] = "天机不足，降级谨慎野外补点"
+                state["wild_training_last_result_at"] = 0
+                state["wild_training_last_error"] = ""
+                save_state()
+                return True
+            await _send_tianxing_panel_calibration(now, "天机不足且探索推命未确认，先查盘校准")
+            save_state()
             return False
         if (
             due_at <= now
@@ -1264,6 +1288,8 @@ async def _run_wild_training_scheduler_unlocked(now):
         return
     if _has_active_wild_training_pending(now):
         return
+
+    _repair_tianji_shortage_cautious_deferral(now)
 
     _repair_far_running_deep_retreat_deferral(now)
 
