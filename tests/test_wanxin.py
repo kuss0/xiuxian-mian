@@ -121,6 +121,9 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wanxin_moon_join", action_guard.resolve_action_key(".月下合参"))
 
     def test_parse_real_moon_actions_and_safe_defaults(self):
+        panel = wanxin.parse_wanxin_text(
+            "【月影同参】\n侍妾：【南宫婉·月影】（随行中）\n情缘：142\n共鸣：已觉醒"
+        )
         greet = wanxin.parse_wanxin_text(
             "【婉影问安】\n你与【南宫婉·月影】于月下静坐片刻。\n情缘 +9。\n"
             "婉心 +1，魂封 -1。\n婉心 115 | 魂封 0 | 月魄 38 | 咒源 120"
@@ -133,6 +136,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         blocked = wanxin.parse_wanxin_text("封魂咒尚未解除，月下合参不可贸然施展。需先完成 .解除封魂咒。")
         config = wanxin.normalize_wanxin_auto_config()
 
+        self.assertEqual(("moon_panel", 142), (panel["type"], panel["affinity"]))
         self.assertEqual(("moon_greet_success", 9), (greet["type"], greet["affinity_gain"]))
         self.assertEqual(("moon_seal_success", 24), (seal["type"], seal["affinity_cost"]))
         self.assertEqual(("cooldown", "moon_seal"), (cooldown["type"], cooldown["cooldown_action"]))
@@ -140,6 +144,33 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config["moon_greet_enabled"])
         self.assertFalse(config["moon_seal_enabled"])
         self.assertFalse(config["moon_join_enabled"])
+
+    async def test_moon_panel_syncs_shared_affinity_for_voyage_gate(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["concubine_affinity"] = 0
+            state_module.state["wanxin_observation"] = {
+                "moon_awakened": True,
+                "pending": {
+                    "action": "moon_status",
+                    "family": "wanxin_moon_panel",
+                    "msg_id": 7007,
+                    "send_as_id": identity_id,
+                    "reply_due_at": now + 90,
+                },
+            }
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "【月影同参】\n侍妾：【南宫婉·月影】（随行中）\n情缘：160\n共鸣：已觉醒",
+                    now,
+                    reply_to=SimpleNamespace(id=7007, raw_text=".婉影"),
+                    matched_family="wanxin_moon_panel",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(160, state_module.state["concubine_affinity"])
 
     async def test_moon_greet_reply_updates_shared_affinity_and_cooldown(self):
         identity_id = self._prepare_identity()

@@ -165,6 +165,7 @@ RE_MOON_GAIN = re.compile(r"月魄\s*\+(?P<gain>\d+)")
 RE_CONTRIB_GAIN = re.compile(r"咒师贡献\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_GAIN = re.compile(r"情缘\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_COST = re.compile(r"消耗[：:]?[^\n]*?(?P<cost>\d+)\s*情缘")
+RE_MOON_AFFINITY_VALUE = re.compile(r"情缘\s*[:：]\s*(?P<value>\d+)")
 
 
 def _entry_ts(value):
@@ -590,7 +591,13 @@ def parse_wanxin_text(text, now=None, family=""):
         parsed.update({"type": "moon_awakened", "available": "yes", "summary": "婉影觉醒"})
         return parsed
     if "【月影同参】" in raw or "婉影共鸣: 已觉醒" in raw or "婉影共鸣：已觉醒" in raw:
-        parsed.update({"type": "moon_panel", "available": "yes", "summary": "婉影状态"})
+        affinity = RE_MOON_AFFINITY_VALUE.search(raw)
+        parsed.update({
+            "type": "moon_panel",
+            "available": "yes",
+            "affinity": _safe_int(affinity.group("value"), 0) if affinity else None,
+            "summary": "婉影状态",
+        })
         return parsed
     if "【婉影问安】" in raw:
         gain = RE_MOON_AFFINITY_GAIN.search(raw)
@@ -1439,6 +1446,8 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
     elif ptype in {"panel", "help", "moon_panel", "moon_awakened"}:
         if ptype in {"moon_panel", "moon_awakened"}:
             observed["moon_awakened"] = True
+        if ptype == "moon_panel" and parsed.get("affinity") is not None:
+            state["concubine_affinity"] = max(0, int(parsed.get("affinity", 0) or 0))
         observed["auto_last_result"] = parsed.get("summary") or "已校准"
         observed["auto_last_error"] = ""
         _clear_pending(observed)
