@@ -845,7 +845,17 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
     last_sent_at = max((float(item.get("_epoch", 0) or 0) for item in sent), default=0.0)
     last_bot_reply_at = max((float(item.get("_epoch", 0) or 0) for item in bot_replies), default=0.0)
     command_counts = Counter(command_key(str(item.get("text") or "")) for item in sent if str(item.get("text") or "").strip())
-    module_counts = Counter(str(item.get("source_module") or item.get("family") or "").strip() for item in sent)
+    def module_density_key(item):
+        module = str(item.get("source_module") or item.get("family") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if module == "灵溪垂钓":
+            if text.startswith(".钓鱼"):
+                return "灵溪垂钓:入口"
+            if text.startswith((".鱼篓", ".开鱼")):
+                return "灵溪垂钓:后处理"
+        return module
+
+    module_counts = Counter(module_density_key(item) for item in sent)
     module_counts = Counter({key: value for key, value in module_counts.items() if key})
     return {
         "window_sec": int(window_sec),

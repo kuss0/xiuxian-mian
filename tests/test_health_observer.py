@@ -749,6 +749,36 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(1, result["bot_reply_count"])
         self.assertEqual(now - 50, result["last_bot_reply_at"])
 
+    def test_business_message_analysis_splits_fishing_entry_and_post_processing_density(self):
+        now = 1_780_500_000.0
+        events = []
+        for index in range(8):
+            events.append({
+                "event_type": "sent",
+                "_epoch": now - 900 + index,
+                "message_id": 500 + index,
+                "sender_id": 1000 + index,
+                "text": ".钓鱼 青溪浅滩 灵米饵",
+                "family": "fishing",
+                "source_module": "灵溪垂钓",
+            })
+        for index in range(17):
+            events.append({
+                "event_type": "sent",
+                "_epoch": now - 600 + index,
+                "message_id": 600 + index,
+                "sender_id": 1000 + index % 8,
+                "text": ".鱼篓" if index % 3 == 0 else ".开鱼 青鳞小鲫 2",
+                "family": "fishing",
+                "source_module": "灵溪垂钓",
+            })
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertEqual(8, result["module_counts"]["灵溪垂钓:入口"])
+        self.assertEqual(17, result["module_counts"]["灵溪垂钓:后处理"])
+        self.assertNotIn("灵溪垂钓", result["module_counts"])
+
     def test_business_message_analysis_allows_marked_divination_query_chain(self):
         now = 1_780_500_000.0
         sender_id = 3777092103
