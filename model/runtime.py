@@ -16,6 +16,13 @@ import requests
 from telethon import functions, types
 from telethon.errors import FloodWaitError
 
+from .command_attempt.runtime_shadow import (
+    note_blocked as note_shadow_attempt_blocked,
+    note_queued as note_shadow_attempt_queued,
+    note_sent as note_shadow_attempt_sent,
+    shadow_attempt_scope,
+)
+
 from .config import (
     CMD_BATTLE_POWER,
     CMD_CHECKIN,
@@ -477,6 +484,11 @@ def _record_game_send_block(send_as_id, command, code, reason, *, definitely_uns
     }
     _GAME_SEND_BLOCK_LAST[(identity_id, raw_command)] = payload
     _GAME_SEND_BLOCK_LAST[(identity_id, "")] = payload
+    note_shadow_attempt_blocked(
+        payload["code"],
+        payload["reason"],
+        definitely_unsent=bool(payload["definitely_unsent"] or payload["code"] in GAME_SEND_UNSENT_BLOCK_CODES),
+    )
     return payload
 
 
@@ -1131,6 +1143,7 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
             if wait <= 0:
                 _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "sending"
                 try:
+                    note_shadow_attempt_queued()
                     yield
                 finally:
                     sent_mono = time.monotonic()
@@ -3336,6 +3349,7 @@ def _finalize_game_command_sent(
         **send_intent,
     )
     _clear_game_send_block(send_as_id, command)
+    note_shadow_attempt_sent(msg_id, sent_at=sent_at)
     return msg
 
 
@@ -3431,7 +3445,7 @@ async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
     return True
 
 
-async def send_game_command(
+async def _send_game_command_impl(
     command,
     track=True,
     reply_to=None,
@@ -3895,6 +3909,75 @@ async def send_game_command(
         )
         _record_game_send_block(send_as_id, command, "send_exception", _truncate_log_text(e, limit=120))
         return None
+
+
+async def send_game_command(
+    command,
+    track=True,
+    reply_to=None,
+    send_as_id=None,
+    priority=None,
+    max_retry=None,
+    *,
+    reply_timeout=None,
+    intent=None,
+    source_module=None,
+    op_id=None,
+    chain_id=None,
+    delete_policy=None,
+    queue_timeout=None,
+    allow_maintenance_pause=False,
+):
+    """Send through the legacy path while optionally recording a shadow attempt."""
+    shadow_identity_id = None
+    if send_as_id is not None:
+        try:
+            candidate = int(send_as_id)
+        except (TypeError, ValueError):
+            candidate = 0
+        if candidate > 0 and has_identity(candidate):
+            shadow_identity_id = candidate
+    elif has_active_identity_context():
+        candidate = int(get_active_identity_id() or 0)
+        if candidate > 0 and has_identity(candidate):
+            shadow_identity_id = candidate
+
+    normalized_intent = _normalize_send_intent(
+        command,
+        intent=intent,
+        source_module=source_module,
+        op_id=op_id,
+        chain_id=chain_id,
+        delete_policy=delete_policy,
+    )
+    send_priority = _normalize_send_priority(command, priority=priority)
+    with shadow_attempt_scope(
+        command=command,
+        send_as_id=shadow_identity_id,
+        source_module=str(normalized_intent.get("source_module") or source_module or "runtime"),
+        family=resolve_reply_family(command) or "",
+        priority=send_priority,
+        chain_id=str(normalized_intent.get("chain_id") or chain_id or ""),
+        intent=normalized_intent,
+        legacy_op_id=str(normalized_intent.get("op_id") or op_id or ""),
+        reply_to_msg_id=int(reply_to or 0),
+    ):
+        return await _send_game_command_impl(
+            command,
+            track=track,
+            reply_to=reply_to,
+            send_as_id=send_as_id,
+            priority=priority,
+            max_retry=max_retry,
+            reply_timeout=reply_timeout,
+            intent=intent,
+            source_module=source_module,
+            op_id=op_id,
+            chain_id=chain_id,
+            delete_policy=delete_policy,
+            queue_timeout=queue_timeout,
+            allow_maintenance_pause=allow_maintenance_pause,
+        )
 
 
 def _get_tracked_identity_message_ids(identity_state):

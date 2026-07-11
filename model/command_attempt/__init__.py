@@ -1,7 +1,4 @@
-"""Shadow-only CommandAttempt ledger APIs.
-
-Gate 1 does not integrate these APIs with runtime sending or inbound routing.
-"""
+"""Shadow-only CommandAttempt ledger APIs."""
 
 from .config import AttemptFeatureFlags, get_attempt_feature_flags
 from .identity import IdentityContextRequired, require_identity_id
