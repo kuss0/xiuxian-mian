@@ -210,6 +210,35 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(22027, record["command_msg_id"])
         self.assertEqual(now + duel.DUEL_TARGET_RESERVATION_SEC, record["until"])
 
+    async def test_unconfirmed_reservation_blocks_other_identity_for_same_target(self):
+        first_id = self._prepare_identity(8659059191)
+        second_id = self._prepare_identity(3823558636)
+        now = 1_700_000_000.0
+
+        with state_module.use_identity(first_id):
+            duel._set_target_cooldown(
+                "@cupaopao",
+                now + duel.DUEL_TARGET_RESERVATION_SEC,
+                confirmed=False,
+                command_msg_id=22027,
+            )
+
+        with state_module.use_identity(second_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now + 3 * 60
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "_duel_batch_stagger_sec", return_value=180),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 3 * 60)
+
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(second_id):
+            self.assertIn("仍在斗法冷却", state_module.state["duel_last_error"])
+
     async def test_own_cooldown_reply_releases_target_reservation(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
