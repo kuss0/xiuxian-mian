@@ -1711,6 +1711,48 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(msg_id, payload["msg_id"])
             self.assertEqual(["deep_retreat_phase"], payload["specs"])
 
+    def test_replayable_command_refreshes_track_false_after_passive_echo_race(self):
+        send_as_id = 8659059233
+        now = 1_700_000_457.0
+        msg_id = 9338527
+        self._prepare_identity(send_as_id, "DreamRetreatEchoRace")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with patch.object(_phaseful, "save_state"):
+                # The outgoing channel echo can be observed before the send
+                # coroutine records the command's real metadata.
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    concubine.CMD_CONCUBINE_DREAM,
+                    now=now,
+                    msg_id=msg_id,
+                )
+                self.assertEqual("observing_summary", state_module.state["deep_retreat_phase"])
+
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    concubine.CMD_CONCUBINE_DREAM,
+                    now=now + 0.1,
+                    msg_id=msg_id,
+                    track=False,
+                    reply_to=0,
+                    priority="normal",
+                    max_retry=0,
+                    source_module="侍妾",
+                )
+
+            payload = _phaseful._SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
+            self.assertIsNotNone(payload)
+            self.assertFalse(payload["track"])
+            self.assertEqual("normal", payload["priority"])
+            self.assertEqual(0, payload["max_retry"])
+            self.assertEqual("侍妾", payload["send_intent"]["source_module"])
+
     def test_deep_retreat_summary_due_ignores_wild_training_replay(self):
         send_as_id = 8659059232
         now = 1_700_000_457.0

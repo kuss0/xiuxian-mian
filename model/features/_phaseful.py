@@ -434,6 +434,21 @@ def _remember_summary_consumed_command(
         specs = set(previous.get("specs") or ())
         specs.add(spec.phase_key)
         previous["specs"] = sorted(specs)
+        # Telegram can deliver the outgoing channel message before
+        # send_game_command() records its authoritative send metadata.  The
+        # passive observation defaults to track=True, while many replayable
+        # module commands are intentionally track=False.  Preserve the latter
+        # when the sent observer catches up, otherwise replay incorrectly
+        # requires a pending_tasks row and silently exits.
+        previous["track"] = bool(previous.get("track", True)) and bool(track)
+        if priority is not None:
+            previous["priority"] = priority
+        if max_retry is not None:
+            previous["max_retry"] = max_retry
+        previous_intent = previous.setdefault("send_intent", {})
+        previous_intent.update(
+            {name: value for name, value in send_intent.items() if str(value or "").strip()}
+        )
         return
     _SUMMARY_CONSUMED_COMMANDS[key] = {
         "cmd": str(command or "").strip(),
@@ -682,6 +697,24 @@ def observe_phaseful_identity_message(
 
     changed = False
     with use_identity(send_as_id):
+        # Refresh an already-captured command even when the first passive
+        # observation moved the phase to observing_summary.  The later sent
+        # observer carries the reliable track/retry/source metadata.
+        previous = _SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
+        if (
+            previous
+            and int(previous.get("msg_id", 0) or 0) == int(msg_id or 0)
+            and str(previous.get("cmd") or "").strip() == text
+        ):
+            previous["track"] = bool(previous.get("track", True)) and bool(track)
+            if priority is not None:
+                previous["priority"] = priority
+            if max_retry is not None:
+                previous["max_retry"] = max_retry
+            previous_intent = previous.setdefault("send_intent", {})
+            previous_intent.update(
+                {name: value for name, value in _send_intent.items() if str(value or "").strip()}
+            )
         for spec in _REGISTERED_SPECS:
             if not state.get(spec.enabled_key):
                 continue
