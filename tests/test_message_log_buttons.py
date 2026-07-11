@@ -64,7 +64,7 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual("url", buttons[0][1]["type"])
         self.assertEqual("example.com", buttons[0][1]["url_host"])
 
-    def test_han_tianzun_bot_sender_is_learned_as_game_bot(self):
+    def test_han_tianzun_name_alone_stays_candidate_until_reply_evidence(self):
         snapshot = copy.deepcopy(state_module._meta_state)
         try:
             state_module._meta_state["game_bot_ids"] = []
@@ -72,13 +72,14 @@ class MessageLogButtonTests(unittest.TestCase):
                 sender_id=424242,
                 sender=SimpleNamespace(bot=True, first_name="韩天尊", last_name=""),
             )
-            with patch("model.app.save_state"), patch("model.app.send_audit_log", new=AsyncMock()) as audit_mock:
+            with patch("model.app.save_state") as save_mock, patch("model.app.send_audit_log", new=AsyncMock()) as audit_mock:
                 handled = asyncio.run(app._is_game_bot_event(event))
 
-            self.assertTrue(handled)
-            self.assertTrue(getattr(event, "_xiuxian_sender_is_game_bot"))
-            self.assertIn(424242, state_module.get_game_bot_ids())
-            audit_mock.assert_awaited_once()
+            self.assertFalse(handled)
+            self.assertFalse(getattr(event, "_xiuxian_sender_is_game_bot"))
+            self.assertNotIn(424242, state_module.get_game_bot_ids())
+            save_mock.assert_not_called()
+            audit_mock.assert_not_awaited()
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
@@ -434,7 +435,7 @@ class MessageLogButtonTests(unittest.TestCase):
                 SimpleNamespace(bot=True, first_name="", last_name="", title="韩天尊")
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             app._entity_is_han_tianzun_bot(
                 SimpleNamespace(bot=True, first_name="陆天尊", last_name="")
             )
@@ -445,7 +446,7 @@ class MessageLogButtonTests(unittest.TestCase):
             )
         )
 
-    def test_han_tianzun_sender_can_be_loaded_from_event(self):
+    def test_han_tianzun_sender_loaded_from_event_stays_candidate(self):
         class LazySenderEvent:
             sender_id = 525252
             sender = None
@@ -457,12 +458,13 @@ class MessageLogButtonTests(unittest.TestCase):
         try:
             state_module._meta_state["game_bot_ids"] = []
             event = LazySenderEvent()
-            with patch("model.app.save_state"), patch("model.app.send_audit_log", new=AsyncMock()):
+            with patch("model.app.save_state") as save_mock, patch("model.app.send_audit_log", new=AsyncMock()):
                 handled = asyncio.run(app._is_game_bot_event(event))
 
-            self.assertTrue(handled)
-            self.assertTrue(getattr(event, "_xiuxian_sender_is_game_bot"))
-            self.assertIn(525252, state_module.get_game_bot_ids())
+            self.assertFalse(handled)
+            self.assertFalse(getattr(event, "_xiuxian_sender_is_game_bot"))
+            self.assertNotIn(525252, state_module.get_game_bot_ids())
+            save_mock.assert_not_called()
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
@@ -472,6 +474,24 @@ class MessageLogButtonTests(unittest.TestCase):
             id=616161,
             sender_id=8214307121,
             sender=SimpleNamespace(bot=False, first_name="韩天尊"),
+        )
+
+        with patch.object(app, "_resolve_identity_sender_id", return_value=0), \
+                patch.object(app, "_resolve_event_reply", new=AsyncMock()) as resolve_mock:
+            handled = asyncio.run(app._handle_suspected_game_bot_reply(
+                event,
+                "【问道】天机不可频繁窥探",
+                1000.0,
+            ))
+
+        self.assertFalse(handled)
+        resolve_mock.assert_not_awaited()
+
+    def test_unofficial_bot_sender_is_not_routed_as_game_bot(self):
+        event = SimpleNamespace(
+            id=616162,
+            sender_id=8214307122,
+            sender=SimpleNamespace(bot=True, first_name="群管助手", username="group_helper_bot"),
         )
 
         with patch.object(app, "_resolve_identity_sender_id", return_value=0), \
@@ -507,7 +527,7 @@ class MessageLogButtonTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 
-    def test_suspected_verified_bot_candidate_is_learned_after_threshold(self):
+    def test_verified_bot_without_command_evidence_is_not_learned(self):
         snapshot = copy.deepcopy(state_module._meta_state)
         app._suspected_game_bot_hits.clear()
         try:
@@ -522,8 +542,35 @@ class MessageLogButtonTests(unittest.TestCase):
                         verified_bot=True,
                     ))
 
-            self.assertIn(990990, state_module.get_game_bot_ids())
-            save_mock.assert_called_once()
+            self.assertNotIn(990990, state_module.get_game_bot_ids())
+            save_mock.assert_not_called()
+        finally:
+            app._suspected_game_bot_hits.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_duplicate_reply_edits_count_once_for_bot_learning(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        try:
+            state_module._meta_state["game_bot_ids"] = []
+            with patch("model.app.save_state") as save_mock, \
+                    patch("model.app.send_audit_log", new=AsyncMock()):
+                for _ in range(app.UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES):
+                    asyncio.run(app._record_suspected_game_bot(
+                        990992,
+                        "wild_training",
+                        "【野外历练】已出发",
+                        verified_bot=True,
+                        player_id=1101,
+                        command_label="野外历练",
+                        reply_to_msg_id=7001,
+                        sender_username="hantianzun20_bot",
+                    ))
+
+            self.assertEqual(1, app._suspected_game_bot_hits[990992]["count"])
+            self.assertNotIn(990992, state_module.get_game_bot_ids())
+            save_mock.assert_not_called()
         finally:
             app._suspected_game_bot_hits.clear()
             state_module._meta_state.clear()
@@ -539,6 +586,7 @@ class MessageLogButtonTests(unittest.TestCase):
             (7003, 1103, ".我的侍妾", "你的道心侍妾: 【妍丽】 (状态: 随行中)\n情缘值: 410"),
             (7004, 1101, ".第二元神", "你的第二元神\n\n等级: 12 级\n状态: 窍中温养"),
             (7005, 1102, ".世界boss", "【真仙试锋】\n青元子魔压翻涌，阵势正在变化。"),
+            (7006, 1103, ".元婴状态", "【元婴状态】\n本命元婴正在窍中温养。"),
         ]
         try:
             state_module._meta_state["game_bot_ids"] = []
@@ -564,6 +612,8 @@ class MessageLogButtonTests(unittest.TestCase):
                         1000.0 + idx,
                     ))
                     self.assertFalse(handled)
+                    if idx + 1 < app.UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES:
+                        self.assertNotIn(990991, state_module.get_game_bot_ids())
 
             self.assertIn(990991, state_module.get_game_bot_ids())
             save_mock.assert_called_once()

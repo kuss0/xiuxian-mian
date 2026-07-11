@@ -267,15 +267,14 @@ _MESSAGE_BOX_SHADOW_CAP = 10000
 _message_box_shadow = MessageBox(cap=_MESSAGE_BOX_SHADOW_CAP)
 
 IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
-UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
-UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
-UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES = 5
+UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 6
+UNKNOWN_GAME_BOT_HIT_TTL_SEC = 5 * 60
+UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES = 6
 UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS = 3
 UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS = 3
 OBSERVED_GAME_COMMAND_TTL_SEC = 15 * 60
 OBSERVED_GAME_COMMAND_CAP = 2000
 HAN_TIANZUN_BOT_NAME = "韩天尊"
-TIANZUN_BOT_NAME_MARKER = "天尊"
 TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
 TIANXING_TIMELINE_FOLLOWUP_MAX_PER_TICK = 4
 DUE_WILD_TRAINING_MAX_PER_TICK = 5
@@ -794,19 +793,10 @@ def _entity_is_han_tianzun_bot(entity):
     candidates.extend([first_name, title])
     for name in candidates:
         normalized_name = _normalize_sender_display_name(name)
-        if normalized_name == HAN_TIANZUN_BOT_NAME or TIANZUN_BOT_NAME_MARKER in normalized_name:
+        if normalized_name == HAN_TIANZUN_BOT_NAME or HAN_TIANZUN_BOT_NAME in normalized_name:
             return True
-    return False
-
-
-async def _event_sender_is_bot(event):
-    sender = getattr(event, "sender", None)
-    if sender is None:
-        try:
-            sender = await event.get_sender()
-        except Exception:
-            sender = None
-    return bool(getattr(sender, "bot", False))
+    username = str(getattr(entity, "username", "") or "").strip().lower()
+    return bool(username.startswith("hantianzun") and username.endswith("_bot"))
 
 
 async def _learn_game_bot_id(sender_id, reason, *, evidence=None):
@@ -862,10 +852,6 @@ async def _is_game_bot_event(event):
             sender = await event.get_sender()
         except Exception:
             sender = None
-    if _entity_is_han_tianzun_bot(sender):
-        setattr(event, "_xiuxian_sender_is_game_bot", True)
-        await _learn_game_bot_id(sender_id, "bot 名称=韩天尊")
-        return True
     setattr(event, "_xiuxian_sender_is_game_bot", False)
     return False
 
@@ -940,7 +926,15 @@ async def _record_suspected_game_bot(
             "commands": set(),
             "reply_to_ids": set(),
         }
-    item["count"] = int(item.get("count", 0) or 0) + 1
+    reply_to_ids = _ensure_evidence_set(item, "reply_to_ids")
+    duplicate_reply = False
+    if reply_to_msg_id:
+        try:
+            duplicate_reply = int(reply_to_msg_id) in reply_to_ids
+        except (TypeError, ValueError):
+            duplicate_reply = False
+    if not duplicate_reply:
+        item["count"] = int(item.get("count", 0) or 0) + 1
     item["last_seen"] = now
     if family:
         _ensure_evidence_set(item, "families").add(str(family))
@@ -953,7 +947,7 @@ async def _record_suspected_game_bot(
             pass
     if reply_to_msg_id:
         try:
-            _ensure_evidence_set(item, "reply_to_ids").add(int(reply_to_msg_id))
+            reply_to_ids.add(int(reply_to_msg_id))
         except (TypeError, ValueError):
             pass
     _suspected_game_bot_hits[sender_id] = item
@@ -969,13 +963,12 @@ async def _record_suspected_game_bot(
     players = _ensure_evidence_set(item, "players")
     commands = _ensure_evidence_set(item, "commands")
     has_external_evidence = bool(players or commands)
-    ready_to_learn = int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_LEARN_THRESHOLD
-    if has_external_evidence:
-        ready_to_learn = (
-            int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES
-            and len(players) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS
-            and len(commands) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS
-        )
+    ready_to_learn = bool(
+        has_external_evidence
+        and int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES
+        and len(players) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS
+        and len(commands) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS
+    )
 
     if ready_to_learn and not item.get("learned"):
         item["learned"] = True
@@ -1016,10 +1009,16 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
     sender_id = int(getattr(event, "sender_id", 0) or 0)
     if _resolve_identity_sender_id(sender_id):
         return False
-    sender_is_bot = await _event_sender_is_bot(event)
-    if not sender_is_bot:
+    sender = getattr(event, "sender", None)
+    if sender is None:
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+    sender_is_official_bot = _entity_is_han_tianzun_bot(sender)
+    if not sender_is_official_bot:
         return False
-    await _record_external_game_bot_evidence(event, text, now, verified_bot=sender_is_bot)
+    await _record_external_game_bot_evidence(event, text, now, verified_bot=True)
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
     except Exception:
@@ -1048,14 +1047,6 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
         reply_context,
         event_kind="edit" if edited else "message",
     )
-    if handled_reply:
-        await _record_suspected_game_bot(
-            sender_id,
-            matched_family,
-            text,
-            verified_bot=sender_is_bot,
-            sender_username=_game_bot_sender_username(event),
-        )
     return handled_reply
 
 
