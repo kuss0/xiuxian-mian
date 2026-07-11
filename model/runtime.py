@@ -1104,6 +1104,7 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
         "enqueued_at": time.time(),
         "not_before_mono": 0.0,
     }
+    note_shadow_attempt_queued()
     try:
         while True:
             if queue_deadline > 0:
@@ -1143,7 +1144,6 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
             if wait <= 0:
                 _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "sending"
                 try:
-                    note_shadow_attempt_queued()
                     yield
                 finally:
                     sent_mono = time.monotonic()
