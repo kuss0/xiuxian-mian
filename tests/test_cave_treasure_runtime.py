@@ -1160,6 +1160,35 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         self.assertIn("1001:cave_deep_retreat", state_module.get_miniapp_state_records())
 
+    async def test_cave_public_deep_retreat_allows_send_as_player_switch(self):
+        state_module.set_identity_account(1001, 2001)
+        flow_result = {"ok": True, "status": "start", "data": {"actionResult": {"ok": True, "rawMessage": "深度闭关成功"}}}
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                    patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value={
+                        "ok": True,
+                        "init_data": "dwelling_init_data",
+                        "player_id": 1001,
+                        "result": {"ok": True},
+                    })) as session_mock, \
+                    patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock(return_value=flow_result)), \
+                    patch.object(cave_treasure_runtime, "sync_cave_deep_seclusion_action_result", new=AsyncMock(return_value={
+                        "handled": True,
+                        "message_kind": "start",
+                        "phase": "running",
+                    })), \
+                    patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                result = await cave_treasure_runtime.run_cave_public_deep_retreat_action(
+                    1001,
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    "start",
+                    now=1_700_000_001.0,
+                )
+
+        self.assertTrue(result["ok"])
+        session_mock.assert_awaited_once()
+
     def test_cave_public_deep_status_replaces_send_as_identity_scheduler(self):
         state_module.set_miniapp_auto_config({
             "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",

@@ -1440,9 +1440,6 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not get_identity_enabled(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
-    identity_error = _public_entry_account_identity_error(identity_id)
-    if identity_error:
-        return {"ok": False, "message": identity_error, "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
