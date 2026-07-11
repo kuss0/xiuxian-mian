@@ -616,7 +616,7 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
     """
     identity_id = _identity_id(identity_id)
     message = extract_cave_tianjige_command_message(data)
-    if identity_id <= 0 or (not message and not snapshot.get("known")):
+    if identity_id <= 0 or not message:
         return {"handled": False, "reason": "missing_identity_or_message", "message": "", "phase": ""}
 
     command = str(command or yuanying.CMD_YUANYING).strip()
@@ -706,7 +706,7 @@ async def sync_cave_deep_seclusion_action_result(identity_id, action, data, *, n
     message = extract_cave_deep_seclusion_action_message(data)
     if action == "status" and not message:
         message = _extract_cave_deep_seclusion_status_message(data)
-    if identity_id <= 0 or not message:
+    if identity_id <= 0 or (not message and not snapshot.get("known")):
         return {"handled": False, "reason": "missing_identity_or_message", "message_kind": ""}
 
     with use_identity(identity_id):

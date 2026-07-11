@@ -683,6 +683,16 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["yuanying_phase"])
             self.assertEqual(123.0, state_module.state["next_yuanying_time"])
 
+    async def test_tianjige_yuanying_empty_message_is_ignored(self):
+        sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
+            1001,
+            {"actionResult": {"ok": True}},
+            now=1_700_000_000.0,
+        )
+
+        self.assertFalse(sync["handled"])
+        self.assertEqual("missing_identity_or_message", sync["reason"])
+
     async def test_tianjige_yuanying_negative_warm_status_never_launches(self):
         now = 1_700_000_000.0
         with state_module.use_identity(1001):
