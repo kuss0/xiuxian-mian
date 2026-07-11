@@ -61,6 +61,7 @@ from .state import (
     get_send_as_profile,
     get_inventory_delta_records,
     get_miniapp_state_records,
+    get_duel_target_cooldowns,
     get_storage_bag_api_config,
     get_storage_bag_item_rules,
     get_storage_bag_records,
@@ -108,6 +109,7 @@ from .state import (
     set_send_as_profile,
     set_inventory_delta_records,
     set_miniapp_state_records,
+    set_duel_target_cooldowns,
     set_storage_bag_api_config,
     set_storage_bag_item_rules,
     set_storage_bag_records,
@@ -1017,6 +1019,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_result TEXT NOT NULL DEFAULT ''")
     if "duel_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_error TEXT NOT NULL DEFAULT ''")
+    if "duel_unequip_prepared" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_unequip_prepared INTEGER NOT NULL DEFAULT 0")
     if "fishing_pond" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pond TEXT NOT NULL DEFAULT '青溪浅滩'")
     if "fishing_bait" not in runtime_columns:
@@ -1749,6 +1753,7 @@ def init_db():
             duel_last_msg_id INTEGER NOT NULL DEFAULT 0,
             duel_last_result TEXT NOT NULL DEFAULT '',
             duel_last_error TEXT NOT NULL DEFAULT '',
+            duel_unequip_prepared INTEGER NOT NULL DEFAULT 0,
             fishing_enabled INTEGER NOT NULL DEFAULT 0,
             next_fishing_time REAL NOT NULL DEFAULT 0,
             fishing_pond TEXT NOT NULL DEFAULT '青溪浅滩',
@@ -2003,6 +2008,10 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("miniapp_state_records", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("duel_target_cooldowns", "{}"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -2602,6 +2611,11 @@ _META_STATE_CODEC = {
         get_miniapp_state_records,
         _encode_meta_json,
         lambda value: set_miniapp_state_records(_decode_meta_json(value, {})),
+    ),
+    "duel_target_cooldowns": (
+        get_duel_target_cooldowns,
+        _encode_meta_json,
+        lambda value: set_duel_target_cooldowns(_decode_meta_json(value, {})),
     ),
     "tianjige_dao_path_records": (
         get_tianjige_dao_path_records,

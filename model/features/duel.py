@@ -3,11 +3,18 @@ import re
 import time
 from types import SimpleNamespace
 
-from ..config import CD_BUFFER_SEC, CMD_DUEL
+from ..config import CD_BUFFER_SEC, CMD_DUEL, CMD_DUEL_UNEQUIP
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_send_as_profile, state, update_send_as_profile
+from ..state import (
+    get_current_identity_id,
+    get_duel_target_cooldowns,
+    get_send_as_profile,
+    set_duel_target_cooldowns,
+    state,
+    update_send_as_profile,
+)
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .tianxing import (
     build_tianxing_consume_window,
@@ -33,6 +40,8 @@ DUEL_RECOVERY_MAX_SEC = 180
 DUEL_RESULT_GRACE_SEC = 30
 DUEL_BATCH_STAGGER_MIN_SEC = 3 * 60
 DUEL_BATCH_STAGGER_MAX_SEC = 8 * 60
+DUEL_SAME_TARGET_COOLDOWN_SEC = 10 * 60
+DUEL_TARGET_RESERVATION_SEC = DUEL_REPLY_TIMEOUT_SEC + DUEL_RESULT_GRACE_SEC
 DUEL_WAITING_PREFIX = "正在锁定对手天机，请稍候"
 DUEL_READY_PREFIX = "⚔️ 法宝齐出！"
 DUEL_REPORT_PREFIX = "【天道战报·文字版】"
@@ -114,6 +123,49 @@ def _target_tokens():
 def build_duel_command(target=None):
     target = normalize_duel_target(_target_token() if target is None else target)
     return f"{CMD_DUEL} {target}" if target else ""
+
+
+def _target_cooldown_key(target):
+    return normalize_duel_target(target).casefold()
+
+
+def _get_target_cooldown_record(target):
+    record = get_duel_target_cooldowns().get(_target_cooldown_key(target)) or {}
+    return record if isinstance(record, dict) else {"until": float(record or 0)}
+
+
+def _target_cooldown_until(target):
+    return float(_get_target_cooldown_record(target).get("until", 0) or 0)
+
+
+def _set_target_cooldown(target, until, *, confirmed, command_msg_id=0):
+    key = _target_cooldown_key(target)
+    if not key:
+        return 0
+    records = dict(get_duel_target_cooldowns())
+    current = records.get(key) or {}
+    current_until = float(current.get("until", 0) or 0) if isinstance(current, dict) else float(current or 0)
+    records[key] = {
+        "until": max(current_until, float(until or 0)),
+        "confirmed": bool(confirmed),
+        "owner_identity_id": int(get_current_identity_id() or 0),
+        "command_msg_id": int(command_msg_id or 0),
+    }
+    set_duel_target_cooldowns(records)
+    return float(records[key]["until"])
+
+
+def _clear_target_reservation(target, command_msg_id=0):
+    key = _target_cooldown_key(target)
+    records = dict(get_duel_target_cooldowns())
+    record = records.get(key)
+    if not isinstance(record, dict) or record.get("confirmed"):
+        return False
+    if command_msg_id and int(record.get("command_msg_id", 0) or 0) != int(command_msg_id):
+        return False
+    records.pop(key, None)
+    set_duel_target_cooldowns(records)
+    return True
 
 
 def _schedule_next_duel(now, delay_sec):
@@ -270,6 +322,11 @@ def _duel_counts_as_attempt(text):
     return _is_duel_report_text(raw) or _has_duel_terminal_attempt_keyword(raw)
 
 
+def _target_cooldown_confirmed_by_text(text):
+    raw = str(text or "")
+    return _is_duel_report_text(raw) or "对方正在斗法" in raw
+
+
 def parse_duel_result_summary(text):
     raw = str(text or "").strip()
     if not raw:
@@ -316,7 +373,7 @@ def _duel_next_delay_from_result(text, weak_or_unknown):
         if weakness and weak_or_unknown:
             return parse_wait_time(weakness.group("wait")) + CD_BUFFER_SEC + stagger
         if not weak_or_unknown:
-            return stagger
+            return DUEL_SAME_TARGET_COOLDOWN_SEC + CD_BUFFER_SEC + stagger
     if has_wait_time(raw):
         return parse_wait_time(raw) + CD_BUFFER_SEC
     return _duel_result_cooldown_sec(weak_or_unknown) + CD_BUFFER_SEC
@@ -412,6 +469,7 @@ def apply_duel_config(target=None, total_count=None, *, reset_progress=False, no
         state["duel_total_count"] = max(0, _parse_int(total_count))
     if reset_progress:
         state["duel_completed_count"] = 0
+        state["duel_unequip_prepared"] = False
     if now is not None and state.get("duel_enabled") and not _duel_next_time_blocks(now):
         state["next_duel_time"] = float(now + 1)
     if persist:
@@ -446,7 +504,7 @@ def get_duel_status_text():
         f"- 待回复命令ID：{int(state.get('duel_reply_to_msg_id', 0) or 0) or '无'}",
         f"- 斗法消息ID：{int(state.get('duel_open_msg_id', 0) or 0) or '无'}",
         f"- 回复超时：{fmt_abs_ts(state.get('duel_reply_due_at', 0))}（{fmt_remaining(state.get('duel_reply_due_at', 0))}）",
-        "- 冷却：正常/无虚弱 18-32分钟随机；虚弱/逃脱/未知 30-55分钟随机；多目标额外3-8分钟随机",
+        "- 冷却：同一目标全账号共享至少10分钟；批次额外错峰3-8分钟；真实虚弱/CD更长时按回包",
         f"- 最近结果：{state.get('duel_last_result') or '无'}",
     ]
     if state.get("duel_last_error"):
@@ -507,6 +565,8 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
         save_state()
         return True
 
+    target = _target_token()
+    pending_command_msg_id = _parse_int(state.get("duel_reply_to_msg_id", 0))
     summary = parse_duel_result_summary(raw_text)
     weak_or_unknown = _is_weak_or_unknown_result(raw_text)
     xiuwei_loss = _apply_duel_xiuwei_loss(raw_text)
@@ -516,6 +576,15 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     if xiuwei_loss > 0:
         state["duel_last_result"] = f"{summary}｜修为-{xiuwei_loss}"
     state["duel_last_error"] = "" if not weak_or_unknown else summary
+    if _target_cooldown_confirmed_by_text(raw_text):
+        _set_target_cooldown(
+            target,
+            now + DUEL_SAME_TARGET_COOLDOWN_SEC,
+            confirmed=True,
+            command_msg_id=pending_command_msg_id,
+        )
+    else:
+        _clear_target_reservation(target, pending_command_msg_id)
     if _duel_counts_as_attempt(raw_text):
         state["duel_completed_count"] = int(state.get("duel_completed_count", 0) or 0) + 1
         total_count = int(state.get("duel_total_count", 0) or 0)
@@ -596,6 +665,19 @@ async def run_duel_scheduler(now):
             _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
 
+    if not state.get("duel_unequip_prepared"):
+        msg = await send_game_command(CMD_DUEL_UNEQUIP, track=False, max_retry=0, source_module="斗法")
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+        if not msg:
+            _set_duel_error("斗法准备：卸下法宝发送失败", next_delay=DUEL_RECOVERY_MIN_SEC, now=sent_at)
+            return
+        state["duel_unequip_prepared"] = True
+        state["duel_last_result"] = "斗法准备：已发送卸下法宝"
+        state["duel_last_error"] = ""
+        _schedule_next_duel(sent_at, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+        save_state()
+        return
+
     reply_to_msg_id = int(state.get("duel_reply_to_msg_id", 0) or 0)
     reply_due_at = float(state.get("duel_reply_due_at", 0) or 0)
     if reply_to_msg_id > 0:
@@ -620,6 +702,13 @@ async def run_duel_scheduler(now):
     if _duel_next_time_blocks(now):
         return
 
+    target_cooldown_until = _target_cooldown_until(target)
+    if target_cooldown_until > now:
+        _schedule_next_duel(now, (target_cooldown_until - now) + _duel_batch_stagger_sec())
+        state["duel_last_error"] = f"目标 {target} 仍在斗法冷却"
+        save_state()
+        return
+
     if not await _prepare_duel_tianxing_route(now, due_at=now):
         return
 
@@ -641,6 +730,12 @@ async def run_duel_scheduler(now):
     state["duel_last_result"] = "已发送"
     state["duel_last_error"] = ""
     state["next_duel_time"] = state["duel_reply_due_at"]
+    _set_target_cooldown(
+        target,
+        sent_at + DUEL_TARGET_RESERVATION_SEC,
+        confirmed=False,
+        command_msg_id=state["duel_reply_to_msg_id"],
+    )
     save_state()
     console_log(f"🗡️ 斗法已发送：{command}，等待战报→{fmt_abs_ts(state['duel_reply_due_at'])}", scope="identity", limit=180)
 
