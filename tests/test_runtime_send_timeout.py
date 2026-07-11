@@ -743,6 +743,22 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.is_game_send_status_unknown(send_as_id, ".慢返回"))
         self.assertTrue(runtime.is_game_send_definitely_unsent(send_as_id, ".没发出"))
 
+    def test_dynamic_pre_send_guard_code_is_still_definitely_unsent(self):
+        send_as_id = 301299112
+        runtime._record_game_send_block(
+            send_as_id,
+            ".探寻裂缝",
+            "tianxing_route_pending:探索",
+            "天星探索下游动作仍在等待回复",
+            definitely_unsent=True,
+        )
+
+        block = runtime.classify_game_send_block(send_as_id, ".探寻裂缝")
+
+        self.assertEqual("tianxing_route_pending:探索", block["code"])
+        self.assertTrue(block["definitely_unsent"])
+        self.assertEqual("unsent", block["status"])
+
     async def test_global_recovery_hold_blocks_normal_send_as_unsent(self):
         now = 1_700_000_000.0
         send_as_id = 301299112

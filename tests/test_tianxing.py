@@ -1410,6 +1410,43 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual(now + 1800, plan["blocked_until"])
         self.assertIn("避免逆命", plan["reason"])
 
+    def test_final_send_guard_cancels_queued_auto_craft_after_prediction_changes(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "探索",
+                "current_prediction_until": now + 8 * 3600,
+                "current_prediction_set_at": now - 1,
+                "prediction_consumed_route": "",
+                "prediction_consumed_at": 0,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "prediction_conflict",
+                "route": "炼制",
+                "released_routes": {},
+            }
+
+        blocked = tianxing.tianxing_route_pre_send_guard(
+            ".炼制 玄铁剑",
+            send_as_id=self.identity_id,
+            priority="normal",
+            intent={"source_module": "天星宗"},
+            now=now,
+        )
+        manual = tianxing.tianxing_route_pre_send_guard(
+            ".炼制 玄铁剑",
+            send_as_id=self.identity_id,
+            priority="normal",
+            intent={},
+            now=now,
+        )
+
+        self.assertFalse(blocked["allowed"])
+        self.assertEqual("tianxing_prediction_conflict:探索", blocked["code"])
+        self.assertIn("避免增加逆命劫", blocked["reason"])
+        self.assertTrue(manual["allowed"])
+
     def test_route_preflight_blocks_active_change_fate_when_prediction_conflicts(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
@@ -4269,6 +4306,51 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".天机盘", timeline["active_step"]["command"])
         self.assertIn("release_downstream", [step.get("action") for step in timeline["steps"]])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 77))
+
+    async def test_ack_timeout_accepts_fresh_external_panel_without_second_query(self):
+        now = 1_780_000_000.0
+        sent_at = now - 120
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, tianji_value=18, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_observed_at": now - 1,
+                "last_action": "天机盘",
+                "last_result": "panel",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+            })
+            predict_step = {
+                "id": "predict:探索:test",
+                "action": "predict",
+                "arg": "探索",
+                "route": "探索",
+                "command": ".推命 探索",
+                "status": "ack_timeout",
+                "send_msg_id": 35158,
+                "sent_at": sent_at,
+                "ack_due_at": now - 30,
+                "calibration_due_at": now + 300,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-探索-test",
+                "phase": "ack_timeout",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": dict(predict_step),
+                "steps": [dict(predict_step)],
+                "blocked_until": now + 300,
+            }
+
+            changed, timeline = tianxing._confirm_tianxing_timeline_from_observation(now)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(changed)
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertEqual("calibration_not_confirmed", timeline["steps"][0]["status"])
+        self.assertIn("天机盘未证明", timeline["last_error"])
 
     async def test_timeline_panel_calibration_timeout_replans_without_repeat_panel(self):
         now = 1_780_000_000.0

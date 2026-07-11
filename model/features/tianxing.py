@@ -4275,6 +4275,28 @@ def _confirm_tianxing_timeline_from_observation(now):
             return False, timeline
         return _block_tianxing_terminal_panel_without_route_ready(timeline, step, now)
     if not _timeline_step_is_confirmed(step, observed, now):
+        observed_at = float(observed.get("last_observed_at", 0) or 0)
+        sent_at = float(step.get("sent_at", 0) or step.get("send_started_at", 0) or 0)
+        if (
+            status == "ack_timeout"
+            and action in {"predict", "change_fate", "set_star"}
+            and str(observed.get("last_action") or "").strip() == "天机盘"
+            and observed_at > 0
+            and (sent_at <= 0 or observed_at + 0.001 >= sent_at)
+        ):
+            step["status"] = "calibration_not_confirmed"
+            step["confirmed_at"] = float(now)
+            step["last_error"] = "新鲜天机盘未证明此前前置命令已生效。"
+            _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+            timeline["phase"] = "blocked_replan"
+            timeline["active_step_index"] = -1
+            timeline["active_step"] = {}
+            timeline["blocked_until"] = float(now)
+            timeline["last_error"] = step["last_error"]
+            timeline["updated_at"] = float(now)
+            _timeline_audit(timeline, now, "external_panel_calibration_unready", action=action, route=step.get("route") or step.get("arg"))
+            state["tianxing_timeline_state"] = timeline
+            return True, timeline
         return False, timeline
     step["status"] = "confirmed"
     step["confirmed_at"] = float(now)
@@ -4994,13 +5016,30 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
     with use_identity(send_as_id):
         if not state.get("tianxing_enabled") or not is_module_available("天星宗"):
             return {"allowed": True}
+        command_route = _command_tianxing_route(command)
+        source_module = str((intent or {}).get("source_module") or "").strip() if isinstance(intent, dict) else ""
         lease = _active_tianxing_route_lease(now)
         if not lease:
+            if command_route and source_module in {"天星宗", "炼制", "野外历练", "探寻裂缝", "斗法"}:
+                observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+                current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
+                if (
+                    current_prediction
+                    and current_prediction != command_route
+                    and _has_active_unconsumed_prediction(current_prediction, observed, now)
+                ):
+                    return {
+                        "allowed": False,
+                        "code": f"tianxing_prediction_conflict:{current_prediction}",
+                        "reason": (
+                            f"当前仍有 {current_prediction} 推命尚未应验；自动化 {command_route} 路线命令 "
+                            f"{str(command or '').strip()} 已在最终发送前取消，避免增加逆命劫。"
+                        ),
+                    }
             return {"allowed": True}
         route = _normalize_route_choice(lease.get("route"), "")
         if not route:
             return {"allowed": True}
-        command_route = _command_tianxing_route(command)
         has_pending_downstream = _tianxing_route_has_pending_downstream(route)
         if has_pending_downstream:
             if not command_route:

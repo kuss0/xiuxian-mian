@@ -461,7 +461,7 @@ def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **
             traceback.print_exc()
 
 
-def _record_game_send_block(send_as_id, command, code, reason):
+def _record_game_send_block(send_as_id, command, code, reason, *, definitely_unsent=False):
     try:
         identity_id = int(send_as_id or 0)
     except (TypeError, ValueError):
@@ -472,6 +472,7 @@ def _record_game_send_block(send_as_id, command, code, reason):
         "command": raw_command,
         "code": str(code or "blocked").strip() or "blocked",
         "reason": str(reason or "").strip(),
+        "definitely_unsent": bool(definitely_unsent),
         "at": time.time(),
     }
     _GAME_SEND_BLOCK_LAST[(identity_id, raw_command)] = payload
@@ -536,7 +537,7 @@ def classify_game_send_block(send_as_id=None, command=None, *, max_age_sec=300):
     payload["code"] = code
     if not code:
         payload["status"] = "none"
-    elif code in GAME_SEND_UNSENT_BLOCK_CODES:
+    elif payload.get("definitely_unsent") or code in GAME_SEND_UNSENT_BLOCK_CODES:
         payload["status"] = "unsent"
     else:
         payload["status"] = "unknown"
@@ -3539,7 +3540,13 @@ async def send_game_command(
                     send_as_id=send_as_id,
                     limit=260,
                 )
-            _record_game_send_block(send_as_id, command, pre_guard_code or "pre_send_guard", pre_guard_reason)
+            _record_game_send_block(
+                send_as_id,
+                command,
+                pre_guard_code or "pre_send_guard",
+                pre_guard_reason,
+                definitely_unsent=True,
+            )
             return None
 
         guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
@@ -3658,7 +3665,13 @@ async def send_game_command(
                         send_as_id=send_as_id,
                         limit=260,
                     )
-                _record_game_send_block(send_as_id, command, pre_guard_code or "pre_send_guard", pre_guard_reason)
+                _record_game_send_block(
+                    send_as_id,
+                    command,
+                    pre_guard_code or "pre_send_guard",
+                    pre_guard_reason,
+                    definitely_unsent=True,
+                )
                 return None
             guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
             if not guard_allowed:

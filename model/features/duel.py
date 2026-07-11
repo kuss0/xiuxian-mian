@@ -709,6 +709,12 @@ async def run_duel_scheduler(now):
     if not state.get("duel_enabled"):
         return
 
+    # Reconcile the last real battle report before resource/realm gates. A
+    # losing duel can push cultivation below the reserve threshold; if the
+    # consumed prediction is only cleared after that gate, the stale 斗法 lease
+    # blocks exploration forever even though no further duel can be sent.
+    _reconcile_consumed_duel_prediction_from_last_report(now)
+
     targets = _target_tokens()
     if not targets:
         if not _duel_next_time_blocks(now):
