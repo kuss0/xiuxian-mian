@@ -29,6 +29,12 @@ DUANWU_SETTLEMENT = """【端午镇蛟·龙舟破浪】
 幸运掉落：@guoke08 额外获得 【五色丝】x3。
 最终判定：98分 | 毒潮风险：22"""
 
+XIAOJI_SETTLEMENT = """【北冥小极宫·寒宫失利】
+众人护着小极宫残阵撤退，冰海妖潮被阵门切断在外。
+
+本次未能带出小极宫机缘，全员获得 1500修为、80贡献 作为补偿。
+最终状态：寒焰 12 | 宫阵 88 | 鼎机 25 | 判定分 6527007"""
+
 
 class DungeonQuietTests(unittest.TestCase):
     def setUp(self):
@@ -86,6 +92,23 @@ class DungeonQuietTests(unittest.TestCase):
     def test_settlement_notice_does_not_create_quiet_window(self):
         self.assertIsNone(dungeon_quiet.observe_dungeon_quiet_text(DUANWU_SETTLEMENT, now=1300))
         self.assertFalse(dungeon_quiet.is_dungeon_quiet_active(now=1300))
+
+    def test_xiaoji_failure_settlement_clears_active_quiet_window(self):
+        state_module.state["dungeon_quiet_until"] = 2000
+        state_module.state["dungeon_quiet_reason"] = "北冥小极宫静场令"
+        state_module.state["dungeon_quiet_last_log_at"] = 1200
+
+        result = dungeon_quiet.observe_dungeon_quiet_text(XIAOJI_SETTLEMENT, now=1300)
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["cleared"])
+        self.assertEqual("北冥小极宫静场令", result["reason"])
+        self.assertFalse(dungeon_quiet.is_dungeon_quiet_active(now=1300))
+
+    def test_intermediate_dungeon_state_does_not_release_quiet_window(self):
+        text = """【北冥小极宫·冰海妖围】
+当前状态：寒焰 12 | 宫阵 72 | 鼎机 25 | 妖潮 30 | 判定分 100"""
+        self.assertFalse(dungeon_quiet.is_dungeon_quiet_release_notice(text))
 
     def test_real_active_notice_with_dungeon_after_marker_sets_reason(self):
         self.assertTrue(dungeon_quiet.is_dungeon_quiet_active_notice(ACTIVE_NOTICE_REAL_20260531))

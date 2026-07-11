@@ -108,6 +108,7 @@ class TowerSchedulerTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase
                 patch.object(tower, "_is_tower_window_time", return_value=True),
                 patch.object(tower.time, "time", return_value=failed_at),
                 patch.object(tower, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(tower, "classify_game_send_block", return_value={"status": "none", "code": ""}),
                 patch.object(tower, "save_state"),
                 patch.object(tower, "send_audit_log", new=AsyncMock()),
             ):
@@ -117,6 +118,66 @@ class TowerSchedulerTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase
             self.assertEqual(0, state_module.state["last_tower_command_sent_at"])
             self.assertEqual(0, state_module.state["tower_reply_due_at"])
             self.assertEqual(failed_at + tower.RETRY_MAX_SEC, state_module.state["next_tower_time"])
+
+    async def test_runtime_unsent_block_is_deferred_without_failure_log(self):
+        send_as_id = 8659059306
+        now = 1_700_000_075.0
+        failed_at = now + 1
+        self._prepare_identity(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = ""
+            state_module.state["next_tower_time"] = now - 1
+
+            with (
+                patch.object(tower, "_is_tower_window_time", return_value=True),
+                patch.object(tower.time, "time", return_value=failed_at),
+                patch.object(tower, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(tower, "classify_game_send_block", return_value={
+                    "status": "unsent",
+                    "code": "global_recovery_cooldown",
+                }),
+                patch.object(tower, "save_state"),
+                patch.object(tower, "console_log") as console_mock,
+                patch.object(tower, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await tower.run_tower_scheduler(now)
+
+            self.assertEqual(0, state_module.state["last_tower_command_sent_at"])
+            self.assertEqual(0, state_module.state["tower_reply_due_at"])
+            self.assertEqual(failed_at + tower.RETRY_MAX_SEC, state_module.state["next_tower_time"])
+            self.assertIn("未发送", str(console_mock.call_args.args[0]))
+            audit_mock.assert_not_awaited()
+
+    async def test_send_timeout_keeps_unknown_attempt_waiting_for_reply(self):
+        send_as_id = 8659059307
+        now = 1_700_000_076.0
+        failed_at = now + 1
+        self._prepare_identity(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = ""
+            state_module.state["next_tower_time"] = now - 1
+
+            with (
+                patch.object(tower, "_is_tower_window_time", return_value=True),
+                patch.object(tower.time, "time", return_value=failed_at),
+                patch.object(tower, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(tower, "classify_game_send_block", return_value={
+                    "status": "unknown",
+                    "code": "send_timeout",
+                }),
+                patch.object(tower, "save_state"),
+                patch.object(tower, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await tower.run_tower_scheduler(now)
+
+            self.assertEqual(now, state_module.state["last_tower_command_sent_at"])
+            self.assertEqual(failed_at + tower.TOWER_REPLY_TIMEOUT_SEC, state_module.state["tower_reply_due_at"])
+            self.assertEqual(state_module.state["tower_reply_due_at"], state_module.state["next_tower_time"])
+            self.assertIn("状态未知", str(audit_mock.await_args.args[0]))
 
     async def test_dirty_next_tower_time_fail_closed_without_sending(self):
         now = 1_700_000_080.0

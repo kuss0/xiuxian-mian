@@ -250,11 +250,11 @@ _REPLICA_LIGHTWEIGHT_FAST_RETRY_COLLISION_DELAY_SEC = 2.0
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_SETTLEMENT_WINDOW_SEC = 8.0
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC = {
     "open": 12.0,
-    "join": 3.0,
+    "join": 35.0,
     "enter": 12.0,
     "dissolve": 8.0,
 }
-_REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS = frozenset({"dissolve"})
+_REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS = frozenset({"join", "dissolve"})
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_TTL_SEC = 5 * 60
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_MAX = 300
 _REPLICA_LIGHTWEIGHT_ROOM_HISTORY_TTL_SEC = REPLICA_ACTIVE_TTL_SEC
@@ -478,6 +478,14 @@ def _is_replica_button_exclusive_group_executed(exclusive_key):
     return exclusive_key in _cleanup_replica_button_exclusive_groups()
 
 
+def _get_replica_button_exclusive_group(exclusive_key):
+    exclusive_key = str(exclusive_key or "").strip()
+    if not exclusive_key:
+        return {}
+    item = _cleanup_replica_button_exclusive_groups().get(exclusive_key)
+    return dict(item) if isinstance(item, dict) else {}
+
+
 def _mark_replica_button_exclusive_group_executed(exclusive_key, actor_id=0, command="", ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC):
     exclusive_key = str(exclusive_key or "").strip()
     if not exclusive_key:
@@ -574,6 +582,8 @@ def _is_reusable_replica_command_text(command):
     if not command:
         return False
     if command.startswith(".开启副本 "):
+        return True
+    if _is_specific_join_command(command):
         return True
     return command == ".查询副本"
 
@@ -3196,7 +3206,9 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
                         buttons=_build_lightweight_room_action_buttons(current, include_enter=True, include_dissolve=True, include_query=True),
                     )
                     return bool(ok), "房间已变化，未解散。"
-        if exclusive_key and _is_replica_button_exclusive_group_executed(exclusive_key):
+        reusable_command = _is_reusable_replica_command_text(command)
+        exclusive_item = _get_replica_button_exclusive_group(exclusive_key) if exclusive_key else {}
+        if exclusive_item and (not reusable_command or str(exclusive_item.get("command") or "").strip() != command):
             return True, "本房间加入已处理过。"
         event_id = int(payload.get("event_id") or 0)
         if _is_reusable_replica_command_text(command):
@@ -12389,6 +12401,12 @@ def _should_fast_retry_lightweight_join(identity_id, replica_kind, room_id, chat
     current = _get_current_lightweight_retry_room(replica_kind, room_id, chat_id=chat_id, now=now)
     if not current or str(current.get("phase") or "") in {"entered", "dissolved", "dissolve_requested"}:
         return False
+    current = _refresh_lightweight_room_team_from_message_log(current, now=now)
+    profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+    if profile_username and profile_username in set(_get_lightweight_room_actual_team_usernames(current)):
+        return False
+    if _has_lightweight_room_closed_or_full_evidence(current):
+        return False
     records = _cleanup_replica_run_state(now)
     record = records.get(str(int(identity_id or 0))) if isinstance(records, dict) else {}
     record = record if isinstance(record, dict) else {}
@@ -12524,6 +12542,15 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
                 "updated_at": now,
             })
             _set_lightweight_last_room(current)
+    elif action == "join":
+        _mark_external_dispatch_join_sent(
+            identity_id,
+            replica_kind,
+            room_id,
+            msg_id,
+            now,
+            retry_count=1,
+        )
     elif action == "dissolve":
         current = _get_current_lightweight_retry_room(replica_kind, room_id, chat_id=chat_id, now=now)
         if current:
@@ -13981,7 +14008,26 @@ def _reserve_external_dispatch_join(identity_id, replica_kind, room_id, event, n
         return False, "joined_lobby"
     dispatch_pending_until = float(state_item.get("dispatch_pending_until") or 0)
     if dispatch_pending_until > float(now or 0):
-        return False, "pending"
+        pending_started_at = dispatch_pending_until - _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC
+        pending_age = max(0.0, float(now or 0) - pending_started_at)
+        retry_count = int(state_item.get("dispatch_retry_count") or 0)
+        if pending_age < _REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC["join"] or retry_count >= 1:
+            return False, "pending"
+        state_item.update({
+            "dispatch_pending_room_id": room_id,
+            "dispatch_pending_until": float(now or 0) + _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC,
+            "dispatch_pending_source_chat_id": int(getattr(event, "chat_id", 0) or 0),
+            "dispatch_pending_source_msg_id": int(getattr(event, "id", 0) or 0),
+            "dispatch_retry_count": 1,
+        })
+        record.update({
+            "replica_kind": replica_kind,
+            "last_join_result": "pending",
+            "last_join_error": "",
+            "updated_at": float(now or 0),
+        })
+        _save_replica_run_records(records)
+        return True, "retry"
     state_item.update({
         "dispatch_pending_room_id": room_id,
         "dispatch_pending_until": float(now or 0) + _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC,

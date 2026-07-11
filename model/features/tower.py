@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from ..config import CMD_TOWER, RETRY_MAX_SEC
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import format_window_text, get_module_window_hours, get_pending_command, state
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 
@@ -293,6 +293,28 @@ async def run_tower_scheduler(now):
         msg = await send_game_command(CMD_TOWER, track=False, max_retry=0, priority=send_priority, source_module="闯塔")
         if not msg:
             failed_at = time.time()
+            send_block = classify_game_send_block(command=CMD_TOWER)
+            if send_block.get("status") == "unsent":
+                state["last_tower_command_sent_at"] = 0
+                state["tower_reply_due_at"] = 0
+                state["next_tower_time"] = failed_at + RETRY_MAX_SEC
+                save_state()
+                console_log(
+                    f"🗼 闯塔未发送：{send_block.get('code') or 'runtime_block'}，延后至 {fmt_abs_ts(state['next_tower_time'])}"
+                )
+                return
+            if send_block.get("status") == "unknown":
+                state["last_tower_msg_id"] = 0
+                state["tower_reply_due_at"] = max(
+                    float(state.get("tower_reply_due_at", 0) or 0),
+                    failed_at + TOWER_REPLY_TIMEOUT_SEC,
+                )
+                state["next_tower_time"] = state["tower_reply_due_at"]
+                save_state()
+                await send_audit_log(
+                    f"⚠️ 闯塔发送状态未知，等待被动回复至 {fmt_abs_ts(state['tower_reply_due_at'])}。"
+                )
+                return
             state["last_tower_command_sent_at"] = 0
             state["tower_reply_due_at"] = 0
             state["next_tower_time"] = failed_at + RETRY_MAX_SEC

@@ -19,6 +19,10 @@ _DUNGEON_QUIET_RELEASE_MARKERS = (
     "本场失败",
     "镇蛟未竟",
     "LDC 红包池",
+    "本次未能带出",
+    "副本已解散",
+    "队伍已解散",
+    "房间已解散",
 )
 
 
@@ -57,9 +61,15 @@ def is_dungeon_quiet_release_notice(text):
     raw = str(text or "")
     if not raw:
         return False
-    if not any(marker in raw for marker in _DUNGEON_QUIET_RELEASE_MARKERS):
+    has_title = bool(_DUNGEON_NAME_RE.search(raw))
+    if not has_title:
         return False
-    return bool(_DUNGEON_NAME_RE.search(raw))
+    if any(marker in raw for marker in _DUNGEON_QUIET_RELEASE_MARKERS):
+        return True
+    return (
+        "最终状态" in raw
+        and any(marker in raw for marker in ("全员获得", "每位队员获得", "判定分"))
+    )
 
 
 def get_dungeon_quiet_until():

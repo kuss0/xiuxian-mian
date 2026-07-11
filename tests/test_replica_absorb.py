@@ -2046,6 +2046,30 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(1, len(handle_calls))
         self.assertEqual(".加入副本 @first", handle_calls[0].args[0].raw_text)
 
+    def test_join_recommendation_button_can_retry_same_command(self):
+        button = app_replica._replica_command_action_button(
+            "加入推荐",
+            ".加入副本 @first @second",
+            -100777,
+            listener_account_id=9001,
+            token_key="join-retry-same-command",
+            exclusive_key="lightweight_join:-100777:cangkun:48",
+        )
+        _token, action = app_replica._get_replica_button_action(button["callback_data"])
+
+        async def run_test():
+            with patch("model.app_replica._handle_replica_group_command", new=AsyncMock(return_value=True)) as handle_mock:
+                first_ok, first_message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                second_ok, second_message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                return first_ok, first_message, second_ok, second_message, handle_mock.await_args_list
+
+        first_ok, first_message, second_ok, second_message, handle_calls = asyncio.run(run_test())
+        self.assertTrue(first_ok)
+        self.assertIn(".加入副本 @first @second", first_message)
+        self.assertTrue(second_ok)
+        self.assertIn(".加入副本 @first @second", second_message)
+        self.assertEqual(2, len(handle_calls))
+
     def test_lightweight_join_waits_when_open_flow_exists_without_room_broadcast(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军")
         app_replica._upsert_lightweight_open_flow({
@@ -7764,7 +7788,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         now = 1000.0
 
         self.assertEqual(12.0, app_replica._get_lightweight_retry_delay_sec("open", now=now))
-        self.assertEqual(3.0, app_replica._get_lightweight_retry_delay_sec("join", now=now))
+        self.assertEqual(35.0, app_replica._get_lightweight_retry_delay_sec("join", now=now))
 
         app_replica._note_replica_settlement_observed(now)
 
@@ -7866,7 +7890,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(0, send_count)
 
-    def test_lightweight_join_fast_retry_disabled_by_default(self):
+    def test_lightweight_join_fast_retry_resends_once_when_still_missing(self):
         leader_id = self._register_replica_identity(991201, "leader")
         first_id = self._register_replica_identity(991202, "first")
         now = time.time()
@@ -7901,8 +7925,56 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         retried, send_calls = asyncio.run(run_test())
 
-        self.assertFalse(retried)
-        self.assertEqual([], send_calls)
+        self.assertTrue(retried)
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".加入苍坤洞府 16", send_calls[0].args[0])
+
+    def test_lightweight_join_reclick_releases_stale_pending_once(self):
+        identity_id = self._register_replica_identity(991202, "first")
+        now = time.time()
+        event = SimpleNamespace(chat_id=-100777, id=88007)
+        records = app_replica._get_replica_run_records()
+        record = app_replica._get_replica_identity_record(records, identity_id)
+        state_item = app_replica._get_replica_kind_state(
+            record,
+            app_replica._REPLICA_KIND_CANGKUN,
+            create=True,
+        )
+        state_item.update({
+            "dispatch_pending_room_id": "16",
+            "dispatch_pending_until": now + app_replica._REPLICA_EXTERNAL_DISPATCH_PENDING_SEC - 40,
+            "dispatch_pending_source_chat_id": -100777,
+            "dispatch_pending_source_msg_id": 88006,
+            "dispatch_pending_msg_id": 778,
+            "dispatch_retry_count": 0,
+        })
+        app_replica._save_replica_run_records(records)
+
+        allowed, reason = app_replica._reserve_external_dispatch_join(
+            identity_id,
+            app_replica._REPLICA_KIND_CANGKUN,
+            "16",
+            event,
+            now,
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual("retry", reason)
+        records = app_replica._get_replica_run_records()
+        record = app_replica._get_replica_identity_record(records, identity_id)
+        state_item = app_replica._get_replica_kind_state(record, app_replica._REPLICA_KIND_CANGKUN)
+        self.assertEqual(1, state_item.get("dispatch_retry_count"))
+        self.assertEqual(88007, state_item.get("dispatch_pending_source_msg_id"))
+
+        allowed_again, reason_again = app_replica._reserve_external_dispatch_join(
+            identity_id,
+            app_replica._REPLICA_KIND_CANGKUN,
+            "16",
+            event,
+            now + 40,
+        )
+        self.assertFalse(allowed_again)
+        self.assertEqual("pending", reason_again)
 
     def test_lightweight_join_fast_retry_skips_after_join_success(self):
         leader_id = self._register_replica_identity(991201, "leader")

@@ -29,7 +29,7 @@ from ..config import (
     SECT_TEACH_DELAY_MIN_SEC,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import _get_identity_client, console_log, send_audit_log, send_game_command
+from ..runtime import _get_identity_client, classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     format_window_text,
     get_current_identity_id,
@@ -540,7 +540,17 @@ async def run_checkin_scheduler(now):
                 failed_at = time.time()
                 state["next_sect_teach_time"] = failed_at + RETRY_MAX_SEC
                 save_state()
-                await send_audit_log("❌ 传功发送失败，稍后重试。")
+                send_block = classify_game_send_block(command=CMD_SECT_TEACH)
+                if send_block.get("status") == "unsent":
+                    console_log(
+                        f"📘 传功未发送：{send_block.get('code') or 'runtime_block'}，延后至 {fmt_abs_ts(state['next_sect_teach_time'])}"
+                    )
+                elif send_block.get("status") == "unknown":
+                    await send_audit_log(
+                        f"⚠️ 传功发送状态未知，保留链路并延后至 {fmt_abs_ts(state['next_sect_teach_time'])}。"
+                    )
+                else:
+                    await send_audit_log("❌ 传功发送失败，稍后重试。")
         else:
             state["next_sect_teach_time"] = 0
             state["sect_teach_reply_to_msg_id"] = 0
@@ -559,7 +569,17 @@ async def run_checkin_scheduler(now):
             failed_at = time.time()
             state["next_checkin_time"] = failed_at + RETRY_MAX_SEC
             save_state()
-            await send_audit_log("❌ 点卯发送失败，稍后重试。")
+            send_block = classify_game_send_block(command=CMD_CHECKIN)
+            if send_block.get("status") == "unsent":
+                console_log(
+                    f"📝 点卯未发送：{send_block.get('code') or 'runtime_block'}，延后至 {fmt_abs_ts(state['next_checkin_time'])}"
+                )
+            elif send_block.get("status") == "unknown":
+                await send_audit_log(
+                    f"⚠️ 点卯发送状态未知，延后至 {fmt_abs_ts(state['next_checkin_time'])} 等待被动校准。"
+                )
+            else:
+                await send_audit_log("❌ 点卯发送失败，稍后重试。")
             return
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
         msg_id = int(getattr(msg, "id", 0) or 0)
