@@ -57,6 +57,8 @@ BENIGN_MODULE_ERROR_PATTERN = re.compile(
 )
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
 ACTIVE_STATUS_REPEAT_CLOSE_GAP_SEC = 5 * 60
+DAILY_ONCE_FAMILIES = {"wanxin_moon_greet", "wanxin_visit"}
+DAILY_ONCE_COMMANDS = {".婉影问安", ".探望南宫婉"}
 GUARDED_COMMAND_REPEAT_ALERT_MIN = 4
 GUARDED_COMMAND_REPEAT_ALERT_MIN_BY_COMMAND = {
     # One small-world prayer refresh round can legitimately send:
@@ -788,6 +790,36 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
                     count=len(items),
                 )
             )
+
+    daily_once_grouped: dict[tuple[int, str], list[dict[str, object]]] = defaultdict(list)
+    for item in sent:
+        identity_id = event_identity_id(item)
+        command = command_key(str(item.get("text") or ""))
+        family = str(item.get("family") or "").strip()
+        daily_key = family if family in DAILY_ONCE_FAMILIES else command if command in DAILY_ONCE_COMMANDS else ""
+        if identity_id and daily_key:
+            daily_once_grouped[(identity_id, daily_key)].append(item)
+    for (identity_id, daily_key), items in sorted(daily_once_grouped.items()):
+        if len(items) < 2:
+            continue
+        command = command_key(str(items[-1].get("text") or ""))
+        repeated_command_samples.append({
+            "kind": "daily_once_repeat",
+            "identity_id": identity_id,
+            "command": command,
+            "family": daily_key,
+            "count": len(items),
+            "sample": [event_ref(item) for item in items[-4:]],
+        })
+        alerts.append(
+            business_alert(
+                f"daily-once action repeated: {identity_id}:{daily_key} x{len(items)}/{int(window_sec / 60)}m",
+                identity_id=identity_id,
+                command=command,
+                family=daily_key,
+                count=len(items),
+            )
+        )
 
     cooldown_replies = []
     bot_replies = []

@@ -124,6 +124,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         panel = wanxin.parse_wanxin_text(
             "【月影同参】\n侍妾：【南宫婉·月影】（随行中）\n情缘：142\n共鸣：已觉醒"
         )
+        already = wanxin.parse_wanxin_text("今日已与婉影问安。月魄需静养，不可频繁牵动。")
         greet = wanxin.parse_wanxin_text(
             "【婉影问安】\n你与【南宫婉·月影】于月下静坐片刻。\n情缘 +9。\n"
             "婉心 +1，魂封 -1。\n婉心 115 | 魂封 0 | 月魄 38 | 咒源 120"
@@ -137,6 +138,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         config = wanxin.normalize_wanxin_auto_config()
 
         self.assertEqual(("moon_panel", 142), (panel["type"], panel["affinity"]))
+        self.assertEqual("moon_greet_already", already["type"])
         self.assertEqual(("moon_greet_success", 9), (greet["type"], greet["affinity_gain"]))
         self.assertEqual(("moon_seal_success", 24), (seal["type"], seal["affinity_cost"]))
         self.assertEqual(("cooldown", "moon_seal"), (cooldown["type"], cooldown["cooldown_action"]))
@@ -199,6 +201,36 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertEqual(129, state_module.state["concubine_affinity"])
+
+    async def test_moon_greet_already_reply_closes_pending_until_next_day(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["concubine_affinity"] = 142
+            state_module.state["wanxin_observation"] = {
+                "moon_awakened": True,
+                "pending": {
+                    "action": "moon_greet",
+                    "family": "wanxin_moon_greet",
+                    "msg_id": 7010,
+                    "send_as_id": identity_id,
+                    "reply_due_at": now + 90,
+                },
+            }
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "今日已与婉影问安。月魄需静养，不可频繁牵动。",
+                    now,
+                    reply_to=SimpleNamespace(id=7010, raw_text=".婉影问安"),
+                    matched_family="wanxin_moon_greet",
+                )
+
+            self.assertTrue(handled)
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual({}, observed["pending"])
+            self.assertGreater(observed["next_moon_greet_time"], now + 2 * 3600)
+            self.assertEqual(142, state_module.state["concubine_affinity"])
             observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
             self.assertTrue(observed["moon_awakened"])
             self.assertGreater(observed["next_moon_greet_time"], now)

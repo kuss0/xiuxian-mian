@@ -599,6 +599,13 @@ def parse_wanxin_text(text, now=None, family=""):
             "summary": "婉影状态",
         })
         return parsed
+    if "今日已与婉影问安" in raw or "今日已经问候过婉影" in raw:
+        parsed.update({
+            "type": "moon_greet_already",
+            "available": "yes",
+            "summary": "今日已与婉影问安",
+        })
+        return parsed
     if "【婉影问安】" in raw:
         gain = RE_MOON_AFFINITY_GAIN.search(raw)
         parsed.update({
@@ -1463,7 +1470,7 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         _schedule_next(observed, now)
     elif ptype in {
         "visit_success", "visit_already", "protect_success", "deduce_success",
-        "moon_greet_success", "moon_seal_success", "moon_join_success",
+        "moon_greet_success", "moon_greet_already", "moon_seal_success", "moon_join_success",
     }:
         if ptype in {"visit_success", "visit_already"}:
             action = WANXIN_ACTION_VISIT
@@ -1471,13 +1478,14 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
             action = WANXIN_ACTION_PROTECT
         elif ptype == "deduce_success":
             action = WANXIN_ACTION_DEDUCE
-        elif ptype == "moon_greet_success":
+        elif ptype in {"moon_greet_success", "moon_greet_already"}:
             action = WANXIN_ACTION_MOON_GREET
             observed["moon_awakened"] = True
-            state["concubine_affinity"] = max(
-                0,
-                int(state.get("concubine_affinity", 0) or 0) + int(parsed.get("affinity_gain", 0) or 0),
-            )
+            if ptype == "moon_greet_success":
+                state["concubine_affinity"] = max(
+                    0,
+                    int(state.get("concubine_affinity", 0) or 0) + int(parsed.get("affinity_gain", 0) or 0),
+                )
         elif ptype == "moon_seal_success":
             action = WANXIN_ACTION_MOON_SEAL
             observed["moon_awakened"] = True

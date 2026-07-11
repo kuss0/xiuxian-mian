@@ -666,6 +666,43 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(3, result["cooldown_reply_count"])
         self.assertTrue(any("cooldown replies" in item["message"] for item in result["alerts"]))
 
+    def test_business_message_analysis_flags_repeated_daily_once_family(self):
+        now = 1_780_500_000.0
+        events = [
+            {
+                "event_type": "sent",
+                "_epoch": now - 900,
+                "message_id": 1801,
+                "sender_id": 8659059191,
+                "text": ".婉影问安",
+                "family": "wanxin_moon_greet",
+            },
+            {
+                "event_type": "sent",
+                "_epoch": now - 200,
+                "message_id": 1802,
+                "sender_id": 8659059191,
+                "text": ".婉影问安",
+                "family": "wanxin_moon_greet",
+            },
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertTrue(any("daily-once action repeated" in item["message"] for item in result["alerts"]))
+        self.assertEqual("daily_once_repeat", result["repeated_command_samples"][0]["kind"])
+
+    def test_business_message_analysis_allows_daily_once_actions_from_different_identities(self):
+        now = 1_780_500_000.0
+        events = [
+            {"event_type": "sent", "_epoch": now - 500, "message_id": 1811, "sender_id": 1, "text": ".婉影问安", "family": "wanxin_moon_greet"},
+            {"event_type": "sent", "_epoch": now - 300, "message_id": 1812, "sender_id": 2, "text": ".婉影问安", "family": "wanxin_moon_greet"},
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertFalse(any("daily-once action repeated" in item["message"] for item in result["alerts"]))
+
     def test_business_message_analysis_excludes_unanchored_broadcasts_from_bot_replies(self):
         now = 1_780_500_000.0
         events = [
