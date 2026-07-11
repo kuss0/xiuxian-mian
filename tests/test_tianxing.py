@@ -5974,7 +5974,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("consume_craft_prediction_calibration", craft["last_action"])
         self.assertEqual(9411, craft["last_msg_id"])
 
-    async def test_consume_craft_prediction_defers_expired_calibration_during_phaseful_summary(self):
+    async def test_consume_craft_prediction_defers_expired_calibration_during_yuanying_summary(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             self._prepare_identity(now, tianji_value=39)
@@ -5992,7 +5992,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"),
+                patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="元婴归位待结算"),
                 patch.object(tianxing.random, "uniform", return_value=80),
                 patch.object(tianxing, "save_state"),
             ):
@@ -6013,7 +6013,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("phaseful_deferred", result["stage"])
         self.assertEqual("phaseful_deferred", craft["phase"])
         self.assertEqual(now + 80, craft["next_time"])
-        self.assertIn("深度闭关临近归位结算", craft["last_error"])
+        self.assertIn("元婴归位待结算", craft["last_error"])
 
     async def test_craft_farm_does_not_send_unpredicted_craft_when_tianji_short_by_default(self):
         now = 1_780_000_000.0
@@ -7298,7 +7298,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("downstream_released", timeline["phase"])
         self.assertEqual("timeline", observed["auto_last_action"])
 
-    async def test_craft_farm_defers_send_during_phaseful_summary_window(self):
+    async def test_craft_farm_defers_send_during_yuanying_summary_window(self):
         now = local_ts(2, 30, year=2026, month=7, day=2)
         config = {
             "timeline_enabled": True,
@@ -7343,7 +7343,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
             }
             with patch.object(tianxing, "save_state"), \
                  patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock, \
-                 patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"), \
+                 patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="元婴归位待结算"), \
                  patch.object(tianxing.random, "uniform", return_value=90):
                 result = await tianxing.run_tianxing_craft_farm_scheduler(now, config=config)
             craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
@@ -7352,7 +7352,14 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("phaseful_deferred", result["stage"])
         self.assertEqual("phaseful_deferred", craft["phase"])
         self.assertEqual(now + 90, craft["next_time"])
-        self.assertIn("深度闭关临近归位结算", craft["last_error"])
+        self.assertIn("元婴归位待结算", craft["last_error"])
+
+    def test_tianxing_commands_ignore_deep_retreat_summary_risk(self):
+        now = 1_780_000_000.0
+        with patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"):
+            payload = tianxing._tianxing_phaseful_defer_payload(now, "时间线前置命令")
+
+        self.assertEqual({}, payload)
 
     async def test_timeline_step_defers_send_during_phaseful_summary_window(self):
         now = 1_780_000_000.0

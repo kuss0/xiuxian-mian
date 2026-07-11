@@ -2349,6 +2349,8 @@ def _tianxing_phaseful_defer_payload(now, action):
     reason = get_phaseful_summary_risk_reason(now, lead_sec=60)
     if not reason:
         return {}
+    if "深度闭关" in str(reason) or "深闭" in str(reason):
+        return {}
     defer_until = float(now + random.uniform(TIANXING_PHASEFUL_DEFER_MIN_SEC, TIANXING_PHASEFUL_DEFER_MAX_SEC))
     action = str(action or "自动命令").strip() or "自动命令"
     return {
