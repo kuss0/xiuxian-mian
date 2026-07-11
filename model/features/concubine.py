@@ -3538,6 +3538,19 @@ async def _send_fragment_command(now):
     msg = await _send_concubine_game_command(CMD_CONCUBINE_FRAGMENT, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        # The queued send can lose the race to an already-sent puzzle reply.
+        # Re-read business state before an old send result overwrites success.
+        if _is_current_fragment_confirmed() or not _is_puzzle_ready():
+            state["concubine_last_error"] = ""
+            save_state()
+            return False
+        if _handle_send_queue_timeout(
+            CMD_CONCUBINE_FRAGMENT,
+            sent_at,
+            label="残图确认",
+        ):
+            save_state()
+            return False
         state["concubine_last_error"] = "发送 .残图 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "fragment_pending")

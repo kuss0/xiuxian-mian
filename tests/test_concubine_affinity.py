@@ -1833,6 +1833,33 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(888, state_module.state["concubine_puzzle_msg_id"])
         self.assertEqual("cangkun:4/4", state_module.state["concubine_fragment_confirm_key"])
 
+    async def test_stale_fragment_send_cannot_overwrite_puzzle_success(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "idle"
+            identity_state["next_concubine_time"] = now
+            identity_state["concubine_last_error"] = ""
+            concubine._set_fragment_progress(concubine.DREAM_KIND_CANGKUN, 4, 4)
+
+        async def finish_puzzle_before_queue_returns(*_args, **_kwargs):
+            concubine._clear_fragment_progress(concubine.DREAM_KIND_CANGKUN)
+            state_module.state["concubine_phase"] = "idle"
+            state_module.state["next_concubine_time"] = now + 3600
+            state_module.state["concubine_last_error"] = ""
+            return None
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state") as save_mock, \
+             patch.object(concubine, "_send_concubine_game_command", new=AsyncMock(side_effect=finish_puzzle_before_queue_returns)):
+            sent = await concubine._send_fragment_command(now)
+
+        self.assertFalse(sent)
+        self.assertEqual("", state_module.state["concubine_last_error"])
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(now + 3600, state_module.state["next_concubine_time"])
+        save_mock.assert_called()
+
     async def test_orphan_heart_prompt_blocks_new_heart_command(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
