@@ -144,14 +144,14 @@ def _parse_public_cave_entry_url(public_entry_url):
 
 
 def _public_entry_account_identity_error(identity_id):
-    """A WebApp login represents its physical Telegram account, not a send-as peer."""
+    """Treasure attempts are shared by the physical Telegram login account."""
     identity_id = _identity_id(identity_id)
     try:
         account_id = int(get_identity_account(identity_id) or 0)
     except (TypeError, ValueError, OverflowError):
         account_id = 0
     if account_id > 0 and account_id != identity_id:
-        return "洞府公共入口绑定登录账号，请选择该账号本体身份后执行"
+        return "洞府寻宝次数按登录账号共享，请使用该账号本体身份执行"
     return ""
 
 
