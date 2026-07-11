@@ -124,6 +124,41 @@ class ModuleTimeoutReconciliationTests(unittest.TestCase):
         self.assertFalse(plan["allowed"])
         save_mock.assert_called_once()
 
+    def test_yinluo_blood_forest_timeout_retries_when_phaseful_summary_consumed_command(self):
+        now = 1_780_000_000.0
+        sent_at = now - 30
+        summary_entry = {
+            "event_type": "edit",
+            "message_id": 9004,
+            "text": "📜 修士 @timeout_user 深度闭关总结\n【深度闭关总结】",
+        }
+        state_module.update_send_as_profile(self.identity_id, username="timeout_user")
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "next_blood_forest_time": sent_at + yinluo.YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC,
+            }
+
+            with (
+                patch.object(yinluo, "iter_message_log_entries_between", return_value=iter([(summary_entry, sent_at + 5)])),
+                patch.object(yinluo, "save_state") as save_mock,
+            ):
+                handled = yinluo.reconcile_yinluo_timeout_from_pending(
+                    9003,
+                    cmd=yinluo.CMD_YINLUO_BLOOD_FOREST,
+                    sent_at=sent_at,
+                    now=now,
+                )
+
+            observed = yinluo.normalize_yinluo_observation(state_module.state["yinluo_observation"])
+
+        self.assertTrue(handled)
+        self.assertEqual("phaseful_consumed", observed["last_result"])
+        self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["next_blood_forest_time"])
+        self.assertEqual("", observed["last_error"])
+        save_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

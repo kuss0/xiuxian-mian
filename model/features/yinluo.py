@@ -16,6 +16,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
+from ..message_log_recovery import iter_message_log_entries_between
 from ..persisted_state import PersistedState
 from ..runtime import send_game_command
 from ..state import (
@@ -2409,6 +2410,39 @@ def reconcile_yinluo_timeout_from_pending(msg_id, cmd="", sent_at=0, now=None):
     if sent_at <= 0:
         sent_at = now
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    profile = get_send_as_profile(get_current_identity_id()) or {}
+    username = str(profile.get("username") or "").strip().lstrip("@").casefold()
+    phaseful_summary = None
+    if username:
+        for entry, entry_ts in iter_message_log_entries_between(sent_at, now + 5):
+            text = str((entry or {}).get("text") or "")
+            if not any(marker in text for marker in ("深度闭关总结", "元神归窍总结")):
+                continue
+            if f"@{username}" not in text.casefold():
+                continue
+            phaseful_summary = (entry, entry_ts)
+            break
+    if phaseful_summary:
+        retry_at = float(now + YINLUO_AUTO_CHAIN_STEP_SEC)
+        observed["last_observed_at"] = max(float(observed.get("last_observed_at", 0) or 0), float(sent_at))
+        observed["last_action"] = "血洗山林"
+        observed["last_result"] = "phaseful_consumed"
+        observed["last_summary"] = "血洗山林触发闭关/元婴结算，动作未执行"
+        observed["last_error"] = ""
+        observed["next_blood_forest_time"] = retry_at
+        observed["auto_last_action"] = "blood_forest"
+        observed["auto_last_error"] = ""
+        observed["auto_next_time"] = retry_at
+        observed["recent"].append({
+            "ts": float(now),
+            "action": "血洗山林",
+            "result": "phaseful_consumed",
+            "summary": observed["last_summary"],
+        })
+        observed["recent"] = observed["recent"][-8:]
+        state["yinluo_observation"] = observed
+        save_state()
+        return True
     cooldown_until = float(sent_at + YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC)
     observed["last_observed_at"] = max(float(observed.get("last_observed_at", 0) or 0), float(sent_at))
     observed["last_action"] = "血洗山林"
