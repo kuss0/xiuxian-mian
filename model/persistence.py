@@ -158,6 +158,16 @@ def _open_sqlite_conn(db_file=None, *, row_factory=True, set_journal_mode=True):
     return conn
 
 
+def open_db_connection(*, row_factory=True, set_journal_mode=False):
+    """Return a short-lived connection for narrowly scoped transactional stores."""
+
+    return _open_sqlite_conn(
+        DB_FILE,
+        row_factory=row_factory,
+        set_journal_mode=set_journal_mode,
+    )
+
+
 def get_db_conn():
     global _db_conn, _schema_columns_ensured_key
     if _db_conn is None:
@@ -1839,6 +1849,90 @@ def init_db():
             delete_policy TEXT NOT NULL DEFAULT ''
         );
 
+        CREATE TABLE IF NOT EXISTS command_attempts (
+            op_id TEXT PRIMARY KEY,
+            chain_id TEXT NOT NULL DEFAULT '',
+            send_as_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL DEFAULT 0,
+            source_module TEXT NOT NULL DEFAULT '',
+            command TEXT NOT NULL DEFAULT '',
+            command_family TEXT NOT NULL DEFAULT '',
+            priority TEXT NOT NULL DEFAULT '',
+            intent_json TEXT NOT NULL DEFAULT '{}',
+            transport TEXT NOT NULL DEFAULT 'created',
+            business TEXT NOT NULL DEFAULT 'open',
+            recovery_policy TEXT NOT NULL DEFAULT 'wait_late_edit',
+            block_code TEXT NOT NULL DEFAULT '',
+            block_reason TEXT NOT NULL DEFAULT '',
+            definitely_unsent INTEGER NOT NULL DEFAULT 0,
+            root_msg_id INTEGER NOT NULL DEFAULT 0,
+            reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            result_msg_id INTEGER NOT NULL DEFAULT 0,
+            resend_count INTEGER NOT NULL DEFAULT 0,
+            max_resend INTEGER NOT NULL DEFAULT 0,
+            transport_due_at REAL NOT NULL DEFAULT 0,
+            business_due_at REAL NOT NULL DEFAULT 0,
+            business_code TEXT NOT NULL DEFAULT '',
+            business_summary TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            last_transition_key TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            sent_at REAL NOT NULL DEFAULT 0,
+            closed_at REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS command_attempt_transitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            op_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            axis TEXT NOT NULL,
+            from_state TEXT NOT NULL DEFAULT '',
+            to_state TEXT NOT NULL,
+            code TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            transition_key TEXT NOT NULL,
+            ts REAL NOT NULL,
+            UNIQUE(op_id, seq),
+            UNIQUE(op_id, transition_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS command_attempt_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            op_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            msg_id INTEGER NOT NULL DEFAULT 0,
+            edit_seq INTEGER NOT NULL DEFAULT 0,
+            family TEXT NOT NULL DEFAULT '',
+            text_digest TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            idempotency_key TEXT NOT NULL,
+            ts REAL NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(op_id, seq),
+            UNIQUE(op_id, idempotency_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_command_attempts_identity_open
+            ON command_attempts(send_as_id, business, transport, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_command_attempts_root_msg
+            ON command_attempts(root_msg_id);
+        CREATE INDEX IF NOT EXISTS idx_command_attempts_result_msg
+            ON command_attempts(result_msg_id);
+        CREATE INDEX IF NOT EXISTS idx_command_attempts_chain
+            ON command_attempts(chain_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_command_attempts_due
+            ON command_attempts(transport_due_at, business_due_at);
+        CREATE INDEX IF NOT EXISTS idx_command_attempt_transitions_op
+            ON command_attempt_transitions(op_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_command_attempt_evidence_msg
+            ON command_attempt_evidence(msg_id);
+        CREATE INDEX IF NOT EXISTS idx_command_attempt_evidence_op
+            ON command_attempt_evidence(op_id, seq);
+
         CREATE TABLE IF NOT EXISTS message_index (
             msg_id INTEGER PRIMARY KEY,
             send_as_id INTEGER NOT NULL,
@@ -3070,6 +3164,7 @@ configure_timing(save_state)
 __all__ = [
     "flush_if_dirty",
     "get_db_conn",
+    "open_db_connection",
     "get_persistence_write_failure",
     "has_persisted_identity_rows",
     "has_persistence_write_failure",
