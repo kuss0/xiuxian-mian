@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 import sys
@@ -32,9 +33,37 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
 
     def tearDown(self):
+        explore_rift._EXPLORE_RIFT_LOCKS.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
+
+    async def test_scheduler_serializes_same_identity(self):
+        identity_id = self._prepare_identity()
+        entered = []
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def fake_unlocked(now):
+            entered.append(now)
+            if len(entered) == 1:
+                first_entered.set()
+                await release_first.wait()
+
+        with state_module.use_identity(identity_id), patch.object(
+            explore_rift,
+            "_run_explore_rift_scheduler_unlocked",
+            new=fake_unlocked,
+        ):
+            first = asyncio.create_task(explore_rift.run_explore_rift_scheduler(1.0))
+            await first_entered.wait()
+            second = asyncio.create_task(explore_rift.run_explore_rift_scheduler(2.0))
+            await asyncio.sleep(0)
+            self.assertEqual([1.0], entered)
+            release_first.set()
+            await asyncio.gather(first, second)
+
+        self.assertEqual([1.0, 2.0], entered)
 
     def _prepare_identity(self, identity_id=8659059191, *, realm="元婴初期", xiuwei_current=1000):
         state_module.ensure_identity_registered(identity_id)

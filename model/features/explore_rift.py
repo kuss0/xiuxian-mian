@@ -1,3 +1,4 @@
+import asyncio
 import json
 import hashlib
 import random
@@ -77,6 +78,7 @@ EXPLORE_RIFT_PENDING_RESULT_STALE_SEC = 10 * 60
 EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC = 36 * 3600
 EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC = 10
+_EXPLORE_RIFT_LOCKS = {}
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
 RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下)")
@@ -113,6 +115,15 @@ REBIRTH_CHOICE_MODES = ("safe_first", "root_first")
 REBIRTH_ROOT_TYPES = ("", "天灵根", "异灵根", "伪灵根", "废灵根")
 RE_REBIRTH_OPTION_HEADER = re.compile(r"(?m)^\s*(?P<index>[123])\.\s*【夺舍\s+(?P<name>[^】]+)】\s*$")
 RE_REBIRTH_OPTION_FIELD = re.compile(r"(?m)^\s*-\s*(?P<key>灵根|命途)\s*[:：]\s*(?P<value>[^\n]+)\s*$")
+
+
+def _explore_rift_lock():
+    identity_id = int(get_current_identity_id() or 0)
+    lock = _EXPLORE_RIFT_LOCKS.get(identity_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _EXPLORE_RIFT_LOCKS[identity_id] = lock
+    return lock
 RE_ROOT_ATTRS = re.compile(r"\(([^)]*)\)")
 RE_REBIRTH_ATTR_SPLIT = re.compile(r"[\s,，、/|]+")
 
@@ -1495,7 +1506,7 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
     return False
 
 
-async def run_explore_rift_scheduler(now):
+async def _run_explore_rift_scheduler_unlocked(now):
     if await _confirm_pending_fatal(now):
         return
     if await _run_rebirth_scheduler(now):
@@ -1709,6 +1720,11 @@ async def run_explore_rift_scheduler(now):
     state["next_explore_rift_time"] = state["explore_rift_reply_due_at"]
     save_state()
     console_log(f"🕳 探寻裂缝已发送，等待回复→{fmt_abs_ts(state['explore_rift_reply_due_at'])}", scope="identity", limit=180)
+
+
+async def run_explore_rift_scheduler(now):
+    async with _explore_rift_lock():
+        return await _run_explore_rift_scheduler_unlocked(now)
 
 
 def schedule_explore_rift_initial_check(now, *, persist=False, keep_last_error=True):
