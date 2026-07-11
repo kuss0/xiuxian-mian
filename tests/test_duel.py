@@ -482,6 +482,42 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         save_mock.assert_called_once()
         console_mock.assert_called_once()
 
+    def test_reconcile_consumed_duel_prediction_accepts_escape_result_with_prediction_banner(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_100.0
+        report_at = now - 20
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["duel_last_msg_id"] = 7789
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+                "prediction_consumed_route": "",
+                "prediction_consumed_at": 0,
+            }
+            report = {
+                "message_id": 7789,
+                "ts_epoch": report_at,
+                "text": (
+                    "面对境界压制，@xuruode6 凭借神通侥幸逃脱！(成功率: 26%)\n"
+                    "✨ 【司命盘】 @xuruode6 【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30"
+                ),
+            }
+            with (
+                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "console_log"),
+                patch.object(duel, "save_state"),
+            ):
+                changed = duel._reconcile_consumed_duel_prediction_from_last_report(now)
+
+            observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        self.assertTrue(changed)
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("斗法", observed["prediction_consumed_route"])
+        self.assertEqual(report_at, observed["prediction_consumed_at"])
+
     async def test_scheduler_requests_tianxing_timeline_before_due_duel(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

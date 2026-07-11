@@ -331,6 +331,14 @@ def _duel_counts_as_attempt(text):
     return _is_duel_report_text(raw) or _has_duel_terminal_attempt_keyword(raw)
 
 
+def _is_duel_prediction_consuming_result(text):
+    raw = str(text or "").strip()
+    return _is_duel_report_text(raw) or (
+        _duel_counts_as_attempt(raw)
+        and any(keyword in raw for keyword in ("【推命命中】", "【推命落空】"))
+    )
+
+
 def _is_target_named_cooldown(text):
     raw = str(text or "")
     target = _target_token().lstrip("@")
@@ -444,7 +452,7 @@ def _reconcile_consumed_duel_prediction_from_last_report(now):
         now,
         lookback_sec=DUEL_TIANXING_RECONCILE_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
-        predicate=lambda entry: _is_duel_report_text(str((entry or {}).get("text") or "")),
+        predicate=lambda entry: _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")),
     )
     report_at = float((report or {}).get("ts_epoch", 0) or 0)
     if report_at + 0.001 < set_at:
