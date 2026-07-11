@@ -254,6 +254,62 @@ def get_attempt(op_id):
         return _attempt_from_row(_get_attempt_row(conn, op_id))
 
 
+def _list_attempt_rows(where_sql, params, *, limit=100):
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM command_attempts WHERE {where_sql} ORDER BY created_at DESC LIMIT ?",
+            (*params, max(1, min(1000, int(limit or 100)))),
+        ).fetchall()
+    return [_attempt_from_row(row) for row in rows]
+
+
+def list_attempts_by_root_msg_id(root_msg_id, *, limit=20):
+    root_msg_id = int(root_msg_id or 0)
+    if root_msg_id <= 0:
+        return []
+    return _list_attempt_rows("root_msg_id = ?", (root_msg_id,), limit=limit)
+
+
+def list_attempts_by_result_msg_id(result_msg_id, *, limit=20):
+    result_msg_id = int(result_msg_id or 0)
+    if result_msg_id <= 0:
+        return []
+    return _list_attempt_rows("result_msg_id = ?", (result_msg_id,), limit=limit)
+
+
+def list_attempts_by_chain_id(chain_id, *, limit=100):
+    chain_id = str(chain_id or "").strip()
+    if not chain_id:
+        return []
+    return _list_attempt_rows("chain_id = ?", (chain_id,), limit=limit)
+
+
+def list_bind_candidates(*, send_as_id=0, family="", event_at=0, window_sec=900, limit=100):
+    clauses = ["business NOT IN (?, ?, ?)", "transport IN (?, ?, ?, ?)"]
+    params = [
+        BusinessState.TERMINAL_OK.value,
+        BusinessState.TERMINAL_FAIL.value,
+        BusinessState.ABANDONED.value,
+        TransportState.SENT.value,
+        TransportState.SENT_NO_ID.value,
+        TransportState.SEND_UNKNOWN.value,
+        TransportState.TIMED_OUT.value,
+    ]
+    if int(send_as_id or 0) > 0:
+        clauses.append("send_as_id = ?")
+        params.append(int(send_as_id))
+    family = str(family or "").strip()
+    if family:
+        clauses.append("command_family = ?")
+        params.append(family)
+    event_at = float(event_at or 0)
+    if event_at > 0:
+        window_sec = max(1.0, float(window_sec or 0))
+        clauses.append("sent_at BETWEEN ? AND ?")
+        params.extend([event_at - window_sec, event_at + 5.0])
+    return _list_attempt_rows(" AND ".join(clauses), tuple(params), limit=limit)
+
+
 def transition_transport(
     op_id,
     target,

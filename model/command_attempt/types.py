@@ -45,6 +45,12 @@ class EvidenceKind(_TextEnum):
     BROADCAST_BIND = "broadcast_bind"
 
 
+class BindStatus(_TextEnum):
+    MATCHED = "matched"
+    AMBIGUOUS = "ambiguous"
+    UNMATCHED = "unmatched"
+
+
 TRANSPORT_TRANSITIONS = {
     TransportState.CREATED: {
         TransportState.QUEUED,
@@ -183,6 +189,15 @@ class AttemptEvidence:
     payload: dict
 
 
+@dataclass(frozen=True)
+class BindResult:
+    status: BindStatus
+    matched_op_id: str = ""
+    candidate_op_ids: tuple[str, ...] = ()
+    reason: str = ""
+    anchor: str = ""
+
+
 __all__ = [
     "AttemptConflict",
     "AttemptError",
@@ -190,6 +205,8 @@ __all__ = [
     "AttemptNotFound",
     "AttemptRecord",
     "AttemptTransition",
+    "BindResult",
+    "BindStatus",
     "BUSINESS_TRANSITIONS",
     "BusinessState",
     "EvidenceKind",

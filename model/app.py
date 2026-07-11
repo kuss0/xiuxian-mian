@@ -77,6 +77,7 @@ from .features.concubine import (
 )
 from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, handle_pet_formation_reply, run_pet_scheduler
 from .features.passive_inbox import handle_passive_module_card, record_passive_inbox_event
+from .command_attempt import bind_shadow_evidence
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.rare_daily_report import run_rare_daily_report_scheduler
 from .features.duel_daily_report import run_duel_daily_report_scheduler
@@ -1254,6 +1255,23 @@ async def _resolve_event_reply(event):
     if reply_to is None and reply_header_msg_id > 0:
         reply_to = SimpleNamespace(id=reply_header_msg_id, raw_text="")
     return reply_to, reply_context
+
+
+def _bind_command_attempt_shadow(event, text, now, reply_context, *, event_kind):
+    context = reply_context if isinstance(reply_context, dict) else {}
+    return bind_shadow_evidence(
+        event_kind=event_kind,
+        msg_id=int(getattr(event, "id", 0) or 0),
+        reply_to_msg_id=int(context.get("reply_to_msg_id") or 0),
+        identity_id=int(context.get("send_as_id") or 0),
+        family=str(context.get("family") or ""),
+        text=text,
+        op_id=str(context.get("op_id") or ""),
+        chain_id=str(context.get("chain_id") or ""),
+        event_at=now,
+        source="live",
+        payload={"matched_via": str(context.get("matched_via") or "")},
+    )
 
 
 async def _run_for_all_identities(handler, *args, enabled_only=False):
@@ -2717,6 +2735,7 @@ async def on_message(event):
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
+        _bind_command_attempt_shadow(event, text, now, reply_context, event_kind="message")
         _record_message_box_shadow(
             event,
             text,
@@ -2826,6 +2845,7 @@ async def on_message_edited(event):
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
+        _bind_command_attempt_shadow(event, text, now, reply_context, event_kind="edit")
         _record_message_box_shadow(
             event,
             text,

@@ -1,6 +1,7 @@
 """Shadow-only CommandAttempt ledger APIs."""
 
 from .config import AttemptFeatureFlags, get_attempt_feature_flags
+from .bind import bind_shadow_evidence, classify_evidence_binding
 from .identity import IdentityContextRequired, require_identity_id
 from .service import (
     append_evidence,
@@ -20,6 +21,8 @@ from .types import (
     AttemptNotFound,
     AttemptRecord,
     AttemptTransition,
+    BindResult,
+    BindStatus,
     BusinessState,
     EvidenceKind,
     RecoveryPolicy,
@@ -33,12 +36,16 @@ __all__ = [
     "AttemptNotFound",
     "AttemptRecord",
     "AttemptTransition",
+    "BindResult",
+    "BindStatus",
     "BusinessState",
     "EvidenceKind",
     "IdentityContextRequired",
     "RecoveryPolicy",
     "TransportState",
     "append_evidence",
+    "bind_shadow_evidence",
+    "classify_evidence_binding",
     "create_attempt",
     "get_attempt",
     "get_attempt_feature_flags",
