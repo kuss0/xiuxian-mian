@@ -540,6 +540,45 @@ def extract_cave_deep_seclusion_action_message(data):
     return ""
 
 
+def extract_cave_deep_seclusion_state(data):
+    """Extract authoritative deep-seclusion fields from action or dwelling payloads."""
+
+    data = data if isinstance(data, dict) else {}
+    action_result = data.get("actionResult") if isinstance(data.get("actionResult"), dict) else {}
+    deep_state = {}
+    for item in _iter_nested_dicts(data):
+        normalized_keys = {_normalize_key(key) for key in item}
+        if "remainingseconds" not in normalized_keys:
+            continue
+        if normalized_keys.intersection({"active", "cansettle", "canstart", "statuscommand", "statustext"}):
+            deep_state = item
+            break
+
+    def optional_bool(container, *keys):
+        for key in keys:
+            if key in container and isinstance(container.get(key), bool):
+                return container.get(key)
+        return None
+
+    remaining_raw = action_result.get(
+        "remainingSeconds",
+        action_result.get(
+            "remaining_seconds",
+            deep_state.get("remainingSeconds", deep_state.get("remaining_seconds")),
+        ),
+    )
+    remaining_seconds = None if remaining_raw is None else max(0, _parse_int(remaining_raw, 0))
+    return {
+        "known": bool(action_result or deep_state),
+        "ok": optional_bool(action_result, "ok"),
+        "completed": optional_bool(action_result, "completed"),
+        "active": optional_bool(deep_state, "active"),
+        "can_settle": optional_bool(deep_state, "canSettle", "can_settle"),
+        "remaining_seconds": remaining_seconds,
+        "message": extract_cave_deep_seclusion_action_message(data),
+    }
+
+
 def _extract_cave_deep_seclusion_status_message(data):
     data = data if isinstance(data, dict) else {}
     for item in _iter_nested_dicts(data or {}):
@@ -577,7 +616,7 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
     """
     identity_id = _identity_id(identity_id)
     message = extract_cave_tianjige_command_message(data)
-    if identity_id <= 0 or not message:
+    if identity_id <= 0 or (not message and not snapshot.get("known")):
         return {"handled": False, "reason": "missing_identity_or_message", "message": "", "phase": ""}
 
     command = str(command or yuanying.CMD_YUANYING).strip()
@@ -663,6 +702,7 @@ async def sync_cave_deep_seclusion_action_result(identity_id, action, data, *, n
 
     identity_id = _identity_id(identity_id)
     action = str(action or "").strip()
+    snapshot = extract_cave_deep_seclusion_state(data)
     message = extract_cave_deep_seclusion_action_message(data)
     if action == "status" and not message:
         message = _extract_cave_deep_seclusion_status_message(data)
@@ -671,8 +711,35 @@ async def sync_cave_deep_seclusion_action_result(identity_id, action, data, *, n
 
     with use_identity(identity_id):
         if action == "settle":
+            remaining_seconds = snapshot.get("remaining_seconds")
+            still_running = (
+                (remaining_seconds is not None and remaining_seconds > 0)
+                or snapshot.get("completed") is False
+                or (snapshot.get("active") is True and snapshot.get("can_settle") is not True)
+            )
+            if still_running:
+                wait_sec = remaining_seconds if remaining_seconds and remaining_seconds > 0 else CAVE_DEEP_STATUS_RECHECK_SEC
+                deep_retreat.mark_deep_retreat_success(now, now + wait_sec + deep_retreat.CD_BUFFER_SEC)
+                return {
+                    "handled": True,
+                    "ready": False,
+                    "reason": "still_running",
+                    "message_kind": "running",
+                    "phase": str(state.get("deep_retreat_phase") or ""),
+                    "remaining_seconds": remaining_seconds,
+                }
             if "深度闭关总结" not in message and "功成圆满" not in message:
-                return {"handled": False, "reason": "not_summary_message", "message_kind": "other"}
+                deep_retreat.clear_deep_retreat_summary_flags()
+                deep_retreat.set_deep_retreat_phase("launching")
+                state["deep_retreat_probe_pending"] = False
+                state["next_deep_retreat_time"] = now + CAVE_DEEP_STATUS_RECHECK_SEC
+                save_state()
+                return {
+                    "handled": False,
+                    "reason": "ambiguous_settle_recheck_status",
+                    "message_kind": "other",
+                    "phase": "launching",
+                }
             if state.get("deep_retreat_phase") not in ("summary_due", "observing_summary", "waiting_summary", "running"):
                 deep_retreat.begin_deep_retreat_summary_wait(now)
             before = str(state.get("deep_retreat_phase") or "")
@@ -1477,7 +1544,7 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
             capture_source=f"cave_public_deep_retreat:{identity_id}:{action}",
         )
         sync_result = await sync_cave_deep_seclusion_action_result(identity_id, action, result.get("data") or {}, now=now)
-        if action == "status" and result.get("ok") and not sync_result.get("handled"):
+        if action in {"status", "settle"} and result.get("ok") and not sync_result.get("handled"):
             with use_identity(identity_id):
                 state["next_deep_retreat_time"] = max(
                     float(state.get("next_deep_retreat_time", 0) or 0),
@@ -1490,7 +1557,12 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
         else:
             phase = (sync_result or {}).get("phase") or "-"
             handled = "已同步" if (sync_result or {}).get("handled") else "未改状态"
-            recheck = "｜30 分钟后保守复查" if action == "status" and not (sync_result or {}).get("handled") else ""
+            recheck = ""
+            if not (sync_result or {}).get("handled"):
+                if action == "status":
+                    recheck = "｜30 分钟后保守复查"
+                elif action == "settle":
+                    recheck = "｜30 分钟后改查状态"
             message = f"洞府闭关 {action} 完成：{handled}｜阶段 {phase}{recheck}"
         await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=240)
         return {"ok": bool(result.get("ok")), "message": message, "extra": {"record_key": record.get("record_key", ""), "sync": sync_result}}
@@ -1559,6 +1631,7 @@ __all__ = [
     "CAVE_TREASURE_MANUAL_MAX_STEPS",
     "authorize_cave_treasure_miniapp_manual_run",
     "extract_cave_deep_seclusion_action_message",
+    "extract_cave_deep_seclusion_state",
     "extract_cave_tianjige_command_message",
     "handle_cave_treasure_miniapp_entry",
     "revoke_cave_treasure_miniapp_manual_run",

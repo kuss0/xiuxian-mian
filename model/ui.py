@@ -7045,7 +7045,10 @@ async def _run_cave_public_background_scheduler(now, config):
         "last_result": str(message or "")[:240],
     })
     retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
-    _cave_public_background_retry_at[(retry_action, identity_id)] = time.time() + (60 if ok else 30 * 60)
+    retry_sec = 60 if ok else 30 * 60
+    if action in {"deep_status", "deep_settle"} and not ok:
+        retry_sec = 30 * 60
+    _cave_public_background_retry_at[(retry_action, identity_id)] = time.time() + retry_sec
     return {
         "started": True,
         "kind": "background",

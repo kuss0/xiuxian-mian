@@ -815,6 +815,56 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(1001):
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
 
+    async def test_deep_seclusion_settle_before_completion_restores_running_timer(self):
+        now = 1_700_000_550.0
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "observing_summary"
+            state_module.state["next_deep_retreat_time"] = now - 60
+
+        with patch.object(deep_retreat, "save_state"):
+            result = await cave_treasure_runtime.sync_cave_deep_seclusion_action_result(
+                1001,
+                "settle",
+                {
+                    "ok": True,
+                    "actionResult": {
+                        "ok": True,
+                        "completed": False,
+                        "remainingSeconds": 3738,
+                        "message": "深度闭关尚未完成。",
+                    },
+                },
+                now=now,
+            )
+
+        self.assertTrue(result["handled"])
+        self.assertEqual("still_running", result["reason"])
+        with state_module.use_identity(1001):
+            self.assertEqual("running", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 3738 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+
+    async def test_deep_seclusion_ambiguous_settle_defers_to_status(self):
+        now = 1_700_000_575.0
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["next_deep_retreat_time"] = now - 60
+
+        with patch.object(cave_treasure_runtime, "save_state"):
+            result = await cave_treasure_runtime.sync_cave_deep_seclusion_action_result(
+                1001,
+                "settle",
+                {"ok": True, "actionResult": {"ok": True, "message": "操作完成"}},
+                now=now,
+            )
+
+        self.assertFalse(result["handled"])
+        self.assertEqual("ambiguous_settle_recheck_status", result["reason"])
+        with state_module.use_identity(1001):
+            self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + cave_treasure_runtime.CAVE_DEEP_STATUS_RECHECK_SEC, state_module.state["next_deep_retreat_time"])
+
     async def test_deep_seclusion_message_prefers_action_result_raw_message(self):
         message = cave_treasure_runtime.extract_cave_deep_seclusion_action_message({
             "ok": True,
