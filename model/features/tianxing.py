@@ -3680,6 +3680,49 @@ def mark_tianxing_route_result_unknown(route, *, now=None, reason=""):
     return bool(changed or timeline_changed)
 
 
+def reconcile_tianxing_route_consumption(
+    route,
+    *,
+    prediction_consumed,
+    change_consumed,
+    now=None,
+    reason="",
+):
+    """Apply route-consumption evidence obtained from a fresh Tianji panel."""
+    now = float(now if now is not None else time.time())
+    route = _normalize_route_choice(route, "")
+    if route not in TIANXING_ROUTES:
+        return False
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    changed = False
+    if prediction_consumed:
+        observed["prediction_consumed_route"] = route
+        observed["prediction_consumed_at"] = now
+        if _normalize_route_choice(observed.get("current_prediction"), "") == route:
+            observed["current_prediction"] = ""
+            observed["current_prediction_until"] = 0
+        changed = True
+    if change_consumed and _normalize_route_choice(observed.get("current_change"), "") == route:
+        observed["current_change"] = ""
+        observed["current_change_until"] = 0
+        observed["current_change_set_at"] = 0
+        changed = True
+
+    if changed:
+        observed["last_summary"] = str(reason or "路线消费已由天机盘校准").strip()
+        observed["last_error"] = ""
+        state["tianxing_observation"] = observed
+    timeline_changed = False
+    if prediction_consumed:
+        timeline_changed = _consume_tianxing_released_route(
+            route,
+            now,
+            reason=str(reason or "panel_consumption_reconciled").strip(),
+        )
+    return bool(changed or timeline_changed)
+
+
 def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, observed=None, config=None):
     now = float(now if now is not None else time.time())
     horizon_hours = _coerce_float_range(horizon_hours, 8, 1, 24)
@@ -7568,6 +7611,7 @@ __all__ = [
     "normalize_tianxing_observation",
     "normalize_tianxing_timeline_state",
     "parse_tianxing_text",
+    "reconcile_tianxing_route_consumption",
     "reconcile_tianxing_timeout_from_pending",
     "run_tianxing_retreat_farm_scheduler",
     "run_tianxing_craft_farm_scheduler",

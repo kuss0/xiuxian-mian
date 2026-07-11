@@ -1642,7 +1642,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result_ts + 4831 + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
         self.assertEqual("", state_module.state["explore_rift_last_error"])
 
-    async def test_scheduler_unknown_send_without_log_does_not_resend_high_risk_command(self):
+    async def test_scheduler_unknown_send_without_tianxing_does_not_resend_high_risk_command(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
         now = 1_700_000_000.0
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1654,7 +1654,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["explore_rift_reply_due_at"] = now - 1
                 state_module.state["next_explore_rift_time"] = now - 1
                 state_module.state["explore_rift_last_result"] = "发送状态未知，等待被动回复或冷却校准"
-                state_module.state["tianxing_enabled"] = True
+                state_module.state["tianxing_enabled"] = False
                 with (
                     patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
                     patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
@@ -1669,6 +1669,274 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
         self.assertIn("未捞到反馈", state_module.state["explore_rift_last_error"])
         self.assertIn("暂停本轮", state_module.state["explore_rift_last_result"])
+
+    async def test_scheduler_unknown_send_requests_panel_before_invalidating_tianxing(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        panel_msg = SimpleNamespace(id=44001, sent_at=now)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, [], now)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["tianxing_enabled"] = True
+                state_module.state["tianxing_observation"] = {
+                    "current_prediction": "探索",
+                    "current_prediction_until": now + 3600,
+                    "current_prediction_set_at": now - 300,
+                    "current_change": "探索",
+                    "current_change_until": now + 7200,
+                    "current_change_set_at": now - 120,
+                }
+                explore_rift._mark_explore_rift_send_unknown(now - explore_rift.EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC - 1)
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
+                    patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=panel_msg)) as send_mock,
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                    patch.object(explore_rift, "save_state"),
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_awaited_once_with(
+            ".天机盘",
+            track=False,
+            max_retry=0,
+            priority="chain",
+            source_module="探寻裂缝",
+        )
+        observed = state_module.state["tianxing_observation"]
+        self.assertEqual("探索", observed["current_prediction"])
+        self.assertEqual("探索", observed["current_change"])
+        self.assertEqual(44001, observed["explore_rift_unknown_snapshot"]["panel_msg_id"])
+        self.assertIn("等待天机盘消费校准", state_module.state["explore_rift_last_result"])
+
+    async def test_scheduler_panel_confirms_unknown_rift_without_change_trigger(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
+            state_module.state["explore_rift_reply_due_at"] = now + 60
+            state_module.state["tianxing_observation"] = {
+                "last_action": "天机盘",
+                "last_observed_at": now,
+                "current_prediction": "",
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "explore_rift_unknown_snapshot": {
+                    "recorded_at": now - 600,
+                    "prediction": "探索",
+                    "prediction_set_at": now - 900,
+                    "change": "探索",
+                    "change_set_at": now - 700,
+                    "panel_sent_at": now - 5,
+                    "panel_msg_id": 44002,
+                },
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "released_routes": {
+                    "探索": {"route": "探索", "basis": "change_fate", "released_at": now - 10},
+                },
+                "active_step": {
+                    "action": "release_downstream",
+                    "route": "探索",
+                    "status": "released",
+                },
+            }
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertIn("推命已消费、改命仍在", state_module.state["explore_rift_last_result"])
+        self.assertEqual(now - 600 + explore_rift.EXPLORE_RIFT_FALLBACK_CD_SEC + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
+        self.assertNotIn("explore_rift_unknown_snapshot", state_module.state["tianxing_observation"])
+        self.assertNotIn("探索", state_module.state["tianxing_timeline_state"]["released_routes"])
+        self.assertEqual("blocked_replan", state_module.state["tianxing_timeline_state"]["phase"])
+
+    async def test_scheduler_panel_confirms_unknown_rift_triggered_change_fate(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
+            state_module.state["explore_rift_reply_due_at"] = now + 60
+            state_module.state["tianxing_observation"] = {
+                "last_action": "天机盘",
+                "last_observed_at": now,
+                "current_prediction": "",
+                "current_change": "",
+                "explore_rift_unknown_snapshot": {
+                    "recorded_at": now - 600,
+                    "prediction": "探索",
+                    "prediction_set_at": now - 900,
+                    "change": "探索",
+                    "change_set_at": now - 700,
+                    "panel_sent_at": now - 5,
+                    "panel_msg_id": 44003,
+                },
+            }
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertIn("推命与改命均已消费", state_module.state["explore_rift_last_result"])
+        self.assertNotIn("explore_rift_unknown_snapshot", state_module.state["tianxing_observation"])
+
+    async def test_scheduler_panel_keeps_unconsumed_protection_and_retries_later(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
+            state_module.state["explore_rift_reply_due_at"] = now + 60
+            state_module.state["tianxing_observation"] = {
+                "last_action": "天机盘",
+                "last_observed_at": now,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "探索",
+                "current_change_until": now + 7200,
+                "explore_rift_unknown_snapshot": {
+                    "recorded_at": now - 600,
+                    "prediction": "探索",
+                    "change": "探索",
+                    "panel_sent_at": now - 5,
+                    "panel_msg_id": 44004,
+                },
+            }
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertIn("保护均未消费", state_module.state["explore_rift_last_result"])
+        self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
+        self.assertEqual("探索", state_module.state["tianxing_observation"]["current_prediction"])
+        self.assertEqual("探索", state_module.state["tianxing_observation"]["current_change"])
+
+    async def test_scheduler_contradictory_panel_freezes_automatic_rift_retry(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
+            state_module.state["explore_rift_reply_due_at"] = now + 60
+            state_module.state["tianxing_observation"] = {
+                "last_action": "天机盘",
+                "last_observed_at": now,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "",
+                "explore_rift_unknown_snapshot": {
+                    "recorded_at": now - 600,
+                    "prediction": "探索",
+                    "change": "探索",
+                    "panel_sent_at": now - 5,
+                    "panel_msg_id": 44005,
+                },
+            }
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+                await explore_rift.run_explore_rift_scheduler(now + 86400)
+
+        send_mock.assert_not_awaited()
+        self.assertTrue(state_module.state["explore_rift_manual_required"])
+        self.assertIn("校准矛盾", state_module.state["explore_rift_last_result"])
+
+    async def test_scheduler_recovers_unknown_panel_reply_from_message_log(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        panel_sent_at = now - 30
+        entries = [{
+            "ts": self._log_ts(now - 20),
+            "event_type": "message",
+            "message_id": 44007,
+            "reply_to_msg_id": 44006,
+            "text": "【天机盘】\n今日可选命星: 【太阴】、【紫微】\n今日已定命星: 【太阴】\n当前推命: 无\n当前改命: 探索（剩余 20小时）\n天机值: 30\n逆命劫: 0\n命中 / 落空 / 改命: 120 / 4 / 29",
+        }]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["tianxing_enabled"] = True
+                state_module.state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
+                state_module.state["explore_rift_reply_due_at"] = now + 60
+                state_module.state["tianxing_observation"] = {
+                    "last_action": "推命",
+                    "last_observed_at": now - 600,
+                    "current_prediction": "探索",
+                    "current_change": "探索",
+                    "explore_rift_unknown_snapshot": {
+                        "recorded_at": now - 600,
+                        "prediction": "探索",
+                        "change": "探索",
+                        "panel_sent_at": panel_sent_at,
+                        "panel_msg_id": 44006,
+                    },
+                }
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
+                    patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                    patch.object(explore_rift, "save_state"),
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertIn("推命已消费、改命仍在", state_module.state["explore_rift_last_result"])
+
+    async def test_scheduler_panel_timeout_keeps_snapshot_without_resending(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, [], now)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["tianxing_enabled"] = True
+                state_module.state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
+                state_module.state["explore_rift_reply_due_at"] = now - 1
+                state_module.state["tianxing_observation"] = {
+                    "current_prediction": "探索",
+                    "current_change": "探索",
+                    "explore_rift_unknown_snapshot": {
+                        "recorded_at": now - 600,
+                        "prediction": "探索",
+                        "change": "探索",
+                        "panel_sent_at": now - 300,
+                        "panel_msg_id": 44008,
+                    },
+                }
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
+                    patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                    patch.object(explore_rift, "save_state"),
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+                    await explore_rift.run_explore_rift_scheduler(now + explore_rift.RETRY_MAX_SEC + 1)
+
+        send_mock.assert_not_awaited()
+        self.assertIn("等待迟到盘面", state_module.state["explore_rift_last_result"])
+        self.assertIn("explore_rift_unknown_snapshot", state_module.state["tianxing_observation"])
 
     async def test_scheduler_does_not_reprocess_paused_unknown_send_result(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
