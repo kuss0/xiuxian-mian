@@ -163,6 +163,8 @@ def looks_like_tianxing_route_result(text):
 
 def _infer_route_from_modifier_text(text):
     raw_text = str(text or "")
+    if "【天道战报·文字版】" in raw_text and "终局结算" in raw_text and "攻方：" in raw_text:
+        return "斗法"
     if any(
         marker in raw_text
         for marker in (

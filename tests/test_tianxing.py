@@ -1012,6 +1012,70 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertNotIn("探索", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
 
+    def test_duel_report_consumes_duel_prediction_and_records_tianji_gain(self):
+        now = 1_780_000_000.0
+        text = (
+            "【天道战报·文字版】\n"
+            "攻方：@xuruode6 · 守拙子 · 元婴后期\n"
+            "守方：@ccahen · 碧波子 · 化神后期大圆满\n\n"
+            "🏁 终局结算\n"
+            "败者：@xuruode6 | 损失修为 -6.0万\n\n"
+            "📚 战局回放\n"
+            "1. ✨ 【司命盘】 @xuruode6 命盘【太阴】照命。\n"
+            "2. ✨ 【司命盘】 @xuruode6 【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30"
+        )
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 60,
+                "tianji_value": 9,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "released_routes": {"斗法": {"released_at": now - 20, "basis": "prediction"}},
+            }
+
+            self.assertTrue(tianxing.apply_tianxing_passive(text, now=now, family="duel"))
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        self.assertEqual("斗法", observed["last_route"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("斗法", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertEqual(10, observed["tianji_value"])
+
+    def test_duel_report_without_hit_clears_stale_duel_prediction(self):
+        now = 1_780_000_000.0
+        text = (
+            "【天道战报·文字版】\n"
+            "攻方：@xuruode6 · 守拙子 · 元婴后期\n"
+            "守方：@ccahen · 碧波子 · 化神后期大圆满\n\n"
+            "🏁 终局结算\n"
+            "败者：@xuruode6 | 损失修为 -6.0万\n\n"
+            "📚 战局回放\n"
+            "1. ✨ 【司命盘】 @xuruode6 命盘【太阴】照命。"
+        )
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 60,
+                "tianji_value": 9,
+            }
+
+            self.assertTrue(tianxing.apply_tianxing_passive(text, now=now, family="duel"))
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        self.assertEqual("斗法", observed["last_route"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual(9, observed["tianji_value"])
+
     def test_tianxing_result_without_change_marker_clears_stale_change_release(self):
         now = 1_780_000_000.0
         text = (

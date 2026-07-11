@@ -4,7 +4,7 @@ import time
 from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_DUEL
-from ..message_log_recovery import find_message_log_replies
+from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
@@ -20,6 +20,8 @@ from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     normalize_tianxing_auto_config,
+    normalize_tianxing_observation,
+    normalize_tianxing_timeline_state,
     run_tianxing_timeline_scheduler,
 )
 
@@ -41,6 +43,7 @@ DUEL_RESULT_GRACE_SEC = 30
 DUEL_BATCH_STAGGER_MIN_SEC = 3 * 60
 DUEL_BATCH_STAGGER_MAX_SEC = 8 * 60
 DUEL_SAME_TARGET_COOLDOWN_SEC = 10 * 60
+DUEL_TIANXING_PREPARE_LEAD_SEC = 60
 DUEL_TARGET_RESERVATION_SEC = DUEL_REPLY_TIMEOUT_SEC + DUEL_RESULT_GRACE_SEC
 DUEL_WAITING_PREFIX = "正在锁定对手天机，请稍候"
 DUEL_READY_PREFIX = "⚔️ 法宝齐出！"
@@ -70,6 +73,7 @@ RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|
 RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>万)?")
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
+DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
 
 
 def _parse_int(value):
@@ -422,7 +426,53 @@ def _duel_next_time_blocks(now):
     return cd_blocks(state.get("next_duel_time", 0), now, 0)
 
 
+def _reconcile_consumed_duel_prediction_from_last_report(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if str(observed.get("current_prediction") or "").strip() != "斗法":
+        return False
+    set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+    last_msg_id = int(state.get("duel_last_msg_id", 0) or 0)
+    if set_at <= 0 or last_msg_id <= 0:
+        return False
+    report = find_message_log_message(
+        last_msg_id,
+        now,
+        lookback_sec=DUEL_TIANXING_RECONCILE_LOOKBACK_SEC,
+        lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=lambda entry: _is_duel_report_text(str((entry or {}).get("text") or "")),
+    )
+    report_at = float((report or {}).get("ts_epoch", 0) or 0)
+    if report_at + 0.001 < set_at:
+        return False
+    observed["current_prediction"] = ""
+    observed["current_prediction_until"] = 0
+    observed["prediction_consumed_route"] = "斗法"
+    observed["prediction_consumed_at"] = report_at or float(now)
+    observed["last_error"] = ""
+    state["tianxing_observation"] = observed
+
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    released = dict(timeline.get("released_routes") or {})
+    released.pop("斗法", None)
+    timeline["released_routes"] = released
+    active_step = dict(timeline.get("active_step") or {})
+    if str(active_step.get("route") or active_step.get("arg") or "").strip() == "斗法":
+        timeline["phase"] = "blocked_replan"
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["blocked_until"] = float(now)
+        timeline["last_error"] = "上一场斗法已消费推命，需重新准备。"
+    timeline["updated_at"] = float(now)
+    state["tianxing_timeline_state"] = timeline
+    save_state()
+    console_log("🌌 已按最后一场真实战报清理已消费的斗法推命。", scope="identity")
+    return True
+
+
 async def _prepare_duel_tianxing_route(now, *, due_at=0):
+    _reconcile_consumed_duel_prediction_from_last_report(now)
     due_at = float(due_at or now)
     preflight = build_tianxing_route_preflight_plan("斗法", reason="斗法", now=now)
     if preflight.get("route_allowed"):
@@ -442,12 +492,20 @@ async def _prepare_duel_tianxing_route(now, *, due_at=0):
         config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
         if not config.get("duel_route_enabled"):
             return True
-        windows = build_tianxing_consume_window("斗法", now=now, due_at=max(due_at, now), reason="斗法")
+        duel_config = dict(config)
+        duel_config["route_prepare_lead_sec"] = DUEL_TIANXING_PREPARE_LEAD_SEC
+        windows = build_tianxing_consume_window(
+            "斗法",
+            now=now,
+            due_at=max(due_at, now),
+            config=duel_config,
+            reason="斗法",
+        )
         if not windows:
             state["duel_last_error"] = str(preflight.get("reason") or "斗法等待天星时间线准备窗口")
             save_state()
             return False
-        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows, config=duel_config)
         state["duel_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
         state["duel_last_error"] = "" if timeline_result.get("changed") else str(preflight.get("reason") or "")
         if due_at <= now:

@@ -54,6 +54,11 @@ def normalize_storage_bag_api_cookie(raw_cookie):
         return ""
     if text.lower().startswith("cookie:"):
         text = text.split(":", 1)[1].strip()
+    # Browser cookie viewers may display the Flask session as
+    # ``session.<signed-value>`` instead of a Cookie header assignment.
+    # Preserve the leading dot that belongs to the signed value.
+    if text.lower().startswith("session.") and ";" not in text:
+        text = f"session=.{text[len('session.'):]}"
     parts = [part.strip() for part in text.replace("\n", ";").split(";") if part.strip()]
     session_part = next((part for part in parts if part.lower().startswith("session=")), "")
     return session_part or "; ".join(parts)

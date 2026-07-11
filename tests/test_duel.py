@@ -268,7 +268,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_prepares_tianxing_before_future_duel_window(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
-        due_at = now + 120
+        due_at = now + duel.DUEL_TIANXING_PREPARE_LEAD_SEC
         with state_module.use_identity(identity_id):
             state_module.update_send_as_profile(identity_id, sect_name="天星宗")
             state_module.state["duel_enabled"] = True
@@ -306,9 +306,62 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             window = timeline_mock.await_args.kwargs["windows"][0]
             self.assertEqual("斗法", window["route"])
             self.assertEqual("consume", window["kind"])
+            self.assertEqual(due_at - duel.DUEL_TIANXING_PREPARE_LEAD_SEC, window["start_at"])
+            self.assertEqual(
+                duel.DUEL_TIANXING_PREPARE_LEAD_SEC,
+                timeline_mock.await_args.kwargs["config"]["route_prepare_lead_sec"],
+            )
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_duel_time"])
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["duel_last_result"])
+
+    def test_reconcile_consumed_duel_prediction_uses_last_report_without_double_counting(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        report_at = now - 30
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["duel_last_msg_id"] = 7788
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+                "prediction_consumed_route": "",
+                "prediction_consumed_at": 0,
+                "tianji_value": 19,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step_index": 0,
+                "active_step": {"action": "release_downstream", "route": "斗法", "status": "released"},
+                "released_routes": {"斗法": {"released_at": now - 90, "basis": "prediction"}},
+            }
+            report = {
+                "message_id": 7788,
+                "ts_epoch": report_at,
+                "text": "【天道战报·文字版】\n攻方：@dueler\n🏁 终局结算",
+            }
+
+            with (
+                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "console_log") as console_mock,
+                patch.object(duel, "save_state") as save_mock,
+            ):
+                changed = duel._reconcile_consumed_duel_prediction_from_last_report(now)
+
+            observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(changed)
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("斗法", observed["prediction_consumed_route"])
+        self.assertEqual(report_at, observed["prediction_consumed_at"])
+        self.assertEqual(19, observed["tianji_value"])
+        self.assertNotIn("斗法", timeline["released_routes"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+        save_mock.assert_called_once()
+        console_mock.assert_called_once()
 
     async def test_scheduler_requests_tianxing_timeline_before_due_duel(self):
         identity_id = self._prepare_identity()

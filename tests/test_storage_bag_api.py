@@ -147,6 +147,11 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("session=SESSION_VALUE", cookie)
 
+    def test_cookie_viewer_session_dot_format_normalizes_to_cookie_assignment(self):
+        cookie = storage_bag_api_client.normalize_storage_bag_api_cookie("session.eJwtSIGNED")
+
+        self.assertEqual("session=.eJwtSIGNED", cookie)
+
     def test_storage_bag_api_client_bootstrap_extracts_token_and_rotated_cookie(self):
         html = '<html><script>window.DASHBOARD_API_TOKEN = "token-from-html";</script></html>'
         fake_session = _FakeSession([
