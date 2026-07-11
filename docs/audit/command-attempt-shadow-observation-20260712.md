@@ -40,6 +40,9 @@ Checkpoint: 2026-07-12 02:15 UTC+8.
 - `database is locked` or CommandAttempt shadow failures: 0 observed.
 - Sensitive token/session/startapp scan: no matches.
 - Read-only aggregate query latency: about 4 ms at this sample size.
+- Offline replay of `data/messages/2026-07-12.log`: 5,187 events;
+  33 strong-anchor matches, 5,154 unmatched, 0 ambiguous. Replay performed no
+  evidence writes.
 
 Observed Tianxing exploration for `growrdick` and `xuruode6` completed with the
 existing protected route and normal result handling. Shadow persistence added no
