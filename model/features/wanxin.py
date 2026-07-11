@@ -1388,7 +1388,7 @@ def _apply_success_cooldown(observed, action, now, parsed=None):
     elif action == WANXIN_ACTION_DEDUCE:
         observed["next_deduce_time"] = now + WANXIN_DEDUCE_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_MOON_GREET:
-        observed["next_moon_greet_time"] = _next_daily_after(now)
+        observed["next_moon_greet_time"] = now + WANXIN_MOON_GREET_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_MOON_SEAL:
         observed["next_moon_seal_time"] = now + WANXIN_MOON_SEAL_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_MOON_JOIN:

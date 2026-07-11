@@ -229,7 +229,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             observed = state_module.state["wanxin_observation"]
             self.assertEqual({}, observed["pending"])
-            self.assertGreater(observed["next_moon_greet_time"], now + 2 * 3600)
+            self.assertEqual(now + wanxin.WANXIN_MOON_GREET_CD_SEC + wanxin.CD_BUFFER_SEC, observed["next_moon_greet_time"])
             self.assertEqual(142, state_module.state["concubine_affinity"])
             observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
             self.assertTrue(observed["moon_awakened"])
