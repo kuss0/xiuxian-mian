@@ -2401,8 +2401,6 @@ def reconcile_yinluo_timeout_from_pending(msg_id, cmd="", sent_at=0, now=None):
     """Reconcile tracked Yinluo pending commands after runtime reply timeout."""
     now = float(now if now is not None else time.time())
     command = str(cmd or "").strip()
-    if command != CMD_YINLUO_BLOOD_FOREST:
-        return False
     try:
         sent_at = float(sent_at or 0)
     except (TypeError, ValueError, OverflowError):
@@ -2410,6 +2408,21 @@ def reconcile_yinluo_timeout_from_pending(msg_id, cmd="", sent_at=0, now=None):
     if sent_at <= 0:
         sent_at = now
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    if command == CMD_YINLUO_REFINE or command.startswith(f"{CMD_YINLUO_REFINE} "):
+        reply_result = str(observed.get("last_result") or "").strip()
+        reply_at = float(observed.get("last_observed_at", 0) or 0)
+        if (
+            str(observed.get("last_action") or "").strip() == "囚禁魂魄"
+            and reply_result in {"success", "sha_shortage", "missing_soul", "slot_busy"}
+            and reply_at >= sent_at
+        ):
+            # The passive handler already applied the business transition. Only
+            # acknowledge it here so the generic tracked pending/action guard is
+            # closed; replaying the result would double-apply resources/slots.
+            return True
+        return False
+    if command != CMD_YINLUO_BLOOD_FOREST:
+        return False
     profile = get_send_as_profile(get_current_identity_id()) or {}
     username = str(profile.get("username") or "").strip().lstrip("@").casefold()
     phaseful_summary = None

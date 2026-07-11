@@ -124,6 +124,55 @@ class ModuleTimeoutReconciliationTests(unittest.TestCase):
         self.assertFalse(plan["allowed"])
         save_mock.assert_called_once()
 
+    def test_yinluo_refine_timeout_closes_from_unthreaded_passive_reply(self):
+        now = 1_780_000_000.0
+        sent_at = now - 30
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": sent_at + 1,
+                "last_action": "囚禁魂魄",
+                "last_result": "success",
+                "last_refine_slot": 3,
+                "last_resource": "凶兽戾魄",
+                "sha_current": 300,
+                "soul_stocks": {"凶兽戾魄": 0},
+                "refining_slot_numbers": [3],
+            }
+            before = copy.deepcopy(state_module.state["yinluo_observation"])
+
+            with patch.object(yinluo, "save_state") as save_mock:
+                handled = yinluo.reconcile_yinluo_timeout_from_pending(
+                    9005,
+                    cmd=".囚禁魂魄 3 凶兽戾魄",
+                    sent_at=sent_at,
+                    now=now,
+                )
+
+            after = state_module.state["yinluo_observation"]
+
+        self.assertTrue(handled)
+        self.assertEqual(before, after)
+        save_mock.assert_not_called()
+
+    def test_yinluo_refine_timeout_does_not_accept_stale_reply(self):
+        now = 1_780_000_000.0
+        sent_at = now - 30
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": sent_at - 1,
+                "last_action": "囚禁魂魄",
+                "last_result": "success",
+            }
+            handled = yinluo.reconcile_yinluo_timeout_from_pending(
+                9006,
+                cmd=".囚禁魂魄 3 凶兽戾魄",
+                sent_at=sent_at,
+                now=now,
+            )
+
+        self.assertFalse(handled)
+
     def test_yinluo_blood_forest_timeout_retries_when_phaseful_summary_consumed_command(self):
         now = 1_780_000_000.0
         sent_at = now - 30
