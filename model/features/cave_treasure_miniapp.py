@@ -1,4 +1,7 @@
 import asyncio
+from collections import deque
+import json
+import os
 import random
 import re
 import time
@@ -6,8 +9,9 @@ import time
 import requests
 from telethon import functions
 
-from ..config import CMD_YUANYING, CMD_YUANYING_STATUS, TG_REQUESTS_PROXIES
+from ..config import CMD_YUANYING, CMD_YUANYING_STATUS, MESSAGES_DIR, TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
+from ..state import get_game_bot_ids
 from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
@@ -71,6 +75,43 @@ CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial"})
 
 _RATIO_RE = re.compile(r"(?P<label>神识|出手|次数|游戏|局数)?\s*[:：]?\s*(?P<a>\d+)\s*/\s*(?P<b>\d+)")
 _TARGET_RE = re.compile(r"(?:第|#)?\s*(?P<target>\d{1,2})\s*(?:个|号|处|位)")
+
+
+def _recent_game_bot_id_for_username(username, *, max_lines=20000):
+    username = str(username or "").strip().lstrip("@").casefold()
+    if not username:
+        return 0
+    allowed_ids = set(get_game_bot_ids())
+    try:
+        names = os.listdir(MESSAGES_DIR)
+    except OSError:
+        return 0
+    paths = sorted(
+        (
+            os.path.join(MESSAGES_DIR, name)
+            for name in names if name.endswith(".log") and name[:4].isdigit()
+        ),
+        reverse=True,
+    )[:2]
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                lines = deque(handle, maxlen=max(1, int(max_lines or 1)))
+        except OSError:
+            continue
+        for line in reversed(lines):
+            try:
+                payload = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            sender_id = int(payload.get("sender_id") or 0)
+            if (
+                str(payload.get("sender_username") or "").casefold() == username
+                and bool(payload.get("sender_is_bot"))
+                and sender_id in allowed_ids
+            ):
+                return sender_id
+    return 0
 
 
 def build_cave_treasure_miniapp_adapter(
@@ -244,7 +285,16 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
-        bot = await client.get_entity(launch.bot_username or adapter.bot_username)
+        bot_username = launch.bot_username or adapter.bot_username
+        try:
+            bot = await client.get_entity(bot_username)
+        except Exception as exc:
+            if type(exc).__name__ not in {"UsernameInvalidError", "UsernameNotOccupiedError"}:
+                raise
+            bot_id = _recent_game_bot_id_for_username(bot_username)
+            if bot_id <= 0:
+                raise
+            bot = await client.get_entity(bot_id)
         bot_input = await client.get_input_entity(bot)
         result = await client(functions.messages.RequestMainWebViewRequest(
             peer=bot_input,

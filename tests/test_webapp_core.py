@@ -1487,6 +1487,28 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertFalse(bad_launch.allowed)
         self.assertEqual({}, bad_args)
 
+    def test_cave_treasure_recovers_invalid_username_only_from_known_bot_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = f"{tmpdir}/2026-07-12.log"
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "sender_username": "hantianzun19_bot",
+                    "sender_id": 8981353192,
+                    "sender_is_bot": True,
+                }) + "\n")
+                handle.write(json.dumps({
+                    "sender_username": "hantianzun19_bot",
+                    "sender_id": 999,
+                    "sender_is_bot": True,
+                }) + "\n")
+            with (
+                patch.object(cave_treasure_miniapp, "MESSAGES_DIR", tmpdir),
+                patch.object(cave_treasure_miniapp, "get_game_bot_ids", return_value=[8981353192]),
+            ):
+                bot_id = cave_treasure_miniapp._recent_game_bot_id_for_username("@hantianzun19_bot")
+
+        self.assertEqual(8981353192, bot_id)
+
     def test_tree_entry_state_and_flow_are_lab_only(self):
         url = "https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999"
         button = SimpleNamespace(
