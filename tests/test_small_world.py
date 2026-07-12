@@ -1764,6 +1764,30 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     def test_success_followup_matches_observed_shared_god_cooldown(self):
         self.assertEqual(3 * 3600, small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC)
 
+    def test_stale_six_hour_action_guard_is_cleared_after_cooldown_calibration(self):
+        send_as_id = 8659059309
+        now = 10_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_god_cooldown_until"] = now - 1
+            state_module.state["action_guard_sessions"] = {
+                "small_world_preach": {
+                    "action_key": "small_world_preach",
+                    "remote_block_until": now + 3 * 3600,
+                    "remote_block_reason": "神迹成功后的游戏冷却",
+                    "remote_block_kind": "success",
+                    "remote_observed_at": now - 3 * 3600,
+                }
+            }
+
+            reconciled = small_world._reconcile_god_action_guard_cooldown(now)
+
+            self.assertTrue(reconciled)
+            session = state_module.state["action_guard_sessions"]["small_world_preach"]
+            self.assertEqual(0, session["remote_block_until"])
+            self.assertEqual("", session["remote_block_reason"])
+            self.assertEqual("", session["remote_block_kind"])
+
     async def test_scheduler_sends_due_pending_god_action_before_query_chain(self):
         send_as_id = 8659059308
         now = 4270.0

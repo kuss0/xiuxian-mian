@@ -278,7 +278,38 @@ def _clear_local_unsent_action_guard_block(action_key, now):
     return True
 
 
+def _reconcile_god_action_guard_cooldown(now):
+    session = _action_guard_session("small_world_preach")
+    if not session:
+        return False
+    if str(session.get("remote_block_kind") or "").strip() != "success":
+        return False
+    if "神迹成功" not in str(session.get("remote_block_reason") or ""):
+        return False
+    guard_until = float(session.get("remote_block_until", 0) or 0)
+    cooldown_until = _god_cooldown_until()
+    if cooldown_until <= 0 or guard_until <= cooldown_until + 1:
+        return False
+    clear_action_guard_remote_block(
+        "small_world_preach",
+        send_as_id=get_current_identity_id(),
+        reason="small_world_cooldown_reconciled",
+        now=now,
+    )
+    if cooldown_until > float(now or time.time()):
+        _note_small_world_god_remote_block(
+            CMD_SMALL_WORLD_PREACH,
+            now,
+            cooldown_until,
+            "神迹成功后的游戏冷却",
+            "success",
+        )
+    return True
+
+
 def _defer_for_action_guard_block(action_key, command, now, label):
+    if action_key == "small_world_preach":
+        _reconcile_god_action_guard_cooldown(now)
     if _clear_local_unsent_action_guard_block(action_key, now):
         return False
     blocked_until, guard_reason = get_action_guard_blocked_until(
