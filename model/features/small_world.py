@@ -66,6 +66,7 @@ SMALL_WORLD_DISASTER_GUARD_BEFORE_SEC = 30 * 60
 SMALL_WORLD_DISASTER_GUARD_AFTER_SEC = 25 * 60
 SMALL_WORLD_RELIEF_POPULATION_RATIO_TRIGGER = 0.95
 SMALL_WORLD_RELIEF_STABILITY_RATIO_TRIGGER = 0.80
+SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER = 0.95
 SMALL_WORLD_BARRIER_REPLY_TIMEOUT_SEC = 10 * 60
 SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC = 6 * 3600
 SMALL_WORLD_SAME_COMMAND_GUARD_SEC = 95
@@ -1002,8 +1003,8 @@ def _should_relief(panel):
 
 
 def _relief_reason(panel):
-    deficit, population, _ratio = _small_world_population_deficit(panel)
-    if deficit > 0:
+    deficit, population, ratio = _small_world_population_deficit(panel)
+    if deficit > 0 and ratio <= SMALL_WORLD_RELIEF_POPULATION_RATIO_TRIGGER:
         return f"人口 {population} 缺口 {deficit}，优先赈灾"
     stability = _panel_int(panel, "stability")
     stability_max = _panel_int(panel, "stability_max", SMALL_WORLD_DEFAULT_STATUS_MAX)
@@ -1013,7 +1014,11 @@ def _relief_reason(panel):
 
 
 def _should_preach(panel):
-    return _is_panel_value_below_max(panel, "faith", "faith_max")
+    faith = _panel_int(panel, "faith")
+    faith_max = _panel_int(panel, "faith_max", SMALL_WORLD_DEFAULT_STATUS_MAX)
+    if faith <= 0 or faith_max <= 0:
+        return False
+    return faith / faith_max <= SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER
 
 
 def _preach_reason(panel):
@@ -1025,10 +1030,10 @@ def _preach_reason(panel):
 
 
 def _queue_maintenance_god_action(panel, now):
-    if _should_preach(panel):
-        return _queue_god_action("preach", _preach_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
     if _should_relief(panel):
         return _queue_god_action("relief", _relief_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+    if _should_preach(panel):
+        return _queue_god_action("preach", _preach_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
     return False
 
 
