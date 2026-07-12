@@ -1788,6 +1788,39 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", session["remote_block_reason"])
             self.assertEqual("", session["remote_block_kind"])
 
+    async def test_god_send_reconciles_stale_success_block_before_runtime_send(self):
+        send_as_id = 8659059310
+        now = 11_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_god_cooldown_until"] = now - 1
+            state_module.state["small_world_pending_god_action"] = "preach"
+            state_module.state["action_guard_sessions"] = {
+                "small_world_preach": {
+                    "action_key": "small_world_preach",
+                    "remote_block_until": now + 3 * 3600,
+                    "remote_block_reason": "神迹成功后的游戏冷却",
+                    "remote_block_kind": "success",
+                    "remote_observed_at": now - 3 * 3600,
+                }
+            }
+            with (
+                patch.object(small_world, "save_state"),
+                patch.object(
+                    small_world,
+                    "send_game_command",
+                    new=AsyncMock(return_value=SimpleNamespace(id=9910, sent_at=now)),
+                ) as send_mock,
+            ):
+                sent = await small_world._send_small_world_preach(now, "信仰 60/100，布道维护")
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once()
+            session = state_module.state["action_guard_sessions"]["small_world_preach"]
+            self.assertEqual("pending_reply", session["remote_block_kind"])
+
     async def test_scheduler_sends_due_pending_god_action_before_query_chain(self):
         send_as_id = 8659059308
         now = 4270.0

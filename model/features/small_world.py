@@ -1226,6 +1226,7 @@ async def _send_small_world_god_action(now, command, reason):
         command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
         action = _command_god_action(command)
         action_name = _god_action_name(action)
+        _reconcile_god_action_guard_cooldown(float(now or time.time()))
         prev_last_god_action = str(state.get("small_world_last_god_action") or "")
         prev_last_god_sent_at = float(state.get("small_world_last_god_sent_at", 0) or 0)
 
