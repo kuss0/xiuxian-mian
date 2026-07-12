@@ -57,6 +57,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             set(hit["payload"]),
         )
         self.assertEqual({"token", "initData", "bossProof"}, set(finish["payload"]))
+        self.assertEqual("world_boss", start["global_priority"])
 
         captures = MiniAppCaptureStore()
         world_boss_miniapp.run_world_boss_miniapp_lab_flow(

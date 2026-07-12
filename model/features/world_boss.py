@@ -1411,10 +1411,18 @@ def _world_boss_miniapp_auto_config():
         account_gap_sec = max(1.0, min(15.0, float(raw.get("world_boss_auto_account_gap_sec", 3) or 3)))
     except (TypeError, ValueError, OverflowError):
         account_gap_sec = 3.0
+    excluded_ids = raw.get("world_boss_auto_excluded_identity_ids") or []
+    if not isinstance(excluded_ids, (list, tuple, set)):
+        excluded_ids = []
     return {
         "enabled": bool(raw.get("world_boss_auto_enabled")),
         "account_limit": account_limit,
         "account_gap_sec": account_gap_sec,
+        "excluded_identity_ids": {
+            _coerce_int(identity_id, 0)
+            for identity_id in excluded_ids
+            if _coerce_int(identity_id, 0) > 0
+        },
     }
 
 
@@ -1491,7 +1499,11 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
     run_state["miniapp_only"] = bool(parsed.get("miniapp_only"))
     auto_config = _world_boss_miniapp_auto_config()
     entry_identity_ids = select_world_boss_miniapp_entry_identities()
-    auto_identity_ids = entry_identity_ids[: auto_config["account_limit"]]
+    auto_identity_ids = [
+        identity_id
+        for identity_id in entry_identity_ids
+        if identity_id not in auto_config["excluded_identity_ids"]
+    ][: auto_config["account_limit"]]
     run_state["miniapp_entry_identity_ids"] = entry_identity_ids if run_state["miniapp_only"] else []
     run_state["last_open_log_key"] = event_key
     run_state["last_result"] = "小程序开打提醒" if run_state["miniapp_only"] else "未启用提醒"
@@ -1518,7 +1530,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
             )
             message = (
                 f"🗡 真仙试锋小程序（MiniApp）自动参与已启动：{'、'.join(_identity_label(identity_id) for identity_id in auto_identity_ids)}"
-                f"\n先完成 {len(auto_identity_ids)} 个登录账户串行入场，再逐账户串行战斗；账户间隔 {auto_config['account_gap_sec']:g}s。"
+                f"\n{len(auto_identity_ids)} 个登录账户并行入场并各自运行战斗时间线；单账户内部请求保持串行。"
             ) if started else "🗡 真仙试锋 MiniApp 已有事件任务运行，本次广播仅去重记录。"
         elif auto_config["enabled"] and not launch:
             run_state["miniapp_auto_status"] = "entry_missing"

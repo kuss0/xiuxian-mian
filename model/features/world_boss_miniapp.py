@@ -212,13 +212,15 @@ def build_world_boss_miniapp_request(
     elif endpoint == "finish":
         payload["bossProof"] = dict(boss_proof or {})
 
-    return build_miniapp_http_request(
+    request = build_miniapp_http_request(
         adapter,
         endpoint,
         payload,
         init_data_session=init_data_session,
         init_data=init_data,
     )
+    request["global_priority"] = "world_boss"
+    return request
 
 
 def classify_world_boss_miniapp_error(error):

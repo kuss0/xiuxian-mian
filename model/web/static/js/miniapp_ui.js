@@ -225,12 +225,20 @@
 
   function renderWorldBossControls(automation) {
     automation = automation || {};
+    var candidates = Array.isArray(automation.world_boss_candidates) ? automation.world_boss_candidates : [];
+    var candidateHtml = candidates.length ? candidates.map(function (item) {
+      return '<label class="miniapp-cave-switch">'
+        + '<input type="checkbox" data-world-boss-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '>'
+        + '<span>' + esc(item.label || item.identity_id) + '</span>'
+        + '</label>';
+    }).join('') : '<span class="miniapp-empty">暂无可用登录账户</span>';
     return ''
       + '<section class="miniapp-score-config" data-world-boss-auto="1">'
-      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>先入场 barrier，再严格串行战斗</span></div>'
+      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行</span></div>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-enabled="1"' + (automation.world_boss_auto_enabled ? ' checked' : '') + '><span>自动参与</span></label>'
       + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
-      + '<label><span>账户间隔（秒）</span><input type="number" min="1" max="15" step="1" data-world-boss-account-gap="1" value="' + esc(automation.world_boss_auto_account_gap_sec || 3) + '"></label>'
+      + '<div class="miniapp-score-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'
+      + '<div class="miniapp-cave-switches">' + candidateHtml + '</div>'
       + '<div class="miniapp-item-actions"><button type="button" class="btn btn-secondary btn-compact" data-world-boss-config-save="1">保存设置</button></div>'
       + '</section>';
   }
@@ -253,6 +261,7 @@
     probes.forEach(function (item) { probeByKey[item.game_key] = item; });
     runners.forEach(function (item) { runByKey[item.game_key] = item; });
     var policy = miniapp.policy || {};
+    var globalRate = policy.global_rate_limit || {};
     var scoreControls = miniapp.score_controls || {};
     var automation = miniapp.automation || {};
     var batchButtons = renderBatchButtons(miniapp.batch_run_commands);
@@ -274,6 +283,7 @@
       + badge(autoDoneText, automation.trial_daily_done_today ? 'ok' : 'neutral')
       + badge(policy.raw_init_data_persisted ? 'initData落盘' : 'initData不落盘', policy.raw_init_data_persisted ? 'warn' : 'ok')
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
+      + badge('全局请求 ' + esc(globalRate.request_count || 0) + '/' + esc(globalRate.limit || 90) + '·60s', globalRate.priority_active ? 'warn' : 'neutral')
       + '</div>'
       + renderCavePublicControls(automation, miniapp.cave_public_batch || {})
       + renderWorldBossControls(automation)
@@ -482,10 +492,14 @@
     if (!panel) return;
     if (button) button.disabled = true;
     try {
+      var excludedIds = [];
+      panel.querySelectorAll('[data-world-boss-candidate]').forEach(function (input) {
+        if (!input.checked) excludedIds.push(input.getAttribute('data-world-boss-candidate'));
+      });
       var data = await post('/api/world-boss-miniapp-config', {
         enabled: !!(panel.querySelector('[data-world-boss-enabled="1"]') || {}).checked,
         account_limit: (panel.querySelector('[data-world-boss-account-limit="1"]') || {}).value || 1,
-        account_gap_sec: (panel.querySelector('[data-world-boss-account-gap="1"]') || {}).value || 3
+        excluded_identity_ids: excludedIds
       });
       flash(data.message || '世界 Boss MiniApp 设置已保存', false);
       if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });

@@ -456,6 +456,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 "enabled": True,
                 "account_limit": 9,
                 "account_gap_sec": 0,
+                "excluded_identity_ids": "8659059191, 301299112",
             })
 
         automation = ui.get_miniapp_status_snapshot()["automation"]
@@ -464,6 +465,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(automation["world_boss_auto_enabled"])
         self.assertEqual(4, automation["world_boss_auto_account_limit"])
         self.assertEqual(1, automation["world_boss_auto_account_gap_sec"])
+        self.assertEqual([301299112, 8659059191], automation["world_boss_auto_excluded_identity_ids"])
         save_mock.assert_called_once()
 
     async def test_cave_public_batch_claims_slot_before_background_task(self):

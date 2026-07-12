@@ -92,6 +92,7 @@ from .features import miniapp_registry
 from .inventory_delta import build_inventory_freshness_snapshot
 from .miniapp_state import get_miniapp_state_snapshot
 from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
+from .webapp_core import get_miniapp_global_rate_limit_snapshot
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import (
@@ -358,6 +359,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "world_boss_auto_enabled": False,
     "world_boss_auto_account_limit": 1,
     "world_boss_auto_account_gap_sec": 3,
+    "world_boss_auto_excluded_identity_ids": [],
 }
 TRIAL_DAILY_BATCH_WAVES = (
     {"key": "wave1", "label": "第一批", "start_hour": 1, "start_minute": 0, "end_hour": 4, "end_minute": 0},
@@ -415,6 +417,14 @@ def normalize_miniapp_auto_config(config=None):
     except (TypeError, ValueError, OverflowError):
         result["world_boss_auto_account_gap_sec"] = 3
     result["world_boss_auto_account_gap_sec"] = max(1, min(15, result["world_boss_auto_account_gap_sec"]))
+    excluded_ids = result.get("world_boss_auto_excluded_identity_ids") or []
+    if not isinstance(excluded_ids, (list, tuple, set)):
+        excluded_ids = []
+    result["world_boss_auto_excluded_identity_ids"] = sorted({
+        int(identity_id)
+        for identity_id in excluded_ids
+        if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+    })
     for key, default in (
         ("trial_daily_start_hour_local", 0),
         ("trial_daily_start_minute_local", 20),
@@ -537,8 +547,24 @@ def get_miniapp_auto_config_snapshot(now=None):
     all_done = all(item["done_today"] for item in wave_states)
     safe_config = dict(config)
     safe_config.pop("cave_public_entry_url", None)
+    try:
+        from .features.world_boss import select_world_boss_miniapp_entry_identities
+        world_boss_candidate_ids = select_world_boss_miniapp_entry_identities()
+    except Exception:
+        world_boss_candidate_ids = []
+    excluded_world_boss_ids = set(config.get("world_boss_auto_excluded_identity_ids") or [])
+    world_boss_candidates = [
+        {
+            "identity_id": int(identity_id),
+            "label": get_identity_ui_display_name(identity_id),
+            "account_id": int(get_identity_account(identity_id) or 0),
+            "auto_enabled": int(identity_id) not in excluded_world_boss_ids,
+        }
+        for identity_id in world_boss_candidate_ids
+    ]
     return {
         **safe_config,
+        "world_boss_candidates": world_boss_candidates,
         "cave_public_entry_url_configured": bool(config.get("cave_public_entry_url")),
         "today": today,
         "trial_daily_done_today": all_done,
@@ -664,6 +690,7 @@ def get_miniapp_status_snapshot(send_as_id=None):
             "manual_only": True,
             "raw_init_data_persisted": False,
             "raw_start_token_persisted": False,
+            "global_rate_limit": get_miniapp_global_rate_limit_snapshot(),
         },
         "automation": get_miniapp_auto_config_snapshot(),
         "cave_public_batch": dict(_cave_public_batch_state),
@@ -6738,12 +6765,24 @@ async def ui_set_world_boss_miniapp_config(payload=None):
             config["world_boss_auto_account_gap_sec"] = max(1, min(15, float(payload.get("account_gap_sec"))))
         except (TypeError, ValueError, OverflowError):
             return False, "世界 Boss 账户间隔必须为 1-15 秒"
+    if "excluded_identity_ids" in payload:
+        raw_ids = payload.get("excluded_identity_ids") or []
+        if isinstance(raw_ids, str):
+            raw_ids = re.split(r"[,，\s]+", raw_ids.strip()) if raw_ids.strip() else []
+        if not isinstance(raw_ids, (list, tuple, set)):
+            return False, "世界 Boss 排除身份格式无效"
+        config["world_boss_auto_excluded_identity_ids"] = sorted({
+            int(identity_id)
+            for identity_id in raw_ids
+            if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+        })
     set_miniapp_auto_config(config)
     save_state()
     status = "开启" if config["world_boss_auto_enabled"] else "关闭"
     return True, (
         f"世界 Boss MiniApp 自动化已{status}｜最多 {config['world_boss_auto_account_limit']} 个登录账户"
-        f"｜账户间隔 {config['world_boss_auto_account_gap_sec']:g}s"
+        "｜账户并行、账户内部串行"
+        f"｜排除身份 {len(config['world_boss_auto_excluded_identity_ids'])} 个"
     )
 
 

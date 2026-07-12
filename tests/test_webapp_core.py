@@ -13,6 +13,34 @@ from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_regis
 
 
 class WebAppCoreTests(unittest.TestCase):
+    def test_global_rate_limiter_enforces_window_and_priority_lease(self):
+        now = [0.0]
+        sleeps = []
+        limiter = webapp_core.MiniAppGlobalRateLimiter(limit=2, window_sec=60)
+
+        def clock():
+            return now[0]
+
+        def sleep(delay):
+            sleeps.append(delay)
+            now[0] += delay
+
+        limiter.acquire(clock=clock, sleeper=sleep)
+        limiter.acquire(clock=clock, sleeper=sleep)
+        limiter.acquire(clock=clock, sleeper=sleep)
+        self.assertEqual([60.0], sleeps)
+
+        limiter.begin_priority("world_boss:test")
+
+        def release_priority(delay):
+            sleeps.append(delay)
+            limiter.end_priority("world_boss:test")
+            now[0] += delay
+
+        limiter.acquire(clock=clock, sleeper=release_priority)
+        self.assertGreaterEqual(sleeps[-1], 0.1)
+        self.assertFalse(limiter.snapshot()["priority_active"])
+
     def _reply_markup_webapp_event(self, *, url, text):
         button = SimpleNamespace(
             button=SimpleNamespace(

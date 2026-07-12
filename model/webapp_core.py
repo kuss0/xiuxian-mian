@@ -2,7 +2,9 @@ import hashlib
 import hmac
 import json
 import re
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urljoin, urlparse
@@ -29,11 +31,90 @@ DEFAULT_MINIAPP_REQUEST_MIN_INTERVAL_SEC = 1.0
 DEFAULT_MINIAPP_REQUEST_MAX_PER_RUN = 32
 DEFAULT_MINIAPP_REQUEST_MAX_ATTEMPTS = 2
 DEFAULT_MINIAPP_REQUEST_MAX_CONSECUTIVE_FAILURES = 2
+DEFAULT_MINIAPP_GLOBAL_REQUEST_LIMIT = 90
+DEFAULT_MINIAPP_GLOBAL_WINDOW_SEC = 60.0
 MINIAPP_CAPTURE_MAX_TEXT = 400
 MINIAPP_CAPTURE_SHAPE_MAX_DEPTH = 4
 MINIAPP_CAPTURE_LIST_SAMPLE_LIMIT = 2
 MINIAPP_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 MINIAPP_LOCAL_METHODS = {"LOCAL", "TELEGRAM"}
+
+
+class MiniAppGlobalRateLimiter:
+    """Process-wide sliding-window limiter with a priority lease."""
+
+    def __init__(self, limit=DEFAULT_MINIAPP_GLOBAL_REQUEST_LIMIT, window_sec=DEFAULT_MINIAPP_GLOBAL_WINDOW_SEC):
+        self.limit = max(1, int(limit))
+        self.window_sec = max(1.0, float(window_sec))
+        self._lock = threading.Lock()
+        self._request_times = deque()
+        self._priority_leases = set()
+
+    def begin_priority(self, owner):
+        owner = str(owner or "").strip()
+        if owner:
+            with self._lock:
+                self._priority_leases.add(owner)
+
+    def end_priority(self, owner):
+        owner = str(owner or "").strip()
+        if owner:
+            with self._lock:
+                self._priority_leases.discard(owner)
+
+    def acquire(self, *, priority=False, clock=None, sleeper=None):
+        clock = clock or time.monotonic
+        sleeper = sleeper or time.sleep
+        total_delay = 0.0
+        while True:
+            now = float(clock())
+            with self._lock:
+                cutoff = now - self.window_sec
+                while self._request_times and self._request_times[0] <= cutoff:
+                    self._request_times.popleft()
+                priority_blocked = bool(self._priority_leases) and not priority
+                if not priority_blocked and len(self._request_times) < self.limit:
+                    self._request_times.append(now)
+                    return total_delay
+                if priority_blocked:
+                    delay = 0.1
+                else:
+                    delay = max(0.01, self._request_times[0] + self.window_sec - now)
+            sleeper(delay)
+            total_delay += delay
+
+    def snapshot(self):
+        with self._lock:
+            cutoff = time.monotonic() - self.window_sec
+            while self._request_times and self._request_times[0] <= cutoff:
+                self._request_times.popleft()
+            return {
+                "limit": self.limit,
+                "window_sec": self.window_sec,
+                "request_count": len(self._request_times),
+                "priority_active": bool(self._priority_leases),
+                "priority_owners": sorted(self._priority_leases),
+            }
+
+
+_GLOBAL_MINIAPP_RATE_LIMITER = MiniAppGlobalRateLimiter()
+
+
+def begin_miniapp_priority_window(owner):
+    _GLOBAL_MINIAPP_RATE_LIMITER.begin_priority(owner)
+
+
+def end_miniapp_priority_window(owner):
+    _GLOBAL_MINIAPP_RATE_LIMITER.end_priority(owner)
+
+
+def get_miniapp_global_rate_limit_snapshot():
+    return _GLOBAL_MINIAPP_RATE_LIMITER.snapshot()
+
+
+def _uses_live_requests_transport(transport):
+    name = str(getattr(transport, "__name__", "") or "")
+    return name == "_requests_transport" or name.endswith("_requests_transport")
 
 RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|startapp|start_param)=([^&#\s]+)",
@@ -1242,6 +1323,11 @@ def execute_miniapp_http_request(
                 )
                 return result
         try:
+            if _uses_live_requests_transport(transport):
+                _GLOBAL_MINIAPP_RATE_LIMITER.acquire(
+                    priority=str(request.get("global_priority") or "").lower() == "world_boss",
+                    sleeper=sleeper or time.sleep,
+                )
             response = transport(request)
             status_code, body = _response_status_and_body(response)
             response_for_capture = (status_code, body)

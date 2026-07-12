@@ -15,9 +15,11 @@ from ..state import get_identity_account
 from ..timing import get_day_key
 from ..webapp_core import (
     MiniAppCaptureStore,
+    begin_miniapp_priority_window,
     build_miniapp_launch_request,
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
+    end_miniapp_priority_window,
     safe_miniapp_event_detail,
 )
 from .world_boss_miniapp import (
@@ -104,11 +106,11 @@ async def run_world_boss_miniapp_event(
     *,
     message_text="",
     opened_at=None,
-    account_gap_sec=3,
+    account_gap_sec=0,
     transport=None,
     init_data_provider=None,
 ):
-    """Join every account first, then execute joined battles serially."""
+    """Join accounts in parallel, then run one serial timeline per account."""
 
     now = float(opened_at or time.time())
     launch = extract_world_boss_miniapp_launch(event, message_text=message_text)
@@ -117,22 +119,18 @@ async def run_world_boss_miniapp_event(
     transport = transport or _requests_transport
     init_data_provider = init_data_provider or request_world_boss_miniapp_init_data
     capture_sink = _capture_store(now)
-    contexts = []
-    results = []
-
-    for index, raw_identity_id in enumerate(identity_ids or ()):
+    async def join_one(raw_identity_id):
         identity_id = int(raw_identity_id or 0)
         if identity_id <= 0:
-            continue
+            return None, None
         if time.time() - now > WORLD_BOSS_JOIN_WINDOW_SEC:
-            results.append({
+            return None, {
                 "identity_id": identity_id,
                 "phase": "join",
                 "ok": False,
                 "status": "join_deadline_exceeded",
                 "error": "world boss join window exceeded",
-            })
-            break
+            }
         try:
             init_data = await init_data_provider(identity_id, launch)
             receipt = await asyncio.to_thread(
@@ -147,26 +145,25 @@ async def run_world_boss_miniapp_event(
                 capture_source=f"world_boss:join:{identity_id}",
             )
         except Exception as exc:
-            results.append({
+            return None, {
                 "identity_id": identity_id,
                 "phase": "join",
                 "ok": False,
                 "status": "runtime_error",
                 "error": str(safe_miniapp_event_detail({"error": str(exc)}).get("error") or "runtime error"),
-            })
-            continue
-        results.append({
+            }
+        join_result = {
             "identity_id": identity_id,
             "phase": "join",
             "ok": bool(receipt.joined),
             **receipt.safe_summary(),
-        })
+        }
         if receipt.joined:
-            contexts.append((identity_id, init_data, receipt))
-        if index + 1 < len(identity_ids or ()):
-            await asyncio.sleep(max(1.0, min(15.0, float(account_gap_sec or 3))))
+            return (identity_id, init_data, receipt), join_result
+        return None, join_result
 
-    for identity_id, init_data, receipt in contexts:
+    async def battle_one(context):
+        identity_id, init_data, receipt = context
         battle_token = getattr(receipt, "session_token", "") or launch["token"]
         try:
             battle = await asyncio.to_thread(
@@ -179,22 +176,32 @@ async def run_world_boss_miniapp_event(
                 capture_source=f"world_boss:battle:{identity_id}",
             )
             safe_battle = safe_miniapp_event_detail(battle)
-            results.append({
+            return {
                 "identity_id": identity_id,
                 "phase": "battle",
                 "ok": bool(battle.get("ok")),
                 "status": str(battle.get("status") or "failed"),
                 "data": safe_battle.get("data") or {},
                 "error": str(safe_battle.get("error") or ""),
-            })
+            }
         except Exception as exc:
-            results.append({
+            return {
                 "identity_id": identity_id,
                 "phase": "battle",
                 "ok": False,
                 "status": "runtime_error",
                 "error": str(safe_miniapp_event_detail({"error": str(exc)}).get("error") or "runtime error"),
-            })
+            }
+
+    priority_owner = f"world_boss:{int(now)}"
+    begin_miniapp_priority_window(priority_owner)
+    try:
+        joined = await asyncio.gather(*(join_one(identity_id) for identity_id in (identity_ids or ())))
+        contexts = [context for context, _result in joined if context is not None]
+        results = [result for _context, result in joined if result is not None]
+        results.extend(await asyncio.gather(*(battle_one(context) for context in contexts)))
+    finally:
+        end_miniapp_priority_window(priority_owner)
 
     battle_results = [item for item in results if item.get("phase") == "battle"]
     return {
