@@ -696,7 +696,11 @@ def note_game_command_sent(command, sent_at=None, priority=SEND_PRIORITY_NORMAL)
         _bot_probe_sent_at = sent_at
         return
     if _bot_health_state not in {BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}:
-        _bot_waiting_since = sent_at
+        # Preserve the oldest unanswered command. Resetting this anchor for
+        # every later send lets a silent bot evade the global timeout while the
+        # scheduler keeps producing new commands.
+        if _bot_waiting_since <= 0 or _bot_last_seen_at >= _bot_waiting_since:
+            _bot_waiting_since = sent_at
 
 
 def note_bot_health_probe_attempt(attempted_at=None):

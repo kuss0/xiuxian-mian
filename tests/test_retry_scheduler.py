@@ -413,6 +413,26 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertEqual({}, identity_state["pending_tasks"])
 
+    def test_later_sends_do_not_move_oldest_unanswered_health_anchor(self):
+        runtime._bot_health_state = runtime.BOT_HEALTH_HEALTHY
+        runtime._bot_last_seen_at = 100.0
+        runtime._bot_waiting_since = 0.0
+
+        runtime.note_game_command_sent(".野外历练 谨慎", sent_at=200.0)
+        runtime.note_game_command_sent(".闯塔", sent_at=260.0)
+
+        self.assertEqual(200.0, runtime.get_bot_health_snapshot()["waiting_since"])
+
+    def test_bot_reply_allows_next_send_to_start_new_health_window(self):
+        runtime._bot_health_state = runtime.BOT_HEALTH_HEALTHY
+        runtime._bot_last_seen_at = 100.0
+        runtime._bot_waiting_since = 200.0
+        runtime._bot_last_seen_at = 220.0
+
+        runtime.note_game_command_sent(".闯塔", sent_at=260.0)
+
+        self.assertEqual(260.0, runtime.get_bot_health_snapshot()["waiting_since"])
+
     def test_legacy_command_key_pending_resends_once(self):
         send_as_id = 971003
         now = 7000.0
