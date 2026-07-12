@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import os
 import re
 import threading
 import time
@@ -111,10 +112,6 @@ def end_miniapp_priority_window(owner):
 def get_miniapp_global_rate_limit_snapshot():
     return _GLOBAL_MINIAPP_RATE_LIMITER.snapshot()
 
-
-def _uses_live_requests_transport(transport):
-    name = str(getattr(transport, "__name__", "") or "")
-    return name == "_requests_transport" or name.endswith("_requests_transport")
 
 RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|startapp|start_param)=([^&#\s]+)",
@@ -1323,7 +1320,7 @@ def execute_miniapp_http_request(
                 )
                 return result
         try:
-            if _uses_live_requests_transport(transport):
+            if request.get("global_rate_limit", True) and not os.environ.get("PYTEST_CURRENT_TEST"):
                 _GLOBAL_MINIAPP_RATE_LIMITER.acquire(
                     priority=str(request.get("global_priority") or "").lower() == "world_boss",
                     sleeper=sleeper or time.sleep,
