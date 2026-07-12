@@ -27,16 +27,16 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
         start = world_boss_miniapp.build_world_boss_miniapp_request(
             "start",
-            token="boss_SECRET_TOKEN",
+            token="qyz_SECRET_TOKEN",
             init_data="query_id=secret&hash=VERY_SECRET",
             player_id=8659059191,
         )
         state = world_boss_miniapp.build_world_boss_miniapp_request(
-            "state", token="boss_SECRET_TOKEN", init_data="query_id=secret&hash=VERY_SECRET",
+            "state", token="qyz_SECRET_TOKEN", init_data="query_id=secret&hash=VERY_SECRET",
         )
         hit = world_boss_miniapp.build_world_boss_miniapp_request(
             "hit",
-            token="boss_SECRET_TOKEN",
+            token="qyz_SECRET_TOKEN",
             init_data="query_id=secret&hash=VERY_SECRET",
             challenge_id="challenge-1",
             window_id="window-1",
@@ -45,7 +45,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
         finish = world_boss_miniapp.build_world_boss_miniapp_request(
             "finish",
-            token="boss_SECRET_TOKEN",
+            token="qyz_SECRET_TOKEN",
             init_data="query_id=secret&hash=VERY_SECRET",
             boss_proof={"mode": "qyz_focus_burst_v2"},
         )
@@ -60,16 +60,16 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
         captures = MiniAppCaptureStore()
         world_boss_miniapp.run_world_boss_miniapp_lab_flow(
-            token="boss_SECRET_TOKEN",
+            token="qyz_SECRET_TOKEN",
             init_data="query_id=secret&hash=VERY_SECRET",
             player_id=8659059191,
             transport=lambda _request: (409, {"ok": False, "error": "event_closed"}),
             sleeper=lambda _delay: None,
             capture_sink=captures,
-            capture_source="world-boss-test:boss_SECRET_TOKEN",
+            capture_source="world-boss-test:qyz_SECRET_TOKEN",
         )
         serialized = json.dumps(captures.records, ensure_ascii=False)
-        self.assertNotIn("boss_SECRET_TOKEN", serialized)
+        self.assertNotIn("qyz_SECRET_TOKEN", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
         self.assertNotIn("query_id=secret", serialized)
 
@@ -91,17 +91,17 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
         def transport(request):
             calls.append(request["safe_summary"]["endpoint"])
-            return 409, {"ok": False, "error": "event_closed"}
+            return 409, {"ok": False, "error": "boss_event_closed"}
 
         result = world_boss_miniapp.run_world_boss_miniapp_lab_flow(
-            token="boss_CLOSED",
+            token="qyz_CLOSED",
             init_data="query_id=x&hash=y",
             player_id=1,
             transport=transport,
             sleeper=lambda _delay: None,
         )
         self.assertFalse(result["ok"])
-        self.assertEqual("event_closed", result["status"])
+        self.assertEqual("boss_event_closed", result["status"])
         self.assertEqual(["start"], calls)
 
     def test_identity_selection_is_returned_without_combat(self):
@@ -112,14 +112,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
             return 200, {
                 "ok": True,
                 "needsIdentitySelection": True,
-                "identities": [
+                "identityChoices": [
                     {"playerId": 11, "username": "alpha", "daoName": "甲", "secret": "drop-me"},
                     {"playerId": 12, "username": "beta", "available": True},
                 ],
             }
 
         result = world_boss_miniapp.run_world_boss_miniapp_lab_flow(
-            token="boss_SELECT",
+            token="qyz_SELECT",
             init_data="query_id=x&hash=y",
             transport=transport,
             sleeper=lambda _delay: None,
@@ -137,7 +137,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             return 200, {"ok": True, "needsVerification": True, "verifyUrl": "/xianxia-verify?id=secret"}
 
         result = world_boss_miniapp.run_world_boss_miniapp_lab_flow(
-            token="boss_VERIFY",
+            token="qyz_VERIFY",
             init_data="query_id=x&hash=y",
             player_id=1,
             transport=transport,
@@ -208,7 +208,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             self.fail(endpoint)
 
         result = world_boss_miniapp.run_world_boss_miniapp_lab_flow(
-            token="boss_FLOW",
+            token="qyz_FLOW",
             init_data="query_id=x&hash=y",
             player_id=99,
             transport=transport,
@@ -229,9 +229,134 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual([1500, 3000], [item["t"] for item in proof["actions"]])
         self.assertEqual(850, proof["playerHp"])
         self.assertFalse(proof["dead"])
-        self.assertEqual(280, proof["realtimeDamageApplied"])
+        self.assertIs(proof["realtimeDamageApplied"], True)
         self.assertEqual(280, proof["clientStats"]["damage"])
         self.assertEqual(2, proof["clientStats"]["bestCombo"])
+
+    def test_unknown_start_is_not_retried_and_state_calibrates_join(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                raise TimeoutError("start response lost")
+            return 200, {
+                "ok": True,
+                "joined": True,
+                "player": {"playerId": 88, "daoName": "校准角色"},
+                "room": {"status": "waiting"},
+            }
+
+        receipt = world_boss_miniapp.join_world_boss_miniapp_lab(
+            token="qyz_UNKNOWN",
+            init_data="query_id=x&hash=y",
+            player_id=88,
+            identity_id=8800,
+            account_id=8,
+            transport=transport,
+            sleeper=lambda _delay: None,
+        )
+
+        self.assertTrue(receipt.joined)
+        self.assertTrue(receipt.calibrated)
+        self.assertEqual("joined_calibrated", receipt.status)
+        self.assertEqual(["start", "state"], calls)
+
+    def test_four_account_barrier_joins_all_before_first_battle_state(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            token = request["payload"]["token"]
+            calls.append((endpoint, token))
+            if endpoint == "start":
+                return 200, {"ok": True, "joined": True, "playerId": request["payload"]["playerId"]}
+            if endpoint == "state":
+                return 200, {
+                    "ok": True,
+                    "elapsedMs": 0,
+                    "challenge": {
+                        "challengeId": f"challenge-{token}",
+                        "windows": [{"windowId": "w1", "centerMs": 0}],
+                    },
+                }
+            if endpoint == "hit":
+                return 200, {"ok": True, "playerHp": 100, "clientStats": {"hits": 1}}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"settled": True}}
+            self.fail(endpoint)
+
+        entries = [
+            {
+                "token": f"qyz_ACCOUNT_{index}",
+                "init_data": f"query_id={index}&hash=secret",
+                "player_id": 100 + index,
+                "identity_id": 200 + index,
+                "account_id": index,
+            }
+            for index in range(1, 5)
+        ]
+        result = world_boss_miniapp.run_world_boss_miniapp_batch_lab_flow(
+            entries,
+            transport=transport,
+            rng=random.Random(21),
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            opened_at=clock.clock(),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(4, result["barrier"]["joined_count"])
+        self.assertEqual(["start"] * 4, [endpoint for endpoint, _token in calls[:4]])
+        self.assertEqual(["state", "hit", "finish"] * 4, [endpoint for endpoint, _token in calls[4:]])
+
+    def test_battle_refresh_filters_expired_windows(self):
+        calls = []
+        hit_windows = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "state":
+                return 200, {
+                    "ok": True,
+                    "elapsedMs": 2500,
+                    "challenge": {
+                        "challengeId": "challenge-filter",
+                        "windows": [
+                            {"windowId": "expired", "centerMs": 1000},
+                            {"windowId": "future", "centerMs": 3000},
+                        ],
+                    },
+                }
+            if endpoint == "hit":
+                hit_windows.append(request["payload"]["windowId"])
+                return 200, {"ok": True, "playerHp": 90, "clientStats": {"hits": 1}}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"settled": True}}
+            self.fail(endpoint)
+
+        receipt = world_boss_miniapp.WorldBossJoinReceipt(
+            True, "joined", player_id="77", identity_id=7700, account_id=7,
+        )
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            receipt,
+            token="qyz_FILTER",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            rng=random.Random(22),
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["state", "hit", "finish"], calls)
+        self.assertEqual(["future"], hit_windows)
+        plan_event = next(event for event in result["events"] if event["step"] == "plan")
+        self.assertEqual(1, plan_event["expired_window_count"])
 
     def test_action_limit_does_not_retry_hit_or_submit_finish(self):
         calls = []
@@ -240,22 +365,24 @@ class WorldBossMiniAppTests(unittest.TestCase):
             endpoint = request["safe_summary"]["endpoint"]
             calls.append(endpoint)
             if endpoint == "start":
+                return 200, {"ok": True, "joined": True}
+            if endpoint == "state":
                 return 200, {
                     "ok": True,
                     "challenge": {"challengeId": "challenge-limit", "windows": [{"windowId": "w1", "centerMs": 0}]},
                 }
-            return 409, {"ok": False, "error": "action_limit"}
+            return 409, {"ok": False, "error": "boss_action_limit"}
 
         result = world_boss_miniapp.run_world_boss_miniapp_lab_flow(
-            token="boss_LIMIT",
+            token="qyz_LIMIT",
             init_data="query_id=x&hash=y",
             player_id=1,
             transport=transport,
             sleeper=lambda _delay: None,
             clock=lambda: 0,
         )
-        self.assertEqual("action_limit", result["status"])
-        self.assertEqual(["start", "hit"], calls)
+        self.assertEqual("boss_action_limit", result["status"])
+        self.assertEqual(["start", "state", "hit"], calls)
 
 
 if __name__ == "__main__":

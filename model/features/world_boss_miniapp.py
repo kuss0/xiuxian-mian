@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 import time
+from dataclasses import dataclass, field
 
 from ..webapp_core import (
     MiniAppAdapter,
@@ -31,17 +32,21 @@ WORLD_BOSS_MINIAPP_ENDPOINTS = {
     "hit": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}hit",
     "finish": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}finish",
 }
-WORLD_BOSS_MINIAPP_START_PARAM_PATTERN = r"boss_[A-Za-z0-9_-]{4,160}"
+WORLD_BOSS_MINIAPP_START_PARAM_PATTERN = r"qyz_[A-Za-z0-9_-]{4,160}"
 WORLD_BOSS_PROOF_MODE = "qyz_focus_burst_v2"
 WORLD_BOSS_STANCE = "强攻"
 WORLD_BOSS_HOLD_RANGE_MS = (700, 1100)
+WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
 
 WORLD_BOSS_ERROR_TYPES = (
     "boss_token_missing",
-    "event_closed",
-    "join_closed",
-    "action_limit",
-    "not_enough_participants",
+    "boss_event_closed",
+    "boss_join_closed",
+    "boss_action_limit",
+    "boss_not_enough_participants",
+    "boss_battle_not_started",
+    "boss_token_used",
+    "boss_token_expired",
 )
 
 _VERIFICATION_KEYS = (
@@ -58,6 +63,49 @@ _VERIFICATION_MARKERS = (
     "验证码",
 )
 _STAT_KEYS = ("dodges", "grazes", "damage", "hits", "perfects", "combo", "bestCombo")
+_TERMINAL_ERROR_TYPES = {
+    "boss_token_missing",
+    "boss_event_closed",
+    "boss_join_closed",
+    "boss_action_limit",
+    "boss_not_enough_participants",
+    "boss_token_used",
+    "boss_token_expired",
+}
+
+
+@dataclass(frozen=True)
+class WorldBossJoinReceipt:
+    """Non-secret admission result passed from the join phase to battle."""
+
+    joined: bool
+    status: str
+    player_id: str = ""
+    identity_id: int = 0
+    account_id: int = 0
+    calibrated: bool = False
+    terminal: bool = False
+    needs_identity_selection: bool = False
+    verification_required: bool = False
+    identity_choices: tuple = field(default_factory=tuple, repr=False)
+    challenge: dict = field(default_factory=dict, repr=False)
+    error: str = ""
+
+    def safe_summary(self):
+        return {
+            "joined": bool(self.joined),
+            "status": self.status,
+            "player_id": self.player_id,
+            "identity_id": int(self.identity_id or 0),
+            "account_id": int(self.account_id or 0),
+            "calibrated": bool(self.calibrated),
+            "terminal": bool(self.terminal),
+            "needs_identity_selection": bool(self.needs_identity_selection),
+            "verification_required": bool(self.verification_required),
+            "identity_choice_count": len(self.identity_choices),
+            "has_challenge": bool(self.challenge),
+            "error": sanitize_webapp_secret_text(self.error),
+        }
 
 
 def build_world_boss_miniapp_adapter(
@@ -176,6 +224,10 @@ def classify_world_boss_miniapp_error(error):
     return "failed"
 
 
+def is_terminal_world_boss_miniapp_error(error):
+    return classify_world_boss_miniapp_error(error) in _TERMINAL_ERROR_TYPES
+
+
 def _int_value(value, default=0):
     try:
         return int(float(value))
@@ -239,7 +291,7 @@ def _identity_selection(data):
         return None
     required = bool(data.get("needsIdentitySelection"))
     options = None
-    for key in ("identities", "identityOptions", "players", "availablePlayers"):
+    for key in ("identityChoices", "identities", "identityOptions", "players", "availablePlayers"):
         if isinstance(data.get(key), list):
             options = data.get(key)
             break
@@ -261,6 +313,101 @@ def _identity_selection(data):
             if key in item
         })
     return {"needsIdentitySelection": True, "identities": safe_options}
+
+
+def _mapping_from_payload(data, keys):
+    if not isinstance(data, dict):
+        return {}
+    direct = _first_mapping(data, keys)
+    if direct:
+        return direct
+    for key in ("data", "state", "event", "battle", "result"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            found = _mapping_from_payload(nested, keys)
+            if found:
+                return found
+    return {}
+
+
+def parse_world_boss_join_response(
+    data,
+    *,
+    player_id=None,
+    identity_id=0,
+    account_id=0,
+    calibrated=False,
+    assume_joined_on_ok=False,
+):
+    data = data if isinstance(data, dict) else {}
+    selection = _identity_selection(data)
+    if _verification_required(data):
+        return WorldBossJoinReceipt(
+            False,
+            "verification_required",
+            player_id=str(player_id or ""),
+            identity_id=_int_value(identity_id),
+            account_id=_int_value(account_id),
+            calibrated=bool(calibrated),
+            verification_required=True,
+            error="xianxia-verify required",
+        )
+    if selection is not None:
+        return WorldBossJoinReceipt(
+            False,
+            "needs_identity_selection",
+            player_id=str(player_id or ""),
+            identity_id=_int_value(identity_id),
+            account_id=_int_value(account_id),
+            calibrated=bool(calibrated),
+            needs_identity_selection=True,
+            identity_choices=tuple(selection.get("identities") or ()),
+        )
+
+    error = _error_from_payload(data)
+    if error:
+        return WorldBossJoinReceipt(
+            False,
+            error,
+            player_id=str(player_id or ""),
+            identity_id=_int_value(identity_id),
+            account_id=_int_value(account_id),
+            calibrated=bool(calibrated),
+            terminal=is_terminal_world_boss_miniapp_error(error),
+            error=error,
+        )
+
+    challenge = _challenge_from_payload(data)
+    player = _mapping_from_payload(data, ("player", "identity"))
+    room = _mapping_from_payload(data, ("room",))
+    resolved_player_id = str(
+        player.get("playerId")
+        or player.get("id")
+        or data.get("playerId")
+        or player_id
+        or ""
+    )
+    explicit_joined = any(
+        data.get(key) is True
+        for key in ("joined", "isJoined", "participating", "entered")
+    )
+    joined = bool(
+        explicit_joined
+        or challenge
+        or player
+        or room
+        or (assume_joined_on_ok and data.get("ok") is True)
+    )
+    return WorldBossJoinReceipt(
+        joined,
+        "joined_calibrated" if joined and calibrated else "joined" if joined else "unknown",
+        player_id=resolved_player_id,
+        identity_id=_int_value(identity_id),
+        account_id=_int_value(account_id),
+        calibrated=bool(calibrated),
+        challenge=dict(challenge or {}),
+        error="" if joined else "join state not confirmed",
+    )
 
 
 def _window_center_ms(window):
@@ -324,6 +471,17 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=WORLD_BOS
     return plan
 
 
+def filter_world_boss_action_plan(plan, current_elapsed_ms, *, grace_ms=0):
+    """Keep only windows whose target has not already passed."""
+
+    cutoff_ms = max(0, _int_value(current_elapsed_ms)) - max(0, _int_value(grace_ms))
+    return [
+        dict(action)
+        for action in plan or ()
+        if _int_value((action or {}).get("elapsedMs"), -1) >= cutoff_ms
+    ]
+
+
 def _nested_mappings(data):
     if not isinstance(data, dict):
         return
@@ -372,7 +530,6 @@ def build_world_boss_proof(challenge, actions, hit_payloads):
     payloads = [dict(item or {}) for item in hit_payloads or ()]
     duration_ms = max(action["t"] + action["holdMs"] for action in clean_actions)
     duration_ms = max(duration_ms, _int_value(challenge.get("minDurationMs"), 0))
-    realtime_damage = _latest_value(payloads, ("realtimeDamageApplied", "damageApplied", "appliedDamage"), 0)
     return {
         "mode": WORLD_BOSS_PROOF_MODE,
         "challengeId": challenge_id,
@@ -382,7 +539,8 @@ def build_world_boss_proof(challenge, actions, hit_payloads):
         "dead": bool(_latest_value(payloads, ("dead", "isDead"), challenge.get("dead", False))),
         "actions": clean_actions,
         "clientStats": _client_stats(payloads),
-        "realtimeDamageApplied": max(0, _int_value(realtime_damage, 0)),
+        # Damage has already been committed by the serial /hit requests.
+        "realtimeDamageApplied": True,
     }
 
 
@@ -419,32 +577,93 @@ def _current_elapsed_ms(data, challenge):
     return 0
 
 
-def run_world_boss_miniapp_lab_flow(
+def _failed_join_receipt(result, *, player_id=None, identity_id=0, account_id=0, calibrated=False):
+    status = classify_world_boss_miniapp_error(result.error)
+    return WorldBossJoinReceipt(
+        False,
+        status,
+        player_id=str(player_id or ""),
+        identity_id=_int_value(identity_id),
+        account_id=_int_value(account_id),
+        calibrated=bool(calibrated),
+        terminal=is_terminal_world_boss_miniapp_error(status),
+        error=str(result.error or status),
+    )
+
+
+def reconcile_world_boss_join_state_lab(
     *,
     token,
     init_data,
     player_id=None,
+    identity_id=0,
+    account_id=0,
     transport,
     adapter=None,
-    rng=None,
     sleeper=None,
-    clock=None,
     capture_sink=None,
     capture_source="",
+    events=None,
 ):
-    """Join and execute one World Boss challenge without browser automation."""
+    """Calibrate an uncertain join using read-only /state."""
 
     adapter = adapter or build_world_boss_miniapp_adapter()
+    events = events if events is not None else []
+    state_request = build_world_boss_miniapp_request(
+        "state", token=token, init_data=init_data, adapter=adapter,
+    )
+    state_result = execute_miniapp_http_request(
+        state_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="join_state_reconcile",
+    )
+    _append_http_event(events, "join_state_reconcile", state_result)
+    if not state_result.ok:
+        return _failed_join_receipt(
+            state_result,
+            player_id=player_id,
+            identity_id=identity_id,
+            account_id=account_id,
+            calibrated=True,
+        )
+    return parse_world_boss_join_response(
+        state_result.data,
+        player_id=player_id,
+        identity_id=identity_id,
+        account_id=account_id,
+        calibrated=True,
+        assume_joined_on_ok=False,
+    )
+
+
+def join_world_boss_miniapp_lab(
+    *,
+    token,
+    init_data,
+    player_id=None,
+    identity_id=0,
+    account_id=0,
+    transport,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    events=None,
+):
+    """Perform one admission attempt without entering the battle loop."""
+
+    adapter = adapter or build_world_boss_miniapp_adapter()
+    events = events if events is not None else []
     token = str(token or "").strip()
     init_data = str(init_data or "").strip()
-    sleeper = sleeper or time.sleep
-    clock = clock or time.monotonic
     if not token:
-        return _flow_result(False, "boss_token_missing", error="boss_token_missing")
+        return WorldBossJoinReceipt(False, "boss_token_missing", terminal=True, error="boss_token_missing")
     if not init_data:
-        return _flow_result(False, "failed", error="initData missing")
+        return WorldBossJoinReceipt(False, "failed", error="initData missing")
 
-    events = []
     start_request = build_world_boss_miniapp_request(
         "start",
         token=token,
@@ -455,6 +674,7 @@ def run_world_boss_miniapp_lab_flow(
     start_result = execute_miniapp_http_request(
         start_request,
         transport,
+        backoff_sec=(),
         sleeper=sleeper,
         capture_sink=capture_sink,
         capture_source=capture_source,
@@ -462,63 +682,175 @@ def run_world_boss_miniapp_lab_flow(
     )
     _append_http_event(events, "start", start_result)
     if not start_result.ok:
-        status = classify_world_boss_miniapp_error(start_result.error)
-        return _flow_result(False, status, error=start_result.error, data=start_result.data, events=events)
-    start_data = start_result.data if isinstance(start_result.data, dict) else {}
-    if _verification_required(start_data):
-        return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
-    selection = _identity_selection(start_data)
-    if selection is not None:
-        return _flow_result(False, "needs_identity_selection", data=selection, events=events)
-    payload_error = _error_from_payload(start_data)
-    if payload_error:
-        return _flow_result(False, payload_error, error=payload_error, data=start_data, events=events)
-
-    challenge = _challenge_from_payload(start_data)
-    state_data = start_data
-    if not challenge:
-        state_request = build_world_boss_miniapp_request(
-            "state",
-            token=token,
-            init_data=init_data,
-            adapter=adapter,
+        if bool(start_result.retryable) or start_result.error_type == "transient":
+            return reconcile_world_boss_join_state_lab(
+                token=token,
+                init_data=init_data,
+                player_id=player_id,
+                identity_id=identity_id,
+                account_id=account_id,
+                transport=transport,
+                adapter=adapter,
+                sleeper=sleeper,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                events=events,
+            )
+        return _failed_join_receipt(
+            start_result,
+            player_id=player_id,
+            identity_id=identity_id,
+            account_id=account_id,
         )
-        state_result = execute_miniapp_http_request(
-            state_request,
-            transport,
+    return parse_world_boss_join_response(
+        start_result.data,
+        player_id=player_id,
+        identity_id=identity_id,
+        account_id=account_id,
+        assume_joined_on_ok=True,
+    )
+
+
+def join_world_boss_batch_lab(
+    entries,
+    *,
+    transport,
+    adapter=None,
+    sleeper=None,
+    clock=None,
+    opened_at=None,
+    join_window_sec=WORLD_BOSS_JOIN_WINDOW_SEC,
+    capture_sink=None,
+    capture_source="",
+):
+    """Join all selected accounts serially before any battle work starts."""
+
+    clock = clock or time.monotonic
+    started_at = float(clock()) if opened_at is None else float(opened_at)
+    deadline_at = started_at + max(1.0, float(join_window_sec or WORLD_BOSS_JOIN_WINDOW_SEC))
+    receipts = []
+    events = []
+    for entry in entries or ():
+        entry = dict(entry or {})
+        if float(clock()) >= deadline_at:
+            receipts.append(WorldBossJoinReceipt(
+                False,
+                "join_deadline_exceeded",
+                player_id=str(entry.get("player_id") or ""),
+                identity_id=_int_value(entry.get("identity_id")),
+                account_id=_int_value(entry.get("account_id")),
+                terminal=True,
+                error="world boss join window exceeded",
+            ))
+            continue
+        receipt = join_world_boss_miniapp_lab(
+            token=entry.get("token"),
+            init_data=entry.get("init_data"),
+            player_id=entry.get("player_id"),
+            identity_id=entry.get("identity_id", 0),
+            account_id=entry.get("account_id", 0),
+            transport=transport,
+            adapter=adapter,
             sleeper=sleeper,
             capture_sink=capture_sink,
             capture_source=capture_source,
-            step_key="state",
+            events=events,
         )
-        _append_http_event(events, "state", state_result)
-        if not state_result.ok:
-            status = classify_world_boss_miniapp_error(state_result.error)
-            return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
-        state_data = state_result.data if isinstance(state_result.data, dict) else {}
-        if _verification_required(state_data):
-            return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
-        selection = _identity_selection(state_data)
-        if selection is not None:
-            return _flow_result(False, "needs_identity_selection", data=selection, events=events)
-        payload_error = _error_from_payload(state_data)
-        if payload_error:
-            return _flow_result(False, payload_error, error=payload_error, data=state_data, events=events)
-        challenge = _challenge_from_payload(state_data)
+        receipts.append(receipt)
+        if receipt.terminal and receipt.status in {
+            "boss_token_missing", "boss_event_closed", "boss_join_closed", "boss_token_expired",
+        }:
+            break
+    joined_count = sum(1 for receipt in receipts if receipt.joined)
+    return {
+        "ok": bool(receipts) and joined_count == len(receipts),
+        "status": "join_barrier_ready" if receipts and joined_count == len(receipts) else "join_barrier_partial",
+        "deadline_at": deadline_at,
+        "joined_count": joined_count,
+        "receipts": tuple(receipts),
+        "events": events,
+    }
+
+
+def run_world_boss_joined_battle_lab_flow(
+    receipt,
+    *,
+    token,
+    init_data,
+    transport,
+    adapter=None,
+    rng=None,
+    sleeper=None,
+    clock=None,
+    capture_sink=None,
+    capture_source="",
+    events=None,
+):
+    """Refresh state, discard expired windows, then execute one joined battle."""
+
+    adapter = adapter or build_world_boss_miniapp_adapter()
+    sleeper = sleeper or time.sleep
+    clock = clock or time.monotonic
+    events = events if events is not None else []
+    if not isinstance(receipt, WorldBossJoinReceipt) or not receipt.joined:
+        status = getattr(receipt, "status", "join_not_confirmed")
+        error = getattr(receipt, "error", "join not confirmed")
+        return _flow_result(False, status, error=error, events=events)
+
+    state_request = build_world_boss_miniapp_request(
+        "state", token=token, init_data=init_data, adapter=adapter,
+    )
+    state_result = execute_miniapp_http_request(
+        state_request,
+        transport,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="battle_state_refresh",
+    )
+    _append_http_event(events, "battle_state_refresh", state_result)
+    if not state_result.ok:
+        status = classify_world_boss_miniapp_error(state_result.error)
+        return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
+    state_data = state_result.data if isinstance(state_result.data, dict) else {}
+    if _verification_required(state_data):
+        return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
+    payload_error = _error_from_payload(state_data)
+    if payload_error:
+        return _flow_result(False, payload_error, error=payload_error, data=state_data, events=events)
+
+    challenge = _challenge_from_payload(state_data) or dict(receipt.challenge or {})
     if not challenge:
         return _flow_result(False, "not_ready", error="world boss challenge missing", events=events)
-
+    initial_elapsed_ms = _current_elapsed_ms(state_data, challenge)
     try:
-        plan = build_world_boss_action_plan(challenge, rng=rng)
+        full_plan = build_world_boss_action_plan(challenge, rng=rng)
     except ValueError as exc:
         return _flow_result(False, "not_ready", error=exc, events=events)
-    events.append({"step": "plan", "ok": True, "window_count": len(plan)})
+    plan = filter_world_boss_action_plan(full_plan, initial_elapsed_ms)
+    events.append({
+        "step": "plan",
+        "ok": bool(plan),
+        "window_count": len(plan),
+        "expired_window_count": len(full_plan) - len(plan),
+        "current_elapsed_ms": initial_elapsed_ms,
+    })
+    if not plan:
+        return _flow_result(False, "windows_expired", error="all world boss windows expired", events=events)
 
-    initial_elapsed_ms = _current_elapsed_ms(state_data, challenge)
     timeline_origin = float(clock()) - (float(initial_elapsed_ms) / 1000.0)
     hit_payloads = []
+    executed_actions = []
     for action in plan:
         current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+        if current_elapsed_ms > int(action["elapsedMs"]):
+            events.append({
+                "step": "skip_expired_window",
+                "ok": True,
+                "windowId": action["windowId"],
+                "current_elapsed_ms": current_elapsed_ms,
+            })
+            continue
         wait_ms = max(0, int(action["elapsedMs"]) - current_elapsed_ms)
         if wait_ms:
             sleeper(wait_ms / 1000.0)
@@ -549,15 +881,14 @@ def run_world_boss_miniapp_lab_flow(
         hit_data = hit_result.data if isinstance(hit_result.data, dict) else {}
         if _verification_required(hit_data):
             return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
+        executed_actions.append(action)
         hit_payloads.append(hit_data)
 
-    proof = build_world_boss_proof(challenge, plan, hit_payloads)
+    if not executed_actions:
+        return _flow_result(False, "windows_expired", error="world boss windows expired before hit", events=events)
+    proof = build_world_boss_proof(challenge, executed_actions, hit_payloads)
     finish_request = build_world_boss_miniapp_request(
-        "finish",
-        token=token,
-        init_data=init_data,
-        boss_proof=proof,
-        adapter=adapter,
+        "finish", token=token, init_data=init_data, boss_proof=proof, adapter=adapter,
     )
     finish_result = execute_miniapp_http_request(
         finish_request,
@@ -577,3 +908,100 @@ def run_world_boss_miniapp_lab_flow(
         return _flow_result(False, "verification_required", error="xianxia-verify required", events=events, proof=proof)
     return _flow_result(True, "settled", data=finish_data, events=events, proof=proof)
 
+
+def run_world_boss_miniapp_lab_flow(
+    *,
+    token,
+    init_data,
+    player_id=None,
+    transport,
+    adapter=None,
+    rng=None,
+    sleeper=None,
+    clock=None,
+    capture_sink=None,
+    capture_source="",
+):
+    """Backward-compatible single identity join followed by refreshed battle."""
+
+    events = []
+    receipt = join_world_boss_miniapp_lab(
+        token=token,
+        init_data=init_data,
+        player_id=player_id,
+        transport=transport,
+        adapter=adapter,
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        events=events,
+    )
+    if not receipt.joined:
+        data = {"needsIdentitySelection": True, "identities": list(receipt.identity_choices)} if receipt.needs_identity_selection else {}
+        return _flow_result(False, receipt.status, error=receipt.error, data=data, events=events)
+    return run_world_boss_joined_battle_lab_flow(
+        receipt,
+        token=token,
+        init_data=init_data,
+        transport=transport,
+        adapter=adapter,
+        rng=rng,
+        sleeper=sleeper,
+        clock=clock,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        events=events,
+    )
+
+
+def run_world_boss_miniapp_batch_lab_flow(
+    entries,
+    *,
+    transport,
+    adapter=None,
+    rng=None,
+    sleeper=None,
+    clock=None,
+    opened_at=None,
+    join_window_sec=WORLD_BOSS_JOIN_WINDOW_SEC,
+    capture_sink=None,
+    capture_source="",
+):
+    """Join every account first, then run joined battles one at a time."""
+
+    entries = [dict(entry or {}) for entry in (entries or ())]
+    barrier = join_world_boss_batch_lab(
+        entries,
+        transport=transport,
+        adapter=adapter,
+        sleeper=sleeper,
+        clock=clock,
+        opened_at=opened_at,
+        join_window_sec=join_window_sec,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+    )
+    battle_results = []
+    for entry, receipt in zip(entries, barrier["receipts"]):
+        if not receipt.joined:
+            continue
+        battle_results.append(run_world_boss_joined_battle_lab_flow(
+            receipt,
+            token=entry.get("token"),
+            init_data=entry.get("init_data"),
+            transport=transport,
+            adapter=adapter,
+            rng=rng,
+            sleeper=sleeper,
+            clock=clock,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+        ))
+    all_battles_ok = bool(battle_results) and all(result.get("ok") for result in battle_results)
+    overall_ok = bool(barrier["ok"]) and all_battles_ok
+    return {
+        "ok": overall_ok,
+        "status": "settled" if overall_ok else barrier["status"],
+        "barrier": barrier,
+        "battle_results": battle_results,
+    }
