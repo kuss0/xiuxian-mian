@@ -1,4 +1,5 @@
 import asyncio
+import re
 import signal
 import time
 import traceback
@@ -896,6 +897,10 @@ def _game_bot_sender_username(event):
     return str(getattr(event, "sender_username", "") or "").strip()
 
 
+def _is_strict_han_tianzun_shard_username(username):
+    return bool(re.fullmatch(r"hantianzun\d+_bot", str(username or "").strip(), flags=re.IGNORECASE))
+
+
 async def _record_suspected_game_bot(
     sender_id,
     family,
@@ -1024,7 +1029,17 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
     sender_is_official_bot = _entity_is_han_tianzun_bot(sender)
     if not sender_is_official_bot:
         return False
-    await _record_external_game_bot_evidence(event, text, now, verified_bot=True)
+    sender_username = _game_bot_sender_username(event)
+    recorded_exact_reply = await _record_external_game_bot_evidence(event, text, now, verified_bot=True)
+    if recorded_exact_reply and _is_strict_han_tianzun_shard_username(sender_username):
+        await _learn_game_bot_id(
+            sender_id,
+            "官方分片精确回复我方已登记命令",
+            evidence=_build_game_bot_evidence(
+                _suspected_game_bot_hits.get(sender_id) or {},
+                username=sender_username,
+            ),
+        )
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
     except Exception:

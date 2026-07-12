@@ -505,6 +505,58 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertFalse(handled)
         resolve_mock.assert_not_awaited()
 
+    def test_strict_tianzun_shard_exact_reply_is_learned_and_routed_immediately(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        app._observed_game_commands.clear()
+        sender_id = 8917921351
+        command_msg_id = 74444
+        player_id = 3765328695
+        reply_to = SimpleNamespace(id=command_msg_id, raw_text=".天机盘")
+        reply_context = {
+            "send_as_id": player_id,
+            "family": "tianxing_panel",
+            "reply_to_msg_id": command_msg_id,
+            "root_msg_id": command_msg_id,
+        }
+        event = SimpleNamespace(
+            id=74445,
+            chat_id=-1002083016447,
+            sender_id=sender_id,
+            sender=SimpleNamespace(bot=True, first_name="韩天尊", username="hantianzun31_bot"),
+            reply_to=SimpleNamespace(reply_to_msg_id=command_msg_id),
+        )
+        try:
+            state_module._meta_state["game_bot_ids"] = []
+            app._observe_game_command_for_bot_evidence(player_id, ".天机盘", command_msg_id, now=1000.0)
+            with patch.object(app, "_resolve_identity_sender_id", return_value=0), \
+                    patch.object(app, "_resolve_event_reply", new=AsyncMock(return_value=(reply_to, reply_context))), \
+                    patch.object(app, "_looks_like_game_bot_reply", return_value=True), \
+                    patch.object(app, "_handle_routed_reply_event", new=AsyncMock(return_value=True)) as routed_mock, \
+                    patch.object(app, "save_state") as save_mock, \
+                    patch.object(app, "send_audit_log", new=AsyncMock()) as audit_mock:
+                handled = asyncio.run(app._handle_suspected_game_bot_reply(
+                    event,
+                    "【天机盘】\n当前推命: 无\n当前改命: 探索（剩余 16小时29分钟）",
+                    1001.0,
+                ))
+
+            self.assertTrue(handled)
+            self.assertIn(sender_id, state_module.get_game_bot_ids())
+            save_mock.assert_called_once()
+            routed_mock.assert_awaited_once()
+            self.assertTrue(any("自动识别到游戏 BOT" in str(call.args[0]) for call in audit_mock.await_args_list))
+        finally:
+            app._suspected_game_bot_hits.clear()
+            app._observed_game_commands.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_non_numeric_tianzun_username_keeps_multi_sample_threshold(self):
+        self.assertFalse(app._is_strict_han_tianzun_shard_username("hantianzun_new_bot"))
+        self.assertFalse(app._is_strict_han_tianzun_shard_username("group_helper_bot"))
+        self.assertTrue(app._is_strict_han_tianzun_shard_username("hantianzun31_bot"))
+
     def test_suspected_non_bot_candidate_is_not_learned_after_threshold(self):
         snapshot = copy.deepcopy(state_module._meta_state)
         app._suspected_game_bot_hits.clear()
