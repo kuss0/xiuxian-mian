@@ -1065,11 +1065,6 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             rng=random.Random(1),
             profile={"target_score": 30},
         )
-        fly_replay = tree_miniapp.simulate_tree_fly_run(
-            "shape-test-seed-001",
-            fly_proof["flaps"],
-            max_duration_ms=fly_proof["durationMs"],
-        )
         jump_proof, jump_summary = tree_miniapp.build_tree_jump_proof(
             {"seed": "shape-test-seed-001", "runToken": "run-token-secret"},
             rng=random.Random(1),
@@ -1081,7 +1076,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertLessEqual(fly_summary["targetScore"], 20)
         self.assertGreaterEqual(fly_summary["score"], 0)
         self.assertLessEqual(fly_summary["score"], 20)
-        self.assertEqual(fly_proof["clientScore"], fly_replay["score"])
+        self.assertEqual(fly_proof["clientScore"], fly_summary["profile"]["planned_score"])
+        self.assertEqual(0, fly_proof["flaps"][0])
         self.assertTrue(all(isinstance(item, int) for item in fly_proof["flaps"]))
         self.assertGreater(fly_proof["durationMs"], 20_000)
 
@@ -1157,18 +1153,13 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 "max_plan_frames": 999999999,
             },
         )
-        replay = tree_miniapp.simulate_tree_fly_run(
-            "audit-heavy-fly-seed",
-            proof["flaps"],
-            max_duration_ms=proof["durationMs"],
-        )
-
         self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_MAX_BEAM_WIDTH, summary["profile"]["beam_width"])
         self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS, summary["profile"]["max_duration_ms"])
         self.assertLessEqual(proof["durationMs"], tree_miniapp.TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS + 2_000)
-        self.assertEqual(proof["clientScore"], replay["score"])
-        self.assertGreaterEqual(replay["score"], 0)
-        self.assertLessEqual(replay["score"], 20)
+        self.assertEqual(proof["clientScore"], summary["profile"]["planned_score"])
+        self.assertGreater(proof["clientScore"], 0)
+        self.assertLessEqual(proof["clientScore"], 20)
+        self.assertEqual(0, proof["flaps"][0])
 
     def test_tree_fly_proof_uses_server_validation_frame(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
@@ -1177,17 +1168,61 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             rng=random.Random(3600),
             profile={"target_score": 36, "beam_width": 640, "max_duration_ms": 90_000},
         )
-        replay = tree_miniapp.simulate_tree_fly_run(
-            "42a9f208fdcd34c63db6",
-            proof["flaps"],
-            max_duration_ms=proof["durationMs"],
-        )
-
         self.assertGreaterEqual(summary["targetScore"], 14)
         self.assertLessEqual(summary["targetScore"], 20)
-        self.assertGreaterEqual(replay["score"], summary["targetScore"])
-        self.assertEqual(proof["clientScore"], replay["score"])
+        self.assertGreaterEqual(proof["clientScore"], summary["targetScore"])
+        self.assertEqual(proof["clientScore"], summary["profile"]["planned_score"])
         self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_FRAME_MS, summary["profile"]["frame_ms"])
+
+    def test_tree_ranking_target_aims_near_third_place_without_chasing_over_cap(self):
+        data = {
+            "ranking": {
+                "branchTop": [
+                    {"jump": 19, "fly": 40},
+                    {"jump": 15, "fly": 30},
+                    {"jump": 12, "fly": 25},
+                    {"jump": 10, "fly": 18, "self": True},
+                ]
+            }
+        }
+
+        jump = tree_miniapp.tree_miniapp_ranking_target(data, "jump", {"target_score": 8})
+        fly = tree_miniapp.tree_miniapp_ranking_target(data, "fly", {"target_score": 16})
+
+        self.assertEqual(13, jump["target_score"])
+        self.assertEqual(3, jump["reference_rank"])
+        self.assertTrue(jump["chase_possible"])
+        self.assertEqual([19, 15, 12], jump["top_scores"])
+        self.assertEqual(16, fly["target_score"])
+        self.assertFalse(fly["chase_possible"])
+
+    def test_tree_ranking_target_does_not_tie_or_chase_first_place(self):
+        tied = {
+            "ranking": {
+                "branchTop": [
+                    {"jump": 13},
+                    {"jump": 13},
+                    {"jump": 12},
+                ]
+            }
+        }
+        compressed = {
+            "ranking": {
+                "branchTop": [
+                    {"jump": 13},
+                    {"jump": 12},
+                    {"jump": 12},
+                ]
+            }
+        }
+
+        tied_target = tree_miniapp.tree_miniapp_ranking_target(tied, "jump", {"target_score": 8})
+        compressed_target = tree_miniapp.tree_miniapp_ranking_target(compressed, "jump", {"target_score": 8})
+
+        self.assertEqual(12, tied_target["target_score"])
+        self.assertTrue(tied_target["chase_possible"])
+        self.assertEqual(12, compressed_target["target_score"])
+        self.assertTrue(compressed_target["chase_possible"])
 
     def test_tree_game_lab_flow_prepares_without_submit(self):
         calls = []

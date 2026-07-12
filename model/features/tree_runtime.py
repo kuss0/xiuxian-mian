@@ -354,6 +354,17 @@ def _format_tree_summary(result):
                 parts.append("跳分 " + "/".join(jump_scores))
             if fly_scores:
                 parts.append("飞分 " + "/".join(fly_scores))
+            ranking_notes = []
+            for mode, label in (("jump", "跳"), ("fly", "飞")):
+                item = next((run for run in runs if run.get("mode") == mode), {})
+                target = item.get("ranking_target") if isinstance(item.get("ranking_target"), dict) else {}
+                top_scores = [str(int(score)) for score in (target.get("top_scores") or [])]
+                if top_scores:
+                    ranking_notes.append(
+                        f"{label}榜前三={'/'.join(top_scores)}，目标{int(target.get('target_score') or 0)}"
+                    )
+            if ranking_notes:
+                parts.append("；".join(ranking_notes))
         material_parts = [f"{name}x{amount}" for name, amount in sorted(items.items()) if int(amount or 0)]
         material_parts.extend(f"{name}+{amount}" for name, amount in sorted(gains.items()) if int(amount or 0))
         parts.append("收获 " + "、".join(material_parts) if material_parts else "未解析到新增物资")

@@ -13,6 +13,29 @@ def _tree_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=tree_SECRET999"
 
 
 class TreeRuntimeSummaryTests(unittest.TestCase):
+    def test_tree_daily_summary_reports_podium_scores_and_safe_target(self):
+        summary = tree_runtime._format_tree_summary({
+            "ok": True,
+            "status": "settled",
+            "data": {
+                "phase": "settled",
+                "quotas": {},
+                "runs": [
+                    {
+                        "mode": "jump",
+                        "score": 13,
+                        "ranking_target": {
+                            "top_scores": [19, 15, 12],
+                            "target_score": 13,
+                        },
+                    },
+                ],
+                "rewards": {},
+            },
+        })
+
+        self.assertIn("跳榜前三=19/15/12，目标13", summary)
+
     def test_tree_success_summary_does_not_report_scores_as_rewards(self):
         summary = tree_runtime._format_tree_summary({
             "ok": True,
