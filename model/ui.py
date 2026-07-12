@@ -7044,6 +7044,13 @@ async def _run_cave_public_background_scheduler(now, config):
         "last_action": f"{identity_id}:{action}",
         "last_result": str(message or "")[:240],
     })
+    console_log(
+        f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"
+        f"{'成功' if ok else '失败'}｜{str(message or '无详情')[:180]}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=260,
+    )
     retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
     retry_sec = 60 if ok else 30 * 60
     if action in {"deep_status", "deep_settle"} and not ok:
