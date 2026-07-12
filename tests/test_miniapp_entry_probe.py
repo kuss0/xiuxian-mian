@@ -22,11 +22,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_miniapp_send_whitelists_are_exact(self):
         self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
-        self.assertEqual({"cave_treasure", "stargazer", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
+        self.assertEqual({"cave_treasure", "stargazer", "tree", "trial"}, set(ui.MINIAPP_MANUAL_RUN_COMMANDS))
         self.assertNotIn("world_boss", ui.MINIAPP_ENTRY_PROBE_COMMANDS)
         self.assertNotIn("world_boss", ui.MINIAPP_MANUAL_RUN_COMMANDS)
         self.assertNotIn("fishing", ui.MINIAPP_MANUAL_RUN_COMMANDS)
-        self.assertNotIn("tree", ui.MINIAPP_MANUAL_RUN_COMMANDS)
 
     async def test_tree_score_config_is_ui_adjustable_tens_policy(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -284,17 +283,27 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("MiniApp手动", kwargs["source_module"])
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
-    async def test_manual_run_rejects_tree_before_send(self):
+    async def test_manual_run_allows_tree_and_authorizes_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12353))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
-                patch.object(ui, "send_game_command", new=send_mock):
+                patch.object(ui, "get_tree_miniapp_score_config", return_value={"fly": {"target_score_range": (8, 18)}}), \
+                patch.object(ui, "authorize_tree_miniapp_manual_run", return_value=123456.0) as auth_mock, \
+                patch.object(ui, "send_game_command", new=send_mock), \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
             ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "tree", {"mode": "fly"})
 
-        self.assertFalse(ok)
-        self.assertIn("仅允许", message)
-        self.assertEqual({}, extra)
-        send_mock.assert_not_awaited()
+        self.assertTrue(ok)
+        self.assertIn("等待入口", message)
+        self.assertEqual("tree", extra["game_key"])
+        self.assertEqual(".灵树", extra["command"])
+        auth_mock.assert_called_once_with(
+            1001,
+            mode="fly",
+            score_profile={"target_score_range": (8, 18)},
+            submit=True,
+        )
+        send_mock.assert_awaited_once()
 
     async def test_manual_run_rejects_non_manual_game_key_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12349))
@@ -788,12 +797,12 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".灵树", probe_commands["tree"])
         self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
+        self.assertEqual(".灵树", manual_run_commands["tree"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
         self.assertEqual(".天机试炼", batch_run_commands["trial"]["command"])
         self.assertEqual("/api/miniapp-trial-batch-run", batch_run_commands["trial"]["endpoint"])
         self.assertIn("全号批量", batch_run_commands["trial"]["label"])
         self.assertNotIn("fishing", manual_run_commands)
-        self.assertNotIn("tree", manual_run_commands)
         self.assertIn("cave_treasure", snapshot["flow_plans"])
         self.assertIn("tree", snapshot["flow_plans"])
         self.assertFalse(snapshot["flow_plans"]["cave_treasure"]["default_enabled"])
