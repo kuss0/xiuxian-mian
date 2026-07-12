@@ -34,6 +34,7 @@ CAVE_TREASURE_MANUAL_MAX_STEPS = 48
 CAVE_TREASURE_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 CAVE_SMALL_WORLD_RESOURCE_PAUSE_SEC = 6 * 3600
 CAVE_SMALL_WORLD_CYCLE_SEC = 6 * 3600
+CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC = 3 * 3600
 CAVE_SMALL_WORLD_REFRESH_SEC = 10 * 60
 CAVE_SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
 CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
@@ -1125,7 +1126,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 state["small_world_phase"] = "idle"
                 state["next_small_world_time"] = now + CAVE_SMALL_WORLD_CYCLE_SEC
                 if action in {"miracle_sermon", "miracle_relief"}:
-                    state["small_world_god_cooldown_until"] = now + CAVE_SMALL_WORLD_CYCLE_SEC
+                    state["small_world_god_cooldown_until"] = now + CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC
                 state["small_world_last_error"] = ""
                 action_label = {
                     "manifest": "显灵",

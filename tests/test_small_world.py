@@ -1733,6 +1733,9 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_small_world_time"],
             )
 
+    def test_success_followup_matches_observed_shared_god_cooldown(self):
+        self.assertEqual(3 * 3600, small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC)
+
     async def test_scheduler_sends_due_pending_god_action_before_query_chain(self):
         send_as_id = 8659059308
         now = 4270.0
