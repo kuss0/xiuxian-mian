@@ -161,7 +161,7 @@ _MANIFESTS = (
         replay_required=False,
         duplicate_guard="action_guard",
         archived=True,
-        archive_reason="旧版灵树/定脉/采摘 automation 已归档；新灵树为 MiniApp 跳一跳/飞一飞 lab-only 候选，不接生产 scheduler。",
+        archive_reason="旧版灵树/定脉/采摘 automation 已归档；新灵树 MiniApp 使用独立显式开关与每日串行 scheduler，不复用本模块开关。",
     ),
     ModuleManifest("法宝", MODULE_KEY_MAP["法宝"], replay_modules=("pet",), reply_families=("pet",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("温养器灵", MODULE_KEY_MAP["温养器灵"], reply_families=("pet_warm",), replay_required=False, duplicate_guard="pending_reply"),

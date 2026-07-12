@@ -84,6 +84,20 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("目标分必须是数字", message)
         save_mock.assert_not_called()
 
+    async def test_tree_daily_auto_config_is_scoped_and_requires_luoyun(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "check_tree_miniapp_eligibility", side_effect=lambda identity_id, enabled=None: (identity_id == 1001, "宗门不匹配")), \
+                patch.object(ui, "save_state", return_value=True) as save_mock:
+            ok, message = await ui.ui_set_tree_miniapp_auto_config(1001, {"enabled": True})
+            rejected, rejected_message = await ui.ui_set_tree_miniapp_auto_config(1002, {"enabled": True})
+
+        self.assertTrue(ok)
+        self.assertIn("已开启", message)
+        self.assertFalse(rejected)
+        self.assertIn("宗门不匹配", rejected_message)
+        self.assertEqual([1001], ui.normalize_miniapp_auto_config()["tree_daily_enabled_identity_ids"])
+        save_mock.assert_called_once()
+
     async def test_probe_sends_only_whitelisted_entry_command_without_tracking(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12345))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -646,6 +660,48 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snapshot["trial_daily_done_today"])
         self.assertEqual("batch-auto", snapshot["trial_daily_last_batch_id"])
         self.assertEqual("batch-auto", snapshot["trial_daily_wave1_last_batch_id"])
+
+    async def test_miniapp_daily_scheduler_starts_tree_once_and_persists_pending(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "tree_daily_enabled_identity_ids": [1001],
+        }
+        now = datetime(2026, 7, 7, 2, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        sent_msg = SimpleNamespace(id=77001)
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_coordinator_snapshot", return_value={"phase": "idle"}), \
+                patch.object(ui, "check_tree_miniapp_eligibility", return_value=(True, "")), \
+                patch.object(ui, "_tree_daily_state_for_identity", return_value={}), \
+                patch.object(ui, "get_tree_miniapp_score_config", return_value={"jump": {}, "fly": {}}), \
+                patch.object(ui, "prepare_tree_miniapp_daily_run", return_value={"ok": True, "op_id": "tree_daily:2026-07-07:1001"}) as prepare_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock, \
+                patch.object(ui, "finalize_tree_miniapp_daily_command", return_value=True) as finalize_mock, \
+                patch.object(ui, "record_miniapp_state") as record_mock, \
+                patch.object(ui, "send_audit_log", new=AsyncMock()):
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertTrue(result["started"])
+        self.assertEqual(1001, result["identity_id"])
+        prepare_mock.assert_called_once()
+        send_mock.assert_awaited_once()
+        self.assertEqual(".灵树", send_mock.await_args.args[0])
+        self.assertEqual(0, send_mock.await_args.kwargs["max_retry"])
+        finalize_mock.assert_called_once_with("tree_daily:2026-07-07:1001", 77001, now=now)
+        self.assertEqual("entry_pending", record_mock.call_args.args[2]["phase"])
+
+    async def test_miniapp_daily_scheduler_does_not_repeat_tree_attempt_same_day(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "tree_daily_enabled_identity_ids": [1001],
+        }
+        now = datetime(2026, 7, 7, 2, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_coordinator_snapshot", return_value={"phase": "idle"}), \
+                patch.object(ui, "check_tree_miniapp_eligibility", return_value=(True, "")), \
+                patch.object(ui, "_tree_daily_state_for_identity", return_value={"kind": "daily", "day_key": "2026-07-07", "phase": "unknown"}), \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual({"started": False, "reason": "disabled"}, result)
+        send_mock.assert_not_awaited()
 
     async def test_miniapp_daily_scheduler_starts_second_wave_inside_window(self):
         state_module._meta_state["miniapp_auto_config"] = {

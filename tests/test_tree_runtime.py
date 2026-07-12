@@ -57,20 +57,23 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._manual_auth = dict(tree_runtime._MANUAL_AUTH)
+        self._coordinator = dict(tree_runtime._COORDINATOR)
         tree_runtime._MANUAL_AUTH.clear()
-        tree_runtime._RUN_LOCKS.clear()
+        tree_runtime._GLOBAL_RUN_LOCK = None
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module.ensure_identity_registered(1001)
         state_module.ensure_identity_registered(1002)
-        state_module.update_send_as_profile(1001, username="first_identity", label="first")
-        state_module.update_send_as_profile(1002, username="imcanonical_ai", label="反向的钟")
+        state_module.update_send_as_profile(1001, username="first_identity", label="first", sect_name="落云宗")
+        state_module.update_send_as_profile(1002, username="imcanonical_ai", label="反向的钟", sect_name="落云宗")
 
     def tearDown(self):
         tree_runtime._MANUAL_AUTH.clear()
         tree_runtime._MANUAL_AUTH.update(self._manual_auth)
-        tree_runtime._RUN_LOCKS.clear()
+        tree_runtime._GLOBAL_RUN_LOCK = None
+        tree_runtime._COORDINATOR.clear()
+        tree_runtime._COORDINATOR.update(self._coordinator)
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -135,6 +138,99 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(handled)
         flow_mock.assert_not_awaited()
+
+    async def test_daily_authorization_requires_enabled_identity_and_luoyun_sect(self):
+        disabled = tree_runtime.prepare_tree_miniapp_daily_run(1001, enabled=False, now=1_700_000_000.0)
+        self.assertFalse(disabled["ok"])
+
+        state_module.update_send_as_profile(1001, sect_name="星宫")
+        wrong_sect = tree_runtime.prepare_tree_miniapp_daily_run(1001, enabled=True, now=1_700_000_000.0)
+        self.assertFalse(wrong_sect["ok"])
+        self.assertIn("宗门不匹配", wrong_sect["reason"])
+
+    async def test_daily_entry_binds_reply_chain_and_runs_daily_flow(self):
+        prepared = tree_runtime.prepare_tree_miniapp_daily_run(
+            1002,
+            enabled=True,
+            day_key="2026-07-13",
+            now=1_700_000_000.0,
+        )
+        self.assertTrue(tree_runtime.finalize_tree_miniapp_daily_command(prepared["op_id"], 8123, now=1_700_000_001.0))
+        flow_result = {
+            "ok": True,
+            "status": "completed",
+            "data": {
+                "phase": "completed",
+                "quotas": {
+                    "jump": {"used": 2, "limit": 2, "remaining": 0},
+                    "fly": {"used": 1, "limit": 1, "remaining": 0},
+                },
+                "runs": [{"mode": "jump", "score": 18}],
+                "rewards": {"items": {"灵木": 1}, "gains": {}},
+            },
+        }
+
+        with patch.object(
+            tree_runtime,
+            "run_tree_miniapp_daily_production_flow",
+            new=AsyncMock(return_value=flow_result),
+        ) as flow_mock, patch.object(tree_runtime, "send_audit_log", new=AsyncMock()):
+            wrong_chain = await tree_runtime.handle_tree_miniapp_entry(
+                _tree_event(),
+                "【落云宗 · 灵眼之树】 @imcanonical_ai",
+                1_700_000_002.0,
+                reply_to=SimpleNamespace(id=9000),
+            )
+            handled = await tree_runtime.handle_tree_miniapp_entry(
+                _tree_event(),
+                "【落云宗 · 灵眼之树】 @imcanonical_ai",
+                1_700_000_003.0,
+                reply_to=SimpleNamespace(id=8123),
+                result_msg_id=7001,
+            )
+
+        self.assertFalse(wrong_chain)
+        self.assertTrue(handled)
+        flow_mock.assert_awaited_once()
+        self.assertEqual("completed", tree_runtime.get_tree_miniapp_coordinator_snapshot()["phase"])
+
+    async def test_broadcast_fallback_requires_exact_mention_and_bound_authorization(self):
+        prepared = tree_runtime.prepare_tree_miniapp_daily_run(1002, enabled=True, now=1_700_000_000.0)
+        with patch.object(
+            tree_runtime,
+            "run_tree_miniapp_daily_production_flow",
+            new=AsyncMock(),
+        ) as flow_mock:
+            unbound = await tree_runtime.handle_tree_miniapp_entry(
+                _tree_event(),
+                "【落云宗 · 灵眼之树】 @imcanonical_ai",
+                1_700_000_001.0,
+                require_identity_match=True,
+            )
+            tree_runtime.finalize_tree_miniapp_daily_command(prepared["op_id"], 8123, now=1_700_000_002.0)
+            missing_mention = await tree_runtime.handle_tree_miniapp_entry(
+                _tree_event(),
+                "【落云宗 · 灵眼之树】",
+                1_700_000_003.0,
+                require_identity_match=True,
+            )
+
+        self.assertFalse(unbound)
+        self.assertFalse(missing_mention)
+        flow_mock.assert_not_awaited()
+
+    async def test_global_coordinator_rejects_second_identity_before_command_send(self):
+        first = tree_runtime.prepare_tree_miniapp_daily_run(1001, enabled=True, now=1_700_000_000.0)
+        self.assertTrue(first["ok"])
+        tree_runtime.finalize_tree_miniapp_daily_command(first["op_id"], 8101, now=1_700_000_001.0)
+        second = tree_runtime.prepare_tree_miniapp_daily_run(1002, enabled=True, now=1_700_000_000.0)
+        self.assertFalse(second["ok"])
+        self.assertEqual(1001, second["active_identity_id"])
+        self.assertNotIn(1002, tree_runtime._MANUAL_AUTH)
+
+        self.assertTrue(tree_runtime.cancel_tree_miniapp_daily_run(first["op_id"], reason="send failed"))
+        retry = tree_runtime.prepare_tree_miniapp_daily_run(1002, enabled=True, now=1_700_000_002.0)
+        self.assertTrue(retry["ok"])
 
 
 if __name__ == "__main__":

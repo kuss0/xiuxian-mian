@@ -125,12 +125,29 @@
     var flyMin = Number((tree.fly && tree.fly.min_target_score) || 4);
     var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 20);
     var flyMax = Number((tree.fly && tree.fly.max_target_score) || 20);
+    var daily = tree.daily_state || {};
+    var coordinator = tree.coordinator || {};
+    var dailyStatus = daily.day_key
+      ? String(daily.day_key) + '｜' + String(daily.phase || 'unknown')
+      : '今日尚未运行';
+    var runningText = ['entry_pending', 'running'].indexOf(String(coordinator.phase || '')) >= 0
+      ? '全局 ' + String(coordinator.phase) + '｜身份 ' + String(coordinator.identity_id || '-')
+      : '';
     return ''
       + '<section class="miniapp-score-config" data-miniapp-score-config="tree">'
-      + '<div class="miniapp-score-title"><strong>灵树区间中值</strong><span>身份：' + esc(selectedIdentityId() || '-') + '</span></div>'
+      + '<div class="miniapp-score-title"><strong>灵树 MiniApp</strong><span>身份：' + esc(selectedIdentityId() || '-') + '</span></div>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-tree-auto-enabled="1"' + (tree.auto_enabled ? ' checked' : '') + (tree.eligible || tree.auto_enabled ? '' : ' disabled') + '><span>每日自动跑完跳一跳与飞一飞</span></label>'
+      + '<div class="miniapp-item-meta">'
+      + badge(tree.eligible ? '落云宗资格正常' : (tree.eligibility_reason || '资格不符'), tree.eligible ? 'ok' : 'warn')
+      + badge(dailyStatus, daily.phase === 'completed' ? 'ok' : 'neutral')
+      + (runningText ? badge(runningText, 'warn') : '')
+      + '</div>'
       + '<label><span>跳一跳</span><input type="number" min="' + esc(jumpMin) + '" max="' + esc(jumpMax) + '" step="1" data-tree-score-input="jump" value="' + esc(targetScoreValue(tree, 'jump')) + '"></label>'
       + '<label><span>飞一飞</span><input type="number" min="' + esc(flyMin) + '" max="' + esc(flyMax) + '" step="1" data-tree-score-input="fly" value="' + esc(targetScoreValue(tree, 'fly')) + '"></label>'
-      + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-score-save="1">保存</button>'
+      + '<div class="miniapp-item-actions">'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-score-save="1">保存分数</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-auto-save="1">保存自动开关</button>'
+      + '</div>'
       + '</section>';
   }
 
@@ -409,6 +426,30 @@
     }
   }
 
+  async function saveTreeAutoConfig(button) {
+    var sendAsId = selectedIdentityId();
+    if (!sendAsId) {
+      flash('请选择身份', true);
+      return;
+    }
+    var panel = document.querySelector('[data-miniapp-score-config="tree"]');
+    var enabledInput = panel && panel.querySelector('[data-tree-auto-enabled="1"]');
+    if (button) button.disabled = true;
+    try {
+      var data = await post('/api/miniapp-tree-auto-config', {
+        send_as_id: sendAsId,
+        enabled: !!(enabledInput && enabledInput.checked)
+      });
+      flash(data.message || '灵树自动开关已保存', false);
+      refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || '灵树自动开关保存失败', true);
+      refreshMiniAppStatus();
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function runCavePublicEntry(button) {
     var sendAsId = selectedIdentityId();
     if (!sendAsId) {
@@ -586,6 +627,11 @@
     var scoreSaveBtn = event.target.closest('[data-miniapp-tree-score-save]');
     if (scoreSaveBtn) {
       saveTreeScoreConfig(scoreSaveBtn);
+      return;
+    }
+    var treeAutoSaveBtn = event.target.closest('[data-miniapp-tree-auto-save]');
+    if (treeAutoSaveBtn) {
+      saveTreeAutoConfig(treeAutoSaveBtn);
       return;
     }
     var caveConfigSaveBtn = event.target.closest('[data-cave-public-config-save]');

@@ -90,7 +90,7 @@ from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normaliz
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
 from .inventory_delta import build_inventory_freshness_snapshot
-from .miniapp_state import get_miniapp_state_snapshot
+from .miniapp_state import get_miniapp_state_snapshot, record_miniapp_state
 from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
 from .webapp_core import get_miniapp_global_rate_limit_snapshot
 from .features.passive_inbox import get_passive_inbox_snapshot
@@ -108,7 +108,15 @@ from .features.cave_treasure_runtime import (
 )
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
-from .features.tree_runtime import authorize_tree_miniapp_manual_run, revoke_tree_miniapp_manual_run
+from .features.tree_runtime import (
+    authorize_tree_miniapp_manual_run,
+    cancel_tree_miniapp_daily_run,
+    check_tree_miniapp_eligibility,
+    finalize_tree_miniapp_daily_command,
+    get_tree_miniapp_coordinator_snapshot,
+    prepare_tree_miniapp_daily_run,
+    revoke_tree_miniapp_manual_run,
+)
 from .tree_score_policy import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
 from .features.trial_runtime import (
     authorize_trial_miniapp_manual_run,
@@ -362,6 +370,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "world_boss_auto_account_limit": 1,
     "world_boss_auto_account_gap_sec": 3,
     "world_boss_auto_excluded_identity_ids": [],
+    "tree_daily_enabled_identity_ids": [],
 }
 TRIAL_DAILY_BATCH_WAVES = (
     {"key": "wave1", "label": "第一批", "start_hour": 1, "start_minute": 0, "end_hour": 4, "end_minute": 0},
@@ -425,6 +434,14 @@ def normalize_miniapp_auto_config(config=None):
     result["world_boss_auto_excluded_identity_ids"] = sorted({
         int(identity_id)
         for identity_id in excluded_ids
+        if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+    })
+    tree_identity_ids = result.get("tree_daily_enabled_identity_ids") or []
+    if not isinstance(tree_identity_ids, (list, tuple, set)):
+        tree_identity_ids = []
+    result["tree_daily_enabled_identity_ids"] = sorted({
+        int(identity_id)
+        for identity_id in tree_identity_ids
         if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
     })
     for key, default in (
@@ -596,6 +613,12 @@ def get_tree_miniapp_score_config(send_as_id=None):
     saved = _tree_miniapp_score_config_for_key(key)
     jump = normalize_tree_score_profile("jump", saved.get("jump"))
     fly = normalize_tree_score_profile("fly", saved.get("fly"))
+    auto_config = normalize_miniapp_auto_config()
+    auto_enabled = key in set(auto_config.get("tree_daily_enabled_identity_ids") or ())
+    eligible, eligibility_reason = check_tree_miniapp_eligibility(key, enabled=True)
+    tree_state = get_miniapp_state_snapshot(send_as_id=key, game_key="tree")
+    rows = list(tree_state.get("rows") or ())
+    latest_state = dict((rows[0].get("state") if rows else {}) or {})
     return {
         "identity_id": key,
         "jump": {
@@ -609,7 +632,12 @@ def get_tree_miniapp_score_config(send_as_id=None):
             "max_target_score": int(TREE_MINIAPP_MAX_TARGET_SCORE["fly"]),
         },
         "submit_default": False,
-        "note": "灵树跳一跳/飞一飞默认低分；手动配置仅作为随机区间中值，不接定时自动跑分。",
+        "auto_enabled": auto_enabled,
+        "eligible": eligible,
+        "eligibility_reason": eligibility_reason,
+        "daily_state": latest_state,
+        "coordinator": get_tree_miniapp_coordinator_snapshot(),
+        "note": "灵树跳一跳/飞一飞使用低分随机区间；自动化仅对显式开启的落云宗身份生效。",
     }
 
 
@@ -641,6 +669,28 @@ async def ui_set_tree_miniapp_score_config(send_as_id, payload=None):
     jump_range = refreshed["jump"]["target_score_range"] or [0, 0]
     fly_range = refreshed["fly"]["target_score_range"] or [0, 0]
     return True, f"灵树目标区间已更新：跳一跳 {jump_range[0]}-{jump_range[-1]}｜飞一飞 {fly_range[0]}-{fly_range[-1]}"
+
+
+async def ui_set_tree_miniapp_auto_config(send_as_id, payload=None):
+    payload = dict(payload or {})
+    key = _miniapp_tree_score_config_key(send_as_id)
+    if key not in get_identity_ids():
+        return False, "身份不存在"
+    enabled = _coerce_ui_bool(payload.get("enabled"))
+    if enabled:
+        eligible, reason = check_tree_miniapp_eligibility(key, enabled=True)
+        if not eligible:
+            return False, f"灵树自动化不可开启：{reason}"
+    config = normalize_miniapp_auto_config()
+    enabled_ids = set(config.get("tree_daily_enabled_identity_ids") or ())
+    if enabled:
+        enabled_ids.add(key)
+    else:
+        enabled_ids.discard(key)
+    config["tree_daily_enabled_identity_ids"] = sorted(enabled_ids)
+    set_miniapp_auto_config(config)
+    save_state()
+    return True, f"灵树 MiniApp 每日自动化已{'开启' if enabled else '关闭'}"
 
 
 def get_miniapp_status_snapshot(send_as_id=None):
@@ -7157,11 +7207,99 @@ async def _run_cave_public_background_scheduler(now, config):
     }
 
 
+def _tree_daily_state_for_identity(identity_id):
+    snapshot = get_miniapp_state_snapshot(send_as_id=identity_id, game_key="tree")
+    rows = list(snapshot.get("rows") or ())
+    return dict((rows[0].get("state") if rows else {}) or {})
+
+
+async def _run_tree_miniapp_daily_scheduler(now, config):
+    if not get_global_enabled():
+        return {"started": False, "reason": "global_disabled"}
+    enabled_ids = list(config.get("tree_daily_enabled_identity_ids") or ())
+    if not enabled_ids:
+        return {"started": False, "reason": "tree_disabled"}
+    coordinator = get_tree_miniapp_coordinator_snapshot()
+    if str(coordinator.get("phase") or "") in {"entry_pending", "running"}:
+        return {"started": False, "reason": "tree_busy"}
+    day_key = get_day_key(now)
+    for identity_id in enabled_ids:
+        eligible, reason = check_tree_miniapp_eligibility(identity_id, enabled=True)
+        if not eligible:
+            continue
+        daily_state = _tree_daily_state_for_identity(identity_id)
+        if (
+            daily_state.get("kind") == "daily"
+            and daily_state.get("day_key") == day_key
+            and str(daily_state.get("phase") or "") in {"entry_pending", "running", "completed", "blocked", "unknown"}
+        ):
+            continue
+        op_id = f"tree_daily:{day_key}:{int(identity_id)}"
+        prepared = prepare_tree_miniapp_daily_run(
+            identity_id,
+            enabled=True,
+            day_key=day_key,
+            now=now,
+            op_id=op_id,
+            score_profiles=get_tree_miniapp_score_config(identity_id),
+        )
+        if not prepared.get("ok"):
+            continue
+        msg = await send_game_command(
+            MINIAPP_MANUAL_RUN_COMMANDS["tree"],
+            track=False,
+            send_as_id=identity_id,
+            priority="normal",
+            max_retry=0,
+            source_module="灵树MiniApp",
+            op_id=op_id,
+            chain_id=f"tree_daily:{day_key}",
+            delete_policy="keep",
+            queue_timeout=90,
+        )
+        if not msg:
+            cancel_tree_miniapp_daily_run(op_id, reason="入口命令未发送", now=now)
+            return {"started": False, "reason": "tree_send_blocked", "identity_id": identity_id}
+        msg_id = int(getattr(msg, "id", 0) or 0)
+        if not finalize_tree_miniapp_daily_command(op_id, msg_id, now=now):
+            cancel_tree_miniapp_daily_run(op_id, reason="入口命令绑定失败", now=now)
+            return {"started": False, "reason": "tree_bind_failed", "identity_id": identity_id}
+        record_miniapp_state(
+            identity_id,
+            "tree",
+            {
+                "kind": "daily",
+                "day_key": day_key,
+                "phase": "entry_pending",
+                "completed_today": False,
+                "command_msg_id": msg_id,
+            },
+            source="tree_daily_scheduler",
+            source_id=op_id,
+            now=now,
+            outputs=("daily_counter", "score_policy", "rewards"),
+            replaces_commands=(".灵树",),
+        )
+        await send_audit_log(
+            f"🌳 灵树 MiniApp 每日入口已发送：msg_id={msg_id}，等待按钮回包后按服务端额度串行完成。",
+            scope="identity",
+            send_as_id=identity_id,
+            priority="low",
+            limit=220,
+        )
+        return {"started": True, "identity_id": identity_id, "msg_id": msg_id, "op_id": op_id}
+    return {"started": False, "reason": "tree_done_or_ineligible"}
+
+
 async def run_miniapp_daily_scheduler(now):
     raw_config = normalize_miniapp_auto_config()
     config = get_miniapp_auto_config_snapshot(now)
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
+
+    tree_daily = await _run_tree_miniapp_daily_scheduler(now, raw_config)
+    if tree_daily.get("started"):
+        return tree_daily
 
     active_wave = dict(config.get("trial_daily_active_wave") or {})
     wave_key = str(active_wave.get("key") or "").strip()
@@ -8325,6 +8463,24 @@ async def handle_ui_http(reader, writer):
                             extra={"miniapp": get_miniapp_status_snapshot(send_as_id=send_as_id)},
                             include_snapshot=False,
                         )
+            elif path == "/api/miniapp-tree-auto-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_tree_miniapp_auto_config(send_as_id, payload)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                        )
             elif path == "/api/stargazer-star-choice":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8656,5 +8812,6 @@ __all__ = [
     "ui_set_cave_public_config",
     "ui_start_cave_public_entry_batch",
     "ui_start_trial_miniapp_batch_run",
+    "ui_set_tree_miniapp_auto_config",
     "ui_set_tree_miniapp_score_config",
 ]

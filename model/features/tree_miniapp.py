@@ -732,13 +732,27 @@ def _mode_quota(data, mode):
         quota = {}
     used = _int_value(quota.get("used"), 0)
     limit = _int_value(quota.get("limit"), 0)
+    remaining = (
+        max(0, _int_value(quota.get("remaining"), 0))
+        if "remaining" in quota
+        else max(0, limit - used) if limit > 0 else 0
+    )
     best = _int_value(quota.get("best"), 0)
     return {
         "used": used,
         "limit": limit,
-        "remaining": max(0, limit - used) if limit > 0 else 0,
+        "remaining": remaining,
         "best": best,
     }
+
+
+def _mode_quota_is_authoritative(data, mode):
+    council = data.get("council") if isinstance(data, dict) else {}
+    daily = council.get("daily") if isinstance(council, dict) else {}
+    quota = daily.get(mode) if isinstance(daily, dict) else {}
+    return isinstance(quota, dict) and "used" in quota and "limit" in quota and (
+        "remaining" in quota or _int_value(quota.get("limit"), 0) > 0
+    )
 
 
 def parse_tree_miniapp_state(data):
@@ -762,6 +776,10 @@ def parse_tree_miniapp_state(data):
         "season_day_index": _int_value(season.get("dayIndex"), 0),
         "jump": jump,
         "fly": fly,
+        "quota_known": {
+            "jump": _mode_quota_is_authoritative(data, "jump"),
+            "fly": _mode_quota_is_authoritative(data, "fly"),
+        },
         "my_contribution_points": _int_value(ranking.get("myContributionPoints"), 0),
         "branch_rank": _int_value(ranking.get("branchRank"), 0),
         "claimed": bool(ranking.get("claimed")),
@@ -812,6 +830,325 @@ def _append_http_event(events, step, result):
         "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
         "error": sanitize_webapp_secret_text(result.error),
     })
+
+
+def _non_idempotent_failure_status(result):
+    if bool(getattr(result, "retryable", False)) or str(getattr(result, "error_type", "") or "") in {
+        "transient",
+        "timeout",
+        "network",
+    }:
+        return "result_unknown"
+    return classify_tree_miniapp_error(getattr(result, "error", ""))
+
+
+def _authoritative_tree_state(data):
+    queue = [data]
+    seen = set()
+    while queue:
+        candidate = queue.pop(0)
+        if not isinstance(candidate, dict) or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        state = parse_tree_miniapp_state(candidate)
+        known = state.get("quota_known") if isinstance(state.get("quota_known"), dict) else {}
+        if known.get("jump") or known.get("fly"):
+            return state
+        for key in ("state", "seasonState", "councilState", "data", "result"):
+            nested = candidate.get(key)
+            if isinstance(nested, dict):
+                if key in {"state", "seasonState", "councilState"} and "daily" in nested and "council" not in nested:
+                    queue.append({"council": nested})
+                queue.append(nested)
+    return None
+
+
+def _merge_tree_reward_counts(target, source):
+    for name, amount in dict(source or {}).items():
+        clean_name = sanitize_webapp_secret_text(name, limit=80).strip()
+        parsed_amount = _int_value(amount, 0)
+        if clean_name and parsed_amount:
+            target[clean_name] = int(target.get(clean_name, 0) or 0) + parsed_amount
+
+
+def summarize_tree_rewards(data):
+    """Extract game materials/gains without treating score or protocol fields as rewards."""
+
+    items = {}
+    gains = {}
+    item_container_keys = {"reward", "rewards", "bonusloot", "loot", "items", "materials", "drops"}
+    gain_labels = {
+        "expgain": "经验",
+        "experiencegain": "经验",
+        "cultivationgain": "修为",
+        "xiuweigain": "修为",
+        "lingshigain": "灵石",
+        "stonegain": "灵石",
+        "contributiongain": "贡献",
+        "tracegain": "天机残痕",
+    }
+
+    def add_item(item):
+        if not isinstance(item, dict):
+            return
+        name = item.get("name") or item.get("itemName") or item.get("label") or item.get("title")
+        amount = item.get("qty", item.get("quantity", item.get("count", item.get("amount", 1))))
+        if name:
+            _merge_tree_reward_counts(items, {name: amount})
+
+    def visit(value, parent_key="", depth=0):
+        if depth > 5:
+            return
+        if isinstance(value, list):
+            for child in value:
+                if parent_key.lower() in item_container_keys:
+                    add_item(child)
+                else:
+                    visit(child, parent_key=parent_key, depth=depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        if parent_key.lower() in item_container_keys:
+            add_item(value)
+            if not any(key in value for key in ("name", "itemName", "label", "title")):
+                _merge_tree_reward_counts(items, value)
+        for key, child in value.items():
+            lowered = str(key or "").lower()
+            if lowered in gain_labels:
+                _merge_tree_reward_counts(gains, {gain_labels[lowered]: child})
+            elif lowered in item_container_keys:
+                visit(child, parent_key=lowered, depth=depth + 1)
+            elif isinstance(child, (dict, list)):
+                visit(child, parent_key=lowered, depth=depth + 1)
+
+    visit(data)
+    return {"items": items, "gains": gains}
+
+
+def _daily_tree_data(*, phase, state=None, runs=None, rewards=None, errors=None):
+    state = state if isinstance(state, dict) else {}
+    return {
+        "phase": str(phase or ""),
+        "quotas": {
+            mode: dict(state.get(mode) or {})
+            for mode in ("jump", "fly")
+        },
+        "quota_known": dict(state.get("quota_known") or {}),
+        "runs": list(runs or ()),
+        "rewards": dict(rewards or {"items": {}, "gains": {}}),
+        "errors": list(errors or ()),
+        "state": state,
+    }
+
+
+def run_tree_miniapp_daily_lab_flow(
+    *,
+    token,
+    init_data,
+    transport=None,
+    adapter=None,
+    rng=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    score_profiles=None,
+):
+    """Run all server-advertised jump quota, then fly quota, using one initData."""
+
+    adapter = adapter or build_tree_miniapp_adapter()
+    transport = transport or _requests_transport
+    rng = rng or random
+    sleeper = sleeper or time.sleep
+    token = str(token or "").strip()
+    init_data = str(init_data or "").strip()
+    events = []
+    runs = []
+    errors = []
+    rewards = {"items": {}, "gains": {}}
+    profiles = dict(score_profiles or {})
+    if not token or not init_data:
+        error = "token missing" if not token else "initData missing"
+        return _flow_result(False, "failed", data=_daily_tree_data(phase="blocked", errors=[error]), error=error)
+
+    def read_state(step_key):
+        request = build_tree_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+        result = execute_miniapp_http_request(
+            request,
+            transport,
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=step_key,
+        )
+        _append_http_event(events, step_key, result)
+        return result, _authoritative_tree_state(result.data) if result.ok else None
+
+    start_result, state = read_state("start")
+    if not start_result.ok:
+        error = sanitize_webapp_secret_text(start_result.error)
+        errors.append(error)
+        return _flow_result(
+            False,
+            classify_tree_miniapp_error(start_result.error),
+            data=_daily_tree_data(phase="blocked", errors=errors),
+            events=events,
+            error=error,
+        )
+    if state is None or not all((state.get("quota_known") or {}).get(mode) for mode in ("jump", "fly")):
+        error = "server quota missing for jump/fly"
+        errors.append(error)
+        return _flow_result(False, "quota_unknown", data=_daily_tree_data(phase="blocked", state=state, errors=errors), events=events, error=error)
+
+    for mode in ("jump", "fly"):
+        try:
+            score_profile = normalize_tree_score_profile(mode, profiles.get(mode))
+        except Exception as exc:
+            error = sanitize_webapp_secret_text(exc)
+            errors.append(error)
+            return _flow_result(False, "failed", data=_daily_tree_data(phase="blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+
+        while _int_value((state.get(mode) or {}).get("remaining"), 0) > 0:
+            quota_before = dict(state.get(mode) or {})
+            run_start_request = build_tree_miniapp_request(
+                "run_start",
+                token=token,
+                init_data=init_data,
+                payload={"mode": mode},
+                adapter=adapter,
+            )
+            run_start_result = execute_miniapp_http_request(
+                run_start_request,
+                transport,
+                sleeper=sleeper,
+                backoff_sec=(),
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key=f"{mode}:run_start",
+            )
+            _append_http_event(events, f"{mode}:run_start", run_start_result)
+            if not run_start_result.ok:
+                status = _non_idempotent_failure_status(run_start_result)
+                error = sanitize_webapp_secret_text(run_start_result.error)
+                errors.append(f"{mode}:run_start:{error or status}")
+                return _flow_result(False, status, data=_daily_tree_data(phase="unknown" if status == "result_unknown" else "blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+
+            run = run_start_result.data.get("run") if isinstance(run_start_result.data.get("run"), dict) else {}
+            if not run.get("runToken") or not run.get("seed"):
+                error = f"{mode} runToken or seed missing"
+                errors.append(error)
+                return _flow_result(False, "result_unknown", data=_daily_tree_data(phase="unknown", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+            try:
+                proof, proof_summary = build_tree_game_proof(mode, run, rng=rng, profile=score_profile)
+            except Exception as exc:
+                error = sanitize_webapp_secret_text(exc)
+                errors.append(f"{mode}:solve:{error}")
+                return _flow_result(False, "solve_failed", data=_daily_tree_data(phase="blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+
+            score = _int_value(proof_summary.get("score"), 0)
+            target_score = _int_value(proof_summary.get("targetScore"), 0)
+            if score <= 0 or score > TREE_MINIAPP_MAX_TARGET_SCORE[mode] or target_score > TREE_MINIAPP_MAX_TARGET_SCORE[mode]:
+                error = f"unsafe {mode} proof score={score} target={target_score}"
+                errors.append(error)
+                return _flow_result(False, "unsafe_score", data=_daily_tree_data(phase="blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+
+            duration_ms = max(0, _int_value(proof.get("durationMs"), 0))
+            if duration_ms:
+                sleeper(float(duration_ms) / 1000.0)
+            submit_request = build_tree_miniapp_request(
+                "run_submit",
+                token=token,
+                init_data=init_data,
+                payload={
+                    "mode": mode,
+                    "runToken": str(run.get("runToken") or ""),
+                    "proof": proof,
+                },
+                adapter=adapter,
+            )
+            submit_result = execute_miniapp_http_request(
+                submit_request,
+                transport,
+                sleeper=sleeper,
+                backoff_sec=(),
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key=f"{mode}:run_submit",
+            )
+            _append_http_event(events, f"{mode}:run_submit", submit_result)
+            if not submit_result.ok:
+                status = _non_idempotent_failure_status(submit_result)
+                error = sanitize_webapp_secret_text(submit_result.error)
+                errors.append(f"{mode}:run_submit:{error or status}")
+                return _flow_result(False, status, data=_daily_tree_data(phase="unknown" if status == "result_unknown" else "blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+
+            submitted_score = _int_value(submit_result.data.get("score"), 0)
+            reward_summary = summarize_tree_rewards(submit_result.data)
+            _merge_tree_reward_counts(rewards["items"], reward_summary.get("items"))
+            _merge_tree_reward_counts(rewards["gains"], reward_summary.get("gains"))
+            runs.append({
+                "mode": mode,
+                "score": submitted_score,
+                "target_score": target_score,
+                "quota_before": quota_before,
+                "rewards": reward_summary,
+            })
+            if submitted_score <= 0:
+                error = f"{mode} server score is zero; stop remaining daily attempts"
+                errors.append(error)
+                return _flow_result(
+                    False,
+                    "zero_score",
+                    data=_daily_tree_data(
+                        phase="blocked",
+                        state=state,
+                        runs=runs,
+                        rewards=rewards,
+                        errors=errors,
+                    ),
+                    events=events,
+                    error=error,
+                )
+
+            next_state = _authoritative_tree_state(submit_result.data)
+            next_known = (next_state or {}).get("quota_known") or {}
+            next_quota = (next_state or {}).get(mode) or {}
+            progressed = (
+                next_known.get(mode)
+                and (
+                    _int_value(next_quota.get("used"), 0) > _int_value(quota_before.get("used"), 0)
+                    or _int_value(next_quota.get("remaining"), 0) < _int_value(quota_before.get("remaining"), 0)
+                )
+            )
+            if not progressed:
+                reconcile_result, reconciled_state = read_state(f"{mode}:reconcile")
+                if not reconcile_result.ok:
+                    error = sanitize_webapp_secret_text(reconcile_result.error)
+                    errors.append(f"{mode}:reconcile:{error or 'failed'}")
+                    return _flow_result(False, "quota_unknown", data=_daily_tree_data(phase="unknown", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                next_state = reconciled_state
+                next_known = (next_state or {}).get("quota_known") or {}
+                next_quota = (next_state or {}).get(mode) or {}
+                progressed = (
+                    next_known.get(mode)
+                    and (
+                        _int_value(next_quota.get("used"), 0) > _int_value(quota_before.get("used"), 0)
+                        or _int_value(next_quota.get("remaining"), 0) < _int_value(quota_before.get("remaining"), 0)
+                    )
+                )
+            if next_state is None or not progressed:
+                error = f"{mode} quota did not advance after confirmed submit"
+                errors.append(error)
+                return _flow_result(False, "quota_unknown", data=_daily_tree_data(phase="blocked", state=next_state or state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+            state = next_state
+
+    complete = all(
+        (state.get("quota_known") or {}).get(mode)
+        and _int_value((state.get(mode) or {}).get("remaining"), -1) == 0
+        for mode in ("jump", "fly")
+    )
+    phase = "completed" if complete else "blocked"
+    status = "completed" if complete else "quota_unknown"
+    return _flow_result(complete, status, data=_daily_tree_data(phase=phase, state=state, runs=runs, rewards=rewards, errors=errors), events=events, error="" if complete else "daily quota not explicitly exhausted")
 
 
 def run_tree_miniapp_start_lab_flow(
@@ -1077,6 +1414,50 @@ async def run_tree_miniapp_game_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_tree_miniapp_daily_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    rng=None,
+    capture_sink=None,
+    capture_source="",
+    score_profiles=None,
+):
+    adapter = adapter or build_tree_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = await request_tree_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        return await asyncio.to_thread(
+            run_tree_miniapp_daily_lab_flow,
+            token=token,
+            init_data=init_data,
+            transport=transport or _requests_transport,
+            adapter=adapter,
+            rng=rng,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            score_profiles=score_profiles,
+        )
+    except Exception as exc:
+        return _flow_result(
+            False,
+            "failed",
+            data=_daily_tree_data(phase="blocked", errors=[sanitize_webapp_secret_text(exc)]),
+            error=exc,
+        )
+
+
 __all__ = [
     "TREE_MINIAPP_ENDPOINTS",
     "TREE_MINIAPP_FLY_MAX_BEAM_WIDTH",
@@ -1099,12 +1480,15 @@ __all__ = [
     "normalize_tree_score_profile",
     "parse_tree_miniapp_state",
     "request_tree_miniapp_init_data",
+    "run_tree_miniapp_daily_lab_flow",
+    "run_tree_miniapp_daily_production_flow",
     "run_tree_miniapp_game_lab_flow",
     "run_tree_miniapp_game_production_flow",
     "run_tree_miniapp_start_lab_flow",
     "run_tree_miniapp_start_production_flow",
     "simulate_tree_fly_run",
     "simulate_tree_jump_run",
+    "summarize_tree_rewards",
     "tree_miniapp_seed_hash",
     "summarize_tree_entry",
 ]

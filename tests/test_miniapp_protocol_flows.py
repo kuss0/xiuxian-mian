@@ -1403,6 +1403,232 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual(["start", "run_start"], calls)
         self.assertEqual(0, result["data"]["proof_summary"]["score"])
 
+    def test_tree_daily_flow_runs_dynamic_jump_then_fly_quota_to_completion(self):
+        calls = []
+        used = {"jump": 0, "fly": 0}
+        limits = {"jump": 2, "fly": 1}
+
+        def state_payload():
+            return {
+                "ok": True,
+                "council": {
+                    "daily": {
+                        mode: {
+                            "used": used[mode],
+                            "limit": limits[mode],
+                            "remaining": limits[mode] - used[mode],
+                        }
+                        for mode in ("jump", "fly")
+                    },
+                },
+            }
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            mode = request["payload"].get("mode", "")
+            calls.append((endpoint, mode))
+            if endpoint == "start":
+                return 200, state_payload()
+            if endpoint == "run_start":
+                return 200, {
+                    "ok": True,
+                    "run": {
+                        "mode": mode,
+                        "runToken": f"run_{mode}_{used[mode]}",
+                        "seed": f"seed-{mode}-{used[mode]}",
+                    },
+                }
+            if endpoint == "run_submit":
+                used[mode] += 1
+                return 200, {
+                    "ok": True,
+                    "score": request["payload"]["proof"]["clientScore"],
+                    "rewards": [{"name": "灵木", "qty": 1}],
+                }
+            raise AssertionError(endpoint)
+
+        with patch.object(
+            tree_miniapp,
+            "build_tree_game_proof",
+            side_effect=lambda mode, _run, **_kwargs: (
+                {"durationMs": 1, "clientScore": 18, "charges": [0.5]} if mode == "jump" else {"durationMs": 1, "clientScore": 17, "flaps": [100]},
+                {"mode": mode, "score": 18 if mode == "jump" else 17, "targetScore": 18 if mode == "jump" else 17, "durationMs": 1},
+            ),
+        ):
+            result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+                token="tree_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                transport=transport,
+                sleeper=lambda _delay: None,
+                rng=random.Random(1),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("completed", result["status"])
+        self.assertEqual("completed", result["data"]["phase"])
+        self.assertEqual(0, result["data"]["quotas"]["jump"]["remaining"])
+        self.assertEqual(0, result["data"]["quotas"]["fly"]["remaining"])
+        self.assertEqual(["jump", "jump", "fly"], [item["mode"] for item in result["data"]["runs"]])
+        self.assertEqual({"灵木": 3}, result["data"]["rewards"]["items"])
+        run_modes = [mode for endpoint, mode in calls if endpoint == "run_start"]
+        self.assertEqual(["jump", "jump", "fly"], run_modes)
+
+    def test_tree_daily_flow_uses_submit_quota_without_extra_reconcile(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            mode = request["payload"].get("mode", "")
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "council": {"daily": {
+                        "jump": {"used": 0, "limit": 1, "remaining": 1},
+                        "fly": {"used": 1, "limit": 1, "remaining": 0},
+                    }},
+                }
+            if endpoint == "run_start":
+                return 200, {"ok": True, "run": {"runToken": "run-once", "seed": "seed-once"}}
+            if endpoint == "run_submit":
+                return 200, {
+                    "ok": True,
+                    "score": 16,
+                    "seasonState": {"daily": {
+                        "jump": {"used": 1, "limit": 1, "remaining": 0},
+                        "fly": {"used": 1, "limit": 1, "remaining": 0},
+                    }},
+                }
+            raise AssertionError((endpoint, mode))
+
+        with patch.object(
+            tree_miniapp,
+            "build_tree_game_proof",
+            return_value=(
+                {"durationMs": 1, "clientScore": 16, "charges": [0.5]},
+                {"mode": "jump", "score": 16, "targetScore": 16, "durationMs": 1},
+            ),
+        ):
+            result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+                token="tree_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                transport=transport,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "run_start", "run_submit"], calls)
+
+    def test_tree_daily_flow_stops_unknown_non_idempotent_request_without_retry(self):
+        for failing_endpoint in ("run_start", "run_submit"):
+            calls = []
+
+            def transport(request):
+                endpoint = request["safe_summary"]["endpoint"]
+                calls.append(endpoint)
+                if endpoint == "start":
+                    return 200, {
+                        "ok": True,
+                        "council": {"daily": {
+                            "jump": {"used": 0, "limit": 1, "remaining": 1},
+                            "fly": {"used": 0, "limit": 1, "remaining": 1},
+                        }},
+                    }
+                if endpoint == "run_start" and failing_endpoint == "run_start":
+                    raise TimeoutError("unknown after send")
+                if endpoint == "run_start":
+                    return 200, {"ok": True, "run": {"runToken": "run-once", "seed": "seed-once"}}
+                if endpoint == "run_submit":
+                    raise TimeoutError("unknown after submit")
+                raise AssertionError(endpoint)
+
+            with patch.object(
+                tree_miniapp,
+                "build_tree_game_proof",
+                return_value=(
+                    {"durationMs": 1, "clientScore": 15, "charges": [0.5]},
+                    {"mode": "jump", "score": 15, "targetScore": 15, "durationMs": 1},
+                ),
+            ):
+                result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+                    token="tree_SECRET999",
+                    init_data="query_id=abc&hash=VERY_SECRET",
+                    transport=transport,
+                    sleeper=lambda _delay: None,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual("result_unknown", result["status"])
+            self.assertEqual("unknown", result["data"]["phase"])
+            self.assertEqual(1, calls.count(failing_endpoint))
+            self.assertNotIn("reconcile", [event["step"] for event in result["events"]])
+
+    def test_tree_daily_flow_stops_after_first_server_zero_score(self):
+        calls = []
+        used = {"jump": 1, "fly": 0}
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            mode = request["payload"].get("mode", "")
+            calls.append((endpoint, mode))
+            if endpoint == "start":
+                return 200, {"ok": True, "council": {"daily": {
+                    "jump": {"used": 1, "limit": 1, "remaining": 0},
+                    "fly": {"used": used["fly"], "limit": 3, "remaining": 3 - used["fly"]},
+                }}}
+            if endpoint == "run_start":
+                return 200, {"ok": True, "run": {"runToken": "run-fly", "seed": "seed-fly"}}
+            if endpoint == "run_submit":
+                used["fly"] += 1
+                return 200, {"ok": True, "score": 0}
+            raise AssertionError(endpoint)
+
+        with patch.object(
+            tree_miniapp,
+            "build_tree_game_proof",
+            return_value=(
+                {"durationMs": 1, "clientScore": 18, "flaps": [100]},
+                {"mode": "fly", "score": 18, "targetScore": 18, "durationMs": 1},
+            ),
+        ):
+            result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+                token="tree_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                transport=transport,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("zero_score", result["status"])
+        self.assertEqual("blocked", result["data"]["phase"])
+        self.assertEqual(1, used["fly"])
+        self.assertEqual(1, sum(1 for endpoint, _mode in calls if endpoint == "run_submit"))
+        self.assertEqual(0, result["data"]["runs"][0]["score"])
+
+    def test_tree_daily_flow_requires_explicit_quota_for_both_modes(self):
+        calls = []
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 200, {
+                "ok": True,
+                "council": {"daily": {
+                    "jump": {"used": 1, "limit": 1, "remaining": 0},
+                }},
+            }
+
+        result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            sleeper=lambda _delay: None,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("quota_unknown", result["status"])
+        self.assertEqual("blocked", result["data"]["phase"])
+        self.assertEqual(["start"], calls)
+
     def test_capture_store_direct_raw_dict_append_is_sanitized(self):
         store = webapp_core.MiniAppCaptureStore()
 
