@@ -255,6 +255,47 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(280, proof["clientStats"]["damage"])
         self.assertEqual(2, proof["clientStats"]["bestCombo"])
 
+    def test_joined_battle_polls_until_room_is_locked(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "state" and calls.count("state") == 1:
+                return 200, {"ok": True, "boss": {"roomStatus": "waiting", "participantCount": 4}}
+            if endpoint == "state":
+                return 200, {
+                    "ok": True,
+                    "elapsedMs": 0,
+                    "challenge": {
+                        "challengeId": "challenge-wait",
+                        "windows": [{"id": "w1", "centerMs": 1500, "hitMs": 560, "perfectMs": 180}],
+                    },
+                }
+            if endpoint == "hit":
+                return 200, {"ok": True, "playerHp": 100, "clientStats": {"hits": 1}}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"settled": True}}
+            self.fail(endpoint)
+
+        receipt = world_boss_miniapp.WorldBossJoinReceipt(
+            True, "joined", player_id="77", identity_id=7700, account_id=7,
+        )
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            receipt,
+            token="qyz_WAIT",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            rng=random.Random(5),
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["state", "state", "hit", "finish"], calls)
+        self.assertGreaterEqual(clock.sleeps[0], 1.5)
+
     def test_unknown_start_is_not_retried_and_state_calibrates_join(self):
         calls = []
 

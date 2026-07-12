@@ -819,8 +819,10 @@ def run_world_boss_joined_battle_lab_flow(
     capture_sink=None,
     capture_source="",
     events=None,
+    battle_wait_timeout_sec=65.0,
+    state_poll_interval_sec=1.5,
 ):
-    """Refresh state, discard expired windows, then execute one joined battle."""
+    """Wait for room lock, refresh state, then execute one joined battle."""
 
     adapter = adapter or build_world_boss_miniapp_adapter()
     sleeper = sleeper or time.sleep
@@ -831,29 +833,41 @@ def run_world_boss_joined_battle_lab_flow(
         error = getattr(receipt, "error", "join not confirmed")
         return _flow_result(False, status, error=error, events=events)
 
-    state_request = build_world_boss_miniapp_request(
-        "state", token=token, init_data=init_data, adapter=adapter,
-    )
-    state_result = execute_miniapp_http_request(
-        state_request,
-        transport,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="battle_state_refresh",
-    )
-    _append_http_event(events, "battle_state_refresh", state_result)
-    if not state_result.ok:
-        status = classify_world_boss_miniapp_error(state_result.error)
-        return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
-    state_data = state_result.data if isinstance(state_result.data, dict) else {}
-    if _verification_required(state_data):
-        return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
-    payload_error = _error_from_payload(state_data)
-    if payload_error:
-        return _flow_result(False, payload_error, error=payload_error, data=state_data, events=events)
+    wait_deadline = float(clock()) + max(0.0, float(battle_wait_timeout_sec or 0))
+    state_data = {}
+    challenge = {}
+    while True:
+        state_request = build_world_boss_miniapp_request(
+            "state", token=token, init_data=init_data, adapter=adapter,
+        )
+        state_result = execute_miniapp_http_request(
+            state_request,
+            transport,
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="battle_state_refresh",
+        )
+        _append_http_event(events, "battle_state_refresh", state_result)
+        if not state_result.ok:
+            status = classify_world_boss_miniapp_error(state_result.error)
+            if status == "boss_battle_not_started" and float(clock()) < wait_deadline:
+                sleeper(max(0.1, float(state_poll_interval_sec or 1.5)))
+                continue
+            return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
+        state_data = state_result.data if isinstance(state_result.data, dict) else {}
+        if _verification_required(state_data):
+            return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
+        payload_error = _error_from_payload(state_data)
+        if payload_error and payload_error != "boss_battle_not_started":
+            return _flow_result(False, payload_error, error=payload_error, data=state_data, events=events)
+        challenge = _challenge_from_payload(state_data) or dict(receipt.challenge or {})
+        if challenge:
+            break
+        if float(clock()) >= wait_deadline:
+            return _flow_result(False, "battle_wait_timeout", error="world boss battle not started", events=events)
+        sleeper(max(0.1, float(state_poll_interval_sec or 1.5)))
 
-    challenge = _challenge_from_payload(state_data) or dict(receipt.challenge or {})
     if not challenge:
         return _flow_result(False, "not_ready", error="world boss challenge missing", events=events)
     initial_elapsed_ms = _current_elapsed_ms(state_data, challenge)
