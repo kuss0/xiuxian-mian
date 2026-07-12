@@ -3,6 +3,7 @@ import asyncio
 import sys
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -633,6 +634,91 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["yuanying_phase"])
             self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
+
+    async def test_yuanying_sect_fresh_closure_auto_continues_before_estimated_due(self):
+        send_as_id = 7538826434
+        now = 1_700_000_355.0
+        self._prepare_identity(send_as_id, "Lpprceqei")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="元婴宗")
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "running"
+            state_module.state["next_yuanying_time"] = now + 13 * 60
+            state_module.state["last_yuanying_command_time"] = now - 8 * 60 * 60
+
+        text = (
+            "【元婴闭关结算】\n"
+            "你的元婴在过去 8 小时内为你增加了 10400 点修为！\n"
+            "- 二级妖丹x3\n- 养魂木x1"
+        )
+        reply_to = SimpleNamespace(
+            id=51807,
+            raw_text=".野外历练 谨慎",
+            date=datetime.fromtimestamp(now - 1, timezone.utc),
+        )
+
+        with (
+            patch.object(yuanying.random, "uniform", return_value=60),
+            patch.object(yuanying, "save_state"),
+            patch.object(yuanying, "console_log"),
+            patch.object(yuanying, "update_yuanying_block_log_state", new=AsyncMock()) as block_mock,
+            patch.object(yuanying, "finalize_summary_broadcast", new=AsyncMock()) as finalize_mock,
+        ):
+            await yuanying.handle_yuanying_summary_broadcast(
+                text,
+                now,
+                reply_to=reply_to,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "wild_training",
+                    "reply_to_msg_id": 51807,
+                    "matched_via": "sent_message_log",
+                },
+            )
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(now, state_module.state["last_yuanying_command_time"])
+            self.assertEqual(
+                now + yuanying.YUANYING_CD + yuanying.CD_BUFFER_SEC + 60,
+                state_module.state["next_yuanying_time"],
+            )
+        block_mock.assert_awaited_once_with(waiting=False, protect=False)
+        finalize_mock.assert_not_awaited()
+
+    async def test_yuanying_sect_duplicate_closure_does_not_move_new_cycle(self):
+        send_as_id = 7538826434
+        now = 1_700_000_356.0
+        next_time = now + 8 * 60 * 60
+        self._prepare_identity(send_as_id, "Lpprceqei")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="元婴宗")
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "running"
+            state_module.state["next_yuanying_time"] = next_time
+            state_module.state["last_yuanying_command_time"] = now - 1
+
+        with (
+            patch.object(yuanying, "save_state"),
+            patch.object(yuanying, "console_log"),
+            patch.object(yuanying, "send_audit_log", new=AsyncMock()),
+        ):
+            await yuanying.handle_yuanying_summary_broadcast(
+                "【元婴闭关结算】\n你的元婴闭关已经结束。",
+                now,
+                reply_to=SimpleNamespace(
+                    id=51807,
+                    raw_text=".野外历练 谨慎",
+                    date=datetime.fromtimestamp(now - 2, timezone.utc),
+                ),
+                reply_context={"send_as_id": send_as_id, "family": "wild_training", "reply_to_msg_id": 51807},
+            )
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(next_time, state_module.state["next_yuanying_time"])
 
     async def test_yuanying_running_reply_accepts_retreat_task_variant(self):
         send_as_id = 8659059201

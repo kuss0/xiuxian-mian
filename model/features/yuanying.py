@@ -102,6 +102,7 @@ register_phaseful_spec(YUANYING_SPEC)
 
 YUANYING_SECT_NAME = "元婴宗"
 YUANYING_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
+YUANYING_SECT_CLOSURE_ROOT_MAX_AGE_SEC = 2 * 60
 
 
 def get_yuanying_launch_command(send_as_id=None):
@@ -345,7 +346,33 @@ def _reply_context_identity(reply_context):
     return identity_id if identity_id > 0 and has_identity(identity_id) else 0
 
 
-def match_yuanying_summary_identity(text, now=None, reply_context=None):
+def _is_fresh_yuanying_sect_closure(text, now, reply_to=None, reply_context=None, send_as_id=0):
+    compact_text = RE_WHITESPACE.sub("", text or "")
+    if "元婴闭关结算" not in compact_text:
+        return False
+    if int((reply_context or {}).get("reply_to_msg_id") or 0) <= 0:
+        return False
+    if _is_yuanying_launch_command(getattr(reply_to, "raw_text", "")):
+        return False
+    profile = get_send_as_profile(send_as_id or get_current_identity_id()) or {}
+    if str(profile.get("sect_name") or "").strip() != YUANYING_SECT_NAME:
+        return False
+    root_date = getattr(reply_to, "date", None)
+    if root_date is None:
+        return False
+    try:
+        root_sent_at = float(root_date.timestamp())
+        root_age = float(now or 0) - root_sent_at
+    except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+        return False
+    last_cycle_at = float(state.get("last_yuanying_command_time", 0) or 0)
+    return (
+        -5 <= root_age <= YUANYING_SECT_CLOSURE_ROOT_MAX_AGE_SEC
+        and root_sent_at > last_cycle_at
+    )
+
+
+def match_yuanying_summary_identity(text, now=None, reply_to=None, reply_context=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
     old_summary_kw_hit = "元神归窍总结" in compact_text
     new_summary_kw_hit = (
@@ -359,7 +386,14 @@ def match_yuanying_summary_identity(text, now=None, reply_context=None):
     reply_identity_id = _reply_context_identity(reply_context)
     if reply_identity_id:
         with use_identity(reply_identity_id):
-            if state["yuanying_enabled"] and _is_yuanying_summary_candidate_phase(now):
+            fresh_sect_closure = _is_fresh_yuanying_sect_closure(
+                text,
+                now,
+                reply_to=reply_to,
+                reply_context=reply_context,
+                send_as_id=reply_identity_id,
+            )
+            if state["yuanying_enabled"] and (_is_yuanying_summary_candidate_phase(now) or fresh_sect_closure):
                 return reply_identity_id, [reply_identity_id], old_summary_kw_hit, new_summary_kw_hit
         return None, [], old_summary_kw_hit, new_summary_kw_hit
 
@@ -385,7 +419,12 @@ def match_yuanying_summary_identity(text, now=None, reply_context=None):
 
 
 async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None, reply_context=None):
-    target_id, matched_ids, old_summary_kw_hit, new_summary_kw_hit = match_yuanying_summary_identity(text, now=now, reply_context=reply_context)
+    target_id, matched_ids, old_summary_kw_hit, new_summary_kw_hit = match_yuanying_summary_identity(
+        text,
+        now=now,
+        reply_to=reply_to,
+        reply_context=reply_context,
+    )
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
@@ -406,6 +445,17 @@ async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None
     )
 
     with use_identity(target_id):
+        if _is_fresh_yuanying_sect_closure(
+            text,
+            now,
+            reply_to=reply_to,
+            reply_context=reply_context,
+            send_as_id=target_id,
+        ):
+            mark_yuanying_success(now)
+            await update_yuanying_block_log_state(waiting=False, protect=False)
+            console_log("👶 元婴宗闭关已结算并自动续闭，刷新下一轮观察时间。")
+            return
         await finalize_summary_broadcast(YUANYING_SPEC, now)
 
 
