@@ -172,6 +172,11 @@ class HealthObserverTests(unittest.TestCase):
     def test_warn_line_ignores_no_resend_context(self):
         self.assertFalse(health_observer.is_warn_journal_line("启动校验：查询灵树状态（无补发）。"))
         self.assertFalse(health_observer.is_warn_journal_line("状态确认，不补发。"))
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "口径：仅统计真实天道战报；目标CD、拒绝、超时和未发送不计。"
+            )
+        )
         self.assertFalse(health_observer.is_warn_journal_line("野外历练回复超时，准备补发一次。"))
         self.assertFalse(
             health_observer.is_warn_journal_line(
