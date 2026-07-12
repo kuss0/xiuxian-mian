@@ -34,6 +34,7 @@ TREE_MINIAPP_GAME_KEY = "tree"
 TREE_MINIAPP_LABEL = "灵眼之树"
 TREE_MINIAPP_DEFAULT_API_BASE_URL = "https://asc.aiopenai.app"
 TREE_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
+TREE_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (r"hantianzun\d+_bot",)
 TREE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-spirit-tree/"
 TREE_MINIAPP_ENDPOINTS = {
     "start": f"{TREE_MINIAPP_API_PATH_PREFIX}start",
@@ -84,6 +85,7 @@ def build_tree_miniapp_adapter(
         game_key=TREE_MINIAPP_GAME_KEY,
         label=TREE_MINIAPP_LABEL,
         bot_username=bot_username,
+        allowed_bot_username_patterns=TREE_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS,
         api_base_url=api_base_url,
         allowed_web_hosts=("t.me", "telegram.me", "asc.aiopenai.app"),
         allowed_api_hosts=("asc.aiopenai.app",),

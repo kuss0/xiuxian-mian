@@ -1639,6 +1639,28 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("start_param not allowed", launch.reason)
         self.assertEqual({}, args)
 
+    def test_tree_entry_accepts_tianzun_shard_bot_but_rejects_unknown_bot(self):
+        message_text = (
+            "【落云宗 · 灵眼之树】\n"
+            "@imcanonical_ai 已抵达云梦山灵树台。\n\n"
+            "点击下方 进入灵树，照看灵眼之树与本轮机缘。"
+        )
+        shard_url = "https://t.me/hantianzun27_bot?startapp=tree_SECRET999"
+        event = self._reply_markup_webapp_event(url=shard_url, text="进入灵树")
+
+        extracted = tree_miniapp.extract_tree_miniapp_launch(event, message_text=message_text)
+
+        self.assertEqual("tree_SECRET999", extracted["token"])
+        self.assertEqual(shard_url, extracted["webview_url"])
+        self.assertEqual("hantianzun27_bot", extracted["safe_summary"]["bot_username"])
+
+        bad_url = "https://t.me/evil_bot?startapp=tree_SECRET999"
+        bad_event = self._reply_markup_webapp_event(url=bad_url, text="进入灵树")
+        self.assertEqual(
+            {},
+            tree_miniapp.extract_tree_miniapp_launch(bad_event, message_text=message_text),
+        )
+
     def test_cave_treasure_state_keeps_sense_remaining_and_games_used_separate(self):
         parsed = cave_treasure_miniapp.parse_cave_treasure_state({
             "ok": True,
