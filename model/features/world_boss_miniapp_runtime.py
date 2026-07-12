@@ -167,11 +167,12 @@ async def run_world_boss_miniapp_event(
             await asyncio.sleep(max(1.0, min(15.0, float(account_gap_sec or 3))))
 
     for identity_id, init_data, receipt in contexts:
+        battle_token = getattr(receipt, "session_token", "") or launch["token"]
         try:
             battle = await asyncio.to_thread(
                 run_world_boss_joined_battle_lab_flow,
                 receipt,
-                token=launch["token"],
+                token=battle_token,
                 init_data=init_data,
                 transport=transport,
                 capture_sink=capture_sink,

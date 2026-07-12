@@ -159,9 +159,28 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(7),
         )
         self.assertEqual(["early", "middle", "late"], [item["windowId"] for item in plan])
-        self.assertEqual([1500, 3000, 4500], [item["elapsedMs"] for item in plan])
-        self.assertTrue(all(700 <= item["holdMs"] <= 1100 for item in plan))
+        self.assertTrue(all(abs(item["elapsedMs"] - item["centerMs"]) <= 24 for item in plan))
+        self.assertTrue(all(548 <= item["holdMs"] <= 572 for item in plan))
+        self.assertTrue(all(item["hitMs"] == 560 for item in plan))
+        self.assertTrue(all(item["chargeStartMs"] == item["elapsedMs"] - item["holdMs"] for item in plan))
         self.assertTrue(all(item["stance"] == "强攻" for item in plan))
+
+    def test_action_plan_tracks_ring_hit_width_without_overcharging(self):
+        plan = world_boss_miniapp.build_world_boss_action_plan(
+            {
+                "challengeId": "challenge-ring",
+                "windows": [
+                    {"id": "normal", "centerMs": 2000, "hitMs": 700, "perfectMs": 180},
+                    {"id": "wide", "centerMs": 5000, "hitMs": 1800, "perfectMs": 180},
+                ],
+            },
+            rng=random.Random(13),
+        )
+
+        self.assertTrue(688 <= plan[0]["holdMs"] <= 712)
+        self.assertLessEqual(plan[1]["holdMs"], 1250)
+        self.assertGreaterEqual(plan[1]["holdMs"], 1238)
+        self.assertTrue(all(item["holdMs"] <= 1250 for item in plan))
 
     def test_state_fallback_waits_real_windows_then_hits_and_finishes_once(self):
         calls = []
@@ -173,7 +192,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             calls.append(endpoint)
             payloads.append(dict(request["payload"]))
             if endpoint == "start":
-                return 200, {"ok": True, "joined": True}
+                return 200, {"ok": True, "joined": True, "sessionToken": "qyz_SESSION"}
             if endpoint == "state":
                 return 200, {
                     "ok": True,
@@ -219,14 +238,16 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("settled", result["status"])
         self.assertEqual(["start", "state", "hit", "hit", "finish"], calls)
-        self.assertEqual([1.0, 1.5], clock.sleeps)
+        self.assertEqual("qyz_SESSION", payloads[1]["token"])
+        self.assertTrue(all(delay > 0 for delay in clock.sleeps))
         self.assertEqual("w1", payloads[2]["windowId"])
-        self.assertEqual(1500, payloads[2]["elapsedMs"])
+        self.assertLessEqual(abs(payloads[2]["elapsedMs"] - 1500), 24)
+        self.assertGreaterEqual(payloads[2]["holdMs"], 520)
         self.assertEqual("w2", payloads[3]["windowId"])
         proof = payloads[-1]["bossProof"]
         self.assertEqual("qyz_focus_burst_v2", proof["mode"])
         self.assertEqual("强攻", proof["stance"])
-        self.assertEqual([1500, 3000], [item["t"] for item in proof["actions"]])
+        self.assertTrue(all(abs(item["t"] - center) <= 24 for item, center in zip(proof["actions"], (1500, 3000))))
         self.assertEqual(850, proof["playerHp"])
         self.assertFalse(proof["dead"])
         self.assertIs(proof["realtimeDamageApplied"], True)
@@ -279,7 +300,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
                     "elapsedMs": 0,
                     "challenge": {
                         "challengeId": f"challenge-{token}",
-                        "windows": [{"windowId": "w1", "centerMs": 0}],
+                        "windows": [{"windowId": "w1", "centerMs": 1500}],
                     },
                 }
             if endpoint == "hit":
@@ -328,7 +349,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
                         "challengeId": "challenge-filter",
                         "windows": [
                             {"windowId": "expired", "centerMs": 1000},
-                            {"windowId": "future", "centerMs": 3000},
+                            {"windowId": "future", "centerMs": 4000},
                         ],
                     },
                 }
@@ -369,7 +390,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             if endpoint == "state":
                 return 200, {
                     "ok": True,
-                    "challenge": {"challengeId": "challenge-limit", "windows": [{"windowId": "w1", "centerMs": 0}]},
+                    "challenge": {"challengeId": "challenge-limit", "windows": [{"windowId": "w1", "centerMs": 1500}]},
                 }
             return 409, {"ok": False, "error": "boss_action_limit"}
 

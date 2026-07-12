@@ -35,7 +35,10 @@ WORLD_BOSS_MINIAPP_ENDPOINTS = {
 WORLD_BOSS_MINIAPP_START_PARAM_PATTERN = r"qyz_[A-Za-z0-9_-]{4,160}"
 WORLD_BOSS_PROOF_MODE = "qyz_focus_burst_v2"
 WORLD_BOSS_STANCE = "强攻"
-WORLD_BOSS_HOLD_RANGE_MS = (700, 1100)
+WORLD_BOSS_PERFECT_HOLD_MIN_MS = 520
+WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
+WORLD_BOSS_DEFAULT_HIT_MS = 560
+WORLD_BOSS_HOLD_JITTER_MS = 12
 WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
 
 WORLD_BOSS_ERROR_TYPES = (
@@ -89,6 +92,7 @@ class WorldBossJoinReceipt:
     verification_required: bool = False
     identity_choices: tuple = field(default_factory=tuple, repr=False)
     challenge: dict = field(default_factory=dict, repr=False)
+    session_token: str = field(default="", repr=False)
     error: str = ""
 
     def safe_summary(self):
@@ -104,6 +108,7 @@ class WorldBossJoinReceipt:
             "verification_required": bool(self.verification_required),
             "identity_choice_count": len(self.identity_choices),
             "has_challenge": bool(self.challenge),
+            "has_session_token": bool(self.session_token),
             "error": sanitize_webapp_secret_text(self.error),
         }
 
@@ -378,6 +383,10 @@ def parse_world_boss_join_response(
         )
 
     challenge = _challenge_from_payload(data)
+    session_token = str(data.get("sessionToken") or data.get("session_token") or "").strip()
+    if not session_token:
+        session = _mapping_from_payload(data, ("session",))
+        session_token = str(session.get("token") or session.get("sessionToken") or "").strip()
     player = _mapping_from_payload(data, ("player", "identity"))
     room = _mapping_from_payload(data, ("room",))
     resolved_player_id = str(
@@ -406,6 +415,7 @@ def parse_world_boss_join_response(
         account_id=_int_value(account_id),
         calibrated=bool(calibrated),
         challenge=dict(challenge or {}),
+        session_token=session_token,
         error="" if joined else "join state not confirmed",
     )
 
@@ -429,7 +439,7 @@ def _window_center_ms(window):
     return -1
 
 
-def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=WORLD_BOSS_HOLD_RANGE_MS):
+def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
     rng = rng or random
     challenge = dict(challenge or {})
     challenge_id = str(challenge.get("challengeId") or "").strip()
@@ -438,31 +448,53 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=WORLD_BOS
     windows = challenge.get("windows")
     if not isinstance(windows, list) or not windows:
         raise ValueError("challenge windows missing")
-    try:
-        hold_low, hold_high = hold_range_ms
-        hold_low = max(700, int(hold_low))
-        hold_high = min(1100, int(hold_high))
-    except (TypeError, ValueError, OverflowError):
-        hold_low, hold_high = WORLD_BOSS_HOLD_RANGE_MS
-    if hold_low > hold_high:
-        raise ValueError("invalid hold range")
-
     plan = []
     seen = set()
     for window in windows:
         if not isinstance(window, dict):
             continue
         window_id = str(window.get("windowId") or window.get("id") or "").strip()
-        elapsed_ms = _window_center_ms(window)
-        if not window_id or window_id in seen or elapsed_ms < 0:
+        center_ms = _window_center_ms(window)
+        if not window_id or window_id in seen or center_ms < 0:
             continue
         seen.add(window_id)
-        hold_ms = int(rng.randint(hold_low, hold_high))
+        hit_ms = max(1, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS))
+        # The outer ring changes into the hit color at center-hitMs. Begin
+        # charging there and release around the brightest point (centerMs).
+        hold_target_ms = max(
+            WORLD_BOSS_PERFECT_HOLD_MIN_MS,
+            min(WORLD_BOSS_PERFECT_HOLD_MAX_MS, hit_ms),
+        )
+        if hold_range_ms is not None:
+            try:
+                hold_low, hold_high = hold_range_ms
+                hold_low = max(WORLD_BOSS_PERFECT_HOLD_MIN_MS, int(hold_low))
+                hold_high = min(WORLD_BOSS_PERFECT_HOLD_MAX_MS, int(hold_high))
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("invalid hold range")
+            if hold_low > hold_high:
+                raise ValueError("invalid hold range")
+            hold_ms = int(rng.randint(hold_low, hold_high))
+        else:
+            hold_ms = max(
+                WORLD_BOSS_PERFECT_HOLD_MIN_MS,
+                min(
+                    WORLD_BOSS_PERFECT_HOLD_MAX_MS,
+                    hold_target_ms + int(rng.randint(-WORLD_BOSS_HOLD_JITTER_MS, WORLD_BOSS_HOLD_JITTER_MS)),
+                ),
+            )
+        perfect_ms = max(0, _int_value(window.get("perfectMs"), 150))
+        release_jitter = min(24, max(0, int(perfect_ms * 0.15)))
+        elapsed_ms = center_ms + int(rng.randint(-release_jitter, release_jitter)) if release_jitter else center_ms
         plan.append({
             "challengeId": challenge_id,
             "windowId": window_id,
             "elapsedMs": elapsed_ms,
             "holdMs": hold_ms,
+            "centerMs": center_ms,
+            "perfectMs": perfect_ms,
+            "hitMs": hit_ms,
+            "chargeStartMs": max(0, elapsed_ms - hold_ms),
             "stance": WORLD_BOSS_STANCE,
         })
     plan.sort(key=lambda item: (item["elapsedMs"], item["windowId"]))
@@ -472,13 +504,13 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=WORLD_BOS
 
 
 def filter_world_boss_action_plan(plan, current_elapsed_ms, *, grace_ms=0):
-    """Keep only windows whose target has not already passed."""
+    """Keep windows with enough time left for the minimum valid charge."""
 
     cutoff_ms = max(0, _int_value(current_elapsed_ms)) - max(0, _int_value(grace_ms))
     return [
         dict(action)
         for action in plan or ()
-        if _int_value((action or {}).get("elapsedMs"), -1) >= cutoff_ms
+        if _int_value((action or {}).get("elapsedMs"), -1) - cutoff_ms >= WORLD_BOSS_PERFECT_HOLD_MIN_MS
     ]
 
 
@@ -843,7 +875,8 @@ def run_world_boss_joined_battle_lab_flow(
     executed_actions = []
     for action in plan:
         current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
-        if current_elapsed_ms > int(action["elapsedMs"]):
+        available_charge_ms = int(action["elapsedMs"]) - current_elapsed_ms
+        if available_charge_ms < WORLD_BOSS_PERFECT_HOLD_MIN_MS:
             events.append({
                 "step": "skip_expired_window",
                 "ok": True,
@@ -851,18 +884,36 @@ def run_world_boss_joined_battle_lab_flow(
                 "current_elapsed_ms": current_elapsed_ms,
             })
             continue
-        wait_ms = max(0, int(action["elapsedMs"]) - current_elapsed_ms)
-        if wait_ms:
-            sleeper(wait_ms / 1000.0)
-        events.append({"step": "wait_window", "ok": True, "windowId": action["windowId"], "wait_ms": wait_ms})
+        hold_ms = min(int(action["holdMs"]), available_charge_ms, WORLD_BOSS_PERFECT_HOLD_MAX_MS)
+        charge_start_ms = int(action["elapsedMs"]) - hold_ms
+        wait_before_charge_ms = max(0, charge_start_ms - current_elapsed_ms)
+        if wait_before_charge_ms:
+            sleeper(wait_before_charge_ms / 1000.0)
+        if hold_ms:
+            sleeper(hold_ms / 1000.0)
+        release_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+        executed_action = {
+            **action,
+            "elapsedMs": release_elapsed_ms,
+            "holdMs": hold_ms,
+            "chargeStartMs": charge_start_ms,
+        }
+        events.append({
+            "step": "release_window",
+            "ok": True,
+            "windowId": action["windowId"],
+            "wait_before_charge_ms": wait_before_charge_ms,
+            "hold_ms": hold_ms,
+            "release_elapsed_ms": release_elapsed_ms,
+        })
         hit_request = build_world_boss_miniapp_request(
             "hit",
             token=token,
             init_data=init_data,
             challenge_id=action["challengeId"],
             window_id=action["windowId"],
-            elapsed_ms=action["elapsedMs"],
-            hold_ms=action["holdMs"],
+            elapsed_ms=executed_action["elapsedMs"],
+            hold_ms=executed_action["holdMs"],
             adapter=adapter,
         )
         hit_result = execute_miniapp_http_request(
@@ -881,7 +932,7 @@ def run_world_boss_joined_battle_lab_flow(
         hit_data = hit_result.data if isinstance(hit_result.data, dict) else {}
         if _verification_required(hit_data):
             return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
-        executed_actions.append(action)
+        executed_actions.append(executed_action)
         hit_payloads.append(hit_data)
 
     if not executed_actions:
@@ -941,7 +992,7 @@ def run_world_boss_miniapp_lab_flow(
         return _flow_result(False, receipt.status, error=receipt.error, data=data, events=events)
     return run_world_boss_joined_battle_lab_flow(
         receipt,
-        token=token,
+        token=receipt.session_token or token,
         init_data=init_data,
         transport=transport,
         adapter=adapter,
@@ -987,7 +1038,7 @@ def run_world_boss_miniapp_batch_lab_flow(
             continue
         battle_results.append(run_world_boss_joined_battle_lab_flow(
             receipt,
-            token=entry.get("token"),
+            token=receipt.session_token or entry.get("token"),
             init_data=entry.get("init_data"),
             transport=transport,
             adapter=adapter,
