@@ -114,6 +114,49 @@ def _recent_game_bot_id_for_username(username, *, max_lines=20000):
     return 0
 
 
+def _recent_game_bot_usernames(*, exclude=(), max_lines=20000, limit=8):
+    excluded = {str(item or "").strip().lstrip("@").casefold() for item in exclude}
+    allowed_ids = set(get_game_bot_ids())
+    try:
+        names = os.listdir(MESSAGES_DIR)
+    except OSError:
+        return []
+    paths = sorted(
+        (
+            os.path.join(MESSAGES_DIR, name)
+            for name in names if name.endswith(".log") and name[:4].isdigit()
+        ),
+        reverse=True,
+    )[:2]
+    result = []
+    seen = set(excluded)
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                lines = deque(handle, maxlen=max(1, int(max_lines or 1)))
+        except OSError:
+            continue
+        for line in reversed(lines):
+            try:
+                payload = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            username = str(payload.get("sender_username") or "").strip().lstrip("@").casefold()
+            sender_id = int(payload.get("sender_id") or 0)
+            if (
+                username in seen
+                or not re.fullmatch(r"hantianzun\d{2}_bot", username, flags=re.IGNORECASE)
+                or not bool(payload.get("sender_is_bot"))
+                or sender_id not in allowed_ids
+            ):
+                continue
+            seen.add(username)
+            result.append(username)
+            if len(result) >= max(1, int(limit or 1)):
+                return result
+    return result
+
+
 def build_cave_treasure_miniapp_adapter(
     *,
     api_base_url=CAVE_TREASURE_MINIAPP_DEFAULT_API_BASE_URL,
@@ -285,23 +328,38 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
-        bot_username = launch.bot_username or adapter.bot_username
-        try:
-            bot = await client.get_entity(bot_username)
-        except Exception as exc:
-            if type(exc).__name__ not in {"UsernameInvalidError", "UsernameNotOccupiedError"}:
-                raise
-            bot_id = _recent_game_bot_id_for_username(bot_username)
-            if bot_id <= 0:
-                raise
-            bot = await client.get_entity(bot_id)
-        bot_input = await client.get_input_entity(bot)
-        result = await client(functions.messages.RequestMainWebViewRequest(
-            peer=bot_input,
-            bot=bot_input,
-            platform=launch.platform or adapter.platform,
-            start_param=launch.start_param,
-        ))
+        primary_bot = launch.bot_username or adapter.bot_username
+        bot_usernames = [primary_bot, *_recent_game_bot_usernames(exclude=(primary_bot,))]
+        result = None
+        last_bot_error = None
+        recoverable_errors = {"BotInvalidError", "UsernameInvalidError", "UsernameNotOccupiedError"}
+        for bot_username in bot_usernames:
+            try:
+                try:
+                    bot = await client.get_entity(bot_username)
+                except Exception as exc:
+                    if type(exc).__name__ not in recoverable_errors:
+                        raise
+                    bot_id = _recent_game_bot_id_for_username(bot_username)
+                    if bot_id <= 0:
+                        raise
+                    bot = await client.get_entity(bot_id)
+                bot_input = await client.get_input_entity(bot)
+                result = await client(functions.messages.RequestMainWebViewRequest(
+                    peer=bot_input,
+                    bot=bot_input,
+                    platform=launch.platform or adapter.platform,
+                    start_param=launch.start_param,
+                ))
+                break
+            except Exception as exc:
+                if type(exc).__name__ not in recoverable_errors:
+                    raise
+                last_bot_error = exc
+        if result is None:
+            if last_bot_error is not None:
+                raise last_bot_error
+            raise RuntimeError("没有可用的官方游戏 Bot 获取 WebView")
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")

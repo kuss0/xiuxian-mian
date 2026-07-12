@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -1508,6 +1509,49 @@ class WebAppCoreTests(unittest.TestCase):
                 bot_id = cave_treasure_miniapp._recent_game_bot_id_for_username("@hantianzun19_bot")
 
         self.assertEqual(8981353192, bot_id)
+
+    def test_cave_treasure_webview_falls_back_to_recent_verified_game_bot(self):
+        class BotInvalidError(Exception):
+            pass
+
+        class FakeClient:
+            def __init__(self):
+                self.requested = []
+
+            async def get_entity(self, entity):
+                return SimpleNamespace(username=str(entity))
+
+            async def get_input_entity(self, entity):
+                return entity
+
+            async def __call__(self, request):
+                username = str(getattr(getattr(request, "bot", None), "username", ""))
+                self.requested.append(username)
+                if username == "hantianzun19_bot":
+                    raise BotInvalidError("not a valid bot")
+                return SimpleNamespace(url="https://asc.aiopenai.app/#tgWebAppData=query_id%3Dabc%26hash%3DSECRET")
+
+        class RpcSlot:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        client = FakeClient()
+        with (
+            patch.object(cave_treasure_miniapp, "_get_identity_client_with_account", return_value=(1, client)),
+            patch.object(cave_treasure_miniapp, "account_rpc_slot", return_value=RpcSlot()),
+            patch.object(cave_treasure_miniapp, "_recent_game_bot_usernames", return_value=["hantianzun21_bot"]),
+        ):
+            init_data = asyncio.run(cave_treasure_miniapp.request_cave_treasure_miniapp_init_data(
+                301299112,
+                token="df_SECRET999",
+                webview_url="https://t.me/hantianzun19_bot?startapp=df_SECRET999",
+            ))
+
+        self.assertEqual("query_id=abc&hash=SECRET", init_data)
+        self.assertEqual(["hantianzun19_bot", "hantianzun21_bot"], client.requested)
 
     def test_tree_entry_state_and_flow_are_lab_only(self):
         url = "https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999"
