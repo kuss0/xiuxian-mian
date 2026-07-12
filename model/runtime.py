@@ -19,6 +19,7 @@ from telethon.errors import FloodWaitError
 from .command_attempt.runtime_shadow import (
     note_blocked as note_shadow_attempt_blocked,
     note_queued as note_shadow_attempt_queued,
+    note_sending as note_shadow_attempt_sending,
     note_sent as note_shadow_attempt_sent,
     shadow_attempt_scope,
 )
@@ -1143,6 +1144,7 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
             wait = ready_at - now_mono
             if wait <= 0:
                 _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "sending"
+                note_shadow_attempt_sending()
                 try:
                     yield
                 finally:

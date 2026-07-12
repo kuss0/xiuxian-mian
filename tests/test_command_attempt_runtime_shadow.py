@@ -121,6 +121,53 @@ async def test_queued_send_timeout_records_unknown(shadow_identity):
 
 
 @async_test
+async def test_cancelled_while_queued_records_definitely_unsent(shadow_identity):
+    async def cancelled_impl(*args, **kwargs):
+        runtime_shadow.note_queued()
+        raise asyncio.CancelledError()
+
+    with (
+        patch.dict("os.environ", {"XIUXIAN_ATTEMPT_SHADOW_WRITE": "1"}),
+        patch.object(runtime, "_send_game_command_impl", new=cancelled_impl),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.send_game_command(
+                ".测试排队取消",
+                send_as_id=shadow_identity,
+                source_module="shadow_test",
+            )
+
+    attempt = _attempts(shadow_identity, ".测试排队取消")[0]
+    assert attempt.transport is TransportState.BLOCKED
+    assert attempt.block_code == "scope_exit_without_terminal"
+    assert attempt.definitely_unsent is True
+
+
+@async_test
+async def test_cancelled_after_sending_boundary_records_unknown(shadow_identity):
+    async def cancelled_impl(*args, **kwargs):
+        runtime_shadow.note_queued()
+        runtime_shadow.note_sending()
+        raise asyncio.CancelledError()
+
+    with (
+        patch.dict("os.environ", {"XIUXIAN_ATTEMPT_SHADOW_WRITE": "1"}),
+        patch.object(runtime, "_send_game_command_impl", new=cancelled_impl),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.send_game_command(
+                ".测试发送中取消",
+                send_as_id=shadow_identity,
+                source_module="shadow_test",
+            )
+
+    attempt = _attempts(shadow_identity, ".测试发送中取消")[0]
+    assert attempt.transport is TransportState.SEND_UNKNOWN
+    assert attempt.block_code == "scope_exit_without_terminal"
+    assert attempt.definitely_unsent is False
+
+
+@async_test
 async def test_success_records_sent_but_keeps_legacy_op_id_metadata_only(shadow_identity):
     result = SimpleNamespace(id=88001)
 

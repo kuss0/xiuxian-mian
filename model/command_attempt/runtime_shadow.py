@@ -20,6 +20,7 @@ _CURRENT_SCOPE = ContextVar("command_attempt_shadow_scope", default=None)
 class ShadowAttemptScope:
     op_id: str
     queued: bool = False
+    sending: bool = False
     terminal: bool = False
 
 
@@ -67,6 +68,8 @@ def shadow_attempt_scope(
     try:
         yield scope
     finally:
+        if not scope.terminal:
+            note_abandoned("scope_exit_without_terminal")
         _CURRENT_SCOPE.reset(token)
 
 
@@ -90,6 +93,44 @@ def note_queued():
         scope.queued = True
     except Exception as exc:
         _diagnose("queue", exc)
+
+
+def note_sending():
+    scope = _scope()
+    if scope is None or scope.sending:
+        return
+    try:
+        if not scope.queued:
+            note_queued()
+        # Keep this boundary task-local for Gate 0-3. The approved transport
+        # state model has no persisted `sending` state yet.
+        scope.sending = True
+    except Exception as exc:
+        _diagnose("sending", exc)
+
+
+def note_abandoned(reason="scope_exit_without_terminal"):
+    scope = _scope()
+    if scope is None:
+        return
+    reason = str(reason or "scope_exit_without_terminal")
+    target = TransportState.SEND_UNKNOWN if scope.sending else TransportState.BLOCKED
+    definitely_unsent = not scope.sending
+    try:
+        mark_transport(
+            scope.op_id,
+            target,
+            transition_key=f"runtime:abandoned:{reason}",
+            code=reason,
+            summary=reason,
+            block_code=reason,
+            block_reason=reason,
+            definitely_unsent=definitely_unsent,
+            last_error="" if definitely_unsent else reason,
+        )
+        scope.terminal = True
+    except Exception as exc:
+        _diagnose("abandon", exc)
 
 
 def note_blocked(code, reason, *, definitely_unsent=False):
@@ -147,9 +188,11 @@ def current_shadow_op_id():
 
 __all__ = [
     "ShadowAttemptScope",
+    "note_abandoned",
     "current_shadow_op_id",
     "note_blocked",
     "note_queued",
+    "note_sending",
     "note_sent",
     "shadow_attempt_scope",
 ]
