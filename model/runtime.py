@@ -175,6 +175,7 @@ from .config import (
     LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC,
     LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS,
     LOG_SEND_MODE,
+    BOT_SILENCE_TIMEOUT_SEC,
     TG_REQUESTS_PROXIES,
     ADMIN_IDS,
     MESSAGES_DIR,
@@ -4199,11 +4200,20 @@ async def run_retry_scheduler(now, send_as_id=None):
             if recovered_reply:
                 continue
             if get_bot_last_seen_at() < send_time:
-                mark_bot_health_suspect("pending command timed out without later bot activity", reference_at=send_time, now=now)
-                with use_identity(identity_id) as identity_state:
-                    if msg_id in identity_state["pending_tasks"]:
-                        identity_state["pending_tasks"].pop(msg_id, None)
-                        mark_dirty()
+                # A module reply timeout is not yet proof that the whole game bot
+                # is unavailable. Keep the unresolved command in place and do not
+                # resend it; only escalate after the configured global silence
+                # window has elapsed.
+                if now - send_time >= BOT_SILENCE_TIMEOUT_SEC:
+                    mark_bot_health_suspect(
+                        "pending command timed out without later bot activity",
+                        reference_at=send_time,
+                        now=now,
+                    )
+                    with use_identity(identity_id) as identity_state:
+                        if msg_id in identity_state["pending_tasks"]:
+                            identity_state["pending_tasks"].pop(msg_id, None)
+                            mark_dirty()
                 continue
 
             module_managed_timeout_item = None

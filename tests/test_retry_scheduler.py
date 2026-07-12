@@ -361,7 +361,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             reply_to=123456,
         )
 
-    def test_pending_timeout_without_bot_seen_marks_suspect_and_does_not_resend(self):
+    def test_pending_timeout_without_bot_seen_waits_for_global_silence_threshold(self):
         send_as_id = 971006
         now = 6600.0
         state_module.ensure_identity_registered(send_as_id)
@@ -380,6 +380,32 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
              patch.object(runtime, "send_audit_log", new=AsyncMock()):
             runtime._bot_last_seen_at = now - 30
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        self.assertEqual(runtime.BOT_HEALTH_HEALTHY, runtime.get_bot_health_snapshot()["state"])
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertIn(261, identity_state["pending_tasks"])
+
+    def test_pending_timeout_marks_suspect_after_global_silence_threshold(self):
+        send_as_id = 971009
+        now = 7000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                281: {
+                    "cmd": ".灵树状态",
+                    "sent_at": now - runtime.BOT_SILENCE_TIMEOUT_SEC - 1,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                }
+            }
+
+        with patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            runtime._bot_last_seen_at = now - runtime.BOT_SILENCE_TIMEOUT_SEC - 30
             asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
 
         send_mock.assert_not_awaited()
