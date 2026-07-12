@@ -1625,7 +1625,11 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         and state.get("small_world_refresh_enabled")
     )
 
-    if not manifest_refresh_enabled and state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
+    # A real prayer wait means refresh cannot run yet. Do not let the enabled
+    # refresh switch suppress independent faith/stability maintenance for the
+    # whole six-hour prayer window.
+    maintenance_before_wait = bool(panel.get("has_wait") or not manifest_refresh_enabled)
+    if maintenance_before_wait and state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
         if _queue_maintenance_god_action(panel, now):
             _clear_chain_pending()
             return await _try_send_pending_god_action(now)
