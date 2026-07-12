@@ -1906,7 +1906,7 @@ class WebAppCoreTests(unittest.TestCase):
     def test_known_flow_plans_include_stargazer_without_production_enable(self):
         plans = miniapp_registry.build_known_miniapp_flow_plans()
 
-        self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(plans))
+        self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial", "world_boss"}, set(plans))
         self.assertTrue(plans["stargazer"].manual_only)
         self.assertFalse(plans["stargazer"].default_enabled)
         self.assertTrue(plans["trial"].manual_only)
@@ -1916,6 +1916,8 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertTrue(plans["tree"].manual_only)
         self.assertFalse(plans["tree"].default_enabled)
         self.assertIn("不接生产", plans["tree"].note)
+        self.assertTrue(plans["world_boss"].manual_only)
+        self.assertFalse(plans["world_boss"].default_enabled)
 
     def test_fishing_proof_is_formula_consistent_over_samples(self):
         rng = __import__("random").Random(11)

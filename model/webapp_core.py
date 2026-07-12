@@ -39,7 +39,7 @@ RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|startapp|start_param)=([^&#\s]+)",
     re.IGNORECASE,
 )
-RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|rpt|stk|trial|df|tree)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
+RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|qyz|rpt|stk|trial|df|tree)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
 RE_WEBAPP_URL = re.compile(
     r"(?:https?|tg)://[^\s<>'\"）)]+|(?:t\.me|telegram\.me)/[^\s<>'\"）)]+",
     re.IGNORECASE,

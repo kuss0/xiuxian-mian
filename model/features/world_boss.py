@@ -27,6 +27,7 @@ from ..state import (
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
+    get_miniapp_auto_config,
     get_send_as_profile,
     get_world_boss_run_state,
     set_world_boss_run_state,
@@ -34,6 +35,7 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, parse_wait_time
+from .world_boss_miniapp_runtime import extract_world_boss_miniapp_launch, run_world_boss_miniapp_event
 
 
 WORLD_BOSS_MODULE_NAME = "真仙试锋"
@@ -113,6 +115,7 @@ RE_SETTLEMENT_ROW = re.compile(r"^\s*-\s*@(?P<username>[A-Za-z0-9_]+)[:：](?P<r
 
 _WORLD_BOSS_SCHEDULER_LOCK = asyncio.Lock()
 _WORLD_BOSS_ROUND_TASK = None
+_WORLD_BOSS_MINIAPP_TASK = None
 _WORLD_BOSS_RECOVERY_BOOT_AT = time.time()
 _WORLD_BOSS_RECOVERY_PROBE_DONE = False
 
@@ -153,6 +156,10 @@ def _blank_run_state(now=None):
         "participants": 0,
         "miniapp_only": False,
         "miniapp_entry_identity_ids": [],
+        "miniapp_auto_status": "",
+        "miniapp_auto_started_at": 0,
+        "miniapp_auto_finished_at": 0,
+        "miniapp_auto_results": [],
         "fallback_status_day": "",
         "fallback_status_at": 0,
         "last_priority_window_key": "",
@@ -208,6 +215,8 @@ def _normalize_run_state(raw=None, now=None):
         "last_summary_log_at",
         "last_conclusion_at",
         "fallback_status_at",
+        "miniapp_auto_started_at",
+        "miniapp_auto_finished_at",
     ):
         record[key] = max(0.0, _coerce_float(record.get(key), 0))
     for key in ("hp_percent", "fanhun", "break_progress", "moya", "zhen", "last_status_msg_id", "last_summary_log_total", "participants"):
@@ -233,6 +242,9 @@ def _normalize_run_state(raw=None, now=None):
     ):
         record[key] = str(record.get(key) or "").strip()
     record["miniapp_only"] = bool(record.get("miniapp_only"))
+    record["miniapp_auto_status"] = str(record.get("miniapp_auto_status") or "").strip()
+    raw_results = record.get("miniapp_auto_results") or []
+    record["miniapp_auto_results"] = [dict(item) for item in raw_results if isinstance(item, dict)][:16]
     if record["active"] and record["opened_at"] > 0 and now - record["opened_at"] > WORLD_BOSS_EVENT_TTL_SEC:
         record["active"] = False
         record["closed_at"] = record["closed_at"] or now
@@ -1389,7 +1401,83 @@ async def _open_event(parsed, now, current_msg_id=0):
     return True
 
 
-async def _notify_world_boss_open_only(parsed, now, current_msg_id=0):
+def _world_boss_miniapp_auto_config():
+    raw = dict(get_miniapp_auto_config() or {})
+    try:
+        account_limit = max(1, min(WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT, int(raw.get("world_boss_auto_account_limit", 1) or 1)))
+    except (TypeError, ValueError, OverflowError):
+        account_limit = 1
+    try:
+        account_gap_sec = max(1.0, min(15.0, float(raw.get("world_boss_auto_account_gap_sec", 3) or 3)))
+    except (TypeError, ValueError, OverflowError):
+        account_gap_sec = 3.0
+    return {
+        "enabled": bool(raw.get("world_boss_auto_enabled")),
+        "account_limit": account_limit,
+        "account_gap_sec": account_gap_sec,
+    }
+
+
+def _world_boss_miniapp_task_running():
+    return _WORLD_BOSS_MINIAPP_TASK is not None and not _WORLD_BOSS_MINIAPP_TASK.done()
+
+
+async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec):
+    try:
+        result = await run_world_boss_miniapp_event(
+            identity_ids,
+            event,
+            message_text=text,
+            opened_at=opened_at,
+            account_gap_sec=account_gap_sec,
+        )
+    except Exception as exc:
+        result = {"ok": False, "status": "runtime_error", "joined_count": 0, "results": [], "error": _short_text(exc)}
+    run_state = _get_run_state()
+    if run_state.get("event_key") != event_key:
+        return
+    run_state["miniapp_auto_status"] = str(result.get("status") or "failed")
+    run_state["miniapp_auto_finished_at"] = time.time()
+    run_state["miniapp_auto_results"] = [
+        {
+            "identity_id": _coerce_int(item.get("identity_id"), 0),
+            "phase": str(item.get("phase") or ""),
+            "ok": bool(item.get("ok")),
+            "status": str(item.get("status") or ""),
+            "error": _short_text(item.get("error") or "", 120),
+        }
+        for item in (result.get("results") or [])
+        if isinstance(item, dict)
+    ][:16]
+    joined_count = _coerce_int(result.get("joined_count"), 0)
+    settled = [item for item in run_state["miniapp_auto_results"] if item.get("phase") == "battle" and item.get("ok")]
+    failed = [item for item in run_state["miniapp_auto_results"] if not item.get("ok")]
+    run_state["last_result"] = f"MiniApp 入场 {joined_count}｜结算 {len(settled)}｜失败 {len(failed)}"
+    _set_run_state(run_state)
+    details = "、".join(
+        f"{_identity_label(item['identity_id'])}:{item.get('status') or ('ok' if item.get('ok') else 'failed')}"
+        for item in run_state["miniapp_auto_results"]
+        if item.get("phase") == "battle" or not item.get("ok")
+    ) or "无明细"
+    await send_audit_log(
+        f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜失败 {len(failed)}\n{details}",
+        scope="global",
+        priority="high" if failed else "medium",
+        limit=420,
+    )
+
+
+def _start_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec):
+    global _WORLD_BOSS_MINIAPP_TASK
+    if _world_boss_miniapp_task_running():
+        return False
+    _WORLD_BOSS_MINIAPP_TASK = asyncio.create_task(
+        _run_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec)
+    )
+    return True
+
+
+async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=None, text=""):
     run_state = _get_run_state(now)
     event_key = _open_event_key(parsed, now, current_msg_id=current_msg_id)
     if run_state.get("last_open_log_key") == event_key:
@@ -1401,18 +1489,45 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0):
     run_state["opened_at"] = float(now)
     run_state["closed_at"] = 0
     run_state["miniapp_only"] = bool(parsed.get("miniapp_only"))
+    auto_config = _world_boss_miniapp_auto_config()
     entry_identity_ids = select_world_boss_miniapp_entry_identities()
+    auto_identity_ids = entry_identity_ids[: auto_config["account_limit"]]
     run_state["miniapp_entry_identity_ids"] = entry_identity_ids if run_state["miniapp_only"] else []
     run_state["last_open_log_key"] = event_key
     run_state["last_result"] = "小程序开打提醒" if run_state["miniapp_only"] else "未启用提醒"
+    run_state["miniapp_auto_status"] = "disabled"
+    run_state["miniapp_auto_started_at"] = 0
+    run_state["miniapp_auto_finished_at"] = 0
+    run_state["miniapp_auto_results"] = []
     run_state["next_status_query_at"] = 0
     run_state["next_action_at"] = 0
     if run_state["miniapp_only"]:
         labels = "、".join(_identity_label(identity_id) for identity_id in entry_identity_ids) or "无"
-        message = (
-            "🗡 真仙试锋已开打：世界 boss 已迁移到小程序，脚本默认不出手，请手动处理。"
-            f"\nMiniApp 入场候选按登录账号去重，最多 {WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT} 个：{labels}"
-        )
+        launch = extract_world_boss_miniapp_launch(event, message_text=text) if event is not None else {}
+        if auto_config["enabled"] and launch and auto_identity_ids:
+            run_state["miniapp_auto_status"] = "running"
+            run_state["miniapp_auto_started_at"] = float(now)
+            run_state["last_result"] = "MiniApp 自动执行中"
+            started = _start_world_boss_miniapp_automation(
+                event_key,
+                auto_identity_ids,
+                event,
+                text,
+                now,
+                auto_config["account_gap_sec"],
+            )
+            message = (
+                f"🗡 真仙试锋小程序（MiniApp）自动参与已启动：{'、'.join(_identity_label(identity_id) for identity_id in auto_identity_ids)}"
+                f"\n先完成 {len(auto_identity_ids)} 个登录账户串行入场，再逐账户串行战斗；账户间隔 {auto_config['account_gap_sec']:g}s。"
+            ) if started else "🗡 真仙试锋 MiniApp 已有事件任务运行，本次广播仅去重记录。"
+        elif auto_config["enabled"] and not launch:
+            run_state["miniapp_auto_status"] = "entry_missing"
+            message = "🗡 真仙试锋已开打，但广播中未提取到有效 MiniApp 入口，已保守停止自动参与。"
+        else:
+            message = (
+                "🗡 真仙试锋已开打：小程序（MiniApp）自动参与当前关闭，不会自动入场。"
+                f"\n候选按登录账号去重，最多 {WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT} 个：{labels}"
+            )
     else:
         message = "🗡 真仙试锋已开打：当前没有启用身份，脚本不出手。"
     await send_audit_log(
@@ -1689,7 +1804,7 @@ async def handle_world_boss_broadcast(text, now, event=None):
     run_state = _get_run_state(now)
     if _miniapp_only_event_recent(run_state, now):
         if parsed_type == "open":
-            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id)
+            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id, event=event, text=text)
         if parsed_type == "conclusion":
             return await _close_event(parsed, now)
         if parsed_type == "inactive":
@@ -1699,13 +1814,15 @@ async def handle_world_boss_broadcast(text, now, event=None):
         return True
     if not enabled:
         if parsed_type == "open":
-            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id)
+            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id, event=event, text=text)
         if parsed_type == "conclusion" and (run_state.get("active") or _miniapp_only_event_recent(run_state, now)):
             return await _close_event(parsed, now, log=False)
         if parsed_type == "inactive" and run_state.get("active"):
             return await _mark_inactive(now)
         return False
     if parsed_type == "open":
+        if bool(parsed.get("miniapp_only")):
+            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id, event=event, text=text)
         return await _open_event(parsed, now, current_msg_id=event_id)
     if parsed_type == "conclusion":
         return await _close_event(parsed, now)

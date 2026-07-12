@@ -444,6 +444,28 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
         save_mock.assert_called_once()
 
+    async def test_world_boss_miniapp_config_is_default_off_and_clamped(self):
+        state_module._meta_state["miniapp_auto_config"] = {}
+
+        initial = ui.get_miniapp_status_snapshot()["automation"]
+        self.assertFalse(initial["world_boss_auto_enabled"])
+        self.assertEqual(1, initial["world_boss_auto_account_limit"])
+
+        with patch.object(ui, "save_state", return_value=True) as save_mock:
+            ok, message = await ui.ui_set_world_boss_miniapp_config({
+                "enabled": True,
+                "account_limit": 9,
+                "account_gap_sec": 0,
+            })
+
+        automation = ui.get_miniapp_status_snapshot()["automation"]
+        self.assertTrue(ok)
+        self.assertIn("最多 4 个登录账户", message)
+        self.assertTrue(automation["world_boss_auto_enabled"])
+        self.assertEqual(4, automation["world_boss_auto_account_limit"])
+        self.assertEqual(1, automation["world_boss_auto_account_gap_sec"])
+        save_mock.assert_called_once()
+
     async def test_cave_public_batch_claims_slot_before_background_task(self):
         batch_snapshot = dict(ui._cave_public_batch_state)
         ui._cave_public_batch_state.clear()

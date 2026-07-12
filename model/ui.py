@@ -355,6 +355,9 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_yuanying_enabled": False,
     "cave_public_entry_url": "",
     "cave_public_delay_sec": 20,
+    "world_boss_auto_enabled": False,
+    "world_boss_auto_account_limit": 1,
+    "world_boss_auto_account_gap_sec": 3,
 }
 TRIAL_DAILY_BATCH_WAVES = (
     {"key": "wave1", "label": "第一批", "start_hour": 1, "start_minute": 0, "end_hour": 4, "end_minute": 0},
@@ -393,6 +396,7 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_trial_enabled",
         "cave_public_stargazer_enabled",
         "cave_public_yuanying_enabled",
+        "world_boss_auto_enabled",
     ):
         result[key] = bool(result.get(key))
     try:
@@ -401,6 +405,16 @@ def normalize_miniapp_auto_config(config=None):
         result["cave_public_delay_sec"] = 20
     result["cave_public_delay_sec"] = max(10, min(120, result["cave_public_delay_sec"]))
     result["cave_public_entry_url"] = str(result.get("cave_public_entry_url") or "").strip()
+    try:
+        result["world_boss_auto_account_limit"] = int(result.get("world_boss_auto_account_limit", 1) or 1)
+    except (TypeError, ValueError, OverflowError):
+        result["world_boss_auto_account_limit"] = 1
+    result["world_boss_auto_account_limit"] = max(1, min(4, result["world_boss_auto_account_limit"]))
+    try:
+        result["world_boss_auto_account_gap_sec"] = float(result.get("world_boss_auto_account_gap_sec", 3))
+    except (TypeError, ValueError, OverflowError):
+        result["world_boss_auto_account_gap_sec"] = 3
+    result["world_boss_auto_account_gap_sec"] = max(1, min(15, result["world_boss_auto_account_gap_sec"]))
     for key, default in (
         ("trial_daily_start_hour_local", 0),
         ("trial_daily_start_minute_local", 20),
@@ -6709,6 +6723,30 @@ async def ui_set_cave_public_config(payload=None):
     return True, f"已保存洞府公共入口独立开关：{action_text}｜间隔 {config['cave_public_delay_sec']}s"
 
 
+async def ui_set_world_boss_miniapp_config(payload=None):
+    payload = dict(payload or {})
+    config = normalize_miniapp_auto_config()
+    if "enabled" in payload:
+        config["world_boss_auto_enabled"] = _coerce_ui_bool(payload.get("enabled"))
+    if "account_limit" in payload:
+        try:
+            config["world_boss_auto_account_limit"] = max(1, min(4, int(payload.get("account_limit") or 1)))
+        except (TypeError, ValueError, OverflowError):
+            return False, "世界 Boss 账户上限必须为 1-4"
+    if "account_gap_sec" in payload:
+        try:
+            config["world_boss_auto_account_gap_sec"] = max(1, min(15, float(payload.get("account_gap_sec"))))
+        except (TypeError, ValueError, OverflowError):
+            return False, "世界 Boss 账户间隔必须为 1-15 秒"
+    set_miniapp_auto_config(config)
+    save_state()
+    status = "开启" if config["world_boss_auto_enabled"] else "关闭"
+    return True, (
+        f"世界 Boss MiniApp 自动化已{status}｜最多 {config['world_boss_auto_account_limit']} 个登录账户"
+        f"｜账户间隔 {config['world_boss_auto_account_gap_sec']:g}s"
+    )
+
+
 async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids, actions, delay_sec):
     steps = _build_cave_public_batch_steps(identity_ids, actions)
     total = len(steps)
@@ -8156,6 +8194,22 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     ok, message = await ui_set_cave_public_config(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"miniapp": get_miniapp_status_snapshot()},
+                        include_snapshot=False,
+                    )
+            elif path == "/api/world-boss-miniapp-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = await ui_set_world_boss_miniapp_config(payload)
                     _write_json_result(
                         writer,
                         ok,

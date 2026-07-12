@@ -223,6 +223,18 @@
       + '</section>';
   }
 
+  function renderWorldBossControls(automation) {
+    automation = automation || {};
+    return ''
+      + '<section class="miniapp-score-config" data-world-boss-auto="1">'
+      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>先入场 barrier，再严格串行战斗</span></div>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-enabled="1"' + (automation.world_boss_auto_enabled ? ' checked' : '') + '><span>自动参与</span></label>'
+      + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
+      + '<label><span>账户间隔（秒）</span><input type="number" min="1" max="15" step="1" data-world-boss-account-gap="1" value="' + esc(automation.world_boss_auto_account_gap_sec || 3) + '"></label>'
+      + '<div class="miniapp-item-actions"><button type="button" class="btn btn-secondary btn-compact" data-world-boss-config-save="1">保存设置</button></div>'
+      + '</section>';
+  }
+
   function renderMiniAppStatus(snapshot) {
     var body = document.getElementById('miniapp-modal-body');
     if (!body) return;
@@ -264,6 +276,7 @@
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + '</div>'
       + renderCavePublicControls(automation, miniapp.cave_public_batch || {})
+      + renderWorldBossControls(automation)
       + renderTreeScoreControls(scoreControls)
       + '<div class="miniapp-list">'
       + (adapters.length ? groups.map(function (group) {
@@ -464,6 +477,26 @@
     }
   }
 
+  async function saveWorldBossConfig(button) {
+    var panel = document.querySelector('[data-world-boss-auto="1"]');
+    if (!panel) return;
+    if (button) button.disabled = true;
+    try {
+      var data = await post('/api/world-boss-miniapp-config', {
+        enabled: !!(panel.querySelector('[data-world-boss-enabled="1"]') || {}).checked,
+        account_limit: (panel.querySelector('[data-world-boss-account-limit="1"]') || {}).value || 1,
+        account_gap_sec: (panel.querySelector('[data-world-boss-account-gap="1"]') || {}).value || 3
+      });
+      flash(data.message || '世界 Boss MiniApp 设置已保存', false);
+      if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });
+      else refreshMiniAppStatus();
+    } catch (error) {
+      flash((error && error.message) || '世界 Boss MiniApp 设置保存失败', true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function runCavePublicBatch(button) {
     var panel = document.querySelector('[data-cave-public-entry="1"]');
     var input = panel && panel.querySelector('[data-cave-public-url="1"]');
@@ -544,6 +577,11 @@
     var caveConfigSaveBtn = event.target.closest('[data-cave-public-config-save]');
     if (caveConfigSaveBtn) {
       saveCavePublicConfig(caveConfigSaveBtn);
+      return;
+    }
+    var worldBossConfigSaveBtn = event.target.closest('[data-world-boss-config-save]');
+    if (worldBossConfigSaveBtn) {
+      saveWorldBossConfig(worldBossConfigSaveBtn);
       return;
     }
     var caveBatchBtn = event.target.closest('[data-cave-public-batch-run]');

@@ -166,6 +166,10 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         if task is not None and not task.done():
             task.cancel()
         world_boss._WORLD_BOSS_ROUND_TASK = None
+        miniapp_task = getattr(world_boss, "_WORLD_BOSS_MINIAPP_TASK", None)
+        if miniapp_task is not None and not miniapp_task.done():
+            miniapp_task.cancel()
+        world_boss._WORLD_BOSS_MINIAPP_TASK = None
         world_boss._WORLD_BOSS_RECOVERY_BOOT_AT = self._world_boss_recovery_boot_at
         world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE = self._world_boss_recovery_probe_done
         state_module._meta_state.clear()
@@ -1372,6 +1376,39 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("jfdffdddd", audit_mock.await_args.args[0])
         send_mock.assert_not_awaited()
         self.assertEqual({8659059191, 301299112}, set(state_module.get_world_boss_run_state().get("miniapp_entry_identity_ids")))
+
+    async def test_miniapp_open_starts_configured_canary_without_text_commands(self):
+        now = 1_781_319_100.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=False)
+        self._register(301299112, label="jfdffdddd", world_boss_enabled=False)
+        state_module.set_identity_account(8659059191, 101)
+        state_module.set_identity_account(301299112, 102)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_auto_enabled": True,
+            "world_boss_auto_account_limit": 1,
+            "world_boss_auto_account_gap_sec": 3,
+        }
+        event = SimpleNamespace(
+            id=12004,
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(world_boss, "_start_world_boss_miniapp_automation", return_value=True) as start_mock,
+        ):
+            opened = await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=event)
+
+        self.assertTrue(opened)
+        start_mock.assert_called_once()
+        self.assertEqual(1, len(start_mock.call_args.args[1]))
+        self.assertIn("自动参与已启动", audit_mock.await_args.args[0])
+        send_mock.assert_not_awaited()
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual("running", run_state.get("miniapp_auto_status"))
+        self.assertEqual("MiniApp 自动执行中", run_state.get("last_result"))
 
     def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
         # Same login account can only enter one MiniApp role. Pick the strongest
