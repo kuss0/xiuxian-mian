@@ -1100,7 +1100,20 @@ async def _record_suspected_game_bot(
 async def _record_external_game_bot_evidence(event, text, now, *, verified_bot=False):
     reply_to_msg_id = _get_event_reply_header_msg_id(event)
     command_record = _get_observed_game_command(reply_to_msg_id, now=now)
-    if not command_record or not _observed_command_reply_matches(text, command_record):
+    if not command_record:
+        return False
+    semantic_match = _observed_command_reply_matches(text, command_record)
+    sender = getattr(event, "sender", None)
+    official_anchor_fallback = bool(
+        not semantic_match
+        and verified_bot
+        and _entity_is_han_tianzun_bot(sender)
+        and reply_to_msg_id > 0
+        and str(text or "").strip()
+        and not str(text or "").strip().startswith(".")
+        and not _looks_like_unanchored_game_broadcast(text)
+    )
+    if not semantic_match and not official_anchor_fallback:
         return False
     await _record_suspected_game_bot(
         int(getattr(event, "sender_id", 0) or 0),

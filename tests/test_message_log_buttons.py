@@ -713,6 +713,54 @@ class MessageLogButtonTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 
+    def test_official_non_numeric_bot_learns_from_diverse_exact_unknown_command_replies(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        app._observed_game_commands.clear()
+        samples = [
+            (7101, 1201, ".抚摸法宝 玄天斩灵剑", "默契 +2，经验 +17"),
+            (7102, 1202, ".入梦寻图", "梦兆锁定苍坤残图，本次未觅得碎片。"),
+            (7103, 1203, ".元婴状态", "等级 11，状态为窍中温养。"),
+            (7104, 1204, ".灵兽出战 六翼", "六翼已设为出战状态。"),
+            (7105, 1205, ".我的灵兽", "灵兽伙伴们正在休息或放养。"),
+            (7106, 1206, ".灵兽巡游 小玉", "小玉当前正在放养中，无法巡游。"),
+        ]
+        try:
+            state_module._meta_state["game_bot_ids"] = []
+            with patch("model.app.save_state") as save_mock, \
+                    patch("model.app.send_audit_log", new=AsyncMock()) as audit_mock:
+                for idx, (cmd_msg_id, player_id, command, reply_text) in enumerate(samples):
+                    app._observe_game_command_for_bot_evidence(
+                        player_id,
+                        command,
+                        cmd_msg_id,
+                        now=2000.0 + idx,
+                    )
+                    event = SimpleNamespace(
+                        id=8100 + idx,
+                        chat_id=-100910,
+                        sender_id=8265507611,
+                        sender=SimpleNamespace(bot=True, first_name="韩天尊", username="snpao_bot"),
+                        reply_to=SimpleNamespace(reply_to_msg_id=cmd_msg_id),
+                    )
+                    handled = asyncio.run(app._handle_suspected_game_bot_reply(
+                        event,
+                        reply_text,
+                        2000.0 + idx,
+                    ))
+                    self.assertFalse(handled)
+                    if idx + 1 < app.UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES:
+                        self.assertNotIn(8265507611, state_module.get_game_bot_ids())
+
+            self.assertIn(8265507611, state_module.get_game_bot_ids())
+            save_mock.assert_called_once()
+            self.assertTrue(any("自动识别到游戏 BOT" in str(call.args[0]) for call in audit_mock.await_args_list))
+        finally:
+            app._suspected_game_bot_hits.clear()
+            app._observed_game_commands.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
     def test_negative_channel_identity_sender_resolves_known_identity(self):
         with patch("model.app.get_identity_ids", return_value=[3800619925]):
             self.assertEqual(3800619925, app._resolve_identity_sender_id(3800619925))
