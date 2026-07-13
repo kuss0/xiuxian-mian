@@ -838,6 +838,7 @@ class HealthObserverTests(unittest.TestCase):
         result = health_observer.analyze_message_events(events, now, 1800)
 
         self.assertFalse(any("guarded command repeated" in item["message"] for item in result["alerts"]))
+        self.assertEqual(1, result["module_counts"]["卜筮问天"])
 
     def test_business_message_analysis_flags_unmarked_divination_repeats(self):
         now = 1_780_500_000.0
@@ -960,6 +961,66 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(2, len(result["stuck_phases"]))
         self.assertTrue(any("overdue pending" in item["message"] for item in result["alerts"]))
         self.assertTrue(any("stuck runtime phases" in item["message"] for item in result["alerts"]))
+
+    def test_business_db_state_ignores_stuck_phases_for_disabled_identity(self):
+        now = 1_780_500_000.0
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "state.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE pending_tasks(
+                        msg_id INTEGER PRIMARY KEY,
+                        send_as_id INTEGER NOT NULL,
+                        cmd TEXT NOT NULL,
+                        sent_at REAL NOT NULL,
+                        retry INTEGER NOT NULL,
+                        timeout REAL NOT NULL,
+                        reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                        max_retry INTEGER NOT NULL DEFAULT 3,
+                        priority TEXT NOT NULL DEFAULT '',
+                        source_module TEXT NOT NULL DEFAULT '',
+                        op_id TEXT NOT NULL DEFAULT '',
+                        chain_id TEXT NOT NULL DEFAULT '',
+                        delete_policy TEXT NOT NULL DEFAULT ''
+                    );
+                    CREATE TABLE identities(
+                        send_as_id INTEGER PRIMARY KEY,
+                        username TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 1
+                    );
+                    CREATE TABLE identity_timers(
+                        send_as_id INTEGER PRIMARY KEY,
+                        next_concubine_time REAL NOT NULL DEFAULT 0,
+                        next_deep_retreat_time REAL NOT NULL DEFAULT 0,
+                        next_yuanying_time REAL NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE identity_runtime_state(
+                        send_as_id INTEGER PRIMARY KEY,
+                        concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                        deep_retreat_phase TEXT NOT NULL DEFAULT 'idle',
+                        deep_retreat_summary_sent_at REAL NOT NULL DEFAULT 0,
+                        yuanying_phase TEXT NOT NULL DEFAULT 'idle',
+                        yuanying_summary_sent_at REAL NOT NULL DEFAULT 0,
+                        tower_reply_due_at REAL NOT NULL DEFAULT 0,
+                        last_tower_msg_id INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
+                conn.execute("INSERT INTO identities(send_as_id, username, enabled) VALUES(42, 'disabled', 0)")
+                conn.execute(
+                    "INSERT INTO identity_timers(send_as_id, next_concubine_time, next_deep_retreat_time) VALUES(42, ?, ?)",
+                    (now - 700, now - 700),
+                )
+                conn.execute(
+                    "INSERT INTO identity_runtime_state(send_as_id, concubine_phase, deep_retreat_phase) VALUES(42, 'dream_pending', 'summary_due')"
+                )
+
+            result = health_observer.read_db_business_state(db_path, now)
+
+        self.assertTrue(result["available"])
+        self.assertEqual([], result["stuck_phases"])
+        self.assertFalse(any("stuck runtime phases" in item["message"] for item in result["alerts"]))
 
     def test_business_db_state_counts_module_pending_without_task_queue(self):
         now = 1_780_500_000.0

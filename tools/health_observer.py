@@ -855,7 +855,17 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
                 return "灵溪垂钓:后处理"
         return module
 
-    module_counts = Counter(module_density_key(item) for item in sent)
+    module_counts = Counter()
+    seen_module_chains = set()
+    for item in sent:
+        key = module_density_key(item)
+        chain_id = str(item.get("chain_id") or "").strip()
+        if chain_id:
+            chain_key = (key, chain_id)
+            if chain_key in seen_module_chains:
+                continue
+            seen_module_chains.add(chain_key)
+        module_counts[key] += 1
     module_counts = Counter({key: value for key, value in module_counts.items() if key})
     return {
         "window_sec": int(window_sec),
@@ -1415,8 +1425,10 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "source_module": row["source_module"],
                     })
 
+            identity_columns = sqlite_table_columns(conn, "identities")
+            identity_enabled_filter = "WHERE COALESCE(i.enabled, 1) = 1" if "enabled" in identity_columns else ""
             runtime_rows = conn.execute(
-                """
+                f"""
                 SELECT
                     r.send_as_id,
                     COALESCE(i.username, '') AS username,
@@ -1433,6 +1445,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 FROM identity_runtime_state r
                 LEFT JOIN identity_timers t ON t.send_as_id = r.send_as_id
                 LEFT JOIN identities i ON i.send_as_id = r.send_as_id
+                {identity_enabled_filter}
                 """
             ).fetchall()
             for row in runtime_rows:
