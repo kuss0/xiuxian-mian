@@ -296,6 +296,15 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(shard_url, extracted["webview_url"])
         self.assertEqual("hantianzun05_bot", extracted["safe_summary"]["bot_username"])
 
+        snpao_url = "https://t.me/snpao_bot?startapp=fish_SECRET999"
+        snpao_event = self._reply_markup_webapp_event(url=snpao_url, text="进入灵溪垂钓")
+        snpao = fishing_miniapp.extract_fishing_miniapp_launch(
+            snpao_event,
+            message_text="【灵溪垂钓】点击下方 进入灵溪垂钓",
+        )
+        self.assertEqual("fish_SECRET999", snpao["token"])
+        self.assertEqual("snpao_bot", snpao["safe_summary"]["bot_username"])
+
         bad_event = self._reply_markup_webapp_event(
             url="https://t.me/evil_bot?startapp=fish_SECRET999",
             text="进入灵溪垂钓",
@@ -2051,6 +2060,60 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("VERY_SECRET", capture_text)
         self.assertNotIn("fish_SECRET999", capture_text)
         self.assertIn("payload_shape", capture_text)
+
+    def test_fishing_loop_enters_new_lobby_with_configured_pond_and_bait(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append((endpoint, dict(request["payload"])))
+            if endpoint == "start" and request["payload"]["token"] == "fish_LOBBY":
+                return 200, {"ok": True, "lobby": True, "session": {"phase": "lobby"}, "challenge": None}
+            if endpoint == "shop":
+                return 200, {
+                    "ok": True,
+                    "shop": {
+                        "ponds": [
+                            {"key": "qingxi", "name": "青溪浅滩", "unlocked": True},
+                            {"key": "hantan", "name": "灵眼寒潭", "unlocked": True},
+                        ],
+                        "baits": [
+                            {"key": "plain", "itemId": "item_plain", "name": "凡饵", "count": 9, "unlocked": True},
+                            {"key": "rice", "itemId": "item_rice", "name": "灵米饵", "count": 4, "unlocked": True},
+                        ],
+                    },
+                }
+            if endpoint == "next":
+                self.assertEqual("hantan", request["payload"]["pondKey"])
+                self.assertEqual("item_rice", request["payload"]["baitItemId"])
+                return 200, {"ok": True, "token": "fish_CAST"}
+            if endpoint == "start":
+                self.assertEqual("fish_CAST", request["payload"]["token"])
+                return 200, {
+                    "ok": True,
+                    "session": {"phase": "bite", "serverNow": 0},
+                    "challenge": {"challengeId": "c1", "minDurationMs": 20, "maxDurationMs": 70000},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 94}}
+            if endpoint == "result":
+                return 200, {"ok": True, "ready": True, "result": {"score": 94}}
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = fishing_miniapp.run_fishing_miniapp_loop_lab_flow(
+            token="fish_LOBBY",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            max_rounds=1,
+            pond_choice="灵眼寒潭",
+            bait_choice="灵米饵",
+            rng=__import__("random").Random(5),
+            sleeper=lambda _sec: None,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "shop", "next", "start", "finish", "result"], [item[0] for item in calls])
+        self.assertNotIn("fish_CAST", json.dumps(result, ensure_ascii=False))
 
     def test_fishing_lab_flow_waits_between_not_ready_result_polls(self):
         calls = []

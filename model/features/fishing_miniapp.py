@@ -28,6 +28,8 @@ FISHING_MINIAPP_DEFAULT_API_BASE_URL = "https://asc.aiopenai.app"
 FISHING_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
 FISHING_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (
     r"hantianzun\d{2}_bot",
+    r"snpao_bot",
+    r"xlqlcy_bot",
 )
 FISHING_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-fishing/"
 FISHING_MINIAPP_ENDPOINTS = {
@@ -35,6 +37,7 @@ FISHING_MINIAPP_ENDPOINTS = {
     "finish": f"{FISHING_MINIAPP_API_PATH_PREFIX}finish",
     "result": f"{FISHING_MINIAPP_API_PATH_PREFIX}result",
     "next": f"{FISHING_MINIAPP_API_PATH_PREFIX}next",
+    "shop": f"{FISHING_MINIAPP_API_PATH_PREFIX}shop",
 }
 FISHING_MINIAPP_START_PARAM_PATTERN = r"(?:fish_)?[A-Za-z0-9_-]{4,160}"
 FISHING_MINIAPP_DEFAULT_SCORE_LOW = 92
@@ -212,6 +215,8 @@ async def run_fishing_miniapp_production_flow(
     token,
     webview_url,
     max_rounds=1,
+    pond_choice="",
+    bait_choice="",
     transport=None,
     sleeper=None,
     adapter=None,
@@ -231,6 +236,8 @@ async def run_fishing_miniapp_production_flow(
             adapter=adapter,
             sleeper=sleeper or time.sleep,
             max_rounds=max_rounds,
+            pond_choice=pond_choice,
+            bait_choice=bait_choice,
             bite_wait_cap_ms=FISHING_MINIAPP_PRODUCTION_BITE_WAIT_CAP_MS,
             capture_sink=capture_sink,
             capture_source=capture_source,
@@ -473,8 +480,8 @@ def _extract_start_view(data):
     }
 
 
-def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
-    return {
+def _flow_result(ok, status, *, error="", data=None, events=None, proof=None, active_token=""):
+    result = {
         "ok": bool(ok),
         "status": status,
         "error": sanitize_webapp_secret_text(error),
@@ -482,6 +489,9 @@ def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
         "events": list(events or ()),
         "proof": dict(proof or {}),
     }
+    if active_token:
+        result["_active_token"] = str(active_token)
+    return result
 
 
 def _append_http_event(events, step, result):
@@ -508,6 +518,113 @@ def _extract_next_token(data):
         if token:
             return token
     return ""
+
+
+def _coerce_int(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
+def _fishing_shop(data):
+    data = dict(data or {})
+    return data.get("shop") if isinstance(data.get("shop"), dict) else {}
+
+
+def _select_fishing_pond(shop, preferred=""):
+    preferred = str(preferred or "").strip().lower()
+    ponds = [item for item in dict(shop or {}).get("ponds") or () if isinstance(item, dict)]
+    available = [item for item in ponds if item.get("unlocked") is not False]
+    for item in available:
+        values = {str(item.get(key) or "").strip().lower() for key in ("key", "name")}
+        if preferred and preferred in values:
+            return item
+    return available[0] if available else None
+
+
+def _select_fishing_bait(shop, preferred=""):
+    preferred = str(preferred or "").strip().lower()
+    baits = [item for item in dict(shop or {}).get("baits") or () if isinstance(item, dict)]
+    available = [
+        item
+        for item in baits
+        if item.get("unlocked") is not False and _coerce_int(item.get("count"), 0) > 0
+    ]
+    for item in available:
+        values = {str(item.get(key) or "").strip().lower() for key in ("key", "itemId", "name")}
+        if preferred and preferred in values:
+            return item
+    return available[0] if available else None
+
+
+def _enter_fishing_lobby(
+    *,
+    token,
+    init_data,
+    transport,
+    adapter,
+    sleeper,
+    pond_choice,
+    bait_choice,
+    capture_sink,
+    capture_source,
+    events,
+):
+    shop_request = build_fishing_miniapp_request("shop", token=token, init_data=init_data, adapter=adapter)
+    shop_result = execute_miniapp_http_request(
+        shop_request,
+        transport,
+        sleeper=sleeper,
+        backoff_sec=(),
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="shop",
+    )
+    _append_http_event(events, "shop", shop_result)
+    if not shop_result.ok:
+        return "", _flow_result(False, "shop_failed", error=shop_result.error, events=events)
+    shop = _fishing_shop(shop_result.data)
+    pond = _select_fishing_pond(shop, pond_choice)
+    bait = _select_fishing_bait(shop, bait_choice)
+    if not pond:
+        return "", _flow_result(False, "pond_unavailable", error="no unlocked fishing pond", events=events)
+    if not bait:
+        return "", _flow_result(False, "bait_missing", error="no available fishing bait", events=events)
+    next_request = build_fishing_miniapp_request(
+        "next",
+        token=token,
+        init_data=init_data,
+        payload={
+            "pondKey": str(pond.get("key") or "").strip(),
+            "baitItemId": str(bait.get("itemId") or "").strip(),
+        },
+        adapter=adapter,
+    )
+    next_result = execute_miniapp_http_request(
+        next_request,
+        transport,
+        sleeper=sleeper,
+        backoff_sec=(),
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="lobby_next",
+    )
+    _append_http_event(events, "lobby_next", next_result)
+    if not next_result.ok:
+        status = classify_fishing_miniapp_error(next_result.error)
+        return "", _flow_result(False, "daily_limit" if status == "daily_limit" else "next_failed", error=next_result.error, events=events)
+    next_token = _extract_next_token(next_result.data)
+    if not next_token:
+        return "", _flow_result(False, "next_unavailable", error="lobby next token missing", events=events)
+    events.append({
+        "step": "lobby_selected",
+        "ok": True,
+        "pond_key": str(pond.get("key") or ""),
+        "pond_name": str(pond.get("name") or ""),
+        "bait_name": str(bait.get("name") or ""),
+    })
+    return next_token, None
 
 
 def _as_clean_text(value):
@@ -732,6 +849,8 @@ def run_fishing_miniapp_lab_flow(
     result_poll_limit=FISHING_MINIAPP_RESULT_POLL_LIMIT,
     score_low=FISHING_MINIAPP_DEFAULT_SCORE_LOW,
     score_high=FISHING_MINIAPP_DEFAULT_SCORE_HIGH,
+    pond_choice="",
+    bait_choice="",
     capture_sink=None,
     capture_source="",
 ):
@@ -759,6 +878,35 @@ def run_fishing_miniapp_lab_flow(
         return _flow_result(False, status, error=start_result.error, events=events)
 
     view = _extract_start_view(start_result.data)
+    if view["phase"] == "lobby" and view["challenge"] is None:
+        token, failure = _enter_fishing_lobby(
+            token=token,
+            init_data=init_data,
+            transport=transport,
+            adapter=adapter,
+            sleeper=sleeper,
+            pond_choice=pond_choice,
+            bait_choice=bait_choice,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            events=events,
+        )
+        if failure:
+            return failure
+        start_request = build_fishing_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
+        start_result = execute_miniapp_http_request(
+            start_request,
+            transport,
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="start_after_lobby",
+        )
+        _append_http_event(events, "start_after_lobby", start_result)
+        if not start_result.ok:
+            status = classify_fishing_miniapp_error(start_result.error)
+            return _flow_result(False, status, error=start_result.error, events=events)
+        view = _extract_start_view(start_result.data)
     if view["challenge"] is None:
         if view["phase"] == "expired":
             return _flow_result(False, "expired", error="session_phase_expired", events=events)
@@ -826,7 +974,7 @@ def run_fishing_miniapp_lab_flow(
             ready = nested_result.get("ready")
         if ready is True:
             result_data = nested_result or result.data
-            return _flow_result(True, "settled", data=result_data, events=events, proof=proof)
+            return _flow_result(True, "settled", data=result_data, events=events, proof=proof, active_token=token)
         events.append({"step": "result_wait", "ok": True, "attempt": attempt + 1, "ready": bool(ready)})
         if sleeper is not None and attempt < max(0, int(result_poll_limit or 0)) - 1:
             sleeper(FISHING_MINIAPP_RESULT_POLL_DELAY_SEC)
@@ -854,6 +1002,8 @@ def run_fishing_miniapp_loop_lab_flow(
     result_poll_limit=FISHING_MINIAPP_RESULT_POLL_LIMIT,
     score_low=FISHING_MINIAPP_DEFAULT_SCORE_LOW,
     score_high=FISHING_MINIAPP_DEFAULT_SCORE_HIGH,
+    pond_choice="",
+    bait_choice="",
     rest_range_sec=FISHING_MINIAPP_CHAIN_REST_RANGE_SEC,
     capture_sink=None,
     capture_source="",
@@ -884,10 +1034,13 @@ def run_fishing_miniapp_loop_lab_flow(
             result_poll_limit=result_poll_limit,
             score_low=score_low,
             score_high=score_high,
+            pond_choice=pond_choice,
+            bait_choice=bait_choice,
             capture_sink=capture_sink,
             capture_source=capture_source,
         )
         last_result = dict(round_result or {})
+        current_token = str(last_result.pop("_active_token", "") or current_token)
         last_status = str(last_result.get("status") or "").strip()
         last_error = str(last_result.get("error") or "").strip()
         round_data = last_result.get("data") or {}
@@ -922,7 +1075,48 @@ def run_fishing_miniapp_loop_lab_flow(
         if index >= max_rounds - 1:
             break
 
-        next_request = build_fishing_miniapp_request("next", token=current_token, init_data=init_data, adapter=adapter)
+        next_payload = {}
+        if str(pond_choice or "").strip() or str(bait_choice or "").strip():
+            shop_request = build_fishing_miniapp_request("shop", token=current_token, init_data=init_data, adapter=adapter)
+            shop_result = execute_miniapp_http_request(
+                shop_request,
+                transport,
+                sleeper=sleeper,
+                backoff_sec=(),
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key="next_shop",
+            )
+            _append_http_event(events, "next_shop", shop_result)
+            if not shop_result.ok:
+                return _flow_result(True, "shop_failed", error=shop_result.error, data={
+                    "settled_count": settled_count,
+                    "rounds": rounds,
+                    "catches": [item.get("catch") for item in rounds if item.get("catch")],
+                    **loop_gains,
+                }, events=events)
+            shop = _fishing_shop(shop_result.data)
+            pond = _select_fishing_pond(shop, pond_choice)
+            bait = _select_fishing_bait(shop, bait_choice)
+            if not pond or not bait:
+                status = "pond_unavailable" if not pond else "bait_missing"
+                return _flow_result(True, status, error=status, data={
+                    "settled_count": settled_count,
+                    "rounds": rounds,
+                    "catches": [item.get("catch") for item in rounds if item.get("catch")],
+                    **loop_gains,
+                }, events=events)
+            next_payload = {
+                "pondKey": str(pond.get("key") or "").strip(),
+                "baitItemId": str(bait.get("itemId") or "").strip(),
+            }
+        next_request = build_fishing_miniapp_request(
+            "next",
+            token=current_token,
+            init_data=init_data,
+            payload=next_payload,
+            adapter=adapter,
+        )
         next_result = execute_miniapp_http_request(
             next_request,
             transport,

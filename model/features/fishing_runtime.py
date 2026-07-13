@@ -1190,6 +1190,8 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
             token=launch.get("token"),
             webview_url=launch.get("webview_url"),
             max_rounds=max_rounds,
+            pond_choice=str(state.get("fishing_pond") or ""),
+            bait_choice=str(state.get("fishing_bait") or ""),
             capture_sink=_fishing_miniapp_capture_store(now),
             capture_source=f"fishing_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
         )

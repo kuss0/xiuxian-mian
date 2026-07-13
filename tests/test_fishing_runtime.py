@@ -460,6 +460,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 token="fish_TEST1234",
                 webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
                 max_rounds=fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS,
+                pond_choice="青溪浅滩",
+                bait_choice="凡饵",
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
             )
@@ -505,6 +507,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 token="fish_TEST1234",
                 webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
                 max_rounds=fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS,
+                pond_choice="青溪浅滩",
+                bait_choice="凡饵",
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
             )
@@ -546,6 +550,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 token="fish_TEST1234",
                 webview_url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234",
                 max_rounds=fishing_runtime.FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS,
+                pond_choice="青溪浅滩",
+                bait_choice="凡饵",
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
             )
