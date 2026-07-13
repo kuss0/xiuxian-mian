@@ -346,16 +346,50 @@ async def run_channel_send_as_health_scheduler(now):
             raise ValueError("missing frozen channel identities")
         async with account_rpc_slot(account_id=account_id, client_obj=client_obj):
             peer = await asyncio.wait_for(client_obj.get_input_entity(game_group_id), timeout=20)
-            probe_send_as = await asyncio.wait_for(client_obj.get_input_entity(restore_identity_ids[0]), timeout=20)
-            await asyncio.wait_for(
-                client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=probe_send_as)),
-                timeout=20,
-            )
-            personal_send_as = await asyncio.wait_for(client_obj.get_input_entity(account_id), timeout=20)
-            await asyncio.wait_for(
-                client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
-                timeout=20,
-            )
+            restored_identity_ids = []
+            try:
+                result = await asyncio.wait_for(
+                    client_obj(functions.channels.GetSendAsRequest(peer=peer)),
+                    timeout=20,
+                )
+                available_identity_ids = set()
+                for send_as_peer in getattr(result, "peers", ()) or ():
+                    peer_obj = getattr(send_as_peer, "peer", None)
+                    for field in ("channel_id", "user_id", "chat_id"):
+                        peer_id = int(getattr(peer_obj, field, 0) or 0)
+                        if peer_id > 0:
+                            available_identity_ids.add(peer_id)
+                            break
+                restored_identity_ids = [
+                    identity_id
+                    for identity_id in restore_identity_ids
+                    if identity_id in available_identity_ids
+                ]
+            except PeerIdInvalidError:
+                # Some supergroups reject GetSendAs while still accepting a
+                # valid SaveDefaultSendAs. Probe each frozen identity so one
+                # stale channel cannot keep the whole cohort disabled.
+                for identity_id in restore_identity_ids:
+                    try:
+                        probe_send_as = await asyncio.wait_for(
+                            client_obj.get_input_entity(identity_id),
+                            timeout=20,
+                        )
+                        await asyncio.wait_for(
+                            client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=probe_send_as)),
+                            timeout=20,
+                        )
+                    except (PeerIdInvalidError, SendAsPeerInvalidError):
+                        continue
+                    restored_identity_ids.append(identity_id)
+                if restored_identity_ids:
+                    personal_send_as = await asyncio.wait_for(client_obj.get_input_entity(account_id), timeout=20)
+                    await asyncio.wait_for(
+                        client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
+                        timeout=20,
+                    )
+            if not restored_identity_ids:
+                raise SendAsPeerInvalidError(request=None)
     except (PeerIdInvalidError, SendAsPeerInvalidError) as exc:
         record.update({
             "game_group_id": game_group_id,
@@ -378,28 +412,43 @@ async def run_channel_send_as_health_scheduler(now):
         return
 
     restored = 0
-    for identity_id in restore_identity_ids:
+    for identity_id in restored_identity_ids:
         if identity_id in get_identity_ids() and not get_identity_enabled(identity_id):
             set_identity_enabled(identity_id, True)
             initialize_identity_runtime(identity_id, now)
             restored += 1
+    remaining_restore_ids = [
+        identity_id
+        for identity_id in restore_identity_ids
+        if identity_id not in restored_identity_ids
+    ]
+    remaining_frozen_ids = [
+        int(identity_id)
+        for identity_id in record.get("frozen_identity_ids") or []
+        if int(identity_id or 0) not in restored_identity_ids
+    ]
     spread_count = spread_overdue_runtime_timers(now, reason="频道身份恢复")
     if spread_count:
         extend_global_recovery_throttle_for_spread(now, reason="频道身份恢复")
+    fully_open = not remaining_restore_ids
     set_channel_send_as_health({
-        "status": "open",
+        "status": "open" if fully_open else "closed",
         "account_id": account_id,
         "game_group_id": game_group_id,
         "opened_at": now,
         "last_probe_at": now,
-        "next_probe_at": 0,
-        "restore_identity_ids": restore_identity_ids,
-        "frozen_identity_ids": [],
-        "last_error": "",
+        "next_probe_at": 0 if fully_open else now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
+        "restore_identity_ids": remaining_restore_ids,
+        "frozen_identity_ids": remaining_frozen_ids,
+        "last_error": "" if fully_open else "partial_send_as_restore",
     })
     save_state()
     await send_audit_log(
-        f"▶️ 游戏群已恢复频道身份发言，自动解冻 {restored} 个频道身份并完成错峰。",
+        (
+            f"▶️ 游戏群已恢复频道身份发言，自动解冻 {restored} 个频道身份并完成错峰。"
+            if fully_open else
+            f"▶️ 游戏群部分恢复频道身份发言，本轮解冻 {restored} 个，剩余 {len(remaining_restore_ids)} 个继续复查。"
+        ),
         scope="global",
         limit=220,
     )

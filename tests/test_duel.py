@@ -60,6 +60,90 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["@cupaopao"], duel.normalize_duel_targets("@cupaopao, cupaopao"))
         self.assertEqual(".斗法 @cupaopao", duel.build_duel_command("@cupaopao"))
 
+    def test_controlled_loadout_requires_exact_current_equipment(self):
+        self.assertTrue(duel._loadout_reply_matches("你已祭出【玄铁剑】。\n当前祭出：【玄铁剑】\n神识御宝：1/26", ("玄铁剑",)))
+        self.assertFalse(duel._loadout_reply_matches("当前祭出：【玄铁剑】、【金光砖】", ("玄铁剑",)))
+
+    async def test_wa_controlled_loadout_confirms_only_xuantie_before_duel(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now - 1
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = "斗法配装:prepare"
+
+            sent = [SimpleNamespace(id=1001, sent_at=now), SimpleNamespace(id=1002, sent_at=now + 20)]
+            send_mock = AsyncMock(side_effect=sent)
+            with (
+                patch.object(duel, "send_game_command", new=send_mock),
+                patch.object(duel, "find_message_log_replies", return_value=[]),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".卸下法宝", track=False, max_retry=0, source_module="斗法配装")
+            self.assertEqual("斗法配装:prepare_unequip_wait", state_module.state["duel_last_result"])
+
+            with (
+                patch.object(duel, "find_message_log_replies", return_value=[{"text": "你已收回当前祭出的所有法宝。"}]),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 10)
+            self.assertEqual("斗法配装:prepare_equip", state_module.state["duel_last_result"])
+
+            with (
+                patch.object(duel, "send_game_command", new=send_mock),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 20)
+            self.assertEqual("斗法配装:prepare_equip_wait", state_module.state["duel_last_result"])
+
+            with (
+                patch.object(duel, "find_message_log_replies", return_value=[{
+                    "text": "你已祭出【玄铁剑】。\n当前祭出：【玄铁剑】\n神识御宝：1/26",
+                }]),
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 30)
+
+            self.assertTrue(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
+
+    async def test_wa_batch_completion_enters_restore_before_stopping(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = "【天道战报·文字版】\n胜者：@walterwa2000\n败者：@ccahen"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 4
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @ccahen"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertFalse(state_module.state["duel_enabled"])
+            self.assertEqual(5, state_module.state["duel_completed_count"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+            self.assertGreater(state_module.state["next_duel_time"], now)
+            self.assertIn("恢复原法宝配装", audit_mock.await_args.args[0])
+
     def test_duel_result_delay_uses_real_weakness_and_batch_stagger(self):
         text = (
             "【天道战报·文字版】\n"

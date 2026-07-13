@@ -83,6 +83,22 @@ RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
+DUEL_LOADOUT_REPLY_TIMEOUT_SEC = 120
+DUEL_LOADOUT_STEP_DELAY_SEC = 8
+DUEL_LOADOUT_PHASE_PREFIX = "斗法配装:"
+DUEL_CONTROLLED_LOADOUTS = {
+    8659059191: {
+        "battle": ("玄铁剑",),
+        "restore": (
+            "青竹蜂云剑（神雷版）",
+            "乾蓝冰焰",
+            "青竹蜂云剑（金雷竹·庚金相）",
+            "元合五极山",
+            "玄天斩灵剑",
+        ),
+    },
+}
+RE_CURRENT_EQUIPPED = re.compile(r"^当前祭出[：:]\s*(?P<items>.+)$", re.M)
 
 
 def _parse_int(value):
@@ -193,6 +209,188 @@ def _clear_duel_pending():
     state["duel_magic_due_at"] = 0
     state["duel_magic_sent_at"] = 0
     state["duel_started_at"] = 0
+
+
+def _controlled_loadout_config():
+    config = DUEL_CONTROLLED_LOADOUTS.get(int(get_current_identity_id() or 0))
+    if not config:
+        return None
+    if not _loadout_phase() and not state.get("duel_unequip_prepared"):
+        return None
+    return config
+
+
+def _loadout_phase():
+    result = str(state.get("duel_last_result") or "")
+    return result if result.startswith(DUEL_LOADOUT_PHASE_PREFIX) else ""
+
+
+def _set_loadout_phase(phase):
+    state["duel_last_result"] = f"{DUEL_LOADOUT_PHASE_PREFIX}{phase}"
+
+
+def _clear_loadout_pending():
+    state["duel_magic_sent_at"] = 0
+    state["duel_magic_due_at"] = 0
+
+
+def _parse_current_equipment(text):
+    match = RE_CURRENT_EQUIPPED.search(str(text or ""))
+    if not match:
+        return []
+    return re.findall(r"【([^】]+)】", match.group("items"))
+
+
+def _loadout_reply_matches(text, expected):
+    current = _parse_current_equipment(text)
+    return bool(current) and set(current) == set(expected) and len(current) == len(expected)
+
+
+def _loadout_unequip_reply(text):
+    raw = str(text or "")
+    return "你已收回当前祭出的所有法宝" in raw or "当前祭出法宝: 无祭出法宝" in raw
+
+
+def _find_loadout_reply(now, predicate):
+    reply_to_msg_id = _parse_int(state.get("duel_magic_sent_at", 0))
+    if reply_to_msg_id <= 0:
+        return None
+    replies = find_message_log_replies(
+        reply_to_msg_id,
+        now,
+        lookback_sec=DUEL_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=lambda entry: predicate(str((entry or {}).get("text") or "")),
+    )
+    return replies[-1] if replies else None
+
+
+async def _send_loadout_command(command, now, waiting_phase):
+    msg = await send_game_command(command, track=False, max_retry=0, source_module="斗法配装")
+    if not msg:
+        send_block = classify_game_send_block(get_current_identity_id(), command)
+        if send_block.get("status") == "unsent":
+            state["duel_last_error"] = f"斗法配装未发送: {send_block.get('code') or 'runtime_block'}"
+            _schedule_next_duel(now, DUEL_RECOVERY_MIN_SEC)
+            save_state()
+            return False
+        state["duel_enabled"] = False
+        state["duel_last_error"] = "斗法配装发送状态未知，已停止批次"
+        _set_loadout_phase("error")
+        save_state()
+        await send_audit_log("⛔ 斗法配装发送状态未知，已停止 WA 批次。", scope="identity", limit=200)
+        return False
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+    state["duel_magic_sent_at"] = int(getattr(msg, "id", 0) or 0)
+    state["duel_magic_due_at"] = sent_at + DUEL_LOADOUT_REPLY_TIMEOUT_SEC
+    state["duel_last_error"] = ""
+    _set_loadout_phase(waiting_phase)
+    _schedule_next_duel(sent_at, DUEL_LOADOUT_STEP_DELAY_SEC)
+    save_state()
+    return True
+
+
+async def _stop_loadout_batch(message, *, restore=False):
+    state["duel_enabled"] = False
+    state["duel_unequip_prepared"] = False
+    state["duel_last_error"] = message
+    _clear_loadout_pending()
+    _set_loadout_phase("restore_error" if restore else "error")
+    save_state()
+    await send_audit_log(f"⛔ {message}", scope="identity", limit=220)
+
+
+async def _run_controlled_loadout_prepare(now, config):
+    phase = _loadout_phase()
+    battle_items = tuple(config.get("battle") or ())
+    if not battle_items:
+        return True
+    if state.get("duel_unequip_prepared"):
+        return True
+    if not phase or phase in {
+        f"{DUEL_LOADOUT_PHASE_PREFIX}prepare",
+        f"{DUEL_LOADOUT_PHASE_PREFIX}restored",
+        f"{DUEL_LOADOUT_PHASE_PREFIX}error",
+    }:
+        return await _send_loadout_command(".卸下法宝", now, "prepare_unequip_wait") and False
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}prepare_unequip_wait":
+        reply = _find_loadout_reply(now, _loadout_unequip_reply)
+        if reply:
+            _clear_loadout_pending()
+            _set_loadout_phase("prepare_equip")
+            _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
+            save_state()
+            return False
+        if float(state.get("duel_magic_due_at", 0) or 0) <= now:
+            await _stop_loadout_batch("斗法配装卸装回包超时，未进入斗法")
+        return False
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}prepare_equip":
+        return await _send_loadout_command(f".装备 {battle_items[0]}", now, "prepare_equip_wait") and False
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}prepare_equip_wait":
+        reply = _find_loadout_reply(now, lambda text: _loadout_reply_matches(text, battle_items))
+        if reply:
+            _clear_loadout_pending()
+            state["duel_unequip_prepared"] = True
+            state["duel_last_error"] = ""
+            _set_loadout_phase("battle_ready")
+            _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
+            save_state()
+            await send_audit_log("🗡️ WA 斗法配装已确认：仅祭出玄铁剑。", scope="identity", limit=180)
+            return False
+        if float(state.get("duel_magic_due_at", 0) or 0) <= now:
+            await _stop_loadout_batch("斗法配装未确认仅祭出玄铁剑，已停止批次")
+        return False
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}battle_ready":
+        state["duel_unequip_prepared"] = True
+        return True
+    return False
+
+
+async def _run_controlled_loadout_restore(now, config):
+    phase = _loadout_phase()
+    if not phase.startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore"):
+        return False
+    restore_items = tuple(config.get("restore") or ())
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}restore_needed":
+        await _send_loadout_command(".卸下法宝", now, "restore_unequip_wait")
+        return True
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}restore_unequip_wait":
+        reply = _find_loadout_reply(now, _loadout_unequip_reply)
+        if reply:
+            _clear_loadout_pending()
+            _set_loadout_phase("restore_equip:0")
+            _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
+            save_state()
+        elif float(state.get("duel_magic_due_at", 0) or 0) <= now:
+            await _stop_loadout_batch("斗法结束后卸装回包超时，恢复已停止", restore=True)
+        return True
+    equip_match = re.fullmatch(rf"{re.escape(DUEL_LOADOUT_PHASE_PREFIX)}restore_equip:(\d+)", phase)
+    if equip_match:
+        index = int(equip_match.group(1))
+        if index >= len(restore_items):
+            state["duel_unequip_prepared"] = False
+            state["duel_last_error"] = ""
+            _set_loadout_phase("restored")
+            state["next_duel_time"] = 0
+            save_state()
+            await send_audit_log("✅ WA 斗法 5 场完成，原法宝配装已恢复。", scope="identity", limit=200)
+            return True
+        await _send_loadout_command(f".装备 {restore_items[index]}", now, f"restore_equip_wait:{index}")
+        return True
+    wait_match = re.fullmatch(rf"{re.escape(DUEL_LOADOUT_PHASE_PREFIX)}restore_equip_wait:(\d+)", phase)
+    if wait_match:
+        index = int(wait_match.group(1))
+        expected = restore_items[: index + 1]
+        reply = _find_loadout_reply(now, lambda text: _loadout_reply_matches(text, expected))
+        if reply:
+            _clear_loadout_pending()
+            _set_loadout_phase(f"restore_equip:{index + 1}")
+            _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
+            save_state()
+        elif float(state.get("duel_magic_due_at", 0) or 0) <= now:
+            await _stop_loadout_batch(f"斗法结束后恢复法宝失败：{restore_items[index]}", restore=True)
+        return True
+    return True
 
 
 def _set_duel_error(message, *, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=None, persist=True):
@@ -715,9 +913,20 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
         total_count = int(state.get("duel_total_count", 0) or 0)
         if total_count > 0 and int(state.get("duel_completed_count", 0) or 0) >= total_count:
             state["duel_enabled"] = False
-            state["next_duel_time"] = 0
+            loadout_config = _controlled_loadout_config()
+            if loadout_config and state.get("duel_unequip_prepared"):
+                _clear_loadout_pending()
+                _set_loadout_phase("restore_needed")
+                state["next_duel_time"] = float(now + DUEL_LOADOUT_STEP_DELAY_SEC)
+            else:
+                state["next_duel_time"] = 0
             save_state()
-            await send_audit_log(f"✅ 斗法完成：{state['duel_completed_count']}/{total_count}", scope="identity", limit=180)
+            suffix = "，开始恢复原法宝配装" if loadout_config and state.get("duel_unequip_prepared") else ""
+            await send_audit_log(
+                f"✅ 斗法完成：{state['duel_completed_count']}/{total_count}{suffix}",
+                scope="identity",
+                limit=220 if suffix else 180,
+            )
             return True
     _schedule_next_duel(now, _duel_next_delay_from_result(raw_text, weak_or_unknown))
     save_state()
@@ -760,6 +969,9 @@ async def run_duel_scheduler(now):
     # Reconcile its real battle evidence first so a consumed duel prediction
     # cannot remain leased and block the next exploration route.
     _reconcile_consumed_duel_prediction_from_last_report(now)
+    loadout_config = _controlled_loadout_config()
+    if loadout_config and await _run_controlled_loadout_restore(now, loadout_config):
+        return
     if not state.get("duel_enabled"):
         return
 
@@ -792,6 +1004,9 @@ async def run_duel_scheduler(now):
     if total_count <= 0:
         if not _duel_next_time_blocks(now):
             _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
+        return
+
+    if loadout_config and not await _run_controlled_loadout_prepare(now, loadout_config):
         return
 
     reply_to_msg_id = int(state.get("duel_reply_to_msg_id", 0) or 0)
