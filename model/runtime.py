@@ -373,6 +373,7 @@ _GAME_COMMAND_PRE_SEND_GUARDS = []
 _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _GAME_SEND_BLOCK_LAST = {}
 _SEND_AS_PEER_INVALID_UNTIL = {}
+_CHANNEL_SEND_AS_INVALID_UNTIL = {}
 _GAME_SEND_QUIESCED = False
 GAME_SEND_UNKNOWN_BLOCK_CODES = {"send_timeout", "send_exception"}
 GAME_SEND_UNSENT_BLOCK_CODES = {
@@ -473,7 +474,7 @@ def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **
             traceback.print_exc()
 
 
-def _record_game_send_block(send_as_id, command, code, reason, *, definitely_unsent=False):
+def _record_game_send_block(send_as_id, command, code, reason, *, definitely_unsent=False, blocked_until=0):
     try:
         identity_id = int(send_as_id or 0)
     except (TypeError, ValueError):
@@ -485,6 +486,7 @@ def _record_game_send_block(send_as_id, command, code, reason, *, definitely_uns
         "code": str(code or "blocked").strip() or "blocked",
         "reason": str(reason or "").strip(),
         "definitely_unsent": bool(definitely_unsent),
+        "blocked_until": float(blocked_until or 0),
         "at": time.time(),
     }
     _GAME_SEND_BLOCK_LAST[(identity_id, raw_command)] = payload
@@ -509,23 +511,68 @@ def _clear_game_send_block(send_as_id, command):
         _GAME_SEND_BLOCK_LAST.pop((identity_id, ""), None)
 
 
-def _send_as_peer_invalid_until(send_as_id, *, now=None):
+def _channel_send_as_invalid_key(send_as_id, *, account_id=None, game_group_id=None):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    try:
+        resolved_account_id = int(account_id or get_identity_account(identity_id) or 0)
+        resolved_group_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if identity_id <= 0 or resolved_account_id <= 0 or resolved_group_id == 0 or identity_id == resolved_account_id:
+        return None
+    return resolved_account_id, resolved_group_id
+
+
+def _send_as_peer_invalid_until(send_as_id, *, account_id=None, game_group_id=None, now=None):
     try:
         identity_id = int(send_as_id or 0)
     except (TypeError, ValueError, OverflowError):
         return 0.0
-    until = float(_SEND_AS_PEER_INVALID_UNTIL.get(identity_id, 0) or 0)
-    if until <= float(now or time.time()):
+    current = float(now or time.time())
+    identity_until = float(_SEND_AS_PEER_INVALID_UNTIL.get(identity_id, 0) or 0)
+    if identity_until <= current:
         _SEND_AS_PEER_INVALID_UNTIL.pop(identity_id, None)
-        return 0.0
-    return until
+        identity_until = 0.0
+    cohort_key = _channel_send_as_invalid_key(
+        identity_id,
+        account_id=account_id,
+        game_group_id=game_group_id,
+    )
+    cohort_until = float(_CHANNEL_SEND_AS_INVALID_UNTIL.get(cohort_key, 0) or 0) if cohort_key else 0.0
+    if cohort_key and cohort_until <= current:
+        _CHANNEL_SEND_AS_INVALID_UNTIL.pop(cohort_key, None)
+        cohort_until = 0.0
+    return max(identity_until, cohort_until)
 
 
-def _mark_send_as_peer_invalid(send_as_id, *, now=None):
+def _mark_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=None, now=None):
     now = float(now or time.time())
     until = now + SEND_AS_PEER_INVALID_BACKOFF_SEC
-    _SEND_AS_PEER_INVALID_UNTIL[int(send_as_id or 0)] = until
+    identity_id = int(send_as_id or 0)
+    _SEND_AS_PEER_INVALID_UNTIL[identity_id] = until
+    cohort_key = _channel_send_as_invalid_key(
+        identity_id,
+        account_id=account_id,
+        game_group_id=game_group_id,
+    )
+    if cohort_key:
+        _CHANNEL_SEND_AS_INVALID_UNTIL[cohort_key] = until
     return until
+
+
+def _clear_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=None):
+    identity_id = int(send_as_id or 0)
+    _SEND_AS_PEER_INVALID_UNTIL.pop(identity_id, None)
+    cohort_key = _channel_send_as_invalid_key(
+        identity_id,
+        account_id=account_id,
+        game_group_id=game_group_id,
+    )
+    if cohort_key:
+        _CHANNEL_SEND_AS_INVALID_UNTIL.pop(cohort_key, None)
 
 
 def set_game_send_quiesced(enabled=True):
@@ -3378,7 +3425,7 @@ def _finalize_game_command_sent(
         **send_intent,
     )
     _clear_game_send_block(send_as_id, command)
-    _SEND_AS_PEER_INVALID_UNTIL.pop(int(send_as_id or 0), None)
+    _clear_send_as_peer_invalid(send_as_id)
     note_shadow_attempt_sent(msg_id, sent_at=sent_at)
     return msg
 
@@ -3556,7 +3603,7 @@ async def _send_game_command_impl(
             _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
             return None
 
-        send_as_invalid_until = _send_as_peer_invalid_until(send_as_id)
+        send_as_invalid_until = _send_as_peer_invalid_until(send_as_id, account_id=account_id)
         if send_as_invalid_until > 0:
             _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
             _record_game_send_block(
@@ -3565,6 +3612,7 @@ async def _send_game_command_impl(
                 "send_as_peer_invalid",
                 f"频道身份不可用于当前游戏群，退避至 {fmt_abs_ts(send_as_invalid_until)}",
                 definitely_unsent=True,
+                blocked_until=send_as_invalid_until,
             )
             return None
 
@@ -3696,7 +3744,7 @@ async def _send_game_command_impl(
                 await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
                 _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
                 return None
-            send_as_invalid_until = _send_as_peer_invalid_until(send_as_id)
+            send_as_invalid_until = _send_as_peer_invalid_until(send_as_id, account_id=account_id)
             if send_as_invalid_until > 0:
                 _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
                 _record_game_send_block(
@@ -3705,6 +3753,7 @@ async def _send_game_command_impl(
                     "send_as_peer_invalid",
                     f"频道身份不可用于当前游戏群，退避至 {fmt_abs_ts(send_as_invalid_until)}",
                     definitely_unsent=True,
+                    blocked_until=send_as_invalid_until,
                 )
                 return None
             if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
@@ -3903,7 +3952,7 @@ async def _send_game_command_impl(
             )
             return msg
     except SendAsPeerInvalidError as e:
-        until = _mark_send_as_peer_invalid(send_as_id)
+        until = _mark_send_as_peer_invalid(send_as_id, account_id=account_id)
         _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
         await send_audit_log(
             (
@@ -3921,6 +3970,7 @@ async def _send_game_command_impl(
             "send_as_peer_invalid",
             _truncate_log_text(e, limit=120),
             definitely_unsent=True,
+            blocked_until=until,
         )
         return None
     except GameSendQueueTimeout:

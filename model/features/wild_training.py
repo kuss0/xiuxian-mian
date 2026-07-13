@@ -1341,9 +1341,11 @@ async def _run_wild_training_scheduler_unlocked(now):
             state["wild_training_last_result"] = "运行保护拦截，未发送，延后重试"
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = f"野外历练未发送: {send_block.get('code') or 'blocked'}"
-            state["next_wild_training_time"] = float(
-                sent_at + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
-            )
+            retry_at = sent_at + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
+            blocked_until = float(send_block.get("blocked_until", 0) or 0)
+            if blocked_until > sent_at:
+                retry_at = max(retry_at, blocked_until + random.uniform(10, 60))
+            state["next_wild_training_time"] = float(retry_at)
             save_state()
             await send_audit_log(f"⏳ {state['wild_training_last_error']}。", scope="identity")
             return

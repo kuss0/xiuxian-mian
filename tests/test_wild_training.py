@@ -1017,6 +1017,33 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未发送", state_module.state["wild_training_last_error"])
         audit_mock.assert_awaited_once()
 
+    async def test_scheduler_send_as_peer_invalid_honors_central_backoff(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        blocked_until = now + 30 * 60
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training.random, "uniform", side_effect=[wild_training.WILD_TRAINING_RETRY_MIN_SEC, 10]), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=None)), \
+             patch.object(wild_training, "classify_game_send_block", return_value={
+                 "status": "unsent",
+                 "code": "send_as_peer_invalid",
+                 "blocked_until": blocked_until,
+             }), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        self.assertEqual(blocked_until + 10, state_module.state["next_wild_training_time"])
+        self.assertEqual("野外历练未发送: send_as_peer_invalid", state_module.state["wild_training_last_error"])
+        audit_mock.assert_awaited_once()
+
     async def test_scheduler_action_guard_short_window_defers_without_consuming_retry(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

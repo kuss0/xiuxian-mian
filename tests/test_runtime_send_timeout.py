@@ -82,6 +82,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             copy.deepcopy(runtime._GAME_SEND_QUEUE_ITEMS),
             copy.deepcopy(runtime._GAME_SEND_BLOCK_LAST),
             copy.deepcopy(runtime._SEND_AS_PEER_INVALID_UNTIL),
+            copy.deepcopy(runtime._CHANNEL_SEND_AS_INVALID_UNTIL),
             dict(runtime._ACCOUNT_RPC_LOCKS),
             runtime.is_game_send_quiesced(),
         )
@@ -107,9 +108,11 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._GAME_SEND_BLOCK_LAST.update(copy.deepcopy(self._queue_snapshot[6]))
         runtime._SEND_AS_PEER_INVALID_UNTIL.clear()
         runtime._SEND_AS_PEER_INVALID_UNTIL.update(copy.deepcopy(self._queue_snapshot[7]))
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL.clear()
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL.update(copy.deepcopy(self._queue_snapshot[8]))
         runtime._ACCOUNT_RPC_LOCKS.clear()
-        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[8])
-        runtime.set_game_send_quiesced(self._queue_snapshot[9])
+        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[9])
+        runtime.set_game_send_quiesced(self._queue_snapshot[10])
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -264,9 +267,12 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_as_peer_invalid_is_definitely_unsent_and_centrally_backed_off(self):
         send_as_id = 301299112
+        sibling_send_as_id = 301299113
         account_id = 7001
         state_module.ensure_identity_registered(send_as_id)
+        state_module.ensure_identity_registered(sibling_send_as_id)
         state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_identity_account(sibling_send_as_id, account_id)
         client = _FakeClient([runtime.SendAsPeerInvalidError(request=None), "ok"])
 
         with ExitStack() as stack:
@@ -294,7 +300,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             )
             second = await runtime.send_game_command(
                 ".天机盘",
-                send_as_id=send_as_id,
+                send_as_id=sibling_send_as_id,
                 priority="probe",
                 track=False,
             )
@@ -306,9 +312,11 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("send_as_peer_invalid", block["code"])
         self.assertEqual("unsent", block["status"])
         self.assertTrue(block["definitely_unsent"])
-        backed_off = runtime.classify_game_send_block(send_as_id, ".天机盘")
+        self.assertGreater(block["blocked_until"], runtime.time.time())
+        backed_off = runtime.classify_game_send_block(sibling_send_as_id, ".天机盘")
         self.assertEqual("send_as_peer_invalid", backed_off["code"])
         self.assertEqual("unsent", backed_off["status"])
+        self.assertEqual(block["blocked_until"], backed_off["blocked_until"])
 
     async def test_successful_send_clears_send_as_peer_invalid_backoff(self):
         send_as_id = 301299112
@@ -316,6 +324,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         state_module.ensure_identity_registered(send_as_id)
         state_module.set_identity_account(send_as_id, account_id)
         runtime._SEND_AS_PEER_INVALID_UNTIL[send_as_id] = runtime.time.time() + 1800
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL[(account_id, 123456)] = runtime.time.time() + 1800
         client = _FakeClient(["ok"])
 
         with ExitStack() as stack:
@@ -350,6 +359,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(910001, result.id)
         self.assertNotIn(send_as_id, runtime._SEND_AS_PEER_INVALID_UNTIL)
+        self.assertNotIn((account_id, 123456), runtime._CHANNEL_SEND_AS_INVALID_UNTIL)
 
     async def test_send_rpc_timeout_recovers_message_id_from_message_log(self):
         send_as_id = 301299112
