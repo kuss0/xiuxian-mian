@@ -126,6 +126,7 @@ class AppSchedulerContractTests(unittest.TestCase):
     def test_global_scheduler_order_starts_with_current_runtime_sequence(self):
         self.assertEqual(
             (
+                "channel_send_as_health",
                 "delayed_actions",
                 "guanxing_monitor",
                 "guanxing",
