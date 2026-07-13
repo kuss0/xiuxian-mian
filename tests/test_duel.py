@@ -52,6 +52,38 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertGreater(state_module.state["next_duel_time"], 0)
 
+    def test_manual_disable_cancels_tianxing_duel_timeline(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 10,
+            }
+            state_module.state["tianxing_auto_config"] = {"duel_route_enabled": True}
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "route": "斗法",
+                "active_step_index": 1,
+                "active_step": {"route": "斗法", "status": "released"},
+                "released_routes": {"斗法": {"released_at": now - 5}},
+            }
+
+            with patch.object(control, "_clear_pending_tasks_by_commands"):
+                control._manual_disable_duel_module_state()
+
+            self.assertFalse(state_module.state["duel_enabled"])
+            observed = state_module.state["tianxing_observation"]
+            self.assertEqual("", observed["current_prediction"])
+            self.assertEqual("斗法", observed["prediction_cancelled_route"])
+            self.assertFalse(state_module.state["tianxing_auto_config"]["duel_route_enabled"])
+            timeline = state_module.state["tianxing_timeline_state"]
+            self.assertEqual("blocked_replan", timeline["phase"])
+            self.assertEqual({}, timeline["active_step"])
+            self.assertNotIn("斗法", timeline["released_routes"])
+
     def test_target_normalization_and_command(self):
         self.assertEqual("@cupaopao", duel.normalize_duel_target("cupaopao"))
         self.assertEqual("@cupaopao", duel.normalize_duel_target("@cupaopao extra"))

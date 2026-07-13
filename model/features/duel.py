@@ -701,6 +701,52 @@ def _reconcile_consumed_duel_prediction_from_last_report(now):
     return True
 
 
+def cancel_duel_tianxing_route(*, now=None, persist=False):
+    now = float(now or time.time())
+    changed = False
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if str(observed.get("current_prediction") or "").strip() == "斗法":
+        observed["current_prediction"] = ""
+        observed["current_prediction_until"] = 0
+        observed["current_prediction_set_at"] = 0
+        observed["prediction_cancelled_route"] = "斗法"
+        observed["prediction_cancelled_at"] = now
+        observed["last_error"] = "斗法已关闭，未消费的斗法推命已撤销。"
+        state["tianxing_observation"] = observed
+        changed = True
+
+    config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    if config.get("duel_route_enabled"):
+        config["duel_route_enabled"] = False
+        state["tianxing_auto_config"] = config
+        changed = True
+
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    active_step = dict(timeline.get("active_step") or {})
+    active_route = str(active_step.get("route") or active_step.get("arg") or timeline.get("route") or "").strip()
+    released = dict(timeline.get("released_routes") or {})
+    if active_route == "斗法" or "斗法" in released:
+        released.pop("斗法", None)
+        timeline["phase"] = "blocked_replan"
+        timeline["route"] = ""
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["released_routes"] = released
+        timeline["blocked_until"] = now
+        timeline["last_error"] = "斗法模块已关闭，斗法时间线已撤销。"
+        timeline["updated_at"] = now
+        state["tianxing_timeline_state"] = timeline
+        changed = True
+
+    if changed:
+        if persist:
+            save_state()
+        else:
+            mark_dirty()
+    return changed
+
+
 async def _prepare_duel_tianxing_route(now, *, due_at=0):
     _reconcile_consumed_duel_prediction_from_last_report(now)
     due_at = float(due_at or now)
@@ -1107,6 +1153,7 @@ __all__ = [
     "DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC",
     "apply_duel_config",
     "build_duel_command",
+    "cancel_duel_tianxing_route",
     "clear_duel_state",
     "get_duel_status_text",
     "handle_duel_broadcast",

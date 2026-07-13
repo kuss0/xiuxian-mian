@@ -223,7 +223,7 @@ from .features.explore_rift import (
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.mulan import clear_mulan_state, get_mulan_status_text, schedule_mulan_initial_check
 from .features.wanxin import clear_wanxin_state, get_wanxin_status_text, schedule_wanxin_initial_check
-from .features.duel import apply_duel_config, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
+from .features.duel import apply_duel_config, cancel_duel_tianxing_route, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
 from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
@@ -1676,6 +1676,7 @@ def _disable_wanxin_module_state():
 
 def _disable_duel_module_state():
     state["duel_enabled"] = False
+    cancel_duel_tianxing_route(persist=False)
     clear_duel_state(persist=False, keep_last_error=True, keep_config=True)
     _clear_pending_tasks_by_commands({CMD_DUEL})
 
