@@ -230,6 +230,35 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
             self.assertEqual("已发送", state_module.state["duel_last_result"])
 
+    async def test_scheduler_definitely_unsent_duel_honors_runtime_backoff(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        blocked_until = now + 1800
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "cupaopao"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now - 1
+            with (
+                patch.object(duel, "_prepare_duel_tianxing_route", new=AsyncMock(return_value=True)),
+                patch.object(duel, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(duel, "classify_game_send_block", return_value={
+                    "status": "unsent",
+                    "code": "send_as_peer_invalid",
+                    "blocked_until": blocked_until,
+                }),
+                patch.object(duel.random, "uniform", return_value=10),
+                patch.object(duel, "console_log") as console_mock,
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            self.assertEqual("斗法未发送: send_as_peer_invalid", state_module.state["duel_last_error"])
+            self.assertEqual(blocked_until + 10, state_module.state["next_duel_time"])
+            self.assertIn("斗法未发送", str(console_mock.call_args.args[0]))
+            audit_mock.assert_not_awaited()
+
     async def test_same_target_cooldown_is_shared_across_identities(self):
         first_id = self._prepare_identity(8659059191)
         second_id = self._prepare_identity(3823558636)

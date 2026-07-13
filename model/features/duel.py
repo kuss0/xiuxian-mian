@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from ..config import CD_BUFFER_SEC, CMD_DUEL
 from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_duel_target_cooldowns,
@@ -829,6 +829,16 @@ async def run_duel_scheduler(now):
     command = build_duel_command(target)
     msg = await send_game_command(command, track=False, max_retry=0, source_module="斗法")
     if not msg:
+        send_block = classify_game_send_block(get_current_identity_id(), command)
+        if send_block.get("status") == "unsent":
+            blocked_until = float(send_block.get("blocked_until", 0) or 0)
+            next_delay = DUEL_RECOVERY_MIN_SEC
+            if blocked_until > now:
+                next_delay = max(next_delay, blocked_until - now + random.uniform(10, 60))
+            block_code = str(send_block.get("code") or "runtime_block")
+            _set_duel_error(f"斗法未发送: {block_code}", next_delay=next_delay, now=now)
+            console_log(f"🗡️ 斗法未发送：{block_code}，延后至 {fmt_abs_ts(state['next_duel_time'])}", scope="identity")
+            return
         _set_duel_error("斗法发送失败", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         await send_audit_log("❌ 斗法发送失败，稍后重试。", scope="identity", limit=180)
         return
