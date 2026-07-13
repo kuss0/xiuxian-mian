@@ -951,7 +951,8 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     state["duel_phaseful_retry_count"] = 0
     if xiuwei_loss > 0:
         state["duel_last_result"] = f"{summary}｜修为-{xiuwei_loss}"
-    state["duel_last_error"] = "" if not weak_or_unknown else summary
+    normal_target_cooldown = _is_target_named_cooldown(raw_text)
+    state["duel_last_error"] = "" if (not weak_or_unknown or normal_target_cooldown) else summary
     if _target_cooldown_confirmed_by_text(raw_text):
         _set_target_cooldown(
             target,

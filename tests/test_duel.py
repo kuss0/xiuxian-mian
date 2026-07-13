@@ -524,6 +524,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         )
         with state_module.use_identity(identity_id):
             self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual("", state_module.state["duel_last_error"])
 
     async def test_scheduler_rotates_batch_targets_by_completed_count(self):
         identity_id = self._prepare_identity()
