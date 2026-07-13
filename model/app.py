@@ -5,7 +5,8 @@ import time
 import traceback
 from types import SimpleNamespace
 
-from telethon import events
+from telethon import events, functions
+from telethon.errors import PeerIdInvalidError, SendAsPeerInvalidError
 
 from .app_message_log import (
     _append_game_group_message_log,
@@ -207,6 +208,8 @@ from .verified_event import from_telegram_event, is_new_delivery
 from .runtime import (
     MAINTENANCE_PAUSE_SOURCE,
     _fire_and_forget,
+    CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
+    account_rpc_slot,
     check_bot_health_timeout,
     clear_pending_by_reply,
     console_log,
@@ -245,11 +248,14 @@ from .state import (
     get_game_listener_account_ids,
     get_global_enabled,
     get_global_pause_source,
+    get_channel_send_as_health,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
+    set_channel_send_as_health,
+    set_identity_enabled,
     set_game_bot_ids,
     state,
     use_identity,
@@ -308,6 +314,95 @@ DUE_TIANXING_SCHEDULER_TIMEOUT_SEC = max(90, DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC
 DUE_TIANXING_DIAG_INTERVAL_SEC = 180
 _due_tianxing_last_diag_at = 0.0
 
+
+async def run_channel_send_as_health_scheduler(now):
+    record = dict(get_channel_send_as_health())
+    if str(record.get("status") or "") != "closed":
+        return
+    now = float(now or time.time())
+    if float(record.get("next_probe_at", 0) or 0) > now:
+        return
+    account_id = int(record.get("account_id") or 0)
+    game_group_id = int(get_game_group_id() or record.get("game_group_id") or 0)
+    restore_identity_ids = sorted({
+        int(identity_id)
+        for identity_id in record.get("restore_identity_ids") or []
+        if int(identity_id or 0) > 0
+    })
+    client_obj = get_registered_client(account_id) if account_id > 0 else None
+    if client_obj is None or is_account_offline(account_id) or game_group_id == 0:
+        record.update({
+            "last_probe_at": now,
+            "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
+            "last_error": "probe_client_unavailable",
+        })
+        set_channel_send_as_health(record)
+        mark_dirty()
+        return
+    try:
+        if not restore_identity_ids:
+            raise ValueError("missing frozen channel identities")
+        async with account_rpc_slot(account_id=account_id, client_obj=client_obj):
+            peer = await asyncio.wait_for(client_obj.get_input_entity(game_group_id), timeout=20)
+            probe_send_as = await asyncio.wait_for(client_obj.get_input_entity(restore_identity_ids[0]), timeout=20)
+            await asyncio.wait_for(
+                client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=probe_send_as)),
+                timeout=20,
+            )
+            personal_send_as = await asyncio.wait_for(client_obj.get_input_entity(account_id), timeout=20)
+            await asyncio.wait_for(
+                client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
+                timeout=20,
+            )
+    except (PeerIdInvalidError, SendAsPeerInvalidError) as exc:
+        record.update({
+            "game_group_id": game_group_id,
+            "last_probe_at": now,
+            "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
+            "last_error": type(exc).__name__,
+        })
+        set_channel_send_as_health(record)
+        mark_dirty()
+        return
+    except Exception as exc:
+        record.update({
+            "game_group_id": game_group_id,
+            "last_probe_at": now,
+            "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
+            "last_error": f"{type(exc).__name__}: {str(exc)[:120]}",
+        })
+        set_channel_send_as_health(record)
+        mark_dirty()
+        return
+
+    restored = 0
+    for identity_id in restore_identity_ids:
+        if identity_id in get_identity_ids() and not get_identity_enabled(identity_id):
+            set_identity_enabled(identity_id, True)
+            initialize_identity_runtime(identity_id, now)
+            restored += 1
+    spread_count = spread_overdue_runtime_timers(now, reason="频道身份恢复")
+    if spread_count:
+        extend_global_recovery_throttle_for_spread(now, reason="频道身份恢复")
+    set_channel_send_as_health({
+        "status": "open",
+        "account_id": account_id,
+        "game_group_id": game_group_id,
+        "opened_at": now,
+        "last_probe_at": now,
+        "next_probe_at": 0,
+        "restore_identity_ids": restore_identity_ids,
+        "frozen_identity_ids": [],
+        "last_error": "",
+    })
+    save_state()
+    await send_audit_log(
+        f"▶️ 游戏群已恢复频道身份发言，自动解冻 {restored} 个频道身份并完成错峰。",
+        scope="global",
+        limit=220,
+    )
+
+
 _PHASEFUL_IDENTITY_SCHEDULERS = (
     run_deep_retreat_scheduler,
     run_yuanying_scheduler,
@@ -346,6 +441,7 @@ _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS = (
     run_wanxin_phaseful_cleanup_scheduler,
 )
 _GLOBAL_SCHEDULERS = (
+    ("channel_send_as_health", run_channel_send_as_health_scheduler),
     ("delayed_actions", drain_due_actions),
     ("guanxing_monitor", run_guanxing_monitor_scheduler),
     ("guanxing", run_guanxing_scheduler),
@@ -362,6 +458,7 @@ _GLOBAL_SCHEDULERS = (
 )
 
 _SCHEDULER_MANIFEST_BRIDGE = {
+    "channel_send_as_health": {"manifest_names": (), "helper": True},
     "delayed_actions": {"manifest_names": (), "helper": True},
     "guanxing_monitor": {"manifest_names": ("观星监控",), "helper": False},
     "guanxing": {"manifest_names": ("观星",), "helper": False},

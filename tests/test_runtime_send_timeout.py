@@ -317,6 +317,12 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("send_as_peer_invalid", backed_off["code"])
         self.assertEqual("unsent", backed_off["status"])
         self.assertEqual(block["blocked_until"], backed_off["blocked_until"])
+        self.assertFalse(state_module.get_identity_enabled(send_as_id))
+        self.assertFalse(state_module.get_identity_enabled(sibling_send_as_id))
+        health = state_module.get_channel_send_as_health()
+        self.assertEqual("closed", health["status"])
+        self.assertEqual(account_id, health["account_id"])
+        self.assertEqual([send_as_id, sibling_send_as_id], health["restore_identity_ids"])
 
     async def test_successful_send_clears_send_as_peer_invalid_backoff(self):
         send_as_id = 301299112

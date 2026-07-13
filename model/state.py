@@ -89,7 +89,7 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required", "explore_rift_rebirth_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "inventory_delta_records", "miniapp_state_records", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "duel_target_cooldowns", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "channel_send_as_health", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "inventory_delta_records", "miniapp_state_records", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "duel_target_cooldowns", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
 REPLICA_KIND_KEYS = ("virtual_hall", "zhuimo", "huanglong", "cangkun", "kunwu", "luoyun")
 REPLICA_KIND_CONFIG_TEMPLATE = {
     "enabled": True,
@@ -829,6 +829,7 @@ GLOBAL_STATE_DEFAULTS = {
     "global_pause_source": "",
     "global_recovery_hold_until": 0,
     "global_recovery_throttle_until": 0,
+    "channel_send_as_health": {},
     "tiandao_judgement_enabled": False,
     "tiandao_judgement_pending": {},
     "tianji_quiz_pending": {},
@@ -1200,6 +1201,16 @@ def set_identity_enabled(send_as_id, enabled):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, enabled=bool(enabled))
     return get_identity_enabled(send_as_id)
+
+
+def get_channel_send_as_health():
+    record = _meta_state.get("channel_send_as_health") or {}
+    return record if isinstance(record, dict) else {}
+
+
+def set_channel_send_as_health(record):
+    _meta_state["channel_send_as_health"] = record if isinstance(record, dict) else {}
+    return get_channel_send_as_health()
 
 
 def get_storage_bag_records():
@@ -2775,6 +2786,7 @@ __all__ = [
     "get_global_enabled",
     "get_global_recovery_hold_until",
     "get_global_recovery_throttle_until",
+    "get_channel_send_as_health",
     "get_tiandao_judgement_enabled",
     "get_guanxing_monitor_enabled",
     "get_guanxing_monitor_target_options",
@@ -2881,6 +2893,7 @@ __all__ = [
     "set_global_enabled",
     "set_global_recovery_hold_until",
     "set_global_recovery_throttle_until",
+    "set_channel_send_as_health",
     "set_tiandao_judgement_enabled",
     "set_guanxing_monitor_enabled",
     "set_guanxing_monitor_targets",

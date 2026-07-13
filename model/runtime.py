@@ -227,6 +227,7 @@ from .state import (
     get_global_pause_source,
     get_global_recovery_hold_until,
     get_global_recovery_throttle_until,
+    get_channel_send_as_health,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
@@ -237,6 +238,8 @@ from .state import (
     has_identity,
     is_auto_delete_sent_messages_enabled,
     state,
+    set_channel_send_as_health,
+    set_identity_enabled,
     use_identity,
 )
 
@@ -402,6 +405,7 @@ LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 60
 SEND_AS_PEER_INVALID_BACKOFF_SEC = 30 * 60
+CHANNEL_SEND_AS_PROBE_INTERVAL_SEC = 5 * 60
 GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
@@ -573,6 +577,51 @@ def _clear_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=No
     )
     if cohort_key:
         _CHANNEL_SEND_AS_INVALID_UNTIL.pop(cohort_key, None)
+
+
+def _freeze_channel_send_as_identities(account_id, game_group_id, *, now=None):
+    now = float(now or time.time())
+    account_id = int(account_id or 0)
+    game_group_id = int(game_group_id or 0)
+    if account_id <= 0 or game_group_id == 0:
+        return False, 0
+    channel_identity_ids = sorted(
+        identity_id
+        for identity_id in get_identity_ids()
+        if int(get_identity_account(identity_id) or 0) == account_id and int(identity_id) != account_id
+    )
+    if not channel_identity_ids:
+        return False, 0
+    current = dict(get_channel_send_as_health())
+    same_closed_group = (
+        str(current.get("status") or "") == "closed"
+        and int(current.get("account_id") or 0) == account_id
+        and int(current.get("game_group_id") or 0) == game_group_id
+    )
+    restore_ids = {
+        int(identity_id)
+        for identity_id in current.get("restore_identity_ids") or []
+        if int(identity_id or 0) in channel_identity_ids
+    } if same_closed_group else set()
+    restore_ids.update(identity_id for identity_id in channel_identity_ids if get_identity_enabled(identity_id))
+    changed = False
+    for identity_id in channel_identity_ids:
+        if get_identity_enabled(identity_id):
+            set_identity_enabled(identity_id, False)
+            changed = True
+    set_channel_send_as_health({
+        "status": "closed",
+        "account_id": account_id,
+        "game_group_id": game_group_id,
+        "closed_at": float(current.get("closed_at", 0) or now) if same_closed_group else now,
+        "last_probe_at": float(current.get("last_probe_at", 0) or 0) if same_closed_group else 0,
+        "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
+        "restore_identity_ids": sorted(restore_ids),
+        "frozen_identity_ids": channel_identity_ids,
+        "last_error": "send_as_peer_invalid",
+    })
+    mark_dirty()
+    return not same_closed_group, len(channel_identity_ids) if changed else 0
 
 
 def set_game_send_quiesced(enabled=True):
@@ -3953,17 +4002,21 @@ async def _send_game_command_impl(
             return msg
     except SendAsPeerInvalidError as e:
         until = _mark_send_as_peer_invalid(send_as_id, account_id=account_id)
-        _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
-        await send_audit_log(
-            (
-                f"⛔ 频道身份不可用于当前游戏群，指令确定未发送："
-                f"{_truncate_log_text(command, limit=40)}｜退避至 {fmt_abs_ts(until)}｜"
-                f"{_truncate_log_text(e, limit=64)}"
-            ),
-            scope="identity",
-            send_as_id=send_as_id,
-            limit=260,
+        newly_closed, frozen_count = _freeze_channel_send_as_identities(
+            account_id,
+            get_game_group_id(),
+            now=time.time(),
         )
+        _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
+        if newly_closed:
+            await send_audit_log(
+                (
+                    f"⏸ 当前游戏群已关闭频道身份发言，已冻结 {frozen_count} 个频道身份；"
+                    f"后台每 {CHANNEL_SEND_AS_PROBE_INTERVAL_SEC // 60} 分钟只读复查权限，开放后自动恢复。"
+                ),
+                scope="global",
+                limit=260,
+            )
         _record_game_send_block(
             send_as_id,
             command,
