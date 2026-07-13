@@ -183,7 +183,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertGreaterEqual(plan[1]["holdMs"], 1238)
         self.assertTrue(all(item["holdMs"] <= 1250 for item in plan))
 
-    def test_state_fallback_waits_real_windows_then_hits_and_finishes_once(self):
+    def test_start_refresh_waits_real_windows_then_hits_and_finishes_once(self):
         calls = []
         payloads = []
         clock = FakeClock()
@@ -192,9 +192,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
             endpoint = request["safe_summary"]["endpoint"]
             calls.append(endpoint)
             payloads.append(dict(request["payload"]))
+            if endpoint == "start" and calls.count("start") == 1:
+                return 200, {
+                    "ok": True,
+                    "joined": True,
+                    "sessionToken": "qyz_SESSION",
+                    "boss": {"roomStatus": "joining", "joinRemainingSeconds": 20},
+                }
             if endpoint == "start":
-                return 200, {"ok": True, "joined": True, "sessionToken": "qyz_SESSION"}
-            if endpoint == "state":
                 return 200, {
                     "ok": True,
                     "elapsedMs": 500,
@@ -211,17 +216,12 @@ class WorldBossMiniAppTests(unittest.TestCase):
             if endpoint == "hit" and request["payload"]["windowId"] == "w1":
                 return 200, {
                     "ok": True,
-                    "playerHp": 930,
-                    "realtimeDamageApplied": 120,
-                    "clientStats": {"damage": 120, "hits": 1, "perfects": 1, "combo": 1, "bestCombo": 1},
+                    "hit": {"damageYi": 120},
                 }
             if endpoint == "hit":
                 return 200, {
                     "ok": True,
-                    "playerHp": 850,
-                    "dead": False,
-                    "realtimeDamageApplied": 280,
-                    "clientStats": {"dodges": 1, "grazes": 1, "damage": 280, "hits": 2, "perfects": 2, "combo": 2, "bestCombo": 2},
+                    "hit": {"damageYi": 280},
                 }
             if endpoint == "finish":
                 return 200, {"ok": True, "result": {"rank": 3, "reward": "玄晶"}}
@@ -238,7 +238,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual("settled", result["status"])
-        self.assertEqual(["start", "state", "hit", "hit", "finish"], calls)
+        self.assertEqual(["start", "start", "hit", "hit", "finish"], calls)
         self.assertEqual("qyz_SESSION", payloads[1]["token"])
         self.assertTrue(all(delay > 0 for delay in clock.sleeps))
         self.assertEqual("w1", payloads[2]["windowId"])
@@ -249,11 +249,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual("qyz_focus_burst_v2", proof["mode"])
         self.assertEqual("强攻", proof["stance"])
         self.assertTrue(all(abs(item["t"] - center) <= 24 for item, center in zip(proof["actions"], (1500, 3000))))
-        self.assertEqual(850, proof["playerHp"])
+        self.assertEqual(1000, proof["playerHp"])
         self.assertFalse(proof["dead"])
         self.assertIs(proof["realtimeDamageApplied"], True)
-        self.assertEqual(280, proof["clientStats"]["damage"])
+        self.assertEqual(0, proof["clientStats"]["damage"])
+        self.assertEqual(0, proof["clientStats"]["grazes"])
+        self.assertEqual(2, proof["clientStats"]["dodges"])
         self.assertEqual(2, proof["clientStats"]["bestCombo"])
+        self.assertGreaterEqual(proof["durationMs"], 3000 + 560 + 2200)
 
     def test_joined_battle_polls_until_room_is_locked(self):
         calls = []
@@ -262,9 +265,9 @@ class WorldBossMiniAppTests(unittest.TestCase):
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             calls.append(endpoint)
-            if endpoint == "state" and calls.count("state") == 1:
+            if endpoint == "start" and calls.count("start") == 1:
                 return 200, {"ok": True, "boss": {"roomStatus": "waiting", "participantCount": 4}}
-            if endpoint == "state":
+            if endpoint == "start":
                 return 200, {
                     "ok": True,
                     "elapsedMs": 0,
@@ -293,8 +296,103 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(["state", "state", "hit", "finish"], calls)
-        self.assertGreaterEqual(clock.sleeps[0], 1.5)
+        self.assertEqual(["start", "start", "hit", "finish"], calls)
+        self.assertEqual(1.2, clock.sleeps[0])
+
+    def test_start_refresh_uses_page_join_intervals(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start" and calls.count("start") == 1:
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "joining", "joinRemainingSeconds": 18},
+                }
+            if endpoint == "start" and calls.count("start") == 2:
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "joining", "joinRemainingSeconds": 3},
+                }
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle"},
+                    "player": {"maxHp": 100},
+                    "challenge": {
+                        "challengeId": "challenge-refresh",
+                        "windows": [{"id": "w1", "centerMs": 1500}],
+                    },
+                }
+            if endpoint == "hit":
+                return 200, {"ok": True, "hit": {"damageYi": 1}}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"settled": True}}
+            self.fail(endpoint)
+
+        receipt = world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77")
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            receipt,
+            token="qyz_SESSION",
+            entry_token="qyz_ENTRY",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            rng=random.Random(3),
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(5.0, clock.sleeps[0])
+        self.assertEqual(1.2, clock.sleeps[1])
+        self.assertEqual(1.25, clock.sleeps[2])
+
+    def test_session_token_error_resets_to_entry_token_before_battle(self):
+        tokens = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            tokens.append((endpoint, request["payload"]["token"]))
+            if endpoint == "start" and len(tokens) == 1:
+                return 409, {"ok": False, "error": "boss_token_used"}
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "sessionToken": "qyz_RECONNECTED",
+                    "boss": {"roomStatus": "battle"},
+                    "player": {"maxHp": 100},
+                    "challenge": {
+                        "challengeId": "challenge-reconnect",
+                        "windows": [{"id": "w1", "centerMs": 1500}],
+                    },
+                }
+            if endpoint == "hit":
+                return 200, {"ok": True, "hit": {"damageYi": 1}}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"settled": True}}
+            self.fail(endpoint)
+
+        receipt = world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77")
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            receipt,
+            token="qyz_SESSION",
+            entry_token="qyz_ENTRY",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            rng=random.Random(4),
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(("start", "qyz_SESSION"), tokens[0])
+        self.assertEqual(("start", "qyz_ENTRY"), tokens[1])
+        self.assertEqual(("hit", "qyz_RECONNECTED"), tokens[2])
+        self.assertEqual(("finish", "qyz_RECONNECTED"), tokens[3])
+        self.assertTrue(any(event["step"] == "reset_entry_token" for event in result["events"]))
 
     def test_unknown_start_is_not_retried_and_state_calibrates_join(self):
         calls = []
@@ -329,14 +427,16 @@ class WorldBossMiniAppTests(unittest.TestCase):
     def test_four_account_barrier_joins_all_before_first_battle_state(self):
         calls = []
         clock = FakeClock()
+        starts_by_token = {}
 
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             token = request["payload"]["token"]
             calls.append((endpoint, token))
             if endpoint == "start":
-                return 200, {"ok": True, "joined": True, "playerId": request["payload"]["playerId"]}
-            if endpoint == "state":
+                starts_by_token[token] = starts_by_token.get(token, 0) + 1
+                if starts_by_token[token] == 1:
+                    return 200, {"ok": True, "joined": True, "playerId": request["payload"]["playerId"]}
                 return 200, {
                     "ok": True,
                     "elapsedMs": 0,
@@ -373,7 +473,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(4, result["barrier"]["joined_count"])
         self.assertEqual(["start"] * 4, [endpoint for endpoint, _token in calls[:4]])
-        self.assertEqual(["state", "hit", "finish"] * 4, [endpoint for endpoint, _token in calls[4:]])
+        self.assertEqual(["start", "hit", "finish"] * 4, [endpoint for endpoint, _token in calls[4:]])
 
     def test_battle_refresh_filters_expired_windows(self):
         calls = []
@@ -383,7 +483,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             calls.append(endpoint)
-            if endpoint == "state":
+            if endpoint == "start":
                 return 200, {
                     "ok": True,
                     "elapsedMs": 2500,
@@ -416,7 +516,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(["state", "hit", "finish"], calls)
+        self.assertEqual(["start", "hit", "finish"], calls)
         self.assertEqual(["future"], hit_windows)
         plan_event = next(event for event in result["events"] if event["step"] == "plan")
         self.assertEqual(1, plan_event["expired_window_count"])
@@ -427,9 +527,9 @@ class WorldBossMiniAppTests(unittest.TestCase):
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
             calls.append(endpoint)
-            if endpoint == "start":
+            if endpoint == "start" and calls.count("start") == 1:
                 return 200, {"ok": True, "joined": True}
-            if endpoint == "state":
+            if endpoint == "start":
                 return 200, {
                     "ok": True,
                     "challenge": {"challengeId": "challenge-limit", "windows": [{"windowId": "w1", "centerMs": 1500}]},
@@ -445,7 +545,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             clock=lambda: 0,
         )
         self.assertEqual("boss_action_limit", result["status"])
-        self.assertEqual(["start", "state", "hit"], calls)
+        self.assertEqual(["start", "start", "hit"], calls)
 
 
 if __name__ == "__main__":

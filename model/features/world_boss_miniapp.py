@@ -40,6 +40,12 @@ WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
 WORLD_BOSS_DEFAULT_HIT_MS = 560
 WORLD_BOSS_HOLD_JITTER_MS = 12
 WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
+WORLD_BOSS_START_REFRESH_SEC = 5.0
+WORLD_BOSS_START_REFRESH_NEAR_LOCK_SEC = 1.2
+WORLD_BOSS_START_RECONNECT_SEC = 1.5
+WORLD_BOSS_AUTO_START_DELAY_SEC = 0.28
+WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC = 1.25
+WORLD_BOSS_FINISH_GRACE_MS = 2200
 
 WORLD_BOSS_ERROR_TYPES = (
     "boss_token_missing",
@@ -154,7 +160,13 @@ def build_world_boss_miniapp_flow_plan():
                 key="state",
                 endpoint="state",
                 required_payload_keys=("token", "initData"),
-                note="read challenge when start does not include windows",
+                note="status-only room and boss updates; challenge does not come from this endpoint",
+            ),
+            MiniAppFlowStep(
+                key="start_refresh",
+                endpoint="start",
+                required_payload_keys=("token", "initData", "playerId"),
+                note="repeat the joined page lifecycle until the battle challenge is returned",
             ),
             MiniAppFlowStep(
                 key="plan",
@@ -240,6 +252,13 @@ def _int_value(value, default=0):
         return int(float(value))
     except (TypeError, ValueError, OverflowError):
         return int(default)
+
+
+def _float_value(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
 
 
 def _first_mapping(value, keys):
@@ -546,7 +565,17 @@ def _client_stats(hit_payloads):
     return {key: max(0, _int_value(latest.get(key), 0)) for key in _STAT_KEYS}
 
 
-def build_world_boss_proof(challenge, actions, hit_payloads):
+def build_world_boss_proof(
+    challenge,
+    actions,
+    hit_payloads,
+    *,
+    duration_ms=None,
+    player_hp=None,
+    dead=None,
+    client_stats=None,
+    realtime_damage_applied=None,
+):
     challenge = dict(challenge or {})
     challenge_id = str(challenge.get("challengeId") or "").strip()
     if not challenge_id:
@@ -562,19 +591,27 @@ def build_world_boss_proof(challenge, actions, hit_payloads):
     if not clean_actions:
         raise ValueError("boss actions missing")
     payloads = [dict(item or {}) for item in hit_payloads or ()]
-    duration_ms = max(action["t"] + action["holdMs"] for action in clean_actions)
-    duration_ms = max(duration_ms, _int_value(challenge.get("minDurationMs"), 0))
+    if duration_ms is None:
+        duration_ms = max(action["t"] + action["holdMs"] for action in clean_actions)
+        duration_ms = max(duration_ms, _int_value(challenge.get("minDurationMs"), 0))
+    if player_hp is None:
+        player_hp = _latest_value(payloads, ("playerHp", "hp"), challenge.get("playerHp", 0))
+    if dead is None:
+        dead = _latest_value(payloads, ("dead", "isDead"), challenge.get("dead", False))
+    if client_stats is None:
+        client_stats = _client_stats(payloads)
+    if realtime_damage_applied is None:
+        realtime_damage_applied = bool(payloads)
     return {
         "mode": WORLD_BOSS_PROOF_MODE,
         "challengeId": challenge_id,
         "stance": WORLD_BOSS_STANCE,
-        "durationMs": duration_ms,
-        "playerHp": max(0, _int_value(_latest_value(payloads, ("playerHp", "hp"), challenge.get("playerHp", 0)))),
-        "dead": bool(_latest_value(payloads, ("dead", "isDead"), challenge.get("dead", False))),
+        "durationMs": max(0, _int_value(duration_ms)),
+        "playerHp": max(0, _int_value(player_hp)),
+        "dead": bool(dead),
         "actions": clean_actions,
-        "clientStats": _client_stats(payloads),
-        # Damage has already been committed by the serial /hit requests.
-        "realtimeDamageApplied": True,
+        "clientStats": {key: max(0, _int_value(dict(client_stats or {}).get(key), 0)) for key in _STAT_KEYS},
+        "realtimeDamageApplied": bool(realtime_damage_applied),
     }
 
 
@@ -609,6 +646,90 @@ def _current_elapsed_ms(data, challenge):
             if payload.get(key) not in (None, ""):
                 return max(0, _int_value(payload.get(key)))
     return 0
+
+
+def _world_boss_room_state(data):
+    boss = _mapping_from_payload(data, ("boss",))
+    room = _mapping_from_payload(data, ("room",))
+    return boss, room
+
+
+def _world_boss_join_remaining_sec(data):
+    boss, room = _world_boss_room_state(data)
+    for mapping in (boss, room, data if isinstance(data, dict) else {}):
+        for key in ("joinRemainingSeconds", "join_remaining_seconds", "remainingSeconds"):
+            if mapping.get(key) not in (None, ""):
+                return max(0.0, _float_value(mapping.get(key), 0.0))
+    return 0.0
+
+
+def _world_boss_room_status(data):
+    boss, room = _world_boss_room_state(data)
+    return str(
+        boss.get("roomStatus")
+        or room.get("status")
+        or room.get("roomStatus")
+        or ""
+    ).strip().lower()
+
+
+def _world_boss_start_refresh_delay(data, override=None):
+    if override is not None:
+        return max(0.1, float(override or WORLD_BOSS_START_REFRESH_SEC))
+    return (
+        WORLD_BOSS_START_REFRESH_SEC
+        if _world_boss_join_remaining_sec(data) > 5
+        else WORLD_BOSS_START_REFRESH_NEAR_LOCK_SEC
+    )
+
+
+def _world_boss_challenge_duration_ms(challenge):
+    challenge = dict(challenge or {})
+    windows = challenge.get("windows") if isinstance(challenge.get("windows"), list) else []
+    base_duration = max(0, _int_value(challenge.get("durationMs"), 28_000))
+    max_duration = max(1_000, _int_value(challenge.get("maxDurationMs"), base_duration + 12_000))
+    last_window_end = 0
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        last_window_end = max(
+            last_window_end,
+            _window_center_ms(window) + max(1, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)),
+        )
+    return max(1_000, min(max_duration, max(base_duration, last_window_end + 9_000)))
+
+
+def _world_boss_last_window_end_ms(challenge):
+    last_window_end = 0
+    for window in dict(challenge or {}).get("windows") or ():
+        if not isinstance(window, dict):
+            continue
+        last_window_end = max(
+            last_window_end,
+            _window_center_ms(window) + max(1, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)),
+        )
+    return max(0, last_window_end)
+
+
+def _world_boss_player_max_hp(data, challenge):
+    player = _mapping_from_payload(data, ("player", "identity"))
+    return max(
+        0,
+        _int_value(
+            player.get("maxHp")
+            or player.get("playerHp")
+            or dict(challenge or {}).get("playerHp")
+            or 100
+        ),
+    )
+
+
+def _world_boss_realtime_damage_applied(hit_payloads):
+    for payload in hit_payloads or ():
+        hit = _mapping_from_payload(payload, ("hit",))
+        if _float_value(hit.get("damageYi") or hit.get("damage"), 0.0) > 0:
+            return True
+    return False
 
 
 def _failed_join_receipt(result, *, player_id=None, identity_id=0, account_id=0, calibrated=False):
@@ -820,9 +941,10 @@ def run_world_boss_joined_battle_lab_flow(
     capture_source="",
     events=None,
     battle_wait_timeout_sec=65.0,
-    state_poll_interval_sec=1.5,
+    state_poll_interval_sec=None,
+    entry_token="",
 ):
-    """Wait for room lock, refresh state, then execute one joined battle."""
+    """Wait for room lock, refresh the joined session, then execute one battle."""
 
     adapter = adapter or build_world_boss_miniapp_adapter()
     sleeper = sleeper or time.sleep
@@ -834,28 +956,49 @@ def run_world_boss_joined_battle_lab_flow(
         return _flow_result(False, status, error=error, events=events)
 
     wait_deadline = float(clock()) + max(0.0, float(battle_wait_timeout_sec or 0))
+    entry_token = str(entry_token or token or "").strip()
+    current_token = str(token or entry_token).strip()
     state_data = {}
     challenge = {}
+    previous_room_status = ""
     while True:
         state_request = build_world_boss_miniapp_request(
-            "state", token=token, init_data=init_data, adapter=adapter,
+            "start",
+            token=current_token,
+            init_data=init_data,
+            player_id=receipt.player_id or receipt.identity_id,
+            adapter=adapter,
         )
         state_result = execute_miniapp_http_request(
             state_request,
             transport,
+            backoff_sec=(),
             sleeper=sleeper,
             capture_sink=capture_sink,
             capture_source=capture_source,
-            step_key="battle_state_refresh",
+            step_key="battle_start_refresh",
         )
-        _append_http_event(events, "battle_state_refresh", state_result)
+        _append_http_event(events, "battle_start_refresh", state_result)
         if not state_result.ok:
             status = classify_world_boss_miniapp_error(state_result.error)
-            if status == "boss_battle_not_started" and float(clock()) < wait_deadline:
-                sleeper(max(0.1, float(state_poll_interval_sec or 1.5)))
+            retryable_wait_error = status == "boss_battle_not_started" or state_result.error_type == "transient"
+            resettable_token_error = status in {
+                "boss_token_used", "boss_token_expired", "boss_token_missing", "boss_event_closed",
+            }
+            if resettable_token_error and entry_token and current_token != entry_token:
+                current_token = entry_token
+                events.append({"step": "reset_entry_token", "ok": True, "status": status})
+                retryable_wait_error = True
+            if (retryable_wait_error or resettable_token_error) and float(clock()) < wait_deadline:
+                sleeper(WORLD_BOSS_START_RECONNECT_SEC)
                 continue
             return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
         state_data = state_result.data if isinstance(state_result.data, dict) else {}
+        refreshed_session_token = str(
+            state_data.get("sessionToken") or state_data.get("session_token") or ""
+        ).strip()
+        if refreshed_session_token:
+            current_token = refreshed_session_token
         if _verification_required(state_data):
             return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
         payload_error = _error_from_payload(state_data)
@@ -866,11 +1009,19 @@ def run_world_boss_joined_battle_lab_flow(
             break
         if float(clock()) >= wait_deadline:
             return _flow_result(False, "battle_wait_timeout", error="world boss battle not started", events=events)
-        sleeper(max(0.1, float(state_poll_interval_sec or 1.5)))
+        previous_room_status = _world_boss_room_status(state_data) or previous_room_status
+        sleeper(_world_boss_start_refresh_delay(state_data, state_poll_interval_sec))
 
     if not challenge:
         return _flow_result(False, "not_ready", error="world boss challenge missing", events=events)
     initial_elapsed_ms = _current_elapsed_ms(state_data, challenge)
+    current_room_status = _world_boss_room_status(state_data)
+    auto_start_delay = (
+        WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC
+        if previous_room_status in {"joining", "waiting"} and current_room_status == "battle"
+        else WORLD_BOSS_AUTO_START_DELAY_SEC
+    )
+    sleeper(auto_start_delay)
     try:
         full_plan = build_world_boss_action_plan(challenge, rng=rng)
     except ValueError as exc:
@@ -924,7 +1075,7 @@ def run_world_boss_joined_battle_lab_flow(
         })
         hit_request = build_world_boss_miniapp_request(
             "hit",
-            token=token,
+            token=current_token,
             init_data=init_data,
             challenge_id=action["challengeId"],
             window_id=action["windowId"],
@@ -953,9 +1104,43 @@ def run_world_boss_joined_battle_lab_flow(
 
     if not executed_actions:
         return _flow_result(False, "windows_expired", error="world boss windows expired before hit", events=events)
-    proof = build_world_boss_proof(challenge, executed_actions, hit_payloads)
+    challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
+    finish_target_ms = min(
+        challenge_duration_ms,
+        _world_boss_last_window_end_ms(challenge) + WORLD_BOSS_FINISH_GRACE_MS,
+    )
+    current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+    if finish_target_ms > current_elapsed_ms:
+        sleeper((finish_target_ms - current_elapsed_ms) / 1000.0)
+    finish_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+    hit_count = len(executed_actions)
+    client_stats = {
+        "dodges": hit_count,
+        "grazes": 0,
+        "damage": 0,
+        "hits": hit_count,
+        "perfects": sum(
+            1
+            for action in executed_actions
+            if abs(_int_value(action.get("elapsedMs")) - _int_value(action.get("centerMs")))
+            <= _int_value(action.get("perfectMs"), 150)
+            and WORLD_BOSS_PERFECT_HOLD_MIN_MS <= _int_value(action.get("holdMs")) <= WORLD_BOSS_PERFECT_HOLD_MAX_MS
+        ),
+        "combo": hit_count,
+        "bestCombo": hit_count,
+    }
+    proof = build_world_boss_proof(
+        challenge,
+        executed_actions,
+        hit_payloads,
+        duration_ms=finish_elapsed_ms,
+        player_hp=_world_boss_player_max_hp(state_data, challenge),
+        dead=False,
+        client_stats=client_stats,
+        realtime_damage_applied=_world_boss_realtime_damage_applied(hit_payloads),
+    )
     finish_request = build_world_boss_miniapp_request(
-        "finish", token=token, init_data=init_data, boss_proof=proof, adapter=adapter,
+        "finish", token=current_token, init_data=init_data, boss_proof=proof, adapter=adapter,
     )
     finish_result = execute_miniapp_http_request(
         finish_request,
@@ -1009,6 +1194,7 @@ def run_world_boss_miniapp_lab_flow(
     return run_world_boss_joined_battle_lab_flow(
         receipt,
         token=receipt.session_token or token,
+        entry_token=token,
         init_data=init_data,
         transport=transport,
         adapter=adapter,
@@ -1055,6 +1241,7 @@ def run_world_boss_miniapp_batch_lab_flow(
         battle_results.append(run_world_boss_joined_battle_lab_flow(
             receipt,
             token=receipt.session_token or entry.get("token"),
+            entry_token=entry.get("token"),
             init_data=entry.get("init_data"),
             transport=transport,
             adapter=adapter,

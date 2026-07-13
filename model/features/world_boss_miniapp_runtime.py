@@ -170,6 +170,7 @@ async def run_world_boss_miniapp_event(
                 run_world_boss_joined_battle_lab_flow,
                 receipt,
                 token=battle_token,
+                entry_token=launch["token"],
                 init_data=init_data,
                 transport=transport,
                 capture_sink=capture_sink,
