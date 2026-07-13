@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CMD_WILD_TRAINING, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CMD_WILD_TRAINING, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
@@ -391,12 +391,17 @@ def mark_launch_command_sent(spec, sent_at):
 
 def _is_summary_replayable_command(command):
     command = str(command or "").strip()
-    return command in SUMMARY_REPLAYABLE_COMMANDS or _is_wild_training_replay_command(command)
+    return command in SUMMARY_REPLAYABLE_COMMANDS or _is_wild_training_replay_command(command) or _is_duel_replay_command(command)
 
 
 def _is_wild_training_replay_command(command):
     command = str(command or "").strip()
     return command == CMD_WILD_TRAINING or command.startswith(f"{CMD_WILD_TRAINING} ")
+
+
+def _is_duel_replay_command(command):
+    command = str(command or "").strip()
+    return command == CMD_DUEL or command.startswith(f"{CMD_DUEL} ")
 
 
 def _is_voyage_replay_command(command):
@@ -494,6 +499,26 @@ def _has_pending_command(command, *, ignore_msg_id=0):
 
 
 def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
+    if _is_duel_replay_command(command):
+        from .duel import _clear_target_reservation, normalize_duel_target
+
+        if not state.get("duel_enabled"):
+            return False
+        if int(state.get("duel_reply_to_msg_id", 0) or 0) != int(old_msg_id or 0):
+            return False
+        if int(state.get("duel_phaseful_retry_count", 0) or 0) >= 1:
+            return False
+        target = normalize_duel_target(command[len(CMD_DUEL):].strip())
+        _clear_target_reservation(target, command_msg_id=old_msg_id)
+        state["duel_reply_to_msg_id"] = 0
+        state["duel_reply_due_at"] = 0
+        state["duel_started_at"] = 0
+        state["duel_phaseful_retry_count"] = 1
+        state["next_duel_time"] = float(now)
+        state["duel_last_result"] = "归位结算吃掉斗法，准备补发一次"
+        state["duel_last_error"] = ""
+        return True
+
     if _is_wild_training_replay_command(command):
         if not state.get("wild_training_enabled"):
             return False
@@ -564,6 +589,30 @@ def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
 
 
 def _finalize_replayed_command_state(command, msg):
+    if _is_duel_replay_command(command) and msg:
+        from .duel import DUEL_REPLY_TIMEOUT_SEC, DUEL_TARGET_RESERVATION_SEC, _set_target_cooldown, normalize_duel_target
+
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        msg_id = int(getattr(msg, "id", 0) or 0)
+        target = normalize_duel_target(command[len(CMD_DUEL):].strip())
+        state["duel_reply_to_msg_id"] = msg_id
+        state["duel_reply_due_at"] = sent_at + DUEL_REPLY_TIMEOUT_SEC
+        state["duel_open_msg_id"] = 0
+        state["duel_magic_due_at"] = 0
+        state["duel_magic_sent_at"] = 0
+        state["duel_started_at"] = sent_at
+        state["duel_last_msg_id"] = msg_id
+        state["duel_last_result"] = "归位结算吃掉原斗法，已补发一次"
+        state["duel_last_error"] = ""
+        state["next_duel_time"] = state["duel_reply_due_at"]
+        _set_target_cooldown(
+            target,
+            sent_at + DUEL_TARGET_RESERVATION_SEC,
+            confirmed=False,
+            command_msg_id=msg_id,
+        )
+        return True
+
     if _is_wild_training_replay_command(command) and msg:
         from .wild_training import WILD_TRAINING_REPLY_TIMEOUT_SEC
 

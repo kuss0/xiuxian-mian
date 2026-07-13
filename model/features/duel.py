@@ -948,6 +948,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     _clear_duel_pending()
     state["duel_last_msg_id"] = int(result_msg_id or 0)
     state["duel_last_result"] = summary
+    state["duel_phaseful_retry_count"] = 0
     if xiuwei_loss > 0:
         state["duel_last_result"] = f"{summary}｜修为-{xiuwei_loss}"
     state["duel_last_error"] = "" if not weak_or_unknown else summary
@@ -1119,6 +1120,7 @@ async def run_duel_scheduler(now):
     state["duel_magic_due_at"] = 0
     state["duel_magic_sent_at"] = 0
     state["duel_started_at"] = sent_at
+    state["duel_phaseful_retry_count"] = 0
     state["duel_last_msg_id"] = int(getattr(msg, "id", 0) or 0)
     state["duel_last_result"] = "已发送"
     state["duel_last_error"] = ""

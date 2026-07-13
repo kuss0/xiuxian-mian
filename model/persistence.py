@@ -1025,6 +1025,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_magic_sent_at REAL NOT NULL DEFAULT 0")
     if "duel_started_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_started_at REAL NOT NULL DEFAULT 0")
+    if "duel_phaseful_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_phaseful_retry_count INTEGER NOT NULL DEFAULT 0")
     if "duel_last_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_msg_id INTEGER NOT NULL DEFAULT 0")
     if "duel_last_result" not in runtime_columns:
@@ -1762,6 +1764,7 @@ def init_db():
             duel_magic_due_at REAL NOT NULL DEFAULT 0,
             duel_magic_sent_at REAL NOT NULL DEFAULT 0,
             duel_started_at REAL NOT NULL DEFAULT 0,
+            duel_phaseful_retry_count INTEGER NOT NULL DEFAULT 0,
             duel_last_msg_id INTEGER NOT NULL DEFAULT 0,
             duel_last_result TEXT NOT NULL DEFAULT '',
             duel_last_error TEXT NOT NULL DEFAULT '',

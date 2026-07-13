@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import action_guard, control, runtime, ui
-from model.features import _phaseful, concubine, deep_retreat, tianxing, tower, wild_training, yuanying
+from model.features import _phaseful, concubine, deep_retreat, duel, tianxing, tower, wild_training, yuanying
 
 
 class _StateIsolationMixin:
@@ -2831,6 +2831,77 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
     def test_summary_replay_accepts_wild_training_with_strategy_suffix(self):
         self.assertTrue(_phaseful._is_summary_replayable_command(".野外历练 谨慎"))
+
+    def test_summary_replay_accepts_duel_with_target(self):
+        self.assertTrue(_phaseful._is_summary_replayable_command(".斗法 @ccahen"))
+
+    async def test_summary_replay_duel_rebuilds_pending_state_once(self):
+        send_as_id = 8659059227
+        now = 1_700_001_150.0
+        old_msg_id = 9338519
+        new_msg_id = 9338520
+        command = ".斗法 @ccahen"
+        self._prepare_identity(send_as_id, "DuelReplay")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_reply_to_msg_id"] = old_msg_id
+            state_module.state["duel_reply_due_at"] = now + 120
+            state_module.state["duel_started_at"] = now - 30
+            state_module.state["duel_phaseful_retry_count"] = 0
+
+        payload = {
+            "cmd": command,
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": "normal",
+            "max_retry": 0,
+            "send_intent": {"source_module": "斗法"},
+        }
+        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_awaited_once_with(
+            command,
+            track=False,
+            send_as_id=send_as_id,
+            priority="retry",
+            max_retry=0,
+            source_module="斗法",
+            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{command}",
+            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
+        )
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(1, state_module.state["duel_phaseful_retry_count"])
+            self.assertEqual(new_msg_id, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual(now + 1 + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
+            self.assertEqual("归位结算吃掉原斗法，已补发一次", state_module.state["duel_last_result"])
+
+            state_module.state["duel_reply_to_msg_id"] = new_msg_id
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as second_send_mock,
+                patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+                patch.object(_phaseful.random, "uniform", return_value=0),
+                patch.object(_phaseful.time, "time", return_value=now + 10),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await _phaseful._replay_summary_consumed_command(send_as_id, {
+                    **payload,
+                    "msg_id": new_msg_id,
+                    "sent_at": now + 1,
+                })
+            second_send_mock.assert_not_awaited()
 
     async def test_summary_replay_wild_training_rebuilds_pending_state(self):
         send_as_id = 8659059221
