@@ -159,6 +159,7 @@ def _blank_run_state(now=None):
         "miniapp_auto_status": "",
         "miniapp_auto_started_at": 0,
         "miniapp_auto_finished_at": 0,
+        "miniapp_auto_progress": [],
         "miniapp_auto_results": [],
         "fallback_status_day": "",
         "fallback_status_at": 0,
@@ -245,6 +246,19 @@ def _normalize_run_state(raw=None, now=None):
     record["miniapp_auto_status"] = str(record.get("miniapp_auto_status") or "").strip()
     raw_results = record.get("miniapp_auto_results") or []
     record["miniapp_auto_results"] = [dict(item) for item in raw_results if isinstance(item, dict)][:16]
+    raw_progress = record.get("miniapp_auto_progress") or []
+    record["miniapp_auto_progress"] = [
+        {
+            "identity_id": _coerce_int(item.get("identity_id"), 0),
+            "phase": str(item.get("phase") or ""),
+            "ok": bool(item.get("ok")),
+            "status": str(item.get("status") or ""),
+            "error": _short_text(item.get("error") or "", 120),
+            "updated_at": max(0.0, _coerce_float(item.get("updated_at"), 0)),
+        }
+        for item in raw_progress
+        if isinstance(item, dict) and _coerce_int(item.get("identity_id"), 0) > 0
+    ][:16]
     if record["active"] and record["opened_at"] > 0 and now - record["opened_at"] > WORLD_BOSS_EVENT_TTL_SEC:
         record["active"] = False
         record["closed_at"] = record["closed_at"] or now
@@ -1431,6 +1445,32 @@ def _world_boss_miniapp_task_running():
 
 
 async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec):
+    async def record_progress(item):
+        run_state = _get_run_state()
+        if run_state.get("event_key") != event_key:
+            return
+        record = {
+            "identity_id": _coerce_int(item.get("identity_id"), 0),
+            "phase": str(item.get("phase") or ""),
+            "ok": bool(item.get("ok")),
+            "status": str(item.get("status") or ""),
+            "error": _short_text(item.get("error") or "", 120),
+            "updated_at": time.time(),
+        }
+        progress = [
+            existing
+            for existing in (run_state.get("miniapp_auto_progress") or [])
+            if not (
+                _coerce_int(existing.get("identity_id"), 0) == record["identity_id"]
+                and str(existing.get("phase") or "") == record["phase"]
+            )
+        ]
+        progress.append(record)
+        run_state["miniapp_auto_progress"] = progress[-16:]
+        completed = sum(1 for entry in progress if entry.get("phase") == "battle")
+        run_state["last_result"] = f"MiniApp 自动执行中｜战斗完成 {completed}/{len(identity_ids)}"
+        _set_run_state(run_state)
+
     try:
         result = await run_world_boss_miniapp_event(
             identity_ids,
@@ -1438,6 +1478,7 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
             message_text=text,
             opened_at=opened_at,
             account_gap_sec=account_gap_sec,
+            progress_callback=record_progress,
         )
     except Exception as exc:
         result = {"ok": False, "status": "runtime_error", "joined_count": 0, "results": [], "error": _short_text(exc)}
@@ -1457,6 +1498,13 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
         for item in (result.get("results") or [])
         if isinstance(item, dict)
     ][:16]
+    run_state["miniapp_auto_progress"] = [
+        {
+            **item,
+            "updated_at": time.time(),
+        }
+        for item in run_state["miniapp_auto_results"]
+    ]
     joined_count = _coerce_int(result.get("joined_count"), 0)
     settled = [item for item in run_state["miniapp_auto_results"] if item.get("phase") == "battle" and item.get("ok")]
     failed = [item for item in run_state["miniapp_auto_results"] if not item.get("ok")]
@@ -1510,6 +1558,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
     run_state["miniapp_auto_status"] = "disabled"
     run_state["miniapp_auto_started_at"] = 0
     run_state["miniapp_auto_finished_at"] = 0
+    run_state["miniapp_auto_progress"] = []
     run_state["miniapp_auto_results"] = []
     run_state["next_status_query_at"] = 0
     run_state["next_action_at"] = 0
@@ -2117,8 +2166,25 @@ async def run_world_boss_scheduler(now):
         return
     async with _WORLD_BOSS_SCHEDULER_LOCK:
         now = float(now or time.time())
-        enabled_ids = _enabled_identity_ids()
         run_state = _get_run_state(now)
+        if (
+            run_state.get("miniapp_only")
+            and run_state.get("miniapp_auto_status") == "running"
+            and _coerce_float(run_state.get("miniapp_auto_started_at"), 0) > 0
+            and not _world_boss_miniapp_task_running()
+        ):
+            run_state["miniapp_auto_status"] = "interrupted"
+            run_state["miniapp_auto_finished_at"] = now
+            run_state["last_result"] = "MiniApp 任务中断，禁止自动续跑"
+            _set_run_state(run_state)
+            await send_audit_log(
+                "🗡 真仙试锋 MiniApp 任务检测到服务中断，已保守停止本场自动续跑；请按脱敏抓包与进度账本复核，避免重复入场或重复结算。",
+                scope="global",
+                priority="high",
+                limit=320,
+            )
+            return
+        enabled_ids = _enabled_identity_ids()
         if not enabled_ids:
             if run_state != get_world_boss_run_state():
                 _set_run_state(run_state, persist=False)

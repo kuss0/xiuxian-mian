@@ -20,6 +20,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_accounts_join_before_first_battle(self):
         calls = []
+        progress = []
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
         )
@@ -50,6 +51,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 event,
                 init_data_provider=init_data_provider,
                 transport=lambda _request: None,
+                progress_callback=lambda item: progress.append(item),
             )
 
         self.assertTrue(result["ok"])
@@ -59,6 +61,8 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(4, result["joined_count"])
         self.assertTrue(all(item["ok"] for item in result["results"] if item["phase"] == "join"))
+        self.assertEqual(4, sum(item["phase"] == "join" for item in progress))
+        self.assertEqual(4, sum(item["phase"] == "battle" for item in progress))
 
 
 if __name__ == "__main__":

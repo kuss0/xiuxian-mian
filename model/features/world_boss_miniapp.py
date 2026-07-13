@@ -588,7 +588,7 @@ def build_world_boss_proof(
         }
         for action in actions or ()
     ]
-    if not clean_actions:
+    if not clean_actions and duration_ms is None:
         raise ValueError("boss actions missing")
     payloads = [dict(item or {}) for item in hit_payloads or ()]
     if duration_ms is None:
@@ -636,16 +636,6 @@ def _append_http_event(events, step, result):
         "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
         "error": sanitize_webapp_secret_text(result.error),
     })
-
-
-def _current_elapsed_ms(data, challenge):
-    for payload in (data, challenge):
-        if not isinstance(payload, dict):
-            continue
-        for key in ("elapsedMs", "currentElapsedMs", "battleElapsedMs"):
-            if payload.get(key) not in (None, ""):
-                return max(0, _int_value(payload.get(key)))
-    return 0
 
 
 def _world_boss_room_state(data):
@@ -730,6 +720,11 @@ def _world_boss_realtime_damage_applied(hit_payloads):
         if _float_value(hit.get("damageYi") or hit.get("damage"), 0.0) > 0:
             return True
     return False
+
+
+def _world_boss_counter_damage(challenge):
+    phase = max(1, _int_value(dict(challenge or {}).get("phase"), 1))
+    return {1: 16, 2: 22, 3: 30}.get(phase, 22)
 
 
 def _failed_join_receipt(result, *, player_id=None, identity_id=0, account_id=0, calibrated=False):
@@ -1014,7 +1009,19 @@ def run_world_boss_joined_battle_lab_flow(
 
     if not challenge:
         return _flow_result(False, "not_ready", error="world boss challenge missing", events=events)
-    initial_elapsed_ms = _current_elapsed_ms(state_data, challenge)
+    # The page starts a fresh local performance.now() timeline after challenge
+    # acquisition. Server room elapsed values are display state, not proof time.
+    server_elapsed_ms = 0
+    for payload in (state_data, challenge):
+        if not isinstance(payload, dict):
+            continue
+        for key in ("elapsedMs", "currentElapsedMs", "battleElapsedMs"):
+            if payload.get(key) not in (None, ""):
+                server_elapsed_ms = max(0, _int_value(payload.get(key)))
+                break
+        if server_elapsed_ms:
+            break
+    initial_elapsed_ms = 0
     current_room_status = _world_boss_room_status(state_data)
     auto_start_delay = (
         WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC
@@ -1029,19 +1036,65 @@ def run_world_boss_joined_battle_lab_flow(
     plan = filter_world_boss_action_plan(full_plan, initial_elapsed_ms)
     events.append({
         "step": "plan",
-        "ok": bool(plan),
+        "ok": True,
         "window_count": len(plan),
         "expired_window_count": len(full_plan) - len(plan),
         "current_elapsed_ms": initial_elapsed_ms,
+        "server_elapsed_ms_ignored": server_elapsed_ms,
     })
-    if not plan:
-        return _flow_result(False, "windows_expired", error="all world boss windows expired", events=events)
 
     timeline_origin = float(clock()) - (float(initial_elapsed_ms) / 1000.0)
     hit_payloads = []
     executed_actions = []
+    processed_window_ids = set()
+    player_hp = _world_boss_player_max_hp(state_data, challenge)
+    dead = False
+    death_elapsed_ms = 0
+    client_stats = {key: 0 for key in _STAT_KEYS}
+
+    def process_missed_windows(current_elapsed_ms):
+        nonlocal player_hp, dead, death_elapsed_ms
+        if dead:
+            return
+        for missed_action in full_plan:
+            window_id = missed_action["windowId"]
+            if window_id in processed_window_ids:
+                continue
+            miss_at_ms = (
+                _int_value(missed_action.get("centerMs"))
+                + _int_value(missed_action.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)
+                + 80
+            )
+            if current_elapsed_ms <= miss_at_ms:
+                continue
+            processed_window_ids.add(window_id)
+            client_stats["combo"] = 0
+            player_hp = max(0, player_hp - _world_boss_counter_damage(challenge))
+            events.append({
+                "step": "miss_window",
+                "ok": True,
+                "windowId": window_id,
+                "miss_at_ms": miss_at_ms,
+                "player_hp": player_hp,
+            })
+            if player_hp <= 0:
+                dead = True
+                death_elapsed_ms = miss_at_ms
+                events.append({
+                    "step": "player_dead",
+                    "ok": True,
+                    "elapsed_ms": death_elapsed_ms,
+                })
+                break
+
+    process_missed_windows(initial_elapsed_ms)
     for action in plan:
+        if dead:
+            break
         current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+        process_missed_windows(current_elapsed_ms)
+        if dead:
+            break
         available_charge_ms = int(action["elapsedMs"]) - current_elapsed_ms
         if available_charge_ms < WORLD_BOSS_PERFECT_HOLD_MIN_MS:
             events.append({
@@ -1056,9 +1109,15 @@ def run_world_boss_joined_battle_lab_flow(
         wait_before_charge_ms = max(0, charge_start_ms - current_elapsed_ms)
         if wait_before_charge_ms:
             sleeper(wait_before_charge_ms / 1000.0)
+            process_missed_windows(max(0, int((float(clock()) - timeline_origin) * 1000)))
+            if dead:
+                break
         if hold_ms:
             sleeper(hold_ms / 1000.0)
         release_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
+        process_missed_windows(release_elapsed_ms)
+        if dead or action["windowId"] in processed_window_ids:
+            continue
         executed_action = {
             **action,
             "elapsedMs": release_elapsed_ms,
@@ -1099,43 +1158,45 @@ def run_world_boss_joined_battle_lab_flow(
         hit_data = hit_result.data if isinstance(hit_result.data, dict) else {}
         if _verification_required(hit_data):
             return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
+        processed_window_ids.add(action["windowId"])
+        client_stats["dodges"] += 1
+        client_stats["hits"] += 1
+        client_stats["combo"] += 1
+        client_stats["bestCombo"] = max(client_stats["bestCombo"], client_stats["combo"])
+        if (
+            abs(_int_value(executed_action.get("elapsedMs")) - _int_value(executed_action.get("centerMs")))
+            <= _int_value(executed_action.get("perfectMs"), 150)
+            and WORLD_BOSS_PERFECT_HOLD_MIN_MS
+            <= _int_value(executed_action.get("holdMs"))
+            <= WORLD_BOSS_PERFECT_HOLD_MAX_MS
+        ):
+            client_stats["perfects"] += 1
         executed_actions.append(executed_action)
         hit_payloads.append(hit_data)
 
-    if not executed_actions:
-        return _flow_result(False, "windows_expired", error="world boss windows expired before hit", events=events)
     challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
-    finish_target_ms = min(
-        challenge_duration_ms,
-        _world_boss_last_window_end_ms(challenge) + WORLD_BOSS_FINISH_GRACE_MS,
-    )
+    if dead:
+        finish_target_ms = min(challenge_duration_ms, death_elapsed_ms + 1250)
+    else:
+        finish_target_ms = min(
+            challenge_duration_ms,
+            _world_boss_last_window_end_ms(challenge) + WORLD_BOSS_FINISH_GRACE_MS,
+        )
     current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
     if finish_target_ms > current_elapsed_ms:
         sleeper((finish_target_ms - current_elapsed_ms) / 1000.0)
     finish_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
-    hit_count = len(executed_actions)
-    client_stats = {
-        "dodges": hit_count,
-        "grazes": 0,
-        "damage": 0,
-        "hits": hit_count,
-        "perfects": sum(
-            1
-            for action in executed_actions
-            if abs(_int_value(action.get("elapsedMs")) - _int_value(action.get("centerMs")))
-            <= _int_value(action.get("perfectMs"), 150)
-            and WORLD_BOSS_PERFECT_HOLD_MIN_MS <= _int_value(action.get("holdMs")) <= WORLD_BOSS_PERFECT_HOLD_MAX_MS
-        ),
-        "combo": hit_count,
-        "bestCombo": hit_count,
-    }
+    process_missed_windows(finish_elapsed_ms)
+    if dead and death_elapsed_ms + 1250 > finish_elapsed_ms:
+        sleeper((death_elapsed_ms + 1250 - finish_elapsed_ms) / 1000.0)
+        finish_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
     proof = build_world_boss_proof(
         challenge,
         executed_actions,
         hit_payloads,
         duration_ms=finish_elapsed_ms,
-        player_hp=_world_boss_player_max_hp(state_data, challenge),
-        dead=False,
+        player_hp=player_hp,
+        dead=dead,
         client_stats=client_stats,
         realtime_damage_applied=_world_boss_realtime_damage_applied(hit_payloads),
     )

@@ -1435,6 +1435,88 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([8659059191], start_mock.call_args.args[1])
 
+    async def test_interrupted_miniapp_task_is_not_automatically_resumed(self):
+        now = 1_781_319_500.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=False)
+        state_module.set_world_boss_run_state({
+            "miniapp_only": True,
+            "event_key": "2026-07-13:12006",
+            "miniapp_auto_status": "running",
+            "miniapp_auto_started_at": now - 30,
+            "miniapp_auto_progress": [
+                {"identity_id": 8659059191, "phase": "join", "ok": True, "status": "joined", "updated_at": now - 20},
+            ],
+        })
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual("interrupted", run_state.get("miniapp_auto_status"))
+        self.assertEqual("MiniApp 任务中断，禁止自动续跑", run_state.get("last_result"))
+        self.assertEqual(now, run_state.get("miniapp_auto_finished_at"))
+        audit_mock.assert_awaited_once()
+        self.assertIn("停止本场自动续跑", audit_mock.await_args.args[0])
+
+    async def test_miniapp_progress_is_persisted_without_secrets(self):
+        now = 1_781_319_600.0
+        event_key = "2026-07-13:12007"
+        state_module.set_world_boss_run_state({
+            "miniapp_only": True,
+            "event_key": event_key,
+            "miniapp_auto_status": "running",
+            "miniapp_auto_started_at": now,
+        })
+
+        async def fake_runtime(*_args, progress_callback=None, **_kwargs):
+            await progress_callback({
+                "identity_id": 8659059191,
+                "phase": "join",
+                "ok": True,
+                "status": "joined",
+                "session_token": "qyz_SECRET",
+            })
+            await progress_callback({
+                "identity_id": 8659059191,
+                "phase": "battle",
+                "ok": True,
+                "status": "settled",
+                "initData": "query_id=SECRET",
+            })
+            return {
+                "ok": True,
+                "status": "settled",
+                "joined_count": 1,
+                "results": [
+                    {"identity_id": 8659059191, "phase": "join", "ok": True, "status": "joined"},
+                    {"identity_id": 8659059191, "phase": "battle", "ok": True, "status": "settled"},
+                ],
+            }
+
+        with (
+            patch.object(world_boss, "run_world_boss_miniapp_event", new=fake_runtime),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+        ):
+            await world_boss._run_world_boss_miniapp_automation(
+                event_key,
+                [8659059191],
+                SimpleNamespace(id=12007),
+                MINIAPP_OPEN_TEXT,
+                now,
+                0,
+            )
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual("settled", run_state.get("miniapp_auto_status"))
+        serialized = str(run_state.get("miniapp_auto_progress"))
+        self.assertNotIn("qyz_SECRET", serialized)
+        self.assertNotIn("query_id=SECRET", serialized)
+        self.assertEqual(2, len(run_state.get("miniapp_auto_progress") or []))
+
     def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
         # Same login account can only enter one MiniApp role. Pick the strongest
         # role per account, then cap total simultaneous entries to four accounts.

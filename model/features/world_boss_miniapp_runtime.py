@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from pathlib import Path
 
@@ -100,6 +101,14 @@ def _capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+async def _emit_progress(callback, item):
+    if callback is None:
+        return
+    result = callback(dict(item or {}))
+    if inspect.isawaitable(result):
+        await result
+
+
 async def run_world_boss_miniapp_event(
     identity_ids,
     event,
@@ -109,6 +118,7 @@ async def run_world_boss_miniapp_event(
     account_gap_sec=0,
     transport=None,
     init_data_provider=None,
+    progress_callback=None,
 ):
     """Join accounts in parallel, then run one serial timeline per account."""
 
@@ -124,13 +134,15 @@ async def run_world_boss_miniapp_event(
         if identity_id <= 0:
             return None, None
         if time.time() - now > WORLD_BOSS_JOIN_WINDOW_SEC:
-            return None, {
+            join_result = {
                 "identity_id": identity_id,
                 "phase": "join",
                 "ok": False,
                 "status": "join_deadline_exceeded",
                 "error": "world boss join window exceeded",
             }
+            await _emit_progress(progress_callback, join_result)
+            return None, join_result
         try:
             init_data = await init_data_provider(identity_id, launch)
             receipt = await asyncio.to_thread(
@@ -145,13 +157,15 @@ async def run_world_boss_miniapp_event(
                 capture_source=f"world_boss:join:{identity_id}",
             )
         except Exception as exc:
-            return None, {
+            join_result = {
                 "identity_id": identity_id,
                 "phase": "join",
                 "ok": False,
                 "status": "runtime_error",
                 "error": str(safe_miniapp_event_detail({"error": str(exc)}).get("error") or "runtime error"),
             }
+            await _emit_progress(progress_callback, join_result)
+            return None, join_result
         join_result = {
             "identity_id": identity_id,
             "phase": "join",
@@ -159,7 +173,9 @@ async def run_world_boss_miniapp_event(
             **receipt.safe_summary(),
         }
         if receipt.joined:
+            await _emit_progress(progress_callback, join_result)
             return (identity_id, init_data, receipt), join_result
+        await _emit_progress(progress_callback, join_result)
         return None, join_result
 
     async def battle_one(context):
@@ -177,7 +193,7 @@ async def run_world_boss_miniapp_event(
                 capture_source=f"world_boss:battle:{identity_id}",
             )
             safe_battle = safe_miniapp_event_detail(battle)
-            return {
+            battle_result = {
                 "identity_id": identity_id,
                 "phase": "battle",
                 "ok": bool(battle.get("ok")),
@@ -185,14 +201,18 @@ async def run_world_boss_miniapp_event(
                 "data": safe_battle.get("data") or {},
                 "error": str(safe_battle.get("error") or ""),
             }
+            await _emit_progress(progress_callback, battle_result)
+            return battle_result
         except Exception as exc:
-            return {
+            battle_result = {
                 "identity_id": identity_id,
                 "phase": "battle",
                 "ok": False,
                 "status": "runtime_error",
                 "error": str(safe_miniapp_event_detail({"error": str(exc)}).get("error") or "runtime error"),
             }
+            await _emit_progress(progress_callback, battle_result)
+            return battle_result
 
     priority_owner = f"world_boss:{int(now)}"
     begin_miniapp_priority_window(priority_owner)
