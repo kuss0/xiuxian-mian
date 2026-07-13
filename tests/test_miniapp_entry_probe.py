@@ -443,6 +443,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             "cave_public_deep_status_enabled": False,
             "cave_public_treasure_enabled": False,
             "cave_public_trial_enabled": False,
+            "cave_public_fishing_enabled": False,
+            "cave_public_fishing_identity_ids": [],
         }
 
         with patch.object(ui, "save_state", return_value=True) as save_mock:
@@ -451,6 +453,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 "deep_status_enabled": False,
                 "treasure_enabled": True,
                 "trial_enabled": False,
+                "fishing_enabled": True,
+                "fishing_identity_ids": [3820064579, "3765328695", "bad"],
                 "delay_sec": 7,
             })
 
@@ -462,10 +466,42 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(automation["cave_public_deep_status_enabled"])
         self.assertTrue(automation["cave_public_treasure_enabled"])
         self.assertFalse(automation["cave_public_trial_enabled"])
+        self.assertTrue(automation["cave_public_fishing_enabled"])
+        self.assertEqual([3765328695, 3820064579], automation["cave_public_fishing_identity_ids"])
         self.assertEqual(10, automation["cave_public_delay_sec"])
         self.assertNotIn("small_world_enabled", state_module.get_miniapp_auto_config())
         self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
         save_mock.assert_called_once()
+
+    def test_cave_public_fishing_batch_uses_only_configured_enabled_channels(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [3765328695, 3820064579],
+        }
+        with patch.object(ui, "get_identity_enabled", side_effect=lambda identity_id: identity_id != 3820064579):
+            selected = ui._cave_public_batch_identity_ids_for_action(
+                "fishing",
+                [301299112, 3765328695, 3820064579, 3852827410],
+            )
+
+        self.assertEqual([3765328695], selected)
+
+    def test_cave_public_fishing_background_respects_failure_backoff(self):
+        identity_id = 3765328695
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_daily_day"] = ui.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 1
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["next_fishing_time"] = now + 1800
+
+        self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, now))
+        self.assertTrue(ui._cave_public_background_action_due("fishing", identity_id, now + 1801))
 
     async def test_world_boss_miniapp_config_is_default_off_and_clamped(self):
         state_module._meta_state["miniapp_auto_config"] = {}

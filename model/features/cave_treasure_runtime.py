@@ -27,6 +27,13 @@ from .cave_treasure_miniapp import (
 from .trial_miniapp import build_trial_launch_args
 from .trial_runtime import _format_trial_summary, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
+from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
+from .fishing_runtime import (
+    _apply_fishing_miniapp_result,
+    _fishing_miniapp_capture_store,
+    _remaining_miniapp_chain_rounds,
+    _send_fishing_daily_completion_summary,
+)
 
 
 CAVE_TREASURE_MANUAL_AUTH_TTL_SEC = 10 * 60
@@ -208,6 +215,31 @@ def _find_trial_external_app_in_cave_payload(value):
                 normalized_action = "tianji_trial"
             return {
                 "action": normalized_action,
+                "url": url,
+                "title": title or key,
+                "available": bool(item.get("available", True)),
+            }
+    return {}
+
+
+def _find_fishing_external_app_in_cave_payload(value):
+    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    for group in external.get("groups") or ():
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("apps") or ():
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()
+            title = str(item.get("title") or item.get("buttonText") or "").strip()
+            action = str(item.get("action") or "").strip().lower()
+            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+            if key not in {"fishing", "fish"} and action != "fishing" and "钓" not in title:
+                continue
+            return {
+                "action": "fishing" if action == "fishing" or url in {"", "#"} else "",
                 "url": url,
                 "title": title or key,
                 "available": bool(item.get("available", True)),
@@ -1330,6 +1362,111 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         return {"ok": completed_ok, "message": message, "extra": {"trial_title": launch.get("title", "")}}
 
 
+async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
+    """Run fishing for a selected dwelling identity without a channel group command."""
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not get_identity_enabled(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_fishing_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府钓鱼身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
+
+        dwelling_init_data = str(session.get("init_data") or "")
+        selected_player_id = session.get("player_id")
+        cave_result = dict(session.get("result") or {})
+        cave_data = dict(cave_result.get("data") or {})
+        raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
+        external_app = _find_fishing_external_app_in_cave_payload(raw)
+        if not external_app or not external_app.get("available"):
+            message = "洞府公共入口未开放灵溪垂钓"
+            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
+            return {"ok": False, "message": message, "extra": {}}
+
+        launch = {}
+        if external_app.get("action"):
+            external_result = await run_cave_external_action_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                action="fishing",
+                player_id=selected_player_id,
+                init_data=dwelling_init_data,
+                capture_sink=_capture_store(now),
+                capture_source=f"cave_public_fishing_external:{identity_id}",
+            )
+            if not external_result.get("ok"):
+                message = f"洞府钓鱼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
+                await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+                return {"ok": False, "message": message, "extra": {}}
+            launch = extract_fishing_miniapp_launch_from_dwelling_payload(external_result.get("data") or {})
+        elif external_app.get("url"):
+            launch = extract_fishing_miniapp_launch_from_dwelling_payload({
+                "account": {"externalApps": {"groups": [{"apps": [external_app]}]}},
+            })
+        if not launch:
+            message = "洞府钓鱼入口已请求，但未返回可用 URL"
+            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
+            return {"ok": False, "message": message, "extra": {}}
+
+        with use_identity(identity_id):
+            max_rounds = _remaining_miniapp_chain_rounds(now)
+            pond_choice = str(state.get("fishing_pond") or "")
+            bait_choice = str(state.get("fishing_bait") or "")
+        result = await run_fishing_miniapp_production_flow(
+            identity_id,
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            init_data=dwelling_init_data,
+            max_rounds=max_rounds,
+            pond_choice=pond_choice,
+            bait_choice=bait_choice,
+            capture_sink=_fishing_miniapp_capture_store(now),
+            capture_source=f"cave_public_fishing:{identity_id}",
+        )
+        with use_identity(identity_id):
+            summary = _apply_fishing_miniapp_result(result, time.time())
+        completed_ok = bool(result.get("ok")) or str(result.get("status") or "") == "daily_limit"
+        message = f"洞府灵溪垂钓公共入口：{summary}"
+        await send_audit_log(
+            f"🎣 {message}",
+            scope="identity",
+            send_as_id=identity_id,
+            priority="low" if completed_ok else "normal",
+            limit=420,
+        )
+        if completed_ok:
+            with use_identity(identity_id):
+                await _send_fishing_daily_completion_summary(time.time())
+        return {
+            "ok": completed_ok,
+            "message": message,
+            "extra": {
+                "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
+                "player_id": selected_player_id,
+            },
+        }
+
+
 async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
     """Run the one safe Tianjige command exposed by the public dwelling entry."""
     identity_id = _identity_id(identity_id)
@@ -1637,6 +1774,7 @@ __all__ = [
     "handle_cave_treasure_miniapp_entry",
     "revoke_cave_treasure_miniapp_manual_run",
     "run_cave_public_deep_retreat_action",
+    "run_cave_public_fishing",
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",
     "run_cave_public_treasure",

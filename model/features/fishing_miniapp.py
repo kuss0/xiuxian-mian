@@ -146,6 +146,18 @@ def _iter_dwelling_external_apps(data):
                 yield group, app
 
 
+def _iter_nested_dicts(value, *, depth=0):
+    if depth > 8:
+        return
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _iter_nested_dicts(child, depth=depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_nested_dicts(child, depth=depth + 1)
+
+
 def extract_fishing_miniapp_launch_from_dwelling_payload(data):
     adapter = build_fishing_miniapp_adapter()
     for group, app in _iter_dwelling_external_apps(data):
@@ -164,6 +176,27 @@ def extract_fishing_miniapp_launch_from_dwelling_payload(data):
             "webview_url": url,
             "button_text": str(app.get("buttonText") or app.get("title") or "").strip(),
             "group_key": str(group.get("key") or "").strip(),
+            "app_key": app_key,
+            "safe_summary": launch.safe_summary(),
+        }
+    for app in _iter_nested_dicts(data):
+        app_key = str(app.get("key") or app.get("action") or "").strip().lower()
+        title = str(app.get("title") or app.get("buttonText") or "").strip()
+        url = str(app.get("url") or app.get("webviewUrl") or app.get("webview_url") or "").strip()
+        if app_key not in {"fishing", "fish"} and "钓" not in title and "xianxia-fishing" not in url:
+            continue
+        if url.startswith("/"):
+            url = f"{FISHING_MINIAPP_DEFAULT_API_BASE_URL.rstrip('/')}{url}"
+        if not url:
+            continue
+        launch = build_miniapp_launch_request(adapter, url)
+        if not launch.allowed or not launch.start_param:
+            continue
+        return {
+            "token": launch.start_param,
+            "webview_url": launch.webview_url,
+            "button_text": str(app.get("buttonText") or app.get("title") or "").strip(),
+            "group_key": "",
             "app_key": app_key,
             "safe_summary": launch.safe_summary(),
         }
@@ -214,6 +247,7 @@ async def run_fishing_miniapp_production_flow(
     *,
     token,
     webview_url,
+    init_data="",
     max_rounds=1,
     pond_choice="",
     bait_choice="",
@@ -227,7 +261,12 @@ async def run_fishing_miniapp_production_flow(
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_fishing_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
+        init_data = str(init_data or "").strip() or await request_fishing_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
         result = await asyncio.to_thread(
             run_fishing_miniapp_loop_lab_flow,
             token=token,

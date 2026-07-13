@@ -482,6 +482,72 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw_player_id, start_mock.await_args_list[1].kwargs["player_id"])
         self.assertEqual(raw_player_id, trial_mock.await_args.kwargs["player_id"])
 
+    async def test_public_entry_fishing_uses_selected_channel_and_dwelling_init_data(self):
+        identity_id = 3820064579
+        raw_player_id = -1003820064579
+        state_module.ensure_identity_registered(identity_id)
+        state_module.set_identity_account(identity_id, 301299112)
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_daily_day"] = ""
+            state_module.state["fishing_daily_count"] = 0
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_pond"] = "青溪浅滩"
+            state_module.state["fishing_bait"] = "灵米饵"
+
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": raw_player_id,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {
+                        "account": {
+                            "externalApps": {
+                                "groups": [{
+                                    "apps": [{
+                                        "key": "fishing",
+                                        "title": "灵溪垂钓",
+                                        "available": True,
+                                        "action": "fishing",
+                                    }],
+                                }],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        external_result = {
+            "ok": True,
+            "data": {
+                "url": "/miniapp/xianxia-fishing?startapp=fish_CHANNEL999",
+                "title": "灵溪垂钓",
+            },
+        }
+        fishing_result = {"ok": True, "status": "daily_limit", "settled_count": 5, "data": {}}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)) as external_mock, \
+                patch.object(cave_treasure_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=fishing_result)) as fishing_mock, \
+                patch.object(cave_treasure_runtime, "_apply_fishing_miniapp_result", return_value="5/5竿") as apply_mock, \
+                patch.object(cave_treasure_runtime, "_send_fishing_daily_completion_summary", new=AsyncMock(return_value=True)) as summary_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_fishing(
+                identity_id,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(raw_player_id, external_mock.await_args.kwargs["player_id"])
+        self.assertEqual("fishing", external_mock.await_args.kwargs["action"])
+        self.assertEqual("dwelling_init_data", fishing_mock.await_args.kwargs["init_data"])
+        self.assertEqual("青溪浅滩", fishing_mock.await_args.kwargs["pond_choice"])
+        self.assertEqual("灵米饵", fishing_mock.await_args.kwargs["bait_choice"])
+        apply_mock.assert_called_once()
+        summary_mock.assert_awaited_once()
+
     def test_public_entry_trial_finds_trial_url_without_leaking_token(self):
         launch = cave_treasure_runtime._find_trial_launch_in_cave_payload({
             "externalApps": {

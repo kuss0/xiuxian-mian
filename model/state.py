@@ -1408,6 +1408,7 @@ def is_cave_public_auto_enabled(action, identity_id=None):
         "deep_status": "cave_public_deep_status_enabled",
         "treasure": "cave_public_treasure_enabled",
         "trial": "cave_public_trial_enabled",
+        "fishing": "cave_public_fishing_enabled",
         "stargazer": "cave_public_stargazer_enabled",
         "yuanying": "cave_public_yuanying_enabled",
     }
@@ -1417,6 +1418,17 @@ def is_cave_public_auto_enabled(action, identity_id=None):
     config = get_miniapp_auto_config()
     if not bool(str(config.get("cave_public_entry_url") or "").strip() and config.get(flag)):
         return False
+    if normalized_action == "fishing":
+        try:
+            current_identity_id = int(identity_id or get_current_identity_id() or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        configured_ids = {
+            int(value)
+            for value in (config.get("cave_public_fishing_identity_ids") or ())
+            if str(value or "").strip().lstrip("-").isdigit()
+        }
+        return current_identity_id > 0 and current_identity_id in configured_ids
     if normalized_action not in {"small_world"}:
         return True
     try:

@@ -1061,6 +1061,57 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(day_key, state_module.get_identity_state(identity_id)["fishing_daily_summary_day"])
         self.assertEqual(day_key, state_module.get_identity_state(other_id)["fishing_daily_summary_day"])
 
+    async def test_daily_completion_includes_public_fishing_identity_with_legacy_disabled(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 8, 10, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_TEST",
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 20
+            state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                "day": day_key,
+                "rods": 20,
+                "fish": {"银须灵鲢": 20},
+                "rewards": {},
+            }, ensure_ascii=False)
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertTrue(sent)
+        self.assertIn("20/20竿", audit_mock.await_args.args[0])
+
+    def test_daily_limit_without_progress_infers_real_settled_limit(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 8, 15, 0)
+        catches = [{"fish": f"灵鱼{i}", "rewards": []} for i in range(20)]
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"),
+            ):
+                fishing_runtime._apply_fishing_miniapp_result({
+                    "ok": True,
+                    "status": "daily_limit",
+                    "settled_count": 20,
+                    "data": {"catches": catches},
+                }, now=now)
+
+            self.assertEqual(20, state_module.state["fishing_daily_limit"])
+            self.assertEqual(20, state_module.state["fishing_daily_count"])
+
     async def test_miniapp_failure_backs_off_without_old_followup_chain(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 8, 50, 0)

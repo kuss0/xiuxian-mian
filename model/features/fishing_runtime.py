@@ -37,6 +37,7 @@ from ..state import (
     get_identity_display_name,
     get_identity_ids,
     get_identity_state,
+    is_cave_public_auto_enabled,
     get_send_as_profile,
     get_storage_bag_records,
     state,
@@ -885,7 +886,7 @@ def _enabled_fishing_daily_entries(now):
             identity_state = get_identity_state(identity_id)
         except KeyError:
             continue
-        if not identity_state.get("fishing_enabled"):
+        if not identity_state.get("fishing_enabled") and not is_cave_public_auto_enabled("fishing", identity_id):
             continue
         entry_day, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(dict(identity_state), now)
         if daily_updates:
@@ -1013,6 +1014,11 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), default_settled_count)
     if ok and (status in settled_statuses or settled_count > 0 or has_progress):
         settled_count = max(default_settled_count, settled_count)
+        if status == "daily_limit" and not has_progress:
+            inferred_limit = max(int(limit or 0), int(count or 0) + settled_count, len(catches))
+            if inferred_limit > int(limit or 0):
+                limit = fishing_behavior.clamp_fishing_daily_limit(inferred_limit)
+                updates["fishing_daily_limit"] = limit
         if progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0:
             count = min(int(limit or 0), int(count or 0))
         else:
@@ -1822,6 +1828,9 @@ async def run_fishing_scheduler(now):
         return
 
     if await _run_pending_fishing_transfer(now):
+        return
+
+    if is_cave_public_auto_enabled("fishing", get_current_identity_id()):
         return
 
     reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))

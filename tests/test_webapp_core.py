@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import quote, urlencode
 
 from model import webapp_core
@@ -2114,6 +2114,38 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(["start", "shop", "next", "start", "finish", "result"], [item[0] for item in calls])
         self.assertNotIn("fish_CAST", json.dumps(result, ensure_ascii=False))
+
+    def test_fishing_extracts_dynamic_launch_from_cave_external_payload(self):
+        result = fishing_miniapp.extract_fishing_miniapp_launch_from_dwelling_payload({
+            "result": {
+                "title": "灵溪垂钓",
+                "url": "/miniapp/xianxia-fishing?startapp=fish_CHANNEL999",
+            },
+        })
+
+        self.assertEqual("fish_CHANNEL999", result["token"])
+        self.assertTrue(result["webview_url"].startswith("https://asc.aiopenai.app/"))
+
+    def test_fishing_production_flow_reuses_supplied_dwelling_init_data(self):
+        with patch.object(
+            fishing_miniapp,
+            "request_fishing_miniapp_init_data",
+            new=AsyncMock(side_effect=AssertionError("must not request a second WebView")),
+        ), patch.object(
+            fishing_miniapp,
+            "run_fishing_miniapp_loop_lab_flow",
+            return_value={"ok": True, "status": "daily_limit", "settled_count": 5, "data": {}},
+        ) as flow_mock:
+            result = asyncio.run(fishing_miniapp.run_fishing_miniapp_production_flow(
+                3820064579,
+                token="fish_CHANNEL999",
+                webview_url="https://asc.aiopenai.app/miniapp/xianxia-fishing?startapp=fish_CHANNEL999",
+                init_data="dwelling_init_data",
+                max_rounds=5,
+            ))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("dwelling_init_data", flow_mock.call_args.kwargs["init_data"])
 
     def test_fishing_lab_flow_waits_between_not_ready_result_polls(self):
         calls = []

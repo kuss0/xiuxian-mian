@@ -100,6 +100,7 @@ from .features.cave_treasure_runtime import (
     authorize_cave_treasure_miniapp_manual_run,
     revoke_cave_treasure_miniapp_manual_run,
     run_cave_public_deep_retreat_action,
+    run_cave_public_fishing,
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
     run_cave_public_treasure,
@@ -362,6 +363,8 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_deep_status_enabled": True,
     "cave_public_treasure_enabled": True,
     "cave_public_trial_enabled": True,
+    "cave_public_fishing_enabled": False,
+    "cave_public_fishing_identity_ids": [],
     "cave_public_stargazer_enabled": False,
     "cave_public_yuanying_enabled": False,
     "cave_public_entry_url": "",
@@ -407,6 +410,7 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_deep_status_enabled",
         "cave_public_treasure_enabled",
         "cave_public_trial_enabled",
+        "cave_public_fishing_enabled",
         "cave_public_stargazer_enabled",
         "cave_public_yuanying_enabled",
         "world_boss_auto_enabled",
@@ -442,6 +446,14 @@ def normalize_miniapp_auto_config(config=None):
     result["tree_daily_enabled_identity_ids"] = sorted({
         int(identity_id)
         for identity_id in tree_identity_ids
+        if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+    })
+    fishing_identity_ids = result.get("cave_public_fishing_identity_ids") or []
+    if not isinstance(fishing_identity_ids, (list, tuple, set)):
+        fishing_identity_ids = []
+    result["cave_public_fishing_identity_ids"] = sorted({
+        int(identity_id)
+        for identity_id in fishing_identity_ids
         if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
     })
     for key, default in (
@@ -501,6 +513,8 @@ def _cave_public_actions_from_config(config=None):
         actions.append("treasure")
     if config.get("cave_public_trial_enabled"):
         actions.append("trial")
+    if config.get("cave_public_fishing_enabled"):
+        actions.append("fishing")
     if config.get("cave_public_stargazer_enabled"):
         actions.append("stargazer")
     if config.get("cave_public_yuanying_enabled"):
@@ -581,9 +595,22 @@ def get_miniapp_auto_config_snapshot(now=None):
         }
         for identity_id in world_boss_candidate_ids
     ]
+    fishing_public_ids = set(config.get("cave_public_fishing_identity_ids") or [])
+    cave_public_fishing_candidates = []
+    for identity_id in get_identity_ids():
+        account_id = int(get_identity_account(identity_id) or 0)
+        if account_id <= 0 or account_id == int(identity_id) or not get_identity_enabled(identity_id):
+            continue
+        cave_public_fishing_candidates.append({
+            "identity_id": int(identity_id),
+            "label": get_identity_ui_display_name(identity_id),
+            "account_id": account_id,
+            "auto_enabled": int(identity_id) in fishing_public_ids,
+        })
     return {
         **safe_config,
         "world_boss_candidates": world_boss_candidates,
+        "cave_public_fishing_candidates": cave_public_fishing_candidates,
         "cave_public_entry_url_configured": bool(config.get("cave_public_entry_url")),
         "today": today,
         "trial_daily_done_today": all_done,
@@ -6698,6 +6725,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             result = await run_cave_public_treasure(identity_id, url)
         elif normalized_action in {"trial", "tianji_trial"}:
             result = await run_cave_public_trial(identity_id, url)
+        elif normalized_action in {"fishing", "fish"}:
+            result = await run_cave_public_fishing(identity_id, url)
         elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
             result = await run_cave_public_stargazer(identity_id, url)
         elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
@@ -6731,12 +6760,13 @@ def _normalize_cave_public_batch_actions(payload):
         "cave_treasure": "treasure",
         "hunt": "treasure",
         "tianji_trial": "trial",
+        "fish": "fishing",
         "sect_farm": "stargazer",
         "star_farm": "stargazer",
         "yuan_ying": "yuanying",
         "yuanying_launch": "yuanying",
     }
-    allowed = {"small_world", "deep_status", "treasure", "trial", "stargazer", "yuanying"}
+    allowed = {"small_world", "deep_status", "treasure", "trial", "fishing", "stargazer", "yuanying"}
     actions = []
     seen = set()
     for raw in raw_actions or ():
@@ -6762,6 +6792,9 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
 
     enabled_set = set(enabled_ids)
     normalized_action = str(action or "").strip().lower()
+    if normalized_action == "fishing":
+        selected_ids = set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or [])
+        return [identity_id for identity_id in enabled_ids if identity_id in selected_ids]
     if normalized_action in {"trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
         return enabled_ids
     result = []
@@ -6806,12 +6839,22 @@ async def ui_set_cave_public_config(payload=None):
         "deep_status_enabled": "cave_public_deep_status_enabled",
         "treasure_enabled": "cave_public_treasure_enabled",
         "trial_enabled": "cave_public_trial_enabled",
+        "fishing_enabled": "cave_public_fishing_enabled",
         "stargazer_enabled": "cave_public_stargazer_enabled",
         "yuanying_enabled": "cave_public_yuanying_enabled",
     }
     for payload_key, config_key in mapping.items():
         if payload_key in payload:
             config[config_key] = _coerce_ui_bool(payload.get(payload_key))
+    if "fishing_identity_ids" in payload:
+        raw_ids = payload.get("fishing_identity_ids") or []
+        if not isinstance(raw_ids, (list, tuple, set)):
+            raw_ids = []
+        config["cave_public_fishing_identity_ids"] = sorted({
+            int(identity_id)
+            for identity_id in raw_ids
+            if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+        })
     if "delay_sec" in payload:
         config["cave_public_delay_sec"] = int(_normalize_cave_public_batch_delay(payload.get("delay_sec")))
     if "public_entry_url" in payload:
@@ -7087,6 +7130,16 @@ def _cave_public_background_action_due(action, identity_id, now):
                 if games_limit > 0 and games_used >= games_limit:
                     return False
             return True
+        if action == "fishing":
+            if int(identity_id) not in set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or []):
+                return False
+            if float(state.get("next_fishing_time", 0) or 0) > now:
+                return False
+            day_key = get_day_key(now)
+            if str(state.get("fishing_daily_day") or "") != day_key:
+                return True
+            limit = max(1, int(state.get("fishing_daily_limit", 5) or 5))
+            return int(state.get("fishing_daily_count", 0) or 0) < limit
         if action == "stargazer":
             if not state.get("stargazer_enabled"):
                 return False
@@ -7129,8 +7182,9 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
         "deep_start": 1,
         "deep_force": 1,
         "small_world": 2,
-        "stargazer": 3,
-        "treasure": 4,
+        "fishing": 3,
+        "stargazer": 4,
+        "treasure": 5,
     }.get(action, 9)
     due_at = 0.0
     with use_identity(identity_id):
@@ -7140,6 +7194,8 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
             due_at = float(state.get("next_deep_retreat_time", 0) or 0)
         elif action == "small_world":
             due_at = float(state.get("next_small_world_time", 0) or 0)
+        elif action == "fishing":
+            due_at = float(state.get("next_fishing_time", 0) or 0)
         elif action == "stargazer":
             due_times = [
                 float(item)
@@ -7169,6 +7225,7 @@ async def _run_cave_public_background_scheduler(now, config):
         ("yuanying", "cave_public_yuanying_enabled"),
         ("deep_status", "cave_public_deep_status_enabled"),
         ("small_world", "cave_public_small_world_enabled"),
+        ("fishing", "cave_public_fishing_enabled"),
         ("stargazer", "cave_public_stargazer_enabled"),
         ("treasure", "cave_public_treasure_enabled"),
     )

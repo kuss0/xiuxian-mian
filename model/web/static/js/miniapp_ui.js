@@ -203,6 +203,12 @@
       ? '运行中 ' + completed + '/' + total + (batch.current ? '｜' + batch.current : '')
       : (batch.batch_id ? '最近完成 ' + completed + '/' + total : '未启动');
     var result = batch.last_result || '';
+    var fishingCandidates = Array.isArray(automation.cave_public_fishing_candidates) ? automation.cave_public_fishing_candidates : [];
+    var fishingCandidateHtml = fishingCandidates.length
+      ? '<div class="miniapp-candidate-list">' + fishingCandidates.map(function (item) {
+          return '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-fishing-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '><span>' + esc(item.label || item.identity_id) + '</span></label>';
+        }).join('') + '</div>'
+      : '<span class="miniapp-empty">暂无频道身份候选</span>';
     return ''
       + '<section class="miniapp-score-config miniapp-cave-public" data-cave-public-entry="1">'
       + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜按动作身份策略串行</span></div>'
@@ -217,9 +223,12 @@
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="deep_status"' + (automation.cave_public_deep_status_enabled ? ' checked' : '') + '><span>闭关状态</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="treasure"' + (automation.cave_public_treasure_enabled ? ' checked' : '') + '><span>洞府寻宝</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="trial"' + (automation.cave_public_trial_enabled ? ' checked' : '') + '><span>天机试炼</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="fishing"' + (automation.cave_public_fishing_enabled ? ' checked' : '') + '><span>频道钓鱼</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="stargazer"' + (automation.cave_public_stargazer_enabled ? ' checked' : '') + '><span>观星台</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="yuanying"' + (automation.cave_public_yuanying_enabled ? ' checked' : '') + '><span>元婴</span></label>'
       + '</div>'
+      + '<div class="miniapp-score-title"><strong>频道钓鱼白名单</strong><span>仅走公共入口，不发送群命令</span></div>'
+      + fishingCandidateHtml
       + '<div class="miniapp-cave-batch-status">'
       + badge(status, running ? 'warn' : 'neutral')
       + badge('成功 ' + succeeded, 'ok')
@@ -230,6 +239,7 @@
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world">小世界处理</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="treasure">洞府寻宝</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="trial">天机试炼</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="fishing">频道钓鱼</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="stargazer">观星台</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yuanying">元婴状态/出窍</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_status">闭关状态</button>'
@@ -488,11 +498,19 @@
       return !!(input && input.checked);
     }
     var delayInput = panel && panel.querySelector('[data-cave-public-delay="1"]');
+    var fishingIdentityIds = [];
+    if (panel) {
+      panel.querySelectorAll('[data-cave-public-fishing-candidate]').forEach(function (input) {
+        if (input.checked) fishingIdentityIds.push(input.getAttribute('data-cave-public-fishing-candidate'));
+      });
+    }
     return {
       small_world_enabled: enabled('small_world'),
       deep_status_enabled: enabled('deep_status'),
       treasure_enabled: enabled('treasure'),
       trial_enabled: enabled('trial'),
+      fishing_enabled: enabled('fishing'),
+      fishing_identity_ids: fishingIdentityIds,
       stargazer_enabled: enabled('stargazer'),
       yuanying_enabled: enabled('yuanying'),
       public_entry_url: (panel && panel.querySelector('[data-cave-public-url="1"]') || {}).value || '',
@@ -507,6 +525,7 @@
     if (config.deep_status_enabled) actions.push('deep_status');
     if (config.treasure_enabled) actions.push('treasure');
     if (config.trial_enabled) actions.push('trial');
+    if (config.fishing_enabled) actions.push('fishing');
     if (config.stargazer_enabled) actions.push('stargazer');
     if (config.yuanying_enabled) actions.push('yuanying');
     return actions;
