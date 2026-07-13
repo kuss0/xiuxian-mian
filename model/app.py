@@ -1022,6 +1022,7 @@ async def _note_game_bot_activity(text=None, reply_to=None, reply_context=None, 
         bot_health_action is None
         and not get_global_enabled()
         and get_global_pause_source() == "bot_health_monitor"
+        and not should_pause_for_bot_health()
     ):
         _bot_silence_auto_paused = True
         restore_bot_health_auto_pause("恢复持久化天尊健康暂停态")

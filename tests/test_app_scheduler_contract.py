@@ -1665,6 +1665,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(app, "note_game_bot_message", side_effect=[None, "probe"]),
                 patch.object(app, "get_global_enabled", return_value=False),
                 patch.object(app, "get_global_pause_source", return_value="bot_health_monitor"),
+                patch.object(app, "should_pause_for_bot_health", return_value=False),
                 patch.object(app, "restore_bot_health_auto_pause") as restore_mock,
                 patch.object(app, "_fire_and_forget") as fire_mock,
                 patch.object(app, "_send_bot_health_probe", new=MagicMock(return_value=probe_coro)) as probe_mock,
@@ -1679,6 +1680,32 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             restore_mock.assert_called_once_with("恢复持久化天尊健康暂停态")
             probe_mock.assert_called_once()
             fire_mock.assert_called_once_with(probe_coro)
+            self.assertTrue(app._bot_silence_auto_paused)
+        finally:
+            app._bot_silence_auto_paused = old_flag
+
+    async def test_persisted_bot_health_pause_does_not_reset_active_probe(self):
+        old_flag = app._bot_silence_auto_paused
+        app._bot_silence_auto_paused = True
+        try:
+            with (
+                patch.object(app, "note_game_bot_message", return_value=None) as health_mock,
+                patch.object(app, "get_global_enabled", return_value=False),
+                patch.object(app, "get_global_pause_source", return_value="bot_health_monitor"),
+                patch.object(app, "should_pause_for_bot_health", return_value=True),
+                patch.object(app, "restore_bot_health_auto_pause") as restore_mock,
+                patch.object(app, "_fire_and_forget") as fire_mock,
+            ):
+                await app._note_game_bot_activity(
+                    "【野外历练】\n@alpha 选择【谨慎】策略。",
+                    12345,
+                    {"send_as_id": 301299112, "family": "wild_training"},
+                    now=1000.0,
+                )
+
+            health_mock.assert_called_once_with(1000.0, reply_to_msg_id=12345)
+            restore_mock.assert_not_called()
+            fire_mock.assert_not_called()
             self.assertTrue(app._bot_silence_auto_paused)
         finally:
             app._bot_silence_auto_paused = old_flag
