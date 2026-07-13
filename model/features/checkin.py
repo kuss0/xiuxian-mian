@@ -91,6 +91,14 @@ def _schedule_checkin_next_day(now):
     return schedule_next_checkin_after_completion(now, persist=False)
 
 
+def _schedule_checkin_retry(now):
+    retry_at = float(now) + RETRY_MAX_SEC
+    if _is_checkin_window_time(retry_at):
+        state["next_checkin_time"] = retry_at
+        return retry_at
+    return _schedule_checkin_next_day(now)
+
+
 def _is_checkin_window_time(ts):
     start_hour_utc, end_hour_utc = get_module_window_hours("点卯")
     utc_time = datetime.fromtimestamp(float(ts), timezone.utc)
@@ -567,7 +575,7 @@ async def run_checkin_scheduler(now):
         msg = await send_game_command(CMD_CHECKIN, max_retry=1)
         if not msg:
             failed_at = time.time()
-            state["next_checkin_time"] = failed_at + RETRY_MAX_SEC
+            _schedule_checkin_retry(failed_at)
             save_state()
             send_block = classify_game_send_block(command=CMD_CHECKIN)
             if send_block.get("status") == "unsent":

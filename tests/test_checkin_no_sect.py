@@ -217,6 +217,38 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("点卯未发送", str(console_mock.call_args.args[0]))
             audit_mock.assert_not_awaited()
 
+    async def test_checkin_runtime_block_near_window_end_defers_to_next_day(self):
+        send_as_id = 991010
+        now = datetime(2026, 6, 20, 2, 55, tzinfo=timezone.utc).timestamp()
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="checkinlate", sect_name="星宫")
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["checkin_enabled"] = True
+            identity_state["sect_teach_enabled"] = False
+            identity_state["checkin_teach_day"] = checkin.get_checkin_day_key(now)
+            identity_state["last_checkin_done_day"] = ""
+            identity_state["next_checkin_time"] = now - 1
+
+            with (
+                patch.object(checkin.time, "time", return_value=now + 1),
+                patch.object(checkin, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(checkin, "classify_game_send_block", return_value={
+                    "status": "unsent",
+                    "code": "send_as_peer_invalid",
+                }),
+                patch.object(checkin, "save_state"),
+                patch.object(checkin, "console_log"),
+                patch.object(checkin, "send_audit_log", new=AsyncMock()),
+            ):
+                await checkin.run_checkin_scheduler(now)
+                await checkin.run_checkin_scheduler(now + 60)
+
+            next_checkin_time = identity_state["next_checkin_time"]
+            self.assertGreater(next_checkin_time, now + 20 * 60 * 60)
+            self.assertTrue(checkin._is_checkin_window_time(next_checkin_time))
+            self.assertEqual(1, send_mock.await_count)
+
     async def test_sect_teach_runtime_block_is_not_reported_as_send_failure(self):
         send_as_id = 991008
         now = datetime(2026, 6, 20, 2, 30, tzinfo=timezone.utc).timestamp()
