@@ -1435,14 +1435,26 @@ def run_tree_miniapp_game_lab_flow(
     _append_http_event(events, "run_submit", submit_result)
     if not submit_result.ok:
         return _flow_result(False, classify_tree_miniapp_error(submit_result.error), error=submit_result.error, data=data, events=events)
+    server_verification = _tree_server_verification(submit_result.data)
     submitted_score = _int_value(submit_result.data.get("score"), int(proof_summary.get("score") or 0))
+    if server_verification and not server_verification.get("ok", True):
+        submitted_score = 0
     data["submit"] = {
         "score": submitted_score,
         "data_keys": sorted(str(key) for key in submit_result.data),
+        "server_verification": server_verification,
     }
     season_state = submit_result.data.get("seasonState") if isinstance(submit_result.data.get("seasonState"), dict) else {}
     if season_state:
         data["season_state_keys"] = sorted(str(key) for key in season_state)
+    if submitted_score <= 0:
+        return _flow_result(
+            False,
+            "zero_score",
+            data=data,
+            events=events,
+            error=f"{normalized_mode} server score is zero",
+        )
     return _flow_result(True, "settled", data=data, events=events)
 
 

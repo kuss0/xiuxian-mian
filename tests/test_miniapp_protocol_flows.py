@@ -1381,6 +1381,55 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)
 
+    def test_tree_game_lab_flow_rejects_failed_server_verification(self):
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            if endpoint == "start":
+                return 200, {"ok": True, "council": {"daily": {
+                    "jump": {"used": 0, "limit": 1},
+                    "fly": {"used": 0, "limit": 1},
+                }}}
+            if endpoint == "run_start":
+                return 200, {"ok": True, "run": {
+                    "mode": "fly",
+                    "runToken": "run_SECRET999",
+                    "seed": "server-verification-seed",
+                    "used": 1,
+                    "limit": 1,
+                }}
+            if endpoint == "run_submit":
+                return 200, {
+                    "ok": True,
+                    "score": 18,
+                    "verified": {"ok": False, "hit": True, "score": 0, "durationMs": 4567},
+                }
+            raise AssertionError(endpoint)
+
+        with patch.object(
+            tree_miniapp,
+            "build_tree_game_proof",
+            return_value=(
+                {"flaps": [0, 200], "durationMs": 1000, "clientScore": 18},
+                {"mode": "fly", "targetScore": 18, "score": 18, "durationMs": 1000},
+            ),
+        ):
+            result = tree_miniapp.run_tree_miniapp_game_lab_flow(
+                token="tree_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                mode="fly",
+                submit=True,
+                transport=transport,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("zero_score", result["status"])
+        self.assertEqual(0, result["data"]["submit"]["score"])
+        self.assertEqual(
+            {"ok": False, "hit": True, "score": 0, "durationMs": 4567},
+            result["data"]["submit"]["server_verification"],
+        )
+
     def test_tree_game_lab_flow_blocks_zero_score_submit(self):
         calls = []
 
