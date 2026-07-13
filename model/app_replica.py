@@ -10940,6 +10940,8 @@ def _format_replica_query_reply_for_kind(replica_kind, filter_text=""):
 
 def _get_replica_query_aggregator_submit_config():
     config = get_replica_query_aggregator_config()
+    if not config.get("enabled"):
+        return {}
     if not config.get("base_url") or not config.get("client_id") or not config.get("secret"):
         return {}
     return config
@@ -12114,6 +12116,8 @@ async def _handle_replica_query_command(
         participant_identity_ids=participant_identity_ids,
         fallback_to_all=participant_fallback_to_all,
     )
+    if reply_text.startswith("未找到") or reply_text == "当前没有已勾选且带 username 的副本参与身份":
+        return True
     event_message_id = _coerce_replica_metadata_int(getattr(event, "id", 0))
     if await _maybe_submit_replica_query_reply_to_aggregator(
         event_message_id,

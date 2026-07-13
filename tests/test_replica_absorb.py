@@ -241,6 +241,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertEqual(
             {
+                "enabled": True,
                 "base_url": "https://example.invalid/api",
                 "client_id": "client-a",
                 "secret": "secret-a",
@@ -249,6 +250,14 @@ class ReplicaAbsorbTests(unittest.TestCase):
         )
 
         state_module.set_replica_query_aggregator_config({"base_url": "https://example.invalid/api"})
+        self.assertEqual({}, app_replica._get_replica_query_aggregator_submit_config())
+
+        state_module.set_replica_query_aggregator_config({
+            "enabled": False,
+            "base_url": "https://example.invalid/api",
+            "client_id": "client-a",
+            "secret": "secret-a",
+        })
         self.assertEqual({}, app_replica._get_replica_query_aggregator_submit_config())
 
     def test_replica_query_aggregator_body_carries_source_and_identity_metadata(self):
@@ -280,7 +289,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "client_id": "client-a",
             "secret": "secret-a",
         })
-        event = self._prepare_replica_group([])
+        identity_id = self._prepare_replica_identity()
+        event = self._prepare_replica_group([identity_id])
         event.raw_text = ".查询"
         event.id = 456
 
@@ -308,7 +318,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "client_id": "client-a",
             "secret": "secret-a",
         })
-        event = self._prepare_replica_group([])
+        identity_id = self._prepare_replica_identity()
+        event = self._prepare_replica_group([identity_id])
         event.raw_text = ".查询"
         event.id = 457
 
@@ -322,26 +333,26 @@ class ReplicaAbsorbTests(unittest.TestCase):
         handled, send_count, reply_text = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertEqual(1, send_count)
-        self.assertIn("当前没有已勾选且带 username 的副本参与身份", reply_text)
+        self.assertIn("@leader", reply_text)
 
-    def test_replica_query_command_replies_when_no_candidates(self):
+    def test_replica_query_command_suppresses_empty_result(self):
         event = self._prepare_replica_group([])
         event.raw_text = ".查询"
         event.id = 321
 
         async def run_test():
             with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
-                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=701))):
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=701))) as send_mock:
                 handled = await app_replica._handle_replica_query_command(event)
-                reply_text = app_replica._send_replica_group_message.await_args.args[2]
-                return handled, reply_text
+                return handled, send_mock.await_count
 
-        handled, reply_text = asyncio.run(run_test())
+        handled, send_count = asyncio.run(run_test())
         self.assertTrue(handled)
-        self.assertIn("当前没有已勾选且带 username 的副本参与身份", reply_text)
+        self.assertEqual(0, send_count)
 
     def test_replica_query_command_deduplicates_same_runtime_event(self):
-        event = self._prepare_replica_group([])
+        identity_id = self._prepare_replica_identity()
+        event = self._prepare_replica_group([identity_id])
         event.raw_text = ".查询"
         event.id = 323
 
@@ -364,14 +375,13 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         async def run_test():
             with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
-                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=702))):
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=702))) as send_mock:
                 handled = await app_replica._handle_replica_group_command(event)
-                reply_text = app_replica._send_replica_group_message.await_args.args[2]
-                return handled, reply_text
+                return handled, send_mock.await_count
 
-        handled, reply_text = asyncio.run(run_test())
+        handled, send_count = asyncio.run(run_test())
         self.assertTrue(handled)
-        self.assertIn("当前没有已勾选且带 username 的副本参与身份", reply_text)
+        self.assertEqual(0, send_count)
 
     def test_replica_dispatch_group_command_dispatches_query_command(self):
         first_id = self._register_replica_identity(991204, "first")

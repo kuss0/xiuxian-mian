@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import control
 from model import state as state_module
 from model.features import duel
 
@@ -32,6 +33,24 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             xiuwei_current=xiuwei_current,
         )
         return identity_id
+
+    async def test_manual_reenable_starts_a_new_completed_batch(self):
+        identity_id = self._prepare_identity()
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = False
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["next_duel_time"] = 0
+
+        with patch.object(control, "save_state"):
+            ok, _message = await control.set_module_enabled("斗法", True, send_as_id=identity_id)
+
+        self.assertTrue(ok)
+        with state_module.use_identity(identity_id):
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertGreater(state_module.state["next_duel_time"], 0)
 
     def test_target_normalization_and_command(self):
         self.assertEqual("@cupaopao", duel.normalize_duel_target("cupaopao"))

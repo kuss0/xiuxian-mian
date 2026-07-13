@@ -248,6 +248,9 @@ def test_dungeon_ui_keeps_replica_open_switches_visible():
     assert "副本手动配置" in script
     assert "推荐/开房名单" in script
     assert "renderReplicaKindEnableGrid(replica)" in script
+    assert 'data-replica-query-aggregator-toggle="1"' in script
+    assert "提交查询与推荐到拉人汇聚服务" in script
+    assert "/api/replica-query-aggregator-toggle" in script
 
 
 def test_summary_card_script_keeps_role_resource_fields():

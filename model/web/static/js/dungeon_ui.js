@@ -283,7 +283,8 @@ function renderReplicaConfig(replica) {
     + '</div>'
     + '</div>'
     + '<div class="dungeon-section">'
-    + '<div class="queue-section-title">外部汇聚接入' + (aggregator.configured ? '（已配置）' : '（未配置）') + '</div>'
+    + '<div class="queue-section-title">外部汇聚接入' + (aggregator.enabled ? '（运行中）' : '（已关闭）') + '</div>'
+    + '<label class="toggle-field"><input type="checkbox" data-replica-query-aggregator-toggle="1"' + (aggregator.enabled ? ' checked' : '') + ' /><span>提交查询与推荐到拉人汇聚服务</span></label>'
     + '<div class="replica-config-grid">'
     + '<label class="form-label">Base URL<input class="text-input" name="replica_query_aggregator_base_url" value="' + escapeHtml(aggregator.base_url || '') + '" autocomplete="off" /></label>'
     + '<label class="form-label">Client ID<input class="text-input" name="replica_query_aggregator_client_id" value="' + escapeHtml(aggregator.client_id || '') + '" autocomplete="off" /></label>'
@@ -554,6 +555,25 @@ async function toggleReplicaGoldDps(identityId, enabled) {
   }
 }
 
+async function toggleReplicaQueryAggregator(enabled) {
+  try {
+    const data = await postJson('/api/replica-query-aggregator-toggle', {enabled: !!enabled});
+    updateFlash(data.message || '已更新拉人汇聚服务开关', false);
+    if (data.snapshot && typeof applySnapshot === 'function') {
+      applySnapshot(data.snapshot, {keepFlash: true});
+    } else if (typeof refreshState === 'function') {
+      await refreshState({silent: true, keepFlash: true});
+    }
+    renderDungeonModal({force: true});
+  } catch (error) {
+    updateFlash((error && error.message) || '拉人汇聚服务开关切换失败', true);
+    if (typeof setFlash === 'function') {
+      setFlash();
+    }
+    renderDungeonModal({force: true});
+  }
+}
+
 if (typeof renderAll === 'function') {
   const originalRenderAllForDungeon = renderAll;
   renderAll = function() {
@@ -590,6 +610,13 @@ document.addEventListener('click', function(event) {
 document.addEventListener('submit', function(event) {
   if (event.target && event.target.id === 'replica-config-form') {
     saveReplicaConfig(event);
+  }
+});
+
+document.addEventListener('change', function(event) {
+  const aggregatorToggle = event.target.closest('[data-replica-query-aggregator-toggle]');
+  if (aggregatorToggle) {
+    toggleReplicaQueryAggregator(aggregatorToggle.checked);
   }
 });
 

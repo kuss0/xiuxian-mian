@@ -299,6 +299,7 @@ class GuanxingConfigTests(unittest.TestCase):
             "participant_identity_ids": [],
             "virtual_hall_match_enabled_map": {},
             "query_aggregator_config": {
+                "enabled": False,
                 "base_url": "https://new.example/api/",
                 "client_id": "new-client",
                 "secret": "",
@@ -311,6 +312,7 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual(
             {
+                "enabled": False,
                 "base_url": "https://new.example/api",
                 "client_id": "new-client",
                 "secret": "old-secret",
@@ -319,8 +321,31 @@ class GuanxingConfigTests(unittest.TestCase):
         )
         snapshot = ui.get_replica_config_snapshot()["query_aggregator_config"]
         self.assertTrue(snapshot["configured"])
+        self.assertFalse(snapshot["enabled"])
         self.assertTrue(snapshot["secret_configured"])
         self.assertNotIn("secret", snapshot)
+
+    def test_replica_query_aggregator_toggle_preserves_credentials(self):
+        state_module.set_replica_query_aggregator_config({
+            "enabled": True,
+            "base_url": "https://example.invalid/api",
+            "client_id": "client-a",
+            "secret": "secret-a",
+        })
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_query_aggregator_enabled(False)
+
+        self.assertTrue(ok, message)
+        self.assertEqual(
+            {
+                "enabled": False,
+                "base_url": "https://example.invalid/api",
+                "client_id": "client-a",
+                "secret": "secret-a",
+            },
+            state_module.get_replica_query_aggregator_config(),
+        )
 
     def test_replica_config_saves_cangkun_success_cooldown_hours(self):
         self.assertEqual(2.5, ui.get_replica_config_snapshot()["success_cooldown_hours"]["cangkun"])

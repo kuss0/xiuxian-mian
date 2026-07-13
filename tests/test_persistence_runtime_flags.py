@@ -535,6 +535,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual({"-100777": True, "-100888": False}, state_module.get_replica_virtual_hall_match_enabled_map())
                 self.assertEqual(
                     {
+                        "enabled": True,
                         "base_url": "https://example.invalid/api",
                         "client_id": "client-a",
                         "secret": "secret-a",

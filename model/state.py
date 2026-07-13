@@ -1737,7 +1737,9 @@ def _normalize_replica_query_aggregator_config(config):
     base_url = str(config.get("base_url") or "").strip().rstrip("/")
     client_id = str(config.get("client_id") or "").strip()
     secret = str(config.get("secret") or "").strip()
+    enabled = _coerce_meta_bool(config.get("enabled", True), True)
     return {
+        "enabled": enabled,
         "base_url": base_url,
         "client_id": client_id,
         "secret": secret,

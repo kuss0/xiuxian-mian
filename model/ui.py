@@ -3911,6 +3911,7 @@ def get_replica_config_snapshot():
         "dispatch_enabled": False,
         "dispatch_listener_account_map": {str(group_id): int(dispatch_listener_map.get(str(group_id)) or 0) for group_id in dispatch_group_ids},
         "query_aggregator_config": {
+            "enabled": bool(query_aggregator_config.get("enabled")),
             "base_url": query_aggregator_config.get("base_url") or "",
             "client_id": query_aggregator_config.get("client_id") or "",
             "secret_configured": bool(query_aggregator_config.get("secret")),
@@ -3992,6 +3993,9 @@ def ui_set_replica_config(payload):
         if not next_secret:
             next_secret = current_query_aggregator.get("secret") or ""
         set_replica_query_aggregator_config({
+            "enabled": _coerce_ui_bool(
+                query_aggregator_input.get("enabled", current_query_aggregator.get("enabled", True))
+            ),
             "base_url": query_aggregator_input.get("base_url"),
             "client_id": query_aggregator_input.get("client_id"),
             "secret": next_secret,
@@ -4017,6 +4021,15 @@ def ui_set_replica_config(payload):
     if ignored_dispatch_group_ids:
         message += f"，已忽略与游戏群/轻量群重叠的拉人群 {len(ignored_dispatch_group_ids)} 个"
     return True, message
+
+
+def ui_set_replica_query_aggregator_enabled(enabled):
+    current = get_replica_query_aggregator_config()
+    current["enabled"] = _coerce_ui_bool(enabled)
+    updated = set_replica_query_aggregator_config(current)
+    save_state()
+    action = "开启" if updated.get("enabled") else "关闭"
+    return True, f"已{action}拉人汇聚服务提交"
 
 
 def ui_set_replica_gold_dps_enabled(send_as_id, enabled):
@@ -7934,6 +7947,14 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = ui_set_replica_gold_dps_enabled(send_as_id, _coerce_ui_bool(payload.get("enabled")))
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/replica-query-aggregator-toggle":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = ui_set_replica_query_aggregator_enabled(payload.get("enabled"))
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/basic-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
