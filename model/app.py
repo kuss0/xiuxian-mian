@@ -96,6 +96,7 @@ from .features.tree_runtime import handle_tree_miniapp_entry
 from .features.tianxing import (
     apply_tianxing_passive,
     build_tianxing_consume_window,
+    build_tianxing_route_preflight_plan,
     has_tianxing_craft_farm_due,
     has_tianxing_craft_farm_override_due,
     has_tianxing_timeline_due_work,
@@ -104,6 +105,7 @@ from .features.tianxing import (
     normalize_tianxing_timeline_state,
     run_tianxing_daily_bootstrap_scheduler,
     run_tianxing_scheduler,
+    run_tianxing_timeline_scheduler,
     run_tianxing_timeline_followup_scheduler,
 )
 from .features.yinluo import run_yinluo_scheduler
@@ -2296,6 +2298,64 @@ async def _run_tianxing_timeline_followup_identity_schedulers(now, *, limit=TIAN
                 processed += 1
 
 
+def _tianxing_downstream_prepare_windows(now):
+    now = float(now or 0)
+    windows = []
+    specs = (
+        (
+            "wild_training_enabled",
+            "next_wild_training_time",
+            "wild_training_tianxing_prepare_retry_at",
+            ("wild_training_reply_to_msg_id",),
+            "wild_training_reply_due_at",
+            "野外历练",
+        ),
+        (
+            "explore_rift_enabled",
+            "next_explore_rift_time",
+            "explore_rift_tianxing_prepare_retry_at",
+            ("explore_rift_reply_to_msg_id", "explore_rift_pending_result_msg_id"),
+            "explore_rift_reply_due_at",
+            "探寻裂缝",
+        ),
+    )
+    for enabled_key, next_key, retry_key, pending_keys, reply_due_key, reason in specs:
+        if not state.get(enabled_key):
+            continue
+        try:
+            due_at = float(state.get(next_key, 0) or 0)
+            retry_at = float(state.get(retry_key, 0) or 0)
+            reply_due_at = float(state.get(reply_due_key, 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if due_at <= 0 or retry_at > now:
+            continue
+        if any(int(state.get(key, 0) or 0) > 0 for key in pending_keys):
+            continue
+        if reply_due_at > now:
+            continue
+        preflight = build_tianxing_route_preflight_plan(
+            "探索",
+            reason=reason,
+            deadline_at=due_at,
+            now=now,
+            require_change_fate=True,
+        )
+        if preflight.get("route_allowed"):
+            continue
+        blocked_until = float(preflight.get("blocked_until", 0) or 0)
+        if blocked_until > now:
+            continue
+        windows.extend(build_tianxing_consume_window(
+            "探索",
+            now=now,
+            due_at=max(due_at, now),
+            reason=reason,
+            require_change_fate=True,
+        ))
+    return windows
+
+
 def _tianxing_fast_due_info(now):
     due_times = []
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
@@ -2328,14 +2388,17 @@ def _tianxing_fast_due_info(now):
         due_times.append(craft_next_time if craft_next_time > 0 else float(now))
     timeline_due = has_tianxing_timeline_due_work(now)
     craft_override_due = has_tianxing_craft_farm_override_due(now)
+    downstream_prepare_due = bool(_tianxing_downstream_prepare_windows(now))
     if timeline_due:
         due_times.append(float(now))
     if craft_override_due:
         due_times.append(float(now))
+    if downstream_prepare_due:
+        due_times.append(float(now))
     due_times = [value for value in due_times if value > 0]
     if not due_times:
         return {"due_at": 0.0, "priority": 99, "tianji": tianji_value}
-    if timeline_due or craft_recovery_due:
+    if timeline_due or craft_recovery_due or downstream_prepare_due:
         priority = 0
     elif craft_override_due:
         priority = 1
@@ -2345,7 +2408,12 @@ def _tianxing_fast_due_info(now):
         priority = 3
     else:
         priority = 9
-    return {"due_at": min(due_times), "priority": priority, "tianji": tianji_value}
+    return {
+        "due_at": min(due_times),
+        "priority": priority,
+        "tianji": tianji_value,
+        "downstream_prepare_due": downstream_prepare_due,
+    }
 
 
 def _tianxing_fast_due_time(now):
@@ -2432,6 +2500,9 @@ async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
 async def _run_due_tianxing_candidate(identity_id, scheduler_now):
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
+        windows = _tianxing_downstream_prepare_windows(candidate_now)
+        if windows:
+            await run_tianxing_timeline_scheduler(candidate_now, windows=windows)
         await run_tianxing_scheduler(candidate_now)
 
 
