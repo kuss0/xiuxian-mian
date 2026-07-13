@@ -642,6 +642,30 @@ async def handle_duel_broadcast(text, now, event=None, result_msg_id=0):
     return await _handle_duel_text(raw, now, result_msg_id=result_msg_id)
 
 
+async def handle_duel_target_observation(text, now, event=None):
+    if not state.get("duel_enabled"):
+        return False
+    raw = str(text or "")
+    if not (raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX)):
+        return False
+    target = _target_token()
+    if not target or not _tag_in_text(raw, target.lstrip("@")):
+        return False
+    until = _set_target_cooldown(
+        target,
+        float(now) + DUEL_SAME_TARGET_COOLDOWN_SEC,
+        confirmed=True,
+        command_msg_id=0,
+    )
+    save_state()
+    console_log(
+        f"🗡️ 被动采集到目标 {target} 的斗法战报，共享目标CD→{fmt_abs_ts(until)}",
+        scope="identity",
+        limit=180,
+    )
+    return True
+
+
 async def _handle_duel_text(text, now, *, result_msg_id=0):
     raw_text = str(text or "").strip()
     if not raw_text:
@@ -853,6 +877,7 @@ __all__ = [
     "clear_duel_state",
     "get_duel_status_text",
     "handle_duel_broadcast",
+    "handle_duel_target_observation",
     "handle_duel_reply",
     "is_duel_reply_text",
     "normalize_duel_target",

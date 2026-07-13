@@ -816,6 +816,31 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             audit_mock.assert_not_awaited()
             self.assertEqual(0, state_module.state["duel_completed_count"])
 
+    async def test_external_duel_report_refreshes_shared_target_lock_without_counting_attempt(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            with (
+                patch.object(duel, "console_log") as console_mock,
+                patch.object(duel, "save_state") as save_mock,
+            ):
+                handled = await duel.handle_duel_target_observation(
+                    "【天道战报·文字版】\n@external_player 与 @cupaopao 斗法结束。\n胜者：@cupaopao\n败者：@external_player",
+                    now,
+                    event=SimpleNamespace(id=22031),
+                )
+
+            target_lock = state_module.get_duel_target_cooldowns()["@cupaopao"]
+            self.assertTrue(handled)
+            self.assertTrue(target_lock["confirmed"])
+            self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, target_lock["until"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            save_mock.assert_called_once()
+            console_mock.assert_called_once()
+
     async def test_broadcast_outside_pending_window_is_ignored(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

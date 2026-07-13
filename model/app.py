@@ -167,7 +167,7 @@ from .features.yuanying import (
     run_yuanying_scheduler,
 )
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
-from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
+from .features.duel import handle_duel_broadcast, handle_duel_reply, handle_duel_target_observation, run_duel_scheduler
 from .features.fishing_runtime import (
     handle_fishing_miniapp_entry,
     handle_fishing_reply,
@@ -1478,6 +1478,8 @@ async def _dispatch_duel_broadcast_fallbacks(event, text, now):
         or raw_text.startswith("【斗法终局】")
     ):
         return
+    if _claim_runtime_event(event, scope="duel_target_observation"):
+        await _run_until_handled_for_enabled_identities(handle_duel_target_observation, text, now, event)
     if _claim_runtime_event(event, scope="duel_broadcast"):
         await _run_until_handled_for_enabled_identities(handle_duel_broadcast, text, now, event)
 
