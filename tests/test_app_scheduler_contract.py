@@ -1257,6 +1257,56 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         candidate_mock.assert_awaited_once_with(urgent_identity_id, now)
         self.assertEqual([(urgent_identity_id, now)], seen)
 
+    async def test_due_tianxing_fast_scan_allows_downstream_prepare_during_phaseful_summary(self):
+        identity_id = 991846
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["next_wild_training_time"] = now + 9 * 60
+            state_module.state["tianxing_observation"] = {"auto_next_time": now + 6 * 3600}
+
+        windows = [{"route": "探索", "kind": "consume", "reason": "野外历练"}]
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=True),
+            patch.object(app, "build_tianxing_route_preflight_plan", return_value={"route_allowed": False, "timeline_required": True}),
+            patch.object(app, "build_tianxing_consume_window", return_value=windows),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "sent_waiting_ack"})) as timeline_mock,
+            patch.object(app, "run_tianxing_scheduler", new=AsyncMock()),
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        timeline_mock.assert_awaited_once_with(now, windows=windows)
+
+    async def test_due_tianxing_fast_scan_keeps_phaseful_block_for_routine_auto_work(self):
+        identity_id = 991847
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {"auto_next_time": now - 1}
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=True),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+            patch.object(app, "run_tianxing_scheduler", new=AsyncMock()) as scheduler_mock,
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        timeline_mock.assert_not_awaited()
+        scheduler_mock.assert_not_awaited()
+
     async def test_due_tianxing_fast_scan_runs_craft_override_due(self):
         identity_id = 991836
         now = 1_700_000_000.0

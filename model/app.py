@@ -2432,9 +2432,10 @@ async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
-            if has_phaseful_summary_block(scheduler_now):
-                continue
             if not state.get("tianxing_enabled"):
+                continue
+            downstream_prepare_windows = _tianxing_downstream_prepare_windows(scheduler_now)
+            if has_phaseful_summary_block(scheduler_now) and not downstream_prepare_windows:
                 continue
             due_info = _tianxing_fast_due_info(scheduler_now)
             due_at = float(due_info.get("due_at", 0.0) or 0.0)
