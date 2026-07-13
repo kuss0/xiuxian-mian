@@ -2440,9 +2440,17 @@ async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
             due_at = float(due_info.get("due_at", 0.0) or 0.0)
             if due_at <= 0 or due_at > scheduler_now:
                 continue
+            try:
+                priority = int(due_info.get("priority", 99))
+            except (TypeError, ValueError, OverflowError):
+                priority = 99
+            try:
+                tianji_value = int(due_info.get("tianji", 999999))
+            except (TypeError, ValueError, OverflowError):
+                tianji_value = 999999
             candidates.append((
-                int(due_info.get("priority", 99) or 99),
-                int(due_info.get("tianji", 999999) or 999999),
+                priority,
+                tianji_value,
                 due_at,
                 scan_index,
                 identity_id,

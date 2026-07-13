@@ -1223,6 +1223,40 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         timeline_mock.assert_not_awaited()
         scheduler_mock.assert_not_awaited()
 
+    async def test_due_tianxing_fast_scan_preserves_zero_priority_and_tianji(self):
+        urgent_identity_id = 991844
+        routine_identity_id = 991845
+        now = 1_700_000_000.0
+        for identity_id in (urgent_identity_id, routine_identity_id):
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["tianxing_enabled"] = True
+
+        def fake_due_info(_now):
+            if state_module.get_current_identity_id() == urgent_identity_id:
+                return {"due_at": now, "priority": 0, "tianji": 0}
+            return {"due_at": now - 60, "priority": 3, "tianji": 1}
+
+        seen = []
+
+        async def fake_candidate(identity_id, scheduler_now):
+            seen.append((identity_id, scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[routine_identity_id, urgent_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "_tianxing_fast_due_info", side_effect=fake_due_info),
+            patch.object(app, "_run_due_tianxing_candidate", new=AsyncMock(side_effect=fake_candidate)) as candidate_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        candidate_mock.assert_awaited_once_with(urgent_identity_id, now)
+        self.assertEqual([(urgent_identity_id, now)], seen)
+
     async def test_due_tianxing_fast_scan_runs_craft_override_due(self):
         identity_id = 991836
         now = 1_700_000_000.0
