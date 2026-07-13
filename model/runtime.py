@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 import requests
 from telethon import functions, types
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
 from .command_attempt.runtime_shadow import (
     note_blocked as note_shadow_attempt_blocked,
@@ -372,6 +372,7 @@ _GAME_COMMAND_SENT_OBSERVERS = []
 _GAME_COMMAND_PRE_SEND_GUARDS = []
 _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _GAME_SEND_BLOCK_LAST = {}
+_SEND_AS_PEER_INVALID_UNTIL = {}
 _GAME_SEND_QUIESCED = False
 GAME_SEND_UNKNOWN_BLOCK_CODES = {"send_timeout", "send_exception"}
 GAME_SEND_UNSENT_BLOCK_CODES = {
@@ -384,6 +385,7 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "account_client_missing",
     "account_client_not_ready",
     "account_session_error",
+    "send_as_peer_invalid",
     "bot_health",
     "identity_weak",
     "pre_send_guard",
@@ -398,6 +400,7 @@ LOG_BOT_POLL_READ_TIMEOUT_SEC = 35
 LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 60
+SEND_AS_PEER_INVALID_BACKOFF_SEC = 30 * 60
 GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
@@ -504,6 +507,25 @@ def _clear_game_send_block(send_as_id, command):
     latest = _GAME_SEND_BLOCK_LAST.get((identity_id, ""))
     if latest and str(latest.get("command") or "") == raw_command:
         _GAME_SEND_BLOCK_LAST.pop((identity_id, ""), None)
+
+
+def _send_as_peer_invalid_until(send_as_id, *, now=None):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    until = float(_SEND_AS_PEER_INVALID_UNTIL.get(identity_id, 0) or 0)
+    if until <= float(now or time.time()):
+        _SEND_AS_PEER_INVALID_UNTIL.pop(identity_id, None)
+        return 0.0
+    return until
+
+
+def _mark_send_as_peer_invalid(send_as_id, *, now=None):
+    now = float(now or time.time())
+    until = now + SEND_AS_PEER_INVALID_BACKOFF_SEC
+    _SEND_AS_PEER_INVALID_UNTIL[int(send_as_id or 0)] = until
+    return until
 
 
 def set_game_send_quiesced(enabled=True):
@@ -3356,6 +3378,7 @@ def _finalize_game_command_sent(
         **send_intent,
     )
     _clear_game_send_block(send_as_id, command)
+    _SEND_AS_PEER_INVALID_UNTIL.pop(int(send_as_id or 0), None)
     note_shadow_attempt_sent(msg_id, sent_at=sent_at)
     return msg
 
@@ -3533,6 +3556,18 @@ async def _send_game_command_impl(
             _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
             return None
 
+        send_as_invalid_until = _send_as_peer_invalid_until(send_as_id)
+        if send_as_invalid_until > 0:
+            _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
+            _record_game_send_block(
+                send_as_id,
+                command,
+                "send_as_peer_invalid",
+                f"频道身份不可用于当前游戏群，退避至 {fmt_abs_ts(send_as_invalid_until)}",
+                definitely_unsent=True,
+            )
+            return None
+
         if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
             await _log_weakness_blocked(command, send_as_id=send_as_id)
             _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
@@ -3660,6 +3695,17 @@ async def _send_game_command_impl(
             if flood_until > 0:
                 await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
                 _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
+                return None
+            send_as_invalid_until = _send_as_peer_invalid_until(send_as_id)
+            if send_as_invalid_until > 0:
+                _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
+                _record_game_send_block(
+                    send_as_id,
+                    command,
+                    "send_as_peer_invalid",
+                    f"频道身份不可用于当前游戏群，退避至 {fmt_abs_ts(send_as_invalid_until)}",
+                    definitely_unsent=True,
+                )
                 return None
             if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
                 await _log_weakness_blocked(command, send_as_id=send_as_id)
@@ -3856,6 +3902,27 @@ async def _send_game_command_impl(
                 send_intent=send_intent,
             )
             return msg
+    except SendAsPeerInvalidError as e:
+        until = _mark_send_as_peer_invalid(send_as_id)
+        _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
+        await send_audit_log(
+            (
+                f"⛔ 频道身份不可用于当前游戏群，指令确定未发送："
+                f"{_truncate_log_text(command, limit=40)}｜退避至 {fmt_abs_ts(until)}｜"
+                f"{_truncate_log_text(e, limit=64)}"
+            ),
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=260,
+        )
+        _record_game_send_block(
+            send_as_id,
+            command,
+            "send_as_peer_invalid",
+            _truncate_log_text(e, limit=120),
+            definitely_unsent=True,
+        )
+        return None
     except GameSendQueueTimeout:
         _close_guard_for_unsent_command(command, send_as_id, "send_queue_timeout")
         effective_queue_timeout = _effective_send_queue_timeout(

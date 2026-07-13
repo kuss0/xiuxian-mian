@@ -53,6 +53,8 @@ class _FakeClient:
     async def __call__(self, request):
         self.sent_requests.append(request)
         behavior = self.behaviors.pop(0) if self.behaviors else "ok"
+        if isinstance(behavior, BaseException):
+            raise behavior
         if behavior == "timeout":
             try:
                 await asyncio.sleep(10)
@@ -79,6 +81,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             runtime._GAME_SEND_QUEUE_SEQ,
             copy.deepcopy(runtime._GAME_SEND_QUEUE_ITEMS),
             copy.deepcopy(runtime._GAME_SEND_BLOCK_LAST),
+            copy.deepcopy(runtime._SEND_AS_PEER_INVALID_UNTIL),
             dict(runtime._ACCOUNT_RPC_LOCKS),
             runtime.is_game_send_quiesced(),
         )
@@ -102,9 +105,11 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._GAME_SEND_QUEUE_ITEMS.update(copy.deepcopy(self._queue_snapshot[5]))
         runtime._GAME_SEND_BLOCK_LAST.clear()
         runtime._GAME_SEND_BLOCK_LAST.update(copy.deepcopy(self._queue_snapshot[6]))
+        runtime._SEND_AS_PEER_INVALID_UNTIL.clear()
+        runtime._SEND_AS_PEER_INVALID_UNTIL.update(copy.deepcopy(self._queue_snapshot[7]))
         runtime._ACCOUNT_RPC_LOCKS.clear()
-        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[7])
-        runtime.set_game_send_quiesced(self._queue_snapshot[8])
+        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[8])
+        runtime.set_game_send_quiesced(self._queue_snapshot[9])
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -256,6 +261,95 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(910001, second.id)
         self.assertFalse(runtime._GAME_SEND_LOCK.locked())
         self.assertEqual(2, len(client.sent_requests))
+
+    async def test_send_as_peer_invalid_is_definitely_unsent_and_centrally_backed_off(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        client = _FakeClient([runtime.SendAsPeerInvalidError(request=None), "ok"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=0),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+
+            first = await runtime.send_game_command(
+                ".野外历练 谨慎",
+                send_as_id=send_as_id,
+                priority="probe",
+                track=False,
+            )
+            second = await runtime.send_game_command(
+                ".天机盘",
+                send_as_id=send_as_id,
+                priority="probe",
+                track=False,
+            )
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(1, len(client.sent_requests))
+        block = runtime.classify_game_send_block(send_as_id, ".野外历练 谨慎")
+        self.assertEqual("send_as_peer_invalid", block["code"])
+        self.assertEqual("unsent", block["status"])
+        self.assertTrue(block["definitely_unsent"])
+        backed_off = runtime.classify_game_send_block(send_as_id, ".天机盘")
+        self.assertEqual("send_as_peer_invalid", backed_off["code"])
+        self.assertEqual("unsent", backed_off["status"])
+
+    async def test_successful_send_clears_send_as_peer_invalid_backoff(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        runtime._SEND_AS_PEER_INVALID_UNTIL[send_as_id] = runtime.time.time() + 1800
+        client = _FakeClient(["ok"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=0),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_send_as_peer_invalid_until", return_value=0.0),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(runtime, "_append_sent_message_log"),
+                patch.object(runtime, "action_guard_note_sent"),
+                patch.object(runtime, "mark_dirty"),
+                patch.object(runtime, "note_game_command_sent"),
+                patch.object(runtime, "_notify_game_command_sent_observers"),
+            ):
+                stack.enter_context(patcher)
+
+            result = await runtime.send_game_command(
+                ".测试恢复",
+                send_as_id=send_as_id,
+                priority="probe",
+                track=False,
+            )
+
+        self.assertEqual(910001, result.id)
+        self.assertNotIn(send_as_id, runtime._SEND_AS_PEER_INVALID_UNTIL)
 
     async def test_send_rpc_timeout_recovers_message_id_from_message_log(self):
         send_as_id = 301299112
