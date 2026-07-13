@@ -352,6 +352,43 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual("account", sent_log_mock.call_args.kwargs["sent_via"])
         audit_mock.assert_not_awaited()
 
+    def test_replica_group_bot_chat_not_found_uses_per_chat_backoff(self):
+        class FallbackClient:
+            async def send_message(self, chat_id, text, **kwargs):
+                return SimpleNamespace(id=94002)
+
+        async def run_case():
+            app_message_log._REPLICA_BOT_BACKOFF_UNTIL = 0
+            app_message_log._REPLICA_BOT_CHAT_BACKOFF_UNTIL.clear()
+            error_text = 'HTTP 400: {"ok":false,"description":"Bad Request: chat not found"}'
+            with patch.object(app_message_log, "LOG_SEND_MODE", "bot"), \
+                    patch.object(app_message_log, "_send_replica_group_via_bot", return_value=(False, 0, error_text)) as bot_mock, \
+                    patch.object(app_message_log, "_append_sent_replica_group_message_log") as sent_log_mock, \
+                    patch.object(app_message_log, "send_audit_log", new=AsyncMock()) as audit_mock:
+                first = await app_message_log._send_replica_group_message(
+                    FallbackClient(),
+                    -5181946386,
+                    "第一次查询",
+                    listener_account_id=93001,
+                )
+                second = await app_message_log._send_replica_group_message(
+                    FallbackClient(),
+                    -5181946386,
+                    "第二次查询",
+                    listener_account_id=93001,
+                )
+                return first, second, bot_mock, sent_log_mock, audit_mock
+
+        first, second, bot_mock, sent_log_mock, audit_mock = asyncio.run(run_case())
+
+        self.assertEqual(94002, first.id)
+        self.assertEqual(94002, second.id)
+        self.assertEqual(1, bot_mock.call_count)
+        self.assertEqual(2, sent_log_mock.call_count)
+        self.assertTrue(all(call.kwargs["sent_via"] == "account" for call in sent_log_mock.call_args_list))
+        self.assertGreater(app_message_log._REPLICA_BOT_CHAT_BACKOFF_UNTIL[-5181946386], 0)
+        audit_mock.assert_not_awaited()
+
     def test_replica_button_event_can_use_log_group_overlap_listener(self):
         listener_client = SimpleNamespace(name="listener")
         event = SimpleNamespace(

@@ -34,6 +34,8 @@ _REPLICA_BOT_CONNECT_TIMEOUT_SEC = 3
 _REPLICA_BOT_READ_TIMEOUT_SEC = 8
 _REPLICA_BOT_TOTAL_TIMEOUT_SEC = 12
 _REPLICA_BOT_BACKOFF_UNTIL = 0.0
+_REPLICA_BOT_CHAT_BACKOFF_UNTIL = {}
+_REPLICA_BOT_CHAT_FAILURE_BACKOFF_SEC = 6 * 3600
 _MESSAGE_LOG_LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS message_log_events (
     event_key TEXT PRIMARY KEY,
@@ -516,9 +518,23 @@ def _mark_replica_bot_backoff(error_text):
     return retry_after
 
 
+def _mark_replica_bot_chat_backoff(chat_id, error_text, *, now=None):
+    lower = str(error_text or "").lower()
+    if not any(marker in lower for marker in ("chat not found", "bot was kicked", "not enough rights")):
+        return 0.0
+    until = float(now or time.time()) + _REPLICA_BOT_CHAT_FAILURE_BACKOFF_SEC
+    _REPLICA_BOT_CHAT_BACKOFF_UNTIL[int(chat_id or 0)] = until
+    return until
+
+
 async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=None, reply_to=None, listener_account_id=0, log_text=None, buttons=None):
     log_payload_text = log_text if log_text is not None else str(text or "")
-    if LOG_SEND_MODE == "bot" and time.time() >= _REPLICA_BOT_BACKOFF_UNTIL:
+    now = time.time()
+    chat_bot_backoff_until = float(_REPLICA_BOT_CHAT_BACKOFF_UNTIL.get(int(chat_id or 0), 0) or 0)
+    if chat_bot_backoff_until <= now:
+        _REPLICA_BOT_CHAT_BACKOFF_UNTIL.pop(int(chat_id or 0), None)
+        chat_bot_backoff_until = 0.0
+    if LOG_SEND_MODE == "bot" and now >= _REPLICA_BOT_BACKOFF_UNTIL and chat_bot_backoff_until <= 0:
         try:
             ok, msg_id, error_text = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -532,6 +548,7 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
                 timeout=_REPLICA_BOT_TOTAL_TIMEOUT_SEC,
             )
             if ok and msg_id > 0:
+                _REPLICA_BOT_CHAT_BACKOFF_UNTIL.pop(int(chat_id or 0), None)
                 _append_sent_replica_group_message_log(
                     chat_id,
                     msg_id,
@@ -543,8 +560,11 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
                 )
                 return SimpleNamespace(id=msg_id)
             retry_after = _mark_replica_bot_backoff(error_text)
+            chat_backoff_until = _mark_replica_bot_chat_backoff(chat_id, error_text, now=now)
             if retry_after:
                 print(f"_send_replica_group_message bot backoff {retry_after}s: {error_text} | text={log_payload_text}")
+            elif chat_backoff_until > 0:
+                print(f"_send_replica_group_message bot unavailable for chat until {chat_backoff_until:.0f}: {error_text}")
             else:
                 print(f"_send_replica_group_message bot failed: {error_text} | text={log_payload_text}")
         except asyncio.TimeoutError:
