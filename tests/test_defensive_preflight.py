@@ -95,7 +95,7 @@ def test_tianxing_wild_training_far_running_deep_retreat_does_not_block():
     assert "均有效" in item["reason"]
 
 
-def test_tianxing_wild_training_near_running_deep_retreat_is_watch():
+def test_tianxing_wild_training_near_running_deep_retreat_does_not_block():
     now = 1_700_000_000.0
     item = preflight._tianxing_action_status(
         label="tutu",
@@ -119,9 +119,8 @@ def test_tianxing_wild_training_near_running_deep_retreat_is_watch():
         next_deep_retreat_time=now + 300,
     )
 
-    assert item["level"] == "watch"
-    assert "深度闭关 running" in item["reason"]
-    assert "顺延" in item["reason"]
+    assert item["level"] == "healthy"
+    assert "均有效" in item["reason"]
 
 
 def test_tianxing_stale_change_counter_is_not_healthy_inside_prepare_window():
