@@ -74,6 +74,32 @@ class TreeRuntimeSummaryTests(unittest.TestCase):
         self.assertNotIn("126", summary)
         self.assertNotIn("88", summary)
 
+    def test_tree_zero_score_summary_reports_server_verification(self):
+        summary = tree_runtime._format_tree_summary({
+            "ok": False,
+            "status": "zero_score",
+            "error": "fly server score is zero; stop remaining daily attempts",
+            "data": {
+                "phase": "blocked",
+                "quotas": {},
+                "runs": [{
+                    "mode": "fly",
+                    "score": 0,
+                    "server_verification": {
+                        "ok": False,
+                        "hit": True,
+                        "score": 0,
+                        "durationMs": 1234,
+                    },
+                }],
+                "rewards": {},
+            },
+        })
+
+        self.assertIn("飞分 0", summary)
+        self.assertIn("服务校验 ok=0,hit=1,score=0,durationMs=1234", summary)
+        self.assertIn("stop remaining daily attempts", summary)
+
 
 class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

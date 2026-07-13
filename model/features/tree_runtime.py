@@ -354,6 +354,24 @@ def _format_tree_summary(result):
                 parts.append("跳分 " + "/".join(jump_scores))
             if fly_scores:
                 parts.append("飞分 " + "/".join(fly_scores))
+            failed_verification = next(
+                (
+                    item.get("server_verification")
+                    for item in runs
+                    if int(item.get("score") or 0) <= 0
+                    and isinstance(item.get("server_verification"), dict)
+                    and item.get("server_verification")
+                ),
+                {},
+            )
+            if failed_verification:
+                verification_parts = []
+                for key in ("ok", "hit", "score", "durationMs"):
+                    if key in failed_verification:
+                        value = int(failed_verification[key]) if isinstance(failed_verification[key], bool) else failed_verification[key]
+                        verification_parts.append(f"{key}={value}")
+                if verification_parts:
+                    parts.append("服务校验 " + ",".join(verification_parts))
             ranking_notes = []
             for mode, label in (("jump", "跳"), ("fly", "飞")):
                 item = next((run for run in runs if run.get("mode") == mode), {})

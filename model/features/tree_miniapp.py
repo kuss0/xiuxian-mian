@@ -254,6 +254,20 @@ def _int_value(value, default=0):
         return default
 
 
+def _tree_server_verification(data):
+    verified = data.get("verified") if isinstance(data, dict) and isinstance(data.get("verified"), dict) else {}
+    if not verified:
+        return {}
+    result = {}
+    for key in ("ok", "hit", "gameOver"):
+        if key in verified:
+            result[key] = bool(verified.get(key))
+    for key in ("score", "durationMs", "steps", "centerSteps", "exactCenters", "bestCenterCombo", "maxEvents"):
+        if key in verified:
+            result[key] = _int_value(verified.get(key), 0)
+    return result
+
+
 def _float_value(value, default=0.0):
     try:
         return float(value)
@@ -1162,7 +1176,10 @@ def run_tree_miniapp_daily_lab_flow(
                 errors.append(f"{mode}:run_submit:{error or status}")
                 return _flow_result(False, status, data=_daily_tree_data(phase="unknown" if status == "result_unknown" else "blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
 
+            server_verification = _tree_server_verification(submit_result.data)
             submitted_score = _int_value(submit_result.data.get("score"), 0)
+            if server_verification and not server_verification.get("ok", True):
+                submitted_score = 0
             reward_summary = summarize_tree_rewards(submit_result.data)
             _merge_tree_reward_counts(rewards["items"], reward_summary.get("items"))
             _merge_tree_reward_counts(rewards["gains"], reward_summary.get("gains"))
@@ -1173,6 +1190,7 @@ def run_tree_miniapp_daily_lab_flow(
                 "ranking_target": dict(ranking_targets.get(mode) or {}),
                 "quota_before": quota_before,
                 "rewards": reward_summary,
+                "server_verification": server_verification,
             })
             if submitted_score <= 0:
                 error = f"{mode} server score is zero; stop remaining daily attempts"

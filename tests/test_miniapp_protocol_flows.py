@@ -1615,7 +1615,11 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 return 200, {"ok": True, "run": {"runToken": "run-fly", "seed": "seed-fly"}}
             if endpoint == "run_submit":
                 used["fly"] += 1
-                return 200, {"ok": True, "score": 0}
+                return 200, {
+                    "ok": True,
+                    "score": 0,
+                    "verified": {"ok": False, "hit": True, "score": 0, "durationMs": 1234},
+                }
             raise AssertionError(endpoint)
 
         with patch.object(
@@ -1639,6 +1643,10 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual(1, used["fly"])
         self.assertEqual(1, sum(1 for endpoint, _mode in calls if endpoint == "run_submit"))
         self.assertEqual(0, result["data"]["runs"][0]["score"])
+        self.assertEqual(
+            {"ok": False, "hit": True, "score": 0, "durationMs": 1234},
+            result["data"]["runs"][0]["server_verification"],
+        )
 
     def test_tree_daily_flow_requires_explicit_quota_for_both_modes(self):
         calls = []
