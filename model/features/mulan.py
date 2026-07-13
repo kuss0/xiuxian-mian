@@ -23,7 +23,7 @@ from ..config import (
 from ..action_guard import close_action as close_action_guard_action
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import classify_game_send_block, console_log, mark_bot_health_suspect, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import _meta_state, get_current_identity_id, get_identity_account, has_identity, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -743,9 +743,16 @@ def _recover_mulan_unanswered_pending(now, phase, *, reply_to_msg_id=0):
         return f"⚠️ 慕兰辨报无回复，消息ID={reply_to_msg_id or '无'}，已按文本支援兜底。"
     if phase == MULAN_PHASE_SUPPORT_PENDING:
         action = str(state.get("mulan_support_action") or "").strip()
-        _finish_mulan_cycle(now, f"支援结果超时，按今日完成：{action or '未知'}", delay_sec=_daily_done_delay_sec(now))
-        state["mulan_last_error"] = ""
-        return f"⚠️ 慕兰支援结果无回复，消息ID={reply_to_msg_id or '无'}，已按今日完成处理。"
+        state["mulan_phase"] = MULAN_PHASE_READY_TO_PANEL
+        state["mulan_last_result"] = f"支援结果无回复，等待军功面板校准：{action or '未知'}"
+        state["mulan_last_error"] = "支援终态缺失，未按完成结算"
+        state["next_mulan_time"] = float(now + 60)
+        mark_bot_health_suspect(
+            f"慕兰支援 {action or '未知'} 超时无终态",
+            reference_at=now,
+            now=now,
+        )
+        return f"⚠️ 慕兰支援结果无回复，消息ID={reply_to_msg_id or '无'}，已暂停完成结算并等待军功面板校准。"
     if phase == MULAN_PHASE_PUBLISH_PENDING:
         state["mulan_phase"] = MULAN_PHASE_READY_TO_PANEL
         state["mulan_last_result"] = f"{phase} 无回复，准备面板校准"

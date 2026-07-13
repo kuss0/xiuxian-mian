@@ -493,7 +493,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("奇袭", state_module.state["mulan_support_action"])
             self.assertEqual("", state_module.state["mulan_last_error"])
 
-    async def test_support_timeout_finishes_cycle_without_panel_retry(self):
+    async def test_support_timeout_requires_panel_calibration_and_marks_bot_suspect(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -505,16 +505,18 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(mulan.random, "uniform", return_value=0),
                 patch.object(mulan, "save_state"),
+                patch.object(mulan, "mark_bot_health_suspect") as health_mock,
                 patch.object(mulan, "send_audit_log", new=AsyncMock()),
             ):
                 await mulan.run_mulan_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertEqual("ready_to_panel", state_module.state["mulan_phase"])
             self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
-            self.assertIn("支援结果超时", state_module.state["mulan_last_result"])
-            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertIn("等待军功面板校准", state_module.state["mulan_last_result"])
+            self.assertIn("未按完成结算", state_module.state["mulan_last_error"])
             self.assertGreater(state_module.state["next_mulan_time"], now)
+            health_mock.assert_called_once()
 
     async def test_support_timeout_does_not_recover_from_start_notice_only(self):
         identity_id = self._prepare_identity()
@@ -538,14 +540,15 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(mulan.random, "uniform", return_value=0),
                 patch.object(mulan, "save_state"),
+                patch.object(mulan, "mark_bot_health_suspect"),
                 patch.object(mulan, "send_audit_log", new=AsyncMock()) as audit_mock,
             ):
                 await mulan.run_mulan_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertEqual("ready_to_panel", state_module.state["mulan_phase"])
             self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
-            self.assertIn("支援结果超时", state_module.state["mulan_last_result"])
+            self.assertIn("等待军功面板校准", state_module.state["mulan_last_result"])
             audit_text = str(audit_mock.await_args.args[0])
             self.assertIn("支援结果无回复", audit_text)
             self.assertNotIn("日志补偿", audit_text)
