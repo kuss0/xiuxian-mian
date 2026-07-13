@@ -497,7 +497,8 @@ def snapshot(*, horizon_sec: int) -> dict[str, Any]:
             JOIN identities i ON i.send_as_id = m.send_as_id
             LEFT JOIN identity_timers t ON t.send_as_id = m.send_as_id
             LEFT JOIN identity_runtime_state r ON r.send_as_id = m.send_as_id
-            WHERE m.tianxing_enabled = 1
+            WHERE i.enabled = 1
+              AND m.tianxing_enabled = 1
             ORDER BY t.next_wild_training_time
             """,
         )
@@ -512,7 +513,8 @@ def snapshot(*, horizon_sec: int) -> dict[str, Any]:
             FROM identity_module_state m
             JOIN identities i ON i.send_as_id = m.send_as_id
             LEFT JOIN identity_runtime_state r ON r.send_as_id = m.send_as_id
-            WHERE m.hehuan_enabled = 1
+            WHERE i.enabled = 1
+              AND m.hehuan_enabled = 1
             ORDER BY i.label
             """,
         )

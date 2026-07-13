@@ -1,7 +1,67 @@
 import json
+import sqlite3
 
 from tools import defensive_preflight as preflight
 from unittest.mock import patch
+
+
+def _create_preflight_db(path, *, identity_enabled):
+    now = 1_700_000_000.0
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE pending_tasks (
+                send_as_id INTEGER,
+                cmd TEXT,
+                sent_at REAL,
+                retry INTEGER,
+                timeout REAL,
+                source_module TEXT,
+                op_id TEXT
+            );
+            CREATE TABLE identities (
+                send_as_id INTEGER PRIMARY KEY,
+                label TEXT,
+                username TEXT,
+                enabled INTEGER
+            );
+            CREATE TABLE identity_module_state (
+                send_as_id INTEGER PRIMARY KEY,
+                tianxing_enabled INTEGER,
+                wild_training_enabled INTEGER,
+                explore_rift_enabled INTEGER,
+                hehuan_enabled INTEGER
+            );
+            CREATE TABLE identity_timers (
+                send_as_id INTEGER PRIMARY KEY,
+                next_wild_training_time REAL,
+                next_explore_rift_time REAL,
+                next_deep_retreat_time REAL
+            );
+            CREATE TABLE identity_runtime_state (
+                send_as_id INTEGER PRIMARY KEY,
+                wild_training_tianxing_prepare_retry_at REAL,
+                explore_rift_tianxing_prepare_retry_at REAL,
+                deep_retreat_phase TEXT,
+                tianxing_observation TEXT,
+                tianxing_timeline_state TEXT,
+                tianxing_auto_config TEXT,
+                hehuan_observation TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO identities VALUES (1, 'disabled', 'disabled_user', ?)",
+            (int(identity_enabled),),
+        )
+        conn.execute("INSERT INTO identity_module_state VALUES (1, 1, 1, 1, 1)")
+        conn.execute(
+            "INSERT INTO identity_timers VALUES (1, ?, ?, ?)",
+            (now + 120, now + 120, now + 3600),
+        )
+        conn.execute(
+            "INSERT INTO identity_runtime_state VALUES (1, 0, 0, '', '{}', '{}', '{}', '{}')"
+        )
 
 
 def test_tianxing_outside_prepare_window_is_watch():
@@ -258,6 +318,23 @@ def test_listener_sidecar_without_independent_accounts_is_watch(tmp_path):
     assert item["level"] == "watch"
     assert item["service_state"] == "active"
     assert "independent accounts" in item["reason"]
+
+
+def test_snapshot_excludes_disabled_identities(tmp_path):
+    db_path = tmp_path / "preflight.db"
+    _create_preflight_db(db_path, identity_enabled=False)
+
+    with patch.object(preflight, "DB_PATH", db_path), patch.object(
+        preflight.time, "time", return_value=1_700_000_000.0
+    ), patch.object(
+        preflight,
+        "_listener_status",
+        return_value={"level": "healthy", "module": "listener", "reason": "test"},
+    ), patch.object(preflight, "_recent_script_sends", return_value=[]):
+        result = preflight.snapshot(horizon_sec=3600)
+
+    assert result["status"] == "healthy"
+    assert all(item.get("label") != "disabled" for item in result["checks"])
 
 
 def test_hehuan_cooldown_with_early_send_is_at_risk():
