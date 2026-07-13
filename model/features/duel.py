@@ -8,6 +8,7 @@ from ..message_log_recovery import find_message_log_message, find_message_log_re
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
+    REALM_SORT_ORDER,
     get_current_identity_id,
     get_duel_target_cooldowns,
     get_send_as_profile,
@@ -209,8 +210,9 @@ def _profile_gate_reason():
     profile = get_send_as_profile(get_current_identity_id()) or {}
     realm = str(profile.get("realm") or "").strip()
     xiuwei_current = _parse_int(profile.get("xiuwei_current", 0))
-    if realm != DUEL_MIN_REALM:
-        return f"境界需为{DUEL_MIN_REALM}，当前={realm or '未知'}"
+    min_realm_index = REALM_SORT_ORDER.index(DUEL_MIN_REALM)
+    if realm not in REALM_SORT_ORDER or REALM_SORT_ORDER.index(realm) < min_realm_index:
+        return f"境界至少需为{DUEL_MIN_REALM}，当前={realm or '未知'}"
     if xiuwei_current < DUEL_MIN_XIUWEI:
         current_text = xiuwei_current if xiuwei_current > 0 else "未知"
         return f"斗法前需至少 {DUEL_MIN_XIUWEI} 修为（保留 {DUEL_RESERVE_XIUWEI} + 单场风险 {DUEL_MAX_LOSS_XIUWEI}），当前={current_text}"
@@ -597,7 +599,7 @@ def get_duel_status_text():
         f"- 目标池：{target_display}",
         f"- 次数：{completed_count}/{total_count if total_count > 0 else '未配置'}",
         f"- 下次执行：{fmt_abs_ts(state.get('next_duel_time', 0))}（{fmt_remaining(state.get('next_duel_time', 0))}）",
-        f"- 境界门槛：{DUEL_MIN_REALM} 且修为 >{DUEL_MIN_XIUWEI}",
+        f"- 境界门槛：{DUEL_MIN_REALM}及以上，且修为 >{DUEL_MIN_XIUWEI}",
         f"- 当前境界：{profile.get('realm') or '未知'}",
         f"- 当前修为：{_parse_int(profile.get('xiuwei_current', 0)) or '未知'}",
         f"- 待回复命令ID：{int(state.get('duel_reply_to_msg_id', 0) or 0) or '无'}",

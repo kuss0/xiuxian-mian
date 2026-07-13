@@ -104,7 +104,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertIn("境界需为元婴后期", state_module.state["duel_last_error"])
+            self.assertIn("境界至少需为元婴后期", state_module.state["duel_last_error"])
 
         identity_id = self._prepare_identity(8659059192, realm="元婴后期", xiuwei_current=600000)
         with state_module.use_identity(identity_id):
@@ -119,6 +119,17 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
             self.assertIn("斗法前需至少 660000 修为", state_module.state["duel_last_error"])
+
+    def test_profile_gate_allows_realms_above_minimum(self):
+        for offset, realm in enumerate(("元婴后期", "化神初期", "化神后期大圆满")):
+            identity_id = self._prepare_identity(8659059200 + offset, realm=realm, xiuwei_current=900000)
+            with state_module.use_identity(identity_id):
+                self.assertEqual("", duel._profile_gate_reason())
+
+    def test_profile_gate_blocks_unknown_realm(self):
+        identity_id = self._prepare_identity(8659059210, realm="未知境界", xiuwei_current=900000)
+        with state_module.use_identity(identity_id):
+            self.assertIn("当前=未知境界", duel._profile_gate_reason())
 
     async def test_scheduler_reconciles_consumed_prediction_before_xiuwei_gate(self):
         identity_id = self._prepare_identity(xiuwei_current=604056)
