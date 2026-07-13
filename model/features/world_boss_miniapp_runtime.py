@@ -193,12 +193,16 @@ async def run_world_boss_miniapp_event(
                 capture_source=f"world_boss:battle:{identity_id}",
             )
             safe_battle = safe_miniapp_event_detail(battle)
+            data = safe_battle.get("data") or {}
+            battle_summary = data.get("result") if isinstance(data, dict) else {}
+            if not isinstance(battle_summary, dict):
+                battle_summary = {}
             battle_result = {
                 "identity_id": identity_id,
                 "phase": "battle",
                 "ok": bool(battle.get("ok")),
                 "status": str(battle.get("status") or "failed"),
-                "data": safe_battle.get("data") or {},
+                "summary": battle_summary,
                 "error": str(safe_battle.get("error") or ""),
             }
             await _emit_progress(progress_callback, battle_result)
@@ -225,9 +229,10 @@ async def run_world_boss_miniapp_event(
         end_miniapp_priority_window(priority_owner)
 
     battle_results = [item for item in results if item.get("phase") == "battle"]
+    effective_results = [item for item in battle_results if item.get("ok") and item.get("status") == "settled"]
     return {
-        "ok": bool(contexts) and bool(battle_results) and all(item.get("ok") for item in battle_results),
-        "status": "settled" if battle_results and all(item.get("ok") for item in battle_results) else "partial",
+        "ok": bool(contexts) and len(effective_results) == len(contexts),
+        "status": "settled" if contexts and len(effective_results) == len(contexts) else "partial",
         "joined_count": len(contexts),
         "results": results,
         "entry": launch.get("safe_summary") or {},

@@ -40,9 +40,12 @@ WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
 WORLD_BOSS_DEFAULT_HIT_MS = 560
 WORLD_BOSS_HOLD_JITTER_MS = 12
 WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
-WORLD_BOSS_START_REFRESH_SEC = 5.0
+WORLD_BOSS_JOIN_READY_LEAD_SEC = 3.0
+WORLD_BOSS_START_REFRESH_SEC = 6.0
 WORLD_BOSS_START_REFRESH_NEAR_LOCK_SEC = 1.2
-WORLD_BOSS_START_RECONNECT_SEC = 1.5
+WORLD_BOSS_START_RECONNECT_SEC = 4.0
+WORLD_BOSS_START_RATE_LIMIT_BACKOFF_SEC = 12.0
+WORLD_BOSS_START_MAX_CONSECUTIVE_429 = 3
 WORLD_BOSS_AUTO_START_DELAY_SEC = 0.28
 WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC = 1.25
 WORLD_BOSS_FINISH_GRACE_MS = 2200
@@ -99,6 +102,8 @@ class WorldBossJoinReceipt:
     identity_choices: tuple = field(default_factory=tuple, repr=False)
     challenge: dict = field(default_factory=dict, repr=False)
     session_token: str = field(default="", repr=False)
+    join_remaining_sec: float = 0.0
+    join_until_ms: int = 0
     error: str = ""
 
     def safe_summary(self):
@@ -115,6 +120,8 @@ class WorldBossJoinReceipt:
             "identity_choice_count": len(self.identity_choices),
             "has_challenge": bool(self.challenge),
             "has_session_token": bool(self.session_token),
+            "join_remaining_sec": max(0.0, float(self.join_remaining_sec or 0.0)),
+            "has_join_deadline": int(self.join_until_ms or 0) > 0,
             "error": sanitize_webapp_secret_text(self.error),
         }
 
@@ -410,6 +417,16 @@ def parse_world_boss_join_response(
         session_token = str(session.get("token") or session.get("sessionToken") or "").strip()
     player = _mapping_from_payload(data, ("player", "identity"))
     room = _mapping_from_payload(data, ("room",))
+    boss = _mapping_from_payload(data, ("boss",))
+    join_remaining_sec = _world_boss_join_remaining_sec(data)
+    join_until_ms = 0
+    for mapping in (boss, room, data):
+        for key in ("joinUntilMs", "join_until_ms"):
+            if mapping.get(key) not in (None, ""):
+                join_until_ms = max(0, _int_value(mapping.get(key), 0))
+                break
+        if join_until_ms:
+            break
     resolved_player_id = str(
         player.get("playerId")
         or player.get("id")
@@ -437,6 +454,8 @@ def parse_world_boss_join_response(
         calibrated=bool(calibrated),
         challenge=dict(challenge or {}),
         session_token=session_token,
+        join_remaining_sec=join_remaining_sec,
+        join_until_ms=join_until_ms,
         error="" if joined else "join state not confirmed",
     )
 
@@ -638,6 +657,23 @@ def _append_http_event(events, step, result):
     })
 
 
+def _append_business_capture(capture_sink, *, source, step, summary):
+    if capture_sink is None:
+        return
+    record = {
+        "adapter_key": WORLD_BOSS_MINIAPP_GAME_KEY,
+        "step_key": f"{step}_business",
+        "endpoint": step,
+        "created_at": time.time(),
+        "source": sanitize_webapp_secret_text(source, limit=120),
+        "business": dict(summary or {}),
+    }
+    if hasattr(capture_sink, "append"):
+        capture_sink.append(record)
+    else:
+        capture_sink(record)
+
+
 def _world_boss_room_state(data):
     boss = _mapping_from_payload(data, ("boss",))
     room = _mapping_from_payload(data, ("room",))
@@ -720,6 +756,130 @@ def _world_boss_realtime_damage_applied(hit_payloads):
         if _float_value(hit.get("damageYi") or hit.get("damage"), 0.0) > 0:
             return True
     return False
+
+
+def _present_int(mapping, *keys):
+    mapping = mapping if isinstance(mapping, dict) else {}
+    for key in keys:
+        if mapping.get(key) not in (None, ""):
+            return _int_value(mapping.get(key), 0)
+    return None
+
+
+def _present_float(mapping, *keys):
+    mapping = mapping if isinstance(mapping, dict) else {}
+    for key in keys:
+        if mapping.get(key) not in (None, ""):
+            return _float_value(mapping.get(key), 0.0)
+    return None
+
+
+def _world_boss_start_business_summary(data, challenge=None):
+    boss = _mapping_from_payload(data, ("boss",))
+    player = _mapping_from_payload(data, ("player", "identity"))
+    challenge = dict(challenge or _challenge_from_payload(data) or {})
+    windows = [item for item in (challenge.get("windows") or ()) if isinstance(item, dict)]
+    return {
+        "action_limit": _present_int(boss, "actionLimit", "action_limit"),
+        "actions_remaining": _present_int(boss, "actionsRemaining", "actions_remaining"),
+        "actions_used": _present_int(boss, "actionsUsed", "actions_used"),
+        "phase": _present_int(boss, "phase"),
+        "boss_hp": _present_int(boss, "hp"),
+        "boss_max_hp": _present_int(boss, "maxHp", "max_hp"),
+        "player_max_hp": _present_int(player, "maxHp", "max_hp"),
+        "player_attack_bonus": _present_float(player, "attackBonus", "attack_bonus"),
+        "player_root": str(player.get("root") or player.get("spiritualRoot") or "")[:80],
+        "window_count": len(windows),
+        "windows": [
+            {
+                "center_ms": _window_center_ms(window),
+                "hit_ms": max(0, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)),
+                "perfect_ms": max(0, _int_value(window.get("perfectMs"), 150)),
+            }
+            for window in windows
+        ],
+    }
+
+
+def _world_boss_hit_business_summary(data):
+    hit = _mapping_from_payload(data, ("hit",))
+    boss = _mapping_from_payload(data, ("boss",))
+    stats = _mapping_from_payload(data, ("clientStats", "stats"))
+    attempt_consumed = hit.get("attemptConsumed")
+    return {
+        "attempt_consumed": bool(attempt_consumed) if attempt_consumed is not None else None,
+        "hit_evidence_present": bool(hit) or _present_int(stats, "hits") not in (None, 0),
+        "perfect": bool(hit.get("perfect")) if hit.get("perfect") is not None else None,
+        "damage_yi": _present_float(hit, "damageYi", "damage"),
+        "delta_ms": _present_float(hit, "deltaMs", "delta_ms"),
+        "hold_ms": _present_float(hit, "holdMs", "hold_ms"),
+        "boss_hp": _present_int(hit, "bossHp", "boss_hp"),
+        "action_limit": _present_int(boss, "actionLimit", "action_limit"),
+        "actions_remaining": _present_int(boss, "actionsRemaining", "actions_remaining"),
+        "actions_used": _present_int(boss, "actionsUsed", "actions_used"),
+    }
+
+
+def _world_boss_hit_was_consumed(summary):
+    summary = dict(summary or {})
+    if summary.get("attempt_consumed") is not None:
+        return bool(summary.get("attempt_consumed"))
+    return bool(
+        _float_value(summary.get("damage_yi"), 0.0) > 0
+        or summary.get("perfect") is True
+        or summary.get("hit_evidence_present") is True
+    )
+
+
+def _world_boss_finish_business_summary(data, *, hit_summary=None):
+    result = _mapping_from_payload(data, ("result",))
+    hit_summary = dict(hit_summary or {})
+    summary = {
+        "action": str(result.get("action") or "")[:40],
+        "grade": str(result.get("grade") or "")[:40],
+        "score": _present_int(result, "score"),
+        "hits": _present_int(result, "hits"),
+        "perfects": _present_int(result, "perfects"),
+        "realtime_hit_count": _present_int(result, "realtime_hit_count", "realtimeHitCount"),
+        "realtime_damage_yi": _present_float(result, "realtime_damage_yi", "realtimeDamageYi"),
+        "realtime_damage_applied": (
+            bool(result.get("realtime_damage_applied"))
+            if result.get("realtime_damage_applied") is not None
+            else (
+                bool(result.get("realtimeDamageApplied"))
+                if result.get("realtimeDamageApplied") is not None
+                else None
+            )
+        ),
+        "dead": bool(result.get("dead")) if result.get("dead") is not None else None,
+        "player_hp": _present_int(result, "player_hp", "playerHp"),
+        "quality_multiplier": _present_float(result, "quality_multiplier", "qualityMultiplier"),
+        "sample_count": _present_int(result, "sample_count", "sampleCount"),
+    }
+    summary.update({
+        "attempted_hit_count": max(0, _int_value(hit_summary.get("attempted_hit_count"), 0)),
+        "accepted_hit_count": max(0, _int_value(hit_summary.get("accepted_hit_count"), 0)),
+        "accepted_perfect_count": max(0, _int_value(hit_summary.get("accepted_perfect_count"), 0)),
+        "accepted_damage_yi": max(0.0, _float_value(hit_summary.get("accepted_damage_yi"), 0.0)),
+        "action_limit": hit_summary.get("action_limit"),
+        "actions_remaining": hit_summary.get("actions_remaining"),
+        "actions_used": hit_summary.get("actions_used"),
+    })
+    return summary
+
+
+def _world_boss_has_effective_contribution(summary):
+    summary = dict(summary or {})
+    authoritative_keys = ("score", "hits", "realtime_hit_count", "realtime_damage_yi")
+    if any(summary.get(key) is not None for key in authoritative_keys):
+        return any(_float_value(summary.get(key), 0.0) > 0 for key in authoritative_keys)
+    return any(
+        _float_value(summary.get(key), 0.0) > 0
+        for key in (
+            "accepted_hit_count",
+            "accepted_damage_yi",
+        )
+    )
 
 
 def _world_boss_counter_damage(challenge):
@@ -950,12 +1110,20 @@ def run_world_boss_joined_battle_lab_flow(
         error = getattr(receipt, "error", "join not confirmed")
         return _flow_result(False, status, error=error, events=events)
 
-    wait_deadline = float(clock()) + max(0.0, float(battle_wait_timeout_sec or 0))
     entry_token = str(entry_token or token or "").strip()
     current_token = str(token or entry_token).strip()
     state_data = {}
     challenge = {}
     previous_room_status = ""
+    join_until_ms = max(0, _int_value(getattr(receipt, "join_until_ms", 0), 0))
+    if join_until_ms:
+        initial_join_remaining = max(0.0, (join_until_ms / 1000.0) - time.time())
+    else:
+        initial_join_remaining = max(0.0, float(getattr(receipt, "join_remaining_sec", 0.0) or 0.0))
+    if initial_join_remaining > WORLD_BOSS_JOIN_READY_LEAD_SEC:
+        sleeper(initial_join_remaining - WORLD_BOSS_JOIN_READY_LEAD_SEC)
+    wait_deadline = float(clock()) + max(0.0, float(battle_wait_timeout_sec or 0))
+    consecutive_429 = 0
     while True:
         state_request = build_world_boss_miniapp_request(
             "start",
@@ -977,6 +1145,16 @@ def run_world_boss_joined_battle_lab_flow(
         if not state_result.ok:
             status = classify_world_boss_miniapp_error(state_result.error)
             retryable_wait_error = status == "boss_battle_not_started" or state_result.error_type == "transient"
+            if int(state_result.status_code or 0) == 429:
+                consecutive_429 += 1
+                if consecutive_429 > WORLD_BOSS_START_MAX_CONSECUTIVE_429:
+                    return _flow_result(
+                        False,
+                        "rate_limited",
+                        error="world boss start polling rate limited",
+                        data=state_result.data,
+                        events=events,
+                    )
             resettable_token_error = status in {
                 "boss_token_used", "boss_token_expired", "boss_token_missing", "boss_event_closed",
             }
@@ -985,9 +1163,15 @@ def run_world_boss_joined_battle_lab_flow(
                 events.append({"step": "reset_entry_token", "ok": True, "status": status})
                 retryable_wait_error = True
             if (retryable_wait_error or resettable_token_error) and float(clock()) < wait_deadline:
-                sleeper(WORLD_BOSS_START_RECONNECT_SEC)
+                reconnect_delay = (
+                    WORLD_BOSS_START_RATE_LIMIT_BACKOFF_SEC * consecutive_429
+                    if int(state_result.status_code or 0) == 429
+                    else WORLD_BOSS_START_RECONNECT_SEC
+                )
+                sleeper(reconnect_delay)
                 continue
             return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
+        consecutive_429 = 0
         state_data = state_result.data if isinstance(state_result.data, dict) else {}
         refreshed_session_token = str(
             state_data.get("sessionToken") or state_data.get("session_token") or ""
@@ -1001,6 +1185,29 @@ def run_world_boss_joined_battle_lab_flow(
             return _flow_result(False, payload_error, error=payload_error, data=state_data, events=events)
         challenge = _challenge_from_payload(state_data) or dict(receipt.challenge or {})
         if challenge:
+            start_business = _world_boss_start_business_summary(state_data, challenge)
+            _append_business_capture(
+                capture_sink,
+                source=capture_source,
+                step="battle_start",
+                summary=start_business,
+            )
+            if _int_value(start_business.get("actions_used"), 0) > 0:
+                return _flow_result(
+                    False,
+                    "already_participated",
+                    error="world boss identity already used actions",
+                    data={"result": start_business},
+                    events=events,
+                )
+            if start_business.get("actions_remaining") == 0:
+                return _flow_result(
+                    False,
+                    "action_limit_reached",
+                    error="world boss identity has no remaining actions",
+                    data={"result": start_business},
+                    events=events,
+                )
             break
         if float(clock()) >= wait_deadline:
             return _flow_result(False, "battle_wait_timeout", error="world boss battle not started", events=events)
@@ -1051,6 +1258,15 @@ def run_world_boss_joined_battle_lab_flow(
     dead = False
     death_elapsed_ms = 0
     client_stats = {key: 0 for key in _STAT_KEYS}
+    server_hit_summary = {
+        "attempted_hit_count": 0,
+        "accepted_hit_count": 0,
+        "accepted_perfect_count": 0,
+        "accepted_damage_yi": 0.0,
+        "action_limit": None,
+        "actions_remaining": None,
+        "actions_used": None,
+    }
 
     def process_missed_windows(current_elapsed_ms):
         nonlocal player_hp, dead, death_elapsed_ms
@@ -1158,21 +1374,59 @@ def run_world_boss_joined_battle_lab_flow(
         hit_data = hit_result.data if isinstance(hit_result.data, dict) else {}
         if _verification_required(hit_data):
             return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
+        hit_business = _world_boss_hit_business_summary(hit_data)
+        server_hit_summary["attempted_hit_count"] += 1
+        for key in ("action_limit", "actions_remaining", "actions_used"):
+            if hit_business.get(key) is not None:
+                server_hit_summary[key] = hit_business.get(key)
+        consumed = _world_boss_hit_was_consumed(hit_business)
+        if consumed:
+            server_hit_summary["accepted_hit_count"] += 1
+            if hit_business.get("perfect") is True:
+                server_hit_summary["accepted_perfect_count"] += 1
+            server_hit_summary["accepted_damage_yi"] += max(
+                0.0,
+                _float_value(hit_business.get("damage_yi"), 0.0),
+            )
+        _append_business_capture(
+            capture_sink,
+            source=capture_source,
+            step="hit",
+            summary={
+                **hit_business,
+                "window_index": server_hit_summary["attempted_hit_count"],
+                "consumed": consumed,
+            },
+        )
         processed_window_ids.add(action["windowId"])
+        # Keep bossProof clientStats identical to the official page: these are
+        # local window-match stats, while realtime hit acceptance is accounted
+        # separately from the server response above. The page never copies
+        # damageYi into clientStats.damage.
         client_stats["dodges"] += 1
         client_stats["hits"] += 1
         client_stats["combo"] += 1
         client_stats["bestCombo"] = max(client_stats["bestCombo"], client_stats["combo"])
-        if (
+        local_perfect = (
             abs(_int_value(executed_action.get("elapsedMs")) - _int_value(executed_action.get("centerMs")))
             <= _int_value(executed_action.get("perfectMs"), 150)
             and WORLD_BOSS_PERFECT_HOLD_MIN_MS
             <= _int_value(executed_action.get("holdMs"))
             <= WORLD_BOSS_PERFECT_HOLD_MAX_MS
-        ):
+        )
+        if local_perfect:
             client_stats["perfects"] += 1
         executed_actions.append(executed_action)
         hit_payloads.append(hit_data)
+        if hit_business.get("actions_remaining") == 0:
+            events.append({
+                "step": "action_limit_reached",
+                "ok": True,
+                "attempted_hit_count": server_hit_summary["attempted_hit_count"],
+                "accepted_hit_count": server_hit_summary["accepted_hit_count"],
+                "action_limit": hit_business.get("action_limit"),
+            })
+            break
 
     challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
     if dead:
@@ -1219,7 +1473,22 @@ def run_world_boss_joined_battle_lab_flow(
     finish_data = finish_result.data if isinstance(finish_result.data, dict) else {}
     if _verification_required(finish_data):
         return _flow_result(False, "verification_required", error="xianxia-verify required", events=events, proof=proof)
-    return _flow_result(True, "settled", data=finish_data, events=events, proof=proof)
+    finish_business = _world_boss_finish_business_summary(finish_data, hit_summary=server_hit_summary)
+    _append_business_capture(
+        capture_sink,
+        source=capture_source,
+        step="finish",
+        summary=finish_business,
+    )
+    effective = _world_boss_has_effective_contribution(finish_business)
+    return _flow_result(
+        effective,
+        "settled" if effective else "settled_zero_contribution",
+        error="" if effective else "world boss settled without effective contribution",
+        data={"result": finish_business},
+        events=events,
+        proof=proof,
+    )
 
 
 def run_world_boss_miniapp_lab_flow(

@@ -1484,6 +1484,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
                 "phase": "battle",
                 "ok": True,
                 "status": "settled",
+                "summary": {"score": 900, "realtime_hit_count": 2, "perfects": 1, "realtime_damage_yi": 300},
                 "initData": "query_id=SECRET",
             })
             return {
@@ -1492,14 +1493,20 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
                 "joined_count": 1,
                 "results": [
                     {"identity_id": 8659059191, "phase": "join", "ok": True, "status": "joined"},
-                    {"identity_id": 8659059191, "phase": "battle", "ok": True, "status": "settled"},
+                    {
+                        "identity_id": 8659059191,
+                        "phase": "battle",
+                        "ok": True,
+                        "status": "settled",
+                        "summary": {"score": 900, "realtime_hit_count": 2, "perfects": 1, "realtime_damage_yi": 300},
+                    },
                 ],
             }
 
         with (
             patch.object(world_boss, "run_world_boss_miniapp_event", new=fake_runtime),
             patch.object(world_boss, "save_state", return_value=True),
-            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
         ):
             await world_boss._run_world_boss_miniapp_automation(
                 event_key,
@@ -1516,6 +1523,8 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("qyz_SECRET", serialized)
         self.assertNotIn("query_id=SECRET", serialized)
         self.assertEqual(2, len(run_state.get("miniapp_auto_progress") or []))
+        self.assertEqual(2, run_state["miniapp_auto_results"][-1]["summary"]["realtime_hit_count"])
+        self.assertIn("命中2 完美1 伤害300亿 分数900", audit_mock.await_args.args[0])
 
     def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
         # Same login account can only enter one MiniApp role. Pick the strongest
@@ -1549,6 +1558,17 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
         ):
             await world_boss.handle_world_boss_broadcast(MINIAPP_OPEN_TEXT, now, event=SimpleNamespace(id=12011))
+            run_state = state_module.get_world_boss_run_state()
+            run_state["miniapp_auto_results"] = [
+                {
+                    "identity_id": 8659059191,
+                    "phase": "battle",
+                    "ok": True,
+                    "status": "settled",
+                    "summary": {"realtime_hit_count": 2, "perfects": 1, "realtime_damage_yi": 300},
+                },
+            ]
+            state_module.set_world_boss_run_state(run_state)
             await world_boss.handle_world_boss_broadcast(MINIAPP_CONCLUSION_TEXT, now + 180, event=SimpleNamespace(id=12012))
 
         send_mock.assert_not_awaited()
@@ -1560,6 +1580,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("保底收获", conclusion_log)
         self.assertIn("修为 +2607", conclusion_log)
         self.assertIn("贡献 +16", conclusion_log)
+        self.assertIn("MiniApp确认：1 身份｜有效强攻 2｜完美 1｜伤害 300亿", conclusion_log)
         self.assertFalse(state_module.get_world_boss_run_state()["active"])
 
     async def test_zero_participant_conclusion_overwrites_stale_participants(self):

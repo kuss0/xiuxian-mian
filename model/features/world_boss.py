@@ -254,6 +254,7 @@ def _normalize_run_state(raw=None, now=None):
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
             "updated_at": max(0.0, _coerce_float(item.get("updated_at"), 0)),
         }
         for item in raw_progress
@@ -1455,6 +1456,7 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
             "updated_at": time.time(),
         }
         progress = [
@@ -1494,6 +1496,7 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
         }
         for item in (result.get("results") or [])
         if isinstance(item, dict)
@@ -1506,15 +1509,38 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
         for item in run_state["miniapp_auto_results"]
     ]
     joined_count = _coerce_int(result.get("joined_count"), 0)
-    settled = [item for item in run_state["miniapp_auto_results"] if item.get("phase") == "battle" and item.get("ok")]
+    settled = [
+        item
+        for item in run_state["miniapp_auto_results"]
+        if item.get("phase") == "battle" and item.get("ok") and item.get("status") == "settled"
+    ]
     failed = [item for item in run_state["miniapp_auto_results"] if not item.get("ok")]
     run_state["last_result"] = f"MiniApp 入场 {joined_count}｜结算 {len(settled)}｜失败 {len(failed)}"
     _set_run_state(run_state)
-    details = "、".join(
-        f"{_identity_label(item['identity_id'])}:{item.get('status') or ('ok' if item.get('ok') else 'failed')}"
-        for item in run_state["miniapp_auto_results"]
-        if item.get("phase") == "battle" or not item.get("ok")
-    ) or "无明细"
+    detail_parts = []
+    for item in run_state["miniapp_auto_results"]:
+        if item.get("phase") != "battle" and item.get("ok"):
+            continue
+        detail = f"{_identity_label(item['identity_id'])}:{item.get('status') or ('ok' if item.get('ok') else 'failed')}"
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        hits = max(
+            _coerce_int(summary.get("realtime_hit_count"), 0),
+            _coerce_int(summary.get("hits"), 0),
+            _coerce_int(summary.get("accepted_hit_count"), 0),
+        )
+        perfects = max(
+            _coerce_int(summary.get("perfects"), 0),
+            _coerce_int(summary.get("accepted_perfect_count"), 0),
+        )
+        damage = max(
+            _coerce_float(summary.get("realtime_damage_yi"), 0),
+            _coerce_float(summary.get("accepted_damage_yi"), 0),
+        )
+        score = _coerce_int(summary.get("score"), 0)
+        if hits or perfects or damage or score:
+            detail += f"｜命中{hits} 完美{perfects} 伤害{damage:g}亿 分数{score}"
+        detail_parts.append(detail)
+    details = "、".join(detail_parts) or "无明细"
     await send_audit_log(
         f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜失败 {len(failed)}\n{details}",
         scope="global",
@@ -1653,6 +1679,41 @@ def _format_local_world_boss_result(parsed):
     return "\n".join(lines)
 
 
+def _miniapp_confirmed_contribution(run_state):
+    identities = 0
+    hits = 0
+    perfects = 0
+    damage_yi = 0.0
+    for item in (run_state or {}).get("miniapp_auto_results") or ():
+        if not isinstance(item, dict) or item.get("phase") != "battle":
+            continue
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        item_hits = max(
+            _coerce_int(summary.get("realtime_hit_count"), 0),
+            _coerce_int(summary.get("hits"), 0),
+            _coerce_int(summary.get("accepted_hit_count"), 0),
+        )
+        item_perfects = max(
+            _coerce_int(summary.get("perfects"), 0),
+            _coerce_int(summary.get("accepted_perfect_count"), 0),
+        )
+        item_damage = max(
+            _coerce_float(summary.get("realtime_damage_yi"), 0),
+            _coerce_float(summary.get("accepted_damage_yi"), 0),
+        )
+        if item_hits > 0 or item_damage > 0:
+            identities += 1
+        hits += item_hits
+        perfects += item_perfects
+        damage_yi += item_damage
+    return {
+        "identities": identities,
+        "hits": hits,
+        "perfects": perfects,
+        "damage_yi": damage_yi,
+    }
+
+
 def _start_world_boss_round_if_ready(now):
     run_state = _get_run_state(now)
     if (
@@ -1695,8 +1756,14 @@ async def _close_event(parsed, now, *, log=True):
         )
         base = (
             f"🗡 真仙试锋{result}：参战 {participant_display}"
-            f"｜本脚本确认 破幡 {summary['破幡']} / 镇魂 {summary['镇魂']} / 护阵 {summary['护阵']} / 强攻 {summary['强攻']}。"
+            f"｜命令链确认 破幡 {summary['破幡']} / 镇魂 {summary['镇魂']} / 护阵 {summary['护阵']} / 强攻 {summary['强攻']}。"
         )
+        miniapp_contribution = _miniapp_confirmed_contribution(run_state)
+        if miniapp_contribution["hits"] or miniapp_contribution["damage_yi"]:
+            base += (
+                f"\nMiniApp确认：{miniapp_contribution['identities']} 身份｜有效强攻 {miniapp_contribution['hits']}"
+                f"｜完美 {miniapp_contribution['perfects']}｜伤害 {miniapp_contribution['damage_yi']:g}亿。"
+            )
         if local_result:
             base += "\n" + local_result
         await send_audit_log(
