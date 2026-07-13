@@ -362,7 +362,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         record = state_module.get_duel_target_cooldowns()["@ccahen"]
         self.assertTrue(record["confirmed"])
-        self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, record["until"])
+        self.assertEqual(
+            now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC + duel.DUEL_TARGET_CONTENTION_BUFFER_SEC,
+            record["until"],
+        )
         with state_module.use_identity(identity_id):
             self.assertEqual(0, state_module.state["duel_completed_count"])
 

@@ -43,6 +43,7 @@ DUEL_RESULT_GRACE_SEC = 30
 DUEL_BATCH_STAGGER_MIN_SEC = 3 * 60
 DUEL_BATCH_STAGGER_MAX_SEC = 8 * 60
 DUEL_SAME_TARGET_COOLDOWN_SEC = 10 * 60
+DUEL_TARGET_CONTENTION_BUFFER_SEC = 5 * 60
 DUEL_TIANXING_PREPARE_LEAD_SEC = 60
 DUEL_TARGET_RESERVATION_SEC = max(
     DUEL_SAME_TARGET_COOLDOWN_SEC,
@@ -357,7 +358,10 @@ def _target_cooldown_confirmed_by_text(text):
 def _target_cooldown_delay_from_text(text):
     raw = str(text or "")
     parsed = parse_wait_time(raw) + CD_BUFFER_SEC if has_wait_time(raw) else 0
-    return max(DUEL_SAME_TARGET_COOLDOWN_SEC, parsed)
+    floor = DUEL_SAME_TARGET_COOLDOWN_SEC
+    if _is_target_named_cooldown(raw):
+        floor += DUEL_TARGET_CONTENTION_BUFFER_SEC
+    return max(floor, parsed)
 
 
 def parse_duel_result_summary(text):
