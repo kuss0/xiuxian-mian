@@ -660,7 +660,7 @@ async def handle_duel_target_observation(text, now, event=None):
     save_state()
     console_log(
         f"🗡️ 被动采集到目标 {target} 的斗法战报，共享目标CD→{fmt_abs_ts(until)}",
-        scope="identity",
+        scope="global",
         limit=180,
     )
     return True
