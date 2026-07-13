@@ -2,7 +2,7 @@ import copy
 import asyncio
 import sys
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -264,6 +264,29 @@ class AppSchedulerContractTests(unittest.TestCase):
 
 
 class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_identity_scheduler_refreshes_now_before_each_module(self):
+        first = AsyncMock()
+        second = AsyncMock()
+        with (
+            patch.object(app, "get_identity_ids", return_value=[301299112]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "use_identity", side_effect=lambda _identity_id: nullcontext()),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "enforce_identity_module_availability"),
+            patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock()),
+            patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", ()),
+            patch.object(app, "_PHASEFUL_BLOCK_CLEANUP_SCHEDULERS", ()),
+            patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (first, second)),
+            patch.object(app, "has_phaseful_summary_block", return_value=False) as block_mock,
+            patch.object(app.time, "time", side_effect=[100.0, 110.0, 120.0, 130.0]),
+        ):
+            await app._run_identity_schedulers(90.0)
+
+        block_mock.assert_called_once_with(110.0)
+        first.assert_awaited_once_with(120.0)
+        second.assert_awaited_once_with(130.0)
+
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)

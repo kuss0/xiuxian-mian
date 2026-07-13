@@ -1759,13 +1759,13 @@ async def _run_identity_schedulers(now):
                 continue
             enforce_identity_module_availability(identity_id)
             for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
-                await scheduler(identity_now)
-            if has_phaseful_summary_block(identity_now):
+                await scheduler(time.time())
+            if has_phaseful_summary_block(time.time()):
                 for scheduler in _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS:
-                    await scheduler(identity_now)
+                    await scheduler(time.time())
                 continue
             for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
-                await scheduler(identity_now)
+                await scheduler(time.time())
 
 
 async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAINING_MAX_PER_TICK):
