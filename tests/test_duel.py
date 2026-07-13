@@ -978,6 +978,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, state_module.state["duel_completed_count"])
             self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
             self.assertEqual(text, state_module.state["duel_last_result"])
+            target_lock = state_module.get_duel_target_cooldowns()["@cupaopao"]
+            self.assertTrue(target_lock["confirmed"])
+            self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, target_lock["until"])
             self.assertEqual(text, state_module.state["duel_last_error"])
             audit_mock.assert_awaited_once_with("✅ 斗法完成：1/1", scope="identity", limit=180)
 

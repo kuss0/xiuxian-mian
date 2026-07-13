@@ -71,6 +71,10 @@ DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
     "你已在斗法",
     "小隐于野",
 )
+DUEL_TARGET_CONSUMING_TERMINAL_KEYWORDS = (
+    "凭借神通侥幸逃脱",
+    "侥幸逃脱",
+)
 RE_DUEL_WINNER = re.compile(r"(?:胜者[:：]\s*|胜者：)(@[^\s|]+)")
 RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
 RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|分钟|秒)(?:\d+\s*(?:小时|分钟|秒))*)")
@@ -352,7 +356,12 @@ def _is_target_named_cooldown(text):
 
 def _target_cooldown_confirmed_by_text(text):
     raw = str(text or "")
-    return _is_duel_report_text(raw) or "对方正在斗法" in raw or _is_target_named_cooldown(raw)
+    return (
+        _is_duel_report_text(raw)
+        or any(keyword in raw for keyword in DUEL_TARGET_CONSUMING_TERMINAL_KEYWORDS)
+        or "对方正在斗法" in raw
+        or _is_target_named_cooldown(raw)
+    )
 
 
 def _target_cooldown_delay_from_text(text):
