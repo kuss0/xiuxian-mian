@@ -1612,7 +1612,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         app._bot_silence_auto_paused = True
         try:
             with (
-                patch.object(app, "note_game_bot_message", return_value="recover"),
+                patch.object(app, "note_game_bot_message", return_value="recover") as health_mock,
                 patch.object(app, "get_global_enabled", return_value=False),
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
@@ -1625,6 +1625,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
+            health_mock.assert_called_once_with(1000.0, reply_to_msg_id=12345)
             recovered_mock.assert_called_once_with("bot 恢复确认完成")
             self.assertFalse(app._bot_silence_auto_paused)
         finally:
@@ -1635,7 +1636,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         app._bot_silence_auto_paused = False
         try:
             with (
-                patch.object(app, "note_game_bot_message", return_value="recover"),
+                patch.object(app, "note_game_bot_message", return_value="recover") as health_mock,
                 patch.object(app, "get_global_enabled", return_value=False),
                 patch.object(app, "get_global_pause_source", return_value="bot_health_monitor"),
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
@@ -1649,6 +1650,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
+            health_mock.assert_called_once_with(1000.0, reply_to_msg_id=12345)
             recovered_mock.assert_called_once_with("bot 恢复确认完成")
             self.assertFalse(app._bot_silence_auto_paused)
         finally:

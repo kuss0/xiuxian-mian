@@ -433,6 +433,40 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
 
         self.assertEqual(260.0, runtime.get_bot_health_snapshot()["waiting_since"])
 
+    def test_bot_health_probe_requires_reply_to_exact_probe_message(self):
+        runtime._bot_health_state = runtime.BOT_HEALTH_PAUSED
+        runtime._bot_probe_sent_at = 0.0
+        runtime._bot_probe_msg_id = 0
+
+        self.assertEqual("probe", runtime.note_game_bot_message(100.0, reply_to_msg_id=111))
+        self.assertEqual(runtime.BOT_HEALTH_PROBING, runtime.get_bot_health_snapshot()["state"])
+
+        self.assertIsNone(runtime.note_game_bot_message(101.0, reply_to_msg_id=222))
+        self.assertEqual(runtime.BOT_HEALTH_PROBING, runtime.get_bot_health_snapshot()["state"])
+
+        runtime.note_bot_health_probe_attempt(102.0, msg_id=333)
+        self.assertIsNone(runtime.note_game_bot_message(103.0, reply_to_msg_id=222))
+        self.assertEqual("recover", runtime.note_game_bot_message(104.0, reply_to_msg_id=333))
+        self.assertEqual(runtime.BOT_HEALTH_RECOVERING, runtime.get_bot_health_snapshot()["state"])
+
+    def test_bot_health_suspect_reply_starts_probe_instead_of_recovering(self):
+        runtime._bot_health_state = runtime.BOT_HEALTH_SUSPECT
+        runtime._bot_probe_sent_at = 0.0
+        runtime._bot_probe_msg_id = 0
+
+        self.assertEqual("probe", runtime.note_game_bot_message(200.0, reply_to_msg_id=444))
+        self.assertEqual(runtime.BOT_HEALTH_PROBING, runtime.get_bot_health_snapshot()["state"])
+
+    def test_probe_send_records_exact_command_message_id(self):
+        runtime._bot_probe_sent_at = 0.0
+        runtime._bot_probe_msg_id = 0
+
+        runtime.note_game_command_sent(".我的信息", sent_at=300.0, priority="probe", msg_id=555)
+
+        snapshot = runtime.get_bot_health_snapshot()
+        self.assertEqual(300.0, snapshot["probe_sent_at"])
+        self.assertEqual(555, snapshot["probe_msg_id"])
+
     def test_legacy_command_key_pending_resends_once(self):
         send_as_id = 971003
         now = 7000.0

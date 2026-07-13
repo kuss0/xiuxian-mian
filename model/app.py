@@ -1016,7 +1016,8 @@ async def _note_game_bot_activity(text=None, reply_to=None, reply_context=None, 
     now = float(now if now is not None else time.time())
     if not _is_bot_health_reply_evidence(text, reply_to, reply_context, now=now):
         return
-    bot_health_action = note_game_bot_message(now)
+    reply_to_msg_id = _bot_health_reply_to_msg_id(reply_to)
+    bot_health_action = note_game_bot_message(now, reply_to_msg_id=reply_to_msg_id)
     if (
         bot_health_action is None
         and not get_global_enabled()
@@ -1024,7 +1025,7 @@ async def _note_game_bot_activity(text=None, reply_to=None, reply_context=None, 
     ):
         _bot_silence_auto_paused = True
         restore_bot_health_auto_pause("恢复持久化天尊健康暂停态")
-        bot_health_action = note_game_bot_message(now)
+        bot_health_action = note_game_bot_message(now, reply_to_msg_id=reply_to_msg_id)
     if bot_health_action == "probe":
         if _bot_silence_auto_paused or not get_global_enabled():
             _bot_silence_auto_paused = True

@@ -749,6 +749,7 @@ _bot_health_changed_at = 0.0
 _bot_waiting_since = 0.0
 _bot_last_seen_at = 0.0
 _bot_probe_sent_at = 0.0
+_bot_probe_msg_id = 0
 _bot_last_block_log_at = 0.0
 _global_recovery_hold_last_block_log_at = 0.0
 _ACCOUNT_FLOOD_WAIT_UNTIL = {}
@@ -786,6 +787,7 @@ def get_bot_health_snapshot():
         "waiting_since": _bot_waiting_since,
         "last_seen_at": _bot_last_seen_at,
         "probe_sent_at": _bot_probe_sent_at,
+        "probe_msg_id": _bot_probe_msg_id,
     }
 
 
@@ -806,12 +808,16 @@ def note_game_command_observed(command, now=None):
         _bot_waiting_since = now
 
 
-def note_game_command_sent(command, sent_at=None, priority=SEND_PRIORITY_NORMAL):
-    global _bot_waiting_since, _bot_probe_sent_at
+def note_game_command_sent(command, sent_at=None, priority=SEND_PRIORITY_NORMAL, msg_id=0):
+    global _bot_waiting_since, _bot_probe_sent_at, _bot_probe_msg_id
     sent_at = _now_ts(sent_at)
     priority = _normalize_send_priority(command, priority=priority)
     if priority == SEND_PRIORITY_PROBE:
         _bot_probe_sent_at = sent_at
+        try:
+            _bot_probe_msg_id = max(0, int(msg_id or 0))
+        except (TypeError, ValueError):
+            _bot_probe_msg_id = 0
         return
     if _bot_health_state not in {BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}:
         # Preserve the oldest unanswered command. Resetting this anchor for
@@ -821,16 +827,24 @@ def note_game_command_sent(command, sent_at=None, priority=SEND_PRIORITY_NORMAL)
             _bot_waiting_since = sent_at
 
 
-def note_bot_health_probe_attempt(attempted_at=None):
-    """Record a failed/blocked probe attempt so PROBING has a timeout exit."""
-    global _bot_probe_sent_at
+def note_bot_health_probe_attempt(attempted_at=None, msg_id=0):
+    """Record a probe attempt and, when sent, its command message id."""
+    global _bot_probe_sent_at, _bot_probe_msg_id
     _bot_probe_sent_at = _now_ts(attempted_at)
+    try:
+        _bot_probe_msg_id = max(0, int(msg_id or 0))
+    except (TypeError, ValueError):
+        _bot_probe_msg_id = 0
 
 
-def note_game_bot_message(now=None):
+def note_game_bot_message(now=None, reply_to_msg_id=0):
     """返回 probe/recover/None，交给 app 层决定是否发探测或恢复全局。"""
-    global _bot_last_seen_at, _bot_waiting_since, _bot_probe_sent_at
+    global _bot_last_seen_at, _bot_waiting_since, _bot_probe_sent_at, _bot_probe_msg_id
     now = _now_ts(now)
+    try:
+        reply_to_msg_id = int(reply_to_msg_id or 0)
+    except (TypeError, ValueError):
+        reply_to_msg_id = 0
     previous_state = _bot_health_state
     _bot_last_seen_at = now
     _bot_waiting_since = 0.0
@@ -838,25 +852,24 @@ def note_game_bot_message(now=None):
         _set_bot_health_state(BOT_HEALTH_PROBING, "bot 有发言，先探测确认", now)
         return "probe"
     if previous_state == BOT_HEALTH_PROBING:
-        if _bot_probe_sent_at <= 0:
-            _set_bot_health_state(BOT_HEALTH_RECOVERING, "探测未落点但已再次看到 bot 发言，恢复普通调度", now)
-            return "recover"
-        if now >= _bot_probe_sent_at:
+        if _bot_probe_msg_id > 0 and reply_to_msg_id == _bot_probe_msg_id and now >= _bot_probe_sent_at:
             _bot_probe_sent_at = 0.0
+            _bot_probe_msg_id = 0
             _set_bot_health_state(BOT_HEALTH_RECOVERING, "探测后已看到 bot 回复", now)
             return "recover"
         return None
     if previous_state == BOT_HEALTH_SUSPECT:
-        _set_bot_health_state(BOT_HEALTH_RECOVERING, "疑似静默后已看到 bot 回复", now)
-        return "recover"
+        _set_bot_health_state(BOT_HEALTH_PROBING, "疑似静默后看到 bot 回包，先探测确认", now)
+        return "probe"
     return None
 
 
 def mark_bot_health_recovered(reason="恢复普通调度", now=None):
-    global _bot_waiting_since, _bot_probe_sent_at
+    global _bot_waiting_since, _bot_probe_sent_at, _bot_probe_msg_id
     now = _now_ts(now)
     _bot_waiting_since = 0.0
     _bot_probe_sent_at = 0.0
+    _bot_probe_msg_id = 0
     return _set_bot_health_state(BOT_HEALTH_HEALTHY, reason, now)
 
 
@@ -870,15 +883,16 @@ def mark_bot_health_suspect(reason, reference_at=None, now=None):
 
 def restore_bot_health_auto_pause(reason="恢复进程内天尊健康暂停态", now=None):
     """Restore a persisted bot-health pause after service restart."""
-    global _bot_waiting_since, _bot_probe_sent_at
+    global _bot_waiting_since, _bot_probe_sent_at, _bot_probe_msg_id
     now = _now_ts(now)
     _bot_waiting_since = 0.0
     _bot_probe_sent_at = 0.0
+    _bot_probe_msg_id = 0
     return _set_bot_health_state(BOT_HEALTH_PAUSED, reason, now)
 
 
 def check_bot_health_timeout(now=None, silence_timeout_sec=600):
-    global _bot_probe_sent_at
+    global _bot_probe_sent_at, _bot_probe_msg_id
     now = _now_ts(now)
     if (
         _bot_waiting_since > 0
@@ -893,6 +907,7 @@ def check_bot_health_timeout(now=None, silence_timeout_sec=600):
         and now - _bot_probe_sent_at >= RETRY_MAX_SEC
     ):
         _bot_probe_sent_at = 0.0
+        _bot_probe_msg_id = 0
         return _set_bot_health_state(BOT_HEALTH_PAUSED, "恢复探测超时，继续暂停", now)
     return False
 
@@ -3458,7 +3473,7 @@ def _finalize_game_command_sent(
             pending_item.update(send_intent)
             identity_state["pending_tasks"][msg_id] = pending_item
         mark_dirty()
-    note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
+    note_game_command_sent(command, sent_at=sent_at, priority=send_priority, msg_id=msg_id)
     family = resolve_reply_family(command)
     if family:
         track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
