@@ -28,17 +28,18 @@ RE_QUIZ_QUESTION = re.compile(r'["“”]{1,2}(.+?)["“”]{1,2}\s*$', re.M)
 RE_QUIZ_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_QUIZ_COMMAND_HINT = re.compile(r"回复本消息并使用\s*\.作答\s*<选项>")
 QUIZ_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
+QUIZ_RESULT_TITLE_PATTERN = r"(?:玄骨考校|玄骨窥鼎|玄骨夺焰)"
 RE_QUIZ_TARGET_TAG = re.compile(rf"@({QUIZ_TARGET_TAG_PATTERN})")
 RE_QUIZ_RESULT_CORRECT = re.compile(
-    rf"【(?:考校结束[·・•]正确|玄骨考校[·・•]答对)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<answer>[A-D])\s*完全正确",
+    rf"【(?:考校结束[·・•]正确|{QUIZ_RESULT_TITLE_PATTERN}[·・•]答对)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<answer>[A-D])\s*完全正确",
     re.S,
 )
 RE_QUIZ_RESULT_WRONG = re.compile(
-    rf"【(?:考校结束[·・•]错误|玄骨考校[·・•]答错)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
+    rf"【(?:考校结束[·・•]错误|{QUIZ_RESULT_TITLE_PATTERN}[·・•]答错)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
     re.S,
 )
 RE_QUIZ_RESULT_TIMEOUT = re.compile(
-    rf"【(?:考校结束[·・•]超时|玄骨考校[·・•]超时)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
+    rf"【(?:考校结束[·・•]超时|{QUIZ_RESULT_TITLE_PATTERN}[·・•]超时)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
     re.S,
 )
 RE_PUNCT_ONLY = re.compile(r"[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+")

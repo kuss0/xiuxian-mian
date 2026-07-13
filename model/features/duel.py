@@ -373,7 +373,13 @@ async def _run_controlled_loadout_restore(now, config):
             _set_loadout_phase("restored")
             state["next_duel_time"] = 0
             save_state()
-            await send_audit_log("✅ WA 斗法 5 场完成，原法宝配装已恢复。", scope="identity", limit=200)
+            completed = int(state.get("duel_completed_count", 0) or 0)
+            total = int(state.get("duel_total_count", 0) or 0)
+            await send_audit_log(
+                f"✅ WA 斗法已停止（{completed}/{total}），原法宝配装已恢复。",
+                scope="identity",
+                limit=220,
+            )
             return True
         await _send_loadout_command(f".装备 {restore_items[index]}", now, f"restore_equip_wait:{index}")
         return True

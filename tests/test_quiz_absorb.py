@@ -58,6 +58,18 @@ class QuizResultParsingTests(unittest.TestCase):
         self.assertEqual("C", wrong["correct_answer"])
         self.assertIsNotNone(timeout)
 
+    def test_parse_special_quiz_result_titles(self):
+        for title in ("玄骨窥鼎", "玄骨夺焰"):
+            with self.subTest(title=title):
+                correct = quiz._parse_quiz_result(f"【{title}·答对】\n@WalterWA2000 的答案 C 完全正确！")
+                wrong = quiz._parse_quiz_result(f"【{title}·答错】\n@WalterWA2000 的答案 A 错了（正确答案：C）")
+                timeout = quiz.RE_QUIZ_RESULT_TIMEOUT.search(f"【{title}·超时】\n@WalterWA2000 未在时间内作答")
+                self.assertEqual("correct", correct["status"])
+                self.assertEqual("C", correct["correct_answer"])
+                self.assertEqual("wrong", wrong["status"])
+                self.assertEqual("C", wrong["correct_answer"])
+                self.assertIsNotNone(timeout)
+
 
 class QuizAiVoteTests(unittest.TestCase):
     def test_single_usable_provider_wins(self):
