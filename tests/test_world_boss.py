@@ -1524,7 +1524,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("query_id=SECRET", serialized)
         self.assertEqual(2, len(run_state.get("miniapp_auto_progress") or []))
         self.assertEqual(2, run_state["miniapp_auto_results"][-1]["summary"]["realtime_hit_count"])
-        self.assertIn("命中2 完美1 伤害300亿 分数900", audit_mock.await_args.args[0])
+        self.assertIn("命中2 完美1 伤害300亿 质量分900", audit_mock.await_args.args[0])
 
     def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
         # Same login account can only enter one MiniApp role. Pick the strongest

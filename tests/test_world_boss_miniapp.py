@@ -147,7 +147,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual("verification_required", result["status"])
         self.assertEqual(["start"], calls)
 
-    def test_action_plan_uses_sorted_window_centers_and_conservative_holds(self):
+    def test_action_plan_uses_sorted_window_centers_and_safe_high_damage_holds(self):
         plan = world_boss_miniapp.build_world_boss_action_plan(
             {
                 "challengeId": "challenge-plan",
@@ -161,7 +161,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
         self.assertEqual(["early", "middle", "late"], [item["windowId"] for item in plan])
         self.assertTrue(all(abs(item["elapsedMs"] - item["centerMs"]) <= 24 for item in plan))
-        self.assertTrue(all(548 <= item["holdMs"] <= 572 for item in plan))
+        self.assertTrue(all(1020 <= item["holdMs"] <= 1160 for item in plan))
         self.assertTrue(all(item["hitMs"] == 560 for item in plan))
         self.assertTrue(all(item["chargeStartMs"] == item["elapsedMs"] - item["holdMs"] for item in plan))
         self.assertTrue(all(item["stance"] == "强攻" for item in plan))
@@ -178,10 +178,9 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(13),
         )
 
-        self.assertTrue(688 <= plan[0]["holdMs"] <= 712)
-        self.assertLessEqual(plan[1]["holdMs"], 1250)
-        self.assertGreaterEqual(plan[1]["holdMs"], 1238)
-        self.assertTrue(all(item["holdMs"] <= 1250 for item in plan))
+        self.assertTrue(1020 <= plan[0]["holdMs"] <= 1160)
+        self.assertTrue(1020 <= plan[1]["holdMs"] <= 1160)
+        self.assertTrue(all(520 <= item["holdMs"] <= 1250 for item in plan))
 
     def test_start_refresh_waits_real_windows_then_hits_and_finishes_once(self):
         calls = []

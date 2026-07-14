@@ -1538,7 +1538,7 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
         )
         score = _coerce_int(summary.get("score"), 0)
         if hits or perfects or damage or score:
-            detail += f"｜命中{hits} 完美{perfects} 伤害{damage:g}亿 分数{score}"
+            detail += f"｜命中{hits} 完美{perfects} 伤害{damage:g}亿 质量分{score}"
         detail_parts.append(detail)
     details = "、".join(detail_parts) or "无明细"
     await send_audit_log(

@@ -37,8 +37,12 @@ WORLD_BOSS_PROOF_MODE = "qyz_focus_burst_v2"
 WORLD_BOSS_STANCE = "强攻"
 WORLD_BOSS_PERFECT_HOLD_MIN_MS = 520
 WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
+# The server accepts a broad perfect-charge band.  The lower edge is safe for
+# timing, but it leaves substantial damage on the table.  Stay in the upper
+# middle of that band without touching the 1.25s timeout boundary.
+WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1020
+WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1160
 WORLD_BOSS_DEFAULT_HIT_MS = 560
-WORLD_BOSS_HOLD_JITTER_MS = 12
 WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
 WORLD_BOSS_JOIN_READY_LEAD_SEC = 3.0
 WORLD_BOSS_START_REFRESH_SEC = 6.0
@@ -501,10 +505,6 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
         hit_ms = max(1, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS))
         # The outer ring changes into the hit color at center-hitMs. Begin
         # charging there and release around the brightest point (centerMs).
-        hold_target_ms = max(
-            WORLD_BOSS_PERFECT_HOLD_MIN_MS,
-            min(WORLD_BOSS_PERFECT_HOLD_MAX_MS, hit_ms),
-        )
         if hold_range_ms is not None:
             try:
                 hold_low, hold_high = hold_range_ms
@@ -516,13 +516,13 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
                 raise ValueError("invalid hold range")
             hold_ms = int(rng.randint(hold_low, hold_high))
         else:
-            hold_ms = max(
-                WORLD_BOSS_PERFECT_HOLD_MIN_MS,
-                min(
-                    WORLD_BOSS_PERFECT_HOLD_MAX_MS,
-                    hold_target_ms + int(rng.randint(-WORLD_BOSS_HOLD_JITTER_MS, WORLD_BOSS_HOLD_JITTER_MS)),
-                ),
-            )
+            # Damage continues to scale inside the accepted perfect band.
+            # Use a randomized upper-middle hold rather than the ring width
+            # (usually ~620ms), while keeping a margin below the hard maximum.
+            hold_ms = int(rng.randint(
+                WORLD_BOSS_OPTIMAL_HOLD_MIN_MS,
+                WORLD_BOSS_OPTIMAL_HOLD_MAX_MS,
+            ))
         perfect_ms = max(0, _int_value(window.get("perfectMs"), 150))
         release_jitter = min(24, max(0, int(perfect_ms * 0.15)))
         elapsed_ms = center_ms + int(rng.randint(-release_jitter, release_jitter)) if release_jitter else center_ms
