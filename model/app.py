@@ -3432,6 +3432,13 @@ async def main_loop(stop_event=None, quiesce_event=None):
         await _sleep_or_stop(stop_event, 5)
 
 
+def _quiesce_runtime(quiesce_event):
+    set_game_send_quiesced(True)
+    quiesce_event.set()
+    _cancel_identity_schedulers()
+    save_state()
+
+
 async def main():
     global _log_bot_callback_task, _phaseful_scheduler_task, _small_world_scheduler_task
     stop_event = asyncio.Event()
@@ -3443,9 +3450,7 @@ async def main():
         stop_event.set()
 
     def request_quiesce():
-        set_game_send_quiesced(True)
-        quiesce_event.set()
-        _cancel_identity_schedulers()
+        _quiesce_runtime(quiesce_event)
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:

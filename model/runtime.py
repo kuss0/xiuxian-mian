@@ -3237,6 +3237,17 @@ def _is_account_session_error(error):
     return any(marker in error_code for marker in markers)
 
 
+def _is_send_as_peer_invalid_error(error):
+    if isinstance(error, SendAsPeerInvalidError):
+        return True
+    error_text = re.sub(r"\s+", " ", str(error or "").strip().lower())
+    return (
+        "send_as_peer_invalid" in error_text
+        or ("can't send messages as" in error_text and "specified peer" in error_text)
+        or ("cannot send messages as" in error_text and "specified peer" in error_text)
+    )
+
+
 def is_account_session_error(error):
     return _is_account_session_error(error)
 
@@ -3252,6 +3263,33 @@ async def _ensure_account_client_ready(tc):
     is_user_authorized = getattr(tc, "is_user_authorized", None)
     if callable(is_user_authorized) and not await is_user_authorized():
         raise RuntimeError("UNAUTHORIZED: 账号 session 未授权，请重新登录")
+
+
+async def _handle_send_as_peer_invalid(command, *, send_as_id, account_id, error):
+    until = _mark_send_as_peer_invalid(send_as_id, account_id=account_id)
+    newly_closed, frozen_count = _freeze_channel_send_as_identities(
+        account_id,
+        get_game_group_id(),
+        now=time.time(),
+    )
+    _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
+    if newly_closed:
+        await send_audit_log(
+            (
+                f"⏸ 当前游戏群已关闭频道身份发言，已冻结 {frozen_count} 个频道身份；"
+                f"后台每 {CHANNEL_SEND_AS_PROBE_INTERVAL_SEC // 60} 分钟只读复查权限，开放后自动恢复。"
+            ),
+            scope="global",
+            limit=260,
+        )
+    _record_game_send_block(
+        send_as_id,
+        command,
+        "send_as_peer_invalid",
+        _truncate_log_text(error, limit=120),
+        definitely_unsent=True,
+        blocked_until=until,
+    )
 
 
 async def _log_account_offline_blocked(command, *, send_as_id, account_id, reason, force=False):
@@ -4027,29 +4065,11 @@ async def _send_game_command_impl(
             )
             return msg
     except SendAsPeerInvalidError as e:
-        until = _mark_send_as_peer_invalid(send_as_id, account_id=account_id)
-        newly_closed, frozen_count = _freeze_channel_send_as_identities(
-            account_id,
-            get_game_group_id(),
-            now=time.time(),
-        )
-        _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
-        if newly_closed:
-            await send_audit_log(
-                (
-                    f"⏸ 当前游戏群已关闭频道身份发言，已冻结 {frozen_count} 个频道身份；"
-                    f"后台每 {CHANNEL_SEND_AS_PROBE_INTERVAL_SEC // 60} 分钟只读复查权限，开放后自动恢复。"
-                ),
-                scope="global",
-                limit=260,
-            )
-        _record_game_send_block(
-            send_as_id,
+        await _handle_send_as_peer_invalid(
             command,
-            "send_as_peer_invalid",
-            _truncate_log_text(e, limit=120),
-            definitely_unsent=True,
-            blocked_until=until,
+            send_as_id=send_as_id,
+            account_id=account_id,
+            error=e,
         )
         return None
     except GameSendQueueTimeout:
@@ -4088,6 +4108,14 @@ async def _send_game_command_impl(
         _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
         return None
     except Exception as e:
+        if _is_send_as_peer_invalid_error(e):
+            await _handle_send_as_peer_invalid(
+                command,
+                send_as_id=send_as_id,
+                account_id=account_id,
+                error=e,
+            )
+            return None
         if account_id and _is_account_session_error(e):
             reason = _compact_account_error(e)
             mark_account_offline(account_id, reason)

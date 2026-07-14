@@ -46,6 +46,7 @@ def _hot_reload_enabled():
 
 PENDING_DRAIN_POLL_SEC = _env_float("XIUXIAN_PENDING_DRAIN_POLL_SEC", 2, minimum=0.25, maximum=10)
 PENDING_DRAIN_GRACE_SEC = _env_float("XIUXIAN_PENDING_DRAIN_GRACE_SEC", 3, minimum=0, maximum=30)
+QUIESCE_STATE_FLUSH_GRACE_SEC = _env_float("XIUXIAN_QUIESCE_STATE_FLUSH_GRACE_SEC", 1, minimum=0, maximum=10)
 RELOAD_PENDING_DRAIN_MAX_SEC = _env_float("XIUXIAN_RELOAD_PENDING_DRAIN_MAX_SEC", 600, minimum=0, maximum=1800)
 STOP_PENDING_DRAIN_MAX_SEC = _env_float("XIUXIAN_STOP_PENDING_DRAIN_MAX_SEC", 75, minimum=0, maximum=300)
 RUNTIME_PENDING_FIELDS = (
@@ -329,6 +330,8 @@ def _quiesce_worker(worker):
     try:
         os.kill(worker.pid, signal.SIGUSR1)
         print("已通知 worker 停止新发送，保留监听等待 pending 回包。", flush=True)
+        if QUIESCE_STATE_FLUSH_GRACE_SEC > 0:
+            time.sleep(QUIESCE_STATE_FLUSH_GRACE_SEC)
         return True
     except ProcessLookupError:
         return False

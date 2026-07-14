@@ -324,6 +324,43 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account_id, health["account_id"])
         self.assertEqual([send_as_id, sibling_send_as_id], health["restore_identity_ids"])
 
+    async def test_send_as_peer_invalid_text_variant_is_definitely_unsent(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        client = _FakeClient([RuntimeError("You can't send messages as the specified peer")])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=0),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+
+            result = await runtime.send_game_command(
+                ".天机盘",
+                send_as_id=send_as_id,
+                priority="probe",
+                track=False,
+            )
+
+        self.assertIsNone(result)
+        block = runtime.classify_game_send_block(send_as_id, ".天机盘")
+        self.assertEqual("send_as_peer_invalid", block["code"])
+        self.assertEqual("unsent", block["status"])
+        self.assertTrue(block["definitely_unsent"])
+
     async def test_successful_send_clears_send_as_peer_invalid_backoff(self):
         send_as_id = 301299112
         account_id = 7001
@@ -412,7 +449,12 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(msg.recovered_from_message_log)
         append_mock.assert_called_once()
         guard_note_mock.assert_called_once_with(".观星台", send_as_id, 920002, sent_at=1234.5)
-        note_sent_mock.assert_called_once_with(".观星台", sent_at=1234.5, priority=runtime.SEND_PRIORITY_NORMAL)
+        note_sent_mock.assert_called_once_with(
+            ".观星台",
+            sent_at=1234.5,
+            priority=runtime.SEND_PRIORITY_NORMAL,
+            msg_id=920002,
+        )
         observer_mock.assert_called_once()
         audit_mock.assert_awaited()
         pending = state_module.get_identity_state(send_as_id)["pending_tasks"][920002]

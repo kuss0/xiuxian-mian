@@ -1630,6 +1630,20 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         asyncio.run(run_case())
 
+    def test_quiesce_runtime_persists_module_pending_state_before_supervisor_drain(self):
+        quiesce_event = asyncio.Event()
+        with (
+            patch.object(app, "set_game_send_quiesced") as quiesce_mock,
+            patch.object(app, "_cancel_identity_schedulers") as cancel_mock,
+            patch.object(app, "save_state") as save_mock,
+        ):
+            app._quiesce_runtime(quiesce_event)
+
+        quiesce_mock.assert_called_once_with(True)
+        cancel_mock.assert_called_once_with()
+        save_mock.assert_called_once_with()
+        self.assertTrue(quiesce_event.is_set())
+
     async def test_bot_health_auto_pause_recovers_global_after_probe_reply(self):
         old_flag = app._bot_silence_auto_paused
         app._bot_silence_auto_paused = True
