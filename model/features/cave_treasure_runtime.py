@@ -975,6 +975,29 @@ def _cave_small_world_panel_snapshot(small_world, now):
     }
 
 
+def _cave_small_world_silence_threshold():
+    try:
+        configured = int(state.get("small_world_barrier_min_stock", 130000) or 130000)
+    except (TypeError, ValueError):
+        configured = 130000
+    return max(100_000, configured)
+
+
+def _cave_small_world_high_stock_silence(small_world):
+    threshold = _cave_small_world_silence_threshold()
+    try:
+        stock = int((small_world or {}).get("incense_stock", 0) or 0)
+    except (TypeError, ValueError):
+        stock = 0
+    if threshold <= 0 or stock < threshold:
+        return None
+    return {
+        "silent": True,
+        "suppress_refresh": True,
+        "reason": f"高香火静默：库存 {stock} 已达阈值 {threshold}，跳过刷新/维护",
+    }
+
+
 def _apply_cave_small_world_overview(small_world, now):
     snapshot = _cave_small_world_panel_snapshot(small_world, now)
     state["small_world_last_panel_at"] = float(now)
@@ -1002,6 +1025,10 @@ def _plan_cave_public_small_world_action(overview):
             if isinstance(item, dict)
         )
         return {"blocked": "resource", "reason": missing_text or "显灵资源不足或当前不可显灵"}
+
+    silence_plan = _cave_small_world_high_stock_silence(small_world)
+    if silence_plan:
+        return silence_plan
 
     if state.get("small_world_preach_enabled") and int(small_world.get("edict_remaining_seconds", 0) or 0) <= 0:
         faith = int(small_world.get("faith", 0) or 0)
@@ -1173,6 +1200,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                     not small_world.get("has_prayer")
                     and state.get("small_world_manifest_enabled")
                     and state.get("small_world_refresh_enabled")
+                    and not plan.get("suppress_refresh")
                 )
                 if can_refresh:
                     refresh_count = int(state.get("small_world_refresh_count", 0) or 0) + 1

@@ -1892,6 +1892,56 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 refresh_attempt=1,
             )
 
+    async def test_high_stock_silence_panel_skips_refresh_hunt(self):
+        send_as_id = 8659059317
+        now = 4276.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【空尘子的小世界】\n\n"
+            "⛩️ 神庙: Lv.4【千户灵祠】\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 100 / 100\n"
+            "⚖️ 稳定: 100 / 100\n"
+            "☁️ 待收香火: 0\n"
+            "🏺 香火库存: 150000\n"
+            "🔥 预计产出: 116.40 香火/小时\n"
+            "🛡️ 护界禁制: 未开启\n"
+            "🧠 神识强度: 17878\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = False
+            state_module.state["small_world_refresh_count"] = 1
+            state_module.state["next_small_world_time"] = now - 1
+
+            with (
+                patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+                patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            harvest_mock.assert_not_awaited()
+            refine_mock.assert_not_awaited()
+            preach_mock.assert_not_awaited()
+            relief_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_refresh_count"])
+            self.assertEqual(now + small_world.SMALL_WORLD_CYCLE_CD_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC, state_module.state["next_small_world_time"])
+            self.assertIn("高香火静默", state_module.state["small_world_last_error"])
+
     async def test_due_disaster_god_action_preempts_chain_pending_phase(self):
         send_as_id = 8659059311
         now = 4280.0

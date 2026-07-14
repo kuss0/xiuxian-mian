@@ -55,6 +55,7 @@ SMALL_WORLD_THEFT_CALIBRATION_MIN_SEC = 30
 SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC = 90
 SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
 SMALL_WORLD_DEFAULT_STATUS_MAX = 100
+SMALL_WORLD_HIGH_STOCK_SILENCE_FLOOR = 100_000
 # 布道、赈灾和安抚信徒共享同一条约 3 小时的神谕冷却。
 # 小世界面板与显灵仍按各自 6 小时周期运行。
 SMALL_WORLD_GOD_FOLLOWUP_SEC = 3 * 3600
@@ -480,6 +481,24 @@ def _barrier_guard_before_sec():
 
 def _barrier_min_stock():
     return _coerce_int_state("small_world_barrier_min_stock", 130000, min_value=0, max_value=1000000)
+
+
+def _high_stock_silence_threshold():
+    return max(SMALL_WORLD_HIGH_STOCK_SILENCE_FLOOR, _barrier_min_stock())
+
+
+def _high_stock_silence_reason(panel):
+    stock = _panel_int(panel or {}, "stock", int(state.get("small_world_incense_stock", 0) or 0))
+    threshold = _high_stock_silence_threshold()
+    return f"高香火静默：库存 {stock} 已达阈值 {threshold}，跳过刷新/维护"
+
+
+def _is_high_stock_silence_panel(panel):
+    threshold = _high_stock_silence_threshold()
+    if threshold <= 0:
+        return False
+    stock = _panel_int(panel or {}, "stock", int(state.get("small_world_incense_stock", 0) or 0))
+    return stock >= threshold
 
 
 def _barrier_min_interval_sec():
@@ -1655,6 +1674,17 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         state["small_world_last_error"] = "检测到祈愿，但自动显灵未开启"
         save_state()
         return True
+
+    if _is_high_stock_silence_panel(panel):
+        reason = _high_stock_silence_reason(panel)
+        state["small_world_refresh_count"] = 0
+        handled = await _finish_no_prayer_panel(now, panel, allow_refresh=False)
+        state["small_world_refresh_count"] = 0
+        if not panel.get("has_wait") and not panel.get("prayer_data_error"):
+            _schedule_next_cycle(now)
+        state["small_world_last_error"] = reason
+        save_state()
+        return handled
 
     manifest_refresh_enabled = bool(
         allow_tool_chain

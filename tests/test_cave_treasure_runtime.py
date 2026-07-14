@@ -1100,6 +1100,36 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("manifest", manifest["action"])
         self.assertEqual("miracle_sermon", sermon["action"])
 
+    def test_cave_public_small_world_high_stock_plan_suppresses_optional_actions(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_barrier_min_stock"] = 130000
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "faith": 80,
+                    "faith_cap": 100,
+                    "stability": 100,
+                    "stability_cap": 100,
+                    "population": 1000,
+                    "population_cap": 1000,
+                    "incense_stock": 150000,
+                    "can_harvest": True,
+                    "edict_remaining_seconds": 0,
+                },
+            })
+
+        self.assertTrue(plan["silent"])
+        self.assertTrue(plan["suppress_refresh"])
+        self.assertNotIn("action", plan)
+        self.assertIn("高香火静默", plan["reason"])
+
     async def test_cave_public_small_world_executes_action_and_updates_legacy_snapshot(self):
         flow_result = {
             "ok": True,
@@ -1263,6 +1293,61 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["small_world_refresh_count"])
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(now + 6 * 3600, state_module.state["next_small_world_time"])
+
+    async def test_cave_public_small_world_high_stock_silence_does_not_schedule_refresh(self):
+        now = 1_700_000_001.0
+        flow_result = {
+            "ok": True,
+            "status": "noop",
+            "data": {
+                "plan": {
+                    "silent": True,
+                    "suppress_refresh": True,
+                    "reason": "高香火静默：库存 150000 已达阈值 130000，跳过刷新/维护",
+                },
+                "overview": {
+                    "small_world": {
+                        "available": True,
+                        "has_world": True,
+                        "has_prayer": False,
+                        "faith": 100,
+                        "faith_cap": 100,
+                        "stability": 100,
+                        "stability_cap": 100,
+                        "population": 1000,
+                        "population_cap": 1000,
+                        "incense_stock": 150000,
+                    },
+                },
+            },
+        }
+        with state_module.use_identity(1001):
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_refresh_count"] = 1
+            state_module.state["next_small_world_time"] = now - 1
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value={
+                    "ok": True,
+                    "init_data": "dwelling_init_data",
+                    "player_id": 1001,
+                    "result": {"ok": True},
+                })), \
+                patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)), \
+                patch.object(cave_treasure_runtime, "save_state"), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_small_world_sync(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        with state_module.use_identity(1001):
+            self.assertEqual(0, state_module.state["small_world_refresh_count"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(now + cave_treasure_runtime.CAVE_SMALL_WORLD_CYCLE_SEC, state_module.state["next_small_world_time"])
+            self.assertIn("高香火静默", state_module.state["small_world_last_error"])
 
     async def test_cave_public_small_world_enforces_persisted_minimum_request_interval(self):
         now = 1_700_000_001.0
