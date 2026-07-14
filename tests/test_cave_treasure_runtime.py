@@ -528,7 +528,12 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "title": "灵溪垂钓",
             },
         }
-        fishing_result = {"ok": True, "status": "daily_limit", "settled_count": 5, "data": {}}
+        fishing_result = {
+            "ok": False,
+            "status": "daily_limit",
+            "error": "fishing_daily_limit_reached",
+            "data": {},
+        }
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)) as external_mock, \
@@ -548,6 +553,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dwelling_init_data", fishing_mock.await_args.kwargs["init_data"])
         self.assertEqual("青溪浅滩", fishing_mock.await_args.kwargs["pond_choice"])
         self.assertEqual("灵米饵", fishing_mock.await_args.kwargs["bait_choice"])
+        self.assertTrue(result["extra"]["daily_exhausted"])
         apply_mock.assert_called_once()
         summary_mock.assert_awaited_once()
 

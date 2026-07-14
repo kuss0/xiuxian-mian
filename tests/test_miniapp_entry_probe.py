@@ -560,6 +560,23 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, now))
         self.assertTrue(ui._cave_public_background_action_due("fishing", identity_id, now + 1801))
 
+    def test_cave_public_fishing_background_stops_on_observed_daily_limit(self):
+        identity_id = 3765328695
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_daily_day"] = ui.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_last_result"] = "MiniApp daily_limit｜fishing_daily_limit_reached"
+            state_module.state["next_fishing_time"] = 0
+
+        self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, now))
+
     async def test_cave_public_background_scheduler_queues_without_waiting_for_http(self):
         identity_id = 1001
         state_module.ensure_identity_registered(identity_id)

@@ -1559,6 +1559,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             "extra": {
                 "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
                 "player_id": selected_player_id,
+                "daily_exhausted": str(result.get("status") or "").strip() == "daily_limit",
             },
         }
 

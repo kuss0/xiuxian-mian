@@ -980,13 +980,14 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     result = dict(result or {})
     ok = bool(result.get("ok"))
     status = str(result.get("status") or "").strip()
+    completed_ok = ok or status == "daily_limit"
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     catches = extract_fishing_miniapp_catches(data)
     updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
     updates["fishing_phase"] = "idle"
     updates["fishing_last_msg_id"] = int(result_msg_id or 0)
     updates["fishing_last_result"] = _format_miniapp_result_summary(result)
-    updates["fishing_last_error"] = "" if ok else updates["fishing_last_result"]
+    updates["fishing_last_error"] = "" if completed_ok else updates["fishing_last_result"]
     partial_statuses = {"next_failed", "next_unavailable", "not_ready"}
     settled_statuses = {"settled", "finish_submitted", "daily_limit"}
     error_text = str(result.get("error") or data.get("next_error") or "").strip()
@@ -1012,7 +1013,7 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     has_progress = progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0
     default_settled_count = 1 if status in settled_statuses else 0
     settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), default_settled_count)
-    if ok and (status in settled_statuses or settled_count > 0 or has_progress):
+    if completed_ok and (status in settled_statuses or settled_count > 0 or has_progress):
         settled_count = max(default_settled_count, settled_count)
         if status == "daily_limit" and not has_progress:
             inferred_limit = max(int(limit or 0), int(count or 0) + settled_count, len(catches))

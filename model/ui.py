@@ -7257,7 +7257,7 @@ def _cave_public_background_action_due(action, identity_id, now):
         if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             return bool(state.get("deep_retreat_enabled")) and float(state.get("next_deep_retreat_time", 0) or 0) <= now
         if action == "treasure":
-            daily_done_key = (get_day_key(now), int(identity_id))
+            daily_done_key = ("treasure", get_day_key(now), int(identity_id))
             if daily_done_key in _cave_public_background_daily_done:
                 return False
             record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
@@ -7275,6 +7275,14 @@ def _cave_public_background_action_due(action, identity_id, now):
             if float(state.get("next_fishing_time", 0) or 0) > now:
                 return False
             day_key = get_day_key(now)
+            daily_done_key = ("fishing", day_key, int(identity_id))
+            if daily_done_key in _cave_public_background_daily_done:
+                return False
+            if (
+                str(state.get("fishing_daily_day") or "") == day_key
+                and "daily_limit" in str(state.get("fishing_last_result") or "").lower()
+            ):
+                return False
             if str(state.get("fishing_daily_day") or "") != day_key:
                 return True
             limit = max(1, int(state.get("fishing_daily_limit", 5) or 5))
@@ -7356,8 +7364,8 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
     extra = {}
     try:
         ok, message, extra = await ui_run_cave_public_entry(identity_id, action, "")
-        if action == "treasure" and isinstance(extra, dict) and extra.get("daily_exhausted"):
-            _cave_public_background_daily_done.add((get_day_key(time.time()), int(identity_id)))
+        if action in {"treasure", "fishing"} and isinstance(extra, dict) and extra.get("daily_exhausted"):
+            _cave_public_background_daily_done.add((action, get_day_key(time.time()), int(identity_id)))
     except asyncio.CancelledError:
         raise
     except Exception as exc:

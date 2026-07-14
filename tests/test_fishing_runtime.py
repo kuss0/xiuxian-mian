@@ -1112,6 +1112,28 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(20, state_module.state["fishing_daily_limit"])
             self.assertEqual(20, state_module.state["fishing_daily_count"])
 
+    def test_daily_limit_error_response_closes_daily_counter(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 15, 7, 30, 0)
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 0
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"),
+            ):
+                fishing_runtime._apply_fishing_miniapp_result({
+                    "ok": False,
+                    "status": "daily_limit",
+                    "error": "fishing_daily_limit_reached",
+                    "data": {},
+                }, now=now)
+
+            self.assertEqual(5, state_module.state["fishing_daily_count"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertGreater(state_module.state["next_fishing_time"], now)
+
     async def test_miniapp_failure_backs_off_without_old_followup_chain(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 8, 50, 0)
