@@ -31,7 +31,9 @@ DUEL_MIN_REALM = "元婴后期"
 DUEL_RESERVE_XIUWEI = 600_000
 DUEL_MAX_LOSS_XIUWEI = 60_000
 DUEL_MIN_XIUWEI = DUEL_RESERVE_XIUWEI + DUEL_MAX_LOSS_XIUWEI
-DUEL_REPLY_TIMEOUT_SEC = 120
+# Real final reports can arrive just after two minutes; keep the pending state
+# alive long enough for the normal reply path before log recovery is needed.
+DUEL_REPLY_TIMEOUT_SEC = 150
 DUEL_NORMAL_COOLDOWN_MIN_SEC = 18 * 60
 DUEL_NORMAL_COOLDOWN_MAX_SEC = 32 * 60
 DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC = 30 * 60
