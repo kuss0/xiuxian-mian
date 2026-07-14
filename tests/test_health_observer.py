@@ -265,6 +265,17 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(health_observer.is_hard_journal_line(line))
 
+    def test_log_bot_callback_transient_bot_api_errors_are_not_hard(self):
+        samples = [
+            'Jul 14 09:27:21 pve python[2122718]: log bot callback poll failed: HTTP 429: {"ok":false,"error_code":429,"description":"Too Many Requests: retry after 5","parameters":{"retry_after":5}}',
+            'Jul 14 09:27:23 pve python[2122718]: log bot callback poll failed: HTTP 502: {"ok":false,"error_code":502,"description":"Bad Gateway"}',
+            "Jul 14 09:27:59 pve python[2122718]: log bot callback poll failed: timeout: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=35)",
+        ]
+
+        for line in samples:
+            with self.subTest(line=line):
+                self.assertFalse(health_observer.is_hard_journal_line(line))
+
     def test_listener_sidecar_unauthed_sessions_are_not_hard_journal_errors(self):
         line = (
             "Jul 08 21:00:52 pve python[3686429]: listener sidecar degraded: no connected accounts "

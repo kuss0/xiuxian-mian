@@ -35,7 +35,7 @@ LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
-    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*ConnectionResetError|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
+    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:)|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(

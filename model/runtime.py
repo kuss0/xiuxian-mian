@@ -2194,6 +2194,16 @@ def _mark_log_bot_backoff(error_text):
     return retry_after
 
 
+def _log_bot_poll_retry_delay(error_text):
+    retry_after = _mark_log_bot_backoff(error_text)
+    if retry_after > 0:
+        return max(float(LOG_BOT_POLL_INTERVAL_SEC), float(retry_after + 1))
+    text = str(error_text or "")
+    if "HTTP 502" in text or text.startswith("timeout:"):
+        return max(float(LOG_BOT_POLL_INTERVAL_SEC), 5.0)
+    return float(LOG_BOT_POLL_INTERVAL_SEC)
+
+
 def _call_log_bot_api(method, payload=None, *, read_timeout=LOG_BOT_READ_TIMEOUT_SEC):
     if not LOG_BOT_TOKEN:
         return False, None, "missing bot token"
@@ -2257,7 +2267,7 @@ async def run_log_bot_callback_poller(callback_handler, stop_event=None):
         )
         if not ok:
             print(f"log bot callback poll failed: {error_text}")
-            await asyncio.sleep(LOG_BOT_POLL_INTERVAL_SEC)
+            await asyncio.sleep(_log_bot_poll_retry_delay(error_text))
             continue
         updates = result if isinstance(result, list) else []
         for update in updates:

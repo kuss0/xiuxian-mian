@@ -149,6 +149,27 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("关注：", message)
         self.assertIn('tg://user?id=123456789', message)
 
+    async def test_log_bot_callback_poller_backs_off_on_retry_after(self):
+        stop_event = asyncio.Event()
+        sleep_delays = []
+        runtime._LOG_BOT_BACKOFF_UNTIL = 0
+
+        def fake_call(method, payload=None, *, read_timeout=0):
+            self.assertEqual("getUpdates", method)
+            return False, None, 'HTTP 429: {"ok":false,"parameters":{"retry_after":5}}'
+
+        async def fake_sleep(delay):
+            sleep_delays.append(delay)
+            stop_event.set()
+
+        with patch.object(runtime, "LOG_BOT_TOKEN", "token"), \
+                patch.object(runtime, "_call_log_bot_api", side_effect=fake_call), \
+                patch.object(runtime.asyncio, "sleep", new=AsyncMock(side_effect=fake_sleep)):
+            await runtime.run_log_bot_callback_poller(AsyncMock(), stop_event=stop_event)
+
+        self.assertEqual([6.0], sleep_delays)
+        self.assertGreater(runtime._LOG_BOT_BACKOFF_UNTIL, 0)
+
     async def test_failed_low_priority_summary_restores_details(self):
         send_mock = AsyncMock(return_value=False)
         with patch.object(runtime, "_send_log_group_message", new=send_mock), \
