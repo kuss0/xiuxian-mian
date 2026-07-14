@@ -1020,6 +1020,7 @@ async def _note_game_bot_activity(text=None, reply_to=None, reply_context=None, 
     bot_health_action = note_game_bot_message(now, reply_to_msg_id=reply_to_msg_id)
     if (
         bot_health_action is None
+        and not _bot_silence_auto_paused
         and not get_global_enabled()
         and get_global_pause_source() == "bot_health_monitor"
         and not should_pause_for_bot_health()

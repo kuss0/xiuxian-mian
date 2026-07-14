@@ -170,6 +170,28 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([6.0], sleep_delays)
         self.assertGreater(runtime._LOG_BOT_BACKOFF_UNTIL, 0)
 
+    async def test_log_bot_callback_poller_stays_within_worker_stop_budget(self):
+        stop_event = asyncio.Event()
+        observed = {}
+
+        def fake_call(method, payload=None, *, read_timeout=0):
+            observed.update(
+                method=method,
+                payload=dict(payload or {}),
+                read_timeout=read_timeout,
+            )
+            stop_event.set()
+            return True, [], ""
+
+        with patch.object(runtime, "LOG_BOT_TOKEN", "token"), \
+                patch.object(runtime, "_call_log_bot_api", side_effect=fake_call):
+            await runtime.run_log_bot_callback_poller(AsyncMock(), stop_event=stop_event)
+
+        self.assertEqual("getUpdates", observed["method"])
+        self.assertEqual(runtime.LOG_BOT_POLL_SERVER_TIMEOUT_SEC, observed["payload"]["timeout"])
+        self.assertEqual(runtime.LOG_BOT_POLL_READ_TIMEOUT_SEC, observed["read_timeout"])
+        self.assertLess(runtime.LOG_BOT_POLL_READ_TIMEOUT_SEC, 20)
+
     async def test_failed_low_priority_summary_restores_details(self):
         send_mock = AsyncMock(return_value=False)
         with patch.object(runtime, "_send_log_group_message", new=send_mock), \

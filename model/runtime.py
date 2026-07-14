@@ -400,7 +400,8 @@ _LOG_BOT_UPDATE_OFFSET = None
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
 LOG_BOT_READ_TIMEOUT_SEC = 8
 LOG_BOT_TOTAL_TIMEOUT_SEC = 12
-LOG_BOT_POLL_READ_TIMEOUT_SEC = 35
+LOG_BOT_POLL_SERVER_TIMEOUT_SEC = 10
+LOG_BOT_POLL_READ_TIMEOUT_SEC = 15
 LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 60
@@ -2254,7 +2255,7 @@ async def run_log_bot_callback_poller(callback_handler, stop_event=None):
         return
     while stop_event is None or not stop_event.is_set():
         payload = {
-            "timeout": 30,
+            "timeout": LOG_BOT_POLL_SERVER_TIMEOUT_SEC,
             "allowed_updates": json.dumps(["callback_query"]),
         }
         if _LOG_BOT_UPDATE_OFFSET is not None:
