@@ -323,6 +323,11 @@ _cave_public_background_state = {
     "last_result": "",
 }
 _cave_public_background_retry_at = {}
+# A successful MiniApp response is authoritative for the current process even
+# if a concurrent state snapshot save temporarily races with it. Keep this
+# short-lived marker as a second guard; the persisted miniapp state remains the
+# restart-safe source of truth.
+_cave_public_background_daily_done = set()
 TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC = 10 * 60
 MINIAPP_ENTRY_PROBE_COMMANDS = {
     "cave_treasure": ".洞府",
@@ -7252,6 +7257,9 @@ def _cave_public_background_action_due(action, identity_id, now):
         if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             return bool(state.get("deep_retreat_enabled")) and float(state.get("next_deep_retreat_time", 0) or 0) <= now
         if action == "treasure":
+            daily_done_key = (get_day_key(now), int(identity_id))
+            if daily_done_key in _cave_public_background_daily_done:
+                return False
             record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
             record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
             updated_at = float(record.get("updated_at", 0) or 0)
@@ -7345,8 +7353,11 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
 async def _execute_cave_public_background_action(identity_id, action, delay_sec):
     ok = False
     message = ""
+    extra = {}
     try:
-        ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, "")
+        ok, message, extra = await ui_run_cave_public_entry(identity_id, action, "")
+        if action == "treasure" and isinstance(extra, dict) and extra.get("daily_exhausted"):
+            _cave_public_background_daily_done.add((get_day_key(time.time()), int(identity_id)))
     except asyncio.CancelledError:
         raise
     except Exception as exc:

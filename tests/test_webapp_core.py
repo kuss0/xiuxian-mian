@@ -1974,7 +1974,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertFalse(plans["cave_treasure"].default_enabled)
         self.assertTrue(plans["tree"].manual_only)
         self.assertFalse(plans["tree"].default_enabled)
-        self.assertIn("不接生产", plans["tree"].note)
+        self.assertIn("生产自动化", plans["tree"].note)
         self.assertTrue(plans["world_boss"].manual_only)
         self.assertFalse(plans["world_boss"].default_enabled)
 

@@ -278,6 +278,9 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
         self.assertIn("古禁印痕", "\n".join(str(call.args[0]) for call in audit_mock.await_args_list))
         self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
+        self.assertEqual(3, result["extra"]["games_used"])
+        self.assertEqual(3, result["extra"]["games_limit"])
+        self.assertTrue(result["extra"]["daily_exhausted"])
 
     async def test_public_treasure_and_small_world_fail_closed_when_identity_selection_fails(self):
         public_url = "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"

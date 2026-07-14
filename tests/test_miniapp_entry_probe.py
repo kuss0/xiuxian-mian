@@ -2,6 +2,7 @@ import asyncio
 import unittest
 import json
 import copy
+import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -615,6 +616,37 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.update(background_snapshot)
             ui._cave_public_background_retry_at.clear()
             ui._cave_public_background_retry_at.update(retry_snapshot)
+
+    async def test_cave_public_background_marks_treasure_daily_exhausted_from_success(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        daily_done_snapshot = set(ui._cave_public_background_daily_done)
+        retry_snapshot = dict(ui._cave_public_background_retry_at)
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._cave_public_background_daily_done.clear()
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_state.update({"running": True, "next_run_at": 0})
+            with patch.object(
+                ui,
+                "ui_run_cave_public_entry",
+                new=AsyncMock(return_value=(
+                    True,
+                    "洞府寻宝公共入口：MiniApp daily_limit｜游戏 3/3｜奖励:灵石x1",
+                    {"daily_exhausted": True},
+                )),
+            ):
+                with patch.object(ui, "console_log"):
+                    await ui._execute_cave_public_background_action(identity_id, "treasure", 20)
+
+            self.assertFalse(ui._cave_public_background_action_due("treasure", identity_id, time.time()))
+        finally:
+            ui._cave_public_background_daily_done.clear()
+            ui._cave_public_background_daily_done.update(daily_done_snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retry_snapshot)
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
 
     async def test_world_boss_miniapp_config_is_default_off_and_clamped(self):
         state_module._meta_state["miniapp_auto_config"] = {}

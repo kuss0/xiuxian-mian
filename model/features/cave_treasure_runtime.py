@@ -1330,6 +1330,8 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
             capture_sink=_capture_store(now),
             capture_source=f"cave_public_treasure:{identity_id}",
         )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        state = data.get("state") if isinstance(data.get("state"), dict) else {}
         inventory_record = _record_cave_treasure_inventory_delta(identity_id, result, now=now)
         state_record = _record_cave_treasure_miniapp_state(identity_id, result, now=now)
         summary = _format_cave_treasure_summary(result)
@@ -1349,6 +1351,15 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
             "extra": {
                 "inventory_record_key": inventory_record.get("record_key", ""),
                 "state_record_key": state_record.get("record_key", ""),
+                "games_used": _parse_int(state.get("games_used"), 0),
+                "games_limit": _parse_int(state.get("games_limit"), 0),
+                "daily_exhausted": (
+                    str(result.get("status") or "").strip() == "daily_limit"
+                    or (
+                        _parse_int(state.get("games_limit"), 0) > 0
+                        and _parse_int(state.get("games_used"), 0) >= _parse_int(state.get("games_limit"), 0)
+                    )
+                ),
             },
         }
 
