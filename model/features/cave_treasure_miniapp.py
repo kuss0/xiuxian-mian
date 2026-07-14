@@ -387,7 +387,7 @@ def build_cave_treasure_miniapp_flow_plan():
         label=CAVE_TREASURE_MINIAPP_LABEL,
         manual_only=True,
         default_enabled=False,
-        note="lab-only cave treasure declaration; endpoint names are capture candidates and production scheduler is not wired",
+        note="洞府命令入口与公共入口并行；频道发言不可用时由公共入口承接",
         replaces_commands=(".洞府",),
         state_outputs=("module_snapshot", "daily_counter", "inventory_delta"),
         steps=(

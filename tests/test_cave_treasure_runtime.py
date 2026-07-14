@@ -548,6 +548,66 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         apply_mock.assert_called_once()
         summary_mock.assert_awaited_once()
 
+    async def test_public_entry_fishing_skips_identity_without_rod_until_next_day(self):
+        identity_id = 3504367852
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["next_fishing_time"] = 0
+            state_module.state["fishing_last_result"] = ""
+            state_module.state["fishing_last_error"] = "old"
+
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": -1003504367852,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {
+                        "account": {
+                            "externalApps": {
+                                "groups": [{
+                                    "apps": [{
+                                        "key": "fishing",
+                                        "title": "灵溪垂钓",
+                                        "available": False,
+                                        "action": "fishing",
+                                    }],
+                                }],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        now = 1_700_000_000.0
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock()) as external_mock, \
+                patch.object(cave_treasure_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock()) as fishing_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
+                patch.object(cave_treasure_runtime, "save_state"):
+            result = await cave_treasure_runtime.run_cave_public_fishing(
+                identity_id,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("rod_missing", result["extra"]["skipped"])
+        external_mock.assert_not_awaited()
+        fishing_mock.assert_not_awaited()
+        with state_module.use_identity(identity_id):
+            self.assertEqual(
+                cave_treasure_runtime.fishing_behavior.next_fishing_reset_timestamp(
+                    now,
+                    cave_treasure_runtime._fishing_reset_jitter_sec(identity_id),
+                ),
+                state_module.state["next_fishing_time"],
+            )
+            self.assertEqual("未持有鱼竿，今日跳过", state_module.state["fishing_last_result"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
+
     def test_public_entry_trial_finds_trial_url_without_leaking_token(self):
         launch = cave_treasure_runtime._find_trial_launch_in_cave_payload({
             "externalApps": {
@@ -1099,6 +1159,26 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("manifest", manifest["action"])
         self.assertEqual("miracle_sermon", sermon["action"])
+
+    def test_cave_public_small_world_does_not_auto_relief_for_population_deficit(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_preach_enabled"] = True
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "faith": 100,
+                    "faith_cap": 100,
+                    "population": 84000,
+                    "population_cap": 100000,
+                    "stability": 70,
+                    "stability_cap": 100,
+                    "edict_remaining_seconds": 0,
+                },
+            })
+
+        self.assertNotIn("action", plan)
 
     def test_cave_public_small_world_high_stock_plan_suppresses_optional_actions(self):
         with state_module.use_identity(1001):

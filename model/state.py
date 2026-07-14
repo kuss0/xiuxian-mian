@@ -1198,6 +1198,31 @@ def get_identity_enabled(send_as_id=None):
     return bool(get_send_as_profile(send_as_id).get("enabled", True))
 
 
+def is_cave_public_identity_available(send_as_id=None):
+    """Allow public-entry HTTP for identities frozen only by channel send-as health."""
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if identity_id <= 0:
+        return False
+    if get_identity_enabled(identity_id):
+        return True
+    if identity_id not in get_identity_ids():
+        return False
+    record = get_channel_send_as_health()
+    if str(record.get("status") or "") != "closed":
+        return False
+    restorable_ids = {
+        int(value)
+        for value in record.get("restore_identity_ids") or ()
+        if str(value or "").strip().lstrip("-").isdigit()
+    }
+    return identity_id in restorable_ids
+
+
 def set_identity_enabled(send_as_id, enabled):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, enabled=bool(enabled))
@@ -1417,7 +1442,15 @@ def is_cave_public_auto_enabled(action, identity_id=None):
     if not flag:
         return False
     config = get_miniapp_auto_config()
-    if not bool(str(config.get("cave_public_entry_url") or "").strip() and config.get(flag)):
+    entry_urls = config.get("cave_public_entry_urls") or []
+    if isinstance(entry_urls, str):
+        entry_url_configured = bool(entry_urls.strip())
+    elif isinstance(entry_urls, (list, tuple, set)):
+        entry_url_configured = any(str(value or "").strip() for value in entry_urls)
+    else:
+        entry_url_configured = False
+    entry_url_configured = entry_url_configured or bool(str(config.get("cave_public_entry_url") or "").strip())
+    if not bool(entry_url_configured and config.get(flag)):
         return False
     if normalized_action == "fishing":
         try:
@@ -2812,6 +2845,7 @@ __all__ = [
     "is_auto_delete_sent_messages_enabled",
     "get_identity_display_name",
     "get_identity_enabled",
+    "is_cave_public_identity_available",
     "get_identity_ui_display_name",
     "get_identity_ids",
     "get_identity_state",

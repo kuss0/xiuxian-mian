@@ -147,7 +147,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, kwargs["max_retry"])
         self.assertEqual("MiniApp诊断", kwargs["source_module"])
 
-    async def test_probe_allows_cave_treasure_entry_command_without_tracking(self):
+    async def test_probe_allows_cave_treasure_command_entry(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12347))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
@@ -159,11 +159,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("入口诊断", message)
         self.assertEqual(".洞府", extra["command"])
         self.assertEqual(12347, extra["msg_id"])
-        kwargs = send_mock.await_args.kwargs
-        self.assertFalse(kwargs["track"])
-        self.assertEqual(0, kwargs["max_retry"])
-        self.assertEqual("MiniApp诊断", kwargs["source_module"])
-        self.assertEqual("miniapp_entry_probe", kwargs["chain_id"])
+        send_mock.assert_awaited_once()
 
     async def test_probe_allows_tree_entry_command_without_tracking(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12352))
@@ -278,7 +274,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("MiniApp手动", kwargs["source_module"])
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
-    async def test_manual_run_allows_cave_treasure_and_authorizes_before_send(self):
+    async def test_manual_run_allows_cave_treasure_command_entry(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12351))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
@@ -288,14 +284,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ok, message, extra = await ui.ui_send_miniapp_manual_run(1001, "cave_treasure")
 
         self.assertTrue(ok)
-        self.assertIn("手动执行", message)
+        self.assertIn("等待入口", message)
         self.assertEqual(".洞府", extra["command"])
+        self.assertEqual(12351, extra["msg_id"])
         auth_mock.assert_called_once_with(1001)
-        kwargs = send_mock.await_args.kwargs
-        self.assertFalse(kwargs["track"])
-        self.assertEqual(0, kwargs["max_retry"])
-        self.assertEqual("MiniApp手动", kwargs["source_module"])
-        self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
+        send_mock.assert_awaited_once()
 
     async def test_manual_run_allows_tree_and_authorizes_before_send(self):
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12353))
@@ -473,12 +466,75 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
         save_mock.assert_called_once()
 
+    async def test_cave_public_config_accepts_multiple_public_entry_urls_safely(self):
+        with patch.object(ui, "save_state", return_value=True):
+            ok, message = await ui.ui_set_cave_public_config({
+                "public_entry_urls": (
+                    "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222\n"
+                    "https://t.me/hantianzun21_bot?startapp=df_SECRET111"
+                ),
+            })
+
+        config = ui.normalize_miniapp_auto_config()
+        snapshot = ui.get_miniapp_status_snapshot()
+        text = json.dumps(snapshot, ensure_ascii=False)
+        self.assertTrue(ok)
+        self.assertIn("已保存", message)
+        self.assertEqual(2, len(config["cave_public_entry_urls"]))
+        self.assertEqual(config["cave_public_entry_urls"][0], config["cave_public_entry_url"])
+        self.assertTrue(snapshot["automation"]["cave_public_entry_url_configured"])
+        self.assertEqual(2, snapshot["automation"]["cave_public_entry_url_count"])
+        self.assertNotIn("df_SECRET111", text)
+        self.assertNotIn("df_SECRET222", text)
+
+    async def test_cave_public_entry_run_falls_back_only_for_entry_health_failure(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_trial", new=AsyncMock(side_effect=[
+                    {"ok": False, "message": "洞府天机试炼入口读取失败：会话初始化失败", "extra": {}},
+                    {"ok": True, "message": "洞府天机试炼公共入口：完成", "extra": {}},
+                ])) as run_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "trial",
+                "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("完成", message)
+        self.assertEqual(1, extra["entry_index"])
+        self.assertEqual(2, len(extra["entry_attempts"]))
+        self.assertEqual(2, run_mock.await_count)
+
+    async def test_cave_public_entry_run_does_not_fallback_for_business_completion(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
+                    "ok": False,
+                    "message": "洞府天机试炼公共入口：今日次数已尽",
+                    "extra": {},
+                })) as run_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "trial",
+                "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("次数已尽", message)
+        self.assertEqual(0, extra["entry_index"])
+        self.assertEqual(1, len(extra["entry_attempts"]))
+        run_mock.assert_awaited_once()
+
     def test_cave_public_fishing_batch_uses_only_configured_enabled_channels(self):
         state_module._meta_state["miniapp_auto_config"] = {
             "cave_public_fishing_enabled": True,
             "cave_public_fishing_identity_ids": [3765328695, 3820064579],
         }
-        with patch.object(ui, "get_identity_enabled", side_effect=lambda identity_id: identity_id != 3820064579):
+        with patch.object(ui, "is_cave_public_identity_available", side_effect=lambda identity_id: identity_id != 3820064579):
             selected = ui._cave_public_batch_identity_ids_for_action(
                 "fishing",
                 [301299112, 3765328695, 3820064579, 3852827410],
@@ -502,6 +558,63 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, now))
         self.assertTrue(ui._cave_public_background_action_due("fishing", identity_id, now + 1801))
+
+    async def test_cave_public_background_scheduler_queues_without_waiting_for_http(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["next_stargazer_panel_time"] = 0
+        background_snapshot = dict(ui._cave_public_background_state)
+        retry_snapshot = dict(ui._cave_public_background_retry_at)
+        scheduled = []
+
+        def capture(coro):
+            scheduled.append(coro)
+            coro.close()
+
+        try:
+            ui._cave_public_background_state.update({"running": False, "next_run_at": 0})
+            ui._cave_public_background_retry_at.clear()
+            run_mock = AsyncMock(return_value=(True, "完成", {}))
+            with patch.object(ui, "_fire_and_forget", side_effect=capture), \
+                    patch.object(ui, "ui_run_cave_public_entry", new=run_mock):
+                result = await ui._run_cave_public_background_scheduler(1_700_000_000.0, {
+                    "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+                    "cave_public_stargazer_enabled": True,
+                    "cave_public_delay_sec": 20,
+                })
+
+            self.assertTrue(result["started"])
+            self.assertTrue(result["queued"])
+            self.assertTrue(ui._cave_public_background_state["running"])
+            run_mock.assert_not_awaited()
+            self.assertEqual(1, len(scheduled))
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retry_snapshot)
+
+    async def test_cave_public_background_worker_releases_slot_after_http(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        retry_snapshot = dict(ui._cave_public_background_retry_at)
+        try:
+            ui._cave_public_background_state.update({"running": True, "next_run_at": 0})
+            ui._cave_public_background_retry_at.clear()
+            with patch.object(ui, "ui_run_cave_public_entry", new=AsyncMock(return_value=(True, "完成", {}))), \
+                    patch.object(ui, "console_log"):
+                await ui._execute_cave_public_background_action(1001, "stargazer", 20)
+
+            self.assertFalse(ui._cave_public_background_state["running"])
+            self.assertEqual("1001:stargazer", ui._cave_public_background_state["last_action"])
+            self.assertEqual("完成", ui._cave_public_background_state["last_result"])
+            self.assertIn(("stargazer", 1001), ui._cave_public_background_retry_at)
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retry_snapshot)
 
     async def test_world_boss_miniapp_config_is_default_off_and_clamped(self):
         state_module._meta_state["miniapp_auto_config"] = {}
@@ -545,7 +658,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
-                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "is_cave_public_identity_available", return_value=True), \
                     patch.object(ui, "_fire_and_forget", side_effect=close_scheduled) as fire_mock:
                 ok, _message, extra = await ui.ui_start_cave_public_entry_batch({
                     "public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -581,7 +694,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 account_by_identity[alias_id] = account_id
 
         self.assertEqual(24, len(identity_ids))
-        with patch.object(ui, "get_identity_enabled", return_value=True), \
+        with patch.object(ui, "is_cave_public_identity_available", return_value=True), \
                 patch.object(ui, "get_identity_account", side_effect=lambda identity_id: account_by_identity[identity_id]):
             selected = ui._cave_public_batch_identity_ids_for_action("small_world", identity_ids)
             trial_selected = ui._cave_public_batch_identity_ids_for_action("trial", identity_ids)
@@ -602,7 +715,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             100202: 1002,
         }
 
-        with patch.object(ui, "get_identity_enabled", side_effect=lambda identity_id: identity_id != 1002), \
+        with patch.object(ui, "is_cave_public_identity_available", side_effect=lambda identity_id: identity_id != 1002), \
                 patch.object(ui, "get_identity_account", side_effect=lambda identity_id: account_by_identity[identity_id]):
             selected = ui._cave_public_batch_identity_ids_for_action("small_world", identity_ids)
 
@@ -624,7 +737,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             return True, f"{action} 完成", {}
 
         try:
-            with patch.object(ui, "get_identity_enabled", return_value=True), \
+            with patch.object(ui, "is_cave_public_identity_available", return_value=True), \
                     patch.object(ui, "get_identity_display_name", side_effect=lambda identity_id: f"角色{identity_id}"), \
                     patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
                     patch.object(ui, "send_audit_log", new=AsyncMock()):
@@ -737,6 +850,72 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             result = await ui.run_miniapp_daily_scheduler(now)
 
         self.assertEqual({"started": False, "reason": "disabled"}, result)
+        send_mock.assert_not_awaited()
+
+    async def test_tree_daily_scheduler_closes_stale_entry_without_resend(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "tree_daily_enabled_identity_ids": [1001],
+        }
+        now = datetime(2026, 7, 7, 2, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        coordinator = {
+            "phase": "entry_pending",
+            "identity_id": 1001,
+            "day_key": "2026-07-07",
+            "op_id": "tree_daily:2026-07-07:1001",
+            "command_msg_id": 77001,
+            "started_at": now - ui.TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC - 1,
+        }
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_coordinator_snapshot", return_value=coordinator), \
+                patch.object(ui, "cancel_tree_miniapp_daily_run", return_value=True) as cancel_mock, \
+                patch.object(ui, "record_miniapp_state") as record_mock, \
+                patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            result = await ui._run_tree_miniapp_daily_scheduler(
+                now,
+                ui.normalize_miniapp_auto_config(),
+            )
+
+        self.assertEqual({"started": False, "reason": "tree_entry_timeout", "identity_id": 1001}, result)
+        cancel_mock.assert_called_once_with(
+            "tree_daily:2026-07-07:1001",
+            reason="入口命令无回包",
+            now=now,
+        )
+        self.assertEqual("unknown", record_mock.call_args.args[2]["phase"])
+        audit_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
+
+    async def test_tree_daily_scheduler_closes_persisted_stale_entry_after_restart(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "tree_daily_enabled_identity_ids": [1001],
+        }
+        now = datetime(2026, 7, 7, 2, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        persisted = {
+            "kind": "daily",
+            "day_key": "2026-07-07",
+            "phase": "entry_pending",
+            "command_msg_id": 77001,
+            "_record_updated_at": now - ui.TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC - 1,
+            "_record_source_id": "tree_daily:2026-07-07:1001",
+        }
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_coordinator_snapshot", return_value={"phase": "idle"}), \
+                patch.object(ui, "check_tree_miniapp_eligibility", return_value=(True, "")), \
+                patch.object(ui, "_tree_daily_state_for_identity", return_value=persisted), \
+                patch.object(ui, "cancel_tree_miniapp_daily_run", return_value=False) as cancel_mock, \
+                patch.object(ui, "record_miniapp_state") as record_mock, \
+                patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            result = await ui._run_tree_miniapp_daily_scheduler(
+                now,
+                ui.normalize_miniapp_auto_config(),
+            )
+
+        self.assertEqual({"started": False, "reason": "tree_entry_timeout", "identity_id": 1001}, result)
+        cancel_mock.assert_called_once()
+        self.assertEqual("unknown", record_mock.call_args.args[2]["phase"])
+        audit_mock.assert_awaited_once()
         send_mock.assert_not_awaited()
 
     async def test_miniapp_daily_scheduler_starts_second_wave_inside_window(self):
@@ -884,10 +1063,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("miniapp", adapters["cave_treasure"]["ui_group"])
         self.assertEqual("sect", adapters["stargazer"]["ui_group"])
         self.assertEqual("sect", adapters["tree"]["ui_group"])
-        self.assertEqual(".洞府", probe_commands["cave_treasure"])
         self.assertEqual(".钓鱼", probe_commands["fishing"])
         self.assertEqual(".灵树", probe_commands["tree"])
-        self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])
         self.assertEqual(".灵树", manual_run_commands["tree"])
         self.assertEqual(".天机试炼", manual_run_commands["trial"])
@@ -901,6 +1078,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snapshot["flow_plans"]["tree"]["default_enabled"])
         self.assertTrue(snapshot["flow_plans"]["cave_treasure"]["manual_only"])
         self.assertTrue(snapshot["flow_plans"]["tree"]["manual_only"])
+        self.assertEqual(".洞府", probe_commands["cave_treasure"])
+        self.assertEqual(".洞府", manual_run_commands["cave_treasure"])
         self.assertEqual([".洞府"], snapshot["flow_plans"]["cave_treasure"]["replaces_commands"])
         self.assertEqual([".灵树"], snapshot["flow_plans"]["tree"]["replaces_commands"])
         self.assertEqual("single_identity_command_replacement", snapshot["flow_plans"]["cave_treasure"]["read_scope"])

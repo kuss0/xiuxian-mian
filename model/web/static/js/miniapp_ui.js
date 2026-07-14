@@ -211,8 +211,8 @@
       : '<span class="miniapp-empty">暂无频道身份候选</span>';
     return ''
       + '<section class="miniapp-score-config miniapp-cave-public" data-cave-public-entry="1">'
-      + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜按动作身份策略串行</span></div>'
-      + '<label><span>公共 URL</span><input type="url" data-cave-public-url="1" value="' + esc(cavePublicUrlDraft) + '" placeholder="' + (automation.cave_public_entry_url_configured ? '已配置，可留空沿用' : '粘贴洞府公共入口') + '" autocomplete="off"></label>'
+      + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜候选入口串行兜底</span></div>'
+      + '<label><span>公共 URL 候选</span><textarea data-cave-public-url="1" rows="3" placeholder="' + (automation.cave_public_entry_url_configured ? '已配置 ' + esc(automation.cave_public_entry_url_count || 1) + ' 个，可留空沿用；每行一个入口' : '粘贴洞府公共入口，每行一个') + '" autocomplete="off">' + esc(cavePublicUrlDraft) + '</textarea></label>'
       + '<label><span>动作间隔</span><input type="number" min="10" max="120" step="5" data-cave-public-delay="1" value="' + esc(automation.cave_public_delay_sec || 20) + '"></label>'
       + '<div class="miniapp-item-actions">'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-config-save="1">保存设置</button>'
@@ -231,6 +231,7 @@
       + fishingCandidateHtml
       + '<div class="miniapp-cave-batch-status">'
       + badge(status, running ? 'warn' : 'neutral')
+      + badge('入口 ' + (automation.cave_public_entry_url_count || 0), automation.cave_public_entry_url_configured ? 'ok' : 'neutral')
       + badge('成功 ' + succeeded, 'ok')
       + (failed ? badge('失败 ' + failed, 'warn') : '')
       + (result ? '<span>' + esc(result) + '</span>' : '')

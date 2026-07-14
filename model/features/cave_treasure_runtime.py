@@ -9,10 +9,10 @@ from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
 from ..runtime import send_audit_log
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_send_as_profile, state, use_identity
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from . import deep_retreat, stargazer, yuanying
+from . import deep_retreat, fishing_behavior, stargazer, yuanying
 from .cave_treasure_miniapp import (
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
@@ -31,6 +31,7 @@ from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payloa
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
+    _fishing_reset_jitter_sec,
     _remaining_miniapp_chain_rounds,
     _send_fishing_daily_completion_summary,
 )
@@ -1035,12 +1036,6 @@ def _plan_cave_public_small_world_action(overview):
         faith_cap = int(small_world.get("faith_cap", 100) or 100)
         if faith_cap > 0 and faith < faith_cap:
             return {"action": "miracle_sermon", "reason": f"信仰 {faith}/{faith_cap}，执行布道"}
-        population = int(small_world.get("population", 0) or 0)
-        population_cap = int(small_world.get("population_cap", 0) or 0)
-        stability = int(small_world.get("stability", 0) or 0)
-        stability_cap = int(small_world.get("stability_cap", 100) or 100)
-        if (population_cap > 0 and population / population_cap <= 0.95) or (stability_cap > 0 and stability / stability_cap <= 0.80):
-            return {"action": "miracle_relief", "reason": "人口或稳定偏低，执行赈灾"}
 
     if state.get("small_world_harvest_enabled") and small_world.get("can_harvest"):
         return {"action": "collect", "reason": "已显式开启收割香火"}
@@ -1095,7 +1090,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
@@ -1250,7 +1245,7 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     identity_error = _public_entry_account_identity_error(identity_id)
     if identity_error:
@@ -1313,7 +1308,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
@@ -1396,7 +1391,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
@@ -1425,10 +1420,22 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
         cave_data = dict(cave_result.get("data") or {})
         raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
         external_app = _find_fishing_external_app_in_cave_payload(raw)
-        if not external_app or not external_app.get("available"):
+        if not external_app:
             message = "洞府公共入口未开放灵溪垂钓"
             await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
             return {"ok": False, "message": message, "extra": {}}
+        if not external_app.get("available"):
+            with use_identity(identity_id):
+                state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(
+                    now,
+                    _fishing_reset_jitter_sec(identity_id),
+                )
+                state["fishing_last_result"] = "未持有鱼竿，今日跳过"
+                state["fishing_last_error"] = ""
+                save_state()
+            message = "未持有鱼竿，今日跳过灵溪垂钓"
+            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
+            return {"ok": True, "message": message, "extra": {"skipped": "rod_missing"}}
 
         launch = {}
         if external_app.get("action"):
@@ -1501,7 +1508,7 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
@@ -1608,7 +1615,7 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     with use_identity(identity_id):
         if not state.get("stargazer_enabled"):
@@ -1671,7 +1678,7 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
         return {"ok": False, "message": "洞府闭关动作仅允许 status/start/settle/force", "extra": {}}
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}

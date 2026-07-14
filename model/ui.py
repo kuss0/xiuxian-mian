@@ -203,6 +203,7 @@ from .state import (
     get_identity_account_map,
     get_identity_ui_display_name,
     get_identity_state,
+    is_cave_public_identity_available,
     get_miniapp_auto_config,
     get_miniapp_state_records,
     get_divination_daily_limit,
@@ -314,12 +315,14 @@ _cave_public_batch_state = {
 }
 _cave_public_ui_run_lock = asyncio.Lock()
 _cave_public_background_state = {
+    "running": False,
     "next_run_at": 0,
     "cursor": 0,
     "last_action": "",
     "last_result": "",
 }
 _cave_public_background_retry_at = {}
+TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC = 10 * 60
 MINIAPP_ENTRY_PROBE_COMMANDS = {
     "cave_treasure": ".洞府",
     "fishing": CMD_FISHING,
@@ -368,6 +371,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_stargazer_enabled": False,
     "cave_public_yuanying_enabled": False,
     "cave_public_entry_url": "",
+    "cave_public_entry_urls": [],
     "cave_public_delay_sec": 20,
     "world_boss_auto_enabled": False,
     "world_boss_auto_account_limit": 1,
@@ -383,6 +387,42 @@ TRIAL_DAILY_BATCH_WAVES = (
 
 def _miniapp_ui_group(game_key):
     return dict(MINIAPP_UI_GROUPS.get(str(game_key or "").strip().lower()) or {"key": "miniapp", "label": "MiniApp合集"})
+
+
+def _normalize_cave_public_entry_urls_value(value):
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in re.split(r"[\r\n,，\s]+", value) if item.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = [str(item or "").strip() for item in value if str(item or "").strip()]
+    else:
+        raw_items = []
+    urls = []
+    seen = set()
+    for item in raw_items:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        urls.append(item)
+    return urls
+
+
+def _cave_public_entry_urls_from_config(config=None):
+    raw = dict(config or get_miniapp_auto_config() or {})
+    urls = []
+    urls.extend(_normalize_cave_public_entry_urls_value(raw.get("cave_public_entry_url")))
+    urls.extend(_normalize_cave_public_entry_urls_value(raw.get("cave_public_entry_urls")))
+    result = []
+    seen = set()
+    for url in urls:
+        key = str(url or "").strip().casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(str(url or "").strip())
+    return result
 
 
 def _with_miniapp_ui_group(item):
@@ -421,7 +461,9 @@ def normalize_miniapp_auto_config(config=None):
     except (TypeError, ValueError, OverflowError):
         result["cave_public_delay_sec"] = 20
     result["cave_public_delay_sec"] = max(10, min(120, result["cave_public_delay_sec"]))
-    result["cave_public_entry_url"] = str(result.get("cave_public_entry_url") or "").strip()
+    urls = _cave_public_entry_urls_from_config(result)
+    result["cave_public_entry_url"] = urls[0] if urls else ""
+    result["cave_public_entry_urls"] = urls
     try:
         result["world_boss_auto_account_limit"] = int(result.get("world_boss_auto_account_limit", 1) or 1)
     except (TypeError, ValueError, OverflowError):
@@ -580,6 +622,7 @@ def get_miniapp_auto_config_snapshot(now=None):
     all_done = all(item["done_today"] for item in wave_states)
     safe_config = dict(config)
     safe_config.pop("cave_public_entry_url", None)
+    safe_config.pop("cave_public_entry_urls", None)
     try:
         from .features.world_boss import select_world_boss_miniapp_entry_identities
         world_boss_candidate_ids = select_world_boss_miniapp_entry_identities()
@@ -599,7 +642,7 @@ def get_miniapp_auto_config_snapshot(now=None):
     cave_public_fishing_candidates = []
     for identity_id in get_identity_ids():
         account_id = int(get_identity_account(identity_id) or 0)
-        if account_id <= 0 or account_id == int(identity_id) or not get_identity_enabled(identity_id):
+        if account_id <= 0 or account_id == int(identity_id) or not is_cave_public_identity_available(identity_id):
             continue
         cave_public_fishing_candidates.append({
             "identity_id": int(identity_id),
@@ -611,7 +654,8 @@ def get_miniapp_auto_config_snapshot(now=None):
         **safe_config,
         "world_boss_candidates": world_boss_candidates,
         "cave_public_fishing_candidates": cave_public_fishing_candidates,
-        "cave_public_entry_url_configured": bool(config.get("cave_public_entry_url")),
+        "cave_public_entry_url_configured": bool(config.get("cave_public_entry_urls")),
+        "cave_public_entry_url_count": len(config.get("cave_public_entry_urls") or []),
         "today": today,
         "trial_daily_done_today": all_done,
         "trial_daily_in_window": bool(active_wave and not active_wave.get("done_today")),
@@ -6710,33 +6754,76 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         identity_id = 0
     if identity_id not in get_identity_ids():
         return False, "身份不存在", {}
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return False, "身份已停用", {}
-    url = str(public_entry_url or normalize_miniapp_auto_config().get("cave_public_entry_url") or "").strip()
-    if not url:
+    if public_entry_url:
+        candidate_urls = _normalize_cave_public_entry_urls_value(public_entry_url)
+    else:
+        candidate_urls = list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or [])
+    if not candidate_urls:
         return False, "缺少洞府公共入口 URL", {}
     if _cave_public_ui_run_lock.locked():
         return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {}
     async with _cave_public_ui_run_lock:
         normalized_action = str(action or "").strip().lower()
-        if normalized_action == "small_world":
-            result = await run_cave_public_small_world_sync(identity_id, url)
-        elif normalized_action in {"treasure", "hunt", "cave_treasure"}:
-            result = await run_cave_public_treasure(identity_id, url)
-        elif normalized_action in {"trial", "tianji_trial"}:
-            result = await run_cave_public_trial(identity_id, url)
-        elif normalized_action in {"fishing", "fish"}:
-            result = await run_cave_public_fishing(identity_id, url)
-        elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
-            result = await run_cave_public_stargazer(identity_id, url)
-        elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
-            result = await run_cave_public_yuanying(identity_id, url)
-        elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
-            deep_action = normalized_action.replace("deep_", "", 1)
-            result = await run_cave_public_deep_retreat_action(identity_id, url, deep_action)
-        else:
-            return False, "洞府公共入口动作无效", {}
-        return bool(result.get("ok")), str(result.get("message") or ""), dict(result.get("extra") or {})
+        result = {}
+        attempted = []
+        for index, url in enumerate(candidate_urls):
+            if normalized_action == "small_world":
+                result = await run_cave_public_small_world_sync(identity_id, url)
+            elif normalized_action in {"treasure", "hunt", "cave_treasure"}:
+                result = await run_cave_public_treasure(identity_id, url)
+            elif normalized_action in {"trial", "tianji_trial"}:
+                result = await run_cave_public_trial(identity_id, url)
+            elif normalized_action in {"fishing", "fish"}:
+                result = await run_cave_public_fishing(identity_id, url)
+            elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
+                result = await run_cave_public_stargazer(identity_id, url)
+            elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
+                result = await run_cave_public_yuanying(identity_id, url)
+            elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
+                deep_action = normalized_action.replace("deep_", "", 1)
+                result = await run_cave_public_deep_retreat_action(identity_id, url, deep_action)
+            else:
+                return False, "洞府公共入口动作无效", {}
+            message = str(result.get("message") or "")
+            attempted.append({"index": index, "ok": bool(result.get("ok")), "message": message[:120]})
+            if result.get("ok") or not _is_cave_public_entry_health_failure(message):
+                extra = dict(result.get("extra") or {})
+                extra["entry_index"] = index
+                extra["entry_attempts"] = attempted
+                return bool(result.get("ok")), message, extra
+            if index + 1 < len(candidate_urls):
+                console_log(
+                    f"🧩 洞府公共入口候选失效，切换备用：{get_identity_display_name(identity_id)}｜{normalized_action}｜{message[:120]}",
+                    scope="identity",
+                    send_as_id=identity_id,
+                    limit=220,
+                )
+        extra = dict(result.get("extra") or {})
+        extra["entry_index"] = max(0, len(candidate_urls) - 1)
+        extra["entry_attempts"] = attempted
+        return bool(result.get("ok")), str(result.get("message") or ""), extra
+
+
+def _is_cave_public_entry_health_failure(message):
+    text = str(message or "")
+    return any(keyword in text for keyword in (
+        "入口 URL 无效",
+        "身份读取失败",
+        "入口读取失败",
+        "会话初始化失败",
+        "WebView",
+        "tgWebAppData",
+        "initial_start_failed",
+        "selected_start_failed",
+        "没有可用的官方游戏 Bot",
+        "UsernameInvalidError",
+        "UsernameNotOccupiedError",
+        "BotInvalidError",
+        "动态入口获取失败",
+        "未返回可用 URL",
+    ))
 
 
 def _normalize_cave_public_batch_delay(value):
@@ -6778,28 +6865,28 @@ def _normalize_cave_public_batch_actions(payload):
 
 
 def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
-    # Telegram WebApp initData is bound to the physical login account. A channel
-    # or other send-as identity under that account cannot select its own player.
-    # Prefer the account's own identity and run it at most once per batch.
-    enabled_ids = []
+    # WebApp initData belongs to the physical account, while the dwelling panel
+    # can select channel players by playerId. Only account-shared actions are
+    # deduplicated to the physical account below.
+    available_ids = []
     for raw_identity_id in all_identity_ids:
         try:
             identity_id = int(raw_identity_id or 0)
         except (TypeError, ValueError, OverflowError):
             continue
-        if identity_id > 0 and get_identity_enabled(identity_id):
-            enabled_ids.append(identity_id)
+        if identity_id > 0 and is_cave_public_identity_available(identity_id):
+            available_ids.append(identity_id)
 
-    enabled_set = set(enabled_ids)
+    available_set = set(available_ids)
     normalized_action = str(action or "").strip().lower()
     if normalized_action == "fishing":
         selected_ids = set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or [])
-        return [identity_id for identity_id in enabled_ids if identity_id in selected_ids]
+        return [identity_id for identity_id in available_ids if identity_id in selected_ids]
     if normalized_action in {"trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
-        return enabled_ids
+        return available_ids
     result = []
     seen_accounts = set()
-    for identity_id in enabled_ids:
+    for identity_id in available_ids:
         try:
             account_id = int(get_identity_account(identity_id) or 0)
         except (TypeError, ValueError, OverflowError):
@@ -6812,9 +6899,9 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
         # fall back to a channel/send-as identity when its account identity is
         # absent or disabled: runtime will correctly reject that alias, and a
         # queued HTTP attempt would only add noise.
-        if account_id != identity_id and account_id not in enabled_set:
+        if account_id != identity_id and account_id not in available_set:
             continue
-        canonical_identity_id = account_id if account_id in enabled_set else identity_id
+        canonical_identity_id = account_id if account_id in available_set else identity_id
         result.append(canonical_identity_id)
     return result
 
@@ -6857,13 +6944,19 @@ async def ui_set_cave_public_config(payload=None):
         })
     if "delay_sec" in payload:
         config["cave_public_delay_sec"] = int(_normalize_cave_public_batch_delay(payload.get("delay_sec")))
-    if "public_entry_url" in payload:
-        public_entry_url = str(payload.get("public_entry_url") or "").strip()
-        if public_entry_url:
-            _token, _webview_url, error = _parse_public_cave_entry_url(public_entry_url)
-            if error:
-                return False, f"洞府公共入口 URL 无效：{error}"
-            config["cave_public_entry_url"] = public_entry_url
+    if "public_entry_url" in payload or "public_entry_urls" in payload:
+        public_urls = []
+        public_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_url")))
+        public_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_urls")))
+        if public_urls:
+            valid_urls = []
+            for public_entry_url in public_urls:
+                _token, _webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+                if error:
+                    return False, f"洞府公共入口 URL 无效：{error}"
+                valid_urls.append(public_entry_url)
+            config["cave_public_entry_urls"] = valid_urls
+            config["cave_public_entry_url"] = valid_urls[0]
     set_miniapp_auto_config(config)
     save_state()
     actions = _cave_public_actions_from_config(config)
@@ -6986,10 +7079,16 @@ async def ui_start_cave_public_entry_batch(payload=None):
     payload = dict(payload or {})
     if _cave_public_batch_state.get("running"):
         return False, "已有洞府公共入口串行批次正在运行", dict(_cave_public_batch_state)
-    public_entry_url = str(payload.get("public_entry_url") or normalize_miniapp_auto_config().get("cave_public_entry_url") or "").strip()
-    if not public_entry_url:
+    if _cave_public_background_state.get("running") or _cave_public_ui_run_lock.locked():
+        return False, "洞府公共入口后台动作正在运行，请等待完成", dict(_cave_public_background_state)
+    payload_urls = []
+    payload_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_url")))
+    payload_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_urls")))
+    public_entry_url = "\n".join(payload_urls)
+    configured_urls = list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or [])
+    if not public_entry_url and not configured_urls:
         return False, "缺少洞府公共入口 URL", {}
-    identity_ids = _normalize_trial_batch_identity_ids(payload)
+    identity_ids = _normalize_cave_public_batch_identity_ids(payload)
     if not identity_ids:
         return False, "没有可执行的启用身份", {}
     actions = _normalize_cave_public_batch_actions(payload)
@@ -7050,6 +7149,30 @@ def _normalize_trial_batch_identity_ids(payload):
         if identity_id not in get_identity_ids():
             continue
         if not get_identity_enabled(identity_id):
+            continue
+        seen.add(identity_id)
+        result.append(identity_id)
+    return result
+
+
+def _normalize_cave_public_batch_identity_ids(payload):
+    payload = dict(payload or {})
+    raw_ids = payload.get("send_as_ids")
+    if raw_ids in (None, "", []):
+        raw_ids = get_identity_ids()
+    if isinstance(raw_ids, str):
+        raw_ids = [item for item in re.split(r"[\s,，]+", raw_ids) if item]
+    result = []
+    seen = set()
+    registered_ids = set(get_identity_ids())
+    for raw_id in raw_ids or ():
+        try:
+            identity_id = int(raw_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if identity_id <= 0 or identity_id in seen or identity_id not in registered_ids:
+            continue
+        if not is_cave_public_identity_available(identity_id):
             continue
         seen.add(identity_id)
         result.append(identity_id)
@@ -7211,12 +7334,43 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
     return priority, due_at, int(identity_id)
 
 
+async def _execute_cave_public_background_action(identity_id, action, delay_sec):
+    ok = False
+    message = ""
+    try:
+        ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, "")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {str(exc)[:180]}"
+    finally:
+        finished_at = time.time()
+        retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
+        retry_sec = 60 if ok else 30 * 60
+        if action in {"deep_status", "deep_settle"} and not ok:
+            retry_sec = 30 * 60
+        _cave_public_background_retry_at[(retry_action, int(identity_id))] = finished_at + retry_sec
+        _cave_public_background_state.update({
+            "running": False,
+            "next_run_at": finished_at + delay_sec,
+            "last_action": f"{identity_id}:{action}",
+            "last_result": str(message or "")[:240],
+        })
+    console_log(
+        f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"
+        f"{'成功' if ok else '失败'}｜{str(message or '无详情')[:180]}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=260,
+    )
+
+
 async def _run_cave_public_background_scheduler(now, config):
     now = float(now or time.time())
-    public_entry_url = str(config.get("cave_public_entry_url") or "").strip()
-    if not public_entry_url:
+    public_entry_urls = _cave_public_entry_urls_from_config(config)
+    if not public_entry_urls:
         return {"started": False, "reason": "public_entry_url_missing"}
-    if _cave_public_batch_state.get("running") or _cave_public_ui_run_lock.locked():
+    if _cave_public_batch_state.get("running") or _cave_public_background_state.get("running") or _cave_public_ui_run_lock.locked():
         return {"started": False, "reason": "cave_public_busy"}
     if now < float(_cave_public_background_state.get("next_run_at", 0) or 0):
         return {"started": False, "reason": "background_throttled"}
@@ -7232,7 +7386,7 @@ async def _run_cave_public_background_scheduler(now, config):
     enabled_action_flags = [(action, flag) for action, flag in action_flags if config.get(flag)]
     if not enabled_action_flags:
         return {"started": False, "reason": "background_disabled"}
-    identity_ids = _normalize_trial_batch_identity_ids({})
+    identity_ids = _normalize_cave_public_batch_identity_ids({})
     candidates = []
     for action, flag in enabled_action_flags:
         for identity_id in _cave_public_batch_identity_ids_for_action(action, identity_ids):
@@ -7249,38 +7403,72 @@ async def _run_cave_public_background_scheduler(now, config):
     candidates.sort(key=lambda item: _cave_public_background_candidate_sort_key(item[1], item[0], now))
     identity_id, action = candidates[0]
     _cave_public_background_state["cursor"] = 0
-    ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
     delay_sec = _normalize_cave_public_batch_delay(config.get("cave_public_delay_sec"))
     _cave_public_background_state.update({
-        "next_run_at": time.time() + delay_sec,
+        "running": True,
+        "next_run_at": now + delay_sec,
         "last_action": f"{identity_id}:{action}",
-        "last_result": str(message or "")[:240],
+        "last_result": "执行中",
     })
-    console_log(
-        f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"
-        f"{'成功' if ok else '失败'}｜{str(message or '无详情')[:180]}",
-        scope="identity",
-        send_as_id=identity_id,
-        limit=260,
-    )
-    retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
-    retry_sec = 60 if ok else 30 * 60
-    if action in {"deep_status", "deep_settle"} and not ok:
-        retry_sec = 30 * 60
-    _cave_public_background_retry_at[(retry_action, identity_id)] = time.time() + retry_sec
+    try:
+        _fire_and_forget(_execute_cave_public_background_action(identity_id, action, delay_sec))
+    except Exception:
+        _cave_public_background_state["running"] = False
+        raise
     return {
         "started": True,
         "kind": "background",
         "identity_id": identity_id,
         "action": action,
-        "ok": bool(ok),
+        "queued": True,
     }
 
 
 def _tree_daily_state_for_identity(identity_id):
     snapshot = get_miniapp_state_snapshot(send_as_id=identity_id, game_key="tree")
     rows = list(snapshot.get("rows") or ())
-    return dict((rows[0].get("state") if rows else {}) or {})
+    if not rows:
+        return {}
+    row = rows[0]
+    result = dict(row.get("state") or {})
+    result["_record_updated_at"] = float(row.get("updated_at", 0) or 0)
+    result["_record_source_id"] = str(row.get("source_id") or "")
+    return result
+
+
+async def _mark_tree_daily_entry_unknown(identity_id, day_key, now, *, op_id="", command_msg_id=0):
+    identity_id = int(identity_id or 0)
+    day_key = str(day_key or get_day_key(now))
+    op_id = str(op_id or "").strip()
+    if op_id:
+        cancel_tree_miniapp_daily_run(op_id, reason="入口命令无回包", now=now)
+    if identity_id <= 0:
+        return {"started": False, "reason": "tree_entry_timeout", "identity_id": 0}
+    record_miniapp_state(
+        identity_id,
+        "tree",
+        {
+            "kind": "daily",
+            "day_key": day_key,
+            "phase": "unknown",
+            "completed_today": False,
+            "command_msg_id": int(command_msg_id or 0),
+            "error": "入口命令无回包",
+        },
+        source="tree_daily_scheduler",
+        source_id=op_id or f"tree_daily:{day_key}:{identity_id}",
+        now=now,
+        outputs=("daily_counter", "score_policy", "rewards"),
+        replaces_commands=(".灵树",),
+    )
+    await send_audit_log(
+        "🌳 灵树 MiniApp 入口 10 分钟无回包，已标记未知并停止今日补发。",
+        scope="identity",
+        send_as_id=identity_id,
+        priority="normal",
+        limit=220,
+    )
+    return {"started": False, "reason": "tree_entry_timeout", "identity_id": identity_id}
 
 
 async def _run_tree_miniapp_daily_scheduler(now, config):
@@ -7290,7 +7478,21 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
     if not enabled_ids:
         return {"started": False, "reason": "tree_disabled"}
     coordinator = get_tree_miniapp_coordinator_snapshot()
-    if str(coordinator.get("phase") or "") in {"entry_pending", "running"}:
+    coordinator_phase = str(coordinator.get("phase") or "")
+    if coordinator_phase == "entry_pending":
+        started_at = float(coordinator.get("started_at", 0) or 0)
+        if started_at > 0 and float(now) - started_at >= TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC:
+            identity_id = int(coordinator.get("identity_id", 0) or 0)
+            op_id = str(coordinator.get("op_id") or "").strip()
+            day_key = str(coordinator.get("day_key") or get_day_key(now))
+            return await _mark_tree_daily_entry_unknown(
+                identity_id,
+                day_key,
+                now,
+                op_id=op_id,
+                command_msg_id=int(coordinator.get("command_msg_id", 0) or 0),
+            )
+    if coordinator_phase in {"entry_pending", "running"}:
         return {"started": False, "reason": "tree_busy"}
     day_key = get_day_key(now)
     for identity_id in enabled_ids:
@@ -7298,6 +7500,21 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
         if not eligible:
             continue
         daily_state = _tree_daily_state_for_identity(identity_id)
+        if (
+            daily_state.get("kind") == "daily"
+            and daily_state.get("day_key") == day_key
+            and str(daily_state.get("phase") or "") == "entry_pending"
+            and coordinator_phase not in {"entry_pending", "running"}
+        ):
+            updated_at = float(daily_state.get("_record_updated_at", 0) or 0)
+            if updated_at > 0 and float(now) - updated_at >= TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC:
+                return await _mark_tree_daily_entry_unknown(
+                    identity_id,
+                    day_key,
+                    now,
+                    op_id=str(daily_state.get("_record_source_id") or ""),
+                    command_msg_id=int(daily_state.get("command_msg_id", 0) or 0),
+                )
         if (
             daily_state.get("kind") == "daily"
             and daily_state.get("day_key") == day_key
@@ -7377,7 +7594,7 @@ async def run_miniapp_daily_scheduler(now):
     trial_ready = bool(
         config.get("trial_daily_effective_enabled")
         and raw_config.get("cave_public_trial_enabled")
-        and raw_config.get("cave_public_entry_url")
+        and raw_config.get("cave_public_entry_urls")
         and active_wave
         and not active_wave.get("done_today")
     )
@@ -7392,7 +7609,6 @@ async def run_miniapp_daily_scheduler(now):
             save_state()
             return {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
         ok, message, extra = await ui_start_cave_public_entry_batch({
-            "public_entry_url": raw_config.get("cave_public_entry_url"),
             "send_as_ids": identity_ids,
             "actions": ["trial"],
             "delay_sec": raw_config.get("cave_public_delay_sec"),
@@ -7424,7 +7640,7 @@ async def run_miniapp_daily_scheduler(now):
         return {"started": False, "reason": "outside_window"}
     if active_wave.get("done_today"):
         return {"started": False, "reason": f"{wave_key or 'wave'}_done_today"}
-    if not raw_config.get("cave_public_entry_url"):
+    if not raw_config.get("cave_public_entry_urls"):
         return {"started": False, "reason": "public_entry_url_missing"}
     return {"started": False, "reason": "cave_public_busy"}
 

@@ -191,7 +191,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_small_world_time"],
             )
 
-    async def test_wait_panel_with_low_stability_prefers_relief_before_preach(self):
+    async def test_wait_panel_with_low_stability_uses_default_preach(self):
         send_as_id = 8659059189
         now = 9100.0
         state_module.ensure_identity_registered(send_as_id)
@@ -216,16 +216,16 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_preach_enabled"] = True
             with (
                 patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
-                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
                 patch.object(small_world, "save_state"),
             ):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            relief_mock.assert_awaited_once_with(now, "稳定 49/100，赈灾维护")
-            preach_mock.assert_not_awaited()
+            relief_mock.assert_not_awaited()
+            preach_mock.assert_awaited_once_with(now, "信仰 92/100，布道维护")
 
-    async def test_wait_panel_with_large_population_deficit_sends_relief(self):
+    async def test_wait_panel_with_large_population_deficit_does_not_auto_relief(self):
         send_as_id = 8659059190
         now = 9200.0
         state_module.ensure_identity_registered(send_as_id)
@@ -250,7 +250,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            relief_mock.assert_awaited_once_with(now, "人口 94000 缺口 6000，优先赈灾")
+            relief_mock.assert_not_awaited()
             preach_mock.assert_not_awaited()
 
     async def test_wait_panel_with_low_faith_only_sends_preach(self):
@@ -1488,8 +1488,8 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(75, snapshot["stability"])
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
-            self.assertEqual("relief", state_module.state["small_world_pending_god_action"])
-            self.assertEqual("稳定 75/100，赈灾维护", state_module.state["small_world_pending_god_reason"])
+            self.assertEqual("", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("", state_module.state["small_world_pending_god_reason"])
             self.assertEqual(
                 now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC + 60,
                 state_module.state["next_small_world_time"],

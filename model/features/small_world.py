@@ -1049,8 +1049,8 @@ def _preach_reason(panel):
 
 
 def _queue_maintenance_god_action(panel, now):
-    if _should_relief(panel):
-        return _queue_god_action("relief", _relief_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+    # Routine panel deficits do not justify a resource-consuming relief action.
+    # Explicit disaster evidence still queues relief at disaster priority.
     if _should_preach(panel):
         return _queue_god_action("preach", _preach_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
     return False

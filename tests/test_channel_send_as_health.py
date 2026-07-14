@@ -49,6 +49,21 @@ class ChannelSendAsHealthTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
 
+    def test_public_cave_entry_allows_channel_freeze_but_not_manual_disable(self):
+        frozen_id = 3504367852
+        manual_disabled_id = 3581351795
+        for identity_id in (frozen_id, manual_disabled_id):
+            state_module.ensure_identity_registered(identity_id)
+            state_module.set_identity_enabled(identity_id, False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "frozen_identity_ids": [frozen_id, manual_disabled_id],
+            "restore_identity_ids": [frozen_id],
+        })
+
+        self.assertTrue(state_module.is_cave_public_identity_available(frozen_id))
+        self.assertFalse(state_module.is_cave_public_identity_available(manual_disabled_id))
+
     async def test_probe_restores_frozen_channel_identities_after_permission_returns(self):
         now = 1_700_000_000.0
         account_id = 301299112
