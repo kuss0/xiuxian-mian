@@ -481,7 +481,6 @@ async def handle_tree_miniapp_entry(
             limit=180,
         )
         return True
-
     lock = _global_run_lock()
     if lock.locked():
         await send_audit_log(
@@ -491,7 +490,6 @@ async def handle_tree_miniapp_entry(
             limit=160,
         )
         return True
-
     async with lock:
         revoke_tree_miniapp_manual_run(identity_id)
         _set_coordinator("running", auth=auth, now=now)
@@ -547,6 +545,70 @@ async def handle_tree_miniapp_entry(
         return True
 
 
+async def run_tree_miniapp_daily_direct(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    init_data="",
+    day_key="",
+    op_id="",
+    score_profiles=None,
+    now=None,
+):
+    """Run the daily tree flow from a trusted MiniApp launch without a group command."""
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    eligible, reason = check_tree_miniapp_eligibility(identity_id, enabled=True)
+    if not eligible:
+        return {"ok": False, "status": "blocked", "error": reason, "data": {}}
+    auth = {
+        "kind": "daily",
+        "identity_id": identity_id,
+        "day_key": str(day_key or get_day_key(now)),
+        "op_id": str(op_id or f"tree_public:{get_day_key(now)}:{identity_id}"),
+        "command_msg_id": 0,
+        "score_profiles": {
+            mode: normalize_tree_score_profile(mode, (score_profiles or {}).get(mode))
+            for mode in ("jump", "fly")
+        },
+    }
+    lock = _global_run_lock()
+    if lock.locked():
+        return {"ok": False, "status": "blocked", "error": "灵树 MiniApp 全局已有任务", "data": {}}
+
+    async with lock:
+        _set_coordinator("running", auth=auth, now=now)
+        result = await run_tree_miniapp_daily_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            init_data=init_data,
+            capture_sink=_tree_miniapp_capture_store(now),
+            capture_source=f"tree_public:{identity_id}:{auth['day_key']}",
+            score_profiles=auth["score_profiles"],
+        )
+        result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
+        phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
+        if phase not in {"completed", "blocked", "unknown"}:
+            phase = "blocked"
+        _set_coordinator(
+            phase,
+            auth=auth,
+            result=result,
+            error=str(dict(result or {}).get("error") or ""),
+        )
+        _record_tree_daily_result(auth, result, phase, now=time.time())
+        await send_audit_log(
+            f"🌳 灵树结果｜{_format_tree_summary(result)}",
+            scope="identity",
+            send_as_id=identity_id,
+            priority="low" if dict(result or {}).get("ok") else "normal",
+            limit=520,
+        )
+        return dict(result or {})
+
+
 __all__ = [
     "TREE_MINIAPP_DEFAULT_MODE",
     "TREE_MINIAPP_MANUAL_AUTH_TTL_SEC",
@@ -558,4 +620,5 @@ __all__ = [
     "handle_tree_miniapp_entry",
     "prepare_tree_miniapp_daily_run",
     "revoke_tree_miniapp_manual_run",
+    "run_tree_miniapp_daily_direct",
 ]

@@ -12,7 +12,7 @@ from ..runtime import send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from . import deep_retreat, fishing_behavior, stargazer, yuanying
+from . import deep_retreat, fishing_behavior, stargazer, tree_runtime, yuanying
 from .cave_treasure_miniapp import (
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
@@ -27,6 +27,7 @@ from .cave_treasure_miniapp import (
 from .trial_miniapp import build_trial_launch_args
 from .trial_runtime import _format_trial_summary, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
+from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
@@ -277,6 +278,55 @@ def _find_stargazer_external_app_in_cave_payload(value):
                 "key": key,
             }
     return {}
+
+
+def _find_tree_external_app_in_cave_payload(value):
+    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    for group in external.get("groups") or ():
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("apps") or ():
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()
+            title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
+            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+            is_tree = (
+                key in {"spirit_tree", "tree", "luoyun_tree"}
+                or "灵树" in title
+                or "xianxia-spirit-tree" in url
+                or "startapp=tree_" in url
+            )
+            if not is_tree:
+                continue
+            return {
+                "url": url,
+                "title": title or key,
+                "available": bool(item.get("available", True)),
+                "key": key,
+            }
+    return {}
+
+
+def _tree_launch_from_external_app(external_app):
+    url = str((external_app or {}).get("url") or "").strip()
+    if not url:
+        return {}
+    if url.startswith("/"):
+        url = urljoin("https://asc.aiopenai.app/", url)
+    elif "://" not in url:
+        url = urljoin("https://asc.aiopenai.app/miniapp/xianxia-dwelling", url)
+    launch, _args = build_tree_launch_args(url)
+    if not launch.allowed or not launch.start_param:
+        return {}
+    return {
+        "token": launch.start_param,
+        "webview_url": launch.webview_url,
+        "title": str((external_app or {}).get("title") or "").strip(),
+        "safe_summary": launch.safe_summary(),
+    }
 
 
 def _stargazer_launch_from_external_app(external_app):
@@ -1667,6 +1717,65 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             "ok": bool(handled and result.get("ok")),
             "message": f"洞府观星台：{result.get('status') or ('完成' if handled else '未处理')}",
             "extra": {"title": launch.get("title", "")},
+        }
+
+
+async def run_cave_public_tree(
+    identity_id,
+    public_entry_url,
+    *,
+    now=None,
+    day_key="",
+    op_id="",
+    score_profiles=None,
+):
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    eligible, reason = tree_runtime.check_tree_miniapp_eligibility(identity_id, enabled=True)
+    if not eligible:
+        return {"ok": False, "message": reason, "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_tree_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            return {"ok": False, "message": f"洞府灵树身份读取失败：{session.get('error') or 'unknown'}", "extra": {}}
+        cave_result = dict(session.get("result") or {})
+        cave_data = dict(cave_result.get("data") or {})
+        external_app = _find_tree_external_app_in_cave_payload(cave_data.get("raw") or {})
+        if not external_app or not external_app.get("available"):
+            return {"ok": False, "message": "洞府外府未开放落云灵树入口", "extra": {}}
+        launch = _tree_launch_from_external_app(external_app)
+        if not launch:
+            return {"ok": False, "message": "洞府落云灵树入口未返回可用 URL", "extra": {}}
+        result = await tree_runtime.run_tree_miniapp_daily_direct(
+            identity_id,
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            init_data=session.get("init_data") or "",
+            day_key=day_key or get_day_key(now),
+            op_id=op_id,
+            score_profiles=score_profiles,
+            now=now,
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "message": f"洞府落云灵树：{result.get('status') or ('完成' if result.get('ok') else '未完成')}",
+            "extra": {"title": launch.get("title", ""), "result": result},
         }
 
 

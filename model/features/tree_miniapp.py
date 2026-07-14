@@ -197,7 +197,7 @@ def build_tree_miniapp_flow_plan():
         label=TREE_MINIAPP_LABEL,
         manual_only=True,
         default_enabled=False,
-        note="lab-only spirit-tree declaration;旧灵树 scheduler 已归档，不接生产自动跑分",
+        note="公共洞府入口生产自动化；单身份串行、结果未知不补发",
         replaces_commands=(".灵树",),
         state_outputs=("module_snapshot", "daily_counter", "score_policy"),
         steps=(
@@ -1531,6 +1531,7 @@ async def run_tree_miniapp_daily_production_flow(
     *,
     token,
     webview_url,
+    init_data="",
     transport=None,
     adapter=None,
     sleeper=None,
@@ -1543,7 +1544,7 @@ async def run_tree_miniapp_daily_production_flow(
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_tree_miniapp_init_data(
+        init_data = str(init_data or "").strip() or await request_tree_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,

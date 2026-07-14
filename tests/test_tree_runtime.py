@@ -243,6 +243,38 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
         flow_mock.assert_awaited_once()
         self.assertEqual("completed", tree_runtime.get_tree_miniapp_coordinator_snapshot()["phase"])
 
+    async def test_direct_daily_flow_reuses_supplied_init_data(self):
+        flow_result = {
+            "ok": True,
+            "status": "completed",
+            "data": {
+                "phase": "completed",
+                "quotas": {
+                    "jump": {"used": 1, "limit": 1, "remaining": 0},
+                    "fly": {"used": 1, "limit": 1, "remaining": 0},
+                },
+                "runs": [],
+                "rewards": {},
+            },
+        }
+        with patch.object(
+            tree_runtime,
+            "run_tree_miniapp_daily_production_flow",
+            new=AsyncMock(return_value=flow_result),
+        ) as flow_mock, patch.object(tree_runtime, "send_audit_log", new=AsyncMock()):
+            result = await tree_runtime.run_tree_miniapp_daily_direct(
+                1002,
+                token="tree_SECRET999",
+                webview_url="https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999",
+                init_data="dwelling_init_data",
+                day_key="2026-07-14",
+                op_id="tree_daily:2026-07-14:1002",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
+        self.assertEqual("completed", tree_runtime.get_tree_miniapp_coordinator_snapshot()["phase"])
+
     async def test_broadcast_fallback_requires_exact_mention_and_bound_authorization(self):
         prepared = tree_runtime.prepare_tree_miniapp_daily_run(1002, enabled=True, now=1_700_000_000.0)
         with patch.object(

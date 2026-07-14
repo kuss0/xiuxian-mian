@@ -103,6 +103,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_fishing,
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
+    run_cave_public_tree,
     run_cave_public_treasure,
     run_cave_public_trial,
     run_cave_public_yuanying,
@@ -6779,6 +6780,12 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 result = await run_cave_public_fishing(identity_id, url)
             elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
                 result = await run_cave_public_stargazer(identity_id, url)
+            elif normalized_action in {"tree", "spirit_tree", "luoyun_tree"}:
+                result = await run_cave_public_tree(
+                    identity_id,
+                    url,
+                    score_profiles=get_tree_miniapp_score_config(identity_id),
+                )
             elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
                 result = await run_cave_public_yuanying(identity_id, url)
             elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
@@ -6823,6 +6830,7 @@ def _is_cave_public_entry_health_failure(message):
         "BotInvalidError",
         "动态入口获取失败",
         "未返回可用 URL",
+        "未开放落云灵树入口",
     ))
 
 
@@ -7471,6 +7479,53 @@ async def _mark_tree_daily_entry_unknown(identity_id, day_key, now, *, op_id="",
     return {"started": False, "reason": "tree_entry_timeout", "identity_id": identity_id}
 
 
+async def _run_tree_public_daily_worker(identity_id, entry_urls, *, day_key, op_id, score_profiles):
+    final_result = {}
+    try:
+        for index, url in enumerate(entry_urls):
+            final_result = await run_cave_public_tree(
+                identity_id,
+                url,
+                day_key=day_key,
+                op_id=op_id,
+                score_profiles=score_profiles,
+            )
+            extra = dict(final_result.get("extra") or {})
+            if final_result.get("ok") or extra.get("result"):
+                return final_result
+            if index + 1 >= len(entry_urls) or not _is_cave_public_entry_health_failure(final_result.get("message")):
+                break
+    except Exception as exc:
+        final_result = {"ok": False, "message": f"{type(exc).__name__}: {exc}", "extra": {}}
+
+    error = str(final_result.get("message") or "洞府落云灵树入口执行失败")
+    record_miniapp_state(
+        identity_id,
+        "tree",
+        {
+            "kind": "daily",
+            "day_key": day_key,
+            "phase": "blocked",
+            "completed_today": False,
+            "command_msg_id": 0,
+            "error": error,
+        },
+        source="tree_daily_scheduler",
+        source_id=op_id,
+        now=time.time(),
+        outputs=("daily_counter", "score_policy", "rewards"),
+        replaces_commands=(".灵树",),
+    )
+    await send_audit_log(
+        f"🌳 洞府落云灵树未执行：{error}",
+        scope="identity",
+        send_as_id=identity_id,
+        priority="normal",
+        limit=320,
+    )
+    return final_result
+
+
 async def _run_tree_miniapp_daily_scheduler(now, config):
     if not get_global_enabled():
         return {"started": False, "reason": "global_disabled"}
@@ -7503,6 +7558,39 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
         if (
             daily_state.get("kind") == "daily"
             and daily_state.get("day_key") == day_key
+            and str(daily_state.get("phase") or "") == "running"
+            and coordinator_phase not in {"entry_pending", "running"}
+        ):
+            updated_at = float(daily_state.get("_record_updated_at", 0) or 0)
+            if updated_at > 0 and float(now) - updated_at >= TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC:
+                record_miniapp_state(
+                    identity_id,
+                    "tree",
+                    {
+                        "kind": "daily",
+                        "day_key": day_key,
+                        "phase": "unknown",
+                        "completed_today": False,
+                        "command_msg_id": 0,
+                        "error": "公共入口任务中断，结果未知",
+                    },
+                    source="tree_daily_scheduler",
+                    source_id=str(daily_state.get("_record_source_id") or f"tree_daily:{day_key}:{identity_id}"),
+                    now=now,
+                    outputs=("daily_counter", "score_policy", "rewards"),
+                    replaces_commands=(".灵树",),
+                )
+                await send_audit_log(
+                    "🌳 灵树 MiniApp 公共入口任务中断，已标记未知并停止今日补发。",
+                    scope="identity",
+                    send_as_id=identity_id,
+                    priority="normal",
+                    limit=240,
+                )
+                return {"started": False, "reason": "tree_run_interrupted", "identity_id": identity_id}
+        if (
+            daily_state.get("kind") == "daily"
+            and daily_state.get("day_key") == day_key
             and str(daily_state.get("phase") or "") == "entry_pending"
             and coordinator_phase not in {"entry_pending", "running"}
         ):
@@ -7515,51 +7603,31 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
                     op_id=str(daily_state.get("_record_source_id") or ""),
                     command_msg_id=int(daily_state.get("command_msg_id", 0) or 0),
                 )
+        tree_phase = str(daily_state.get("phase") or "")
+        legacy_entry_unknown = (
+            tree_phase == "unknown"
+            and str(daily_state.get("error") or "").strip() == "入口命令无回包"
+        )
         if (
             daily_state.get("kind") == "daily"
             and daily_state.get("day_key") == day_key
-            and str(daily_state.get("phase") or "") in {"entry_pending", "running", "completed", "blocked", "unknown"}
+            and tree_phase in {"entry_pending", "running", "completed", "blocked", "unknown"}
+            and not legacy_entry_unknown
         ):
             continue
+        entry_urls = list(config.get("cave_public_entry_urls") or ())
+        if not entry_urls:
+            return {"started": False, "reason": "tree_public_entry_missing", "identity_id": identity_id}
         op_id = f"tree_daily:{day_key}:{int(identity_id)}"
-        prepared = prepare_tree_miniapp_daily_run(
-            identity_id,
-            enabled=True,
-            day_key=day_key,
-            now=now,
-            op_id=op_id,
-            score_profiles=get_tree_miniapp_score_config(identity_id),
-        )
-        if not prepared.get("ok"):
-            continue
-        msg = await send_game_command(
-            MINIAPP_MANUAL_RUN_COMMANDS["tree"],
-            track=False,
-            send_as_id=identity_id,
-            priority="normal",
-            max_retry=0,
-            source_module="灵树MiniApp",
-            op_id=op_id,
-            chain_id=f"tree_daily:{day_key}",
-            delete_policy="keep",
-            queue_timeout=90,
-        )
-        if not msg:
-            cancel_tree_miniapp_daily_run(op_id, reason="入口命令未发送", now=now)
-            return {"started": False, "reason": "tree_send_blocked", "identity_id": identity_id}
-        msg_id = int(getattr(msg, "id", 0) or 0)
-        if not finalize_tree_miniapp_daily_command(op_id, msg_id, now=now):
-            cancel_tree_miniapp_daily_run(op_id, reason="入口命令绑定失败", now=now)
-            return {"started": False, "reason": "tree_bind_failed", "identity_id": identity_id}
         record_miniapp_state(
             identity_id,
             "tree",
             {
                 "kind": "daily",
                 "day_key": day_key,
-                "phase": "entry_pending",
+                "phase": "running",
                 "completed_today": False,
-                "command_msg_id": msg_id,
+                "command_msg_id": 0,
             },
             source="tree_daily_scheduler",
             source_id=op_id,
@@ -7567,14 +7635,14 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
             outputs=("daily_counter", "score_policy", "rewards"),
             replaces_commands=(".灵树",),
         )
-        await send_audit_log(
-            f"🌳 灵树 MiniApp 每日入口已发送：msg_id={msg_id}，等待按钮回包后按服务端额度串行完成。",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="low",
-            limit=220,
-        )
-        return {"started": True, "identity_id": identity_id, "msg_id": msg_id, "op_id": op_id}
+        _fire_and_forget(_run_tree_public_daily_worker(
+            identity_id,
+            entry_urls,
+            day_key=day_key,
+            op_id=op_id,
+            score_profiles=get_tree_miniapp_score_config(identity_id),
+        ))
+        return {"started": True, "identity_id": identity_id, "op_id": op_id, "source": "cave_public"}
     return {"started": False, "reason": "tree_done_or_ineligible"}
 
 

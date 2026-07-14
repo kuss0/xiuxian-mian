@@ -696,6 +696,54 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         finish_mock.assert_awaited_once()
 
+    async def test_public_tree_uses_spirit_tree_external_app_and_reuses_dwelling_session(self):
+        cave_start = {
+            "ok": True,
+            "status": "ok",
+            "data": {
+                "overview": {"player_id": 1001},
+                "raw": {
+                    "account": {
+                        "externalApps": {
+                            "groups": [{
+                                "key": "sect_farm",
+                                "apps": [{
+                                    "key": "spirit_tree",
+                                    "title": "落云宗灵眼之树",
+                                    "available": True,
+                                    "url": "https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999",
+                                }],
+                            }],
+                        },
+                    },
+                },
+            },
+        }
+        flow_result = {
+            "ok": True,
+            "status": "completed",
+            "data": {"phase": "completed", "quotas": {}, "runs": [], "rewards": {}},
+        }
+        state_module.update_send_as_profile(1001, username="imcanonical_ai", label="反向的钟", sect_name="落云宗")
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="dwelling_init_data")), \
+                patch.object(cave_treasure_runtime, "run_cave_dwelling_start_production_flow", new=AsyncMock(return_value=cave_start)), \
+                patch.object(cave_treasure_runtime.tree_runtime, "run_tree_miniapp_daily_direct", new=AsyncMock(return_value=flow_result)) as flow_mock:
+            result = await cave_treasure_runtime.run_cave_public_tree(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+                day_key="2026-07-14",
+                op_id="tree_daily:2026-07-14:1001",
+                score_profiles={"jump": {}, "fly": {}},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("tree_SECRET999", flow_mock.await_args.kwargs["token"])
+        self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
+        self.assertEqual("2026-07-14", flow_mock.await_args.kwargs["day_key"])
+        self.assertEqual("tree_daily:2026-07-14:1001", flow_mock.await_args.kwargs["op_id"])
+
     async def test_public_yuanying_runs_tianjige_command_and_replays_success(self):
         now = 1_700_000_000.0
         result_data = {
