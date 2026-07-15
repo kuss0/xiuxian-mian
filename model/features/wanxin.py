@@ -58,6 +58,7 @@ WANXIN_DEDUCE_CD_SEC = 8 * 3600
 WANXIN_IDENTIFY_CD_SEC = 4 * 3600
 WANXIN_BANNER_CD_SEC = 6 * 3600
 WANXIN_STRIP_CD_SEC = 8 * 3600
+WANXIN_STRIP_RESOURCE_BACKOFF_SEC = 6 * 3600
 WANXIN_MOON_GREET_CD_SEC = 24 * 3600
 WANXIN_MOON_SEAL_CD_SEC = 8 * 3600
 WANXIN_MOON_JOIN_CD_SEC = 24 * 3600
@@ -162,7 +163,7 @@ RE_TARGET_USER = re.compile(r"替\s*@(?P<owner>[\w\d_]+)|@(?P<owner2>[\w\d_]+)\s
 RE_SOURCE_GAIN = re.compile(r"咒源\s*\+(?P<gain>\d+)")
 RE_SEAL_DOWN = re.compile(r"魂封\s*-(?P<down>\d+)")
 RE_MOON_GAIN = re.compile(r"月魄\s*\+(?P<gain>\d+)")
-RE_CONTRIB_GAIN = re.compile(r"咒师贡献\s*\+(?P<gain>\d+)")
+RE_CONTRIB_GAIN = re.compile(r"(?:咒师)?贡献\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_GAIN = re.compile(r"情缘\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_COST = re.compile(r"消耗[：:]?[^\n]*?(?P<cost>\d+)\s*情缘")
 RE_MOON_AFFINITY_VALUE = re.compile(r"情缘\s*[:：]\s*(?P<value>\d+)")
@@ -707,14 +708,25 @@ def parse_wanxin_text(text, now=None, family=""):
             "summary": "剥离咒源失败",
         })
         return parsed
-    if "【剥离咒源】" in raw or "剥离阴罗残咒" in raw:
+    if "【剥离咒源成功】" in raw or "剥下一段阴罗残咒" in raw or "剥离阴罗残咒" in raw:
+        source_match = RE_SOURCE_GAIN.search(raw)
+        seal_match = RE_SEAL_DOWN.search(raw)
         contrib_match = RE_CONTRIB_GAIN.search(raw)
         parsed.update({
             "type": "assist_strip_success",
             "available": "yes",
             "target_username": _parse_target_username(raw),
+            "source_gain": _safe_int(source_match.group("gain"), 0) if source_match else 0,
+            "seal_down": _safe_int(seal_match.group("down"), 0) if seal_match else 0,
             "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
             "summary": "剥离咒源成功",
+        })
+        return parsed
+    if "阴罗幡煞气不足" in raw and "剥离咒源至少需要" in raw:
+        parsed.update({
+            "type": "assist_strip_resource_blocked",
+            "available": "yes",
+            "summary": "阴罗幡煞气不足，剥离暂缓",
         })
         return parsed
     if "咒源尚未辨明" in raw:
@@ -859,6 +871,19 @@ def _mark_commission_invalid(observed, now, reason=""):
     _schedule_next(observed, now)
 
 
+def _consume_commission(observed):
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else _default_wanxin_commission()
+    owner_username = str(commission.get("owner_username") or _owner_username() or "").strip().lstrip("@")
+    commission.update(_default_wanxin_commission())
+    commission["owner_username"] = owner_username
+    observed["commission"] = commission
+
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else _default_wanxin_assist()
+    assist["last_anchor_msg_id"] = 0
+    assist["last_anchor_at"] = 0
+    observed["assist"] = assist
+
+
 def _schedule_next(observed, now, delay_sec=WANXIN_CHAIN_STEP_SEC, *, result="", error=""):
     observed["auto_next_time"] = float(now + max(1, delay_sec))
     if result:
@@ -932,6 +957,8 @@ def _apply_assist_success_to_observed(observed, action, parsed, now):
     observed["auto_last_action"] = action
     observed["auto_last_result"] = parsed.get("summary") or "协助成功"
     observed["auto_last_error"] = ""
+    if action == WANXIN_ACTION_STRIP:
+        _consume_commission(observed)
     _clear_pending(observed)
     _schedule_next(observed, now)
     _push_recent(observed, now, action, parsed.get("summary") or "协助成功")
@@ -1173,6 +1200,8 @@ async def _send_accept_action(observed, now):
 async def _send_assist_action(observed, action, now):
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    owner_username = str(commission.get("owner_username") or "").strip().lstrip("@")
     reply_to_msg_id = int(assist.get("last_anchor_msg_id", 0) or 0)
     anchor_at = float(assist.get("last_anchor_at", 0) or 0)
     if assist_send_as_id <= 0 or not has_identity(assist_send_as_id):
@@ -1181,21 +1210,29 @@ async def _send_assist_action(observed, action, now):
     if not _is_yinluo_identity(assist_send_as_id):
         _schedule_next(observed, now, 60 * 60, error=f"协助身份不是阴罗宗：{get_identity_display_name(assist_send_as_id)}")
         return False
-    if reply_to_msg_id <= 0 or (anchor_at > 0 and now - anchor_at > WANXIN_ANCHOR_MAX_AGE_SEC):
-        _schedule_next(observed, now, 30 * 60, error="缺少可回复的委托方锚点")
-        return False
-    command = WANXIN_ACTION_COMMANDS.get(action, "")
-    msg = await send_game_command(
-        command,
-        track=True,
-        max_retry=0,
-        reply_timeout=WANXIN_REPLY_TIMEOUT_SEC,
-        reply_to=reply_to_msg_id,
-        send_as_id=assist_send_as_id,
-        source_module=WANXIN_MODULE_NAME,
-        op_id=f"wanxin-assist-{action}-{int(now)}",
-        queue_timeout=WANXIN_SEND_QUEUE_TIMEOUT_SEC,
-    )
+    if action == WANXIN_ACTION_STRIP:
+        if not owner_username or not _commission_accept_evidence_valid(observed):
+            _schedule_next(observed, now, 30 * 60, error="剥离咒源缺少有效咒契或委托方")
+            return False
+        command = f"{CMD_WANXIN_ASSIST_STRIP} @{owner_username}"
+        reply_to_msg_id = 0
+    else:
+        if reply_to_msg_id <= 0 or (anchor_at > 0 and now - anchor_at > WANXIN_ANCHOR_MAX_AGE_SEC):
+            _schedule_next(observed, now, 30 * 60, error="缺少可回复的委托方锚点")
+            return False
+        command = WANXIN_ACTION_COMMANDS.get(action, "")
+    send_kwargs = {
+        "track": True,
+        "max_retry": 0,
+        "reply_timeout": WANXIN_REPLY_TIMEOUT_SEC,
+        "send_as_id": assist_send_as_id,
+        "source_module": WANXIN_MODULE_NAME,
+        "op_id": f"wanxin-assist-{action}-{owner_username or reply_to_msg_id}-{int(now)}",
+        "queue_timeout": WANXIN_SEND_QUEUE_TIMEOUT_SEC,
+    }
+    if reply_to_msg_id > 0:
+        send_kwargs["reply_to"] = reply_to_msg_id
+    msg = await send_game_command(command, **send_kwargs)
     if not msg:
         send_block = _send_block_info(assist_send_as_id, command)
         if str((send_block or {}).get("status") or "") == "unknown" and _recover_recent_assist_success_from_log(observed, action, now):
@@ -1558,6 +1595,8 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["assist"]["last_contrib_gain"] = int(parsed.get("contrib_gain", 0) or 0)
             observed["auto_last_result"] = parsed.get("summary") or "协助成功"
             observed["auto_last_error"] = "" if ptype != "assist_strip_failed" else parsed.get("summary") or "剥离咒源失败"
+            if action == WANXIN_ACTION_STRIP:
+                _consume_commission(observed)
             _clear_pending(observed)
             _schedule_next(observed, now)
         elif ptype == "assist_strip_blocked":
@@ -1569,6 +1608,15 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["auto_last_error"] = ""
             _clear_pending(observed)
             _schedule_next(observed, now)
+        elif ptype == "assist_strip_resource_blocked":
+            observed["assist"]["next_strip_time"] = now + WANXIN_STRIP_RESOURCE_BACKOFF_SEC
+            observed["assist"]["last_action"] = WANXIN_ACTION_STRIP
+            observed["assist"]["last_result"] = ""
+            observed["assist"]["last_error"] = parsed.get("summary") or "阴罗幡煞气不足"
+            observed["auto_last_result"] = ""
+            observed["auto_last_error"] = parsed.get("summary") or "阴罗幡煞气不足"
+            _clear_pending(observed)
+            _schedule_next(observed, now, WANXIN_STRIP_RESOURCE_BACKOFF_SEC)
         elif ptype in {"assist_missing_target", "assist_not_yinluo"}:
             action = _matching_pending_action(observed, matched_family)
             delay = 60 * 60 if ptype == "assist_not_yinluo" else 30 * 60

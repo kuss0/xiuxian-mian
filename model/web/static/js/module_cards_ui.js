@@ -642,7 +642,7 @@
           )+
           settingSection(
             '解咒委托',
-            '委托方只发布一次；协助方必须是阴罗宗身份，按委托方锚点回复辨咒或借幡。',
+            '委托方只发布一次；协助方必须是阴罗宗身份。剥离咒源会主动指定 @委托方，不使用回复锚点。',
             wanxinCheckbox('publish_enabled', '自动发布委托', wxConfig.publish_enabled)+
             wanxinCheckbox('assist_enabled', '启用阴罗协助', wxConfig.assist_enabled)+
             '<label class="module-setting-field"><span>灵石</span><input class="text-input module-hour-input" type="number" min="1" max="1000000" step="1" value="'+esc(wxConfig.reward_lingshi || 1)+'" data-wanxin-config="reward_lingshi"></label>'+
@@ -664,14 +664,14 @@
           )+
           settingSection(
             '阴罗协助动作',
-            '剥离咒源真实成功文案尚未稳定，默认关闭；打开后仍按冷却、锚点和安全锁执行。',
+            '剥离咒源按委托方分别记录 8 小时冷却；成功或反噬失败都会消费本次咒契，无有效咒契时不会补发。',
             wanxinCheckbox('identify_enabled', '辨认咒纹', wxAssist.identify_enabled)+
             wanxinCheckbox('banner_enabled', '借幡镇魂', wxAssist.banner_enabled)+
             wanxinCheckbox('strip_enabled', '剥离咒源', wxAssist.strip_enabled)+
             currentChoiceText('下次辨咒', wxAssist.next_identify_time || '未设置')+
             currentChoiceText('下次借幡', wxAssist.next_banner_time || '未设置')+
             currentChoiceText('下次剥离', wxAssist.next_strip_time || '未设置')+
-            currentChoiceText('回复锚点', wxAssist.last_anchor_msg_id || '无')
+            currentChoiceText('辨咒/借幡锚点', wxAssist.last_anchor_msg_id || '无')
           )+
           settingSection(
             '调度状态',

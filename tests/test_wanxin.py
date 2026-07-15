@@ -94,6 +94,25 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(4, parsed["values"]["soul_seal"])
         self.assertEqual(60, parsed["values"]["curse_source"])
 
+    def test_parse_strip_success_and_resource_blocked_real_replies(self):
+        success = wanxin.parse_wanxin_text(
+            "【剥离咒源成功】\n"
+            "@sanshaoyedejian1 以阴罗幡截住咒源反噬，替 @jfdffdddd 剥下一段阴罗残咒。\n"
+            "魂封 -9，咒源 +14。@jfdffdddd：【阴罗残咒】x1；"
+            "@sanshaoyedejian1：【封魂残煞】x1、报酬 1 灵石、贡献 +180。\n\n"
+            "阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：45\n咒源：120",
+            now=1_800_000_000.0,
+        )
+        blocked = wanxin.parse_wanxin_text(
+            "你的阴罗幡煞气不足，剥离咒源至少需要 120 点煞气。",
+            now=1_800_000_000.0,
+        )
+
+        self.assertEqual("assist_strip_success", success["type"])
+        self.assertEqual("jfdffdddd", success["target_username"])
+        self.assertEqual((9, 14, 180), (success["seal_down"], success["source_gain"], success["contrib_gain"]))
+        self.assertEqual("assist_strip_resource_blocked", blocked["type"])
+
     def test_parse_commission_existing_and_assist_success(self):
         existing = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 5），不可重复发布。")
         invalid = wanxin.parse_wanxin_text("你与对方没有有效的咒契协定。需先由对方发布委托，再由你接取。")
@@ -115,6 +134,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wanxin_assist_identify", action_guard.resolve_action_key(".辨认咒纹"))
         self.assertEqual("wanxin_assist_banner", action_guard.resolve_action_key(".借幡镇魂"))
         self.assertEqual("wanxin_assist_strip", action_guard.resolve_action_key(".剥离咒源"))
+        self.assertEqual("wanxin_assist_strip", action_guard.resolve_action_key(".剥离咒源 @jfdffdddd"))
         self.assertEqual("wanxin_moon_panel", action_guard.resolve_action_key(".婉影"))
         self.assertEqual("wanxin_moon_greet", action_guard.resolve_action_key(".婉影问安"))
         self.assertEqual("wanxin_moon_seal", action_guard.resolve_action_key(".同参封魂"))
@@ -796,6 +816,161 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".辨认咒纹", send_mock.await_args.args[0])
             self.assertEqual(helper_id, send_mock.await_args.kwargs["send_as_id"])
             self.assertEqual(11405889, send_mock.await_args.kwargs["reply_to"])
+
+    async def test_scheduler_sends_strip_with_owner_mention_without_reply_anchor(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_225.0
+        fake_msg = SimpleNamespace(id=7004, sent_at=now)
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "auto_config": {"assist_enabled": True},
+                "commission": {
+                    "id": 88,
+                    "accepted": True,
+                    "accepted_at": now - 60,
+                    "owner_username": "jfdffdddd",
+                    "helper_username": "sanshaoyedejian1",
+                },
+                "assist": {
+                    "send_as_id": helper_id,
+                    "identify_enabled": False,
+                    "banner_enabled": False,
+                    "strip_enabled": True,
+                    "next_strip_time": now - 1,
+                },
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(".剥离咒源 @jfdffdddd", send_mock.await_args.args[0])
+            self.assertEqual(helper_id, send_mock.await_args.kwargs["send_as_id"])
+            self.assertNotIn("reply_to", send_mock.await_args.kwargs)
+            self.assertEqual(0, state_module.state["wanxin_observation"]["pending"]["reply_to_msg_id"])
+
+    async def test_strip_success_consumes_only_target_contract_and_sets_target_cooldown(self):
+        owner_id = self._prepare_identity()
+        other_owner_id = self._prepare_identity(7538826434, username="WalterWA2000")
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_275.0
+        for identity_id, username, commission_id, msg_id in (
+            (owner_id, "jfdffdddd", 88, 7101),
+            (other_owner_id, "WalterWA2000", 89, 7201),
+        ):
+            with state_module.use_identity(identity_id):
+                state_module.state["wanxin_enabled"] = True
+                state_module.state["wanxin_observation"] = {
+                    "pending": {
+                        "action": "strip",
+                        "family": "wanxin_assist_strip",
+                        "msg_id": msg_id,
+                        "send_as_id": helper_id,
+                        "reply_due_at": now + 60,
+                    },
+                    "commission": {
+                        "id": commission_id,
+                        "accepted": True,
+                        "accepted_at": now - 60,
+                        "owner_username": username,
+                        "helper_username": "sanshaoyedejian1",
+                    },
+                    "assist": {"send_as_id": helper_id, "strip_enabled": True, "next_strip_time": 0},
+                }
+
+        with state_module.use_identity(helper_id):
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "【剥离咒源成功】\n"
+                    "@sanshaoyedejian1 以阴罗幡截住咒源反噬，替 @jfdffdddd 剥下一段阴罗残咒。\n"
+                    "魂封 -9，咒源 +14。@sanshaoyedejian1：报酬 1 灵石、贡献 +180。",
+                    now,
+                    reply_to=SimpleNamespace(id=7101, raw_text=".剥离咒源 @jfdffdddd"),
+                    matched_family="wanxin_assist_strip",
+                    result_msg_id=7102,
+                )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(0, observed["commission"]["id"])
+            self.assertFalse(observed["commission"]["accepted"])
+            self.assertEqual("jfdffdddd", observed["commission"]["owner_username"])
+            self.assertGreater(observed["assist"]["next_strip_time"], now + wanxin.WANXIN_STRIP_CD_SEC)
+        with state_module.use_identity(other_owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(89, observed["commission"]["id"])
+            self.assertTrue(observed["commission"]["accepted"])
+            self.assertEqual(0, observed["assist"]["next_strip_time"])
+
+    async def test_strip_failure_consumes_contract_but_resource_block_keeps_it(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_300.0
+
+        def prepare(msg_id):
+            with state_module.use_identity(owner_id):
+                state_module.state["wanxin_enabled"] = True
+                state_module.state["wanxin_observation"] = {
+                    "pending": {
+                        "action": "strip",
+                        "family": "wanxin_assist_strip",
+                        "msg_id": msg_id,
+                        "send_as_id": helper_id,
+                        "reply_due_at": now + 60,
+                    },
+                    "commission": {
+                        "id": 88,
+                        "accepted": True,
+                        "accepted_at": now - 60,
+                        "owner_username": "jfdffdddd",
+                        "helper_username": "sanshaoyedejian1",
+                    },
+                    "assist": {"send_as_id": helper_id, "strip_enabled": True, "next_strip_time": 0},
+                }
+
+        prepare(7301)
+        with state_module.use_identity(helper_id):
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "【剥离咒源失败】\n封魂咒骤然反扑，阴罗幡煞气被吞去 120 点，"
+                    "@sanshaoyedejian1 修为折损 500，@jfdffdddd 魂封 +4。",
+                    now,
+                    reply_to=SimpleNamespace(id=7301, raw_text=".剥离咒源 @jfdffdddd"),
+                    matched_family="wanxin_assist_strip",
+                    result_msg_id=7302,
+                )
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(0, observed["commission"]["id"])
+            self.assertFalse(observed["commission"]["accepted"])
+            self.assertGreater(observed["assist"]["next_strip_time"], now + wanxin.WANXIN_STRIP_CD_SEC)
+
+        prepare(7401)
+        with state_module.use_identity(helper_id):
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "你的阴罗幡煞气不足，剥离咒源至少需要 120 点煞气。",
+                    now,
+                    reply_to=SimpleNamespace(id=7401, raw_text=".剥离咒源 @jfdffdddd"),
+                    matched_family="wanxin_assist_strip",
+                    result_msg_id=7402,
+                )
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(88, observed["commission"]["id"])
+            self.assertTrue(observed["commission"]["accepted"])
+            self.assertEqual(now + wanxin.WANXIN_STRIP_RESOURCE_BACKOFF_SEC, observed["assist"]["next_strip_time"])
 
     async def test_scheduler_refuses_assist_without_real_accept_evidence(self):
         owner_id = self._prepare_identity()
