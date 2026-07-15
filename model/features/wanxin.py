@@ -1331,12 +1331,6 @@ async def run_wanxin_scheduler(now):
             _set_observed(observed)
             save_state()
             return
-        self_action = _next_due_action(observed, now, WANXIN_SELF_ACTIONS)
-        if self_action:
-            await _send_owner_action(observed, self_action, now)
-            _set_observed(observed)
-            save_state()
-            return
         commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
         if bool(commission.get("accepted")) and not _commission_accept_evidence_valid(observed):
             commission["accepted"] = False
@@ -1356,6 +1350,12 @@ async def run_wanxin_scheduler(now):
                 _set_observed(observed)
                 save_state()
                 return
+        self_action = _next_due_action(observed, now, WANXIN_SELF_ACTIONS)
+        if self_action:
+            await _send_owner_action(observed, self_action, now)
+            _set_observed(observed)
+            save_state()
+            return
         next_times = [
             _due_time_for_action(observed, action)
             for action in WANXIN_SELF_ACTIONS + WANXIN_ASSIST_ACTIONS

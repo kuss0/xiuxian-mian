@@ -887,6 +887,78 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("reply_to", send_mock.await_args.kwargs)
             self.assertEqual(0, state_module.state["wanxin_observation"]["pending"]["reply_to_msg_id"])
 
+    async def test_commission_accept_and_targeted_strip_end_to_end(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_240.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "auto_config": {"publish_enabled": True, "assist_enabled": True, "reward_lingshi": 1},
+                "commission": {"id": 0, "owner_username": "jfdffdddd"},
+                "assist": {
+                    "send_as_id": helper_id,
+                    "identify_enabled": False,
+                    "banner_enabled": False,
+                    "strip_enabled": True,
+                    "next_strip_time": now - 1,
+                },
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7501, sent_at=now))) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+            self.assertEqual(".发布解咒委托 1", send_mock.await_args.args[0])
+
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "【解咒委托已发布】\n委托 ID：88\n报酬：1 灵石\n"
+                    "阴罗宗玩家可用 .接取解咒委托 88 接取。",
+                    now + 1,
+                    reply_to=SimpleNamespace(id=7501, raw_text=".发布解咒委托 1"),
+                    matched_family="wanxin_commission",
+                    result_msg_id=7502,
+                )
+            self.assertTrue(handled)
+
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7503, sent_at=now + 2))) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now + 2)
+            self.assertEqual(".接取解咒委托 88", send_mock.await_args.args[0])
+            self.assertEqual(helper_id, send_mock.await_args.kwargs["send_as_id"])
+
+        with state_module.use_identity(helper_id):
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "【咒契协定已成】\n阴罗宗弟子 @sanshaoyedejian1 已接取 "
+                    "@jfdffdddd 的解咒委托。",
+                    now + 3,
+                    reply_to=SimpleNamespace(id=7503, raw_text=".接取解咒委托 88"),
+                    matched_family="wanxin_accept",
+                    result_msg_id=7504,
+                )
+        self.assertTrue(handled)
+
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            observed["next_protect_time"] = now - 1
+            state_module.state["wanxin_observation"] = observed
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7505, sent_at=now + 24))) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now + 24)
+            self.assertEqual(".剥离咒源 @jfdffdddd", send_mock.await_args.args[0])
+            self.assertEqual(helper_id, send_mock.await_args.kwargs["send_as_id"])
+            self.assertNotIn("reply_to", send_mock.await_args.kwargs)
+
     async def test_strip_success_consumes_only_target_contract_and_sets_target_cooldown(self):
         owner_id = self._prepare_identity()
         other_owner_id = self._prepare_identity(7538826434, username="WalterWA2000")
