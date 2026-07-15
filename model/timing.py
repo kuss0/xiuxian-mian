@@ -53,6 +53,16 @@ def _normalize_wait_time_text(text):
 
 def parse_wait_time(text):
     text = _normalize_wait_time_text(text)
+    # Many game replies mention both a nominal cooldown and the actual
+    # remaining wait, for example: "冷却 8 小时，请在 6小时57分钟51秒 后再试".
+    # Prefer the explicit remaining-time clause so the two durations are not
+    # accidentally combined.
+    wait_markers = ("请在", "还需等待", "需再等待", "尚需等待", "还需", "剩余时间", "剩余:", "剩余：")
+    marker_positions = [(text.rfind(marker), marker) for marker in wait_markers]
+    marker_positions = [(position, marker) for position, marker in marker_positions if position >= 0]
+    if marker_positions:
+        _, marker = max(marker_positions, key=lambda item: item[0])
+        text = text[text.rfind(marker) + len(marker):]
     total_seconds = 0
     h = RE_HOURS.search(text)
     m = RE_MINUTES.search(text)
