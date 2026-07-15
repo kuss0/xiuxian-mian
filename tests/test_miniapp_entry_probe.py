@@ -801,13 +801,17 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             calls.append((identity_id, action))
             await asyncio.sleep(0)
             active -= 1
-            return True, f"{action} 完成", {}
+            extra = {
+                "settled_count": 3 if action == "trial" else 0,
+                "gains": {"天机残痕": 43} if action == "trial" else {},
+            }
+            return True, f"{action} 完成", extra
 
         try:
             with patch.object(ui, "is_cave_public_identity_available", return_value=True), \
                     patch.object(ui, "get_identity_display_name", side_effect=lambda identity_id: f"角色{identity_id}"), \
                     patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
-                    patch.object(ui, "send_audit_log", new=AsyncMock()):
+                    patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock:
                 await ui._run_cave_public_entry_batch(
                     "cave_public_test",
                     "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -825,6 +829,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(4, ui._cave_public_batch_state["completed"])
             self.assertEqual(4, ui._cave_public_batch_state["succeeded"])
             self.assertEqual(0, ui._cave_public_batch_state["failed"])
+            self.assertTrue(any(
+                "天机试炼：2/2 成功｜结算 6次｜收益:天机残痕+86" in str(call.args[0])
+                for call in audit_mock.await_args_list
+            ))
         finally:
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)

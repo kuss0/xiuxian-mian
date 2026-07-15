@@ -25,7 +25,7 @@ from .cave_treasure_miniapp import (
     run_cave_treasure_miniapp_production_flow,
 )
 from .trial_miniapp import build_trial_launch_args
-from .trial_runtime import _format_trial_summary, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
+from .trial_runtime import _format_trial_summary, _trial_batch_materials, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
@@ -1337,6 +1337,7 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
         summary = _format_cave_treasure_summary(result)
         message = f"洞府寻宝公共入口：{summary}"
         settled_count = _parse_int((result.get("data") or {}).get("settled_count"), 0)
+        rewards, gains = _collect_materials(data or {})
         changed = bool(inventory_record.get("changed")) or settled_count > 0
         await send_audit_log(
             f"🕳️ {message}",
@@ -1353,6 +1354,9 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
                 "state_record_key": state_record.get("record_key", ""),
                 "games_used": _parse_int(state.get("games_used"), 0),
                 "games_limit": _parse_int(state.get("games_limit"), 0),
+                "settled_count": settled_count,
+                "gains": gains,
+                "rewards": rewards,
                 "daily_exhausted": (
                     str(result.get("status") or "").strip() == "daily_limit"
                     or (
@@ -1442,8 +1446,22 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         summary = _format_trial_summary(result)
         message = f"洞府天机试炼公共入口：{summary}"
         completed_ok = bool(result.get("ok")) or str(result.get("status") or "") == "daily_limit"
+        rewards, gains = _trial_batch_materials(result)
+        settled_count = _parse_int(
+            result.get("settled_count") or (result.get("data") or {}).get("settled_count"),
+            0,
+        )
         await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="low" if completed_ok else "normal", limit=260)
-        return {"ok": completed_ok, "message": message, "extra": {"trial_title": launch.get("title", "")}}
+        return {
+            "ok": completed_ok,
+            "message": message,
+            "extra": {
+                "trial_title": launch.get("title", ""),
+                "settled_count": settled_count,
+                "gains": gains,
+                "rewards": rewards,
+            },
+        }
 
 
 async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
@@ -1725,10 +1743,15 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
         )
         with use_identity(identity_id):
             handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
+        result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
         return {
             "ok": bool(handled and result.get("ok")),
             "message": f"洞府观星台：{result.get('status') or ('完成' if handled else '未处理')}",
-            "extra": {"title": launch.get("title", "")},
+            "extra": {
+                "title": launch.get("title", ""),
+                "action_counts": dict(result_data.get("action_counts") or {}),
+                "rewards": dict(result_data.get("item_deltas") or {}),
+            },
         }
 
 

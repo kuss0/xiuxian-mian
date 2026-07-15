@@ -6931,6 +6931,71 @@ def _set_cave_public_batch_state(**updates):
     _cave_public_batch_state.update(updates)
 
 
+def _merge_cave_public_batch_counts(target, source):
+    for raw_name, raw_amount in dict(source or {}).items():
+        name = str(raw_name or "").strip()
+        try:
+            amount = int(raw_amount or 0)
+        except (TypeError, ValueError, OverflowError):
+            amount = 0
+        if name and amount > 0:
+            target[name] = int(target.get(name, 0) or 0) + amount
+
+
+def _record_cave_public_batch_outcome(summary, action, ok, extra):
+    action = str(action or "").strip().lower() or "unknown"
+    row = summary.setdefault(action, {
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "settled_count": 0,
+        "gains": {},
+        "rewards": {},
+        "action_counts": {},
+    })
+    row["attempted"] += 1
+    row["succeeded" if ok else "failed"] += 1
+    extra = dict(extra or {})
+    try:
+        row["settled_count"] += max(0, int(extra.get("settled_count") or 0))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    _merge_cave_public_batch_counts(row["gains"], extra.get("gains"))
+    _merge_cave_public_batch_counts(row["rewards"], extra.get("rewards"))
+    _merge_cave_public_batch_counts(row["action_counts"], extra.get("action_counts"))
+
+
+def _format_cave_public_batch_outcomes(summary):
+    labels = {
+        "trial": "天机试炼",
+        "tianji_trial": "天机试炼",
+        "treasure": "洞府寻宝",
+        "hunt": "洞府寻宝",
+        "cave_treasure": "洞府寻宝",
+        "stargazer": "观星台",
+        "sect_farm": "观星台",
+        "star_farm": "观星台",
+    }
+    lines = []
+    for action, row in dict(summary or {}).items():
+        material = bool(row.get("gains") or row.get("rewards"))
+        settled_count = int(row.get("settled_count") or 0)
+        if action not in labels or (not material and settled_count <= 0):
+            continue
+        parts = [f"{int(row.get('succeeded') or 0)}/{int(row.get('attempted') or 0)} 成功"]
+        if settled_count > 0:
+            unit = "次" if action in {"trial", "tianji_trial"} else "局"
+            parts.append(f"结算 {settled_count}{unit}")
+        gains = dict(row.get("gains") or {})
+        rewards = dict(row.get("rewards") or {})
+        if gains:
+            parts.append("收益:" + "、".join(f"{name}+{amount}" for name, amount in sorted(gains.items())))
+        if rewards:
+            parts.append("奖励:" + "、".join(f"{name}x{amount}" for name, amount in sorted(rewards.items())))
+        lines.append(f"- {labels[action]}：" + "｜".join(parts))
+    return lines
+
+
 async def ui_set_cave_public_config(payload=None):
     payload = dict(payload or {})
     config = normalize_miniapp_auto_config()
@@ -7043,11 +7108,13 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
     try:
         succeeded = 0
         failed = 0
+        outcomes = {}
         for index, (identity_id, action) in enumerate(steps, start=1):
             display = get_identity_display_name(identity_id)
             current = f"{index}/{total} {display} {action}"
             _set_cave_public_batch_state(current=current)
-            ok, message, _extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
+            ok, message, extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
+            _record_cave_public_batch_outcome(outcomes, action, ok, extra)
             result_text = f"{display} {action}: {'ok' if ok else 'fail'} {message}"
             if ok:
                 succeeded += 1
@@ -7086,6 +7153,14 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
         priority="normal",
         limit=260,
     )
+    outcome_lines = _format_cave_public_batch_outcomes(outcomes)
+    if outcome_lines:
+        await send_audit_log(
+            "🧩 洞府公共入口成果汇总\n" + "\n".join(outcome_lines),
+            scope="global",
+            priority="normal",
+            limit=1200,
+        )
 
 
 async def ui_start_cave_public_entry_batch(payload=None):

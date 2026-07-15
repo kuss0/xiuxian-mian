@@ -251,6 +251,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "daily_limit",
             "data": {
+                "settled_count": 3,
                 "state": {"games_used": 3, "games_limit": 3},
                 "results": [{"logs": ["获得古禁印痕 x1。"]}],
             },
@@ -280,6 +281,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
         self.assertEqual(3, result["extra"]["games_used"])
         self.assertEqual(3, result["extra"]["games_limit"])
+        self.assertEqual(3, result["extra"]["settled_count"])
+        self.assertEqual({"古禁印痕": 1}, result["extra"]["rewards"])
         self.assertTrue(result["extra"]["daily_exhausted"])
 
     async def test_public_treasure_and_small_world_fail_closed_when_identity_selection_fails(self):
@@ -344,6 +347,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual("天机试炼", result["extra"]["trial_title"])
+        self.assertEqual(2, result["extra"]["settled_count"])
+        self.assertEqual({"天机残痕": 2}, result["extra"]["gains"])
         start_mock.assert_awaited_once()
         self.assertNotIn("player_id", start_mock.await_args.kwargs)
         trial_mock.assert_awaited_once()
@@ -683,7 +688,15 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         }
-        flow_result = {"ok": True, "status": "wait", "data": {"farm_state": {"total_slots": 2}}}
+        flow_result = {
+            "ok": True,
+            "status": "wait",
+            "data": {
+                "farm_state": {"total_slots": 2},
+                "action_counts": {"collect": 1},
+                "item_deltas": {"星辰精华": 2},
+            },
+        }
         state_module.ensure_identity_registered(2001)
         state_module.set_identity_account(2001, 1001)
         with state_module.use_identity(2001):
@@ -703,6 +716,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("player_id", start_mock.await_args.kwargs)
         self.assertEqual(2001, flow_mock.await_args.kwargs["player_id"])
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
+        self.assertEqual({"collect": 1}, result["extra"]["action_counts"])
+        self.assertEqual({"星辰精华": 2}, result["extra"]["rewards"])
         finish_mock.assert_awaited_once()
 
     async def test_public_tree_uses_spirit_tree_external_app_and_reuses_dwelling_session(self):
