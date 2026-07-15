@@ -96,6 +96,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(duel._loadout_reply_matches("你已祭出【玄铁剑】。\n当前祭出：【玄铁剑】\n神识御宝：1/26", ("玄铁剑",)))
         self.assertFalse(duel._loadout_reply_matches("当前祭出：【玄铁剑】、【金光砖】", ("玄铁剑",)))
 
+    def test_controlled_loadout_accepts_already_unequipped_reply(self):
+        self.assertTrue(duel._loadout_unequip_reply("你当前并未祭出任何法宝。"))
+
     async def test_wa_controlled_loadout_confirms_only_xuantie_before_duel(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

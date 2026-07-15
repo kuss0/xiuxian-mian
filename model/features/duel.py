@@ -250,7 +250,11 @@ def _loadout_reply_matches(text, expected):
 
 def _loadout_unequip_reply(text):
     raw = str(text or "")
-    return "你已收回当前祭出的所有法宝" in raw or "当前祭出法宝: 无祭出法宝" in raw
+    return (
+        "你已收回当前祭出的所有法宝" in raw
+        or "你当前并未祭出任何法宝" in raw
+        or "当前祭出法宝: 无祭出法宝" in raw
+    )
 
 
 def _find_loadout_reply(now, predicate):
