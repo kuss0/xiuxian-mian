@@ -96,6 +96,33 @@ def test_exact_reply_then_exact_edit_bind_and_append_idempotently(bind_identitie
     assert all(item.msg_id == 41001 for item in evidence)
 
 
+def test_caller_payload_cannot_override_strict_binding_metadata(bind_identities):
+    identity_id, _ = bind_identities
+    attempt = _sent(identity_id, "reserved-payload", root_msg_id=31011)
+
+    with patch.dict("os.environ", {"XIUXIAN_ATTEMPT_SHADOW_BIND": "1"}):
+        result = bind_shadow_evidence(
+            event_kind="message",
+            msg_id=41011,
+            reply_to_msg_id=attempt.root_msg_id,
+            identity_id=identity_id,
+            family="bind_family",
+            text="精确回复",
+            event_at=1_700_000_010.0,
+            payload={
+                "bind_reason": "candidate_only",
+                "bind_anchor": "identity_family_time",
+                "note": "caller metadata",
+            },
+        )
+
+    assert result.status is BindStatus.MATCHED
+    evidence = list_evidence(attempt.op_id)
+    assert evidence[0].payload["bind_reason"] == "exact_reply_to_root"
+    assert evidence[0].payload["bind_anchor"] == "reply_to_msg_id"
+    assert evidence[0].payload["note"] == "caller metadata"
+
+
 def test_exact_anchor_with_identity_contradiction_fails_closed(bind_identities):
     first_id, second_id = bind_identities
     _sent(first_id, "identity-mismatch", root_msg_id=31002)

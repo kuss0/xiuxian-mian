@@ -151,9 +151,9 @@ def bind_shadow_evidence(
             text=text,
             source=source,
             payload={
+                **dict(payload or {}),
                 "bind_reason": result.reason,
                 "bind_anchor": result.anchor,
-                **dict(payload or {}),
             },
             result_msg_id=msg_id,
             now=event_at or None,
