@@ -62,10 +62,10 @@ database.
   weakness/Bot-health/pre-guard/action-guard checks before queue admission and
   again while holding the send slot. The second check is required because
   state can change in the queue, but the duplicated implementation already has
-  ordering differences. Future work should return one structured
-  `SendGateDecision` from a shared evaluator with explicit `pre_queue` and
-  `in_queue` phases. This remains Lab-only while the shared send layer is under
-  the 24-hour freeze.
+  ordering differences. The Lab now returns one structured
+  `GameSendGateDecision` from a shared evaluator with explicit `pre_queue` and
+  `in_queue` phases. This remains undeployed while the shared send layer is
+  under the 24-hour freeze.
 - `model/app.py` mixed candidate Bot evidence, TTL pruning, edit deduplication,
   threshold policy, persistence, and audit I/O in one global dictionary flow.
 - `model/ui.py` moved pending Telegram session files over real files while
@@ -93,13 +93,28 @@ Focused validation:
 
 ```text
 34 passed
-3102 passed, 396 subtests passed
+3104 passed, 396 subtests passed
 ```
 
 Coverage includes duplicate edit deduplication, TTL reset, diverse evidence,
 one-shot decisions, immediate strict-shard learning, and persistence-failure
 rollback. This candidate does not change the shared sender, CommandAttempt,
 module scheduling, or production runtime.
+
+### 0.3 Two-phase send-gate Lab implemented
+
+The same branch also removes the duplicated mutable-gate implementation from
+`model/runtime.py`. Queue admission and in-slot revalidation still both run;
+they now call `_evaluate_game_send_gates()` with an explicit phase and receive
+a `GameSendGateDecision` containing the block code, reason, definitely-unsent
+classification, and optional deadline.
+
+This preserves the original phase-specific order. In particular, the outer
+check still evaluates account-offline before refreshing Bot-health timeouts,
+while the in-slot check refreshes Bot health first. Tests lock that behavior and
+also verify that `send_as_peer_invalid` retains its unsent classification and
+blocked-until timestamp. The shared sender remains production-frozen; this is a
+reviewable Lab candidate, not a deployment authorization.
 
 ### 1. Incremental persistence: absorb the idea, not the patch
 

@@ -130,6 +130,74 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("supervisor_quiesce", block["code"])
         self.assertEqual("unsent", block["status"])
 
+    async def test_send_gate_phase_preserves_bot_health_refresh_order(self):
+        calls = []
+
+        def account_offline(_account_id):
+            calls.append("account")
+            return True
+
+        with (
+            patch.object(runtime, "get_global_enabled", return_value=True),
+            patch.object(runtime, "_global_recovery_hold_until_for_priority", return_value=0),
+            patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+            patch.object(runtime, "is_account_offline", side_effect=account_offline),
+            patch.object(runtime, "get_account_offline_reason", return_value="offline"),
+            patch.object(runtime, "_log_account_offline_blocked", new=AsyncMock()),
+            patch.object(runtime, "_refresh_bot_health_timeout_before_send", side_effect=lambda: calls.append("refresh")),
+        ):
+            pre_queue = await runtime._evaluate_game_send_gates(
+                ".观星台",
+                send_as_id=301299112,
+                account_id=301299112,
+                send_priority=runtime.SEND_PRIORITY_NORMAL,
+                send_intent={},
+                phase="pre_queue",
+            )
+            self.assertEqual(["account"], calls)
+            calls.clear()
+
+            in_queue = await runtime._evaluate_game_send_gates(
+                ".观星台",
+                send_as_id=301299112,
+                account_id=301299112,
+                send_priority=runtime.SEND_PRIORITY_NORMAL,
+                send_intent={},
+                phase="in_queue",
+            )
+
+        self.assertEqual(["refresh", "account"], calls)
+        self.assertEqual("account_offline", pre_queue.code)
+        self.assertEqual("account_offline", in_queue.code)
+
+    async def test_send_gate_decision_retains_unsent_metadata(self):
+        with (
+            patch.object(runtime, "get_global_enabled", return_value=True),
+            patch.object(runtime, "_global_recovery_hold_until_for_priority", return_value=0),
+            patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+            patch.object(runtime, "is_account_offline", return_value=False),
+            patch.object(runtime, "_account_flood_wait_until", return_value=0),
+            patch.object(runtime, "_send_as_peer_invalid_until", return_value=1234.0),
+            patch.object(runtime, "_close_guard_for_unsent_command"),
+        ):
+            decision = await runtime._evaluate_game_send_gates(
+                ".观星台",
+                send_as_id=301299112,
+                account_id=301299112,
+                send_priority=runtime.SEND_PRIORITY_NORMAL,
+                send_intent={},
+                phase="pre_queue",
+            )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual("send_as_peer_invalid", decision.code)
+        self.assertTrue(decision.definitely_unsent)
+        self.assertEqual(1234.0, decision.blocked_until)
+        self.assertFalse(runtime._record_game_send_gate_decision(301299112, ".观星台", decision))
+        block = runtime.classify_game_send_block(301299112, ".观星台")
+        self.assertEqual("unsent", block["status"])
+        self.assertEqual(1234.0, block["blocked_until"])
+
     async def test_idle_global_slot_sends_without_artificial_wait(self):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = 10.0
