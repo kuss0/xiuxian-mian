@@ -1123,6 +1123,8 @@ def _next_due_action(observed, now, actions):
     for action in actions:
         if not _action_enabled(observed, action):
             continue
+        if action in WANXIN_ASSIST_ACTIONS and not _assist_action_needed(observed, action):
+            continue
         due_at = _due_time_for_action(observed, action)
         if due_at <= now:
             candidates.append((due_at, action))
@@ -1130,6 +1132,16 @@ def _next_due_action(observed, now, actions):
         return ""
     candidates.sort(key=lambda item: (item[0], actions.index(item[1])))
     return candidates[0][1]
+
+
+def _assist_action_needed(observed, action):
+    soul_seal = max(0, _safe_int(observed.get("soul_seal"), 0))
+    curse_source = max(0, _safe_int(observed.get("curse_source"), 0))
+    if action == WANXIN_ACTION_IDENTIFY:
+        return curse_source < 120
+    if action in {WANXIN_ACTION_BANNER, WANXIN_ACTION_STRIP}:
+        return soul_seal > 0
+    return False
 
 
 async def _send_owner_action(observed, action, now, *, command_override=""):

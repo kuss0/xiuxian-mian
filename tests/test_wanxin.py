@@ -284,6 +284,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["wanxin_observation"] = {
                 "auto_config": {"reward_lingshi": 66, "publish_enabled": True, "assist_enabled": True},
                 "auto_next_time": now - 1,
+                "soul_seal": 5,
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
@@ -294,6 +295,41 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once()
             self.assertEqual(".发布解咒委托 66", send_mock.await_args.args[0])
             self.assertEqual("publish", state_module.state["wanxin_observation"]["pending"]["action"])
+
+    async def test_scheduler_does_not_publish_when_strip_is_enabled_but_soul_seal_is_zero(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_010.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "last_observed_at": now - 60,
+                "soul_seal": 0,
+                "curse_source": 120,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "auto_config": {"publish_enabled": True, "assist_enabled": True},
+                "commission": {"id": 0, "owner_username": "WalterWA2000"},
+                "assist": {
+                    "send_as_id": helper_id,
+                    "identify_enabled": False,
+                    "banner_enabled": False,
+                    "strip_enabled": True,
+                    "next_strip_time": now - 1,
+                },
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(0, observed["commission"]["id"])
+            self.assertEqual({}, observed["pending"])
 
     async def test_scheduler_waits_to_publish_until_strip_is_due(self):
         identity_id = self._prepare_identity()
@@ -479,6 +515,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["wanxin_enabled"] = True
                 state_module.state["wanxin_observation"] = {
                     "auto_next_time": now - 1,
+                    "soul_seal": 15,
                     "next_visit_time": now + 3600,
                     "next_protect_time": now + 3600,
                     "next_deduce_time": now + 3600,
@@ -898,6 +935,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
                 "auto_next_time": now - 1,
+                "soul_seal": 5,
                 "next_visit_time": now + 3600,
                 "next_protect_time": now + 3600,
                 "next_deduce_time": now + 3600,
@@ -937,6 +975,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
                 "auto_next_time": now - 1,
+                "soul_seal": 5,
                 "next_visit_time": now + 3600,
                 "next_protect_time": now + 3600,
                 "next_deduce_time": now + 3600,
