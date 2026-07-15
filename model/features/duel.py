@@ -354,6 +354,8 @@ async def _run_controlled_loadout_prepare(now, config):
 
 async def _run_controlled_loadout_restore(now, config):
     phase = _loadout_phase()
+    if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}restored":
+        return False
     if not phase.startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore"):
         return False
     restore_items = tuple(config.get("restore") or ())

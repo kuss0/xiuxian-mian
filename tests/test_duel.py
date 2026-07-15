@@ -148,6 +148,29 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_module.state["duel_unequip_prepared"])
             self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
 
+    async def test_wa_restored_loadout_can_start_a_new_batch(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["next_duel_time"] = now - 1
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = "斗法配装:restored"
+            state_module.state["tianxing_auto_config"] = {"duel_route_enabled": False}
+
+            send_mock = AsyncMock(return_value=SimpleNamespace(id=1001, sent_at=now))
+            with (
+                patch.object(duel, "send_game_command", new=send_mock),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".卸下法宝", track=False, max_retry=0, source_module="斗法配装")
+            self.assertEqual("斗法配装:prepare_unequip_wait", state_module.state["duel_last_result"])
+
     async def test_wa_batch_completion_enters_restore_before_stopping(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
