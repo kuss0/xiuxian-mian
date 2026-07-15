@@ -34,6 +34,12 @@ class WorldBossMiniAppTests(unittest.TestCase):
         state = world_boss_miniapp.build_world_boss_miniapp_request(
             "state", token="qyz_SECRET_TOKEN", init_data="query_id=secret&hash=VERY_SECRET",
         )
+        begin = world_boss_miniapp.build_world_boss_miniapp_request(
+            "begin",
+            token="qyz_SECRET_TOKEN",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            challenge_id="challenge-1",
+        )
         hit = world_boss_miniapp.build_world_boss_miniapp_request(
             "hit",
             token="qyz_SECRET_TOKEN",
@@ -52,6 +58,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
         self.assertEqual({"token", "initData", "playerId"}, set(start["payload"]))
         self.assertEqual({"token", "initData"}, set(state["payload"]))
+        self.assertEqual({"token", "initData", "challengeId"}, set(begin["payload"]))
         self.assertEqual(
             {"token", "initData", "challengeId", "windowId", "elapsedMs", "holdMs"},
             set(hit["payload"]),
@@ -73,6 +80,52 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertNotIn("qyz_SECRET_TOKEN", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
         self.assertNotIn("query_id=secret", serialized)
+
+    def test_new_single_battle_protocol_calls_begin_before_hits(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-begin",
+                        "durationMs": 2500,
+                        "maxDurationMs": 4000,
+                        "windows": [{"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210}],
+                    },
+                }
+            if endpoint == "begin":
+                self.assertEqual("challenge-begin", request["payload"]["challengeId"])
+                return 200, {"ok": True, "startsInMs": 500}
+            if endpoint == "hit":
+                return 200, {
+                    "ok": True,
+                    "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                    "boss": {"actionLimit": 1, "actionsUsed": 1, "actionsRemaining": 0},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 90, "hits": 1, "perfects": 1}}
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_BEGIN",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            rng=random.Random(9),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "begin", "hit", "finish"], calls)
+        self.assertTrue(any(event["step"] == "begin_sync" for event in result["events"]))
 
     def test_strict_error_classification(self):
         for error_type in world_boss_miniapp.WORLD_BOSS_ERROR_TYPES:
@@ -212,6 +265,8 @@ class WorldBossMiniAppTests(unittest.TestCase):
                         ],
                     },
                 }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 500}
             if endpoint == "hit" and request["payload"]["windowId"] == "w1":
                 return 200, {
                     "ok": True,
@@ -237,13 +292,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual("settled", result["status"])
-        self.assertEqual(["start", "start", "hit", "hit", "finish"], calls)
+        self.assertEqual(["start", "start", "begin", "hit", "hit", "finish"], calls)
         self.assertEqual("qyz_SESSION", payloads[1]["token"])
         self.assertTrue(all(delay > 0 for delay in clock.sleeps))
-        self.assertEqual("w1", payloads[2]["windowId"])
-        self.assertLessEqual(abs(payloads[2]["elapsedMs"] - 1500), 24)
-        self.assertGreaterEqual(payloads[2]["holdMs"], 520)
-        self.assertEqual("w2", payloads[3]["windowId"])
+        self.assertEqual("challenge-live", payloads[2]["challengeId"])
+        self.assertEqual("w1", payloads[3]["windowId"])
+        self.assertLessEqual(abs(payloads[3]["elapsedMs"] - 1500), 24)
+        self.assertGreaterEqual(payloads[3]["holdMs"], 520)
+        self.assertEqual("w2", payloads[4]["windowId"])
         proof = payloads[-1]["bossProof"]
         self.assertEqual("qyz_focus_burst_v2", proof["mode"])
         self.assertEqual("强攻", proof["stance"])

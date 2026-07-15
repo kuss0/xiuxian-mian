@@ -29,6 +29,7 @@ WORLD_BOSS_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-world-boss/"
 WORLD_BOSS_MINIAPP_ENDPOINTS = {
     "start": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}start",
     "state": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}state",
+    "begin": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}begin",
     "hit": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}hit",
     "finish": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}finish",
 }
@@ -180,6 +181,12 @@ def build_world_boss_miniapp_flow_plan():
                 note="repeat the joined page lifecycle until the battle challenge is returned",
             ),
             MiniAppFlowStep(
+                key="begin",
+                endpoint="begin",
+                required_payload_keys=("token", "initData", "challengeId"),
+                note="calibrate the server battle clock before starting the local timeline",
+            ),
+            MiniAppFlowStep(
                 key="plan",
                 endpoint="local_window_plan",
                 method="LOCAL",
@@ -225,6 +232,8 @@ def build_world_boss_miniapp_request(
     payload = {"token": str(token or "").strip()}
     if endpoint == "start" and player_id not in (None, ""):
         payload["playerId"] = player_id
+    elif endpoint == "begin":
+        payload["challengeId"] = str(challenge_id or "").strip()
     elif endpoint == "hit":
         payload.update({
             "challengeId": str(challenge_id or "").strip(),
@@ -723,6 +732,16 @@ def _world_boss_challenge_duration_ms(challenge):
             _window_center_ms(window) + max(1, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)),
         )
     return max(1_000, min(max_duration, max(base_duration, last_window_end + 9_000)))
+
+
+def _world_boss_requires_begin(challenge):
+    challenge = dict(challenge or {})
+    mode = str(challenge.get("mode") or "").strip().lower()
+    return bool(
+        mode.startswith("qyz_focus_burst")
+        or isinstance(challenge.get("attacks"), list)
+        or challenge.get("expiresIn") not in (None, "")
+    )
 
 
 def _world_boss_last_window_end_ms(challenge):
@@ -1236,6 +1255,41 @@ def run_world_boss_joined_battle_lab_flow(
         else WORLD_BOSS_AUTO_START_DELAY_SEC
     )
     sleeper(auto_start_delay)
+    if _world_boss_requires_begin(challenge):
+        begin_started_at = float(clock())
+        begin_request = build_world_boss_miniapp_request(
+            "begin",
+            token=current_token,
+            init_data=init_data,
+            challenge_id=str(challenge.get("challengeId") or ""),
+            adapter=adapter,
+        )
+        begin_result = execute_miniapp_http_request(
+            begin_request,
+            transport,
+            sleeper=sleeper,
+            backoff_sec=(),
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="begin",
+        )
+        _append_http_event(events, "begin", begin_result)
+        if not begin_result.ok:
+            status = classify_world_boss_miniapp_error(begin_result.error)
+            return _flow_result(False, status, error=begin_result.error, data=begin_result.data, events=events)
+        begin_data = begin_result.data if isinstance(begin_result.data, dict) else {}
+        starts_in_ms = max(0.0, _float_value(begin_data.get("startsInMs"), 0.0))
+        round_trip_ms = max(0.0, (float(clock()) - begin_started_at) * 1000.0)
+        wait_ms = max(0.0, starts_in_ms - round_trip_ms / 2.0)
+        events.append({
+            "step": "begin_sync",
+            "ok": True,
+            "starts_in_ms": starts_in_ms,
+            "round_trip_ms": round_trip_ms,
+            "wait_ms": wait_ms,
+        })
+        if wait_ms > 0:
+            sleeper(wait_ms / 1000.0)
     try:
         full_plan = build_world_boss_action_plan(challenge, rng=rng)
     except ValueError as exc:
