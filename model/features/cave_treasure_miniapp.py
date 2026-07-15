@@ -1500,6 +1500,7 @@ async def run_cave_deep_seclusion_action_production_flow(
     capture_source="",
     init_data="",
 ):
+    """Execute one deep-seclusion action without replaying an uncertain POST."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
@@ -1516,6 +1517,7 @@ async def run_cave_deep_seclusion_action_production_flow(
             execute_miniapp_http_request,
             request,
             transport or _requests_transport,
+            backoff_sec=(),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
             capture_source=capture_source,

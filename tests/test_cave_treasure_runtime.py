@@ -991,6 +991,21 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
         self.assertEqual("command_center:.元婴出窍", execute_mock.call_args.kwargs["step_key"])
 
+    async def test_deep_seclusion_action_flow_disables_http_retries(self):
+        http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已结算"}})
+        with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
+                patch.object(cave_treasure_miniapp, "execute_miniapp_http_request", new=Mock(return_value=http_result)) as execute_mock:
+            result = await cave_treasure_miniapp.run_cave_deep_seclusion_action_production_flow(
+                1001,
+                token="df_SECRET999",
+                webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                action="settle",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
+        self.assertEqual("deep_seclusion:settle", execute_mock.call_args.kwargs["step_key"])
+
     async def test_deep_seclusion_settle_replays_summary_through_deep_retreat_state(self):
         now = 1_700_000_500.0
         text = (
