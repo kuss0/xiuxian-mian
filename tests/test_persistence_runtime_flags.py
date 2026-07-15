@@ -1,4 +1,5 @@
 import copy
+import json
 import sqlite3
 import sys
 import tempfile
@@ -79,6 +80,32 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self._reset_persistence_connection()
                 self.assertTrue(persistence.load_state())
                 self.assertEqual(9, state_module.get_divination_daily_limit(identity_id))
+
+    def test_username_history_aliases_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990006
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="old_name", label="same person")
+                state_module.update_send_as_profile(identity_id, username="new_name")
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                row = conn.execute(
+                    "SELECT username, username_aliases FROM identities WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual("new_name", row["username"])
+                self.assertEqual(["old_name"], json.loads(row["username_aliases"]))
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+                profile = state_module.get_send_as_profile(identity_id)
+                self.assertEqual("new_name", profile["username"])
+                self.assertEqual(["old_name"], profile["username_aliases"])
 
     def test_small_world_high_stock_silence_defaults_off_and_roundtrips(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -30,6 +30,8 @@ class ModuleLatencyReportTests(unittest.TestCase):
                     "event_type": "message",
                     "message_id": 101,
                     "chat_id": -1001,
+                    "sender_id": 9001,
+                    "sender_is_bot": True,
                     "reply_to_msg_id": 100,
                     "text": "出发",
                 },
@@ -38,8 +40,20 @@ class ModuleLatencyReportTests(unittest.TestCase):
                     "event_type": "edit",
                     "message_id": 101,
                     "chat_id": -1001,
+                    "sender_id": 9001,
+                    "sender_is_bot": True,
                     "reply_to_msg_id": 100,
                     "text": "结果",
+                },
+                {
+                    "ts": "2026-07-15 10:15:00 UTC+8",
+                    "event_type": "message",
+                    "message_id": 102,
+                    "chat_id": -1001,
+                    "sender_id": 3001,
+                    "sender_is_bot": False,
+                    "reply_to_msg_id": 100,
+                    "text": ".斗法",
                 },
                 {
                     "ts": "2026-07-15 10:10:00 UTC+8",
@@ -62,6 +76,11 @@ class ModuleLatencyReportTests(unittest.TestCase):
         self.assertEqual(2.0, wild["first_reply"]["p99_sec"])
         self.assertEqual(7.0, wild["final_event"]["p99_sec"])
         self.assertEqual(110, wild["missing_samples"][0]["message_id"])
+        self.assertEqual(100, wild["slow_samples"][0]["message_id"])
+        self.assertEqual(2.0, wild["slow_samples"][0]["first_reply_sec"])
+        self.assertEqual(7.0, wild["slow_samples"][0]["final_event_sec"])
+        self.assertEqual("edit", wild["slow_samples"][0]["final_event_type"])
+        self.assertEqual(101, wild["slow_samples"][0]["final_message_id"])
 
     def test_report_keeps_chat_ids_separate(self):
         now = datetime(2026, 7, 15, 12, 0, 0, tzinfo=TZ_LOCAL)

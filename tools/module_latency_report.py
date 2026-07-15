@@ -52,6 +52,20 @@ def _read_rows(messages_dir, start, end):
     return rows
 
 
+def _bot_sender_ids(rows):
+    sender_ids = set()
+    for row in rows:
+        username = str(row.get("sender_username") or "").strip().lower()
+        if row.get("sender_is_bot") is True or username.endswith("_bot"):
+            try:
+                sender_id = int(row.get("sender_id") or 0)
+            except (TypeError, ValueError):
+                sender_id = 0
+            if sender_id > 0:
+                sender_ids.add(sender_id)
+    return sender_ids
+
+
 def _percentile(values, ratio):
     if not values:
         return None
@@ -69,7 +83,15 @@ def _latency_stats(values):
     }
 
 
-def build_latency_report(messages_dir, *, since_hours=24, now=None, modules=None, missing_sample_limit=20):
+def build_latency_report(
+    messages_dir,
+    *,
+    since_hours=24,
+    now=None,
+    modules=None,
+    missing_sample_limit=20,
+    slow_sample_limit=10,
+):
     now = now or datetime.now(TZ_LOCAL)
     if now.tzinfo is None:
         now = now.replace(tzinfo=TZ_LOCAL)
@@ -79,6 +101,7 @@ def build_latency_report(messages_dir, *, since_hours=24, now=None, modules=None
     module_map = dict(modules or DEFAULT_MODULES)
     source_to_key = {source: key for key, source in module_map.items()}
     rows = _read_rows(messages_dir, start, now)
+    bot_sender_ids = _bot_sender_ids(rows)
 
     sent = {}
     for row in rows:
@@ -93,13 +116,15 @@ def build_latency_report(messages_dir, *, since_hours=24, now=None, modules=None
     for row in rows:
         if row.get("event_type") not in {"message", "edit"}:
             continue
+        if int(row.get("sender_id") or 0) not in bot_sender_ids:
+            continue
         reply_to = int(row.get("reply_to_msg_id") or 0)
         key = (int(row.get("chat_id") or 0), reply_to)
         if reply_to > 0 and key in replies:
             replies[key].append(row)
 
     payload = {
-        "policy": "read-only direct reply/edit latency; no send or state mutation",
+        "policy": "read-only direct game-bot reply/edit latency; no send or state mutation",
         "start": start.strftime(TS_FORMAT),
         "end": now.strftime(TS_FORMAT),
         "modules": {},
@@ -107,6 +132,7 @@ def build_latency_report(messages_dir, *, since_hours=24, now=None, modules=None
     for report_key, source_module in module_map.items():
         first_latencies = []
         final_latencies = []
+        slow_samples = []
         missing = []
         total = 0
         for root_key, sent_row in sent.items():
@@ -123,8 +149,24 @@ def build_latency_report(messages_dir, *, since_hours=24, now=None, modules=None
                         "command": str(sent_row.get("text") or "")[:120],
                     })
                 continue
-            first_latencies.append(max(0.0, (evidence[0]["_ts"] - sent_row["_ts"]).total_seconds()))
-            final_latencies.append(max(0.0, (evidence[-1]["_ts"] - sent_row["_ts"]).total_seconds()))
+            first_latency = max(0.0, (evidence[0]["_ts"] - sent_row["_ts"]).total_seconds())
+            final_latency = max(0.0, (evidence[-1]["_ts"] - sent_row["_ts"]).total_seconds())
+            first_latencies.append(first_latency)
+            final_latencies.append(final_latency)
+            slow_samples.append({
+                "ts": sent_row.get("ts") or "",
+                "identity_id": int(sent_row.get("sender_id") or 0),
+                "message_id": int(sent_row.get("message_id") or 0),
+                "command": str(sent_row.get("text") or "")[:120],
+                "first_reply_sec": round(first_latency, 3),
+                "final_event_sec": round(final_latency, 3),
+                "final_event_type": str(evidence[-1].get("event_type") or ""),
+                "final_message_id": int(evidence[-1].get("message_id") or 0),
+            })
+        slow_samples.sort(
+            key=lambda item: (item["final_event_sec"], item["first_reply_sec"]),
+            reverse=True,
+        )
         payload["modules"][report_key] = {
             "source_module": source_module,
             "sent": total,
@@ -132,6 +174,7 @@ def build_latency_report(messages_dir, *, since_hours=24, now=None, modules=None
             "missing": total - len(first_latencies),
             "first_reply": _latency_stats(first_latencies),
             "final_event": _latency_stats(final_latencies),
+            "slow_samples": slow_samples[:max(0, int(slow_sample_limit or 0))],
             "missing_samples": missing,
         }
     return payload
@@ -160,6 +203,12 @@ def format_report(payload):
                 f"  missing: {sample['ts']} identity={sample['identity_id']} "
                 f"msg={sample['message_id']} command={sample['command']}"
             )
+        for sample in row.get("slow_samples") or ():
+            lines.append(
+                f"  slow: {sample['ts']} identity={sample['identity_id']} msg={sample['message_id']} "
+                f"first={sample['first_reply_sec']:.3f}s final={sample['final_event_sec']:.3f}s "
+                f"final_event={sample['final_event_type']}:{sample['final_message_id']} command={sample['command']}"
+            )
     return "\n".join(lines)
 
 
@@ -181,6 +230,7 @@ def main(argv=None):
     parser.add_argument("--since-hours", type=float, default=24.0)
     parser.add_argument("--module", action="append", default=[], help="report_key=source_module")
     parser.add_argument("--missing-sample-limit", type=int, default=20)
+    parser.add_argument("--slow-sample-limit", type=int, default=10)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -192,6 +242,7 @@ def main(argv=None):
         since_hours=args.since_hours,
         modules=modules,
         missing_sample_limit=args.missing_sample_limit,
+        slow_sample_limit=args.slow_sample_limit,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else format_report(payload))
     return 0

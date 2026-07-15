@@ -124,6 +124,7 @@ def _default_hehuan_observation():
         "last_result": "",
         "last_summary": "",
         "last_partner": "",
+        "last_partner_identity_id": 0,
         "last_target": "",
         "last_error": "",
         "last_warm_success_at": 0,
@@ -189,7 +190,7 @@ def normalize_hehuan_observation(value=None):
         observed["last_contrib_gain"] = int(observed.get("last_contrib_gain", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         observed["last_contrib_gain"] = 0
-    for key in ("auto_retry_count", "auto_pending_msg_id", "auto_reply_anchor_msg_id"):
+    for key in ("last_partner_identity_id", "auto_retry_count", "auto_pending_msg_id", "auto_reply_anchor_msg_id"):
         try:
             observed[key] = max(0, int(observed.get(key, 0) or 0))
         except (TypeError, ValueError, OverflowError):
@@ -515,6 +516,10 @@ def _identity_matches_name(identity_id, name):
         str(profile.get("label") or "").strip().lstrip("@").lower(),
         str(profile.get("daohao") or "").strip().lstrip("@").lower(),
     }
+    values.update(
+        str(alias or "").strip().lstrip("@").lower()
+        for alias in profile.get("username_aliases", [])
+    )
     return target in values
 
 
@@ -588,7 +593,13 @@ def _resolve_identity_id_by_at_name(name):
         username = str(profile.get("username") or "").strip().lstrip("@").lower()
         label = str(profile.get("label") or "").strip().lstrip("@").lower()
         daohao = str(profile.get("daohao") or "").strip().lstrip("@").lower()
+        aliases = {
+            str(alias or "").strip().lstrip("@").lower()
+            for alias in profile.get("username_aliases", [])
+        }
         if username == target:
+            return int(identity_id or 0)
+        if target in aliases:
             return int(identity_id or 0)
         if label == target or daohao == target:
             fallback = int(identity_id or 0) or fallback
@@ -978,10 +989,12 @@ def apply_hehuan_passive(text, now=None, family=""):
     observed["last_summary"] = parsed.get("summary") or _short_summary(text)
     if parsed_partner:
         observed["last_partner"] = parsed_partner
+        observed["last_partner_identity_id"] = _resolve_identity_id_by_at_name(parsed_partner)
     elif result in {"contract_invalid", "cooldown", "pending"} and previous_partner:
         observed["last_partner"] = previous_partner
     else:
         observed["last_partner"] = ""
+        observed["last_partner_identity_id"] = 0
     observed["last_target"] = parsed.get("target") or ""
     observed["last_error"] = parsed.get("error") or ""
     action = str(parsed.get("action") or "").strip()
@@ -1113,12 +1126,20 @@ def _hehuan_block_label(code, reason):
 async def _ensure_hehuan_reply_anchor(observed, now):
     partner = str((observed or {}).get("last_partner") or "").strip()
     if partner:
-        anchor_msg_id = find_recent_hehuan_partner_anchor_msg_id(partner, now=now)
+        partner_id = int((observed or {}).get("last_partner_identity_id", 0) or 0)
+        if partner_id <= 0:
+            partner_id = _resolve_identity_id_by_at_name(partner)
+        anchor_msg_id = find_recent_hehuan_partner_anchor_msg_id(
+            partner,
+            now=now,
+            target_id=partner_id,
+        )
         if anchor_msg_id > 0:
+            observed["last_partner_identity_id"] = partner_id
             return anchor_msg_id, ""
-        partner_id = _resolve_identity_id_by_at_name(partner)
         if partner_id <= 0:
             return 0, f"缺少同参对象 {partner} 近10分钟游戏话题锚点，且无法定位本地身份，暂不裸发温养双修。"
+        observed["last_partner_identity_id"] = partner_id
         anchor_requested_at = float((observed or {}).get("auto_anchor_requested_at", 0) or 0)
         if now - anchor_requested_at < 60:
             return 0, f"已请求同参对象 {partner} 发言锚点，等待监听入库。"

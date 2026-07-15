@@ -789,6 +789,46 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(8899, send_mock.await_args.kwargs["reply_to"])
             self.assertEqual(8899, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
 
+    async def test_scheduler_resolves_renamed_partner_from_username_alias(self):
+        now = 1_780_000_000.0
+        partner_id = 8659059191
+        state_module.ensure_identity_registered(partner_id)
+        state_module.update_send_as_profile(
+            partner_id,
+            username="WalterWA2000",
+            label="wa2000",
+            sect_name="天星宗",
+        )
+        state_module.update_send_as_profile(partner_id, username="WalterWA20000")
+        profile = state_module.get_send_as_profile(partner_id)
+        self.assertIn("WalterWA2000", profile["username_aliases"])
+
+        anchor_msg = SimpleNamespace(id=8899, sent_at=now)
+        warm_msg = SimpleNamespace(id=9003, sent_at=now + 12)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@WalterWA2000",
+                "auto_next_time": now - 1,
+            }
+            with (
+                patch.object(hehuan, "find_recent_hehuan_partner_anchor_msg_id", return_value=0),
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=[anchor_msg, warm_msg])) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+        self.assertEqual(2, send_mock.await_count)
+        self.assertEqual(partner_id, send_mock.await_args_list[0].kwargs["send_as_id"])
+        self.assertEqual(8899, send_mock.await_args_list[1].kwargs["reply_to"])
+        self.assertEqual(
+            partner_id,
+            state_module.state["hehuan_observation"]["last_partner_identity_id"],
+        )
+
     async def test_scheduler_ignores_partner_anchor_outside_game_topic(self):
         base_dt = datetime(2026, 7, 4, 13, 20, tzinfo=hehuan.TZ_LOCAL)
         now = base_dt.timestamp()

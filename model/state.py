@@ -131,6 +131,7 @@ QUIZ_AI_CONFIG_DEFAULTS = {
 }
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
+    "username_aliases": [],
     "label": "",
     "daohao": "",
     "realm": "",
@@ -1020,6 +1021,22 @@ def _normalize_send_as_profile_updates(changes):
     return normalized
 
 
+def _normalize_username_aliases(values, *, current_username="", limit=8):
+    if isinstance(values, str):
+        values = [values]
+    current = str(current_username or "").strip().lstrip("@").lower()
+    aliases = []
+    seen = set()
+    for raw_value in values or []:
+        value = str(raw_value or "").strip().lstrip("@")
+        key = value.lower()
+        if not value or key == current or key in seen:
+            continue
+        seen.add(key)
+        aliases.append(value)
+    return aliases[-max(1, int(limit or 8)):]
+
+
 def _normalize_game_bot_ids(bot_ids):
     normalized = []
     seen = set()
@@ -1060,6 +1077,7 @@ def set_send_as_profile(
     send_as_id,
     username="",
     label="",
+    username_aliases=None,
     daohao=None,
     realm=None,
     spiritual_root_type=None,
@@ -1089,6 +1107,7 @@ def set_send_as_profile(
     return update_send_as_profile(
         send_as_id,
         username=username,
+        username_aliases=username_aliases,
         label=label,
         daohao=daohao,
         realm=realm,
@@ -1154,8 +1173,25 @@ def update_send_as_profile(send_as_id, **changes):
     ensure_identity_registered(send_as_id)
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(send_as_id, {}))
+    previous_username = str(profile.get("username") or "").strip().lstrip("@")
+    previous_aliases = _normalize_username_aliases(profile.get("username_aliases"))
     normalized_changes = _normalize_send_as_profile_updates(changes)
     profile.update(normalized_changes)
+    current_username = str(profile.get("username") or "").strip().lstrip("@")
+    aliases = [*previous_aliases]
+    if "username_aliases" in normalized_changes:
+        aliases.extend(_normalize_username_aliases(normalized_changes.get("username_aliases")))
+    if (
+        "username" in normalized_changes
+        and previous_username
+        and current_username
+        and previous_username.lower() != current_username.lower()
+    ):
+        aliases.append(previous_username)
+    profile["username_aliases"] = _normalize_username_aliases(
+        aliases,
+        current_username=current_username,
+    )
     _normalize_replica_professions_profile(
         profile,
         infer_from_root="spiritual_root_attrs" in normalized_changes and "replica_professions" not in normalized_changes,
@@ -1170,6 +1206,10 @@ def get_send_as_profile(send_as_id=None):
         send_as_id = get_current_identity_id()
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(int(send_as_id), {}))
+    profile["username_aliases"] = _normalize_username_aliases(
+        profile.get("username_aliases"),
+        current_username=profile.get("username"),
+    )
     _normalize_replica_professions_profile(profile)
     _normalize_replica_gold_dps_profile(profile)
     if not (profile.get("realm") or "").strip():

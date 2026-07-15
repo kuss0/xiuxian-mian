@@ -326,6 +326,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN sect_teach_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
+    if "username_aliases" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN username_aliases TEXT NOT NULL DEFAULT '[]'")
     if "pet_name" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN pet_name TEXT NOT NULL DEFAULT ''")
     if "pet_trial_name" not in identity_columns:
@@ -1316,6 +1318,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS identities (
             send_as_id INTEGER PRIMARY KEY,
             username TEXT NOT NULL DEFAULT '',
+            username_aliases TEXT NOT NULL DEFAULT '[]',
             label TEXT NOT NULL DEFAULT '',
             daohao TEXT NOT NULL DEFAULT '',
             realm TEXT NOT NULL DEFAULT '',
@@ -2191,14 +2194,15 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, replica_gold_dps_enabled, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
+            send_as_id, username, username_aliases, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, replica_gold_dps_enabled, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, battle_power_text, battle_power_value, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
+            username_aliases=excluded.username_aliases,
             label=excluded.label,
             daohao=excluded.daohao,
             realm=excluded.realm,
@@ -2230,6 +2234,7 @@ def upsert_identity_to_db(send_as_id):
         (
             int(send_as_id),
             profile.get("username", "") or "",
+            json.dumps(profile.get("username_aliases") or [], ensure_ascii=False),
             profile.get("label", "") or "",
             profile.get("daohao", "") or "",
             profile.get("realm", "") or "",
@@ -2335,14 +2340,15 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, replica_gold_dps_enabled, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max, battle_power_text, battle_power_value FROM identities WHERE send_as_id = ?",
+        "SELECT username, username_aliases, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, replica_gold_dps_enabled, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max, battle_power_text, battle_power_value FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
         set_send_as_profile(
             send_as_id,
             row["username"],
-            row["label"],
+            username_aliases=json.loads(row["username_aliases"] or "[]"),
+            label=row["label"],
             daohao=row["daohao"],
             realm=row["realm"],
             spiritual_root_type=row["spiritual_root_type"],
