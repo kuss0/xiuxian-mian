@@ -1247,12 +1247,14 @@ async def _send_assist_action(observed, action, now):
     return True
 
 
-def _owner_needs_commission(observed):
+def _owner_needs_commission(observed, now):
     config = normalize_wanxin_auto_config(observed.get("auto_config"))
     if not config.get("publish_enabled") or not config.get("assist_enabled"):
         return False
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
-    return int(commission.get("id", 0) or 0) <= 0
+    if int(commission.get("id", 0) or 0) > 0:
+        return False
+    return bool(_next_due_action(observed, now, WANXIN_ASSIST_ACTIONS))
 
 
 def _owner_needs_accept(observed):
@@ -1313,7 +1315,7 @@ async def run_wanxin_scheduler(now):
             return
         if not (observed.get("commission") or {}).get("owner_username"):
             observed["commission"]["owner_username"] = _owner_username()
-        if _owner_needs_commission(observed):
+        if _owner_needs_commission(observed, now):
             reward = int(observed.get("auto_config", {}).get("reward_lingshi", 1) or 1)
             await _send_owner_action(
                 observed,

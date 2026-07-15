@@ -295,6 +295,36 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".发布解咒委托 66", send_mock.await_args.args[0])
             self.assertEqual("publish", state_module.state["wanxin_observation"]["pending"]["action"])
 
+    async def test_scheduler_waits_to_publish_until_strip_is_due(self):
+        identity_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_025.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_config": {"publish_enabled": True, "assist_enabled": True},
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "commission": {"id": 0, "owner_username": "jfdffdddd"},
+                "assist": {
+                    "send_as_id": helper_id,
+                    "identify_enabled": False,
+                    "banner_enabled": False,
+                    "strip_enabled": True,
+                    "next_strip_time": now + 8 * 3600,
+                },
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + 3600, state_module.state["wanxin_observation"]["auto_next_time"])
+
     async def test_scheduler_default_starts_owner_action_without_publishing(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_050.0
