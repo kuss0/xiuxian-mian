@@ -128,6 +128,28 @@ class ControlBoolCoercionTests(unittest.TestCase):
         self.assertEqual(0, state_module.get_global_recovery_throttle_until())
         dirty_mock.assert_not_called()
 
+    def test_channel_recovery_can_create_throttle_when_inactive(self):
+        now = 1_700_000_000.0
+        state_module.set_global_recovery_throttle_until(0)
+
+        with (
+            patch.object(control, "console_log") as log_mock,
+            patch.object(control, "mark_dirty") as dirty_mock,
+        ):
+            changed = control.extend_global_recovery_throttle_for_spread(
+                now,
+                reason="频道身份恢复",
+                activate_if_missing=True,
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            now + control.RECOVERY_SPREAD_MAX_SEC + control.RECOVERY_THROTTLE_BUFFER_SEC,
+            state_module.get_global_recovery_throttle_until(),
+        )
+        dirty_mock.assert_called_once()
+        log_mock.assert_called_once()
+
     def test_manual_global_resume_clears_recovery_hold_and_throttle(self):
         state_module.set_global_enabled(False)
         state_module.set_global_pause_source("ui")

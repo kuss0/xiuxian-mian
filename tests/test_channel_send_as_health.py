@@ -101,7 +101,11 @@ class ChannelSendAsHealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("open", state_module.get_channel_send_as_health()["status"])
         self.assertEqual(2, initialize_mock.call_count)
         spread_mock.assert_called_once_with(now, reason="频道身份恢复")
-        throttle_mock.assert_called_once_with(now, reason="频道身份恢复")
+        throttle_mock.assert_called_once_with(
+            now,
+            reason="频道身份恢复",
+            activate_if_missing=True,
+        )
         save_mock.assert_called_once()
         audit_mock.assert_awaited_once()
 

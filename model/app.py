@@ -437,7 +437,11 @@ async def run_channel_send_as_health_scheduler(now):
     ]
     spread_count = spread_overdue_runtime_timers(now, reason="频道身份恢复")
     if spread_count:
-        extend_global_recovery_throttle_for_spread(now, reason="频道身份恢复")
+        extend_global_recovery_throttle_for_spread(
+            now,
+            reason="频道身份恢复",
+            activate_if_missing=True,
+        )
     fully_open = not remaining_restore_ids
     set_channel_send_as_health({
         "status": "open" if fully_open else "closed",

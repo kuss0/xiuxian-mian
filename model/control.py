@@ -882,13 +882,24 @@ def spread_overdue_runtime_timers(now=None, *, reason="recovery", window_sec=Non
     return changed_count
 
 
-def extend_global_recovery_throttle_for_spread(now=None, *, reason="recovery", window_sec=None):
-    """Keep recovery slow-start active long enough to cover freshly spread timers."""
+def extend_global_recovery_throttle_for_spread(
+    now=None,
+    *,
+    reason="recovery",
+    window_sec=None,
+    activate_if_missing=False,
+):
+    """Keep recovery slow-start active long enough to cover freshly spread timers.
+
+    Ordinary startup recovery only extends a throttle that is already active.
+    Automatic channel-identity recovery may explicitly create one because it can
+    release many independently overdue identities in the same scheduler window.
+    """
     if now is None:
         now = time.time()
     now = float(now)
     current_until = float(get_global_recovery_throttle_until() or 0.0)
-    if current_until <= now:
+    if current_until <= now and not activate_if_missing:
         return False
     if window_sec is None:
         window_sec = RECOVERY_SPREAD_MAX_SEC
