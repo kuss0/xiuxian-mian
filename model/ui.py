@@ -4640,6 +4640,7 @@ def get_identity_ui_snapshot(send_as_id):
             "small_world_harvest_enabled": bool(identity_state.get("small_world_harvest_enabled", False)),
             "small_world_refine_enabled": bool(identity_state.get("small_world_refine_enabled", False)),
             "small_world_refresh_enabled": bool(identity_state.get("small_world_refresh_enabled", False)),
+            "small_world_high_stock_silence_enabled": bool(identity_state.get("small_world_high_stock_silence_enabled", False)),
             "small_world_barrier_enabled": bool(identity_state.get("small_world_barrier_enabled", True)),
             "small_world_barrier_min_stock": int(identity_state.get("small_world_barrier_min_stock", 130000) or 130000),
             "small_world_barrier_guard_before_min": int(identity_state.get("small_world_barrier_guard_before_min", 30) or 30),
@@ -5121,6 +5122,7 @@ async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
         "harvest": ("small_world_harvest_enabled", "收割香火"),
         "refine": ("small_world_refine_enabled", "神识淬炼"),
         "refresh": ("small_world_refresh_enabled", "祈愿刷新"),
+        "high_stock_silence": ("small_world_high_stock_silence_enabled", "高香火静默"),
         "barrier": ("small_world_barrier_enabled", "护界禁制"),
     }
     field_name, display_name = feature_map.get(feature_name, ("", ""))

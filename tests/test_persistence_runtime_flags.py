@@ -80,6 +80,31 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.load_state())
                 self.assertEqual(9, state_module.get_divination_daily_limit(identity_id))
 
+    def test_small_world_high_stock_silence_defaults_off_and_roundtrips(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990005
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    self.assertFalse(state_module.state["small_world_high_stock_silence_enabled"])
+                    state_module.state["small_world_high_stock_silence_enabled"] = True
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                row = conn.execute(
+                    "SELECT small_world_high_stock_silence_enabled FROM identity_module_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual(1, int(row["small_world_high_stock_silence_enabled"]))
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+                with state_module.use_identity(identity_id):
+                    self.assertTrue(state_module.state["small_world_high_stock_silence_enabled"])
+
     def test_small_world_public_request_guard_roundtrips(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

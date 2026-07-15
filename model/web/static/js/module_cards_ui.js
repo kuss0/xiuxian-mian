@@ -758,6 +758,11 @@
             renderSmallWorldFeature(identity,'refresh','刷新')
           )+
           settingSection(
+            '高香火静默',
+            '开启后，香火库存达到护界阈值时跳过小世界主动刷新与维护；默认关闭。',
+            renderSmallWorldFeature(identity,'high_stock_silence','静默')
+          )+
+          settingSection(
             '护界禁制策略',
             '库存阈值决定香火低于多少时不再自动开盾；提前分钟决定临灾前多久补盾；最小间隔用于避免过密消耗香火。',
             renderSmallWorldFeature(identity,'barrier','护界')+

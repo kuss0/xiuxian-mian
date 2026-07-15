@@ -1259,6 +1259,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_refresh_enabled"] = True
             state_module.state["small_world_harvest_enabled"] = True
             state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_high_stock_silence_enabled"] = True
             state_module.state["small_world_barrier_min_stock"] = 130000
             plan = cave_treasure_runtime._plan_cave_public_small_world_action({
                 "small_world": {
@@ -1281,6 +1282,25 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plan["suppress_refresh"])
         self.assertNotIn("action", plan)
         self.assertIn("高香火静默", plan["reason"])
+
+    def test_cave_public_small_world_high_stock_plan_is_disabled_by_default(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_high_stock_silence_enabled"] = False
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "faith": 90,
+                    "faith_cap": 100,
+                    "incense_stock": 150000,
+                    "edict_remaining_seconds": 0,
+                },
+            })
+
+        self.assertEqual("miracle_sermon", plan["action"])
+        self.assertNotIn("silent", plan)
 
     async def test_cave_public_small_world_executes_action_and_updates_legacy_snapshot(self):
         flow_result = {
@@ -1476,6 +1496,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(1001):
             state_module.state["small_world_manifest_enabled"] = True
             state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_high_stock_silence_enabled"] = True
             state_module.state["small_world_refresh_count"] = 1
             state_module.state["next_small_world_time"] = now - 1
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \

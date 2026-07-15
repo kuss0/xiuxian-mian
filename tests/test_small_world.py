@@ -1919,6 +1919,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_harvest_enabled"] = True
             state_module.state["small_world_refine_enabled"] = True
             state_module.state["small_world_barrier_enabled"] = False
+            state_module.state["small_world_high_stock_silence_enabled"] = True
             state_module.state["small_world_refresh_count"] = 1
             state_module.state["next_small_world_time"] = now - 1
 
@@ -1941,6 +1942,23 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["small_world_refresh_count"])
             self.assertEqual(now + small_world.SMALL_WORLD_CYCLE_CD_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC, state_module.state["next_small_world_time"])
             self.assertIn("高香火静默", state_module.state["small_world_last_error"])
+
+    async def test_high_stock_silence_panel_runs_normal_policy_when_disabled(self):
+        send_as_id = 8659059318
+        now = 4277.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【空尘子的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "⚖️ 稳定: 100 / 100\n"
+            "☁️ 待收香火: 0\n"
+            "🏺 香火库存: 150000\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_high_stock_silence_enabled"] = False
+            self.assertFalse(small_world._is_high_stock_silence_panel(panel))
 
     async def test_due_disaster_god_action_preempts_chain_pending_phase(self):
         send_as_id = 8659059311

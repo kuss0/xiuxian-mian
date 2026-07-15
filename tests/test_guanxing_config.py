@@ -168,12 +168,16 @@ class GuanxingConfigTests(unittest.TestCase):
         state_module.update_send_as_profile(send_as_id, spiritual_root_attrs="金", replica_gold_dps_enabled=True)
         with state_module.use_identity(send_as_id):
             state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_high_stock_silence_enabled"] = True
             state_module.state["tianti_wenxin_enabled"] = True
             state_module.state["taiyi_node_search_enabled"] = True
 
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
             ok_small, message_small = asyncio.run(
                 ui.ui_set_small_world_feature_enabled(send_as_id, "preach", "false")
+            )
+            ok_silence, message_silence = asyncio.run(
+                ui.ui_set_small_world_feature_enabled(send_as_id, "high_stock_silence", "false")
             )
             ok_tianti, message_tianti = asyncio.run(
                 ui.ui_set_tianti_feature_enabled(send_as_id, "wenxin", "false")
@@ -184,11 +188,13 @@ class GuanxingConfigTests(unittest.TestCase):
             ok_gold, message_gold = ui.ui_set_replica_gold_dps_enabled(send_as_id, "false")
 
         self.assertTrue(ok_small, message_small)
+        self.assertTrue(ok_silence, message_silence)
         self.assertTrue(ok_tianti, message_tianti)
         self.assertTrue(ok_taiyi, message_taiyi)
         self.assertTrue(ok_gold, message_gold)
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["small_world_preach_enabled"])
+            self.assertFalse(state_module.state["small_world_high_stock_silence_enabled"])
             self.assertFalse(state_module.state["tianti_wenxin_enabled"])
             self.assertFalse(state_module.state["taiyi_node_search_enabled"])
         self.assertFalse(state_module.get_replica_gold_dps_enabled(send_as_id))

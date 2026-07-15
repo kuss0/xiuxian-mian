@@ -484,6 +484,8 @@ def _barrier_min_stock():
 
 
 def _high_stock_silence_threshold():
+    if not state.get("small_world_high_stock_silence_enabled", False):
+        return 0
     return max(SMALL_WORLD_HIGH_STOCK_SILENCE_FLOOR, _barrier_min_stock())
 
 

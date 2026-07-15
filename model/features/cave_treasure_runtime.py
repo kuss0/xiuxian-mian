@@ -1027,6 +1027,8 @@ def _cave_small_world_panel_snapshot(small_world, now):
 
 
 def _cave_small_world_silence_threshold():
+    if not state.get("small_world_high_stock_silence_enabled", False):
+        return 0
     try:
         configured = int(state.get("small_world_barrier_min_stock", 130000) or 130000)
     except (TypeError, ValueError):

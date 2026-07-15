@@ -213,7 +213,7 @@ SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 300      # bot 静默超时，触发全局暂停（5分钟）
 DB_FILE = os.path.abspath(os.environ.get("XIUXIAN_DB_FILE") or os.path.join(STATE_DIR, "chaogu_state.db"))
-DB_SCHEMA_VERSION = 9
+DB_SCHEMA_VERSION = 10
 TZ_LOCAL = timezone(timedelta(hours=8))
 
 

@@ -298,6 +298,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refine_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_refresh_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
+    if "small_world_high_stock_silence_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_high_stock_silence_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_barrier_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_enabled INTEGER NOT NULL DEFAULT 1")
     if "small_world_barrier_min_stock" not in module_columns:
@@ -1381,6 +1383,7 @@ def init_db():
             small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refine_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_high_stock_silence_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_barrier_enabled INTEGER NOT NULL DEFAULT 1,
             small_world_barrier_min_stock INTEGER NOT NULL DEFAULT 130000,
             small_world_barrier_guard_before_min INTEGER NOT NULL DEFAULT 30,
