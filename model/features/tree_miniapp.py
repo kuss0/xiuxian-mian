@@ -426,7 +426,9 @@ def _step_tree_fly_state(seed, state_item, *, flap=False, frame_ms=TREE_MINIAPP_
     now_ms, y, vy, score, gates, flaps, last_flap_ms = state_item
     if flap:
         vy = TREE_MINIAPP_FLY_IMPULSE
-        flaps = tuple(list(flaps) + [int(round(now_ms))])
+        # A flap belongs to the current simulation frame. Rounding up delays it
+        # until the following replay frame (for example 1266.67 -> 1267ms).
+        flaps = tuple(list(flaps) + [int(math.floor(now_ms))])
         last_flap_ms = float(now_ms)
     frame_ms = max(8.0, float(frame_ms or TREE_MINIAPP_FLY_FRAME_MS))
     dt = frame_ms / 1000.0
@@ -559,18 +561,29 @@ def build_tree_fly_proof(run, *, rng=None, profile=None):
     planned_score = int(planned_state[3]) if planned_state else 0
     planned_duration_ms = int(round(planned_state[0])) if planned_state else 0
     duration_ms = max(planned_duration_ms, (flaps[-1] + 1) if flaps else 0)
+    replay = simulate_tree_fly_run(
+        seed,
+        flaps,
+        max_duration_ms=duration_ms,
+        frame_ms=frame_ms,
+    )
+    replay_score = int(replay.get("score") or 0)
+    if replay_score != planned_score:
+        raise ValueError(
+            f"fly proof replay mismatch: planned={planned_score} replay={replay_score}"
+        )
     proof = {
         "flaps": [int(item) for item in flaps],
         "durationMs": int(duration_ms),
-        "clientScore": planned_score,
+        "clientScore": replay_score,
     }
     summary = {
         "mode": "fly",
         "targetScore": int(target_score),
-        "score": planned_score,
+        "score": replay_score,
         "flapCount": len(flaps),
         "durationMs": proof["durationMs"],
-        "gameOver": False,
+        "gameOver": bool(replay.get("gameOver")),
         "profile": {
             "frame_ms": float(frame_ms),
             "beam_width": _int_between(
@@ -582,6 +595,7 @@ def build_tree_fly_proof(run, *, rng=None, profile=None):
             "max_duration_ms": int(max_duration_ms),
             "min_interval_ms": int(profile.get("min_interval_ms") or 0),
             "planned_score": planned_score,
+            "replay_score": replay_score,
             "forced_miss": False,
         },
     }
