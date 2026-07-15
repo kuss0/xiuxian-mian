@@ -29,6 +29,20 @@ Reproducible read-only baseline:
 .venv/bin/python tools/persistence_write_profile.py
 ```
 
+An isolated copy of the live DB was then loaded three times through the current
+runtime persistence code. No production file was opened for writing.
+
+| Mode | Iteration times | Traced mutating SQL |
+|---|---:|---:|
+| Current full save plus last-good backup | 47.64ms / 48.84ms / 48.96ms | 225 each |
+| Current full save with backup disabled | 22.49ms / 21.45ms / 21.72ms | 225 each |
+
+This is a no-logical-change save. The SQL half and the full-backup half are both
+material; optimizing only one leaves roughly half of the current cost. P1 must
+make a repeated no-change save issue zero business-table mutations, while P2
+must preserve immediate structural protection without copying the full DB after
+every ordinary state update.
+
 Directly applying `fc78e0c` is unsafe for this line:
 
 - Its module scope is inferred from field-name prefixes. Local modules own shared fields, generic pending/message state, and cross-module metadata that are not safely described by one prefix.
@@ -39,7 +53,7 @@ Directly applying `fc78e0c` is unsafe for this line:
 
 Recommended gates:
 
-1. **P0 Lab baseline**: keep the new read-only profile, add SQLite trace counts and repeated-save timing against an isolated DB copy.
+1. **P0 Lab baseline**: completed with the read-only profile plus SQLite trace/timing against isolated DB copies. Keep this command output as the comparison baseline for later gates.
 2. **P1 Snapshot-diff full API**: preserve the existing `save_state()` contract and call sites, but compare canonical post-load snapshots and write only changed metadata/identities. Keep full-save fallback on unknown scope or snapshot loss.
 3. **P2 Guard backup generations**: decouple last-good backup cadence from every ordinary state commit. Back up immediately on roster/account structural changes, and periodically after ordinary commits. A backup failure must not roll back an already committed state transaction.
 4. **P3 Explicit identity saves**: migrate high-frequency module-local paths to `save_identity_state(identity_id)` only after failure-injection coverage.
