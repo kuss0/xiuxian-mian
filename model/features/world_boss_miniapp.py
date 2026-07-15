@@ -64,6 +64,7 @@ WORLD_BOSS_ERROR_TYPES = (
     "boss_battle_not_started",
     "boss_token_used",
     "boss_token_expired",
+    "boss_hit_outside_window",
 )
 
 _VERIFICATION_KEYS = (
@@ -1425,6 +1426,31 @@ def run_world_boss_joined_battle_lab_flow(
         _append_http_event(events, "hit", hit_result)
         if not hit_result.ok:
             status = classify_world_boss_miniapp_error(hit_result.error)
+            if status == "boss_hit_outside_window":
+                # A single late release is a business miss, not a transport
+                # failure. The server has already rejected this mutation, so
+                # never retry it; record the page-equivalent miss and keep
+                # the rest of the timeline eligible for one final finish.
+                processed_window_ids.add(action["windowId"])
+                client_stats["combo"] = 0
+                player_hp = max(0, player_hp - _world_boss_counter_damage(challenge))
+                events.append({
+                    "step": "server_rejected_window",
+                    "ok": True,
+                    "windowId": action["windowId"],
+                    "error": status,
+                    "player_hp": player_hp,
+                })
+                if player_hp <= 0:
+                    dead = True
+                    death_elapsed_ms = release_elapsed_ms
+                    events.append({
+                        "step": "player_dead",
+                        "ok": True,
+                        "elapsed_ms": death_elapsed_ms,
+                    })
+                    break
+                continue
             return _flow_result(False, status, error=hit_result.error, data=hit_result.data, events=events)
         hit_data = hit_result.data if isinstance(hit_result.data, dict) else {}
         if _verification_required(hit_data):
