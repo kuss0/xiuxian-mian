@@ -35,6 +35,7 @@ from .app_replica import (
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import clear_transient_send_failures_for_global_recovery, enforce_identity_module_availability, extend_global_recovery_throttle_for_spread, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
+from .game_bot_registry import GameBotCandidateRegistry
 from .module_manifest import is_module_archived
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
@@ -280,7 +281,6 @@ _identity_scheduler_last_warn_at = 0.0
 _log_bot_callback_task = None
 _phaseful_scheduler_task = None
 _small_world_scheduler_task = None
-_suspected_game_bot_hits = {}
 _observed_game_commands = {}
 _MESSAGE_BOX_SHADOW_CAP = 10000
 _message_box_shadow = MessageBox(cap=_MESSAGE_BOX_SHADOW_CAP)
@@ -291,6 +291,13 @@ UNKNOWN_GAME_BOT_HIT_TTL_SEC = 5 * 60
 UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES = 6
 UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS = 3
 UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS = 3
+_game_bot_candidate_registry = GameBotCandidateRegistry(
+    ttl_sec=UNKNOWN_GAME_BOT_HIT_TTL_SEC,
+    min_replies=UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES,
+    min_players=UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS,
+    min_commands=UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS,
+)
+_suspected_game_bot_hits = _game_bot_candidate_registry.candidates
 OBSERVED_GAME_COMMAND_TTL_SEC = 15 * 60
 OBSERVED_GAME_COMMAND_CAP = 2000
 HAN_TIANZUN_BOT_NAME = "韩天尊"
@@ -822,32 +829,6 @@ def _observed_command_reply_matches(text, command_record):
     return bool(command_label and len(command_label) >= 2 and command_label in raw_text)
 
 
-def _ensure_evidence_set(item, key):
-    value = (item or {}).get(key)
-    if isinstance(value, set):
-        return value
-    if isinstance(value, (list, tuple)):
-        normalized = {v for v in value if v}
-    elif value:
-        normalized = {value}
-    else:
-        normalized = set()
-    item[key] = normalized
-    return normalized
-
-
-def _build_game_bot_evidence(item, *, username=""):
-    commands = sorted(str(value) for value in _ensure_evidence_set(item, "commands") if str(value).strip())
-    families = sorted(str(value) for value in _ensure_evidence_set(item, "families") if str(value).strip())
-    players = _ensure_evidence_set(item, "players")
-    return {
-        "username": username,
-        "reply_count": int((item or {}).get("count", 0) or 0),
-        "player_count": len(players),
-        "commands": commands or families,
-    }
-
-
 def _track_manual_game_command(sender_id, text, msg_id):
     command = str(text or "").strip()
     if not command:
@@ -968,12 +949,24 @@ def _entity_is_han_tianzun_bot(entity):
 
 async def _learn_game_bot_id(sender_id, reason, *, evidence=None):
     sender_id = int(sender_id or 0)
-    if sender_id <= 0 or sender_id in set(get_game_bot_ids()):
+    previous_ids = sorted({int(bot_id) for bot_id in get_game_bot_ids()})
+    if sender_id <= 0:
         return False
-    known_ids = set(get_game_bot_ids())
+    if sender_id in set(previous_ids):
+        _game_bot_candidate_registry.mark_decided(sender_id, learned=True)
+        return False
+    known_ids = set(previous_ids)
     known_ids.add(sender_id)
     set_game_bot_ids(sorted(known_ids))
-    save_state()
+    if save_state() is False:
+        set_game_bot_ids(previous_ids)
+        await send_audit_log(
+            f"⚠️ 游戏 Bot 识别未落盘，已回滚内存配置：{sender_id}｜{reason}",
+            scope="global",
+            limit=260,
+        )
+        return False
+    _game_bot_candidate_registry.mark_decided(sender_id, learned=True)
     if evidence:
         username = str((evidence or {}).get("username") or "").strip()
         commands = [
@@ -1076,84 +1069,37 @@ async def _record_suspected_game_bot(
     sender_username="",
 ):
     sender_id = int(sender_id or 0)
-    if sender_id == 0 or sender_id in set(get_game_bot_ids()):
-        return
     now = time.time()
-    item = _suspected_game_bot_hits.get(sender_id) or {
-        "count": 0,
-        "first_seen": now,
-        "notified": False,
-        "learned": False,
-        "players": set(),
-        "families": set(),
-        "commands": set(),
-        "reply_to_ids": set(),
-    }
-    if now - float(item.get("first_seen", now) or now) > UNKNOWN_GAME_BOT_HIT_TTL_SEC:
-        item = {
-            "count": 0,
-            "first_seen": now,
-            "notified": False,
-            "learned": False,
-            "players": set(),
-            "families": set(),
-            "commands": set(),
-            "reply_to_ids": set(),
-        }
-    reply_to_ids = _ensure_evidence_set(item, "reply_to_ids")
-    duplicate_reply = False
-    if reply_to_msg_id:
-        try:
-            duplicate_reply = int(reply_to_msg_id) in reply_to_ids
-        except (TypeError, ValueError):
-            duplicate_reply = False
-    if not duplicate_reply:
-        item["count"] = int(item.get("count", 0) or 0) + 1
-    item["last_seen"] = now
-    if family:
-        _ensure_evidence_set(item, "families").add(str(family))
-    if command_label:
-        _ensure_evidence_set(item, "commands").add(str(command_label))
-    if player_id:
-        try:
-            _ensure_evidence_set(item, "players").add(int(player_id))
-        except (TypeError, ValueError):
-            pass
-    if reply_to_msg_id:
-        try:
-            reply_to_ids.add(int(reply_to_msg_id))
-        except (TypeError, ValueError):
-            pass
-    _suspected_game_bot_hits[sender_id] = item
+    decision = _game_bot_candidate_registry.observe(
+        sender_id,
+        now=now,
+        family=family,
+        player_id=player_id,
+        command_label=command_label,
+        reply_to_msg_id=reply_to_msg_id,
+        known=sender_id in set(get_game_bot_ids()),
+    )
+    if sender_id == 0 or decision.already_decided:
+        return
+    item = _suspected_game_bot_hits.get(sender_id) or {}
 
-    if not item.get("notified"):
-        item["notified"] = True
+    if decision.should_notify:
         await send_audit_log(
             f"🧩 检测到未登记游戏 bot 回复候选：{sender_id}｜{family or command_label}｜{str(text or '')[:60]}",
             scope="global",
             limit=260,
         )
 
-    players = _ensure_evidence_set(item, "players")
-    commands = _ensure_evidence_set(item, "commands")
-    has_external_evidence = bool(players or commands)
-    ready_to_learn = bool(
-        has_external_evidence
-        and int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_REPLIES
-        and len(players) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_PLAYERS
-        and len(commands) >= UNKNOWN_GAME_BOT_EXTERNAL_LEARN_MIN_COMMANDS
-    )
-
-    if ready_to_learn and not item.get("learned"):
-        item["learned"] = True
+    if decision.ready_to_learn:
         if verified_bot:
-            evidence = _build_game_bot_evidence(item, username=sender_username) if has_external_evidence else None
+            evidence = _game_bot_candidate_registry.evidence(sender_id, username=sender_username)
             await _learn_game_bot_id(
                 sender_id,
                 f"连续命中 {item['count']} 次",
                 evidence=evidence,
             )
         else:
+            _game_bot_candidate_registry.mark_decided(sender_id, learned=False)
             await send_audit_log(
                 f"🧩 未登记游戏 bot 候选命中 {item['count']} 次但 sender 非 bot，未写入 game_bot_ids：{sender_id}",
                 scope="global",
@@ -1211,10 +1157,7 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
         await _learn_game_bot_id(
             sender_id,
             "官方分片精确回复我方已登记命令",
-            evidence=_build_game_bot_evidence(
-                _suspected_game_bot_hits.get(sender_id) or {},
-                username=sender_username,
-            ),
+            evidence=_game_bot_candidate_registry.evidence(sender_id, username=sender_username),
         )
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
