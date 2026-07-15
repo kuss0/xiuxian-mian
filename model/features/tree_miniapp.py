@@ -57,8 +57,8 @@ TREE_MINIAPP_FLY_BOTTOM_Y = 334.0
 TREE_MINIAPP_FLY_GATE_GAP = 112.0
 TREE_MINIAPP_FLY_GATE_WIDTH = 54.0
 TREE_MINIAPP_FLY_GATE_SPACING = 174.0
-# Server verification behaves like the WebView's capped slow frame path rather
-# than a perfect 60 FPS replay. Plan against the conservative validation step.
+# Match the current WebView planner locally. Do not guess the server verifier's
+# replay step; calibrate it only from a consumed run with captured seed/proof.
 TREE_MINIAPP_FLY_FRAME_MS = 1000.0 / 60.0
 TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH = 420
 TREE_MINIAPP_FLY_MAX_BEAM_WIDTH = 640
