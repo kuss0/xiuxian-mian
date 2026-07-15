@@ -129,10 +129,14 @@ from .timing import configure_timing
 _db_conn = None
 _db_initialized = False
 _schema_columns_ensured_key = None
+_schema_columns_ensured_version = None
 _state_dirty = False
 _last_flush_time = 0
 _last_save_failed_at = 0.0
 _last_save_error = ""
+_persistence_snapshot_db_key = ""
+_persisted_meta_snapshot = {}
+_persisted_identity_snapshots = {}
 SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY = "small_world_preach_default_normalized"
 SQLITE_TIMEOUT_SEC = 15.0
 SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_TIMEOUT_SEC * 1000)
@@ -141,6 +145,52 @@ SQLITE_JOURNAL_MODE = os.environ.get("XIUXIAN_SQLITE_JOURNAL_MODE", "WAL").strip
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
 LIVE_GUARD_MANIFEST_FILE = os.path.join(LIVE_GUARD_DIR, "manifest.json")
+
+IDENTITY_PROFILE_PERSISTED_COLUMNS = (
+    "username",
+    "username_aliases",
+    "label",
+    "daohao",
+    "realm",
+    "spiritual_root_type",
+    "spiritual_root_attrs",
+    "replica_professions",
+    "replica_gold_dps_enabled",
+    "pet_name",
+    "pet_warm_name",
+    "pet_trial_name",
+    "sect_name",
+    "sect_updated_at",
+    "jiyin_choice",
+    "nanlong_choice",
+    "stargazer_star_choice",
+    "tianti_rank_choice",
+    "stargazer_total_slots",
+    "checkin_window_start_hour_utc",
+    "checkin_window_end_hour_utc",
+    "tower_window_start_hour_utc",
+    "tower_window_end_hour_utc",
+    "enabled",
+    "xiuwei_current",
+    "xiuwei_max",
+    "battle_power_text",
+    "battle_power_value",
+)
+PENDING_TASK_PERSISTED_COLUMNS = (
+    "msg_id",
+    "send_as_id",
+    "cmd",
+    "sent_at",
+    "retry",
+    "timeout",
+    "reply_to_msg_id",
+    "max_retry",
+    "priority",
+    "source_module",
+    "op_id",
+    "chain_id",
+    "delete_policy",
+)
 
 
 def _safety_watchdog_fused_file():
@@ -171,9 +221,11 @@ def open_db_connection(*, row_factory=True, set_journal_mode=False):
 
 
 def get_db_conn():
-    global _db_conn, _schema_columns_ensured_key
+    global _db_conn, _schema_columns_ensured_key, _schema_columns_ensured_version
     if _db_conn is None:
         _schema_columns_ensured_key = None
+        _schema_columns_ensured_version = None
+        _clear_persistence_snapshots()
         _db_conn = _open_sqlite_conn(DB_FILE)
     return _db_conn
 
@@ -189,13 +241,40 @@ def _schema_columns_cache_key(conn):
 
 
 def _mark_schema_columns_ensured(conn):
-    global _schema_columns_ensured_key
+    global _schema_columns_ensured_key, _schema_columns_ensured_version
     _schema_columns_ensured_key = _schema_columns_cache_key(conn)
+    _schema_columns_ensured_version = int(conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
 
 
-def _ensure_schema_columns_ready(conn):
+def _schema_columns_complete(conn):
+    expected = {
+        "identities": {"send_as_id", *IDENTITY_PROFILE_PERSISTED_COLUMNS},
+        "identity_module_state": {"send_as_id", *IDENTITY_MODULE_COLUMNS},
+        "identity_timers": {"send_as_id", *IDENTITY_TIMER_COLUMNS},
+        "identity_runtime_state": {"send_as_id", *IDENTITY_RUNTIME_COLUMNS},
+        "pending_tasks": set(PENDING_TASK_PERSISTED_COLUMNS),
+        "message_index": {"msg_id", "send_as_id", "sent_at", "kind"},
+    }
+    for table_name, required_columns in expected.items():
+        actual_columns = {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if not required_columns.issubset(actual_columns):
+            return False
+    return True
+
+
+def _ensure_schema_columns_ready(conn, *, verify=False):
     if _schema_columns_ensured_key == _schema_columns_cache_key(conn):
-        return
+        if not verify:
+            return
+        current_version = int(conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
+        if _schema_columns_ensured_version == current_version:
+            return
+        if _schema_columns_complete(conn):
+            _mark_schema_columns_ensured(conn)
+            return
     _ensure_schema_columns(conn)
 
 
@@ -2184,11 +2263,123 @@ def _deserialize_db_value(key, value):
     return value
 
 
+def _clear_persistence_snapshots():
+    global _persistence_snapshot_db_key
+    _persistence_snapshot_db_key = ""
+    _persisted_meta_snapshot.clear()
+    _persisted_identity_snapshots.clear()
+
+
+def _profile_persistence_snapshot(profile):
+    profile = profile if isinstance(profile, dict) else {}
+    return (
+        profile.get("username", "") or "",
+        json.dumps(profile.get("username_aliases") or [], ensure_ascii=False),
+        profile.get("label", "") or "",
+        profile.get("daohao", "") or "",
+        profile.get("realm", "") or "",
+        profile.get("spiritual_root_type", "") or "",
+        profile.get("spiritual_root_attrs", "") or "",
+        profile.get("replica_professions", "") or "",
+        1 if profile.get("replica_gold_dps_enabled", False) else 0,
+        profile.get("pet_name", "") or "",
+        profile.get("pet_warm_name", "") or "",
+        profile.get("pet_trial_name", "") or "",
+        profile.get("sect_name", "") or "",
+        float(profile.get("sect_updated_at", 0) or 0),
+        profile.get("jiyin_choice", "") or "",
+        profile.get("nanlong_choice", "reject") or "reject",
+        profile.get("stargazer_star_choice", "赤血星") or "赤血星",
+        profile.get("tianti_rank_choice", "普通") or "普通",
+        int(profile.get("stargazer_total_slots", 0) or 0),
+        int(profile.get("checkin_window_start_hour_utc", 2) or 2),
+        int(profile.get("checkin_window_end_hour_utc", 3) or 3),
+        int(profile.get("tower_window_start_hour_utc", 1) or 1),
+        int(profile.get("tower_window_end_hour_utc", 2) or 2),
+        1 if profile.get("enabled", True) else 0,
+        int(profile.get("xiuwei_current", 0) or 0),
+        int(profile.get("xiuwei_max", 0) or 0),
+        profile.get("battle_power_text", "") or "",
+        int(profile.get("battle_power_value", 0) or 0),
+    )
+
+
+def _pending_tasks_persistence_snapshot(identity_state):
+    rows = []
+    for msg_id, item in (identity_state.get("pending_tasks") or {}).items():
+        item = item if isinstance(item, dict) else {}
+        max_retry = item.get("max_retry", RETRY_LIMIT)
+        rows.append(
+            (
+                int(msg_id),
+                get_pending_command(item),
+                float(item.get("sent_at", 0) or 0),
+                int(item.get("retry", 0) or 0),
+                float(item.get("timeout", 0) or 0),
+                int(item.get("reply_to_msg_id", 0) or 0),
+                int(max_retry if max_retry is not None else RETRY_LIMIT),
+                str(item.get("priority", "") or ""),
+                str(item.get("source_module", "") or ""),
+                str(item.get("op_id", "") or ""),
+                str(item.get("chain_id", "") or ""),
+                str(item.get("delete_policy", "") or ""),
+            )
+        )
+    return tuple(sorted(rows))
+
+
+def _message_index_persistence_snapshot(identity_state):
+    return tuple(
+        sorted(
+            (int(msg_id), float(sent_at or 0), "command")
+            for msg_id, sent_at in (identity_state.get("my_msg_ids") or {}).items()
+        )
+    )
+
+
+def _build_identity_persistence_snapshot(send_as_id):
+    identity_state = get_identity_state(send_as_id)
+    return (
+        _profile_persistence_snapshot(get_send_as_profile(send_as_id)),
+        tuple(_serialize_db_value(col, identity_state.get(col)) for col in IDENTITY_MODULE_COLUMNS),
+        tuple(_serialize_db_value(col, identity_state.get(col)) for col in IDENTITY_TIMER_COLUMNS),
+        tuple(_serialize_db_value(col, identity_state.get(col)) for col in IDENTITY_RUNTIME_COLUMNS),
+        _pending_tasks_persistence_snapshot(identity_state),
+        _message_index_persistence_snapshot(identity_state),
+    )
+
+
+def _build_meta_persistence_snapshot():
+    return {
+        key: encoder(getter())
+        for key, (getter, encoder, _decoder) in _META_STATE_CODEC.items()
+    }
+
+
+def _initialize_persistence_snapshots():
+    meta_snapshot = _build_meta_persistence_snapshot()
+    identity_snapshots = {
+        int(send_as_id): _build_identity_persistence_snapshot(send_as_id)
+        for send_as_id in get_identity_ids()
+    }
+    _record_persistence_snapshots(meta_snapshot, identity_snapshots)
+
+
+def _record_persistence_snapshots(meta_snapshot, identity_snapshots):
+    global _persistence_snapshot_db_key
+    _persisted_meta_snapshot.clear()
+    _persisted_meta_snapshot.update(dict(meta_snapshot or {}))
+    _persisted_identity_snapshots.clear()
+    _persisted_identity_snapshots.update(dict(identity_snapshots or {}))
+    _persistence_snapshot_db_key = os.path.abspath(DB_FILE)
+
+
 def upsert_identity_to_db(send_as_id):
     conn = get_db_conn()
     _ensure_schema_columns_ready(conn)
     identity_state = get_identity_state(send_as_id)
     profile = get_send_as_profile(send_as_id)
+    profile_values = _profile_persistence_snapshot(profile)
     now_ts = time.time()
 
     conn.execute(
@@ -2233,34 +2424,7 @@ def upsert_identity_to_db(send_as_id):
         """,
         (
             int(send_as_id),
-            profile.get("username", "") or "",
-            json.dumps(profile.get("username_aliases") or [], ensure_ascii=False),
-            profile.get("label", "") or "",
-            profile.get("daohao", "") or "",
-            profile.get("realm", "") or "",
-            profile.get("spiritual_root_type", "") or "",
-            profile.get("spiritual_root_attrs", "") or "",
-            profile.get("replica_professions", "") or "",
-            1 if profile.get("replica_gold_dps_enabled", False) else 0,
-            profile.get("pet_name", "") or "",
-            profile.get("pet_warm_name", "") or "",
-            profile.get("pet_trial_name", "") or "",
-            profile.get("sect_name", "") or "",
-            float(profile.get("sect_updated_at", 0) or 0),
-            profile.get("jiyin_choice", "") or "",
-            profile.get("nanlong_choice", "reject") or "reject",
-            profile.get("stargazer_star_choice", "赤血星") or "赤血星",
-            profile.get("tianti_rank_choice", "普通") or "普通",
-            int(profile.get("stargazer_total_slots", 0) or 0),
-            int(profile.get("checkin_window_start_hour_utc", 2) or 2),
-            int(profile.get("checkin_window_end_hour_utc", 3) or 3),
-            int(profile.get("tower_window_start_hour_utc", 1) or 1),
-            int(profile.get("tower_window_end_hour_utc", 2) or 2),
-            1 if profile.get("enabled", True) else 0,
-            int(profile.get("xiuwei_current", 0) or 0),
-            int(profile.get("xiuwei_max", 0) or 0),
-            profile.get("battle_power_text", "") or "",
-            int(profile.get("battle_power_value", 0) or 0),
+            *profile_values,
             now_ts,
             now_ts,
         ),
@@ -2852,11 +3016,15 @@ def _sync_external_safety_pause_before_save(conn):
         set_global_pause_source(pause_source or "safety_watchdog")
 
 
-def _save_meta_state(conn):
-    for key, (getter, encoder, _) in _META_STATE_CODEC.items():
+def _save_meta_state(conn, keys=None, snapshot=None):
+    snapshot = dict(_build_meta_persistence_snapshot() if snapshot is None else snapshot)
+    selected_keys = tuple(keys) if keys is not None else tuple(_META_STATE_CODEC)
+    for key in selected_keys:
+        if key not in _META_STATE_CODEC:
+            continue
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            (key, encoder(getter())),
+            (key, snapshot[key]),
         )
 
 
@@ -3021,12 +3189,12 @@ def delete_identity_from_db(send_as_id):
 
 def save_state():
     global _state_dirty, _last_flush_time
+    conn = None
     try:
         init_db()
         conn = get_db_conn()
-        _ensure_schema_columns(conn)
+        _ensure_schema_columns_ready(conn, verify=True)
         _sync_external_safety_pause_before_save(conn)
-        _save_meta_state(conn)
         existing_ids = {
             int(row["send_as_id"])
             for row in conn.execute("SELECT send_as_id FROM identities").fetchall()
@@ -3040,17 +3208,47 @@ def save_state():
             )
             conn.rollback()
             return False
+
+        snapshot_ready = _persistence_snapshot_db_key == os.path.abspath(DB_FILE)
+        current_meta_snapshot = _build_meta_persistence_snapshot()
+        current_identity_snapshots = {
+            send_as_id: _build_identity_persistence_snapshot(send_as_id)
+            for send_as_id in current_ids
+        }
+        changed_meta_keys = tuple(
+            key
+            for key, value in current_meta_snapshot.items()
+            if not snapshot_ready or _persisted_meta_snapshot.get(key) != value
+        )
+        changed_identity_ids = tuple(
+            send_as_id
+            for send_as_id in sorted(current_ids)
+            if (
+                not snapshot_ready
+                or _persisted_identity_snapshots.get(send_as_id)
+                != current_identity_snapshots[send_as_id]
+            )
+        )
+
+        if changed_meta_keys:
+            _save_meta_state(conn, changed_meta_keys, snapshot=current_meta_snapshot)
         for send_as_id in sorted(existing_ids - current_ids):
             delete_identity_from_db(send_as_id)
-        for send_as_id in get_identity_ids():
+        for send_as_id in changed_identity_ids:
             upsert_identity_to_db(send_as_id)
         conn.commit()
         _write_live_guard_backup(conn)
+        _record_persistence_snapshots(current_meta_snapshot, current_identity_snapshots)
         _state_dirty = False
         _last_flush_time = time.time()
         _mark_persistence_save_ok()
         return True
     except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         _mark_persistence_save_failed(exc)
         traceback.print_exc()
         return False
@@ -3169,6 +3367,7 @@ def load_state():
                 upsert_identity_to_db(send_as_id)
             conn.commit()
 
+        _initialize_persistence_snapshots()
         _mark_persistence_save_ok()
         return True
     except Exception as exc:
