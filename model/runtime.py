@@ -1216,6 +1216,21 @@ def get_game_send_queue_snapshot():
     return items
 
 
+def _has_ordered_recovery_queue_items():
+    return any(bool((item or {}).get("recovery_ordered")) for item in _GAME_SEND_QUEUE_ITEMS.values())
+
+
+def _is_recovery_queue_turn(queue_token, *, recovery_ordered=False):
+    if not recovery_ordered:
+        return True
+    ordered_tokens = [
+        int(token or 0)
+        for token, item in _GAME_SEND_QUEUE_ITEMS.items()
+        if bool((item or {}).get("recovery_ordered"))
+    ]
+    return not ordered_tokens or int(queue_token or 0) == min(ordered_tokens)
+
+
 @asynccontextmanager
 async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue_timeout=None):
     global _GAME_LAST_SEND_AT, _GAME_SEND_QUEUE_SEQ
@@ -1231,6 +1246,10 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
     identity_anchor = None
     not_before = 0.0
     queue_deadline = 0.0
+    recovery_ordered = recovery_throttled or (
+        priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}
+        and _has_ordered_recovery_queue_items()
+    )
     timeout_value = _effective_send_queue_timeout(priority, command=command, send_as_id=send_as_id, intent=intent, queue_timeout=queue_timeout)
     if timeout_value is not None and timeout_value > 0:
         queue_deadline = time.monotonic() + timeout_value
@@ -1243,6 +1262,7 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
         "status": "waiting",
         "enqueued_at": time.time(),
         "not_before_mono": 0.0,
+        "recovery_ordered": recovery_ordered,
     }
     note_shadow_attempt_queued()
     try:
@@ -1260,6 +1280,17 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
             else:
                 await _GAME_SEND_LOCK.acquire()
             now_mono = time.monotonic()
+            if not _is_recovery_queue_turn(queue_token, recovery_ordered=recovery_ordered):
+                _GAME_SEND_LOCK.release()
+                if queue_deadline > 0:
+                    remaining = queue_deadline - time.monotonic()
+                    if remaining <= 0:
+                        _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "queue_timeout"
+                        raise GameSendQueueTimeout("local send queue wait timeout")
+                    await asyncio.sleep(min(0.25, remaining))
+                else:
+                    await asyncio.sleep(0.25)
+                continue
             current_module_last = float(_MODULE_LAST_SEND_AT.get(module_name, 0.0) or 0.0) if module_name else 0.0
             current_identity_last = float(_IDENTITY_LAST_SEND_AT.get(identity_id, 0.0) or 0.0) if identity_id > 0 else 0.0
             if (

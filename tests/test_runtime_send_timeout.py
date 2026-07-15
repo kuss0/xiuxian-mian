@@ -157,6 +157,49 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([], sleeps)
 
+    def test_recovery_queue_keeps_fifo_turn_for_throttled_sends(self):
+        runtime._GAME_SEND_QUEUE_ITEMS.update({
+            10: {"recovery_ordered": True, "status": "waiting"},
+            11: {"recovery_ordered": True, "status": "waiting"},
+            12: {"recovery_ordered": False, "status": "waiting"},
+        })
+
+        self.assertTrue(runtime._is_recovery_queue_turn(10, recovery_ordered=True))
+        self.assertFalse(runtime._is_recovery_queue_turn(11, recovery_ordered=True))
+        self.assertTrue(runtime._is_recovery_queue_turn(12, recovery_ordered=False))
+
+        runtime._GAME_SEND_QUEUE_ITEMS.pop(10)
+        self.assertTrue(runtime._is_recovery_queue_turn(11, recovery_ordered=True))
+
+    async def test_recovery_send_slot_does_not_let_later_waiter_overtake(self):
+        runtime._GAME_LAST_SEND_AT = 0.0
+        runtime._GAME_SEND_QUEUE_ITEMS.clear()
+        await runtime._GAME_SEND_LOCK.acquire()
+        entered = []
+
+        async def worker(label):
+            async with runtime._send_slot(
+                runtime.SEND_PRIORITY_NORMAL,
+                command=f".{label}",
+                send_as_id=301299112,
+                queue_timeout=1,
+            ):
+                entered.append(label)
+
+        with (
+            patch.object(runtime, "_global_recovery_throttle_active", return_value=True),
+            patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+            patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+        ):
+            first = asyncio.create_task(worker("first"))
+            await asyncio.sleep(0)
+            second = asyncio.create_task(worker("second"))
+            await asyncio.sleep(0)
+            runtime._GAME_SEND_LOCK.release()
+            await asyncio.gather(first, second)
+
+        self.assertEqual(["first", "second"], entered)
+
     def test_append_sent_message_log_uses_actual_sent_at(self):
         sent_at = 1_700_000_000.0
         with tempfile.TemporaryDirectory() as tmpdir, \
