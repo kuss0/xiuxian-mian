@@ -1235,6 +1235,7 @@ def run_world_boss_joined_battle_lab_flow(
 
     if not challenge:
         return _flow_result(False, "not_ready", error="world boss challenge missing", events=events)
+    single_battle_protocol = _world_boss_requires_begin(challenge)
     # The page starts a fresh local performance.now() timeline after challenge
     # acquisition. Server room elapsed values are display state, not proof time.
     server_elapsed_ms = 0
@@ -1255,7 +1256,7 @@ def run_world_boss_joined_battle_lab_flow(
         else WORLD_BOSS_AUTO_START_DELAY_SEC
     )
     sleeper(auto_start_delay)
-    if _world_boss_requires_begin(challenge):
+    if single_battle_protocol:
         begin_started_at = float(clock())
         begin_request = build_world_boss_miniapp_request(
             "begin",
@@ -1472,7 +1473,7 @@ def run_world_boss_joined_battle_lab_flow(
             client_stats["perfects"] += 1
         executed_actions.append(executed_action)
         hit_payloads.append(hit_data)
-        if hit_business.get("actions_remaining") == 0:
+        if hit_business.get("actions_remaining") == 0 and not single_battle_protocol:
             events.append({
                 "step": "action_limit_reached",
                 "ok": True,

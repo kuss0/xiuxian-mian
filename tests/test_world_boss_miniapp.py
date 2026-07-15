@@ -95,9 +95,12 @@ class WorldBossMiniAppTests(unittest.TestCase):
                     "challenge": {
                         "mode": "qyz_focus_burst_v2",
                         "challengeId": "challenge-begin",
-                        "durationMs": 2500,
-                        "maxDurationMs": 4000,
-                        "windows": [{"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210}],
+                        "durationMs": 4200,
+                        "maxDurationMs": 6000,
+                        "windows": [
+                            {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
+                        ],
                     },
                 }
             if endpoint == "begin":
@@ -110,7 +113,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
                     "boss": {"actionLimit": 1, "actionsUsed": 1, "actionsRemaining": 0},
                 }
             if endpoint == "finish":
-                return 200, {"ok": True, "result": {"score": 90, "hits": 1, "perfects": 1}}
+                return 200, {"ok": True, "result": {"score": 90, "hits": 2, "perfects": 2}}
             self.fail(endpoint)
 
         result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
@@ -124,7 +127,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(["start", "begin", "hit", "finish"], calls)
+        self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
         self.assertTrue(any(event["step"] == "begin_sync" for event in result["events"]))
 
     def test_strict_error_classification(self):
