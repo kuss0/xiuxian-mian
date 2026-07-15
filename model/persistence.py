@@ -144,7 +144,13 @@ SQLITE_JOURNAL_MODE = os.environ.get("XIUXIAN_SQLITE_JOURNAL_MODE", "WAL").strip
 
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
+LIVE_GUARD_PREVIOUS_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.previous.db")
 LIVE_GUARD_MANIFEST_FILE = os.path.join(LIVE_GUARD_DIR, "manifest.json")
+try:
+    _live_guard_interval_sec = float(os.environ.get("XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC") or 1800)
+except (TypeError, ValueError, OverflowError):
+    _live_guard_interval_sec = 1800.0
+LIVE_GUARD_BACKUP_INTERVAL_SEC = max(60.0, _live_guard_interval_sec)
 
 IDENTITY_PROFILE_PERSISTED_COLUMNS = (
     "username",
@@ -3115,32 +3121,109 @@ def _roster_looks_suspicious(roster):
     return len(roster) <= 2
 
 
-def _write_live_guard_backup(conn):
+def _read_live_guard_manifest():
+    try:
+        with open(LIVE_GUARD_MANIFEST_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _remove_sqlite_artifacts(db_file):
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.remove(str(db_file) + suffix)
+        except FileNotFoundError:
+            pass
+
+
+def _live_guard_backup_reason(
+    *,
+    roster_changed=False,
+    account_structure_changed=False,
+    committed_change=False,
+    now=None,
+):
+    if not committed_change:
+        return ""
+    if roster_changed:
+        return "roster_changed"
+    if account_structure_changed:
+        return "account_structure_changed"
+    if not os.path.exists(LIVE_GUARD_DB_FILE):
+        return "bootstrap"
+    manifest = _read_live_guard_manifest()
+    try:
+        saved_at = float(manifest.get("saved_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        saved_at = 0.0
+    current = float(now if now is not None else time.time())
+    if saved_at <= 0 or current - saved_at >= LIVE_GUARD_BACKUP_INTERVAL_SEC:
+        return "periodic"
+    return ""
+
+
+def _write_live_guard_backup(conn, *, reason="periodic"):
     if not _identity_collapse_guard_enabled():
-        return
+        return False
     if os.environ.get("XIUXIAN_DISABLE_LIVE_DB_BACKUP") == "1":
-        return
+        return False
     roster = _read_identity_roster_from_conn(conn)
     if not _roster_looks_like_live(roster):
-        return
+        return False
+    staging_db = LIVE_GUARD_DB_FILE + ".next"
+    previous_tmp = LIVE_GUARD_PREVIOUS_DB_FILE + ".tmp"
     try:
         os.makedirs(LIVE_GUARD_DIR, exist_ok=True)
-        backup_conn = _open_sqlite_conn(LIVE_GUARD_DB_FILE)
+        _remove_sqlite_artifacts(staging_db)
+        _remove_sqlite_artifacts(previous_tmp)
+        backup_conn = _open_sqlite_conn(staging_db, set_journal_mode=False)
         try:
             conn.backup(backup_conn)
         finally:
             backup_conn.close()
+        staged_roster = _read_identity_roster_from_db_file(staging_db)
+        if staged_roster != roster:
+            raise RuntimeError(
+                "live guard staging roster mismatch: "
+                f"source={len(roster)} staged={len(staged_roster)}"
+            )
+        if os.path.exists(LIVE_GUARD_DB_FILE):
+            shutil.copy2(LIVE_GUARD_DB_FILE, previous_tmp)
+            os.replace(previous_tmp, LIVE_GUARD_PREVIOUS_DB_FILE)
+        os.replace(staging_db, LIVE_GUARD_DB_FILE)
         manifest = {
             "saved_at": time.time(),
+            "reason": str(reason or "periodic"),
             "identity_count": len(roster),
             "identity_ids": [send_as_id for send_as_id, _username in roster],
+            "previous_available": os.path.exists(LIVE_GUARD_PREVIOUS_DB_FILE),
         }
         tmp_manifest = LIVE_GUARD_MANIFEST_FILE + ".tmp"
         with open(tmp_manifest, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, sort_keys=True)
         os.replace(tmp_manifest, LIVE_GUARD_MANIFEST_FILE)
+        return True
+    finally:
+        _remove_sqlite_artifacts(staging_db)
+        _remove_sqlite_artifacts(previous_tmp)
+
+
+def _try_write_live_guard_backup(conn, *, reason):
+    try:
+        return _write_live_guard_backup(conn, reason=reason)
     except Exception:
         traceback.print_exc()
+        return False
+
+
+def _select_live_guard_restore_file():
+    for backup_file in (LIVE_GUARD_DB_FILE, LIVE_GUARD_PREVIOUS_DB_FILE):
+        backup_roster = _read_identity_roster_from_db_file(backup_file)
+        if _roster_looks_like_live(backup_roster):
+            return backup_file, backup_roster
+    return "", []
 
 
 def _maybe_restore_live_guard_backup():
@@ -3153,8 +3236,8 @@ def _maybe_restore_live_guard_backup():
     current_roster = _read_identity_roster_from_db_file(DB_FILE)
     if not _roster_looks_suspicious(current_roster):
         return False
-    backup_roster = _read_identity_roster_from_db_file(LIVE_GUARD_DB_FILE)
-    if not _roster_looks_like_live(backup_roster):
+    backup_file, backup_roster = _select_live_guard_restore_file()
+    if not backup_file:
         return False
     try:
         if _db_conn is not None:
@@ -3162,10 +3245,11 @@ def _maybe_restore_live_guard_backup():
         backup_name = f"{DB_FILE}.suspicious-{int(time.time())}"
         if os.path.exists(DB_FILE):
             shutil.copy2(DB_FILE, backup_name)
-        shutil.copy2(LIVE_GUARD_DB_FILE, DB_FILE)
+        shutil.copy2(backup_file, DB_FILE)
         print(
             "Restored live state DB from guard backup after suspicious roster: "
-            f"current={len(current_roster)} backup={len(backup_roster)} saved_bad={backup_name}"
+            f"current={len(current_roster)} backup={len(backup_roster)} "
+            f"source={backup_file} saved_bad={backup_name}"
         )
         return True
     except Exception:
@@ -3237,7 +3321,16 @@ def save_state():
         for send_as_id in changed_identity_ids:
             upsert_identity_to_db(send_as_id)
         conn.commit()
-        _write_live_guard_backup(conn)
+        deleted_identity_ids = existing_ids - current_ids
+        backup_reason = _live_guard_backup_reason(
+            roster_changed=bool(deleted_identity_ids or current_ids - existing_ids),
+            account_structure_changed=bool(
+                {"accounts", "identity_account_map"}.intersection(changed_meta_keys)
+            ),
+            committed_change=bool(changed_meta_keys or changed_identity_ids or deleted_identity_ids),
+        )
+        if backup_reason:
+            _try_write_live_guard_backup(conn, reason=backup_reason)
         _record_persistence_snapshots(current_meta_snapshot, current_identity_snapshots)
         _state_dirty = False
         _last_flush_time = time.time()

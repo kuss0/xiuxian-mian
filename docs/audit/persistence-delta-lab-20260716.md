@@ -7,7 +7,8 @@
 - Worktree: `/root/xiuxian-main-persistence-lab-20260716`
 - Production service, DB, sessions, and runtime control were not modified by this Lab.
 - Benchmarks used SQLite backup copies of the live DB under `/tmp`.
-- The current last-good backup policy is intentionally unchanged in P1.
+- P1 changed business-table persistence only. P2 now changes the last-good
+  backup policy in the same Lab branch; neither candidate is deployed.
 
 ## Candidate
 
@@ -75,10 +76,32 @@ One changed identity still uses the existing full-identity upsert contract:
 four parent/state upserts, two child-table deletes, and inserts for any current
 pending/message rows. P3 can narrow that later; P1 deliberately does not.
 
+## P2 Guard Backup Generations
+
+P2 removes the unconditional full SQLite backup after every successful
+`save_state()`:
+
+- identity roster changes back up immediately;
+- account and identity-account mapping changes back up immediately;
+- ordinary committed changes back up at most once per configured interval
+  (`XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC`, default 30 minutes);
+- a save with no logical change does not copy the database;
+- every successful backup is staged and roster-validated before replacement;
+- the prior last-good DB is retained as `chaogu_state.previous.db`;
+- startup restore uses the previous generation if the newest backup is missing,
+  corrupt, or no longer has a live-shaped roster;
+- backup failure is caught after the state transaction commits, so it cannot
+  turn an already committed state update into a false save failure.
+
+P2 focused coverage includes backup-reason selection, recent ordinary-change
+suppression, no-change suppression, account mapping forcing, generation
+rotation, backup failure after commit, and fallback restore from the previous
+generation.
+
 ## Verification
 
-- Focused persistence/startup suite: `81 passed`.
-- Full suite: `3107 passed, 396 subtests passed in 36.09s`.
+- P2 focused persistence/startup suite: `44 passed`.
+- Full suite: `3113 passed, 396 subtests passed in 36.94s`.
 - `py_compile`: passed.
 - `git diff --check`: passed.
 
@@ -90,8 +113,8 @@ pending/message rows. P3 can narrow that later; P1 deliberately does not.
    counts without changing save behavior.
 3. Observe the shadow distribution for at least 12 hours, including MiniApp
    batches, Telegram reply edits, UI changes, and one restart.
-4. Separately design P2 backup generations. P1 still copies the full last-good
-   DB after every successful `save_state()`, so no-change saves remain about 36ms.
+4. Review P2's 30-minute ordinary-change interval against at least 24 hours of
+   shadow save frequency before production approval.
 5. Do not begin P3 module-level scopes until explicit field ownership replaces
    prefix inference.
 
