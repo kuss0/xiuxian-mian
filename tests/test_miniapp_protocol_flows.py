@@ -1692,10 +1692,65 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual(1, used["fly"])
         self.assertEqual(1, sum(1 for endpoint, _mode in calls if endpoint == "run_submit"))
         self.assertEqual(0, result["data"]["runs"][0]["score"])
+        self.assertEqual(1, result["data"]["quotas"]["fly"]["used"])
         self.assertEqual(
             {"ok": False, "hit": True, "score": 0, "durationMs": 1234},
             result["data"]["runs"][0]["server_verification"],
         )
+
+    def test_tree_daily_flow_stops_after_first_material_fly_verification_mismatch(self):
+        calls = []
+        used = {"fly": 0}
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            mode = request["payload"].get("mode", "")
+            calls.append((endpoint, mode))
+            if endpoint == "start":
+                return 200, {"ok": True, "council": {"daily": {
+                    "jump": {"used": 1, "limit": 1, "remaining": 0},
+                    "fly": {"used": used["fly"], "limit": 3, "remaining": 3 - used["fly"]},
+                }}}
+            if endpoint == "run_start":
+                return 200, {"ok": True, "run": {"runToken": "run-fly", "seed": "seed-fly-once"}}
+            if endpoint == "run_submit":
+                used["fly"] += 1
+                return 200, {
+                    "ok": True,
+                    "score": 2,
+                    "verified": {"ok": True, "hit": True, "score": 2, "durationMs": 24000},
+                    "seasonState": {"daily": {
+                        "jump": {"used": 1, "limit": 1, "remaining": 0},
+                        "fly": {"used": 1, "limit": 3, "remaining": 2},
+                    }},
+                }
+            raise AssertionError(endpoint)
+
+        with patch.object(
+            tree_miniapp,
+            "build_tree_game_proof",
+            return_value=(
+                {"durationMs": 24000, "clientScore": 18, "flaps": [0, 1000]},
+                {"mode": "fly", "score": 18, "targetScore": 18, "durationMs": 24000},
+            ),
+        ):
+            result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+                token="tree_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                transport=transport,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("verification_mismatch", result["status"])
+        self.assertEqual("blocked", result["data"]["phase"])
+        self.assertEqual(1, used["fly"])
+        self.assertEqual(1, sum(1 for endpoint, _mode in calls if endpoint == "run_submit"))
+        self.assertEqual(2, result["data"]["quotas"]["fly"]["remaining"])
+        self.assertEqual(18, result["data"]["runs"][0]["client_score"])
+        self.assertEqual(2, result["data"]["runs"][0]["score"])
+        self.assertEqual("seed-fly-once", result["data"]["runs"][0]["run_seed"])
+        self.assertEqual([0, 1000], result["data"]["runs"][0]["proof"]["flaps"])
 
     def test_tree_daily_flow_requires_explicit_quota_for_both_modes(self):
         calls = []
