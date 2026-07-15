@@ -7686,7 +7686,7 @@ async def run_miniapp_daily_scheduler(now):
         and not active_wave.get("done_today")
     )
     if trial_ready and not _cave_public_batch_state.get("running"):
-        identity_ids = _split_trial_daily_identity_ids(_normalize_trial_batch_identity_ids({}) or [], wave_key)
+        identity_ids = _split_trial_daily_identity_ids(_normalize_cave_public_batch_identity_ids({}) or [], wave_key)
         if not identity_ids:
             next_config = normalize_miniapp_auto_config()
             next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")

@@ -543,6 +543,24 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([3765328695], selected)
 
+    def test_cave_public_batch_includes_channel_health_frozen_identity(self):
+        frozen_id = 3504367852
+        manual_disabled_id = 3581351795
+        for identity_id in (frozen_id, manual_disabled_id):
+            state_module.ensure_identity_registered(identity_id)
+            state_module.set_identity_enabled(identity_id, False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "frozen_identity_ids": [frozen_id, manual_disabled_id],
+            "restore_identity_ids": [frozen_id],
+        })
+
+        selected = ui._normalize_cave_public_batch_identity_ids({
+            "send_as_ids": [frozen_id, manual_disabled_id],
+        })
+
+        self.assertEqual([frozen_id], selected)
+
     def test_cave_public_fishing_background_respects_failure_backoff(self):
         identity_id = 3765328695
         now = 1_700_000_000.0
@@ -839,7 +857,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             "cave_public_yuanying_enabled": False,
         }
         now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
-        with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
+        with patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
                 patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {"batch_id": "batch-auto"}))) as start_mock, \
                 patch.object(ui, "save_state", return_value=True) as save_mock:
             result = await ui.run_miniapp_daily_scheduler(now)
@@ -1019,7 +1037,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             "cave_public_trial_enabled": True,
         }
         now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
-        with patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
+        with patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]) as ids_mock, \
                 patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {"batch_id": "batch-wave2"}))) as start_mock, \
                 patch.object(ui, "save_state", return_value=True):
             result = await ui.run_miniapp_daily_scheduler(now)
@@ -1037,7 +1055,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         }
         now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "get_global_enabled", return_value=False), \
-                patch.object(ui, "_normalize_trial_batch_identity_ids") as ids_mock, \
+                patch.object(ui, "_normalize_cave_public_batch_identity_ids") as ids_mock, \
                 patch.object(ui, "start_trial_miniapp_batch_run") as start_mock, \
                 patch.object(ui, "save_state") as save_mock:
             result = await ui.run_miniapp_daily_scheduler(now)
@@ -1062,7 +1080,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         now = datetime(2026, 7, 7, 1, 30, tzinfo=ui.TZ_LOCAL).timestamp()
         with patch.object(ui, "get_global_enabled", return_value=False), \
                 patch.object(ui, "get_global_pause_source", return_value="tianzun_maintenance"), \
-                patch.object(ui, "_normalize_trial_batch_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002]), \
                 patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {"batch_id": "maintenance-batch"}))) as start_mock, \
                 patch.object(ui, "save_state", return_value=True):
             result = await ui.run_miniapp_daily_scheduler(now)
