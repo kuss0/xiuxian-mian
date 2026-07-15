@@ -1747,6 +1747,21 @@ def _message_log_reply_matches_command(command, entry):
     return any(len(token.strip("@")) >= 2 and token.strip("@") in text for token in parts[1:])
 
 
+def _is_logged_game_bot_reply(entry):
+    if not isinstance(entry, dict):
+        return False
+    text = str(entry.get("text") or "").strip()
+    if not text or text.startswith("."):
+        return False
+    try:
+        sender_id = int(entry.get("sender_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        sender_id = 0
+    if sender_id > 0 and sender_id in {int(bot_id) for bot_id in get_game_bot_ids()}:
+        return True
+    return entry.get("sender_is_bot") is True
+
+
 def has_active_reply_dispatch(send_as_id=None, family=None):
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     family_text = str(family or "").strip()
@@ -3476,6 +3491,7 @@ def _finalize_game_command_sent(
     send_intent=None,
     append_sent_log=True,
     recovered=False,
+    send_started_at=0,
 ):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
@@ -3535,6 +3551,8 @@ def _finalize_game_command_sent(
         reply_to=int(reply_to or 0),
         priority=send_priority,
         max_retry=max_retry,
+        recovered=bool(recovered),
+        send_elapsed_sec=max(0.0, sent_at - float(send_started_at or sent_at)),
         **send_intent,
     )
     _clear_game_send_block(send_as_id, command)
@@ -4021,6 +4039,7 @@ async def _send_game_command_impl(
                         send_intent=send_intent,
                         append_sent_log=str(recovered.get("event_type") or "") != "sent",
                         recovered=True,
+                        send_started_at=send_request_started_at,
                     )
                     if msg is not None:
                         await send_audit_log(
@@ -4062,6 +4081,7 @@ async def _send_game_command_impl(
                 reply_timeout=reply_timeout,
                 max_retry=max_retry,
                 send_intent=send_intent,
+                send_started_at=send_request_started_at,
             )
             return msg
     except SendAsPeerInvalidError as e:
@@ -4354,7 +4374,7 @@ def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
         now,
         lookback_sec=lookback_sec,
         lookahead_sec=30,
-        predicate=lambda entry: _message_log_reply_matches_command(cmd, entry),
+        predicate=lambda entry: _is_logged_game_bot_reply(entry) or _message_log_reply_matches_command(cmd, entry),
     )
     if not replies:
         return None

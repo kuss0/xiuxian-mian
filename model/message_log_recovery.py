@@ -1,8 +1,24 @@
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import MESSAGES_DIR, TZ_LOCAL
+
+
+def _read_log_tail_lines(path, *, max_bytes=512 * 1024):
+    try:
+        with Path(path).open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - max(1, int(max_bytes or 0)))
+            handle.seek(start)
+            if start > 0:
+                handle.readline()
+            data = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    return data.splitlines()
 
 
 def normalize_command_text(text):
@@ -71,6 +87,56 @@ def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead
         item = dict(entry)
         item["ts_epoch"] = entry_ts
         matches.append(item)
+    matches.sort(key=lambda item: (float(item.get("ts_epoch") or 0), int(item.get("message_id") or 0)))
+    return matches
+
+
+def find_message_log_replies_tail(
+    command_msg_id,
+    now,
+    *,
+    lookback_sec=120,
+    lookahead_sec=5,
+    predicate=None,
+    messages_dir=None,
+    max_bytes=512 * 1024,
+):
+    """Find recent direct replies without rereading the full daily log.
+
+    This is intended for the narrow send-bookkeeping race where the bot reply
+    is already durable before the accepted command id is registered locally.
+    """
+    command_msg_id = int(command_msg_id or 0)
+    if command_msg_id <= 0:
+        return []
+    end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
+    start_ts = max(0.0, end_ts - max(1, int(lookback_sec or 1)))
+    base_dir = Path(messages_dir or MESSAGES_DIR)
+    days = {
+        datetime.fromtimestamp(start_ts, TZ_LOCAL).date(),
+        datetime.fromtimestamp(end_ts, TZ_LOCAL).date(),
+    }
+    matches = []
+    for day in sorted(days):
+        for line in _read_log_tail_lines(base_dir / f"{day.isoformat()}.log", max_bytes=max_bytes):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
+                continue
+            if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
+                continue
+            entry_ts = parse_message_log_ts((entry or {}).get("ts"))
+            if not (start_ts <= entry_ts <= end_ts):
+                continue
+            if predicate is not None and not predicate(entry):
+                continue
+            item = dict(entry)
+            item["ts_epoch"] = entry_ts
+            matches.append(item)
     matches.sort(key=lambda item: (float(item.get("ts_epoch") or 0), int(item.get("message_id") or 0)))
     return matches
 

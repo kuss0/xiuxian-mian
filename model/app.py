@@ -200,6 +200,7 @@ from .persistence import (
 from .action_guard import close_by_family as close_action_guard_by_family
 from .delayed_actions import drain_due_actions
 from .message_contract import record_unhandled_routed_reply
+from .message_log_recovery import find_message_log_replies_tail
 from .message_box import (
     MessageBox,
     build_message_box_snapshot_payload,
@@ -230,6 +231,7 @@ from .runtime import (
     note_game_bot_message,
     note_game_command_observed,
     note_identity_weakness,
+    register_game_command_sent_observer,
     resolve_reply_family,
     restore_bot_health_auto_pause,
     run_retry_scheduler,
@@ -263,6 +265,12 @@ from .state import (
     use_identity,
 )
 from .timing import fmt_time_after
+
+
+_EARLY_ROUTED_REPLY_TTL_SEC = 30.0
+_EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC = 0.1
+_EARLY_ROUTED_REPLY_MAX = 512
+_early_routed_replies = {}
 from .ui import run_miniapp_daily_scheduler, run_storage_bag_api_keepalive_scheduler, start_ui_server, stop_ui_server
 
 _bot_silence_auto_paused = False
@@ -1434,6 +1442,173 @@ async def _resolve_event_reply(event):
     if reply_to is None and reply_header_msg_id > 0:
         reply_to = SimpleNamespace(id=reply_header_msg_id, raw_text="")
     return reply_to, reply_context
+
+
+def _prune_early_routed_replies(now=None):
+    now = float(now if now is not None else time.time())
+    expired = [
+        root_msg_id
+        for root_msg_id, items in _early_routed_replies.items()
+        if not items or max(float(item.get("remembered_at", 0) or 0) for item in items) + _EARLY_ROUTED_REPLY_TTL_SEC <= now
+    ]
+    for root_msg_id in expired:
+        _early_routed_replies.pop(root_msg_id, None)
+    if len(_early_routed_replies) <= _EARLY_ROUTED_REPLY_MAX:
+        return
+    overflow = len(_early_routed_replies) - _EARLY_ROUTED_REPLY_MAX
+    oldest = sorted(
+        _early_routed_replies,
+        key=lambda root_msg_id: max(
+            float(item.get("remembered_at", 0) or 0)
+            for item in (_early_routed_replies.get(root_msg_id) or [{}])
+        ),
+    )[:overflow]
+    for root_msg_id in oldest:
+        _early_routed_replies.pop(root_msg_id, None)
+
+
+def _remember_early_routed_reply(event, text, now, reply_to, reply_context, *, event_kind):
+    context = reply_context if isinstance(reply_context, dict) else {}
+    if str(context.get("matched_via") or "") != "reply_sender":
+        return False
+    root_msg_id = int(context.get("reply_to_msg_id") or getattr(reply_to, "id", 0) or 0)
+    identity_id = int(context.get("send_as_id") or 0)
+    if root_msg_id <= 0 or identity_id <= 0:
+        return False
+    _prune_early_routed_replies(now)
+    items = _early_routed_replies.setdefault(root_msg_id, [])
+    event_id = int(getattr(event, "id", 0) or 0)
+    normalized_kind = "edit" if str(event_kind or "").strip().lower() == "edit" else "message"
+    if any(int(item.get("event_id", 0) or 0) == event_id and item.get("event_kind") == normalized_kind for item in items):
+        return True
+    items.append({
+        "event": event,
+        "event_id": event_id,
+        "event_kind": normalized_kind,
+        "text": str(text or ""),
+        "event_at": float(now or time.time()),
+        "reply_to": reply_to,
+        "remembered_at": time.time(),
+    })
+    return True
+
+
+def _logged_reply_event(entry, command, send_as_id):
+    root_msg_id = int((entry or {}).get("reply_to_msg_id") or 0)
+    topic_id = int((entry or {}).get("topic_id") or 0)
+    reply_header = SimpleNamespace(reply_to_msg_id=root_msg_id, reply_to_top_id=topic_id)
+    event = SimpleNamespace(
+        id=int((entry or {}).get("message_id") or 0),
+        chat_id=int((entry or {}).get("chat_id") or get_game_group_id() or 0),
+        sender_id=int((entry or {}).get("sender_id") or 0),
+        raw_text=str((entry or {}).get("text") or ""),
+        reply_to=reply_header,
+        message=SimpleNamespace(buttons=None),
+    )
+    reply_to = SimpleNamespace(id=root_msg_id, raw_text=str(command or ""), sender_id=int(send_as_id or 0))
+    return event, reply_to
+
+
+def _is_logged_game_bot_reply(entry):
+    if not isinstance(entry, dict):
+        return False
+    text = str(entry.get("text") or "").strip()
+    if not text or text.startswith("."):
+        return False
+    try:
+        sender_id = int(entry.get("sender_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        sender_id = 0
+    if sender_id > 0 and sender_id in {int(bot_id) for bot_id in get_game_bot_ids()}:
+        return True
+    return entry.get("sender_is_bot") is True
+
+
+async def _replay_early_replies_after_sent(send_as_id, command, sent_at, msg_id, *, allow_log_fallback=False):
+    await asyncio.sleep(_EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC)
+    _prune_early_routed_replies()
+    items = list(_early_routed_replies.pop(int(msg_id or 0), []))
+    if not items and allow_log_fallback:
+        logged = find_message_log_replies_tail(
+            msg_id,
+            time.time(),
+            lookback_sec=max(30, int(time.time() - float(sent_at or time.time())) + 30),
+            lookahead_sec=5,
+            predicate=_is_logged_game_bot_reply,
+        )
+        for entry in logged:
+            event, reply_to = _logged_reply_event(entry, command, send_as_id)
+            items.append({
+                "event": event,
+                "event_id": int(getattr(event, "id", 0) or 0),
+                "event_kind": str((entry or {}).get("event_type") or "message"),
+                "text": str((entry or {}).get("text") or ""),
+                "event_at": float((entry or {}).get("ts_epoch") or time.time()),
+                "reply_to": reply_to,
+                "remembered_at": time.time(),
+            })
+    if not items:
+        return False
+
+    family = resolve_reply_family(command) or ""
+    replayed = False
+    for item in sorted(items, key=lambda value: (float(value.get("event_at", 0) or 0), int(value.get("event_id", 0) or 0))):
+        event = item.get("event")
+        reply_to = item.get("reply_to") or SimpleNamespace(id=int(msg_id or 0), raw_text=str(command or ""))
+        if event is None:
+            continue
+        context = get_reply_context(reply_to, reply_to_msg_id=msg_id, send_as_id=send_as_id)
+        context.update({
+            "send_as_id": int(send_as_id or 0),
+            "family": family or context.get("family"),
+            "reply_to_msg_id": int(msg_id or 0),
+            "root_msg_id": int(msg_id or 0),
+            "matched_via": "late_sent_replay",
+        })
+        event_kind = "edit" if str(item.get("event_kind") or "").strip().lower() == "edit" else "message"
+        _bind_command_attempt_shadow(
+            event,
+            item.get("text") or "",
+            float(item.get("event_at", 0) or time.time()),
+            context,
+            event_kind=event_kind,
+        )
+        handled = await _handle_routed_reply_event(
+            event,
+            item.get("text") or "",
+            float(item.get("event_at", 0) or time.time()),
+            reply_to,
+            context,
+            event_kind=event_kind,
+            replay=True,
+        )
+        replayed = bool(handled) or replayed
+    if replayed:
+        console_log(
+            f"♻️ 已在发送登记后重放早到回复：{str(command or '')[:32]}｜cmd_msg={int(msg_id or 0)}",
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=180,
+        )
+    return replayed
+
+
+def _observe_sent_for_early_reply_replay(send_as_id, command, *, now, msg_id, **metadata):
+    if int(msg_id or 0) <= 0:
+        return
+    has_cached_reply = int(msg_id or 0) in _early_routed_replies
+    allow_log_fallback = bool(metadata.get("recovered")) or float(metadata.get("send_elapsed_sec", 0) or 0) >= 1.0
+    if not has_cached_reply and not allow_log_fallback:
+        return
+    _fire_and_forget(
+        _replay_early_replies_after_sent(
+            send_as_id,
+            command,
+            now,
+            msg_id,
+            allow_log_fallback=allow_log_fallback,
+        )
+    )
 
 
 def _bind_command_attempt_shadow(event, text, now, reply_context, *, event_kind):
@@ -2625,16 +2800,30 @@ def _cancel_identity_schedulers():
         _identity_scheduler_task.cancel()
 
 
-async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True, event_kind="message"):
+async def _handle_routed_reply_event(
+    event,
+    text,
+    now,
+    reply_to,
+    reply_context,
+    *,
+    allow_tree_panel_claim=True,
+    event_kind="message",
+    replay=False,
+):
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
     matched_family = (reply_context or {}).get("family") or None
     if routed_identity_id <= 0:
         return False
 
+    if not replay:
+        _remember_early_routed_reply(event, text, now, reply_to, reply_context, event_kind=event_kind)
+
     family_scope = str(matched_family or "unknown").strip() or "unknown"
     kind_scope = str(event_kind or "message").strip() or "message"
     edit_text_scope = f":{hash(str(text or ''))}" if kind_scope == "edit" else ""
-    if not _claim_runtime_event(event, scope=f"routed_reply:{kind_scope}:{routed_identity_id}:{family_scope}{edit_text_scope}"):
+    claim_prefix = "routed_reply_replay" if replay else "routed_reply"
+    if not _claim_runtime_event(event, scope=f"{claim_prefix}:{kind_scope}:{routed_identity_id}:{family_scope}{edit_text_scope}"):
         return False
 
     # In multi-client mode a bot reply can be delivered to a different account
@@ -2910,6 +3099,9 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 
     await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
     return handled_any
+
+
+register_game_command_sent_observer(_observe_sent_for_early_reply_replay)
 
 
 @client.on(events.NewMessage())

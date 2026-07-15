@@ -286,6 +286,45 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertEqual({}, identity_state["pending_tasks"])
 
+    def test_pending_retry_accepts_exact_bot_reply_without_command_keywords(self):
+        send_as_id = 971015
+        now = 6400.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                154926: {
+                    "cmd": config.CMD_CHECKIN,
+                    "sent_at": now - 40,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                }
+            }
+
+        exact_reply = {
+            "event_type": "message",
+            "message_id": 154927,
+            "reply_to_msg_id": 154926,
+            "sender_id": 8861328042,
+            "sender_is_bot": True,
+            "text": "点卯成功！你获得了 105 点宗门贡献。",
+        }
+
+        def find_replies(_msg_id, _now, **kwargs):
+            predicate = kwargs.get("predicate")
+            return [exact_reply] if predicate and predicate(exact_reply) else []
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "find_message_log_replies", side_effect=find_replies), \
+             patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
+
     def test_pending_retry_preserves_send_intent_metadata(self):
         send_as_id = 971005
         now = 6500.0

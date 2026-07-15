@@ -8,7 +8,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model.message_log_recovery import recover_sent_command_from_message_log
+from model.message_log_recovery import (
+    find_message_log_replies_tail,
+    parse_message_log_ts,
+    recover_sent_command_from_message_log,
+)
 
 
 def _write_log(base_dir, day, entries):
@@ -19,6 +23,39 @@ def _write_log(base_dir, day, entries):
 
 
 class MessageLogRecoveryTests(unittest.TestCase):
+    def test_tail_reply_lookup_finds_reply_before_late_sent_row(self):
+        now = parse_message_log_ts("2026-07-15 10:55:11 UTC+8")
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_log(tmp, "2026-07-15", [
+                {
+                    "ts": "2026-07-15 10:55:08 UTC+8",
+                    "event_type": "message",
+                    "message_id": 154927,
+                    "chat_id": -1001680975844,
+                    "sender_id": 8861328042,
+                    "reply_to_msg_id": 154926,
+                    "text": "点卯成功！你获得了 105 点宗门贡献。",
+                },
+                {
+                    "ts": "2026-07-15 10:55:11 UTC+8",
+                    "event_type": "sent",
+                    "message_id": 154926,
+                    "chat_id": -1001680975844,
+                    "sender_id": 7538826434,
+                    "reply_to_msg_id": 0,
+                    "text": ".宗门点卯",
+                },
+            ])
+
+            replies = find_message_log_replies_tail(
+                154926,
+                now,
+                messages_dir=tmp,
+                lookback_sec=30,
+            )
+
+        self.assertEqual([154927], [item["message_id"] for item in replies])
+
     def test_recovers_strict_topic_match(self):
         with tempfile.TemporaryDirectory() as tmp:
             _write_log(tmp, "2026-07-05", [
