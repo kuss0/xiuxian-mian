@@ -38,6 +38,7 @@ from ..state import (
     get_identity_ids,
     get_identity_state,
     is_cave_public_auto_enabled,
+    is_cave_public_identity_available,
     get_send_as_profile,
     get_storage_bag_records,
     state,
@@ -880,13 +881,18 @@ def _enabled_fishing_daily_entries(now):
     changed = False
     for identity_id in get_identity_ids():
         identity_id = int(identity_id or 0)
-        if identity_id <= 0 or not get_identity_enabled(identity_id):
+        if identity_id <= 0:
+            continue
+        public_auto_enabled = is_cave_public_auto_enabled("fishing", identity_id)
+        if not get_identity_enabled(identity_id) and not (
+            public_auto_enabled and is_cave_public_identity_available(identity_id)
+        ):
             continue
         try:
             identity_state = get_identity_state(identity_id)
         except KeyError:
             continue
-        if not identity_state.get("fishing_enabled") and not is_cave_public_auto_enabled("fishing", identity_id):
+        if not identity_state.get("fishing_enabled") and not public_auto_enabled:
             continue
         entry_day, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(dict(identity_state), now)
         if daily_updates:
@@ -897,10 +903,21 @@ def _enabled_fishing_daily_entries(now):
             continue
         summary = _normalize_fishing_daily_catch_summary(identity_state.get("fishing_daily_catch_summary_json"))
         phase = str(identity_state.get("fishing_phase") or "").strip()
+        last_result = str(identity_state.get("fishing_last_result") or "").strip()
         active_followup = (
             _parse_int(identity_state.get("fishing_reply_to_msg_id"), 0) > 0
             or bool(str(identity_state.get("fishing_pending_action") or "").strip())
             or phase not in {"", "idle"}
+        )
+        terminal_skip = "未持有鱼竿" in last_result and "今日跳过" in last_result
+        daily_exhausted = "daily_limit" in last_result.lower()
+        reportable = (
+            str(summary.get("day") or "").strip() == str(day_key or "").strip()
+            and (
+                _parse_int(summary.get("rods"), 0) > 0
+                or bool(summary.get("fish"))
+                or bool(summary.get("rewards"))
+            )
         )
         entries.append({
             "identity_id": identity_id,
@@ -911,6 +928,9 @@ def _enabled_fishing_daily_entries(now):
             "summary": summary,
             "summary_day": str(identity_state.get("fishing_daily_summary_day") or "").strip(),
             "active_followup": active_followup,
+            "terminal_skip": terminal_skip,
+            "daily_exhausted": daily_exhausted,
+            "reportable": reportable,
         })
     return day_key, entries, changed
 
@@ -944,18 +964,19 @@ async def _send_fishing_daily_completion_summary(now):
         return False
     if any(item.get("active_followup") for item in entries):
         return False
-    if any(_parse_int(item.get("count"), 0) < _parse_int(item.get("limit"), 0) for item in entries):
-        return False
-    if all(str(item.get("summary_day") or "").strip() == str(day_key or "").strip() for item in entries):
-        return False
-    if not any(
-        _parse_int((item.get("summary") or {}).get("rods"), 0) > 0
-        or bool((item.get("summary") or {}).get("fish"))
-        or bool((item.get("summary") or {}).get("rewards"))
+    if any(
+        _parse_int(item.get("count"), 0) < _parse_int(item.get("limit"), 0)
+        and not item.get("terminal_skip")
+        and not item.get("daily_exhausted")
         for item in entries
     ):
         return False
-    message = _format_fishing_all_daily_completion_summary(day_key, entries)
+    if all(str(item.get("summary_day") or "").strip() == str(day_key or "").strip() for item in entries):
+        return False
+    report_entries = [item for item in entries if item.get("reportable")]
+    if not report_entries:
+        return False
+    message = _format_fishing_all_daily_completion_summary(day_key, report_entries)
     ok = await send_audit_log(message, scope="identity", priority="normal", limit=900)
     if not ok:
         state["fishing_last_error"] = "灵溪垂钓日结播报发送失败，稍后重试"

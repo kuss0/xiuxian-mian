@@ -1090,6 +1090,165 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent)
         self.assertIn("20/20竿", audit_mock.await_args.args[0])
 
+    async def test_daily_completion_includes_channel_frozen_public_identity(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 15, 8, 10, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_TEST",
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        state_module._meta_state["channel_send_as_health"] = {
+            "status": "closed",
+            "restore_identity_ids": [identity_id],
+        }
+        state_module.update_send_as_profile(identity_id, enabled=False)
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 5
+            state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                "day": day_key,
+                "rods": 5,
+                "fish": {"赤尾火鲤": 5},
+                "rewards": {},
+            }, ensure_ascii=False)
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertTrue(sent)
+        self.assertIn("角色1", audit_mock.await_args.args[0])
+        self.assertIn("赤尾火鲤x5", audit_mock.await_args.args[0])
+
+    async def test_daily_completion_excludes_manually_disabled_public_identity(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 15, 8, 10, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_TEST",
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        state_module._meta_state["channel_send_as_health"] = {
+            "status": "closed",
+            "restore_identity_ids": [],
+        }
+        state_module.update_send_as_profile(identity_id, enabled=False)
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 5
+            state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                "day": day_key,
+                "rods": 5,
+                "fish": {"赤尾火鲤": 5},
+                "rewards": {},
+            }, ensure_ascii=False)
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertFalse(sent)
+        audit_mock.assert_not_awaited()
+
+    async def test_daily_completion_ignores_public_identities_without_rods(self):
+        identity_id = self._prepare_identity()
+        skipped_id = 301299112
+        state_module.ensure_identity_registered(skipped_id)
+        now = self._local_ts(2026, 7, 15, 8, 10, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_TEST",
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id, skipped_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 5
+            state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                "day": day_key,
+                "rods": 5,
+                "fish": {"银须灵鲢": 5},
+                "rewards": {},
+            }, ensure_ascii=False)
+        with state_module.use_identity(skipped_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 0
+            state_module.state["fishing_last_result"] = "未持有鱼竿，今日跳过"
+            state_module.state["fishing_daily_catch_summary_json"] = ""
+        with state_module.use_identity(identity_id):
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertTrue(sent)
+        text = audit_mock.await_args.args[0]
+        self.assertIn("5/5竿｜角色1", text)
+        self.assertIn("银须灵鲢x5", text)
+        self.assertNotIn(state_module.get_identity_display_name(skipped_id), text)
+        self.assertEqual(day_key, state_module.get_identity_state(skipped_id)["fishing_daily_summary_day"])
+
+    async def test_daily_limit_terminal_with_stale_zero_count_does_not_block_summary(self):
+        identity_id = self._prepare_identity()
+        exhausted_id = 301299112
+        state_module.ensure_identity_registered(exhausted_id)
+        now = self._local_ts(2026, 7, 15, 8, 10, 0)
+        day_key = fishing_runtime.get_day_key(now)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_TEST",
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id, exhausted_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 5
+            state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                "day": day_key,
+                "rods": 5,
+                "fish": {"青鳞小鲫": 5},
+                "rewards": {},
+            }, ensure_ascii=False)
+        with state_module.use_identity(exhausted_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = day_key
+            state_module.state["fishing_daily_count"] = 0
+            state_module.state["fishing_last_result"] = "MiniApp daily_limit｜fishing_daily_limit_reached"
+            state_module.state["fishing_daily_catch_summary_json"] = json.dumps({
+                "day": "2026-07-14",
+                "rods": 5,
+                "fish": {"旧鱼": 5},
+                "rewards": {},
+            }, ensure_ascii=False)
+        with state_module.use_identity(identity_id):
+            with (
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_daily_completion_summary(now)
+
+        self.assertTrue(sent)
+        text = audit_mock.await_args.args[0]
+        self.assertIn("5/5竿｜角色1", text)
+        self.assertNotIn("旧鱼", text)
+        self.assertEqual(day_key, state_module.get_identity_state(exhausted_id)["fishing_daily_summary_day"])
+
     def test_daily_limit_without_progress_infers_real_settled_limit(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 8, 15, 0)
