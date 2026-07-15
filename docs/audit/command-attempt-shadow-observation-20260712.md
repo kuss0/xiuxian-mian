@@ -1,9 +1,11 @@
 # CommandAttempt Shadow Observation
 
-- Status: active observation; Gate 4 not approved
+- Status: **Gate 0–3 accepted** (2026-07-13); **72h closeout PASS** (2026-07-15); shadow continues; **Gate 4 not approved**
+- Acceptance record: `docs/audit/command-attempt-gate0-3-acceptance-20260713.md`
+- 72h closeout: `docs/audit/command-attempt-72h-closeout-20260715.md`
 - Started: 2026-07-12 02:01:32 UTC+8
 - Scope: production shadow write and strict shadow bind only
-- Runtime commits: `2d66f594`, `2635c57e`, `014aa210`
+- Runtime commits: `2d66f594`, `2635c57e`, `014aa210` (plus checkpoint `75d6e922`; still ancestral on `main`)
 - Pre-deploy database backup:
   `data/state/chaogu_state.db.pre-command-attempt-shadow-20260712020047`
 
@@ -123,3 +125,32 @@ scheduler, or business-control authority.
 Capacity and future archive constraints are defined in
 `docs/audit/command-attempt-shadow-retention-20260712.md`. No archive or delete
 job is approved during the 72-hour evidence window.
+
+## Formal Acceptance Checkpoint (Grok)
+
+Checkpoint: 2026-07-13 09:04:53 UTC+8
+Tool status: **ok**
+Full write-up: `docs/audit/command-attempt-gate0-3-acceptance-20260713.md`
+
+- Observation hours: **30.997** (minimum 24h met; may continue to 72h).
+- Attempts: **1744** (sent/open 1698, blocked/open 46).
+- Sent-log root parity: **1698/1698**.
+- Evidence: **2174**, all `exact_reply_to_root` / `reply_to_msg_id`; non-strong written: **0**.
+- `send_unknown` / stale transport / last_error: **0**.
+- Control lists empty; recover_report_only=0; four core services active.
+- Focused unit tests at acceptance: **31 passed**.
+- Verdict: **Gate 0–3 PASS**; **Gate 4 NOT APPROVED**.
+
+## 72h Closeout Checkpoint (Grok)
+
+Checkpoint: 2026-07-15 08:09:49 UTC+8
+Tool status: **`warn`** (stale queued ×2; last_error ×18 on send_unknown)
+Full write-up: `docs/audit/command-attempt-72h-closeout-20260715.md`
+
+- Observation hours: **78.08** (T+72h target met).
+- Attempts: **4136** (sent 3689, blocked 427, send_unknown 18, queued 2).
+- Sent-log root parity: **3689/3689**.
+- Evidence: **4911**, all `exact_reply_to_root`; non-strong written: **0**.
+- Control lists empty; recover_report_only=0; services active; tests 31 passed.
+- Capacity: ~53 attempts/h; DB ~10.4 MB; payload ~0.97 MB — acceptable.
+- Verdict: **72h closeout PASS**; continue shadow; **Gate 4 NOT APPROVED**.
