@@ -811,6 +811,48 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".接取解咒委托 5", send_mock.await_args.args[0])
             self.assertEqual(helper_id, send_mock.await_args.kwargs["send_as_id"])
 
+    async def test_accept_contract_recovery_uses_reply_anchor_across_listener_and_aliases(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        listener_id = self._prepare_identity(301299112, username="jfdffdddd")
+        now = 1_800_000_300.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "commission": {
+                    "id": 99,
+                    "accepted": False,
+                    "owner_username": "WalterWA2000",
+                },
+                "assist": {"send_as_id": helper_id},
+                "pending": {
+                    "action": "accept",
+                    "family": "wanxin_accept",
+                    "msg_id": 169757,
+                    "send_as_id": helper_id,
+                    "reply_due_at": now + 60,
+                },
+            }
+
+        with state_module.use_identity(listener_id), patch.object(wanxin, "save_state"), patch.object(
+            wanxin, "close_action_guard_by_family"
+        ) as close_guard:
+            handled = await wanxin.handle_wanxin_reply(
+                "【咒契协定已成】\n阴罗宗弟子 @sanshaoyedejian1 已接取 @WalterWA2000 的解咒委托。",
+                now,
+                reply_to=SimpleNamespace(id=169757, raw_text=".接取解咒委托 99"),
+                matched_family="wanxin_accept",
+                result_msg_id=169760,
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertTrue(observed["commission"]["accepted"])
+            self.assertEqual(169760, observed["commission"]["accept_msg_id"])
+            self.assertEqual({}, observed["pending"])
+        self.assertIn(helper_id, [call.kwargs.get("send_as_id") for call in close_guard.call_args_list])
+
     async def test_scheduler_replies_assist_to_owner_anchor_and_strip_default_off(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")

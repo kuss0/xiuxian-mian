@@ -1669,10 +1669,21 @@ async def handle_wanxin_reply(text, now, reply_to=None, matched_family=None, res
             reply_to_msg_id=int(getattr(reply_to, "id", 0) or 0),
             send_as_id=get_current_identity_id(),
         )
+    # Cross-listener replies and game/profile username aliases must fall back
+    # to the exact pending command anchor before treating the reply as foreign.
+    if not owner_id:
+        owner_id = _find_owner_identity_by_pending(
+            family,
+            reply_to_msg_id=int(getattr(reply_to, "id", 0) or 0),
+            send_as_id=0,
+        )
     if owner_id:
         handled = _apply_to_owner_identity(owner_id, parsed, float(now), matched_family=family, result_msg_id=result_msg_id)
         if handled:
             close_action_guard_by_family(family, send_as_id=get_current_identity_id(), reason="wanxin_assist_reply", now=now)
+            helper_id = _find_identity_by_username(parsed.get("helper_username") or "")
+            if helper_id and helper_id != get_current_identity_id():
+                close_action_guard_by_family(family, send_as_id=helper_id, reason="wanxin_assist_reply", now=now)
             save_state()
             return True
 
