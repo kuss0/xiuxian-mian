@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Production baseline: `49bf8760 Preserve renamed identity relationships`
+- Production baseline: `1c7ec199 Record deep seclusion live closure`
 - wxjerry: `794bbbf`
 - Rust: `c4bbc85`
 - Both reference repositories were fetched and are aligned with their current `origin/main`.
@@ -11,6 +11,95 @@
 The local checkout, current state schema, tests, and real message logs remain the source of truth. Upstream code is used as a design and protocol reference only.
 
 ## Decision Summary
+
+### 0. Code organization: absorb ownership boundaries, not repository shape
+
+The first pass compared feature coverage. The second pass reviewed how each
+line owns state, interprets effects, persists changes, and rolls back failures.
+That produces a different and more useful absorb queue.
+
+Rust has three structures worth adapting:
+
+- `Behavior` owns its runtime state and exposes `snapshot_if_dirty()` plus
+  `restore()`. Persistence writes the behavior that changed instead of asking
+  unrelated modules to flush the complete process state.
+- `decide()` returns structured `batches`, `actions`, `notifies`, and a control
+  signal. Telegram sends, clicks, MiniApp calls, deferred writes, and disable
+  requests are interpreted at explicit boundaries instead of being performed
+  from arbitrary decision branches.
+- trusted game senders have a single registry owner. Observation is separated
+  from publication of the trusted snapshot, so in-flight readers see a stable
+  view.
+
+These ideas must be translated, not copied. Rust's `run_identity_tick.rs` is
+about 1,500 lines and its `TaskCtx` carries dozens of unrelated services. That
+is a useful warning against replacing Python globals with one giant context
+object. Its display-name Bot learning is also less strict than the local
+reply-root policy and must not weaken local routing.
+
+wxjerry has two useful transaction patterns:
+
+- state snapshots are compared before writing, and dirty scope is retained
+  after a failed write;
+- account re-login moves existing session files to backups and restores them
+  when new-session validation fails.
+
+The session helper is not directly production-ready here. It silently ignores
+some rollback failures, has no crash-recovery journal, and does not solve the
+larger local problem that `register_identity()` persists and audits inside an
+account-login transaction. A local implementation must first make identity
+registration callable with `persist=False` and `audit=False`, then define one
+owner for session swap, client registration, state commit, and rollback.
+
+wxjerry's DB/`.env` bidirectional Bot-ID merge is explicitly rejected. Two
+writable authorities can resurrect an ID deliberately removed in the UI. The
+local database remains runtime authority; static config may only seed an empty
+database.
+
+### 0.1 Local structural debt found during comparison
+
+- `model/runtime.py` performs nearly the same global/account/flood/send-as/
+  weakness/Bot-health/pre-guard/action-guard checks before queue admission and
+  again while holding the send slot. The second check is required because
+  state can change in the queue, but the duplicated implementation already has
+  ordering differences. Future work should return one structured
+  `SendGateDecision` from a shared evaluator with explicit `pre_queue` and
+  `in_queue` phases. This remains Lab-only while the shared send layer is under
+  the 24-hour freeze.
+- `model/app.py` mixed candidate Bot evidence, TTL pruning, edit deduplication,
+  threshold policy, persistence, and audit I/O in one global dictionary flow.
+- `model/ui.py` moved pending Telegram session files over real files while
+  ignoring `OSError`, without backing up the previous authorized session.
+- broad `save_state()` calls hide state ownership. Snapshot-diff persistence
+  reduces write cost but does not establish which module owns shared fields or
+  which transaction commits a cross-module change.
+
+### 0.2 Code-level Lab implemented
+
+Branch: `lab/code-structure-absorb-20260716`.
+
+The Bot candidate evidence flow has been extracted into
+`model/game_bot_registry.py`. The registry is pure state logic: it owns TTL,
+unique reply-root counting, player/command diversity, evidence snapshots, and
+the learned/decided transition. `app.py` still owns Telegram entity checks,
+strict reply-root binding, persistence, and audit output.
+
+The Lab also fixes a real failure semantic: if persisting a learned Bot ID
+fails, the in-memory `game_bot_ids` change is rolled back and the candidate is
+not marked learned. Previously the function always announced success after
+calling `save_state()` even when that save returned `False`.
+
+Focused validation:
+
+```text
+34 passed
+3102 passed, 396 subtests passed
+```
+
+Coverage includes duplicate edit deduplication, TTL reset, diverse evidence,
+one-shot decisions, immediate strict-shard learning, and persistence-failure
+rollback. This candidate does not change the shared sender, CommandAttempt,
+module scheduling, or production runtime.
 
 ### 1. Incremental persistence: absorb the idea, not the patch
 

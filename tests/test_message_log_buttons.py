@@ -589,6 +589,23 @@ class MessageLogButtonTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 
+    def test_game_bot_learning_rolls_back_when_persistence_fails(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._suspected_game_bot_hits.clear()
+        try:
+            state_module._meta_state["game_bot_ids"] = [111]
+            with patch.object(app, "save_state", return_value=False), \
+                    patch.object(app, "send_audit_log", new=AsyncMock()) as audit_mock:
+                learned = asyncio.run(app._learn_game_bot_id(222, "test failure"))
+
+            self.assertFalse(learned)
+            self.assertEqual([111], state_module.get_game_bot_ids())
+            self.assertTrue(any("已回滚内存配置" in str(call.args[0]) for call in audit_mock.await_args_list))
+        finally:
+            app._suspected_game_bot_hits.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
     def test_non_numeric_tianzun_username_keeps_multi_sample_threshold(self):
         self.assertFalse(app._is_strict_han_tianzun_shard_username("hantianzun_new_bot"))
         self.assertFalse(app._is_strict_han_tianzun_shard_username("group_helper_bot"))
