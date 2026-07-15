@@ -128,6 +128,10 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "runManualMiniApp" in script
     assert "默认关闭" in script
     assert "手动优先" in script
+    assert "renderCommandCatalog" in script
+    assert "data-miniapp-command-catalog" in script
+    assert "flow_replacement_uncatalogued" in script
+    assert "external_entry_not_automated" in script
     assert "自动上线" not in script
     assert "已上线" not in script
 

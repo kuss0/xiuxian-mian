@@ -89,6 +89,7 @@ from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
+from .features import miniapp_command_catalog
 from .inventory_delta import build_inventory_freshness_snapshot
 from .miniapp_state import get_miniapp_state_snapshot, record_miniapp_state
 from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
@@ -773,6 +774,11 @@ async def ui_set_tree_miniapp_auto_config(send_as_id, payload=None):
 def get_miniapp_status_snapshot(send_as_id=None):
     registry = miniapp_registry.build_known_miniapp_registry()
     plans = miniapp_registry.build_known_miniapp_flow_plans()
+    command_catalog = miniapp_command_catalog.build_command_catalog_snapshot()
+    command_catalog_validation = miniapp_command_catalog.validate_command_catalog(
+        flow_plans=plans,
+        entry_probe_commands=MINIAPP_ENTRY_PROBE_COMMANDS,
+    )
     return {
         "adapters": [
             _with_miniapp_ui_group(item)
@@ -821,6 +827,8 @@ def get_miniapp_status_snapshot(send_as_id=None):
             "raw_start_token_persisted": False,
             "global_rate_limit": get_miniapp_global_rate_limit_snapshot(),
         },
+        "command_catalog": command_catalog,
+        "command_catalog_validation": command_catalog_validation,
         "automation": get_miniapp_auto_config_snapshot(),
         "cave_public_batch": dict(_cave_public_batch_state),
         "cave_public_background": dict(_cave_public_background_state),

@@ -191,6 +191,57 @@
     }).join('');
   }
 
+  function commandCatalogIssueLabel(issue) {
+    var labels = {
+      flow_replacement_uncatalogued: '现有 flow 未归类',
+      external_entry_not_automated: '外部入口未自动化',
+      unapproved_multi_surface: '未批准的跨入口重复',
+      malformed_command: '命令格式异常'
+    };
+    return labels[issue && issue.code] || (issue && issue.code) || '目录问题';
+  }
+
+  function renderCommandCatalog(catalog, validation) {
+    catalog = catalog || {};
+    validation = validation || {};
+    var summary = catalog.summary || {};
+    var validationSummary = validation.summary || {};
+    var categories = Array.isArray(catalog.categories) ? catalog.categories : [];
+    var issues = Array.isArray(validation.issues) ? validation.issues : [];
+    var issueHtml = issues.length ? issues.map(function (issue) {
+      var tone = issue.level === 'error' || issue.level === 'warn' ? 'warn' : 'neutral';
+      return '<div class="miniapp-flow">'
+        + badge(String(issue.level || 'info').toUpperCase(), tone)
+        + ' ' + esc(commandCatalogIssueLabel(issue))
+        + (issue.command ? '：' + esc(issue.command) : '')
+        + '</div>';
+    }).join('') : '<div class="miniapp-flow">目录与现有 flow 一致</div>';
+    var categoryHtml = categories.map(function (category) {
+      var groups = Array.isArray(category.groups) ? category.groups : [];
+      return ''
+        + '<details class="miniapp-group miniapp-command-category">'
+        + '<summary class="miniapp-group-title">' + esc(category.label || category.key)
+        + '<span> ' + esc(category.command_count || 0) + '</span></summary>'
+        + groups.map(function (group) {
+          return '<div class="miniapp-flow"><strong>' + esc(group.label || group.key) + '</strong>｜'
+            + compactList(group.commands) + '</div>';
+        }).join('')
+        + '</details>';
+    }).join('');
+    return ''
+      + '<section class="miniapp-score-config miniapp-command-catalog" data-miniapp-command-catalog="1">'
+      + '<div class="miniapp-score-title"><strong>命令迁移目录</strong><span>v' + esc(catalog.version || '-') + '</span></div>'
+      + '<div class="miniapp-item-meta">'
+      + badge(validation.status === 'error' ? '目录错误' : (validation.status === 'warn' ? '待复核' : '已通过'), validation.status === 'ok' ? 'ok' : 'warn')
+      + badge('命令 ' + esc(summary.unique_commands || 0), 'neutral')
+      + badge('flow ' + esc(validationSummary.catalogued_flow_replacements || 0) + '/' + esc(validationSummary.flow_replacement_commands || 0), validationSummary.warnings ? 'warn' : 'ok')
+      + badge('外部自动化 ' + esc(validationSummary.automated_external_entries || 0) + '/' + esc(validationSummary.external_entry_commands || 0), 'neutral')
+      + '</div>'
+      + '<div class="miniapp-command-categories">' + categoryHtml + '</div>'
+      + '<div class="miniapp-command-issues">' + issueHtml + '</div>'
+      + '</section>';
+  }
+
   function renderCavePublicControls(automation, batch) {
     automation = automation || {};
     batch = batch || {};
@@ -314,6 +365,7 @@
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + badge('全局请求 ' + esc(globalRate.request_count || 0) + '/' + esc(globalRate.limit || 90) + '·60s', globalRate.priority_active ? 'warn' : 'neutral')
       + '</div>'
+      + renderCommandCatalog(miniapp.command_catalog, miniapp.command_catalog_validation)
       + renderCavePublicControls(automation, miniapp.cave_public_batch || {})
       + renderWorldBossControls(automation)
       + renderTreeScoreControls(scoreControls)
