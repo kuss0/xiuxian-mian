@@ -10,6 +10,31 @@ from tools import health_observer
 
 
 class HealthObserverTests(unittest.TestCase):
+    def test_read_journal_matches_limits_journalctl_input(self):
+        with patch.object(health_observer, "run_command", return_value=(0, "recent line\n", "")) as run:
+            result = health_observer.read_journal_matches(
+                "xiuxian.service",
+                600,
+                12,
+                max_lines=321,
+            )
+
+        command = run.call_args.args[0]
+        self.assertIn("--lines=321", command)
+        self.assertEqual(1, result["total_lines"])
+
+    def test_append_event_does_not_rewrite_under_size_budget(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "events.jsonl"
+            path.write_text('{"old":true}\n', encoding="utf-8")
+            with patch.object(Path, "read_text", side_effect=AssertionError("full history must not be read")):
+                health_observer.append_event(path, {"new": True}, max_lines=100)
+
+            self.assertEqual(
+                '{"old":true}\n{"new":true}\n',
+                path.read_text(encoding="utf-8"),
+            )
+
     def test_parse_systemctl_show_groups_multiple_services(self):
         output = (
             "Id=xiuxian.service\n"

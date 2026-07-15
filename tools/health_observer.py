@@ -8,6 +8,7 @@ It never sends Telegram/game commands and never calls Tianjige APIs.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import re
@@ -291,6 +292,7 @@ class ObserverConfig:
     max_event_lines: int
     state_dir: Path
     business_window_sec: int
+    max_journal_lines: int = 2000
 
     @property
     def latest_path(self) -> Path:
@@ -426,10 +428,26 @@ def journal_since_text(window_sec: int, *, service_start_epoch: float = 0.0) -> 
     return local_ts(since_epoch)
 
 
-def read_journal_matches(service: str, window_sec: int, limit: int, *, service_start_epoch: float = 0.0) -> dict[str, object]:
+def read_journal_matches(
+    service: str,
+    window_sec: int,
+    limit: int,
+    *,
+    service_start_epoch: float = 0.0,
+    max_lines: int = 2000,
+) -> dict[str, object]:
     since = journal_since_text(window_sec, service_start_epoch=service_start_epoch)
+    scan_limit = max(100, min(10000, int(max_lines or 2000)))
     code, stdout, stderr = run_command(
-        ["journalctl", "-u", service, "--since", since, "--no-pager"],
+        [
+            "journalctl",
+            "-u",
+            service,
+            "--since",
+            since,
+            "--no-pager",
+            f"--lines={scan_limit}",
+        ],
         timeout=12.0,
     )
     lines = [line for line in stdout.splitlines() if line.strip()]
@@ -2004,6 +2022,7 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
                     ),
                     watchdog_reset_epoch=watchdog_reset_epoch,
                 ),
+                max_lines=cfg.max_journal_lines,
             )
         )
     status, reasons = classify_snapshot(service_states, journals)
@@ -2055,9 +2074,17 @@ def append_event(path: Path, payload: dict[str, object], max_lines: int) -> None
     with path.open("a", encoding="utf-8") as fp:
         fp.write(line)
     max_lines = max(100, int(max_lines or 0))
+    # Avoid loading the full audit history on every 60s observation. Compact
+    # only after the file is plausibly over the configured line budget.
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()[-max_lines:]
-        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        if path.stat().st_size <= max_lines * 64 * 1024:
+            return
+        with path.open("r", encoding="utf-8") as fp:
+            lines = deque(fp, maxlen=max_lines)
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        with tmp_path.open("w", encoding="utf-8") as fp:
+            fp.writelines(lines)
+        os.replace(tmp_path, path)
     except OSError:
         pass
 
@@ -2110,6 +2137,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--journal-window-sec", type=int, default=10 * 60)
     parser.add_argument("--max-journal-matches", type=int, default=12)
     parser.add_argument("--max-event-lines", type=int, default=5000)
+    parser.add_argument("--max-journal-lines", type=int, default=2000)
     parser.add_argument("--business-window-sec", type=int, default=30 * 60)
     parser.add_argument("--once", action="store_true")
     return parser.parse_args(argv)
@@ -2127,6 +2155,7 @@ def build_config(args: argparse.Namespace) -> ObserverConfig:
         max_event_lines=max(100, int(args.max_event_lines or 5000)),
         state_dir=project_root / "data" / "state" / "health_observer",
         business_window_sec=max(300, int(args.business_window_sec or 1800)),
+        max_journal_lines=max(100, min(10000, int(args.max_journal_lines or 2000))),
     )
 
 
