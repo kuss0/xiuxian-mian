@@ -81,11 +81,13 @@ EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC = 10
 _EXPLORE_RIFT_LOCKS = {}
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
-RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下)")
+RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下|卷回)")
 RE_EXPLORER_NOISE_PREFIX = re.compile(r"^[\-•·\s]+")
 RE_EXPLORER_XIUWEI_GAIN = re.compile(r"修为(?:最终)?(?:增加了|增加)\s*([\d,]+)\s*点")
 RE_EXPLORER_XIUWEI_LOSS = re.compile(r"修为(?:倒退了|倒退|暴跌了|损失|逸散了|逸散)\s*([\d,]+)\s*点")
 RE_EXPLORER_XIUWEI_NO_LOSS = re.compile(r"(?:未损修为|未损失修为|修为未损)")
+RE_EXPLORER_TIANJI_GAIN = re.compile(r"天机值\s*([+-]\s*\d+)")
+RE_EXPLORER_CONTRIB_GAIN = re.compile(r"宗门贡献\s*([+-]\s*\d+)")
 EXPLORE_RIFT_NON_REWARD_TOKENS = {
     "探寻成功",
     "激战得胜",
@@ -482,6 +484,13 @@ def parse_explore_rift_result_summary(text):
         parts.append(f"修为 -{xiuwei_loss}")
     elif RE_EXPLORER_XIUWEI_NO_LOSS.search(raw_text):
         parts.append("修为未损")
+
+    tianji_match = RE_EXPLORER_TIANJI_GAIN.search(raw_text)
+    if tianji_match:
+        parts.append(f"天机{tianji_match.group(1).replace(' ', '')}")
+    contrib_match = RE_EXPLORER_CONTRIB_GAIN.search(raw_text)
+    if contrib_match:
+        parts.append(f"贡献{contrib_match.group(1).replace(' ', '')}")
 
     for line in raw_text.splitlines():
         line_deltas = _reward_from_line(line)

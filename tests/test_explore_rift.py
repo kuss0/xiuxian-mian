@@ -178,6 +178,20 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual({"法则碎片·木": 2, "空间之核": 1}, item_deltas)
 
+    def test_parse_fate_rewrite_single_item_rollup_and_tianxing_gains(self):
+        summary, item_deltas = explore_rift.parse_explore_rift_result_summary(
+            "【改命回天】\n"
+            "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
+            "你本已不敌异兽，司命盘却在败局成形前扭开了一线退路。\n"
+            "你狼狈退回，却还是从虚空乱流中卷回了一枚 【四级妖丹】，且 本次未损修为。"
+        )
+
+        self.assertEqual(
+            "修为未损 ｜ 天机+1 ｜ 贡献+30 ｜ 奖励：四级妖丹x1",
+            summary,
+        )
+        self.assertEqual({"四级妖丹": 1}, item_deltas)
+
     def test_real_terminal_result_titles_are_identified_as_explore_rift_replies(self):
         for sample_id in (
             "explore_rift.failure.storm",
@@ -564,7 +578,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["explore_rift_pending_result_msg_id"])
             self.assertEqual(now + explore_rift.EXPLORE_RIFT_CD, state_module.state["next_explore_rift_time"])
             self.assertEqual(
-                "修为未损 ｜ 奖励：法则碎片·木x2、空间之核x1",
+                "修为未损 ｜ 天机+1 ｜ 贡献+30 ｜ 奖励：法则碎片·木x2、空间之核x1",
                 state_module.state["explore_rift_last_result"],
             )
             records = state_module.get_storage_bag_records()
