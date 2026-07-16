@@ -43,6 +43,7 @@ WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
 # middle of that band without touching the 1.25s timeout boundary.
 WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1020
 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1160
+WORLD_BOSS_RELEASE_LEAD_MS = 120
 WORLD_BOSS_DEFAULT_HIT_MS = 560
 WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
 WORLD_BOSS_JOIN_READY_LEAD_SEC = 3.0
@@ -534,8 +535,13 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
                 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS,
             ))
         perfect_ms = max(0, _int_value(window.get("perfectMs"), 150))
-        release_jitter = min(24, max(0, int(perfect_ms * 0.15)))
-        elapsed_ms = center_ms + int(rng.randint(-release_jitter, release_jitter)) if release_jitter else center_ms
+        # The page holds a persistent connection; the HTTP automation still
+        # pays a small dispatch/transport delay before the server evaluates the
+        # hit. Submit slightly before the visual center and keep release timing
+        # deterministic. Hold duration remains randomized inside the accepted
+        # high-damage band.
+        release_lead_ms = min(WORLD_BOSS_RELEASE_LEAD_MS, max(0, perfect_ms - 30))
+        elapsed_ms = max(0, center_ms - release_lead_ms)
         plan.append({
             "challengeId": challenge_id,
             "windowId": window_id,
@@ -1426,6 +1432,14 @@ def run_world_boss_joined_battle_lab_flow(
         _append_http_event(events, "hit", hit_result)
         if not hit_result.ok:
             status = classify_world_boss_miniapp_error(hit_result.error)
+            if status == "boss_action_limit" and server_hit_summary["attempted_hit_count"] > 0:
+                events.append({
+                    "step": "action_limit_after_hits",
+                    "ok": True,
+                    "attempted_hit_count": server_hit_summary["attempted_hit_count"],
+                    "accepted_hit_count": server_hit_summary["accepted_hit_count"],
+                })
+                break
             if status == "boss_hit_outside_window":
                 # A single late release is a business miss, not a transport
                 # failure. The server has already rejected this mutation, so

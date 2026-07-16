@@ -81,8 +81,9 @@ async def request_world_boss_miniapp_init_data(identity_id, launch):
     return init_data
 
 
-def _requests_transport(request):
-    return requests.request(
+def _requests_transport(request, *, session=None):
+    requester = session.request if session is not None else requests.request
+    return requester(
         str(request.get("method") or "POST"),
         request["url"],
         json=request.get("payload") or {},
@@ -126,7 +127,7 @@ async def run_world_boss_miniapp_event(
     launch = extract_world_boss_miniapp_launch(event, message_text=message_text)
     if not launch:
         return {"ok": False, "status": "entry_missing", "joined_count": 0, "results": []}
-    transport = transport or _requests_transport
+    shared_transport = transport
     init_data_provider = init_data_provider or request_world_boss_miniapp_init_data
     capture_sink = _capture_store(now)
     async def join_one(raw_identity_id):
@@ -143,6 +144,14 @@ async def run_world_boss_miniapp_event(
             }
             await _emit_progress(progress_callback, join_result)
             return None, join_result
+        session = None
+        identity_transport = shared_transport
+        if identity_transport is None:
+            session = requests.Session()
+
+            def identity_transport(request):
+                return _requests_transport(request, session=session)
+
         try:
             init_data = await init_data_provider(identity_id, launch)
             receipt = await asyncio.to_thread(
@@ -152,11 +161,13 @@ async def run_world_boss_miniapp_event(
                 player_id=identity_id,
                 identity_id=identity_id,
                 account_id=get_identity_account(identity_id),
-                transport=transport,
+                transport=identity_transport,
                 capture_sink=capture_sink,
                 capture_source=f"world_boss:join:{identity_id}",
             )
         except Exception as exc:
+            if session is not None:
+                session.close()
             join_result = {
                 "identity_id": identity_id,
                 "phase": "join",
@@ -174,24 +185,30 @@ async def run_world_boss_miniapp_event(
         }
         if receipt.joined:
             await _emit_progress(progress_callback, join_result)
-            return (identity_id, init_data, receipt), join_result
+            return (identity_id, init_data, receipt, identity_transport, session), join_result
+        if session is not None:
+            session.close()
         await _emit_progress(progress_callback, join_result)
         return None, join_result
 
     async def battle_one(context):
-        identity_id, init_data, receipt = context
+        identity_id, init_data, receipt, identity_transport, session = context
         battle_token = getattr(receipt, "session_token", "") or launch["token"]
         try:
-            battle = await asyncio.to_thread(
-                run_world_boss_joined_battle_lab_flow,
-                receipt,
-                token=battle_token,
-                entry_token=launch["token"],
-                init_data=init_data,
-                transport=transport,
-                capture_sink=capture_sink,
-                capture_source=f"world_boss:battle:{identity_id}",
-            )
+            try:
+                battle = await asyncio.to_thread(
+                    run_world_boss_joined_battle_lab_flow,
+                    receipt,
+                    token=battle_token,
+                    entry_token=launch["token"],
+                    init_data=init_data,
+                    transport=identity_transport,
+                    capture_sink=capture_sink,
+                    capture_source=f"world_boss:battle:{identity_id}",
+                )
+            finally:
+                if session is not None:
+                    session.close()
             safe_battle = safe_miniapp_event_detail(battle)
             data = safe_battle.get("data") or {}
             battle_summary = data.get("result") if isinstance(data, dict) else {}

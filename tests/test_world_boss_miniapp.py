@@ -264,7 +264,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(7),
         )
         self.assertEqual(["early", "middle", "late"], [item["windowId"] for item in plan])
-        self.assertTrue(all(abs(item["elapsedMs"] - item["centerMs"]) <= 24 for item in plan))
+        self.assertTrue(all(item["centerMs"] - item["elapsedMs"] == 120 for item in plan))
         self.assertTrue(all(1020 <= item["holdMs"] <= 1160 for item in plan))
         self.assertTrue(all(item["hitMs"] == 560 for item in plan))
         self.assertTrue(all(item["chargeStartMs"] == item["elapsedMs"] - item["holdMs"] for item in plan))
@@ -348,13 +348,13 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(all(delay > 0 for delay in clock.sleeps))
         self.assertEqual("challenge-live", payloads[2]["challengeId"])
         self.assertEqual("w1", payloads[3]["windowId"])
-        self.assertLessEqual(abs(payloads[3]["elapsedMs"] - 1500), 24)
+        self.assertEqual(1380, payloads[3]["elapsedMs"])
         self.assertGreaterEqual(payloads[3]["holdMs"], 520)
         self.assertEqual("w2", payloads[4]["windowId"])
         proof = payloads[-1]["bossProof"]
         self.assertEqual("qyz_focus_burst_v2", proof["mode"])
         self.assertEqual("强攻", proof["stance"])
-        self.assertTrue(all(abs(item["t"] - center) <= 24 for item, center in zip(proof["actions"], (1500, 3000))))
+        self.assertEqual([1380, 2880], [item["t"] for item in proof["actions"]])
         self.assertEqual(1000, proof["playerHp"])
         self.assertFalse(proof["dead"])
         self.assertIs(proof["realtimeDamageApplied"], True)
@@ -735,6 +735,57 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
         self.assertEqual("boss_action_limit", result["status"])
         self.assertEqual(["start", "start", "hit"], calls)
+
+    def test_action_limit_after_real_hit_still_submits_finish(self):
+        calls = []
+        clock = FakeClock()
+        hit_count = 0
+
+        def transport(request):
+            nonlocal hit_count
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle"},
+                    "challenge": {
+                        "challengeId": "challenge-limit-after-hit",
+                        "windows": [
+                            {"id": "w1", "centerMs": 1500},
+                            {"id": "w2", "centerMs": 3000},
+                        ],
+                    },
+                }
+            if endpoint == "hit":
+                hit_count += 1
+                if hit_count == 1:
+                    return 200, {
+                        "ok": True,
+                        "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                    }
+                return 409, {"ok": False, "error": "boss_action_limit"}
+            if endpoint == "finish":
+                return 200, {
+                    "ok": True,
+                    "result": {"settled": True, "score": 100, "hits": 1, "perfects": 1},
+                }
+            self.fail(endpoint)
+
+        receipt = world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77")
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            receipt,
+            token="qyz_LIMIT_AFTER_HIT",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("settled", result["status"])
+        self.assertEqual(["start", "hit", "hit", "finish"], calls)
+        self.assertTrue(any(event["step"] == "action_limit_after_hits" for event in result["events"]))
 
     def test_missed_window_applies_page_counter_damage_and_resets_combo(self):
         calls = []

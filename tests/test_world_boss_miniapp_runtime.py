@@ -108,6 +108,60 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("partial", result["status"])
         self.assertEqual("settled_zero_contribution", result["results"][-1]["status"])
 
+    async def test_default_transport_reuses_one_session_per_identity(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+        join_transports = {}
+        sessions = []
+
+        class FakeSession:
+            def __init__(self):
+                self.closed = False
+
+            def request(self, *_args, **_kwargs):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        def session_factory():
+            session = FakeSession()
+            sessions.append(session)
+            return session
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            join_transports[kwargs["identity_id"]] = kwargs["transport"]
+            return SimpleNamespace(
+                joined=True,
+                session_token="qyz_SESSION",
+                safe_summary=lambda: {"joined": True, "status": "joined"},
+            )
+
+        def fake_battle(_receipt, **kwargs):
+            identity_id = int(kwargs["capture_source"].rsplit(":", 1)[-1])
+            self.assertIs(join_transports[identity_id], kwargs["transport"])
+            return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}, "error": ""}
+
+        with (
+            patch.object(world_boss_miniapp_runtime.requests, "Session", side_effect=session_factory),
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11, 22],
+                event,
+                init_data_provider=init_data_provider,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(2, len(sessions))
+        self.assertTrue(all(session.closed for session in sessions))
+
 
 if __name__ == "__main__":
     unittest.main()
