@@ -718,8 +718,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
         )
 
         records = state_module.get_replica_run_state()["by_identity"]
-        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可", app_replica._format_replica_identity_statuses(leader_id, now + 2, records=records))
-        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可", app_replica._format_replica_identity_statuses(member_id, now + 2, records=records))
+        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可 | 极:可", app_replica._format_replica_identity_statuses(leader_id, now + 2, records=records))
+        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可 | 极:可", app_replica._format_replica_identity_statuses(member_id, now + 2, records=records))
         for identity_id in (leader_id, member_id):
             state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
             self.assertFalse(state_item["participating"])
@@ -762,7 +762,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             self.assertTrue(state_item["participating"])
             self.assertEqual("1336", state_item["room_id"])
             self.assertNotIn("lobby_until", state_item)
-            self.assertEqual("虚:中 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可", app_replica._format_replica_identity_statuses(identity_id, now + 3, records=records))
+            self.assertEqual("虚:中 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可 | 极:可", app_replica._format_replica_identity_statuses(identity_id, now + 3, records=records))
 
     def test_auto_dissolved_lobby_clears_without_success_cooldown(self):
         leader_id = self._register_replica_identity(991201, "xuruode1")
@@ -794,7 +794,245 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual("dissolved", record["last_join_result"])
         self.assertEqual("1333", state_item["last_dissolved_room_id"])
         self.assertNotIn("lobby_until", state_item)
-        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可", app_replica._format_replica_identity_statuses(leader_id, now + 11 * 60 + 1))
+        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可 | 昆:可 | 落:可 | 极:可", app_replica._format_replica_identity_statuses(leader_id, now + 11 * 60 + 1))
+
+    def test_xiaoji_real_opened_text_is_parsed(self):
+        text = (
+            "【北冥小极宫·集结】\n"
+            "@WalterWA2000 催动【北冥寒令】，北冥冰海坐标在寒玉上浮现。\n"
+            "副本ID: 5\n"
+            "其他道友可使用 .加入小极宫 5 加入队伍！(5人满)\n"
+            "队长可在达到最低人数后使用 .进入小极宫。"
+        )
+
+        opened_match = app_replica._REPLICA_OPENED_RE.search(text)
+
+        self.assertIsNotNone(opened_match)
+        self.assertEqual("北冥小极宫", opened_match.group("opened_xiaoji"))
+        self.assertEqual("@WalterWA2000", opened_match.group("leader"))
+        self.assertEqual("5", opened_match.group("room_id"))
+        self.assertEqual(app_replica._REPLICA_KIND_XIAOJI, app_replica._infer_replica_kind_from_text(text))
+
+    def test_xiaoji_team_uses_five_professions_without_spiritual_root_filter(self):
+        leader_id = self._register_replica_identity(
+            991201, "leader", professions="破军", realm="元婴后期", root_type="伪灵根",
+        )
+        shield_id = self._register_replica_identity(
+            991202, "shield", professions="御山", realm="元婴初期", root_type="伪灵根",
+        )
+        healer_id = self._register_replica_identity(
+            991203, "healer", professions="灵医", realm="元婴初期", root_type="伪灵根",
+        )
+        blade_id = self._register_replica_identity(
+            991204, "blade", professions="影刃", realm="元婴初期", root_type="伪灵根",
+        )
+        curse_id = self._register_replica_identity(
+            991205, "curse", professions="咒师", realm="元婴初期", root_type="伪灵根",
+        )
+        participant_ids = [leader_id, shield_id, healer_id, blade_id, curse_id]
+        state_module.set_replica_participant_identity_ids(participant_ids)
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_XIAOJI: {
+                "enabled": True,
+                "participant_identity_ids": participant_ids,
+            },
+        })
+
+        assignments = app_replica._build_xiaoji_profession_team(leader_id, now=1000.0)
+
+        self.assertEqual(list(app_replica._CANGKUN_REQUIRED_PROFESSIONS), [role for role, _identity_id in assignments])
+        self.assertEqual(set(participant_ids), {identity_id for _role, identity_id in assignments})
+
+    def test_xiaoji_team_excludes_cooldown_candidate_and_uses_ready_backup(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="元婴后期")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="元婴初期")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="元婴初期")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃", realm="元婴初期")
+        cooldown_curse_id = self._register_replica_identity(991205, "aaa_cooldown", professions="咒师", realm="元婴初期")
+        ready_curse_id = self._register_replica_identity(991206, "zzz_ready", professions="咒师", realm="元婴初期")
+        participant_ids = [leader_id, shield_id, healer_id, blade_id, cooldown_curse_id, ready_curse_id]
+        state_module.set_replica_participant_identity_ids(participant_ids)
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_XIAOJI: {
+                "enabled": True,
+                "participant_identity_ids": participant_ids,
+            },
+        })
+        app_replica._mark_replica_success_cooldown(
+            [cooldown_curse_id],
+            1000.0,
+            source_msg_id=9001,
+            replica_kind=app_replica._REPLICA_KIND_XIAOJI,
+        )
+
+        assignments = app_replica._build_xiaoji_profession_team(leader_id, now=1001.0)
+        selected_ids = {identity_id for _role, identity_id in assignments}
+
+        self.assertEqual(5, len(assignments))
+        self.assertNotIn(cooldown_curse_id, selected_ids)
+        self.assertIn(ready_curse_id, selected_ids)
+
+    def test_xiaoji_team_excludes_member_below_real_game_realm_gate(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="元婴后期")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="元婴初期")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="元婴初期")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃", realm="元婴初期")
+        low_curse_id = self._register_replica_identity(991205, "aaa_low", professions="咒师", realm="结丹后期")
+        ready_curse_id = self._register_replica_identity(991206, "zzz_ready", professions="咒师", realm="元婴初期")
+        participant_ids = [leader_id, shield_id, healer_id, blade_id, low_curse_id, ready_curse_id]
+        state_module.set_replica_participant_identity_ids(participant_ids)
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_XIAOJI: {
+                "enabled": True,
+                "participant_identity_ids": participant_ids,
+            },
+        })
+
+        assignments = app_replica._build_xiaoji_profession_team(leader_id, now=1000.0)
+        selected_ids = {identity_id for _role, identity_id in assignments}
+
+        self.assertEqual(5, len(assignments))
+        self.assertNotIn(low_curse_id, selected_ids)
+        self.assertIn(ready_curse_id, selected_ids)
+
+    def test_xiaoji_auto_join_sends_exactly_four_join_commands_once(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="元婴后期")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="元婴初期")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="元婴初期")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃", realm="元婴初期")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师", realm="元婴初期")
+        participant_ids = [leader_id, shield_id, healer_id, blade_id, curse_id]
+        state_module.set_replica_participant_identity_ids(participant_ids)
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_XIAOJI: {
+                "enabled": True,
+                "participant_identity_ids": participant_ids,
+            },
+        })
+        text = (
+            "【北冥小极宫·集结】\n"
+            "@leader 催动【北冥寒令】，开启了北冥小极宫！\n"
+            "副本ID: 5\n"
+            "其他道友可使用 .加入小极宫 5 加入队伍！(5人满)"
+        )
+        opened_match = app_replica._REPLICA_OPENED_RE.search(text)
+        event = SimpleNamespace(id=190001, chat_id=-100777, raw_text=text)
+
+        async def run_test():
+            send_mock = AsyncMock(side_effect=[SimpleNamespace(id=701), SimpleNamespace(id=702), SimpleNamespace(id=703), SimpleNamespace(id=704)])
+            with patch("model.app_replica.send_game_command", new=send_mock), \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()), \
+                    patch("model.app_replica.asyncio.sleep", new=AsyncMock()):
+                first = await app_replica._maybe_auto_join_xiaoji_opened_room(event, opened_match, 1000.0)
+                duplicate = await app_replica._maybe_auto_join_xiaoji_opened_room(event, opened_match, 1001.0)
+                return first, duplicate, send_mock.await_args_list
+
+        first, duplicate, calls = asyncio.run(run_test())
+
+        self.assertTrue(first)
+        self.assertTrue(duplicate)
+        self.assertEqual(4, len(calls))
+        self.assertEqual([shield_id, healer_id, blade_id, curse_id], [call.kwargs["send_as_id"] for call in calls])
+        self.assertTrue(all(call.args[0] == ".加入小极宫 5" for call in calls))
+        self.assertTrue(all(call.kwargs["max_retry"] == 0 for call in calls))
+
+    def test_xiaoji_auto_join_requires_local_known_leader(self):
+        member_ids = [
+            self._register_replica_identity(991202, "shield", professions="御山"),
+            self._register_replica_identity(991203, "healer", professions="灵医"),
+            self._register_replica_identity(991204, "blade", professions="影刃"),
+            self._register_replica_identity(991205, "curse", professions="咒师"),
+        ]
+        state_module.set_replica_participant_identity_ids(member_ids)
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_XIAOJI: {
+                "enabled": True,
+                "participant_identity_ids": member_ids,
+            },
+        })
+        text = (
+            "【北冥小极宫·集结】\n"
+            "@external_leader 催动【北冥寒令】，开启了北冥小极宫！\n"
+            "副本ID: 9\n"
+            "其他道友可使用 .加入小极宫 9 加入队伍！(5人满)"
+        )
+        opened_match = app_replica._REPLICA_OPENED_RE.search(text)
+        event = SimpleNamespace(id=190002, chat_id=-100777, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._maybe_auto_join_xiaoji_opened_room(event, opened_match, 1000.0)
+                return handled, send_mock.await_count
+
+        handled, send_count = asyncio.run(run_test())
+
+        self.assertFalse(handled)
+        self.assertEqual(0, send_count)
+
+    def test_xiaoji_local_open_flow_still_runs_auto_join(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军")
+        text = (
+            "【北冥小极宫·集结】\n"
+            "@leader 催动【北冥寒令】，开启了北冥小极宫！\n"
+            "副本ID: 12\n"
+            "其他道友可使用 .加入小极宫 12 加入队伍！(5人满)"
+        )
+        event = SimpleNamespace(id=190004, chat_id=-100777, raw_text=text)
+        flow = {
+            "flow_id": "flow-12",
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+        }
+
+        async def run_test():
+            with patch("model.app_replica.apply_replica_ticket_text_deltas"), \
+                    patch("model.app_replica._find_lightweight_open_flow", return_value=flow), \
+                    patch("model.app_replica._remove_lightweight_open_flow"), \
+                    patch("model.app_replica._publish_lightweight_opened_room", new=AsyncMock(return_value=True)) as publish_mock, \
+                    patch("model.app_replica._maybe_auto_join_xiaoji_opened_room", new=AsyncMock(return_value=True)) as join_mock:
+                handled = await app_replica._handle_virtual_hall_auto_game_event(event, text, 1000.0)
+                return handled, publish_mock.await_count, join_mock.await_count
+
+        handled, publish_count, join_count = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(1, publish_count)
+        self.assertEqual(1, join_count)
+
+    def test_xiaoji_settlement_uses_72_hour_cooldown(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军")
+        now = 1000.0
+        settlement = (
+            "【北冥小极宫·寒宫失利】\n"
+            "本次未能带出小极宫机缘，全员获得 1500修为、80贡献 作为补偿。"
+        )
+
+        self.assertTrue(app_replica._is_replica_settlement_text(settlement))
+        self.assertEqual(app_replica._REPLICA_KIND_XIAOJI, app_replica._parse_replica_settlement_kind(settlement))
+        app_replica._mark_replica_success_cooldown(
+            [leader_id],
+            now,
+            source_msg_id=190003,
+            replica_kind=app_replica._REPLICA_KIND_XIAOJI,
+        )
+        state_item = state_module.get_replica_run_state()["by_identity"][str(leader_id)]["replica_states"][app_replica._REPLICA_KIND_XIAOJI]
+
+        self.assertEqual(now + 72 * 3600, state_item["cooldown_until"])
+
+    def test_xiaoji_real_missing_room_reply_closes_join_as_not_found(self):
+        reply_to = SimpleNamespace(raw_text=".加入小极宫 5")
+
+        parsed = app_replica._parse_replica_join_reply(
+            "找不到此北冥小极宫房间，可能已出发或已解散。",
+            reply_to=reply_to,
+            now=1000.0,
+        )
+
+        self.assertEqual("not_joined", parsed["kind"])
+        self.assertEqual(app_replica._REPLICA_KIND_XIAOJI, parsed["replica_kind"])
+        self.assertEqual("5", parsed["room_id"])
+        self.assertEqual("not_found", parsed["reason"])
 
     def test_success_cooldown_clears_lobby_fields(self):
         leader_id = self._register_replica_identity(991201, "leader")

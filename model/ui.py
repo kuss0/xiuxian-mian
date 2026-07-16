@@ -863,6 +863,7 @@ _REPLICA_UI_KIND_HUANGLONG = "huanglong"
 _REPLICA_UI_KIND_CANGKUN = "cangkun"
 _REPLICA_UI_KIND_KUNWU = "kunwu"
 _REPLICA_UI_KIND_LUOYUN = "luoyun"
+_REPLICA_UI_KIND_XIAOJI = "xiaojigong"
 _REPLICA_UI_KINDS = (
     _REPLICA_UI_KIND_VIRTUAL_HALL,
     _REPLICA_UI_KIND_ZHUIMO,
@@ -870,6 +871,7 @@ _REPLICA_UI_KINDS = (
     _REPLICA_UI_KIND_CANGKUN,
     _REPLICA_UI_KIND_KUNWU,
     _REPLICA_UI_KIND_LUOYUN,
+    _REPLICA_UI_KIND_XIAOJI,
 )
 _REPLICA_UI_OPEN_PRIORITY = (
     _REPLICA_UI_KIND_VIRTUAL_HALL,
@@ -884,6 +886,7 @@ _REPLICA_UI_TICKET_META = {
     _REPLICA_UI_KIND_HUANGLONG: {"name": "黄龙山", "short": "黄", "items": ("黄龙急援令", "黄龙急援令（宗门版）")},
     _REPLICA_UI_KIND_KUNWU: {"name": "昆吾山", "short": "昆", "items": ("昆吾通行令",)},
     _REPLICA_UI_KIND_LUOYUN: {"name": "落云秘圃", "short": "落", "items": ()},
+    _REPLICA_UI_KIND_XIAOJI: {"name": "北冥小极宫", "short": "极", "items": ()},
 }
 
 
