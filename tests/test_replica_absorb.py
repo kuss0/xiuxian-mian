@@ -107,6 +107,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_replica_group_command_predicate_is_kunwu_scoped(self):
         self.assertTrue(app_replica.is_replica_group_command_text(".查询副本"))
+        self.assertTrue(app_replica.is_replica_group_command_text(".查询小"))
+        self.assertTrue(app_replica.is_replica_group_command_text(".查询小极宫"))
         self.assertTrue(app_replica.is_replica_group_command_text(".开启副本 @leader 昆"))
         self.assertTrue(app_replica.is_replica_group_command_text(".进入昆吾山"))
         self.assertTrue(app_replica.is_replica_group_command_text(".解散副本"))
@@ -895,7 +897,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn(low_curse_id, selected_ids)
         self.assertIn(ready_curse_id, selected_ids)
 
-    def test_xiaoji_auto_join_sends_exactly_four_join_commands_once(self):
+    def test_xiaoji_passive_broadcast_never_auto_joins(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="元婴后期")
         shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="元婴初期")
         healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="元婴初期")
@@ -919,24 +921,22 @@ class ReplicaAbsorbTests(unittest.TestCase):
         event = SimpleNamespace(id=190001, chat_id=-100777, raw_text=text)
 
         async def run_test():
-            send_mock = AsyncMock(side_effect=[SimpleNamespace(id=701), SimpleNamespace(id=702), SimpleNamespace(id=703), SimpleNamespace(id=704)])
-            with patch("model.app_replica.send_game_command", new=send_mock), \
-                    patch("model.app_replica.send_audit_log", new=AsyncMock()), \
-                    patch("model.app_replica.asyncio.sleep", new=AsyncMock()):
-                first = await app_replica._maybe_auto_join_xiaoji_opened_room(event, opened_match, 1000.0)
-                duplicate = await app_replica._maybe_auto_join_xiaoji_opened_room(event, opened_match, 1001.0)
-                return first, duplicate, send_mock.await_args_list
+            send_mock = AsyncMock()
+            absorb_mock = AsyncMock(return_value=True)
+            with patch("model.app_replica.apply_replica_ticket_text_deltas"), \
+                    patch("model.app_replica._find_lightweight_open_flow", return_value=None), \
+                    patch("model.app_replica._maybe_absorb_lightweight_opened_room", new=absorb_mock), \
+                    patch("model.app_replica.send_game_command", new=send_mock):
+                handled = await app_replica._handle_virtual_hall_auto_game_event(event, text, 1000.0)
+                return handled, absorb_mock.await_count, send_mock.await_args_list
 
-        first, duplicate, calls = asyncio.run(run_test())
+        handled, absorb_count, calls = asyncio.run(run_test())
 
-        self.assertTrue(first)
-        self.assertTrue(duplicate)
-        self.assertEqual(4, len(calls))
-        self.assertEqual([shield_id, healer_id, blade_id, curse_id], [call.kwargs["send_as_id"] for call in calls])
-        self.assertTrue(all(call.args[0] == ".加入小极宫 5" for call in calls))
-        self.assertTrue(all(call.kwargs["max_retry"] == 0 for call in calls))
+        self.assertTrue(handled)
+        self.assertEqual(1, absorb_count)
+        self.assertEqual([], calls)
 
-    def test_xiaoji_auto_join_requires_local_known_leader(self):
+    def test_xiaoji_passive_room_requires_local_known_leader(self):
         member_ids = [
             self._register_replica_identity(991202, "shield", professions="御山"),
             self._register_replica_identity(991203, "healer", professions="灵医"),
@@ -960,16 +960,17 @@ class ReplicaAbsorbTests(unittest.TestCase):
         event = SimpleNamespace(id=190002, chat_id=-100777, raw_text=text)
 
         async def run_test():
-            with patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
-                handled = await app_replica._maybe_auto_join_xiaoji_opened_room(event, opened_match, 1000.0)
-                return handled, send_mock.await_count
+            with patch("model.app_replica._find_lightweight_replica_notice_target", return_value=(-100777, 9001)), \
+                    patch("model.app_replica._publish_lightweight_opened_room", new=AsyncMock()) as publish_mock:
+                handled = await app_replica._maybe_absorb_lightweight_opened_room(opened_match, text, 1000.0, event=event)
+                return handled, publish_mock.await_count
 
-        handled, send_count = asyncio.run(run_test())
+        handled, publish_count = asyncio.run(run_test())
 
         self.assertFalse(handled)
-        self.assertEqual(0, send_count)
+        self.assertEqual(0, publish_count)
 
-    def test_xiaoji_local_open_flow_still_runs_auto_join(self):
+    def test_xiaoji_local_open_flow_only_publishes_room(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军")
         text = (
             "【北冥小极宫·集结】\n"
@@ -990,15 +991,15 @@ class ReplicaAbsorbTests(unittest.TestCase):
                     patch("model.app_replica._find_lightweight_open_flow", return_value=flow), \
                     patch("model.app_replica._remove_lightweight_open_flow"), \
                     patch("model.app_replica._publish_lightweight_opened_room", new=AsyncMock(return_value=True)) as publish_mock, \
-                    patch("model.app_replica._maybe_auto_join_xiaoji_opened_room", new=AsyncMock(return_value=True)) as join_mock:
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
                 handled = await app_replica._handle_virtual_hall_auto_game_event(event, text, 1000.0)
-                return handled, publish_mock.await_count, join_mock.await_count
+                return handled, publish_mock.await_count, send_mock.await_count
 
-        handled, publish_count, join_count = asyncio.run(run_test())
+        handled, publish_count, send_count = asyncio.run(run_test())
 
         self.assertTrue(handled)
         self.assertEqual(1, publish_count)
-        self.assertEqual(1, join_count)
+        self.assertEqual(0, send_count)
 
     def test_xiaoji_settlement_uses_72_hour_cooldown(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军")
@@ -2415,7 +2416,72 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(app_replica._REPLICA_KIND_KUNWU, app_replica._resolve_log_group_replica_query_kind(".查询昆"))
         self.assertEqual(app_replica._REPLICA_KIND_VIRTUAL_HALL, app_replica._resolve_log_group_replica_query_kind(".查询虚"))
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, app_replica._resolve_log_group_replica_query_kind(".查询苍"))
+        self.assertEqual(app_replica._REPLICA_KIND_XIAOJI, app_replica._resolve_log_group_replica_query_kind(".查询小"))
+        self.assertEqual(app_replica._REPLICA_KIND_XIAOJI, app_replica._resolve_log_group_replica_query_kind(".查询小极宫"))
         self.assertEqual("", app_replica._resolve_log_group_replica_query_kind(".查询副本"))
+
+    def test_xiaoji_query_is_group_panel_not_profession_filter(self):
+        event = SimpleNamespace(
+            raw_text=".查询小",
+            chat_id=-100777,
+            id=190010,
+            client=SimpleNamespace(),
+        )
+
+        async def run_test():
+            send_mock = AsyncMock()
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=send_mock):
+                handled = await app_replica._handle_replica_query_command(event)
+                return handled, send_mock.await_args
+
+        handled, send_args = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("房间：无", send_args.args[2])
+        self.assertIn("北冥小极宫", send_args.args[2])
+        self.assertEqual("html", send_args.kwargs["parse_mode"])
+
+    def test_xiaoji_query_panel_offers_explicit_five_profession_actions(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="元婴后期")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="元婴初期")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="元婴初期")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃", realm="元婴初期")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师", realm="元婴初期")
+        participant_ids = [leader_id, shield_id, healer_id, blade_id, curse_id]
+        self._prepare_replica_group(participant_ids)
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_XIAOJI: {
+                "enabled": True,
+                "participant_identity_ids": participant_ids,
+            },
+        })
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "55",
+            "replica_kind": app_replica._REPLICA_KIND_XIAOJI,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "leader",
+            "opened_at": now,
+            "updated_at": now,
+            "expires_at": now + 3600,
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询小")
+
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("加入推荐", button_texts)
+        self.assertIn("进入北冥小极宫", button_texts)
+        self.assertIn("刷新面板", button_texts)
+        join_payload = self._button_payload_by_text(panel.get("buttons"), "加入推荐")
+        self.assertTrue(str(join_payload.get("command") or "").startswith(".加入副本 "))
+        self.assertEqual(
+            {"@shield", "@healer", "@blade", "@curse"},
+            set(str(join_payload["command"]).split()[1:]),
+        )
 
     def test_replica_group_query_does_not_double_reply_ticket_query(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")

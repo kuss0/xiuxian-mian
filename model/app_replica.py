@@ -4860,6 +4860,8 @@ def _resolve_log_group_replica_query_kind(query_text):
         return ""
     if raw_text.startswith(".查询"):
         raw_text = raw_text[len(".查询"):].strip()
+    if raw_text in {"小", "小极宫", "北冥小极宫", "极"}:
+        return _REPLICA_KIND_XIAOJI
     short_aliases = {
         "虚": _REPLICA_KIND_VIRTUAL_HALL,
         "昆": _REPLICA_KIND_KUNWU,
@@ -4867,10 +4869,17 @@ def _resolve_log_group_replica_query_kind(query_text):
         "坠": _REPLICA_KIND_ZHUIMO,
         "黄": _REPLICA_KIND_HUANGLONG,
         "落": _REPLICA_KIND_LUOYUN,
+        "极": _REPLICA_KIND_XIAOJI,
+        "小": _REPLICA_KIND_XIAOJI,
     }
     if raw_text in short_aliases:
         return short_aliases[raw_text]
     return _resolve_replica_kind_alias(raw_text)
+
+
+def _is_xiaoji_query_command(text):
+    raw_text = str(text or "").strip()
+    return raw_text in {".查询小", ".查询极", ".查询小极宫", ".查询北冥小极宫", ".查询 小", ".查询 极", ".查询 小极宫"}
 
 
 def _select_open_replica_kind(identity_id, requested_kind=""):
@@ -5683,102 +5692,6 @@ def _build_xiaoji_profession_team(leader_identity_id, now=None, records=None):
 
     search(0, [], set())
     return list(best[1]) if best else []
-
-
-async def _maybe_auto_join_xiaoji_opened_room(event, opened_match, now):
-    if not opened_match or not _is_replica_kind_enabled(_REPLICA_KIND_XIAOJI):
-        return False
-    leader_username = _normalize_replica_username(opened_match.group("leader"))
-    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
-    room_id = str(opened_match.group("room_id") or "").strip()
-    if leader_identity_id <= 0 or not room_id:
-        return False
-    if not _claim_runtime_event(event, scope="xiaojigong_auto_join"):
-        return True
-
-    now = float(now or time.time())
-    records = _cleanup_replica_run_state(now)
-    assignments = _build_xiaoji_profession_team(leader_identity_id, now=now, records=records)
-    if len(assignments) != len(_CANGKUN_REQUIRED_PROFESSIONS):
-        console_log(
-            f"🧊 小极宫未自动加入：房间 {room_id} 无法凑齐五职业｜队长 {leader_username or leader_identity_id}",
-            scope="global",
-            limit=220,
-        )
-        return True
-
-    join_identity_ids = [
-        identity_id
-        for _role, identity_id in assignments
-        if int(identity_id or 0) != leader_identity_id
-    ]
-    command = f"{CMD_REPLICA_XIAOJI_JOIN} {room_id}"
-    sent = []
-    skipped = []
-    started_at = time.monotonic()
-    attempted_count = 0
-    for identity_id in join_identity_ids:
-        allowed, reason = _reserve_external_dispatch_join(
-            identity_id,
-            _REPLICA_KIND_XIAOJI,
-            room_id,
-            event,
-            now,
-        )
-        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or identity_id)
-        if not allowed:
-            skipped.append(_format_replica_skipped_selector(username, reason))
-            continue
-        delay_sec = attempted_count * _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC
-        wait_sec = delay_sec - (time.monotonic() - started_at)
-        if wait_sec > 0:
-            await asyncio.sleep(wait_sec)
-        attempted_count += 1
-        msg = await send_game_command(
-            command,
-            track=False,
-            max_retry=0,
-            send_as_id=identity_id,
-            priority="urgent_reactive",
-            source_module="小极宫自动加入",
-            op_id=f"xiaojigong_auto_join:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
-            chain_id=f"xiaojigong_auto_join:{room_id}",
-            delete_policy="keep",
-        )
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-        if msg:
-            _mark_external_dispatch_join_sent(
-                identity_id,
-                _REPLICA_KIND_XIAOJI,
-                room_id,
-                int(getattr(msg, "id", 0) or 0),
-                sent_at,
-            )
-            sent.append(username)
-        else:
-            _clear_external_dispatch_join_pending(
-                identity_id,
-                _REPLICA_KIND_XIAOJI,
-                room_id,
-                source_msg_id=int(getattr(event, "id", 0) or 0),
-            )
-            skipped.append(_format_replica_skipped_selector(username, "发送失败"))
-
-    role_text = "、".join(
-        f"{role}:{_normalize_replica_username(get_send_as_profile(identity_id).get('username') or identity_id)}"
-        for role, identity_id in assignments
-    )
-    await send_audit_log(
-        (
-            f"🧊 小极宫自动加入：房间 {room_id}｜五职业 {role_text}"
-            f"｜已发 {len(sent)}/4"
-            + (f"｜跳过 {' '.join(skipped)}" if skipped else "")
-        ),
-        scope="global",
-        priority="low",
-        limit=500,
-    )
-    return True
 
 
 def _get_cangkun_realm(identity_id):
@@ -6737,6 +6650,17 @@ def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, lim
         return _get_zhuimo_team_snapshot(leader_identity_id, now=now).get("join_ids", [])[:limit]
     if replica_kind == _REPLICA_KIND_LUOYUN:
         return _get_luoyun_team_snapshot(leader_identity_id, now=now).get("join_ids", [])[:limit]
+    if replica_kind == _REPLICA_KIND_XIAOJI:
+        assignments = _build_xiaoji_profession_team(
+            leader_identity_id,
+            now=now,
+            records=_cleanup_replica_run_state(now),
+        )
+        return [
+            identity_id
+            for _role, identity_id in assignments
+            if int(identity_id or 0) != leader_identity_id
+        ][:limit]
     excluded_username_set = set(_normalize_replica_username_list(excluded_usernames or []))
     leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
     if leader_username and leader_username in excluded_username_set:
@@ -7389,6 +7313,8 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
             lines.append(f"开房身份未达要求：{_format_luoyun_open_requirement(leader_identity_id)}。")
         lines.append("提示：落云开房要求落云宗、结丹后期及以上、宗门贡献>=420；队伍必须至少 1 人持有掌天瓶。")
+    elif replica_kind == _REPLICA_KIND_XIAOJI:
+        lines.append("提示：北冥小极宫要求元婴初期及以上，并凑齐破军/御山/灵医/影刃/咒师五职业；查询只展示推荐，点击【加入推荐】后才发送。")
     else:
         lines.append("提示：先按破军/御山/灵医补齐，若后续出现专属卦象再按卦象改配。")
     return "\n".join(lines)
@@ -7737,7 +7663,7 @@ def _build_log_group_replica_summary_buttons(now=None, *, fallback_chat_id=0, fa
 
 def format_log_group_replica_help(*, html=False):
     lines = [
-        "查询：.查询昆 / .查询虚 / .查询苍 / .查询坠 / .查询黄 / .查询落",
+        "查询：.查询昆 / .查询虚 / .查询苍 / .查询坠 / .查询黄 / .查询落 / .查询小",
         "总览：.查询副本",
         "冷却：.副本cd",
         "昆吾：点开昆 -> 加入/进入 -> 自动选路",
@@ -12181,15 +12107,9 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
             }
             _remove_lightweight_open_flow(flow.get("flow_id"))
             published = await _publish_lightweight_opened_room(room, text, now)
-            auto_joined = False
-            if replica_kind == _REPLICA_KIND_XIAOJI:
-                auto_joined = await _maybe_auto_join_xiaoji_opened_room(event, opened_match, now)
-            return bool(published or auto_joined)
-        auto_joined = False
-        if replica_kind == _REPLICA_KIND_XIAOJI:
-            auto_joined = await _maybe_auto_join_xiaoji_opened_room(event, opened_match, now)
+            return bool(published)
         absorbed = await _maybe_absorb_lightweight_opened_room(opened_match, text, now, event=event)
-        if absorbed or auto_joined:
+        if absorbed:
             return True
     open_failure = _parse_lightweight_replica_open_failure(text)
     if open_failure:
@@ -12305,11 +12225,28 @@ async def _handle_replica_query_command(
     if not listener_account_id:
         return False
     raw_text = str(getattr(event, "raw_text", "") or "").strip()
-    if raw_text != ".查询" and not raw_text.startswith(".查询 "):
+    if raw_text != ".查询" and not raw_text.startswith(".查询 ") and not _is_xiaoji_query_command(raw_text):
         return False
     if not _claim_runtime_event(event, scope=claim_scope):
         return True
     query = raw_text[len(".查询"):].strip()
+    if _is_xiaoji_query_command(raw_text):
+        panel = build_log_group_replica_panel(
+            raw_text,
+            fallback_chat_id=int(getattr(event, "chat_id", 0) or 0),
+            fallback_listener_account_id=listener_account_id,
+        )
+        reply_text = escape(panel.get("text") or "当前没有已记录的小极宫房间。")
+        await _send_replica_group_message(
+            event.client,
+            event.chat_id,
+            reply_text,
+            parse_mode="html",
+            listener_account_id=listener_account_id,
+            log_text=panel.get("text") or "当前没有已记录的小极宫房间。",
+            buttons=panel.get("buttons") or [],
+        )
+        return True
     reply_text = _format_replica_query_reply(
         query,
         participant_identity_ids=participant_identity_ids,
@@ -14588,7 +14525,7 @@ def is_replica_group_command_text(text):
     raw_text = str(text or "").strip()
     if not raw_text.startswith("."):
         return False
-    if raw_text == ".查询副本":
+    if raw_text == ".查询副本" or _is_xiaoji_query_command(raw_text):
         return True
     if _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE.match(raw_text):
         _selector, requested_kind = _parse_lightweight_open_command(raw_text)

@@ -327,7 +327,7 @@ RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒�
 RE_CMD_MESSAGE_BOX_SHADOW = re.compile(r"^\.(?:消息盒子shadow|shadow消息盒子|消息盒子影子)(?:\s+(\d{1,5}))?$", re.I)
 RE_CMD_MESSAGE_CONTRACT_STATUS = re.compile(r"^\.(?:消息契约|契约缺口)(?:状态)?(?:\s+([\w_\-\u4e00-\u9fff]+))?$")
 RE_CMD_DUEL_CONFIG = re.compile(r"^\.(?:设置斗法|斗法配置)\s+(\S+)(?:\s+(\d+))?$")
-RE_CMD_DUNGEON_QUERY_ALIAS = re.compile(r"^\.(?:查询副本|查询\s*(?:副本|虚天殿|虚天|坠魔谷|坠魔|黄龙山|黄龙|苍坤洞府|苍坤|昆吾山|昆吾|落云秘圃|落云)|查询(?:虚|昆|苍|坠|黄|落))$")
+RE_CMD_DUNGEON_QUERY_ALIAS = re.compile(r"^\.(?:查询副本|查询\s*(?:副本|虚天殿|虚天|坠魔谷|坠魔|黄龙山|黄龙|苍坤洞府|苍坤|昆吾山|昆吾|落云秘圃|落云|小|极|小极宫|北冥小极宫)|查询(?:虚|昆|苍|坠|黄|落|小|极))$")
 RE_CMD_DUNGEON_CD_OVERVIEW = re.compile(r"^\.(?:副本(?:cd|冷却)(?:概览)?|查询副本(?:cd|冷却)(?:概览)?)$", re.I)
 RE_CMD_DUNGEON_HELP = re.compile(r"^\.副本帮助$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
@@ -2580,7 +2580,7 @@ def get_dungeon_join_status_text(send_as_id=None):
             "",
             "副本群轻量指令:",
             "- .查询副本",
-            "- .查询昆 / .查询虚 / .查询苍",
+            "- .查询昆 / .查询虚 / .查询苍 / .查询小",
             "- .副本cd",
             "- .副本帮助",
             "- .开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
@@ -3914,7 +3914,7 @@ def _format_log_group_help_html(send_as_id=None):
     ]
     replica_group_commands = [
         ".查询副本",
-        ".查询昆 / .查询虚 / .查询苍",
+        ".查询昆 / .查询虚 / .查询苍 / .查询小",
         ".副本cd",
         ".副本帮助",
         ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
