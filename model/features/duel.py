@@ -207,10 +207,6 @@ def _schedule_next_duel(now, delay_sec):
     return state["next_duel_time"]
 
 
-def _is_one_shot_duel_identity():
-    return int(get_current_identity_id() or 0) in DUEL_CONTROLLED_LOADOUTS
-
-
 def _next_daily_duel_time(now):
     local_now = datetime.fromtimestamp(float(now), TZ_LOCAL)
     next_day = (local_now + timedelta(days=1)).replace(
@@ -227,33 +223,21 @@ def _next_daily_duel_time(now):
 def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
-    if _is_one_shot_duel_identity():
-        state["duel_enabled"] = False
-        loadout_config = _controlled_loadout_config()
-        restoring = bool(loadout_config and state.get("duel_unequip_prepared"))
-        if restoring:
-            _clear_loadout_pending()
-            _set_loadout_phase("restore_needed")
-            state["next_duel_time"] = float(now + DUEL_LOADOUT_STEP_DELAY_SEC)
-        else:
-            state["next_duel_time"] = 0
-        return {
-            "completed_count": completed_count,
-            "total_count": total_count,
-            "daily": False,
-            "restoring": restoring,
-            "next_duel_time": float(state.get("next_duel_time", 0) or 0),
-        }
-
-    state["duel_enabled"] = True
-    state["duel_completed_count"] = 0
-    state["next_duel_time"] = _next_daily_duel_time(now)
+    loadout_config = _controlled_loadout_config()
+    restoring = bool(loadout_config and state.get("duel_unequip_prepared"))
+    if restoring:
+        _clear_loadout_pending()
+        _set_loadout_phase("restore_needed")
+        state["next_duel_time"] = float(now + DUEL_LOADOUT_STEP_DELAY_SEC)
+    else:
+        state["duel_completed_count"] = 0
+        state["next_duel_time"] = _next_daily_duel_time(now) if state.get("duel_enabled") else 0
     return {
         "completed_count": completed_count,
         "total_count": total_count,
-        "daily": True,
-        "restoring": False,
-        "next_duel_time": float(state["next_duel_time"]),
+        "daily": bool(state.get("duel_enabled")),
+        "restoring": restoring,
+        "next_duel_time": float(state.get("next_duel_time", 0) or 0),
     }
 
 
@@ -429,15 +413,26 @@ async def _run_controlled_loadout_restore(now, config):
     if equip_match:
         index = int(equip_match.group(1))
         if index >= len(restore_items):
+            completed = int(state.get("duel_completed_count", 0) or 0)
+            total = int(state.get("duel_total_count", 0) or 0)
             state["duel_unequip_prepared"] = False
             state["duel_last_error"] = ""
             _set_loadout_phase("restored")
-            state["next_duel_time"] = 0
+            state["duel_completed_count"] = 0
+            if state.get("duel_enabled"):
+                state["next_duel_time"] = _next_daily_duel_time(now)
+            else:
+                state["next_duel_time"] = 0
             save_state()
-            completed = int(state.get("duel_completed_count", 0) or 0)
-            total = int(state.get("duel_total_count", 0) or 0)
+            if state.get("duel_enabled"):
+                message = (
+                    f"✅ WA 今日斗法完成（{completed}/{total}），原法宝配装已恢复，"
+                    f"次日批次→{fmt_abs_ts(state['next_duel_time'])}。"
+                )
+            else:
+                message = f"✅ WA 斗法已关闭（{completed}/{total}），原法宝配装已恢复。"
             await send_audit_log(
-                f"✅ WA 斗法已停止（{completed}/{total}），原法宝配装已恢复。",
+                message,
                 scope="identity",
                 limit=220,
             )
@@ -1029,6 +1024,13 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
         if total_count > 0 and int(state.get("duel_completed_count", 0) or 0) >= total_count:
             completion = _complete_duel_batch(now)
             save_state()
+            if completion["restoring"]:
+                await send_audit_log(
+                    f"✅ 今日斗法完成：{completion['completed_count']}/{total_count}，开始恢复原法宝配装",
+                    scope="identity",
+                    limit=220,
+                )
+                return True
             if completion["daily"]:
                 await send_audit_log(
                     f"✅ 今日斗法完成：{completion['completed_count']}/{total_count}，"
@@ -1037,11 +1039,10 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
                     limit=220,
                 )
                 return True
-            suffix = "，开始恢复原法宝配装" if completion["restoring"] else ""
             await send_audit_log(
-                f"✅ 斗法完成：{completion['completed_count']}/{total_count}{suffix}",
+                f"✅ 斗法已关闭：{completion['completed_count']}/{total_count}",
                 scope="identity",
-                limit=220 if suffix else 180,
+                limit=180,
             )
             return True
     _schedule_next_duel(now, _duel_next_delay_from_result(raw_text, weak_or_unknown))
@@ -1081,9 +1082,8 @@ async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
 
 
 async def run_duel_scheduler(now):
-    # The final report can disable the batch before the next scheduler tick.
-    # Reconcile its real battle evidence first so a consumed duel prediction
-    # cannot remain leased and block the next exploration route.
+    # Reconcile real battle evidence before scheduling the next batch so a
+    # consumed duel prediction cannot remain leased and block another route.
     _reconcile_consumed_duel_prediction_from_last_report(now)
     loadout_config = _controlled_loadout_config()
     if loadout_config and await _run_controlled_loadout_restore(now, loadout_config):
@@ -1113,13 +1113,15 @@ async def run_duel_scheduler(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     if total_count > 0 and completed_count >= total_count:
         completion = _complete_duel_batch(now)
-        if completion["daily"]:
+        if completion["restoring"]:
+            pass
+        elif completion["daily"]:
             state["duel_last_result"] = (
                 f"今日任务完成：{completed_count}/{total_count}；"
                 f"次日批次→{fmt_abs_ts(completion['next_duel_time'])}"
             )
         else:
-            state["duel_last_result"] = f"任务完成：{completed_count}/{total_count}"
+            state["duel_last_result"] = f"斗法已关闭：{completed_count}/{total_count}"
         save_state()
         return
     if total_count <= 0:

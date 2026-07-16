@@ -172,7 +172,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once_with(".卸下法宝", track=False, max_retry=0, source_module="斗法配装")
             self.assertEqual("斗法配装:prepare_unequip_wait", state_module.state["duel_last_result"])
 
-    async def test_wa_batch_completion_enters_restore_before_stopping(self):
+    async def test_wa_batch_completion_enters_restore_without_disabling(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         text = "【天道战报·文字版】\n胜者：@walterwa2000\n败者：@ccahen"
@@ -197,11 +197,37 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertFalse(state_module.state["duel_enabled"])
+            self.assertTrue(state_module.state["duel_enabled"])
             self.assertEqual(5, state_module.state["duel_completed_count"])
             self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
             self.assertGreater(state_module.state["next_duel_time"], now)
             self.assertIn("恢复原法宝配装", audit_mock.await_args.args[0])
+
+    async def test_wa_restore_schedules_next_daily_batch_when_enabled(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 5
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:restore_equip:5"
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertFalse(state_module.state["duel_unequip_prepared"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual("斗法配装:restored", state_module.state["duel_last_result"])
+            self.assertEqual(
+                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
+                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
+            )
+            self.assertIn("次日批次", audit_mock.await_args.args[0])
 
     def test_duel_result_delay_uses_real_weakness_and_batch_stagger(self):
         text = (
@@ -955,7 +981,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法回复超时", state_module.state["duel_last_error"])
             self.assertEqual(now + 40 * 60 + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
 
-    async def test_end_broadcast_counts_completion_and_disables_at_total(self):
+    async def test_end_broadcast_counts_completion_and_rolls_to_next_day(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -976,9 +1002,13 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertFalse(state_module.state["duel_enabled"])
-            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertEqual("斗法结束，胜者 @cupaopao", state_module.state["duel_last_result"])
+            self.assertEqual(
+                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
+                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
+            )
 
     async def test_non_wa_batch_completion_rolls_to_next_local_day(self):
         identity_id = self._prepare_identity(3765328695)
@@ -1217,7 +1247,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual("元神尚未平复，无法再次斗法。", state_module.state["duel_last_error"])
 
-    async def test_escape_reply_counts_attempt_and_disables_at_total(self):
+    async def test_escape_reply_counts_attempt_and_rolls_to_next_day(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         text = "面对境界压制，@walterwa2000 凭借神通侥幸逃脱！(成功率: 19%)"
@@ -1239,15 +1269,15 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertFalse(state_module.state["duel_enabled"])
-            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
             self.assertEqual(text, state_module.state["duel_last_result"])
             target_lock = state_module.get_duel_target_cooldowns()["@cupaopao"]
             self.assertTrue(target_lock["confirmed"])
             self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, target_lock["until"])
             self.assertEqual(text, state_module.state["duel_last_error"])
-            audit_mock.assert_awaited_once_with("✅ 斗法完成：1/1", scope="identity", limit=180)
+            self.assertIn("今日斗法完成：1/1", audit_mock.await_args.args[0])
 
     async def test_lock_failure_reply_counts_attempt_and_uses_long_cooldown(self):
         identity_id = self._prepare_identity()
@@ -1343,8 +1373,8 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             recovery_mock.assert_called_once()
-            self.assertFalse(state_module.state["duel_enabled"])
-            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertEqual(text, state_module.state["duel_last_result"])
             self.assertEqual(text, state_module.state["duel_last_error"])
 
