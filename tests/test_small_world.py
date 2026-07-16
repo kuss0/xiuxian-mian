@@ -1122,6 +1122,100 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(7609, state_module.state["small_world_query_msg_id"])
             self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
 
+    async def test_manifest_unknown_send_replays_late_success_before_panel_recheck(self):
+        send_as_id = 8659059303
+        started_at = 3400.0
+        deadline = started_at + small_world.SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC
+        reply_at = deadline + 1
+        state_module.ensure_identity_registered(send_as_id)
+
+        success_text = (
+            "✅ 显灵成功！\n"
+            "你赐下化开的药液，瘟疫瞬间消散，凡人对你顶礼膜拜！\n"
+            "(信仰 +15, 稳定 +5, 人口 +0)\n"
+            "下一次凡人祈愿感应需等待 360 分钟。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 0
+            state_module.state["small_world_manifest_cost_text"] = "清灵丹x2"
+            state_module.state["next_small_world_time"] = deadline
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "瘟疫",
+                "manifest_cost": "清灵丹x2",
+                "faith": 98,
+                "faith_max": 100,
+                "stability": 89,
+                "stability_max": 100,
+                "population": 250000,
+                "capacity": 250000,
+                "updated_at": started_at,
+            }
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "recover_sent_command_from_message_log", return_value=None),
+                patch.object(small_world, "save_state"),
+            ):
+                await small_world.run_small_world_scheduler(deadline)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+            self.assertEqual("manifest_recovery_wait", state_module.state["small_world_phase"])
+            self.assertEqual(
+                deadline + small_world.SMALL_WORLD_MANIFEST_UNKNOWN_GRACE_SEC,
+                state_module.state["next_small_world_time"],
+            )
+
+            recovered_command = {
+                "event_type": "message",
+                "message_id": 202315,
+                "ts_epoch": reply_at,
+            }
+            recovered_reply = {
+                "event_type": "message",
+                "message_id": 202316,
+                "reply_to_msg_id": 202315,
+                "text": success_text,
+                "ts_epoch": reply_at,
+            }
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(
+                    small_world,
+                    "recover_sent_command_from_message_log",
+                    return_value=recovered_command,
+                ),
+                patch.object(small_world, "find_message_log_replies", return_value=[recovered_reply]),
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "console_log"),
+            ):
+                await small_world.run_small_world_scheduler(
+                    deadline + small_world.SMALL_WORLD_MANIFEST_UNKNOWN_GRACE_SEC
+                )
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            self.assertEqual(100, state_module.state["small_world_faith_value"])
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertEqual(100, snapshot["faith"])
+            self.assertEqual(94, snapshot["stability"])
+            self.assertFalse(snapshot["has_prayer"])
+            self.assertEqual("", state_module.state["small_world_last_error"])
+            self.assertEqual(
+                reply_at + 360 * 60 + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+
     async def test_manifest_resource_shortage_clears_ready_snapshot_without_resend(self):
         send_as_id = 8659059301
         now = 3360.0

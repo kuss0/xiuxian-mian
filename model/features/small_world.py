@@ -19,10 +19,21 @@ from ..action_guard import clear_remote_block as clear_action_guard_remote_block
 from ..action_guard import close_action as close_action_guard_action
 from ..action_guard import get_blocked_until as get_action_guard_blocked_until
 from ..action_guard import note_remote_block as note_action_guard_remote_block
-from ..message_log_recovery import find_message_log_replies
+from ..message_log_recovery import (
+    find_message_log_replies,
+    recover_sent_command_from_message_log,
+)
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, is_cave_public_auto_enabled, state
+from ..state import (
+    get_current_identity_id,
+    get_game_group_id,
+    get_identity_enabled,
+    get_identity_ids,
+    get_send_as_tags,
+    is_cave_public_auto_enabled,
+    state,
+)
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_text_delta
 
@@ -35,7 +46,13 @@ SMALL_WORLD_CHAIN_COMMANDS = {
 }
 SMALL_WORLD_GOD_COMMANDS = {CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF}
 SMALL_WORLD_BARRIER_COMMANDS = {CMD_SMALL_WORLD_BARRIER}
-SMALL_WORLD_CHAIN_PENDING = {"query_pending", "manifest_pending", "harvest_pending", "refine_pending"}
+SMALL_WORLD_CHAIN_PENDING = {
+    "query_pending",
+    "manifest_pending",
+    "manifest_recovery_wait",
+    "harvest_pending",
+    "refine_pending",
+}
 SMALL_WORLD_PENDING_TIMEOUT_SEC = 20 * 60
 SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC = 3 * 60
 SMALL_WORLD_REFRESH_MIN_SEC = 10 * 60
@@ -86,6 +103,7 @@ SMALL_WORLD_LOCAL_UNSENT_BLOCK_KINDS = {
     "send_queue_timeout",
 }
 SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC = 30
+SMALL_WORLD_MANIFEST_UNKNOWN_GRACE_SEC = 30
 SMALL_WORLD_BARRIER_COST_BY_LEVEL = {
     1: 600,
     3: 5400,
@@ -1192,6 +1210,52 @@ async def _recover_small_world_reply_from_log(now, *, msg_id=0, family="", comma
     return handled_any
 
 
+def _manifest_recovery_start_at(now):
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    try:
+        snapshot_at = float(snapshot.get("updated_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        snapshot_at = 0.0
+    bounded_start = float(now or time.time()) - (
+        SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC
+        + SMALL_WORLD_MANIFEST_UNKNOWN_GRACE_SEC
+        + 120
+    )
+    if snapshot_at > 0:
+        return max(0.0, snapshot_at - 5.0, bounded_start)
+    return max(0.0, bounded_start)
+
+
+def _recover_manifest_command_id_from_log(now):
+    msg_id = int(state.get("small_world_manifest_msg_id", 0) or 0)
+    if msg_id > 0:
+        return msg_id
+    identity_id = get_current_identity_id()
+    start_at = _manifest_recovery_start_at(now)
+    recovered = recover_sent_command_from_message_log(
+        CMD_SMALL_WORLD_MANIFEST,
+        identity_id,
+        now,
+        start_ts=start_at,
+        game_group_id=get_game_group_id(),
+        lookback_sec=SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC,
+    )
+    if not recovered:
+        return 0
+    try:
+        msg_id = int(recovered.get("message_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg_id <= 0:
+        return 0
+    state["small_world_manifest_msg_id"] = msg_id
+    state["small_world_last_error"] = f"已回捞显灵消息ID={msg_id}，等待业务回执重放"
+    return msg_id
+
+
 async def _recover_current_small_world_pending_from_log(now, phase=None):
     phase = str(phase or _phase() or "")
     barrier_msg_id = int(state.get("small_world_barrier_msg_id", 0) or 0)
@@ -1219,6 +1283,7 @@ async def _recover_current_small_world_pending_from_log(now, phase=None):
     chain_specs = {
         "query_pending": ("small_world_query_msg_id", "small_world_query", CMD_SMALL_WORLD_QUERY, handle_small_world_query_reply),
         "manifest_pending": ("small_world_manifest_msg_id", "small_world_manifest", CMD_SMALL_WORLD_MANIFEST, handle_small_world_manifest_reply),
+        "manifest_recovery_wait": ("small_world_manifest_msg_id", "small_world_manifest", CMD_SMALL_WORLD_MANIFEST, handle_small_world_manifest_reply),
         "harvest_pending": ("small_world_harvest_msg_id", "small_world_harvest", CMD_SMALL_WORLD_HARVEST, handle_small_world_harvest_reply),
         "harvest_sent": ("small_world_harvest_msg_id", "small_world_harvest", CMD_SMALL_WORLD_HARVEST, handle_small_world_harvest_reply),
         "harvest_before_manifest_sent": ("small_world_harvest_msg_id", "small_world_harvest", CMD_SMALL_WORLD_HARVEST, handle_small_world_harvest_reply),
@@ -1230,6 +1295,8 @@ async def _recover_current_small_world_pending_from_log(now, phase=None):
         return False
     state_key, family, command, handler = spec
     msg_id = int(state.get(state_key, 0) or 0)
+    if phase in {"manifest_pending", "manifest_recovery_wait"} and msg_id <= 0:
+        msg_id = _recover_manifest_command_id_from_log(now)
     return await _recover_small_world_reply_from_log(now, msg_id=msg_id, family=family, command=command, handler=handler)
 
 
@@ -2379,12 +2446,33 @@ async def _run_small_world_scheduler(now):
         deadline = float(state.get("next_small_world_time", 0) or 0)
         if deadline <= 0 or now < deadline:
             return
+        manifest_msg_id_before_recovery = int(state.get("small_world_manifest_msg_id", 0) or 0)
         if await _recover_current_small_world_pending_from_log(now, phase):
+            save_state()
+            return
+        manifest_msg_id_after_recovery = int(state.get("small_world_manifest_msg_id", 0) or 0)
+        if phase == "manifest_pending" and manifest_msg_id_before_recovery <= 0:
+            _set_phase("manifest_recovery_wait")
+            state["next_small_world_time"] = float(now + SMALL_WORLD_MANIFEST_UNKNOWN_GRACE_SEC)
+            state["small_world_last_error"] = (
+                "显灵发送状态未知，等待晚到消息ID/回执进入日志后再复查面板"
+            )
+            save_state()
+            return
+        if (
+            phase == "manifest_recovery_wait"
+            and manifest_msg_id_before_recovery <= 0
+            and manifest_msg_id_after_recovery > 0
+        ):
+            state["next_small_world_time"] = float(now + SMALL_WORLD_MANIFEST_UNKNOWN_GRACE_SEC)
+            state["small_world_last_error"] = (
+                f"已回捞显灵消息ID={manifest_msg_id_after_recovery}，继续等待晚到业务回执"
+            )
             save_state()
             return
         state["small_world_last_error"] = f"{phase} 等待回复超时，停止本轮"
         _clear_chain_pending()
-        if phase == "manifest_pending":
+        if phase in {"manifest_pending", "manifest_recovery_wait"}:
             if _has_ready_manifest_snapshot(now):
                 state["small_world_last_error"] = "显灵回执超时，复查小世界面板后再决定是否补显灵"
                 save_state()
