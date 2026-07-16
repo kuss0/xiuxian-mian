@@ -1,6 +1,7 @@
 import copy
 import sys
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -978,6 +979,62 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(state_module.state["duel_enabled"])
             self.assertEqual(1, state_module.state["duel_completed_count"])
             self.assertEqual("斗法结束，胜者 @cupaopao", state_module.state["duel_last_result"])
+
+    async def test_non_wa_batch_completion_rolls_to_next_local_day(self):
+        identity_id = self._prepare_identity(3765328695)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 1
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    "面对境界压制，@walterwa2000 凭借神通侥幸逃脱！(成功率: 19%)",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @cupaopao"),
+                    result_msg_id=22029,
+                )
+
+            next_duel_time = state_module.state["next_duel_time"]
+            self.assertTrue(handled)
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual("@cupaopao", state_module.state["duel_target"])
+            self.assertEqual(
+                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
+                datetime.fromtimestamp(next_duel_time, duel.TZ_LOCAL).date(),
+            )
+            audit_mock.assert_awaited_once()
+            self.assertIn("今日斗法完成：1/1", audit_mock.await_args.args[0])
+
+    async def test_scheduler_rolls_stale_non_wa_completed_batch_to_next_day(self):
+        identity_id = self._prepare_identity(3765328695)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["next_duel_time"] = 0
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual(
+                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
+                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
+            )
+            self.assertIn("今日任务完成：10/10", state_module.state["duel_last_result"])
+            send_mock.assert_not_awaited()
 
     async def test_broadcast_without_current_pending_is_ignored(self):
         identity_id = self._prepare_identity()
