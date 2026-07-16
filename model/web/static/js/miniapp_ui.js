@@ -123,7 +123,7 @@
     if (!tree) return '';
     var jumpMin = Number((tree.jump && tree.jump.min_target_score) || 4);
     var flyMin = Number((tree.fly && tree.fly.min_target_score) || 4);
-    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 20);
+    var jumpMax = Number((tree.jump && tree.jump.max_target_score) || 45);
     var flyMax = Number((tree.fly && tree.fly.max_target_score) || 20);
     var daily = tree.daily_state || {};
     var coordinator = tree.coordinator || {};

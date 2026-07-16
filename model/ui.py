@@ -715,7 +715,7 @@ def get_tree_miniapp_score_config(send_as_id=None):
         "eligibility_reason": eligibility_reason,
         "daily_state": latest_state,
         "coordinator": get_tree_miniapp_coordinator_snapshot(),
-        "note": "灵树跳一跳/飞一飞使用低分随机区间；自动化仅对显式开启的落云宗身份生效。",
+        "note": "灵树跳一跳/飞一飞使用随机目标区间并以服务端校验分为准；自动化仅对显式开启的落云宗身份生效。",
     }
 
 

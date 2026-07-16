@@ -57,9 +57,9 @@ TREE_MINIAPP_FLY_BOTTOM_Y = 334.0
 TREE_MINIAPP_FLY_GATE_GAP = 112.0
 TREE_MINIAPP_FLY_GATE_WIDTH = 54.0
 TREE_MINIAPP_FLY_GATE_SPACING = 174.0
-# Match the current WebView planner locally. Do not guess the server verifier's
-# replay step; calibrate it only from a consumed run with captured seed/proof.
-TREE_MINIAPP_FLY_FRAME_MS = 1000.0 / 60.0
+# A consumed production proof replayed at score 17 with 1000/60ms, while the
+# server verified 8. The same proof replays at the server score with 16ms.
+TREE_MINIAPP_FLY_FRAME_MS = 16.0
 TREE_MINIAPP_FLY_DEFAULT_BEAM_WIDTH = 420
 TREE_MINIAPP_FLY_MAX_BEAM_WIDTH = 640
 TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS = 120000
@@ -732,7 +732,7 @@ def build_tree_jump_proof(run, *, rng=None, profile=None):
         raise ValueError("jump seed missing")
     target_score = _target_score("jump", rng, profile)
     cap_score = target_score
-    high_precision = bool(profile.get("high_precision")) or target_score >= 100
+    high_precision = bool(profile.get("high_precision")) or target_score >= 30
     default_max_jumps = max(14, int(target_score // 6) + 4) if high_precision else 14
     max_jumps = max(2, int(profile.get("max_jumps") or default_max_jumps))
     current = make_tree_jump_platform(seed, 0)

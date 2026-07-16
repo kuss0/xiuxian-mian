@@ -1077,7 +1077,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         jump_replay = tree_miniapp.simulate_tree_jump_run("shape-test-seed-001", jump_proof["charges"])
 
-        self.assertGreaterEqual(fly_summary["targetScore"], 14)
+        self.assertGreaterEqual(fly_summary["targetScore"], 16)
         self.assertLessEqual(fly_summary["targetScore"], 20)
         self.assertGreaterEqual(fly_summary["score"], 0)
         self.assertLessEqual(fly_summary["score"], 20)
@@ -1088,19 +1088,19 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertTrue(all(isinstance(item, int) for item in fly_proof["flaps"]))
         self.assertGreater(fly_proof["durationMs"], 20_000)
 
-        self.assertGreaterEqual(jump_summary["targetScore"], 14)
-        self.assertLessEqual(jump_summary["targetScore"], 20)
+        self.assertGreaterEqual(jump_summary["targetScore"], 27)
+        self.assertLessEqual(jump_summary["targetScore"], 33)
         self.assertGreaterEqual(jump_summary["score"], 0)
-        self.assertLessEqual(jump_summary["score"], 20)
+        self.assertLessEqual(jump_summary["score"], 33)
         self.assertEqual(jump_proof["clientScore"], jump_replay["score"])
         self.assertTrue(all(isinstance(item, float) for item in jump_proof["charges"]))
 
     def test_tree_score_profile_clamps_to_low_anticheat_policy(self):
-        self.assertEqual({"target_score_range": (4, 10)}, tree_miniapp.normalize_tree_score_profile("fly", {"target_score": 7}))
-        self.assertEqual({"target_score_range": (14, 20)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
-        self.assertEqual({"target_score_range": (14, 20)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [36, 36]}))
-        self.assertEqual({"target_score_range": (14, 20)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [126, 126]}))
-        self.assertEqual({"target_score_range": (8, 18)}, tree_miniapp.normalize_tree_score_profile("fly", {}))
+        self.assertEqual({"target_score_range": (5, 9)}, tree_miniapp.normalize_tree_score_profile("fly", {"target_score": 7}))
+        self.assertEqual({"target_score_range": (39, 45)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
+        self.assertEqual({"target_score_range": (33, 39)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [36, 36]}))
+        self.assertEqual({"target_score_range": (39, 45)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [126, 126]}))
+        self.assertEqual({"target_score_range": (8, 12)}, tree_miniapp.normalize_tree_score_profile("fly", {}))
 
     def test_tree_jump_proof_does_not_overshoot_score_cap(self):
         for index in range(6):
@@ -1113,10 +1113,10 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             )
             replay = tree_miniapp.simulate_tree_jump_run(seed, proof["charges"])
 
-            self.assertLessEqual(summary["targetScore"], 20)
-            self.assertLessEqual(summary["score"], 20)
+            self.assertLessEqual(summary["targetScore"], 45)
+            self.assertLessEqual(summary["score"], 45)
             self.assertEqual(proof["clientScore"], replay["score"])
-            self.assertLessEqual(replay["score"], 20)
+            self.assertLessEqual(replay["score"], 45)
 
     def test_tree_jump_proof_clamps_manual_canary_to_safe_cap(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
@@ -1127,9 +1127,9 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         replay = tree_miniapp.simulate_tree_jump_run("luoyun-canary-seed-126", proof["charges"])
 
-        self.assertLessEqual(summary["targetScore"], 20)
-        self.assertGreaterEqual(summary["targetScore"], 14)
-        self.assertLessEqual(summary["score"], 20)
+        self.assertLessEqual(summary["targetScore"], 45)
+        self.assertGreaterEqual(summary["targetScore"], 39)
+        self.assertLessEqual(summary["score"], 45)
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertEqual(summary["score"], replay["score"])
 
@@ -1143,8 +1143,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 profile={"target_score": 126},
             )
             targets.add(summary["targetScore"])
-            self.assertGreaterEqual(summary["targetScore"], 14)
-            self.assertLessEqual(summary["targetScore"], 20)
+            self.assertGreaterEqual(summary["targetScore"], 39)
+            self.assertLessEqual(summary["targetScore"], 45)
 
         self.assertGreater(len(targets), 1)
 
@@ -1175,7 +1175,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             rng=random.Random(3600),
             profile={"target_score": 36, "beam_width": 640, "max_duration_ms": 90_000},
         )
-        self.assertGreaterEqual(summary["targetScore"], 14)
+        self.assertGreaterEqual(summary["targetScore"], 16)
         self.assertLessEqual(summary["targetScore"], 20)
         self.assertGreaterEqual(proof["clientScore"], summary["targetScore"])
         self.assertEqual(proof["clientScore"], summary["profile"]["planned_score"])
@@ -1186,6 +1186,31 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertEqual(tree_miniapp.TREE_MINIAPP_FLY_FRAME_MS, summary["profile"]["frame_ms"])
+
+    def test_tree_fly_consumed_proof_matches_server_at_16ms(self):
+        seed = "b3bc0cc89467844fbc30"
+        flaps = [
+            0, 1133, 1666, 2466, 3266, 4549, 4883, 5983, 6333, 7466,
+            7883, 8716, 9366, 10149, 10466, 11616, 12416, 13283, 14283,
+            15116, 16066, 16399, 16616, 17683, 17899, 19049, 20000,
+            20866, 21033, 21366, 22500, 23050,
+        ]
+
+        server_replay = tree_miniapp.simulate_tree_fly_run(
+            seed,
+            flaps,
+            max_duration_ms=23067,
+            frame_ms=16.0,
+        )
+        browser_replay = tree_miniapp.simulate_tree_fly_run(
+            seed,
+            flaps,
+            max_duration_ms=23067,
+            frame_ms=1000.0 / 60.0,
+        )
+
+        self.assertEqual(8, server_replay["score"])
+        self.assertEqual(17, browser_replay["score"])
 
     def test_tree_ranking_target_aims_near_third_place_without_chasing_over_cap(self):
         data = {
@@ -1289,7 +1314,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual("fly", result["data"]["mode"])
         self.assertGreaterEqual(result["data"]["proof_summary"]["score"], 0)
         self.assertLessEqual(result["data"]["proof_summary"]["score"], 20)
-        self.assertEqual([14, 20], result["data"]["score_profile"]["target_score_range"])
+        self.assertEqual([16, 20], result["data"]["score_profile"]["target_score_range"])
         self.assertNotIn("tree_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)
@@ -1389,7 +1414,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual("run_SECRET999", submitted_payload["runToken"])
         self.assertEqual({"charges", "durationMs", "clientScore"}, set(submitted_payload["proof"]))
         self.assertGreaterEqual(submitted_payload["proof"]["clientScore"], 0)
-        self.assertLessEqual(submitted_payload["proof"]["clientScore"], 20)
+        self.assertLessEqual(submitted_payload["proof"]["clientScore"], 33)
         self.assertNotIn("tree_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
         self.assertNotIn("run_SECRET999", text)

@@ -41,9 +41,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         self.assertIn("跳一跳 4-10", message)
-        self.assertIn("飞一飞 14-20", message)
+        self.assertIn("飞一飞 16-20", message)
         self.assertEqual([4, 10], tree["jump"]["target_score_range"])
-        self.assertEqual([14, 20], tree["fly"]["target_score_range"])
+        self.assertEqual([16, 20], tree["fly"]["target_score_range"])
         self.assertEqual(4, tree["jump"]["min_target_score"])
         self.assertEqual(20, tree["fly"]["max_target_score"])
         save_mock.assert_called_once()
@@ -66,12 +66,12 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok_first)
         self.assertTrue(ok_second)
-        self.assertEqual([14, 20], first["jump"]["target_score_range"])
-        self.assertEqual([14, 20], first["fly"]["target_score_range"])
-        self.assertEqual([14, 20], second["jump"]["target_score_range"])
-        self.assertEqual([14, 20], second["fly"]["target_score_range"])
-        self.assertEqual([8, 16], default["jump"]["target_score_range"])
-        self.assertEqual([8, 18], default["fly"]["target_score_range"])
+        self.assertEqual([25, 31], first["jump"]["target_score_range"])
+        self.assertEqual([16, 20], first["fly"]["target_score_range"])
+        self.assertEqual([39, 45], second["jump"]["target_score_range"])
+        self.assertEqual([16, 20], second["fly"]["target_score_range"])
+        self.assertEqual([30, 36], default["jump"]["target_score_range"])
+        self.assertEqual([8, 12], default["fly"]["target_score_range"])
 
     async def test_tree_score_config_rejects_non_numeric_before_save(self):
         with patch.object(ui, "get_identity_ids", return_value=[1002]), \
