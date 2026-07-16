@@ -197,6 +197,38 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(wrong_sect["ok"])
         self.assertIn("宗门不匹配", wrong_sect["reason"])
 
+    async def test_channel_health_frozen_identity_can_use_public_tree_entry(self):
+        state_module.update_send_as_profile(1002, enabled=False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "restore_identity_ids": [1002],
+            "frozen_identity_ids": [1002],
+        })
+
+        eligible, reason = tree_runtime.check_tree_miniapp_eligibility(1002, enabled=True)
+        prepared = tree_runtime.prepare_tree_miniapp_daily_run(
+            1002,
+            enabled=True,
+            day_key="2026-07-16",
+            now=1_700_000_000.0,
+        )
+
+        self.assertTrue(eligible, reason)
+        self.assertTrue(prepared["ok"])
+
+    async def test_manually_disabled_identity_cannot_use_public_tree_entry(self):
+        state_module.update_send_as_profile(1002, enabled=False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "restore_identity_ids": [],
+            "frozen_identity_ids": [],
+        })
+
+        eligible, reason = tree_runtime.check_tree_miniapp_eligibility(1002, enabled=True)
+
+        self.assertFalse(eligible)
+        self.assertEqual("身份已停用", reason)
+
     async def test_daily_entry_binds_reply_chain_and_runs_daily_flow(self):
         prepared = tree_runtime.prepare_tree_miniapp_daily_run(
             1002,

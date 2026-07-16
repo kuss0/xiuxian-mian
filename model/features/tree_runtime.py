@@ -12,9 +12,9 @@ from ..state import (
     get_global_enabled,
     get_global_pause_source,
     get_identity_ids,
-    get_identity_enabled,
     get_send_as_profile,
     has_active_identity_context,
+    is_cave_public_identity_available,
     use_identity,
 )
 from ..timing import get_day_key
@@ -99,7 +99,7 @@ def check_tree_miniapp_eligibility(identity_id, *, enabled=None):
         return False, "身份无效"
     if enabled is not None and not bool(enabled):
         return False, "MiniApp 自动开关未开启"
-    if not get_identity_enabled(identity_id):
+    if not is_cave_public_identity_available(identity_id):
         return False, "身份已停用"
     sect_name = str((get_send_as_profile(identity_id) or {}).get("sect_name") or "").strip()
     if sect_name != "落云宗":
