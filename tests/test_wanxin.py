@@ -1437,7 +1437,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, observed["commission"]["id"])
             self.assertGreater(observed["assist"]["next_strip_time"], now + 7 * 3600)
 
-    async def test_helper_cooldown_is_shared_across_wanxin_owners(self):
+    async def test_helper_cooldown_is_scoped_to_wanxin_owner_contract(self):
         owner_id = self._prepare_identity()
         other_owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
@@ -1480,14 +1480,18 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(other_owner_id):
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9102, sent_at=now + 1))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now + 1)
-            send_mock.assert_not_awaited()
+            send_mock.assert_awaited_once()
+            self.assertEqual(".辨认咒纹 @WalterWA20000", send_mock.await_args.args[0])
+        with state_module.use_identity(owner_id):
+            owner_observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
+            self.assertGreater(owner_observed["assist"]["next_identify_time"], now + 3 * 3600)
         with state_module.use_identity(helper_id):
             helper_observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
-            self.assertGreater(helper_observed["assist"]["helper_next_identify_time"], now + 3 * 3600)
+            self.assertEqual(0, helper_observed["assist"]["helper_next_identify_time"])
 
 if __name__ == "__main__":
     unittest.main()

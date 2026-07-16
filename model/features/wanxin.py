@@ -992,7 +992,7 @@ def _recover_recent_assist_success_from_log(observed, action, send_started_at):
     expected_type = expected_types.get(action)
     if not expected_type:
         return False
-    owner_username = str((observed.get("commission") or {}).get("owner_username") or _owner_username() or "").strip().lstrip("@").casefold()
+    owner_username = str(_owner_username() or (observed.get("commission") or {}).get("owner_username") or "").strip().lstrip("@").casefold()
     if not owner_username:
         return False
     end_ts = max(float(time.time()), float(send_started_at or 0)) + 5
@@ -1079,20 +1079,11 @@ def _due_time_for_action(observed, action):
         return float(observed.get("next_moon_join_time", 0) or 0)
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     if action == WANXIN_ACTION_IDENTIFY:
-        return max(
-            float(assist.get("next_identify_time", 0) or 0),
-            _helper_due_time(observed, action),
-        )
+        return float(assist.get("next_identify_time", 0) or 0)
     if action == WANXIN_ACTION_BANNER:
-        return max(
-            float(assist.get("next_banner_time", 0) or 0),
-            _helper_due_time(observed, action),
-        )
+        return float(assist.get("next_banner_time", 0) or 0)
     if action == WANXIN_ACTION_STRIP:
-        return max(
-            float(assist.get("next_strip_time", 0) or 0),
-            _helper_due_time(observed, action),
-        )
+        return float(assist.get("next_strip_time", 0) or 0)
     return 0.0
 
 
@@ -1105,69 +1096,6 @@ def _assist_due_field(action, *, helper=False):
     if action == WANXIN_ACTION_STRIP:
         return f"{prefix}_strip_time"
     return ""
-
-
-def _helper_due_time(observed, action):
-    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
-    helper_id = int(assist.get("send_as_id", 0) or 0)
-    field = _assist_due_field(action, helper=True)
-    if helper_id <= 0 or not field or not has_identity(helper_id):
-        return 0.0
-    helper_state = get_identity_state(helper_id)
-    helper_observed = normalize_wanxin_observation(helper_state.get("wanxin_observation"))
-    helper_assist = helper_observed.get("assist") if isinstance(helper_observed.get("assist"), dict) else {}
-    explicit = float(helper_assist.get(field, 0) or 0)
-    if explicit > 0:
-        return explicit
-
-    # Older state stored the helper cooldown only on the owner. Use the newest
-    # owner value until the first post-upgrade reply writes the shared clock.
-    owner_field = _assist_due_field(action)
-    fallback = 0.0
-    for identity_id in get_identity_ids():
-        identity_state = get_identity_state(identity_id)
-        candidate = normalize_wanxin_observation(identity_state.get("wanxin_observation"))
-        candidate_assist = candidate.get("assist") if isinstance(candidate.get("assist"), dict) else {}
-        if int(candidate_assist.get("send_as_id", 0) or 0) != helper_id:
-            continue
-        fallback = max(fallback, float(candidate_assist.get(owner_field, 0) or 0))
-    return fallback
-
-
-def _set_helper_due_time(observed, action, next_time):
-    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
-    helper_id = int(assist.get("send_as_id", 0) or 0)
-    field = _assist_due_field(action, helper=True)
-    if helper_id <= 0 or not field or not has_identity(helper_id):
-        return
-    with use_identity(helper_id):
-        helper_observed = normalize_wanxin_observation(state.get("wanxin_observation"))
-        helper_observed["assist"][field] = max(
-            float(helper_observed["assist"].get(field, 0) or 0),
-            float(next_time or 0),
-        )
-        _set_observed(helper_observed)
-
-
-def _strip_owner_cycle_sec(observed):
-    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
-    helper_id = int(assist.get("send_as_id", 0) or 0)
-    owner_count = 0
-    for identity_id in get_identity_ids():
-        identity_state = get_identity_state(identity_id)
-        if not identity_state.get("wanxin_enabled"):
-            continue
-        candidate = normalize_wanxin_observation(identity_state.get("wanxin_observation"))
-        candidate_config = normalize_wanxin_auto_config(candidate.get("auto_config"))
-        candidate_assist = candidate.get("assist") if isinstance(candidate.get("assist"), dict) else {}
-        if not candidate_config.get("publish_enabled") or not candidate_config.get("assist_enabled"):
-            continue
-        if not candidate_assist.get("strip_enabled"):
-            continue
-        if int(candidate_assist.get("send_as_id", 0) or 0) != helper_id:
-            continue
-        owner_count += 1
-    return WANXIN_STRIP_CD_SEC * max(1, owner_count)
 
 
 def _set_next_time_for_action(observed, action, next_time):
@@ -1324,7 +1252,11 @@ async def _send_assist_action(observed, action, now):
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
-    owner_username = str(commission.get("owner_username") or "").strip().lstrip("@")
+    current_owner_username = _owner_username()
+    owner_username = str(current_owner_username or commission.get("owner_username") or "").strip().lstrip("@")
+    if current_owner_username and current_owner_username.casefold() != str(commission.get("owner_username") or "").strip().lstrip("@").casefold():
+        commission["owner_username"] = current_owner_username
+        observed["commission"] = commission
     if assist_send_as_id <= 0 or not has_identity(assist_send_as_id):
         _schedule_next(observed, now, 30 * 60, error=f"协助身份不存在：{assist_send_as_id or '未配置'}")
         return False
@@ -1551,22 +1483,16 @@ def _apply_success_cooldown(observed, action, now, parsed=None):
         observed["next_moon_join_time"] = now + WANXIN_MOON_JOIN_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_IDENTIFY:
         observed["assist"]["next_identify_time"] = now + WANXIN_IDENTIFY_CD_SEC + CD_BUFFER_SEC
-        _set_helper_due_time(observed, action, observed["assist"]["next_identify_time"])
     elif action == WANXIN_ACTION_BANNER:
         observed["assist"]["next_banner_time"] = now + WANXIN_BANNER_CD_SEC + CD_BUFFER_SEC
-        _set_helper_due_time(observed, action, observed["assist"]["next_banner_time"])
     elif action == WANXIN_ACTION_STRIP:
-        helper_next = now + WANXIN_STRIP_CD_SEC + CD_BUFFER_SEC
-        observed["assist"]["next_strip_time"] = now + _strip_owner_cycle_sec(observed) + CD_BUFFER_SEC
-        _set_helper_due_time(observed, action, helper_next)
+        observed["assist"]["next_strip_time"] = now + WANXIN_STRIP_CD_SEC + CD_BUFFER_SEC
 
 
 def _set_cooldown_from_reply(observed, action, next_time):
     if not action:
         return
     _set_next_time_for_action(observed, action, next_time)
-    if action in WANXIN_ASSIST_ACTIONS:
-        _set_helper_due_time(observed, action, next_time)
 
 
 def _matching_pending_action(observed, matched_family):
