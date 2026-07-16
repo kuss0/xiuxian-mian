@@ -842,8 +842,13 @@ def _world_boss_hit_business_summary(data):
 
 def _world_boss_hit_was_consumed(summary):
     summary = dict(summary or {})
-    if summary.get("attempt_consumed") is not None:
-        return bool(summary.get("attempt_consumed"))
+    if summary.get("attempt_consumed") is True:
+        return True
+    if summary.get("attempt_consumed") is False:
+        return bool(
+            _float_value(summary.get("damage_yi"), 0.0) > 0
+            or summary.get("perfect") is True
+        )
     return bool(
         _float_value(summary.get("damage_yi"), 0.0) > 0
         or summary.get("perfect") is True
@@ -1313,6 +1318,8 @@ def run_world_boss_joined_battle_lab_flow(
     player_hp = _world_boss_player_max_hp(state_data, challenge)
     dead = False
     death_elapsed_ms = 0
+    boss_defeated = False
+    boss_defeated_elapsed_ms = 0
     client_stats = {key: 0 for key in _STAT_KEYS}
     server_hit_summary = {
         "attempted_hit_count": 0,
@@ -1326,7 +1333,7 @@ def run_world_boss_joined_battle_lab_flow(
 
     def process_missed_windows(current_elapsed_ms):
         nonlocal player_hp, dead, death_elapsed_ms
-        if dead:
+        if dead or boss_defeated:
             return
         for missed_action in full_plan:
             window_id = missed_action["windowId"]
@@ -1499,6 +1506,17 @@ def run_world_boss_joined_battle_lab_flow(
             client_stats["perfects"] += 1
         executed_actions.append(executed_action)
         hit_payloads.append(hit_data)
+        if hit_business.get("boss_hp") is not None and _int_value(hit_business.get("boss_hp"), 0) <= 0:
+            boss_defeated = True
+            boss_defeated_elapsed_ms = release_elapsed_ms
+            events.append({
+                "step": "boss_defeated",
+                "ok": True,
+                "elapsed_ms": boss_defeated_elapsed_ms,
+                "accepted_hit_count": server_hit_summary["accepted_hit_count"],
+                "accepted_damage_yi": server_hit_summary["accepted_damage_yi"],
+            })
+            break
         if hit_business.get("actions_remaining") == 0 and not single_battle_protocol:
             events.append({
                 "step": "action_limit_reached",
@@ -1512,6 +1530,8 @@ def run_world_boss_joined_battle_lab_flow(
     challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
     if dead:
         finish_target_ms = min(challenge_duration_ms, death_elapsed_ms + 1250)
+    elif boss_defeated:
+        finish_target_ms = min(challenge_duration_ms, boss_defeated_elapsed_ms)
     else:
         finish_target_ms = min(
             challenge_duration_ms,

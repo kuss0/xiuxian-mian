@@ -176,6 +176,36 @@ The local line already has:
 
 Decision: do not transplant the upstream world-boss state machine. Continue protocol-shape comparison only when a real local capture shows an unparsed field or changed endpoint behavior.
 
+#### 2.1 Capture-driven accounting follow-up
+
+Branch: `lab/world-boss-absorb-20260716`.
+
+The upstream comparison exposed one useful settlement semantic rather than a
+state machine to copy. The 2026-07-15 local capture contains 82 successful hit
+responses where `attemptConsumed=false` but `damageYi>0`; most also report
+`perfect=true`. The previous local parser treated the explicit false value as a
+veto and undercounted accepted hits and damage even though the server had
+already applied the damage. The Lab now treats positive damage or a perfect hit
+as accepted evidence while retaining `attemptConsumed=true` as direct evidence.
+
+The same capture contains four responses with `bossHp=0`, followed by exactly
+four avoidable `boss_event_closed` hit requests. The Lab stops the local window
+timeline as soon as authoritative Boss HP reaches zero and proceeds directly to
+the one final `/finish` attempt. It does not retry `/hit`, change the charge
+band, increase request frequency, or alter participant selection.
+
+Validation:
+
+```text
+25 passed
+156 passed, 10 subtests passed
+3104 passed, 396 subtests passed
+```
+
+This remains a Lab candidate. It should be reviewed against the next real event
+before production deployment because Boss-defeat timing is a live protocol
+boundary.
+
 ### 3. Public dwelling hunt: compare fixtures only
 
 wxjerry `794bbbf` adds a separate, persistent dwelling-hunt phase machine with uncertain-action reconciliation. The local line already parses the full public dwelling overview, dynamically reads game/action limits, follows hints, carries active-session context, avoids automatic retry of non-idempotent POSTs, and re-enters through `/start` for authoritative state on a later scheduler pass.
