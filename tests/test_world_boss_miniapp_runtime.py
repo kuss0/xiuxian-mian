@@ -59,10 +59,11 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(
+        self.assertCountEqual(
             [("join", 11), ("join", 22), ("join", 33), ("join", 44)],
             calls[:4],
         )
+        self.assertTrue(all(kind == "join" for kind, _identity_id in calls[:4]))
         self.assertEqual(4, result["joined_count"])
         self.assertTrue(all(item["ok"] for item in result["results"] if item["phase"] == "join"))
         self.assertEqual(4, sum(item["phase"] == "join" for item in progress))

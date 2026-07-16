@@ -49,6 +49,19 @@ OTHER_RARE_ITEMS = {
     "第二元神残篇",
     "赤炼金骨",
     "铁甲战傀图谱",
+    "镇山封纹",
+    "太阴火种",
+    "圭灵牌影",
+    "化龙玺残印",
+    "黑风旗残幅",
+    "八灵尺残纹·甲",
+    "大衍诀残篇·控傀",
+    "八灵尺",
+    "化龙玺",
+    "黑风旗",
+    "太阴真火",
+    "圭灵本命牌",
+    "封魔塔真符",
     "镇魔残篆",
     "雷鹏之羽",
     "鲲鹏之羽",
@@ -93,6 +106,7 @@ POSITIVE_CONTEXT_MARKERS = (
     "结算成果",
     "战利品结算",
     "登顶昆吾山",
+    "昆吾山·封魔塔镇压成功",
     "挑战成功",
     "问道得宝",
 )
@@ -266,7 +280,7 @@ def _parse_wendao(text):
 
 
 def _parse_settlement(text):
-    if not any(marker in text for marker in ("结算成果", "战利品结算", "登顶昆吾山", "挑战成功")):
+    if not any(marker in text for marker in ("结算成果", "战利品结算", "登顶昆吾山", "昆吾山·封魔塔镇压成功", "挑战成功")):
         return []
     events = []
     for match in RE_GENERIC_GAIN_BRACKET.finditer(text):

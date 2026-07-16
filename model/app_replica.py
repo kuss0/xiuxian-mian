@@ -2128,6 +2128,7 @@ def _is_replica_settlement_text(text):
         or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔成功")
         or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔失败")
         or _has_replica_bracket_title(raw_text, exact="登顶昆吾山")
+        or _has_replica_bracket_title(raw_text, exact="昆吾山·封魔塔镇压成功")
         or _is_luoyun_settlement_text(raw_text)
         or _is_huanglong_settlement_text(raw_text)
         or _has_replica_bracket_title(raw_text, exact="北冥小极宫·寒宫失利")
@@ -2187,7 +2188,10 @@ def _parse_replica_settlement_kind(text):
         return _REPLICA_KIND_HUANGLONG
     if _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔成功") or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔失败"):
         return _REPLICA_KIND_ZHUIMO
-    if _has_replica_bracket_title(raw_text, exact="登顶昆吾山"):
+    if (
+        _has_replica_bracket_title(raw_text, exact="登顶昆吾山")
+        or _has_replica_bracket_title(raw_text, exact="昆吾山·封魔塔镇压成功")
+    ):
         return _REPLICA_KIND_KUNWU
     if (
         _has_replica_bracket_title(raw_text, exact="北冥小极宫·寒宫失利")
@@ -2228,7 +2232,7 @@ def _get_replica_settlement_title(replica_kind, text):
         if match:
             return match.group(1).strip() or "已结算"
     raw_text = str(text or "")
-    match = re.search(r"[【\[]([^】\]\n]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|登顶昆吾山)[^】\]\n]*)[】\]]", raw_text)
+    match = re.search(r"[【\[]([^】\]\n]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|封魔塔镇压成功|登顶昆吾山)[^】\]\n]*)[】\]]", raw_text)
     if replica_kind == _REPLICA_KIND_LUOYUN and not match:
         match = re.search(r"【(落云秘圃·[^】]+)】", raw_text)
     if match:
@@ -2373,6 +2377,29 @@ def _classify_kunwu_path(desc):
 
 def _get_kunwu_decision_stage(text):
     raw_text = str(text or "")
+    if ".昆吾抉择" in raw_text:
+        title_match = re.search(
+            r"【(?:昆吾山·)?((?:第一幕：封魔山门|第二幕：昆吾遗宫|第三幕：八灵尺阵眼|下一阵眼：(?:化龙玺|黑风旗)阵眼))】",
+            raw_text,
+        )
+        title = str(title_match.group(1) if title_match else "").strip()
+        commands = []
+        if title == "第一幕：封魔山门":
+            for option, label in re.findall(r"(?m)^\s*(路径[1-4])\s*[·.、]\s*([^：:\n]+)", raw_text):
+                commands.append((f"{option} {label.strip()}", f".昆吾抉择 {option}"))
+        elif title == "第二幕：昆吾遗宫":
+            for option, label in re.findall(r"(?m)^\s*([1-3])\s*[·.、]\s*([^：:\n]+)", raw_text):
+                commands.append((f"{option} {label.strip()}", f".昆吾抉择 {option}"))
+        elif title in {"第三幕：八灵尺阵眼", "下一阵眼：化龙玺阵眼", "下一阵眼：黑风旗阵眼"}:
+            for option, label in re.findall(r"(?m)^\s*(镇|夺|断)\s*[·.、]\s*([^：:\n]+)", raw_text):
+                commands.append((f"{option} {label.strip()}", f".昆吾抉择 {option}"))
+        if commands:
+            return {
+                "stage": "kunwu-seal:" + hashlib.sha1(title.encode("utf-8")).hexdigest()[:8],
+                "title": f"昆吾山{title}",
+                "commands": tuple(commands),
+            }
+        return {}
     if "【奇遇：" in raw_text and ".选择 强行摘取" in raw_text:
         return {
             "stage": "encounter",
@@ -2491,8 +2518,27 @@ def _get_kunwu_auto_decision_command(stage_info):
     stage = str((stage_info or {}).get("stage") or "")
     if stage == "encounter":
         return _pick_stage_command(stage_info, (".选择 强行摘取", ".选择 静待时机"))
-    priority = ("奇遇", "战斗", "朱果", "采集", "捷径")
+    title = str((stage_info or {}).get("title") or "")
     options = _stage_command_options(stage_info)
+    if stage.startswith("kunwu-seal:"):
+        if "第一幕：封魔山门" in title:
+            preferred_labels = ("路径1",)
+        elif "第二幕：昆吾遗宫" in title:
+            preferred_labels = ("太阴火窟", "灵缈园救援", "圭灵殿辨牌", "化龙石台", "黑风洞截旗")
+        elif "八灵尺阵眼" in title:
+            preferred_labels = ("镇尺光",)
+        elif "化龙玺阵眼" in title:
+            preferred_labels = ("夺残印",)
+        elif "黑风旗阵眼" in title:
+            preferred_labels = ("镇魔风",)
+        else:
+            return ""
+        for keyword in preferred_labels:
+            for label, command in options:
+                if keyword in label:
+                    return command
+        return ""
+    priority = ("奇遇", "战斗", "朱果", "采集", "捷径")
     for keyword in priority:
         for label, command in options:
             if keyword in label:

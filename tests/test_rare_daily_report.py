@@ -75,6 +75,18 @@ class RareDailyReportParserTest(unittest.TestCase):
             _items(rare_daily_report.parse_rare_material_events_from_text(text)),
         )
 
+    def test_counts_kunwu_seal_tower_settlement_rewards(self):
+        text = (
+            "【昆吾山·封魔塔镇压成功】\n"
+            "- 队长 @leader 获得 【大挪移令】x1\n"
+            "- 幸运道友 @lucky 额外获得 【太阴火种】x1\n"
+            "- 队长 @leader 在废机关台中取出 【铁甲战傀图谱】x1"
+        )
+        self.assertEqual(
+            {"大挪移令": 1, "太阴火种": 1, "铁甲战傀图谱": 1},
+            _items(rare_daily_report.parse_rare_material_events_from_text(text)),
+        )
+
     def test_ignores_snapshots_trade_cost_return_and_reward_catalog(self):
         samples = [
             "@xxx 的储物袋\n\n材料:\n- 阴凝之晶 x 5\n- 昆吾通行令 x 2",

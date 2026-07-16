@@ -4911,6 +4911,72 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotEqual(send_calls[0].kwargs["op_id"], send_calls[1].kwargs["op_id"])
         self.assertNotEqual(send_calls[0].kwargs["chain_id"], send_calls[1].kwargs["chain_id"])
 
+    def test_kunwu_seal_tower_stages_parse_and_choose_by_label(self):
+        first = app_replica._get_kunwu_decision_stage(
+            "【昆吾山·第一幕：封魔山门】\n"
+            "路径1 · 循八灵尺光：校正阵位。\n"
+            "路径2 · 借化龙玺镇脉：稳住龙脉。\n"
+            "使用 .昆吾抉择 路径1/路径2 继续。"
+        )
+        second = app_replica._get_kunwu_decision_stage(
+            "【第二幕：昆吾遗宫】\n"
+            "1 · 化龙石台：稳固封印。\n"
+            "2 · 黑风洞截旗：换取爆发。\n"
+            "3 · 太阴火窟：取太阴火种。\n"
+            "使用 .昆吾抉择 1/2/3 继续。"
+        )
+        eight = app_replica._get_kunwu_decision_stage(
+            "【第三幕：八灵尺阵眼】\n"
+            "镇 · 镇尺光：补齐封印。\n夺 · 夺残纹：抢夺残纹。\n断 · 断错纹：降低山禁。\n"
+            "使用 .昆吾抉择 镇、.昆吾抉择 夺 或 .昆吾抉择 断。"
+        )
+        dragon = app_replica._get_kunwu_decision_stage(
+            "【下一阵眼：化龙玺阵眼】\n"
+            "镇 · 镇龙脉：稳住塔基。\n夺 · 夺残印：收取残印。\n断 · 断龙索：降低山禁。\n"
+            "继续使用 .昆吾抉择 镇/夺/断。"
+        )
+        wind = app_replica._get_kunwu_decision_stage(
+            "【下一阵眼：黑风旗阵眼】\n"
+            "镇 · 镇魔风：压住裂隙。\n夺 · 夺旗影：突入塔心。\n断 · 断风路：塔影清明。\n"
+            "继续使用 .昆吾抉择 镇/夺/断。"
+        )
+
+        self.assertEqual(".昆吾抉择 路径1", app_replica._get_kunwu_auto_decision_command(first))
+        self.assertEqual(".昆吾抉择 3", app_replica._get_kunwu_auto_decision_command(second))
+        self.assertEqual(".昆吾抉择 镇", app_replica._get_kunwu_auto_decision_command(eight))
+        self.assertEqual(".昆吾抉择 夺", app_replica._get_kunwu_auto_decision_command(dragon))
+        self.assertEqual(".昆吾抉择 镇", app_replica._get_kunwu_auto_decision_command(wind))
+
+    def test_kunwu_seal_tower_second_stage_uses_dynamic_option_number(self):
+        stage = app_replica._get_kunwu_decision_stage(
+            "【第二幕：昆吾遗宫】\n"
+            "1 · 圭灵殿辨牌：稳住队伍。\n"
+            "2 · 灵缈园救援：救出修士。\n"
+            "3 · 化龙石台：稳固封印。\n"
+            "使用 .昆吾抉择 1/2/3 继续。"
+        )
+        self.assertEqual(".昆吾抉择 2", app_replica._get_kunwu_auto_decision_command(stage))
+
+    def test_kunwu_seal_tower_unknown_stage_fails_closed(self):
+        stage = app_replica._get_kunwu_decision_stage(
+            "【昆吾山·未知幕】\n1 · 未知路线\n使用 .昆吾抉择 1 继续。"
+        )
+        self.assertEqual({}, stage)
+
+    def test_kunwu_seal_tower_success_is_settlement(self):
+        text = (
+            "【昆吾山·封魔塔镇压成功】\n"
+            "- 每位队员获得 8000修为、600贡献\n"
+            "- 队长 @leader 获得 【大挪移令】x1\n"
+            "最终状态：封印 160 | 魔气 63 | 山禁 36 | 宝压 51 | 玲珑 52 | 士气 84"
+        )
+        self.assertTrue(app_replica._is_replica_settlement_text(text))
+        self.assertEqual(app_replica._REPLICA_KIND_KUNWU, app_replica._parse_replica_settlement_kind(text))
+        self.assertEqual(
+            "封魔塔镇压成功",
+            app_replica._get_replica_settlement_title(app_replica._REPLICA_KIND_KUNWU, text),
+        )
+
     def test_kunwu_auto_choice_send_unknown_keeps_stage_key(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])
