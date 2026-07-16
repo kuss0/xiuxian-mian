@@ -278,10 +278,15 @@ def _default_wanxin_assist():
         "send_as_id": WANXIN_DEFAULT_ASSIST_SEND_AS_ID,
         "identify_enabled": True,
         "banner_enabled": True,
-        "strip_enabled": False,
+        "strip_enabled": True,
         "next_identify_time": 0,
         "next_banner_time": 0,
         "next_strip_time": 0,
+        "helper_next_identify_time": 0,
+        "helper_next_banner_time": 0,
+        "helper_next_strip_time": 0,
+        "identified_commission_id": 0,
+        "bannered_commission_id": 0,
         "last_anchor_msg_id": 0,
         "last_anchor_at": 0,
         "last_action": "",
@@ -368,8 +373,18 @@ def normalize_wanxin_observation(value=None):
     assist["send_as_id"] = max(0, _safe_int(assist.get("send_as_id"), WANXIN_DEFAULT_ASSIST_SEND_AS_ID))
     for key in ("identify_enabled", "banner_enabled", "strip_enabled"):
         assist[key] = _normalize_bool(assist.get(key), _default_wanxin_assist()[key])
-    for key in ("next_identify_time", "next_banner_time", "next_strip_time", "last_anchor_at"):
+    for key in (
+        "next_identify_time",
+        "next_banner_time",
+        "next_strip_time",
+        "helper_next_identify_time",
+        "helper_next_banner_time",
+        "helper_next_strip_time",
+        "last_anchor_at",
+    ):
         assist[key] = max(0.0, _safe_float(assist.get(key), 0))
+    for key in ("identified_commission_id", "bannered_commission_id"):
+        assist[key] = max(0, _safe_int(assist.get(key), 0))
     assist["last_anchor_msg_id"] = max(0, _safe_int(assist.get("last_anchor_msg_id"), 0))
     assist["last_contrib_gain"] = max(0, _safe_int(assist.get("last_contrib_gain"), 0))
     for key in ("last_action", "last_result", "last_error"):
@@ -861,6 +876,8 @@ def _mark_commission_invalid(observed, now, reason=""):
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else _default_wanxin_assist()
     assist["last_anchor_msg_id"] = 0
     assist["last_anchor_at"] = 0
+    assist["identified_commission_id"] = 0
+    assist["bannered_commission_id"] = 0
     assist["last_result"] = ""
     assist["last_error"] = reason
     observed["assist"] = assist
@@ -881,6 +898,8 @@ def _consume_commission(observed):
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else _default_wanxin_assist()
     assist["last_anchor_msg_id"] = 0
     assist["last_anchor_at"] = 0
+    assist["identified_commission_id"] = 0
+    assist["bannered_commission_id"] = 0
     observed["assist"] = assist
 
 
@@ -1060,12 +1079,95 @@ def _due_time_for_action(observed, action):
         return float(observed.get("next_moon_join_time", 0) or 0)
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
     if action == WANXIN_ACTION_IDENTIFY:
-        return float(assist.get("next_identify_time", 0) or 0)
+        return max(
+            float(assist.get("next_identify_time", 0) or 0),
+            _helper_due_time(observed, action),
+        )
     if action == WANXIN_ACTION_BANNER:
-        return float(assist.get("next_banner_time", 0) or 0)
+        return max(
+            float(assist.get("next_banner_time", 0) or 0),
+            _helper_due_time(observed, action),
+        )
     if action == WANXIN_ACTION_STRIP:
-        return float(assist.get("next_strip_time", 0) or 0)
+        return max(
+            float(assist.get("next_strip_time", 0) or 0),
+            _helper_due_time(observed, action),
+        )
     return 0.0
+
+
+def _assist_due_field(action, *, helper=False):
+    prefix = "helper_next" if helper else "next"
+    if action == WANXIN_ACTION_IDENTIFY:
+        return f"{prefix}_identify_time"
+    if action == WANXIN_ACTION_BANNER:
+        return f"{prefix}_banner_time"
+    if action == WANXIN_ACTION_STRIP:
+        return f"{prefix}_strip_time"
+    return ""
+
+
+def _helper_due_time(observed, action):
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    helper_id = int(assist.get("send_as_id", 0) or 0)
+    field = _assist_due_field(action, helper=True)
+    if helper_id <= 0 or not field or not has_identity(helper_id):
+        return 0.0
+    helper_state = get_identity_state(helper_id)
+    helper_observed = normalize_wanxin_observation(helper_state.get("wanxin_observation"))
+    helper_assist = helper_observed.get("assist") if isinstance(helper_observed.get("assist"), dict) else {}
+    explicit = float(helper_assist.get(field, 0) or 0)
+    if explicit > 0:
+        return explicit
+
+    # Older state stored the helper cooldown only on the owner. Use the newest
+    # owner value until the first post-upgrade reply writes the shared clock.
+    owner_field = _assist_due_field(action)
+    fallback = 0.0
+    for identity_id in get_identity_ids():
+        identity_state = get_identity_state(identity_id)
+        candidate = normalize_wanxin_observation(identity_state.get("wanxin_observation"))
+        candidate_assist = candidate.get("assist") if isinstance(candidate.get("assist"), dict) else {}
+        if int(candidate_assist.get("send_as_id", 0) or 0) != helper_id:
+            continue
+        fallback = max(fallback, float(candidate_assist.get(owner_field, 0) or 0))
+    return fallback
+
+
+def _set_helper_due_time(observed, action, next_time):
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    helper_id = int(assist.get("send_as_id", 0) or 0)
+    field = _assist_due_field(action, helper=True)
+    if helper_id <= 0 or not field or not has_identity(helper_id):
+        return
+    with use_identity(helper_id):
+        helper_observed = normalize_wanxin_observation(state.get("wanxin_observation"))
+        helper_observed["assist"][field] = max(
+            float(helper_observed["assist"].get(field, 0) or 0),
+            float(next_time or 0),
+        )
+        _set_observed(helper_observed)
+
+
+def _strip_owner_cycle_sec(observed):
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    helper_id = int(assist.get("send_as_id", 0) or 0)
+    owner_count = 0
+    for identity_id in get_identity_ids():
+        identity_state = get_identity_state(identity_id)
+        if not identity_state.get("wanxin_enabled"):
+            continue
+        candidate = normalize_wanxin_observation(identity_state.get("wanxin_observation"))
+        candidate_config = normalize_wanxin_auto_config(candidate.get("auto_config"))
+        candidate_assist = candidate.get("assist") if isinstance(candidate.get("assist"), dict) else {}
+        if not candidate_config.get("publish_enabled") or not candidate_config.get("assist_enabled"):
+            continue
+        if not candidate_assist.get("strip_enabled"):
+            continue
+        if int(candidate_assist.get("send_as_id", 0) or 0) != helper_id:
+            continue
+        owner_count += 1
+    return WANXIN_STRIP_CD_SEC * max(1, owner_count)
 
 
 def _set_next_time_for_action(observed, action, next_time):
@@ -1135,12 +1237,21 @@ def _next_due_action(observed, now, actions):
 
 
 def _assist_action_needed(observed, action):
-    soul_seal = max(0, _safe_int(observed.get("soul_seal"), 0))
-    curse_source = max(0, _safe_int(observed.get("curse_source"), 0))
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    commission_id = int(commission.get("id", 0) or 0)
+    if commission_id <= 0 or not commission.get("accepted"):
+        return False
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    identify_required = bool(assist.get("identify_enabled"))
+    banner_required = bool(assist.get("banner_enabled"))
+    identified = int(assist.get("identified_commission_id", 0) or 0) == commission_id
+    bannered = int(assist.get("bannered_commission_id", 0) or 0) == commission_id
     if action == WANXIN_ACTION_IDENTIFY:
-        return curse_source < 120
-    if action in {WANXIN_ACTION_BANNER, WANXIN_ACTION_STRIP}:
-        return soul_seal > 0
+        return identify_required and not identified
+    if action == WANXIN_ACTION_BANNER:
+        return banner_required and (identified or not identify_required) and not bannered
+    if action == WANXIN_ACTION_STRIP:
+        return (identified or not identify_required) and (bannered or not banner_required)
     return False
 
 
@@ -1214,25 +1325,18 @@ async def _send_assist_action(observed, action, now):
     assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
     owner_username = str(commission.get("owner_username") or "").strip().lstrip("@")
-    reply_to_msg_id = int(assist.get("last_anchor_msg_id", 0) or 0)
-    anchor_at = float(assist.get("last_anchor_at", 0) or 0)
     if assist_send_as_id <= 0 or not has_identity(assist_send_as_id):
         _schedule_next(observed, now, 30 * 60, error=f"协助身份不存在：{assist_send_as_id or '未配置'}")
         return False
     if not _is_yinluo_identity(assist_send_as_id):
         _schedule_next(observed, now, 60 * 60, error=f"协助身份不是阴罗宗：{get_identity_display_name(assist_send_as_id)}")
         return False
-    if action == WANXIN_ACTION_STRIP:
-        if not owner_username or not _commission_accept_evidence_valid(observed):
-            _schedule_next(observed, now, 30 * 60, error="剥离咒源缺少有效咒契或委托方")
-            return False
-        command = f"{CMD_WANXIN_ASSIST_STRIP} @{owner_username}"
-        reply_to_msg_id = 0
-    else:
-        if reply_to_msg_id <= 0 or (anchor_at > 0 and now - anchor_at > WANXIN_ANCHOR_MAX_AGE_SEC):
-            _schedule_next(observed, now, 30 * 60, error="缺少可回复的委托方锚点")
-            return False
-        command = WANXIN_ACTION_COMMANDS.get(action, "")
+    if not owner_username or not _commission_accept_evidence_valid(observed):
+        _schedule_next(observed, now, 30 * 60, error="婉心协助缺少有效咒契或委托方")
+        return False
+    base_command = WANXIN_ACTION_COMMANDS.get(action, "")
+    command = f"{base_command} @{owner_username}"
+    reply_to_msg_id = 0
     send_kwargs = {
         "track": True,
         "max_retry": 0,
@@ -1242,8 +1346,6 @@ async def _send_assist_action(observed, action, now):
         "op_id": f"wanxin-assist-{action}-{owner_username or reply_to_msg_id}-{int(now)}",
         "queue_timeout": WANXIN_SEND_QUEUE_TIMEOUT_SEC,
     }
-    if reply_to_msg_id > 0:
-        send_kwargs["reply_to"] = reply_to_msg_id
     msg = await send_game_command(command, **send_kwargs)
     if not msg:
         send_block = _send_block_info(assist_send_as_id, command)
@@ -1266,7 +1368,10 @@ def _owner_needs_commission(observed, now):
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
     if int(commission.get("id", 0) or 0) > 0:
         return False
-    return bool(_next_due_action(observed, now, WANXIN_ASSIST_ACTIONS))
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    if not assist.get("strip_enabled"):
+        return False
+    return _due_time_for_action(observed, WANXIN_ACTION_STRIP) <= now
 
 
 def _owner_needs_accept(observed):
@@ -1446,16 +1551,22 @@ def _apply_success_cooldown(observed, action, now, parsed=None):
         observed["next_moon_join_time"] = now + WANXIN_MOON_JOIN_CD_SEC + CD_BUFFER_SEC
     elif action == WANXIN_ACTION_IDENTIFY:
         observed["assist"]["next_identify_time"] = now + WANXIN_IDENTIFY_CD_SEC + CD_BUFFER_SEC
+        _set_helper_due_time(observed, action, observed["assist"]["next_identify_time"])
     elif action == WANXIN_ACTION_BANNER:
         observed["assist"]["next_banner_time"] = now + WANXIN_BANNER_CD_SEC + CD_BUFFER_SEC
+        _set_helper_due_time(observed, action, observed["assist"]["next_banner_time"])
     elif action == WANXIN_ACTION_STRIP:
-        observed["assist"]["next_strip_time"] = now + WANXIN_STRIP_CD_SEC + CD_BUFFER_SEC
+        helper_next = now + WANXIN_STRIP_CD_SEC + CD_BUFFER_SEC
+        observed["assist"]["next_strip_time"] = now + _strip_owner_cycle_sec(observed) + CD_BUFFER_SEC
+        _set_helper_due_time(observed, action, helper_next)
 
 
 def _set_cooldown_from_reply(observed, action, next_time):
     if not action:
         return
     _set_next_time_for_action(observed, action, next_time)
+    if action in WANXIN_ASSIST_ACTIONS:
+        _set_helper_due_time(observed, action, next_time)
 
 
 def _matching_pending_action(observed, matched_family):
@@ -1491,12 +1602,16 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         _clear_pending(observed)
     elif ptype in {"commission_published", "commission_existing"}:
         commission = observed["commission"]
+        previous_commission_id = int(commission.get("id", 0) or 0)
         commission["id"] = int(parsed.get("commission_id", 0) or 0)
         if ptype == "commission_published" or not commission.get("published_at"):
             commission["published_at"] = float(now)
         commission["owner_username"] = commission.get("owner_username") or _owner_username()
         if int(getattr(reply_to, "id", 0) or 0) > 0:
             commission["publish_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
+        if commission["id"] != previous_commission_id:
+            observed["assist"]["identified_commission_id"] = 0
+            observed["assist"]["bannered_commission_id"] = 0
         observed["auto_last_result"] = f"{'已有' if ptype == 'commission_existing' else '委托已发布'}：{commission['id'] or '未知'}"
         observed["auto_last_error"] = "" if commission["id"] else "委托存在但未解析到ID"
         observed["auto_next_time"] = float(now)
@@ -1602,6 +1717,11 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
                 action = WANXIN_ACTION_BANNER
             else:
                 action = WANXIN_ACTION_STRIP
+            commission_id = int((observed.get("commission") or {}).get("id", 0) or 0)
+            if action == WANXIN_ACTION_IDENTIFY:
+                observed["assist"]["identified_commission_id"] = commission_id
+            elif action == WANXIN_ACTION_BANNER:
+                observed["assist"]["bannered_commission_id"] = commission_id
             _apply_success_cooldown(observed, action, now, parsed)
             observed["assist"]["last_action"] = action
             observed["assist"]["last_result"] = parsed.get("summary") or "协助成功"
