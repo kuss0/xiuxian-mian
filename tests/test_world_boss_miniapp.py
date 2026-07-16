@@ -130,6 +130,64 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
         self.assertTrue(any(event["step"] == "begin_sync" for event in result["events"]))
 
+    def test_begin_uses_server_started_at_under_high_rtt(self):
+        calls = []
+        clock = FakeClock()
+        wall_epoch = 1_784_212_000.0
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-server-anchor",
+                        "durationMs": 2200,
+                        "maxDurationMs": 4000,
+                        "windows": [
+                            {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
+                        ],
+                    },
+                }
+            if endpoint == "begin":
+                begin_started_at = clock.clock()
+                clock.sleep(0.9)
+                return 200, {
+                    "ok": True,
+                    "startsInMs": 1000,
+                    "serverStartedAtMs": int((wall_epoch + begin_started_at + 1.2) * 1000),
+                }
+            if endpoint == "hit":
+                return 200, {
+                    "ok": True,
+                    "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                    "boss": {"actionLimit": 1, "actionsUsed": 1, "actionsRemaining": 0},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 100, "hits": 1, "perfects": 1}}
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_SERVER_ANCHOR",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            wall_clock=lambda: wall_epoch + clock.clock(),
+            rng=random.Random(9),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "begin", "hit", "finish"], calls)
+        sync = next(event for event in result["events"] if event["step"] == "begin_sync")
+        self.assertEqual("server_started_at", sync["sync_source"])
+        self.assertAlmostEqual(900, sync["round_trip_ms"], delta=1)
+        self.assertAlmostEqual(300, sync["wait_ms"], delta=1)
+
     def test_outside_window_is_a_miss_but_still_finishes_once(self):
         calls = []
         clock = FakeClock()

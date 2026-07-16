@@ -1118,6 +1118,7 @@ def run_world_boss_joined_battle_lab_flow(
     rng=None,
     sleeper=None,
     clock=None,
+    wall_clock=None,
     capture_sink=None,
     capture_source="",
     events=None,
@@ -1130,6 +1131,7 @@ def run_world_boss_joined_battle_lab_flow(
     adapter = adapter or build_world_boss_miniapp_adapter()
     sleeper = sleeper or time.sleep
     clock = clock or time.monotonic
+    wall_clock = wall_clock or time.time
     events = events if events is not None else []
     if not isinstance(receipt, WorldBossJoinReceipt) or not receipt.joined:
         status = getattr(receipt, "status", "join_not_confirmed")
@@ -1288,13 +1290,32 @@ def run_world_boss_joined_battle_lab_flow(
         begin_data = begin_result.data if isinstance(begin_result.data, dict) else {}
         starts_in_ms = max(0.0, _float_value(begin_data.get("startsInMs"), 0.0))
         round_trip_ms = max(0.0, (float(clock()) - begin_started_at) * 1000.0)
-        wait_ms = max(0.0, starts_in_ms - round_trip_ms / 2.0)
+        midpoint_wait_ms = starts_in_ms - round_trip_ms / 2.0
+        wait_ms = max(0.0, midpoint_wait_ms)
+        sync_source = "rtt_midpoint"
+        server_started_at_ms = max(0.0, _float_value(begin_data.get("serverStartedAtMs"), 0.0))
+        server_wait_ms = 0.0
+        if server_started_at_ms >= 1_000_000_000_000:
+            server_wait_ms = server_started_at_ms - float(wall_clock()) * 1000.0
+            max_clock_delta_ms = max(1500.0, round_trip_ms * 1.5)
+            plausible_server_wait = (
+                -5000.0 <= server_wait_ms <= max(5000.0, starts_in_ms + round_trip_ms + 2000.0)
+                and abs(server_wait_ms - midpoint_wait_ms) <= max_clock_delta_ms
+            )
+            if plausible_server_wait:
+                sync_source = "server_started_at"
+                wait_ms = max(0.0, server_wait_ms)
+                initial_elapsed_ms = max(0, int(round(-server_wait_ms)))
         events.append({
             "step": "begin_sync",
             "ok": True,
             "starts_in_ms": starts_in_ms,
             "round_trip_ms": round_trip_ms,
+            "server_started_at_ms": server_started_at_ms,
+            "server_wait_ms": server_wait_ms,
+            "sync_source": sync_source,
             "wait_ms": wait_ms,
+            "initial_elapsed_ms": initial_elapsed_ms,
         })
         if wait_ms > 0:
             sleeper(wait_ms / 1000.0)
