@@ -69,6 +69,35 @@ def _behavior_coverage_tokens(spec):
 
 
 class AppSchedulerContractTests(unittest.TestCase):
+    def test_identity_username_refresh_preserves_previous_alias(self):
+        identity_id = 990099112
+        event = SimpleNamespace(
+            sender_id=identity_id,
+            sender=SimpleNamespace(username="jfdffdddd1"),
+        )
+
+        with patch.object(app, "get_send_as_profile", return_value={
+            "username": "jfdffdddd",
+            "username_aliases": [],
+        }), patch.object(app, "update_send_as_profile") as update_mock, \
+                patch.object(app, "mark_dirty"), patch.object(app, "save_state", return_value=True) as save_mock, \
+                patch.object(app, "console_log"):
+            changed = app._refresh_identity_username_from_event(event, identity_id)
+
+        self.assertTrue(changed)
+        update_mock.assert_called_once_with(identity_id, username="jfdffdddd1")
+        save_mock.assert_called_once()
+
+    def test_identity_username_refresh_ignores_external_sender(self):
+        event = SimpleNamespace(
+            sender_id=999999999,
+            sender=SimpleNamespace(username="jfdffdddd1"),
+        )
+        with patch.object(app, "save_state") as save_mock:
+            changed = app._refresh_identity_username_from_event(event)
+        self.assertFalse(changed)
+        save_mock.assert_not_called()
+
     def test_bot_health_accepts_observed_command_reply_message_object(self):
         command_msg_id = 13567
         app._observed_game_commands.clear()

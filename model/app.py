@@ -263,6 +263,7 @@ from .state import (
     set_identity_enabled,
     set_game_bot_ids,
     state,
+    update_send_as_profile,
     use_identity,
 )
 from .timing import fmt_time_after
@@ -866,6 +867,34 @@ def _resolve_identity_sender_id(sender_id):
         if int(candidate or 0) in identity_ids:
             return int(candidate)
     return 0
+
+
+def _refresh_identity_username_from_event(event, identity_sender_id=0):
+    identity_sender_id = int(identity_sender_id or _resolve_identity_sender_id(getattr(event, "sender_id", 0)) or 0)
+    if identity_sender_id <= 0:
+        return False
+    sender = getattr(event, "sender", None)
+    username = str(
+        getattr(sender, "username", "")
+        or getattr(event, "sender_username", "")
+        or ""
+    ).strip().lstrip("@")
+    if not username:
+        return False
+    profile = get_send_as_profile(identity_sender_id)
+    current = str(profile.get("username") or "").strip().lstrip("@")
+    if current.lower() == username.lower():
+        return False
+    update_send_as_profile(identity_sender_id, username=username)
+    mark_dirty()
+    save_state()
+    console_log(
+        f"🪪 Telegram 用户名已自动刷新：@{current or '未记录'} → @{username}",
+        scope="identity",
+        send_as_id=identity_sender_id,
+        limit=180,
+    )
+    return True
 
 
 def _looks_like_game_bot_reply(text, family):
@@ -3101,6 +3130,8 @@ async def on_message(event):
     raw_text = (event.raw_text or "").strip()
     sender_id = int(event.sender_id or 0)
     identity_sender_id = _resolve_identity_sender_id(sender_id)
+    if identity_sender_id:
+        _refresh_identity_username_from_event(event, identity_sender_id)
     if raw_text.startswith(".") and not sender_is_game_bot:
         _observe_game_command_for_bot_evidence(sender_id, raw_text, event.id, now=now)
     if raw_text.startswith(".") and identity_sender_id and get_global_enabled():
