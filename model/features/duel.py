@@ -805,7 +805,12 @@ def reconcile_duel_from_message_log(now, *, force=False):
             state["duel_unequip_prepared"] = True
             _set_loadout_phase("battle_ready")
             changed = True
-    elif loadout.get("kind") == "equipped" and state.get("duel_enabled") and not _has_active_duel_window(now):
+    elif (
+        loadout.get("kind") == "equipped"
+        and state.get("duel_enabled")
+        and not _has_active_duel_window(now)
+        and not _loadout_phase().startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore")
+    ):
         desired_phase = (
             "prepare"
             if float(state.get("next_duel_time", 0) or 0) <= now + DUEL_TIANXING_PREPARE_LEAD_SEC

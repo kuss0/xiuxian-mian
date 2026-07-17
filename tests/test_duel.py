@@ -1036,6 +1036,30 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_module.state["duel_unequip_prepared"])
             self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
 
+    def test_log_reconcile_does_not_override_restore_phase_with_equip_reply(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        entries = [
+            {"event_type": "sent", "message_id": 300, "sender_id": identity_id, "text": ".装备 青竹蜂云剑（神雷版）", "ts_epoch": now - 2},
+            {
+                "event_type": "message",
+                "message_id": 301,
+                "reply_to_msg_id": 300,
+                "text": "你已祭出【青竹蜂云剑（神雷版）】。\n当前祭出：【青竹蜂云剑（神雷版）】\n神识御宝：4/26",
+                "ts_epoch": now - 1,
+            },
+        ]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_last_result"] = "斗法配装:restore_equip_wait:0"
+            state_module.state["duel_unequip_prepared"] = False
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries):
+                duel.reconcile_duel_from_message_log(now, force=True)
+
+            self.assertEqual("斗法配装:restore_equip_wait:0", state_module.state["duel_last_result"])
+            self.assertFalse(state_module.state["duel_unequip_prepared"])
+
     async def test_own_cooldown_reply_releases_target_reservation(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
