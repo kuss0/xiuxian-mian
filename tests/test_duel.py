@@ -1064,6 +1064,56 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法配装:restore_equip_wait:0", state_module.state["duel_last_result"])
             self.assertFalse(state_module.state["duel_unequip_prepared"])
 
+    def test_completed_batch_consumes_observed_progress_baseline(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        entries = []
+        for index in range(4):
+            command_id = 400 + index * 10
+            entries.extend([
+                {
+                    "event_type": "sent",
+                    "message_id": command_id,
+                    "sender_id": identity_id,
+                    "text": ".斗法 @target",
+                    "ts_epoch": now - 500 + index * 100,
+                },
+                {
+                    "event_type": "message",
+                    "message_id": command_id + 1,
+                    "reply_to_msg_id": command_id,
+                    "text": (
+                        "【天道战报·文字版】\n"
+                        "攻方：@walterwa2000 · 惊慕\n"
+                        "守方：@target · 守方\n"
+                        "胜者：@walterwa2000\n"
+                        f"🧠 今日神念：{9-index}/10"
+                    ),
+                    "ts_epoch": now - 495 + index * 100,
+                },
+            ])
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@target"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 4
+            state_module.state["duel_observed_completed_count"] = 4
+            state_module.state["duel_observed_baseline_count"] = 0
+            state_module.state["duel_log_reconcile_day"] = duel._duel_day_key(now)
+            state_module.state["duel_last_msg_id"] = 9999
+
+            completion = duel._complete_duel_batch(now)
+            self.assertTrue(completion["restoring"])
+            self.assertEqual(4, state_module.state["duel_observed_baseline_count"])
+
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_last_result"] = "斗法配装:restored"
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries):
+                duel.reconcile_duel_from_message_log(now + 1, force=True)
+
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual(4, state_module.state["duel_observed_completed_count"])
+
     async def test_own_cooldown_reply_releases_target_reservation(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

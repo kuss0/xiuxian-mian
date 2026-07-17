@@ -1033,6 +1033,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_log_reconcile_at REAL NOT NULL DEFAULT 0")
     if "duel_observed_completed_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_completed_count INTEGER NOT NULL DEFAULT 0")
+    if "duel_observed_baseline_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_baseline_count INTEGER NOT NULL DEFAULT 0")
     if "duel_observed_manual_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_manual_count INTEGER NOT NULL DEFAULT 0")
     if "duel_observed_mind_remaining" not in runtime_columns:
@@ -1794,6 +1796,7 @@ def init_db():
             duel_log_reconcile_day TEXT NOT NULL DEFAULT '',
             duel_log_reconcile_at REAL NOT NULL DEFAULT 0,
             duel_observed_completed_count INTEGER NOT NULL DEFAULT 0,
+            duel_observed_baseline_count INTEGER NOT NULL DEFAULT 0,
             duel_observed_manual_count INTEGER NOT NULL DEFAULT 0,
             duel_observed_mind_remaining INTEGER NOT NULL DEFAULT -1,
             duel_observed_last_command_msg_id INTEGER NOT NULL DEFAULT 0,

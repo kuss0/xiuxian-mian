@@ -472,6 +472,13 @@ def _next_daily_duel_time(now):
     return float(next_day.timestamp() + offset)
 
 
+def _consume_observed_duel_progress():
+    observed = max(0, int(state.get("duel_observed_completed_count", 0) or 0))
+    baseline = max(0, int(state.get("duel_observed_baseline_count", 0) or 0))
+    if observed > baseline:
+        state["duel_observed_baseline_count"] = observed
+
+
 def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
@@ -480,6 +487,7 @@ def _complete_duel_batch(now):
     loadout_prepared = bool(loadout_config and state.get("duel_unequip_prepared"))
     restore_items = tuple((loadout_config or {}).get("restore") or ())
     restoring = bool(loadout_config and restore_items and not keep_unequipped)
+    _consume_observed_duel_progress()
     if restoring:
         _clear_loadout_pending()
         _set_loadout_phase("restore_needed")
@@ -744,8 +752,12 @@ def reconcile_duel_from_message_log(now, *, force=False):
         and now - float(state.get("duel_log_reconcile_at", 0) or 0) < 30
     ):
         return False
+    previous_day = str(state.get("duel_log_reconcile_day") or "")
     evidence = _derive_duel_log_evidence(_duel_day_log_entries(now), get_current_identity_id(), now=now)
     changed = False
+    if previous_day != day_key and int(state.get("duel_observed_baseline_count", 0) or 0) != 0:
+        state["duel_observed_baseline_count"] = 0
+        changed = True
     observed_values = {
         "duel_log_reconcile_day": day_key,
         "duel_log_reconcile_at": now,
@@ -759,8 +771,10 @@ def reconcile_duel_from_message_log(now, *, force=False):
             state[key] = value
             changed = True
     observed_completed = int(evidence.get("completed") or 0)
-    if observed_completed > int(state.get("duel_completed_count", 0) or 0):
-        state["duel_completed_count"] = observed_completed
+    baseline = min(observed_completed, max(0, int(state.get("duel_observed_baseline_count", 0) or 0)))
+    effective_completed = max(0, observed_completed - baseline)
+    if effective_completed > int(state.get("duel_completed_count", 0) or 0):
+        state["duel_completed_count"] = effective_completed
         changed = True
     for target in evidence.get("limited_targets") or []:
         before = set(_daily_limited_targets(now))
@@ -1806,6 +1820,8 @@ def apply_duel_config(
         state["duel_window_end_minute"] = end
     if reset_progress:
         state["duel_completed_count"] = 0
+        if now is not None and str(state.get("duel_log_reconcile_day") or "") == _duel_day_key(now):
+            state["duel_observed_baseline_count"] = int(state.get("duel_observed_completed_count", 0) or 0)
     if now is not None and state.get("duel_enabled") and not _duel_next_time_blocks(now):
         state["next_duel_time"] = float(now + 1)
     seed_controlled_duel_loadout_prepare(now)
