@@ -1782,6 +1782,7 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         allow_tool_actions
         and
         state.get("small_world_harvest_enabled")
+        and not is_cave_public_auto_enabled("small_world_harvest")
         and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE
     ):
         save_state()

@@ -43,6 +43,8 @@ CAVE_TREASURE_MANUAL_MAX_STEPS = 48
 CAVE_TREASURE_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 CAVE_SMALL_WORLD_RESOURCE_PAUSE_SEC = 6 * 3600
 CAVE_SMALL_WORLD_CYCLE_SEC = 6 * 3600
+CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC = 8 * 3600
+CAVE_SMALL_WORLD_HARVEST_RETRY_SEC = 30 * 60
 CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC = 3 * 3600
 CAVE_SMALL_WORLD_REFRESH_SEC = 10 * 60
 CAVE_SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
@@ -1061,44 +1063,96 @@ def _apply_cave_small_world_overview(small_world, now):
     return snapshot
 
 
-def _plan_cave_public_small_world_action(overview):
+def _cave_small_world_harvest_due(now):
+    if not state.get("small_world_harvest_enabled"):
+        return False
+    return float(state.get("small_world_next_public_harvest_at", 0) or 0) <= float(now or time.time())
+
+
+def _plan_cave_public_small_world_action(overview, *, now=None):
+    now = float(now or time.time())
     small_world = overview.get("small_world") if isinstance(overview, dict) and isinstance(overview.get("small_world"), dict) else {}
     if not small_world or not small_world.get("available") or not small_world.get("has_world"):
         return {"reason": "小世界尚不可用"}
 
+    harvest_due = _cave_small_world_harvest_due(now)
+    can_harvest = bool(small_world.get("can_harvest"))
+    harvest_checked = bool(harvest_due and not can_harvest)
+
     if small_world.get("has_prayer"):
-        if not state.get("small_world_manifest_enabled"):
-            return {"reason": "检测到祈愿，但自动显灵未开启"}
-        if small_world.get("can_manifest") and small_world.get("prayer_resources_ready"):
+        if state.get("small_world_manifest_enabled") and small_world.get("can_manifest") and small_world.get("prayer_resources_ready"):
             return {"action": "manifest", "reason": f"处理祈愿 {small_world.get('prayer_title') or '凡人祈愿'}"}
+        if harvest_due and can_harvest:
+            return {"action": "collect", "harvest_due": True, "reason": "8 小时收割到期，祈愿暂不可处理"}
+        if not state.get("small_world_manifest_enabled"):
+            return {"harvest_due": harvest_due, "harvest_checked": harvest_checked, "reason": "检测到祈愿，但自动显灵未开启"}
         missing = small_world.get("prayer_missing_resources") or []
         missing_text = "、".join(
             f"{item.get('name') or '资源'}缺{int(item.get('missing', 0) or 0)}"
             for item in missing
             if isinstance(item, dict)
         )
-        return {"blocked": "resource", "reason": missing_text or "显灵资源不足或当前不可显灵"}
+        return {
+            "blocked": "resource",
+            "harvest_due": harvest_due,
+            "harvest_checked": harvest_checked,
+            "reason": missing_text or "显灵资源不足或当前不可显灵",
+        }
 
     silence_plan = _cave_small_world_high_stock_silence(small_world)
     if silence_plan:
+        silence_plan.update({"harvest_due": harvest_due, "harvest_checked": harvest_due})
         return silence_plan
+
+    if harvest_due and can_harvest:
+        return {"action": "collect", "harvest_due": True, "reason": "MiniApp 8 小时收割到期"}
 
     if state.get("small_world_preach_enabled") and int(small_world.get("edict_remaining_seconds", 0) or 0) <= 0:
         faith = int(small_world.get("faith", 0) or 0)
         faith_cap = int(small_world.get("faith_cap", 100) or 100)
         if faith_cap > 0 and faith < faith_cap:
-            return {"action": "miracle_sermon", "reason": f"信仰 {faith}/{faith_cap}，执行布道"}
-
-    if state.get("small_world_harvest_enabled") and small_world.get("can_harvest"):
-        return {"action": "collect", "reason": "已显式开启收割香火"}
+            return {
+                "action": "miracle_sermon",
+                "harvest_due": harvest_due,
+                "harvest_checked": harvest_checked,
+                "reason": f"信仰 {faith}/{faith_cap}，执行布道",
+            }
 
     if state.get("small_world_refine_enabled"):
         stock = int(small_world.get("incense_stock", 0) or 0)
         amount = max(0, (stock // 10) * 10)
         if amount >= 10:
-            return {"action": "refine_shenshi", "payload": {"amount": amount}, "reason": f"淬炼神识 {amount} 香火"}
+            return {
+                "action": "refine_shenshi",
+                "payload": {"amount": amount},
+                "harvest_due": harvest_due,
+                "harvest_checked": harvest_checked,
+                "reason": f"淬炼神识 {amount} 香火",
+            }
 
-    return {"reason": "当前无已启用且可执行的小世界动作"}
+    return {
+        "harvest_due": harvest_due,
+        "harvest_checked": harvest_checked,
+        "reason": "8 小时收割已检查，当前无可收香火" if harvest_checked else "当前无已启用且可执行的小世界动作",
+    }
+
+
+def _plan_cave_public_small_world_harvest(overview, *, now=None):
+    now = float(now or time.time())
+    small_world = overview.get("small_world") if isinstance(overview, dict) and isinstance(overview.get("small_world"), dict) else {}
+    if not small_world or not small_world.get("available") or not small_world.get("has_world"):
+        return {"reason": "小世界尚不可用"}
+    if not state.get("small_world_harvest_enabled"):
+        return {"reason": "自动收割香火未开启"}
+    if not _cave_small_world_harvest_due(now):
+        return {"reason": "MiniApp 收割尚未到 8 小时周期"}
+    if small_world.get("can_harvest"):
+        return {"action": "collect", "harvest_due": True, "reason": "MiniApp 8 小时收割到期"}
+    return {
+        "harvest_due": True,
+        "harvest_checked": True,
+        "reason": "8 小时收割已检查，当前无可收香火",
+    }
 
 
 def _cave_small_world_action_message(result):
@@ -1137,7 +1191,7 @@ def _capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
-async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now=None):
+async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now=None, harvest_only=False):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
     if identity_id <= 0:
@@ -1151,16 +1205,36 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
         return {"ok": False, "message": error, "extra": {}}
     with use_identity(identity_id):
         next_time = float(state.get("next_small_world_time", 0) or 0)
-        if next_time > now:
+        next_harvest_at = float(state.get("small_world_next_public_harvest_at", 0) or 0)
+        harvest_due = _cave_small_world_harvest_due(now)
+        if harvest_only and not state.get("small_world_harvest_enabled"):
+            return {"ok": True, "message": "自动收割香火未开启，已跳过请求", "extra": {"skipped": True}}
+        if harvest_only and not harvest_due:
+            return {
+                "ok": True,
+                "message": "MiniApp 收割尚未到 8 小时周期，已跳过请求",
+                "extra": {"skipped": True, "next_time": next_harvest_at},
+            }
+        if not harvest_only and next_time > now and not harvest_due:
+            effective_next_time = min(
+                item
+                for item in (next_time, next_harvest_at if state.get("small_world_harvest_enabled") else 0)
+                if item > 0
+            )
             return {
                 "ok": True,
                 "message": "洞府小世界尚未到检查时间，已跳过请求",
-                "extra": {"skipped": True, "next_time": next_time},
+                "extra": {"skipped": True, "next_time": effective_next_time},
             }
         last_request_at = float(state.get("small_world_last_public_request_at", 0) or 0)
         if last_request_at > 0 and now < last_request_at + CAVE_SMALL_WORLD_MIN_REQUEST_SEC:
             next_time = last_request_at + CAVE_SMALL_WORLD_MIN_REQUEST_SEC
             state["next_small_world_time"] = max(float(state.get("next_small_world_time", 0) or 0), next_time)
+            if harvest_due:
+                state["small_world_next_public_harvest_at"] = max(
+                    float(state.get("small_world_next_public_harvest_at", 0) or 0),
+                    next_time,
+                )
             save_state()
             return {
                 "ok": True,
@@ -1192,7 +1266,11 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 webview_url=webview_url,
                 init_data=session.get("init_data") or "",
                 player_id=session.get("player_id"),
-                action_planner=_plan_cave_public_small_world_action,
+                action_planner=(
+                    (lambda overview: _plan_cave_public_small_world_harvest(overview, now=now))
+                    if harvest_only
+                    else (lambda overview: _plan_cave_public_small_world_action(overview, now=now))
+                ),
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_small_world:{identity_id}",
             )
@@ -1205,6 +1283,15 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             record = _record_cave_small_world_state(identity_id, result, now=now)
             action_message = _cave_small_world_action_message(result)
             resource_blocked = plan.get("blocked") == "resource" or ("不足" in action_message and action == "manifest")
+            harvest_was_due = bool(plan.get("harvest_due")) or _cave_small_world_harvest_due(now)
+            harvest_checked = bool(plan.get("harvest_checked"))
+            if action == "collect" and result.get("ok"):
+                state["small_world_last_public_harvest_at"] = now
+                state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
+            elif harvest_checked:
+                state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
+            elif harvest_was_due and (harvest_only or not result.get("ok") or not small_world):
+                state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_RETRY_SEC
             if not result.get("ok"):
                 state["small_world_refresh_count"] = 0
                 state["small_world_phase"] = "idle"
@@ -1244,6 +1331,8 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 message = f"洞府小世界已{action_label}：{action_message or plan.get('reason') or '处理完成'}"
             else:
                 can_refresh = bool(
+                    not harvest_only
+                    and
                     not small_world.get("has_prayer")
                     and state.get("small_world_manifest_enabled")
                     and state.get("small_world_refresh_enabled")

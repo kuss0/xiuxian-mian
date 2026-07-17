@@ -271,6 +271,7 @@
       + '</div>'
       + '<div class="miniapp-cave-switches">'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="small_world"' + (automation.cave_public_small_world_enabled ? ' checked' : '') + '><span>小世界</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="small_world_harvest"' + (automation.cave_public_small_world_harvest_enabled ? ' checked' : '') + '><span>香火收割 8h</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="deep_status"' + (automation.cave_public_deep_status_enabled ? ' checked' : '') + '><span>闭关状态</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="treasure"' + (automation.cave_public_treasure_enabled ? ' checked' : '') + '><span>洞府寻宝</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="trial"' + (automation.cave_public_trial_enabled ? ' checked' : '') + '><span>天机试炼</span></label>'
@@ -289,6 +290,7 @@
       + '</div>'
       + '<div class="miniapp-item-actions miniapp-cave-single-actions">'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world">小世界处理</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world_harvest">收割香火</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="treasure">洞府寻宝</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="trial">天机试炼</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="fishing">频道钓鱼</button>'
@@ -560,6 +562,7 @@
     }
     return {
       small_world_enabled: enabled('small_world'),
+      small_world_harvest_enabled: enabled('small_world_harvest'),
       deep_status_enabled: enabled('deep_status'),
       treasure_enabled: enabled('treasure'),
       trial_enabled: enabled('trial'),
@@ -576,6 +579,7 @@
     var config = cavePublicConfigPayload(panel);
     var actions = [];
     if (config.small_world_enabled) actions.push('small_world');
+    else if (config.small_world_harvest_enabled) actions.push('small_world_harvest');
     if (config.deep_status_enabled) actions.push('deep_status');
     if (config.treasure_enabled) actions.push('treasure');
     if (config.trial_enabled) actions.push('trial');

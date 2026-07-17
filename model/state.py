@@ -60,7 +60,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "wanxin_observation",
     "world_boss_action_count", "world_boss_action_limit", "world_boss_attack_count", "world_boss_pending_msg_id", "world_boss_pending_action", "world_boss_pending_since", "world_boss_pending_retry_count", "world_boss_pending_action_seq", "world_boss_last_action", "world_boss_last_action_at", "world_boss_last_reply_msg_id", "world_boss_exhausted", "world_boss_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_protect_phase", "nanlong_place_msg_id", "nanlong_recall_msg_id", "nanlong_last_error",
-    "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_god_cooldown_until", "small_world_pending_god_action", "small_world_pending_god_reason", "small_world_pending_god_priority", "small_world_pending_god_at", "small_world_last_god_action", "small_world_last_god_sent_at", "small_world_last_disaster_wave_at", "small_world_barrier_msg_id", "small_world_barrier_due_at", "small_world_last_barrier_sent_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_panel_snapshot", "small_world_last_panel_at", "small_world_last_public_request_at", "small_world_last_error",
+    "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_god_cooldown_until", "small_world_pending_god_action", "small_world_pending_god_reason", "small_world_pending_god_priority", "small_world_pending_god_at", "small_world_last_god_action", "small_world_last_god_sent_at", "small_world_last_disaster_wave_at", "small_world_barrier_msg_id", "small_world_barrier_due_at", "small_world_last_barrier_sent_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_panel_snapshot", "small_world_last_panel_at", "small_world_last_public_request_at", "small_world_last_public_harvest_at", "small_world_next_public_harvest_at", "small_world_last_error",
     "resource_shortage_backoffs", "action_guard_sessions",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required", "explore_rift_tianxing_prepare_retry_at",
@@ -760,6 +760,8 @@ IDENTITY_STATE_TEMPLATE = {
     "small_world_panel_snapshot": {},
     "small_world_last_panel_at": 0,
     "small_world_last_public_request_at": 0,
+    "small_world_last_public_harvest_at": 0,
+    "small_world_next_public_harvest_at": 0,
     "small_world_last_error": "",
     "resource_shortage_backoffs": {},
     "action_guard_sessions": {},
@@ -1485,6 +1487,7 @@ def is_cave_public_auto_enabled(action, identity_id=None):
     normalized_action = str(action or "").strip().lower()
     flag_by_action = {
         "small_world": "cave_public_small_world_enabled",
+        "small_world_harvest": "cave_public_small_world_harvest_enabled",
         "deep_retreat": "cave_public_deep_status_enabled",
         "deep_status": "cave_public_deep_status_enabled",
         "treasure": "cave_public_treasure_enabled",
@@ -1505,7 +1508,8 @@ def is_cave_public_auto_enabled(action, identity_id=None):
     else:
         entry_url_configured = False
     entry_url_configured = entry_url_configured or bool(str(config.get("cave_public_entry_url") or "").strip())
-    if not bool(entry_url_configured and config.get(flag)):
+    enabled = config.get(flag, normalized_action == "small_world_harvest")
+    if not bool(entry_url_configured and enabled):
         return False
     if normalized_action == "fishing":
         try:

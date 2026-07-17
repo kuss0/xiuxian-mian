@@ -394,6 +394,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave2_last_run_at": 0,
     "trial_daily_wave2_last_result": "",
     "cave_public_small_world_enabled": True,
+    "cave_public_small_world_harvest_enabled": True,
     "cave_public_deep_status_enabled": True,
     "cave_public_treasure_enabled": True,
     "cave_public_trial_enabled": True,
@@ -478,6 +479,7 @@ def normalize_miniapp_auto_config(config=None):
     )
     for key in (
         "cave_public_small_world_enabled",
+        "cave_public_small_world_harvest_enabled",
         "cave_public_deep_status_enabled",
         "cave_public_treasure_enabled",
         "cave_public_trial_enabled",
@@ -580,6 +582,8 @@ def _cave_public_actions_from_config(config=None):
     actions = []
     if config.get("cave_public_small_world_enabled"):
         actions.append("small_world")
+    elif config.get("cave_public_small_world_harvest_enabled"):
+        actions.append("small_world_harvest")
     if config.get("cave_public_deep_status_enabled"):
         actions.append("deep_status")
     if config.get("cave_public_treasure_enabled"):
@@ -6912,6 +6916,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         for index, url in enumerate(candidate_urls):
             if normalized_action == "small_world":
                 result = await run_cave_public_small_world_sync(identity_id, url)
+            elif normalized_action in {"small_world_harvest", "harvest_incense"}:
+                result = await run_cave_public_small_world_sync(identity_id, url, harvest_only=True)
             elif normalized_action in {"treasure", "hunt", "cave_treasure"}:
                 result = await run_cave_public_treasure(identity_id, url)
             elif normalized_action in {"trial", "tianji_trial"}:
@@ -6990,6 +6996,7 @@ def _normalize_cave_public_batch_actions(payload):
     if isinstance(raw_actions, str):
         raw_actions = [item for item in re.split(r"[\s,，]+", raw_actions) if item]
     aliases = {
+        "harvest_incense": "small_world_harvest",
         "deep": "deep_status",
         "deep_retreat": "deep_status",
         "cave_treasure": "treasure",
@@ -7001,7 +7008,7 @@ def _normalize_cave_public_batch_actions(payload):
         "yuan_ying": "yuanying",
         "yuanying_launch": "yuanying",
     }
-    allowed = {"small_world", "deep_status", "treasure", "trial", "fishing", "stargazer", "yuanying"}
+    allowed = {"small_world", "small_world_harvest", "deep_status", "treasure", "trial", "fishing", "stargazer", "yuanying"}
     actions = []
     seen = set()
     for raw in raw_actions or ():
@@ -7030,7 +7037,7 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
     if normalized_action == "fishing":
         selected_ids = set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or [])
         return [identity_id for identity_id in available_ids if identity_id in selected_ids]
-    if normalized_action in {"trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
+    if normalized_action in {"small_world_harvest", "trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
         return available_ids
     result = []
     seen_accounts = set()
@@ -7136,6 +7143,7 @@ async def ui_set_cave_public_config(payload=None):
     config = normalize_miniapp_auto_config()
     mapping = {
         "small_world_enabled": "cave_public_small_world_enabled",
+        "small_world_harvest_enabled": "cave_public_small_world_harvest_enabled",
         "deep_status_enabled": "cave_public_deep_status_enabled",
         "treasure_enabled": "cave_public_treasure_enabled",
         "trial_enabled": "cave_public_trial_enabled",
@@ -7463,7 +7471,18 @@ def _cave_public_background_action_due(action, identity_id, now):
         return False
     with use_identity(identity_id):
         if action == "small_world":
-            return bool(state.get("small_world_enabled")) and float(state.get("next_small_world_time", 0) or 0) <= now
+            if not state.get("small_world_enabled"):
+                return False
+            due_times = [float(state.get("next_small_world_time", 0) or 0)]
+            if state.get("small_world_harvest_enabled"):
+                due_times.append(float(state.get("small_world_next_public_harvest_at", 0) or 0))
+            return min(due_times) <= now
+        if action == "small_world_harvest":
+            return bool(
+                state.get("small_world_enabled")
+                and state.get("small_world_harvest_enabled")
+                and float(state.get("small_world_next_public_harvest_at", 0) or 0) <= now
+            )
         if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             return bool(state.get("deep_retreat_enabled")) and float(state.get("next_deep_retreat_time", 0) or 0) <= now
         if action == "treasure":
@@ -7539,6 +7558,7 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
         "deep_start": 1,
         "deep_force": 1,
         "small_world": 2,
+        "small_world_harvest": 2,
         "fishing": 3,
         "stargazer": 4,
         "treasure": 5,
@@ -7550,7 +7570,12 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
         elif action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             due_at = float(state.get("next_deep_retreat_time", 0) or 0)
         elif action == "small_world":
-            due_at = float(state.get("next_small_world_time", 0) or 0)
+            due_times = [float(state.get("next_small_world_time", 0) or 0)]
+            if state.get("small_world_harvest_enabled"):
+                due_times.append(float(state.get("small_world_next_public_harvest_at", 0) or 0))
+            due_at = min(due_times)
+        elif action == "small_world_harvest":
+            due_at = float(state.get("small_world_next_public_harvest_at", 0) or 0)
         elif action == "fishing":
             due_at = float(state.get("next_fishing_time", 0) or 0)
         elif action == "stargazer":
@@ -7616,11 +7641,16 @@ async def _run_cave_public_background_scheduler(now, config):
         ("yuanying", "cave_public_yuanying_enabled"),
         ("deep_status", "cave_public_deep_status_enabled"),
         ("small_world", "cave_public_small_world_enabled"),
+        ("small_world_harvest", "cave_public_small_world_harvest_enabled"),
         ("fishing", "cave_public_fishing_enabled"),
         ("stargazer", "cave_public_stargazer_enabled"),
         ("treasure", "cave_public_treasure_enabled"),
     )
-    enabled_action_flags = [(action, flag) for action, flag in action_flags if config.get(flag)]
+    enabled_action_flags = [
+        (action, flag)
+        for action, flag in action_flags
+        if config.get(flag) and not (action == "small_world_harvest" and config.get("cave_public_small_world_enabled"))
+    ]
     if not enabled_action_flags:
         return {"started": False, "reason": "background_disabled"}
     identity_ids = _normalize_cave_public_batch_identity_ids({})

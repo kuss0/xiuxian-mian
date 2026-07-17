@@ -771,6 +771,15 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(identity_ids, trial_selected)
         self.assertEqual([(account_id, "small_world") for account_id in account_ids], steps)
 
+    def test_cave_public_harvest_batch_keeps_each_selectable_player_identity(self):
+        identity_ids = [1001, 100101, 100102, 1002, 100201, 100202]
+        with patch.object(ui, "is_cave_public_identity_available", return_value=True):
+            selected = ui._cave_public_batch_identity_ids_for_action("small_world_harvest", identity_ids)
+            steps = ui._build_cave_public_batch_steps(identity_ids, ["small_world_harvest"])
+
+        self.assertEqual(identity_ids, selected)
+        self.assertEqual([(identity_id, "small_world_harvest") for identity_id in identity_ids], steps)
+
     def test_cave_public_batch_skips_aliases_when_login_account_identity_is_disabled(self):
         identity_ids = [1001, 100101, 100102, 1002, 100201, 100202]
         account_by_identity = {
@@ -858,6 +867,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             "trial_daily_scheduler_confirmed": True,
             "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
             "cave_public_small_world_enabled": False,
+            "cave_public_small_world_harvest_enabled": False,
             "cave_public_deep_status_enabled": False,
             "cave_public_treasure_enabled": False,
             "cave_public_trial_enabled": True,
@@ -1231,6 +1241,23 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["deep_retreat_enabled"] = False
             state_module.state["next_deep_retreat_time"] = now - 1
             self.assertFalse(ui._cave_public_background_action_due("deep_status", 1001, now))
+
+    def test_cave_public_small_world_uses_independent_harvest_due_time(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["next_small_world_time"] = now + 6 * 3600
+            state_module.state["small_world_next_public_harvest_at"] = now - 1
+            self.assertTrue(ui._cave_public_background_action_due("small_world", 1001, now))
+
+            state_module.state["small_world_next_public_harvest_at"] = now + 8 * 3600
+            self.assertFalse(ui._cave_public_background_action_due("small_world", 1001, now))
+
+            state_module.state["small_world_harvest_enabled"] = False
+            state_module.state["small_world_next_public_harvest_at"] = now - 1
+            self.assertFalse(ui._cave_public_background_action_due("small_world", 1001, now))
 
     def test_cave_public_background_prioritizes_oldest_phaseful_actions(self):
         now = 1_700_000_000.0

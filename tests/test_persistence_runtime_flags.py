@@ -150,6 +150,26 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 with state_module.use_identity(identity_id):
                     self.assertEqual(1_700_000_123.0, state_module.state["small_world_last_public_request_at"])
 
+    def test_small_world_public_harvest_clock_roundtrips(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990005
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    state_module.state["small_world_last_public_harvest_at"] = 1_700_000_123.0
+                    state_module.state["small_world_next_public_harvest_at"] = 1_700_028_923.0
+
+                self.assertTrue(persistence.save_state())
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                persistence.load_state()
+
+                with state_module.use_identity(identity_id):
+                    self.assertEqual(1_700_000_123.0, state_module.state["small_world_last_public_harvest_at"])
+                    self.assertEqual(1_700_028_923.0, state_module.state["small_world_next_public_harvest_at"])
+
     def test_game_listener_account_ids_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

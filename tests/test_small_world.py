@@ -741,6 +741,34 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             harvest_mock.assert_awaited_once()
 
+    async def test_public_miniapp_harvest_lane_suppresses_legacy_harvest_command(self):
+        send_as_id = 8659059392
+        now = 2100.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【清源子的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 1608.92\n"
+            "🏺 香火库存: 2\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = False
+            state_module.state["small_world_refresh_enabled"] = True
+            with (
+                patch.object(small_world, "is_cave_public_auto_enabled", side_effect=lambda action: action == "small_world_harvest"),
+                patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            harvest_mock.assert_not_awaited()
+            self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
+
     async def test_refresh_round_does_not_harvest_again(self):
         send_as_id = 8659059292
         now = 2500.0
