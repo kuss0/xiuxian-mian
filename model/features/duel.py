@@ -969,6 +969,7 @@ async def _run_controlled_loadout_restore(now, config):
         if index >= len(restore_items):
             completed = int(state.get("duel_completed_count", 0) or 0)
             total = int(state.get("duel_total_count", 0) or 0)
+            _consume_observed_duel_progress()
             state["duel_unequip_prepared"] = False
             state["duel_last_error"] = ""
             _set_loadout_phase("restored")

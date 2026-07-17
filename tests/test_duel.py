@@ -317,6 +317,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_target"] = "@ccahen"
             state_module.state["duel_total_count"] = 5
             state_module.state["duel_completed_count"] = 5
+            state_module.state["duel_observed_completed_count"] = 5
+            state_module.state["duel_observed_baseline_count"] = 0
+            state_module.state["duel_log_reconcile_day"] = duel._duel_day_key(now)
+            state_module.state["duel_log_reconcile_at"] = now
             state_module.state["duel_unequip_prepared"] = True
             state_module.state["duel_last_result"] = "斗法配装:restore_equip:5"
             with (
@@ -328,6 +332,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_module.state["duel_enabled"])
             self.assertFalse(state_module.state["duel_unequip_prepared"])
             self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual(5, state_module.state["duel_observed_baseline_count"])
             self.assertEqual("斗法配装:restored", state_module.state["duel_last_result"])
             self.assertEqual(
                 datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
