@@ -202,7 +202,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     "fly": {"target_score_range": (16, 20)},
                 },
                 "990031": {
-                    "jump": {"target_score_range": (39, 45)},
+                    "jump": {"target_score_range": (41, 47)},
                     "fly": {"target_score_range": (16, 20)},
                 },
             },

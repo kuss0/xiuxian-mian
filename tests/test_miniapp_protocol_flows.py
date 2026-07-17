@@ -1097,10 +1097,28 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
 
     def test_tree_score_profile_clamps_to_low_anticheat_policy(self):
         self.assertEqual({"target_score_range": (5, 9)}, tree_miniapp.normalize_tree_score_profile("fly", {"target_score": 7}))
-        self.assertEqual({"target_score_range": (39, 45)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
+        self.assertEqual({"target_score_range": (90, 96)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score": 999}))
         self.assertEqual({"target_score_range": (33, 39)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [36, 36]}))
-        self.assertEqual({"target_score_range": (39, 45)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [126, 126]}))
+        self.assertEqual({"target_score_range": (90, 96)}, tree_miniapp.normalize_tree_score_profile("jump", {"target_score_range": [126, 126]}))
         self.assertEqual({"target_score_range": (8, 12)}, tree_miniapp.normalize_tree_score_profile("fly", {}))
+
+    def test_tree_score_records_migrate_legacy_jump_default(self):
+        self.assertEqual(
+            {
+                "4319360789": {
+                    "jump": {"target_score_range": (72, 78)},
+                    "fly": {"target_score_range": (8, 12)},
+                }
+            },
+            tree_miniapp.normalize_tree_score_records(
+                {
+                    "4319360789": {
+                        "jump": {"target_score_range": [30, 36]},
+                        "fly": {"target_score_range": [8, 12]},
+                    }
+                }
+            ),
+        )
 
     def test_tree_jump_proof_does_not_overshoot_score_cap(self):
         for index in range(6):
@@ -1113,10 +1131,10 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             )
             replay = tree_miniapp.simulate_tree_jump_run(seed, proof["charges"])
 
-            self.assertLessEqual(summary["targetScore"], 45)
-            self.assertLessEqual(summary["score"], 45)
+            self.assertLessEqual(summary["targetScore"], 96)
+            self.assertLessEqual(summary["score"], 96)
             self.assertEqual(proof["clientScore"], replay["score"])
-            self.assertLessEqual(replay["score"], 45)
+            self.assertLessEqual(replay["score"], 96)
 
     def test_tree_jump_proof_clamps_manual_canary_to_safe_cap(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
@@ -1127,9 +1145,9 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         replay = tree_miniapp.simulate_tree_jump_run("luoyun-canary-seed-126", proof["charges"])
 
-        self.assertLessEqual(summary["targetScore"], 45)
-        self.assertGreaterEqual(summary["targetScore"], 39)
-        self.assertLessEqual(summary["score"], 45)
+        self.assertLessEqual(summary["targetScore"], 96)
+        self.assertGreaterEqual(summary["targetScore"], 90)
+        self.assertLessEqual(summary["score"], 96)
         self.assertEqual(proof["clientScore"], replay["score"])
         self.assertEqual(summary["score"], replay["score"])
 
@@ -1143,8 +1161,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 profile={"target_score": 126},
             )
             targets.add(summary["targetScore"])
-            self.assertGreaterEqual(summary["targetScore"], 39)
-            self.assertLessEqual(summary["targetScore"], 45)
+            self.assertGreaterEqual(summary["targetScore"], 90)
+            self.assertLessEqual(summary["targetScore"], 96)
 
         self.assertGreater(len(targets), 1)
 

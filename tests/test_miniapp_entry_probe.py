@@ -68,9 +68,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok_second)
         self.assertEqual([25, 31], first["jump"]["target_score_range"])
         self.assertEqual([16, 20], first["fly"]["target_score_range"])
-        self.assertEqual([39, 45], second["jump"]["target_score_range"])
+        self.assertEqual([41, 47], second["jump"]["target_score_range"])
         self.assertEqual([16, 20], second["fly"]["target_score_range"])
-        self.assertEqual([30, 36], default["jump"]["target_score_range"])
+        self.assertEqual([72, 78], default["jump"]["target_score_range"])
         self.assertEqual([8, 12], default["fly"]["target_score_range"])
 
     async def test_tree_score_config_rejects_non_numeric_before_save(self):

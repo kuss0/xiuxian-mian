@@ -421,6 +421,26 @@ def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
     return _is_summary_replayable_command(command)
 
 
+_SUMMARY_REPLAY_SEND_INTENT_KEYS = {
+    "intent",
+    "source_module",
+    "op_id",
+    "chain_id",
+    "delete_policy",
+    "queue_timeout",
+    "reply_timeout",
+    "allow_maintenance_pause",
+}
+
+
+def _summary_replay_send_intent(values):
+    return {
+        name: value
+        for name, value in (values or {}).items()
+        if name in _SUMMARY_REPLAY_SEND_INTENT_KEYS and str(value or "").strip()
+    }
+
+
 def _remember_summary_consumed_command(
     send_as_id,
     spec,
@@ -456,9 +476,7 @@ def _remember_summary_consumed_command(
         if max_retry is not None:
             previous["max_retry"] = max_retry
         previous_intent = previous.setdefault("send_intent", {})
-        previous_intent.update(
-            {name: value for name, value in send_intent.items() if str(value or "").strip()}
-        )
+        previous_intent.update(_summary_replay_send_intent(send_intent))
         return
     _SUMMARY_CONSUMED_COMMANDS[key] = {
         "cmd": str(command or "").strip(),
@@ -468,7 +486,7 @@ def _remember_summary_consumed_command(
         "reply_to": int(reply_to or 0),
         "priority": priority,
         "max_retry": max_retry,
-        "send_intent": {key: value for key, value in send_intent.items() if str(value or "").strip()},
+        "send_intent": _summary_replay_send_intent(send_intent),
         "specs": [spec.phase_key],
     }
 
@@ -677,7 +695,7 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     track = bool((payload or {}).get("track", True))
     max_retry = (payload or {}).get("max_retry")
     priority = "retry"
-    send_intent = {key: value for key, value in (payload or {}).get("send_intent", {}).items() if str(value or "").strip()}
+    send_intent = _summary_replay_send_intent((payload or {}).get("send_intent", {}))
     for key, value in _summary_replay_intent(send_as_id, msg_id, command).items():
         send_intent.setdefault(key, value)
     if command == CMD_TOWER:
@@ -795,9 +813,7 @@ def observe_phaseful_identity_message(
             if max_retry is not None:
                 previous["max_retry"] = max_retry
             previous_intent = previous.setdefault("send_intent", {})
-            previous_intent.update(
-                {name: value for name, value in _send_intent.items() if str(value or "").strip()}
-            )
+            previous_intent.update(_summary_replay_send_intent(_send_intent))
         for spec in _REGISTERED_SPECS:
             if not state.get(spec.enabled_key):
                 continue

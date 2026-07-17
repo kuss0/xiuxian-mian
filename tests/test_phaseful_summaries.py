@@ -2959,6 +2959,55 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             )
             self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 
+    async def test_summary_replay_filters_sent_observer_metadata(self):
+        send_as_id = 8659059229
+        now = 1_700_001_250.0
+        old_msg_id = 9338529
+        command = ".野外历练 谨慎"
+        self._prepare_identity(send_as_id, "WildReplayMetadata")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_reply_to_msg_id"] = old_msg_id
+            state_module.state["wild_training_reply_due_at"] = now + 600
+            state_module.state["wild_training_retry_count"] = 0
+
+        payload = {
+            "cmd": command,
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": "normal",
+            "max_retry": 0,
+            "send_intent": {
+                "source_module": "野外历练",
+                "send_elapsed_sec": 1.2,
+                "recovered": True,
+            },
+        }
+        sent_msg = SimpleNamespace(id=old_msg_id + 1, sent_at=now + 1)
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_awaited_once_with(
+            command,
+            track=False,
+            send_as_id=send_as_id,
+            priority="retry",
+            max_retry=0,
+            source_module="野外历练",
+            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{command}",
+            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
+        )
+
     async def test_summary_replay_wild_training_stops_after_one_retry(self):
         send_as_id = 8659059222
         now = 1_700_001_300.0

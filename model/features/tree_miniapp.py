@@ -13,6 +13,7 @@ from ..tree_score_policy import (
     TREE_MINIAPP_MAX_TARGET_SCORE,
     TREE_MINIAPP_MIN_TARGET_SCORE,
     TREE_MINIAPP_MODES,
+    normalize_tree_score_records,
     normalize_tree_score_profile,
 )
 from ..webapp_core import (

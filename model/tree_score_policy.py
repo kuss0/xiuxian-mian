@@ -1,6 +1,6 @@
 TREE_MINIAPP_MODES = {"jump", "fly"}
 TREE_MINIAPP_DEFAULT_TARGET_SCORE = {
-    "jump": (30, 36),
+    "jump": (72, 78),
     "fly": (8, 12),
 }
 TREE_MINIAPP_MIN_TARGET_SCORE = {
@@ -8,12 +8,15 @@ TREE_MINIAPP_MIN_TARGET_SCORE = {
     "fly": 4,
 }
 TREE_MINIAPP_MAX_TARGET_SCORE = {
-    "jump": 45,
+    "jump": 96,
     "fly": 20,
 }
 TREE_MINIAPP_MIN_TARGET_SPREAD = {
     "jump": 6,
     "fly": 4,
+}
+TREE_MINIAPP_LEGACY_TARGET_SCORE = {
+    "jump": (30, 36),
 }
 
 
@@ -92,7 +95,10 @@ def normalize_tree_score_records(records):
         item = {}
         for mode in ("jump", "fly"):
             if mode in raw_config:
-                item[mode] = normalize_tree_score_profile(mode, raw_config.get(mode))
+                profile = normalize_tree_score_profile(mode, raw_config.get(mode))
+                if tuple(profile.get("target_score_range") or ()) == TREE_MINIAPP_LEGACY_TARGET_SCORE.get(mode):
+                    profile = normalize_tree_score_profile(mode)
+                item[mode] = profile
         if item:
             normalized[identity_key] = item
     return normalized
