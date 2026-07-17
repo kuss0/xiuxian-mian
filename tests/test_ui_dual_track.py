@@ -170,6 +170,11 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "renderModuleToggle('斗法','开关')" in script
     assert "renderDuelConfig(identity)" in script
     assert "data-duel-config=\"target\"" in script
+    assert "多目标池" in script
+    assert "目标轮转" in script
+    assert "今日封顶" in script
+    assert "日志校准" in script
+    assert "duel_observed_manual_count" in script
     assert "data-duel-config=\"total_count\"" in script
     assert "data-duel-config=\"reserve_xiuwei\"" in script
     assert "data-duel-config=\"window_start_time\"" in script

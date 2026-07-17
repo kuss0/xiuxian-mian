@@ -1027,6 +1027,18 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_daily_limit_day TEXT NOT NULL DEFAULT ''")
     if "duel_daily_limited_targets" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_daily_limited_targets TEXT NOT NULL DEFAULT '[]'")
+    if "duel_log_reconcile_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_log_reconcile_day TEXT NOT NULL DEFAULT ''")
+    if "duel_log_reconcile_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_log_reconcile_at REAL NOT NULL DEFAULT 0")
+    if "duel_observed_completed_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_completed_count INTEGER NOT NULL DEFAULT 0")
+    if "duel_observed_manual_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_manual_count INTEGER NOT NULL DEFAULT 0")
+    if "duel_observed_mind_remaining" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_mind_remaining INTEGER NOT NULL DEFAULT -1")
+    if "duel_observed_last_command_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_last_command_msg_id INTEGER NOT NULL DEFAULT 0")
     if "duel_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "duel_reply_due_at" not in runtime_columns:
@@ -1779,6 +1791,12 @@ def init_db():
             duel_window_end_minute INTEGER NOT NULL DEFAULT 1439,
             duel_daily_limit_day TEXT NOT NULL DEFAULT '',
             duel_daily_limited_targets TEXT NOT NULL DEFAULT '[]',
+            duel_log_reconcile_day TEXT NOT NULL DEFAULT '',
+            duel_log_reconcile_at REAL NOT NULL DEFAULT 0,
+            duel_observed_completed_count INTEGER NOT NULL DEFAULT 0,
+            duel_observed_manual_count INTEGER NOT NULL DEFAULT 0,
+            duel_observed_mind_remaining INTEGER NOT NULL DEFAULT -1,
+            duel_observed_last_command_msg_id INTEGER NOT NULL DEFAULT 0,
             duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             duel_reply_due_at REAL NOT NULL DEFAULT 0,
             duel_open_msg_id INTEGER NOT NULL DEFAULT 0,

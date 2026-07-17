@@ -2055,7 +2055,7 @@ def _manual_enable_duel_module_state(now):
             completed_count = int(state.get("duel_completed_count", 0) or 0)
     if total_count > 0 and completed_count >= total_count:
         state["duel_completed_count"] = 0
-    seed_controlled_duel_loadout_prepare()
+    seed_controlled_duel_loadout_prepare(now)
     if float(state.get("next_duel_time", 0) or 0) > now:
         return
     state["duel_reply_to_msg_id"] = 0

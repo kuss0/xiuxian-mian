@@ -33,6 +33,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             realm=realm,
             xiuwei_current=xiuwei_current,
         )
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
         return identity_id
 
     async def test_manual_reenable_starts_a_new_completed_batch(self):
@@ -43,6 +46,8 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_total_count"] = 10
             state_module.state["duel_completed_count"] = 10
             state_module.state["next_duel_time"] = 0
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = ""
 
         with patch.object(control, "save_state"):
             ok, _message = await control.set_module_enabled("斗法", True, send_as_id=identity_id)
@@ -73,9 +78,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法配装:prepare", state_module.state["duel_last_result"])
             self.assertFalse(state_module.state["duel_unequip_prepared"])
 
-    def test_duel_config_seeds_only_controlled_identity_loadout(self):
+    def test_duel_config_seeds_default_loadout_for_every_identity(self):
         now = 1_700_000_000.0
-        for identity_id, expected in ((301299112, "斗法配装:prepare"), (99001999, "")):
+        for identity_id in (301299112, 99001999):
             self._prepare_identity(identity_id)
             with state_module.use_identity(identity_id):
                 state_module.state["duel_enabled"] = True
@@ -89,7 +94,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                         now=now,
                         persist=True,
                     )
-                self.assertEqual(expected, state_module.state["duel_last_result"])
+                self.assertEqual("斗法配装:prepare", state_module.state["duel_last_result"])
 
     def test_manual_disable_cancels_tianxing_duel_timeline(self):
         identity_id = self._prepare_identity()
@@ -142,7 +147,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         identity_id = self._prepare_identity(301299112)
         state_module.update_send_as_profile(identity_id, username="jfdffdddd1")
         now = 1_700_000_000.0
-        config = duel.DUEL_CONTROLLED_LOADOUTS[identity_id]
+        config = duel.DUEL_DEFAULT_LOADOUT
         with state_module.use_identity(identity_id):
             state_module.state["duel_enabled"] = True
             state_module.state["duel_target"] = "@ccahen"
@@ -197,7 +202,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法配装:restored", state_module.state["duel_last_result"])
             self.assertGreater(state_module.state["next_duel_time"], now)
 
-    async def test_wa_controlled_loadout_confirms_only_xuantie_before_duel(self):
+    async def test_wa_controlled_loadout_confirms_unequipped_before_duel(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -208,8 +213,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_unequip_prepared"] = False
             state_module.state["duel_last_result"] = "斗法配装:prepare"
 
-            sent = [SimpleNamespace(id=1001, sent_at=now), SimpleNamespace(id=1002, sent_at=now + 20)]
-            send_mock = AsyncMock(side_effect=sent)
+            send_mock = AsyncMock(return_value=SimpleNamespace(id=1001, sent_at=now))
             with (
                 patch.object(duel, "send_game_command", new=send_mock),
                 patch.object(duel, "find_message_log_replies", return_value=[]),
@@ -225,24 +229,6 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(duel, "save_state"),
             ):
                 await duel.run_duel_scheduler(now + 10)
-            self.assertEqual("斗法配装:prepare_equip", state_module.state["duel_last_result"])
-
-            with (
-                patch.object(duel, "send_game_command", new=send_mock),
-                patch.object(duel, "save_state"),
-            ):
-                await duel.run_duel_scheduler(now + 20)
-            self.assertEqual("斗法配装:prepare_equip_wait", state_module.state["duel_last_result"])
-
-            with (
-                patch.object(duel, "find_message_log_replies", return_value=[{
-                    "text": "你已祭出【玄铁剑】。\n当前祭出：【玄铁剑】\n神识御宝：1/26",
-                }]),
-                patch.object(duel, "send_audit_log", new=AsyncMock()),
-                patch.object(duel, "save_state"),
-            ):
-                await duel.run_duel_scheduler(now + 30)
-
             self.assertTrue(state_module.state["duel_unequip_prepared"])
             self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
 
@@ -268,6 +254,25 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once_with(".卸下法宝", track=False, max_retry=0, source_module="斗法配装")
             self.assertEqual("斗法配装:prepare_unequip_wait", state_module.state["duel_last_result"])
+
+    async def test_loadout_prepare_does_not_run_before_duel_lead_window(self):
+        identity_id = self._prepare_identity(99002001)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now + 3600
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = "斗法配装:prepare"
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + 3600, state_module.state["next_duel_time"])
 
     async def test_wa_batch_completion_enters_restore_without_disabling(self):
         identity_id = self._prepare_identity()
@@ -940,7 +945,96 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
         send_mock.assert_not_awaited()
         with state_module.use_identity(second_id):
-            self.assertIn("仍在斗法冷却", state_module.state["duel_last_error"])
+            self.assertIn("正在被其他身份斗法", state_module.state["duel_last_error"])
+
+    async def test_reciprocal_duel_is_blocked_while_other_side_is_attacking(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(baiji_id):
+            duel._set_target_cooldown(
+                "@WalterWA20000",
+                now + duel.DUEL_TARGET_RESERVATION_SEC,
+                confirmed=False,
+                command_msg_id=22027,
+            )
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            state_module.state["next_duel_time"] = now - 1
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertIn("当前身份正被", state_module.state["duel_last_error"])
+
+    def test_manual_duel_log_evidence_rebuilds_progress_and_loadout(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        entries = [
+            {"event_type": "message", "message_id": 100, "sender_id": wa_id, "text": ".卸下法宝", "ts_epoch": now - 600},
+            {"event_type": "message", "message_id": 101, "reply_to_msg_id": 100, "text": "你已收回当前祭出的所有法宝，祭炼与本命联系仍然保留。", "ts_epoch": now - 599},
+        ]
+        for index in range(4):
+            command_id = 200 + index * 10
+            entries.append({
+                "event_type": "message",
+                "message_id": command_id,
+                "sender_id": wa_id,
+                "text": ".斗法 @jfdffdddd1",
+                "ts_epoch": now - 500 + index * 100,
+            })
+            if index == 3:
+                entries.append({
+                    "event_type": "sent",
+                    "message_id": command_id,
+                    "sender_id": wa_id,
+                    "text": ".斗法 @jfdffdddd1",
+                    "ts_epoch": now - 500 + index * 100,
+                })
+            entries.append({
+                "event_type": "message",
+                "message_id": command_id + 1,
+                "reply_to_msg_id": command_id,
+                "text": (
+                    "【天道战报·文字版】\n"
+                    "攻方：@WalterWA2000 · 惊慕\n"
+                    "守方：@jfdffdddd · 空尘子\n"
+                    "胜者：@WalterWA2000\n"
+                    f"🧠 今日神念：{9-index}/10 | 对此人剩余胜场: {4-index}"
+                ),
+                "ts_epoch": now - 495 + index * 100,
+            })
+
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 1
+            state_module.state["duel_last_msg_id"] = 0
+            state_module.state["duel_unequip_prepared"] = False
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries):
+                changed = duel.reconcile_duel_from_message_log(now, force=True)
+
+            self.assertTrue(changed)
+            self.assertEqual(4, state_module.state["duel_completed_count"])
+            self.assertEqual(4, state_module.state["duel_observed_completed_count"])
+            self.assertEqual(3, state_module.state["duel_observed_manual_count"])
+            self.assertEqual(6, state_module.state["duel_observed_mind_remaining"])
+            self.assertTrue(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
 
     async def test_own_cooldown_reply_releases_target_reservation(self):
         identity_id = self._prepare_identity()
@@ -1494,12 +1588,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertTrue(state_module.state["duel_enabled"])
-            self.assertEqual(0, state_module.state["duel_completed_count"])
-            self.assertEqual("斗法结束，胜者 @cupaopao", state_module.state["duel_last_result"])
-            self.assertEqual(
-                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
-                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
-            )
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+            self.assertEqual(now + duel.DUEL_LOADOUT_STEP_DELAY_SEC, state_module.state["next_duel_time"])
 
     async def test_non_wa_batch_completion_rolls_to_next_local_day(self):
         identity_id = self._prepare_identity(3765328695)
@@ -1761,14 +1852,14 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertTrue(state_module.state["duel_enabled"])
-            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
             self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
-            self.assertEqual(text, state_module.state["duel_last_result"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
             target_lock = state_module.get_duel_target_cooldowns()["@cupaopao"]
             self.assertTrue(target_lock["confirmed"])
             self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, target_lock["until"])
             self.assertEqual(text, state_module.state["duel_last_error"])
-            self.assertIn("今日斗法完成：1/1", audit_mock.await_args.args[0])
+            self.assertIn("开始恢复原法宝配装", audit_mock.await_args.args[0])
 
     async def test_lock_failure_reply_counts_attempt_and_uses_long_cooldown(self):
         identity_id = self._prepare_identity()
@@ -1829,14 +1920,11 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual(0, state_module.state["duel_completed_count"])
-            self.assertEqual(text, state_module.state["duel_last_result"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
             self.assertEqual("", state_module.state["duel_last_error"])
             self.assertEqual(["@cupaopao"], state_module.state["duel_daily_limited_targets"])
-            self.assertEqual(
-                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
-                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
-            )
+            self.assertEqual(now + duel.DUEL_LOADOUT_STEP_DELAY_SEC, state_module.state["next_duel_time"])
 
     async def test_per_target_limit_reply_switches_to_another_configured_target(self):
         identity_id = self._prepare_identity(99002000)
@@ -1891,8 +1979,8 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             recovery_mock.assert_called_once()
             self.assertTrue(state_module.state["duel_enabled"])
-            self.assertEqual(0, state_module.state["duel_completed_count"])
-            self.assertEqual(text, state_module.state["duel_last_result"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
             self.assertEqual(text, state_module.state["duel_last_error"])
 
     def test_terminal_non_report_texts_are_recognized_for_log_recovery(self):

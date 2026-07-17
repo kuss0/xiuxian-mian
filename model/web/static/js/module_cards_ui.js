@@ -207,6 +207,13 @@
       return key+'×'+targetHits[key];
     }).slice(0, 6);
     var hitText = hitPairs.length ? hitPairs.join('，') : '暂无';
+    var parsedTargets = identity.duel_targets || [];
+    var limitedTargets = identity.duel_daily_limited_targets || [];
+    var observedMind = Number(identity.duel_observed_mind_remaining);
+    var observedText = String(identity.duel_observed_completed_count || 0)+' 场，其中手动 '+String(identity.duel_observed_manual_count || 0)+' 场';
+    if(observedMind >= 0){
+      observedText += '｜剩余神念 '+String(observedMind);
+    }
     return ''+
       '<div class="module-setting-hint">'+esc(presetHint)+'</div>'+
       currentChoiceText('角色带', bandLabel)+
@@ -215,10 +222,15 @@
       '<label class="module-setting-field"><span>窗口起</span><input class="text-input module-hour-input" type="time" value="'+esc(minuteToTimeValue(windowStart))+'" data-duel-config="window_start_time" title="本地时区执行窗口开始"></label>'+
       '<label class="module-setting-field"><span>窗口止</span><input class="text-input module-hour-input" type="time" value="'+esc(minuteToTimeValue(windowEnd))+'" data-duel-config="window_end_time" title="本地时区执行窗口结束"></label>'+
       currentChoiceText('容量预检', capacityText)+
-      '<label class="module-setting-field module-setting-field-wide"><span>目标池</span><input class="text-input module-name-input" type="text" value="'+esc(identity.duel_target || '')+'" placeholder="@target1 @target2" data-duel-config="target"></label>'+
+      '<label class="module-setting-field module-setting-field-wide"><span>多目标池</span><textarea class="text-input module-name-input" rows="2" placeholder="每行、空格或逗号分隔：@target1, @target2" data-duel-config="target">'+esc(identity.duel_target || '')+'</textarea></label>'+
+      currentChoiceText('目标轮转', parsedTargets.length ? parsedTargets.join(' → ') : '未配置')+
+      currentChoiceText('当前目标', identity.duel_current_target || '今日目标均已封顶/未配置')+
+      currentChoiceText('今日封顶', limitedTargets.length ? limitedTargets.join('、') : '无')+
       '<label class="module-setting-field"><span>总次数</span><input class="text-input module-hour-input" type="number" min="1" max="200" step="1" value="'+esc(identity.duel_total_count || '')+'" data-duel-config="total_count"></label>'+
       '<label class="checkbox-inline checkbox-inline-small module-setting-checkbox"><input type="checkbox" data-duel-config="reset_progress" /> 重置进度</label>'+
       currentChoiceText('当前进度', String(identity.duel_completed_count || 0)+'/'+String(identity.duel_total_count || 0))+
+      currentChoiceText('日志校准', observedText)+
+      currentChoiceText('配装阶段', identity.duel_loadout_phase || '待启用时初始化')+
       currentChoiceText('下次执行', identity.duel_next_time || '未设置')+
       currentChoiceText('最近结果', identity.duel_last_result || '无')+
       currentChoiceText('最近异常', identity.duel_last_error || '无')+

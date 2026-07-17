@@ -5,7 +5,12 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_DUEL, TZ_LOCAL
-from ..message_log_recovery import find_message_log_message, find_message_log_replies
+from ..message_log_recovery import (
+    find_message_log_message,
+    find_message_log_replies,
+    iter_message_log_entries_between,
+    sender_matches_identity,
+)
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
@@ -109,6 +114,10 @@ RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
 RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|分钟|秒)(?:\d+\s*(?:小时|分钟|秒))*)")
 RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>万)?")
 RE_DUEL_DAILY_LIMIT_TARGET = re.compile(r"今日对\s+(?P<target>@[^\s，。！？、；：:,.!?]+)\s+出手次数过多")
+RE_DUEL_ATTACKER = re.compile(r"攻方[:：]\s*(?P<username>@[^\s·|]+)")
+RE_DUEL_DEFENDER = re.compile(r"守方[:：]\s*(?P<username>@[^\s·|]+)")
+RE_DUEL_MIND_REMAINING = re.compile(r"今日(?:剩余)?神念[:：]\s*(?P<remaining>\d+)\s*/\s*(?P<total>\d+)")
+RE_DUEL_TARGET_WINS_REMAINING = re.compile(r"对此人剩余胜场[:：]\s*(?P<remaining>\d+)")
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
@@ -124,16 +133,16 @@ DUEL_DEFAULT_WINDOW_END_MINUTE = 23 * 60 + 59
 # 容量预检：单身份最小间隔 ≈ 同目标 CD + 批次错峰下限；同目标全账号共享间隔更严。
 DUEL_CAPACITY_SELF_INTERVAL_SEC = DUEL_SAME_TARGET_COOLDOWN_SEC + DUEL_BATCH_STAGGER_MIN_SEC
 DUEL_CAPACITY_TARGET_INTERVAL_SEC = DUEL_SAME_TARGET_COOLDOWN_SEC + DUEL_TARGET_CONTENTION_BUFFER_SEC
+DUEL_DEFAULT_LOADOUT = {
+    "battle": (),
+    "restore": (),
+    "unequip_only": True,
+    "keep_unequipped": True,
+}
 DUEL_CONTROLLED_LOADOUTS = {
-    301299112: {
-        # 吧唧作为修为转移目标时保持空装；批次结束后也不自动穿回。
-        "battle": (),
-        "restore": (),
-        "unequip_only": True,
-        "keep_unequipped": True,
-    },
     8659059191: {
-        "battle": ("玄铁剑",),
+        # WA 同样空装斗法；批次结束后恢复日常法宝。
+        "battle": (),
         "restore": (
             "青竹蜂云剑（神雷版）",
             "乾蓝冰焰",
@@ -141,9 +150,12 @@ DUEL_CONTROLLED_LOADOUTS = {
             "元合五极山",
             "玄天斩灵剑",
         ),
+        "unequip_only": True,
+        "keep_unequipped": False,
     },
 }
 RE_CURRENT_EQUIPPED = re.compile(r"^当前祭出[：:]\s*(?P<items>.+)$", re.M)
+_DUEL_DAY_LOG_CACHE = {"day": "", "refreshed_at": 0.0, "entries": []}
 
 
 def _parse_int(value):
@@ -272,6 +284,37 @@ def _clear_target_reservation(target, command_msg_id=0):
     records.pop(key, None)
     set_duel_target_cooldowns(records)
     return True
+
+
+def _username_alias_keys(value):
+    key = _username_key(value)
+    aliases = {key} if key else set()
+    for identity_id in get_identity_ids():
+        profile_keys = _profile_username_keys(identity_id)
+        if key in profile_keys:
+            aliases.update(profile_keys)
+    return aliases
+
+
+def _active_duel_participant_block(target, now):
+    current_id = int(get_current_identity_id() or 0)
+    self_aliases = _profile_username_keys(current_id)
+    target_aliases = _username_alias_keys(target)
+    for active_target, record in get_duel_target_cooldowns().items():
+        if not isinstance(record, dict) or record.get("confirmed"):
+            continue
+        if float(record.get("until", 0) or 0) <= float(now):
+            continue
+        owner_id = int(record.get("owner_identity_id", 0) or 0)
+        owner_aliases = _profile_username_keys(owner_id)
+        active_target_aliases = _username_alias_keys(active_target)
+        if current_id != owner_id and self_aliases.intersection(active_target_aliases):
+            return f"当前身份正被 {next(iter(owner_aliases), owner_id)} 发起斗法"
+        if target_aliases.intersection(owner_aliases):
+            return f"目标 {normalize_duel_target(target)} 正在发起另一场斗法"
+        if current_id != owner_id and target_aliases.intersection(active_target_aliases):
+            return f"目标 {normalize_duel_target(target)} 正在被其他身份斗法"
+    return ""
 
 
 def _schedule_next_duel(now, delay_sec):
@@ -431,10 +474,11 @@ def _next_daily_duel_time(now):
 def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
-    loadout_config = _controlled_loadout_config()
+    loadout_config = _controlled_loadout_config(now)
     keep_unequipped = bool(loadout_config and loadout_config.get("keep_unequipped"))
     loadout_prepared = bool(loadout_config and state.get("duel_unequip_prepared"))
-    restoring = bool(loadout_prepared and not keep_unequipped)
+    restore_items = tuple((loadout_config or {}).get("restore") or ())
+    restoring = bool(loadout_config and restore_items and not keep_unequipped)
     if restoring:
         _clear_loadout_pending()
         _set_loadout_phase("restore_needed")
@@ -464,19 +508,23 @@ def _clear_duel_pending():
     state["duel_started_at"] = 0
 
 
-def _controlled_loadout_config():
-    config = DUEL_CONTROLLED_LOADOUTS.get(int(get_current_identity_id() or 0))
-    if not config:
-        return None
+def _controlled_loadout_config(now=None):
+    config = DUEL_CONTROLLED_LOADOUTS.get(int(get_current_identity_id() or 0), DUEL_DEFAULT_LOADOUT)
     if not _loadout_phase() and not state.get("duel_unequip_prepared"):
-        return None
+        if not state.get("duel_enabled") or now is None:
+            return None
+        next_duel_time = float(state.get("next_duel_time", 0) or 0)
+        if next_duel_time > float(now) + DUEL_TIANXING_PREPARE_LEAD_SEC:
+            return None
     return config
 
 
-def seed_controlled_duel_loadout_prepare():
+def seed_controlled_duel_loadout_prepare(now=None):
     """Arm loadout preparation after an explicit enable/configuration change."""
-    config = DUEL_CONTROLLED_LOADOUTS.get(int(get_current_identity_id() or 0))
-    if not config or not state.get("duel_enabled"):
+    if not state.get("duel_enabled"):
+        return False
+    now = float(now if now is not None else time.time())
+    if float(state.get("next_duel_time", 0) or 0) > now + DUEL_TIANXING_PREPARE_LEAD_SEC:
         return False
     if _parse_int(state.get("duel_reply_to_msg_id", 0)) > 0 or _parse_int(state.get("duel_open_msg_id", 0)) > 0:
         return False
@@ -524,6 +572,252 @@ def _loadout_unequip_reply(text):
         or "你当前并未祭出任何法宝" in raw
         or "当前祭出法宝: 无祭出法宝" in raw
     )
+
+
+def _username_key(value):
+    return str(value or "").strip().lstrip("@").casefold()
+
+
+def _profile_username_keys(identity_id):
+    profile = get_send_as_profile(identity_id) or {}
+    values = [profile.get("username")]
+    aliases = profile.get("username_aliases") or []
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    values.extend(aliases)
+    return {_username_key(value) for value in values if _username_key(value)}
+
+
+def _configured_target_aliases():
+    mapping = {}
+    profiles = []
+    for identity_id in get_identity_ids():
+        keys = _profile_username_keys(identity_id)
+        if keys:
+            profiles.append(keys)
+    for target in _target_tokens():
+        canonical = normalize_duel_target(target)
+        key = _username_key(canonical)
+        aliases = {key} if key else set()
+        for profile_keys in profiles:
+            if key in profile_keys:
+                aliases.update(profile_keys)
+        for alias in aliases:
+            mapping[alias] = canonical
+    return mapping
+
+
+def _duel_day_log_entries(now):
+    day_key = _duel_day_key(now)
+    if (
+        _DUEL_DAY_LOG_CACHE.get("day") == day_key
+        and float(now) - float(_DUEL_DAY_LOG_CACHE.get("refreshed_at") or 0) < 15
+    ):
+        return list(_DUEL_DAY_LOG_CACHE.get("entries") or [])
+    local_now = datetime.fromtimestamp(float(now), TZ_LOCAL)
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    entries = []
+    for entry, entry_ts in iter_message_log_entries_between(start, float(now) + DUEL_LOG_REPLAY_LOOKAHEAD_SEC):
+        text = str((entry or {}).get("text") or "").strip()
+        if not text:
+            continue
+        if not (
+            text.startswith(CMD_DUEL)
+            or text.startswith(".卸下法宝")
+            or text.startswith(".装备 ")
+            or _is_duel_report_text(text)
+            or _has_duel_terminal_attempt_keyword(text)
+            or _loadout_unequip_reply(text)
+            or _parse_current_equipment(text)
+        ):
+            continue
+        item = dict(entry)
+        item["ts_epoch"] = float(entry_ts)
+        entries.append(item)
+    _DUEL_DAY_LOG_CACHE.update(day=day_key, refreshed_at=float(now), entries=entries)
+    return list(entries)
+
+
+def _derive_duel_log_evidence(entries, identity_id, *, now=None):
+    identity_id = int(identity_id or 0)
+    now = float(now if now is not None else time.time())
+    self_aliases = _profile_username_keys(identity_id)
+    target_aliases = _configured_target_aliases()
+    commands = {}
+    replies = {}
+    for entry in entries or []:
+        msg_id = _parse_int((entry or {}).get("message_id"))
+        reply_to = _parse_int((entry or {}).get("reply_to_msg_id"))
+        text = str((entry or {}).get("text") or "").strip()
+        if msg_id > 0 and sender_matches_identity((entry or {}).get("sender_id"), identity_id) and (
+            text.startswith(CMD_DUEL) or text.startswith(".卸下法宝") or text.startswith(".装备 ")
+        ):
+            item = commands.setdefault(msg_id, {"entries": [], "text": text, "ts_epoch": 0.0})
+            item["entries"].append(entry)
+            item["text"] = text or item["text"]
+            item["ts_epoch"] = max(float(item.get("ts_epoch") or 0), float((entry or {}).get("ts_epoch") or 0))
+        if reply_to > 0:
+            replies.setdefault(reply_to, []).append(entry)
+
+    completed = 0
+    manual_completed = 0
+    mind_remaining = -1
+    last_command_msg_id = 0
+    last_report = None
+    limited_targets = set()
+    open_duels = []
+    confirmed_loadout = None
+    for msg_id, command in sorted(commands.items(), key=lambda item: (item[1]["ts_epoch"], item[0])):
+        text = str(command.get("text") or "")
+        command_replies = sorted(
+            replies.get(msg_id) or [],
+            key=lambda item: (float((item or {}).get("ts_epoch") or 0), _parse_int((item or {}).get("message_id"))),
+        )
+        is_automatic = any(str((entry or {}).get("event_type") or "") == "sent" for entry in command.get("entries") or [])
+        if text.startswith(".卸下法宝"):
+            if any(_loadout_unequip_reply((entry or {}).get("text")) for entry in command_replies):
+                confirmed_loadout = {"kind": "unequipped", "ts_epoch": command["ts_epoch"], "msg_id": msg_id}
+            continue
+        if text.startswith(".装备 "):
+            if any(_parse_current_equipment((entry or {}).get("text")) for entry in command_replies):
+                confirmed_loadout = {"kind": "equipped", "ts_epoch": command["ts_epoch"], "msg_id": msg_id}
+            continue
+
+        command_target = normalize_duel_target(text[len(CMD_DUEL):].strip())
+        canonical_target = target_aliases.get(_username_key(command_target), command_target)
+        terminal = None
+        for entry in command_replies:
+            reply_text = str((entry or {}).get("text") or "")
+            if _is_duel_report_text(reply_text) or _has_duel_terminal_attempt_keyword(reply_text):
+                terminal = entry
+        if terminal is None:
+            if float(command.get("ts_epoch") or 0) + DUEL_REPLY_TIMEOUT_SEC + DUEL_RESULT_GRACE_SEC >= now:
+                open_duels.append({"target": canonical_target, "msg_id": msg_id, "ts_epoch": command["ts_epoch"]})
+            continue
+        terminal_text = str((terminal or {}).get("text") or "")
+        last_command_msg_id = max(last_command_msg_id, msg_id)
+        if "出手次数过多" in terminal_text:
+            limit_match = RE_DUEL_DAILY_LIMIT_TARGET.search(terminal_text)
+            limited = normalize_duel_target(limit_match.group("target") if limit_match else canonical_target)
+            limited_targets.add(target_aliases.get(_username_key(limited), limited))
+            continue
+        defender_key = ""
+        if _is_duel_report_text(terminal_text):
+            attacker = RE_DUEL_ATTACKER.search(terminal_text)
+            defender = RE_DUEL_DEFENDER.search(terminal_text)
+            attacker_key = _username_key(attacker.group("username") if attacker else "")
+            defender_key = _username_key(defender.group("username") if defender else "")
+            if attacker_key not in self_aliases or defender_key not in target_aliases:
+                continue
+        elif _username_key(canonical_target) not in target_aliases or not _duel_counts_as_attempt(terminal_text):
+            continue
+        completed += 1
+        if not is_automatic:
+            manual_completed += 1
+        last_report = terminal
+        mind_match = RE_DUEL_MIND_REMAINING.search(terminal_text)
+        if mind_match:
+            mind_remaining = int(mind_match.group("remaining"))
+        wins_match = RE_DUEL_TARGET_WINS_REMAINING.search(terminal_text)
+        if defender_key and wins_match and int(wins_match.group("remaining")) <= 0:
+            limited_targets.add(target_aliases[defender_key])
+
+    return {
+        "completed": completed,
+        "manual_completed": manual_completed,
+        "mind_remaining": mind_remaining,
+        "last_command_msg_id": last_command_msg_id,
+        "last_report": last_report,
+        "limited_targets": sorted(target for target in limited_targets if target),
+        "open_duels": open_duels,
+        "confirmed_loadout": confirmed_loadout,
+    }
+
+
+def reconcile_duel_from_message_log(now, *, force=False):
+    now = float(now or time.time())
+    day_key = _duel_day_key(now)
+    if (
+        not force
+        and str(state.get("duel_log_reconcile_day") or "") == day_key
+        and now - float(state.get("duel_log_reconcile_at", 0) or 0) < 30
+    ):
+        return False
+    evidence = _derive_duel_log_evidence(_duel_day_log_entries(now), get_current_identity_id(), now=now)
+    changed = False
+    observed_values = {
+        "duel_log_reconcile_day": day_key,
+        "duel_log_reconcile_at": now,
+        "duel_observed_completed_count": int(evidence.get("completed") or 0),
+        "duel_observed_manual_count": int(evidence.get("manual_completed") or 0),
+        "duel_observed_mind_remaining": int(evidence.get("mind_remaining", -1)),
+        "duel_observed_last_command_msg_id": int(evidence.get("last_command_msg_id") or 0),
+    }
+    for key, value in observed_values.items():
+        if state.get(key) != value:
+            state[key] = value
+            changed = True
+    observed_completed = int(evidence.get("completed") or 0)
+    if observed_completed > int(state.get("duel_completed_count", 0) or 0):
+        state["duel_completed_count"] = observed_completed
+        changed = True
+    for target in evidence.get("limited_targets") or []:
+        before = set(_daily_limited_targets(now))
+        after = _mark_target_daily_limited(target, now)
+        changed = changed or before != after
+    report = evidence.get("last_report") or {}
+    report_text = str(report.get("text") or "")
+    report_msg_id = _parse_int(report.get("message_id"))
+    if report_msg_id > int(state.get("duel_last_msg_id", 0) or 0):
+        state["duel_last_msg_id"] = report_msg_id
+        state["duel_last_result"] = parse_duel_result_summary(report_text)
+        state["duel_last_error"] = ""
+        changed = True
+    defender = RE_DUEL_DEFENDER.search(report_text)
+    if defender:
+        aliases = _configured_target_aliases()
+        target = aliases.get(_username_key(defender.group("username")), normalize_duel_target(defender.group("username")))
+        until = float(report.get("ts_epoch") or 0) + DUEL_SAME_TARGET_COOLDOWN_SEC
+        if until > now:
+            before = _get_target_cooldown_record(target)
+            _set_target_cooldown(target, until, confirmed=True, command_msg_id=0)
+            if float(before.get("until", 0) or 0) < until or not before.get("confirmed"):
+                changed = True
+    for open_duel in evidence.get("open_duels") or []:
+        until = float(open_duel.get("ts_epoch") or 0) + DUEL_REPLY_TIMEOUT_SEC + DUEL_RESULT_GRACE_SEC
+        if until > now:
+            before = _get_target_cooldown_record(open_duel.get("target"))
+            _set_target_cooldown(
+                open_duel.get("target"),
+                until,
+                confirmed=False,
+                command_msg_id=open_duel.get("msg_id"),
+            )
+            if (
+                float(before.get("until", 0) or 0) < until
+                or before.get("confirmed")
+                or int(before.get("command_msg_id", 0) or 0) != int(open_duel.get("msg_id") or 0)
+            ):
+                changed = True
+    loadout = evidence.get("confirmed_loadout") or {}
+    if loadout.get("kind") == "unequipped" and not _loadout_phase().startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore"):
+        if not state.get("duel_unequip_prepared") or _loadout_phase() != f"{DUEL_LOADOUT_PHASE_PREFIX}battle_ready":
+            state["duel_unequip_prepared"] = True
+            _set_loadout_phase("battle_ready")
+            changed = True
+    elif loadout.get("kind") == "equipped" and state.get("duel_enabled") and not _has_active_duel_window(now):
+        desired_phase = (
+            "prepare"
+            if float(state.get("next_duel_time", 0) or 0) <= now + DUEL_TIANXING_PREPARE_LEAD_SEC
+            else "restored"
+        )
+        if state.get("duel_unequip_prepared") or _loadout_phase() != f"{DUEL_LOADOUT_PHASE_PREFIX}{desired_phase}":
+            state["duel_unequip_prepared"] = False
+            _set_loadout_phase(desired_phase)
+            changed = True
+    if changed:
+        mark_dirty()
+    return changed
 
 
 def _find_loadout_reply(now, predicate):
@@ -1041,7 +1335,7 @@ def apply_duel_preset_row(row, *, now=None, persist=True, force=False):
         _clear_duel_pending()
         state["duel_last_result"] = str(row.get("reason") or "预设关闭斗法")
     if enabled:
-        seed_controlled_duel_loadout_prepare()
+        seed_controlled_duel_loadout_prepare(now)
     if persist:
         save_state()
     else:
@@ -1508,7 +1802,7 @@ def apply_duel_config(
         state["duel_completed_count"] = 0
     if now is not None and state.get("duel_enabled") and not _duel_next_time_blocks(now):
         state["next_duel_time"] = float(now + 1)
-    seed_controlled_duel_loadout_prepare()
+    seed_controlled_duel_loadout_prepare(now)
     capacity = estimate_duel_capacity(
         total_count=state.get("duel_total_count", 0) or 0,
         start_minute=get_duel_window_start_minute(),
@@ -1562,6 +1856,16 @@ def get_duel_status_text():
     if state.get("duel_last_error"):
         lines.append(f"- 最近异常：{state['duel_last_error']}")
     return "\n".join(lines)
+
+
+def get_duel_current_target(now=None):
+    return _target_token(now)
+
+
+def get_duel_daily_limited_targets(now=None):
+    now = float(now if now is not None else time.time())
+    limited = _daily_limited_targets(now)
+    return [target for target in _target_tokens() if _target_cooldown_key(target) in limited]
 
 
 async def handle_duel_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0):
@@ -1767,7 +2071,8 @@ async def run_duel_scheduler(now):
     # Reconcile real battle evidence before scheduling the next batch so a
     # consumed duel prediction cannot remain leased and block another route.
     _reconcile_consumed_duel_prediction_from_last_report(now)
-    loadout_config = _controlled_loadout_config()
+    reconcile_duel_from_message_log(now)
+    loadout_config = _controlled_loadout_config(now)
     if loadout_config and await _run_controlled_loadout_restore(now, loadout_config):
         return
     if not state.get("duel_enabled"):
@@ -1813,12 +2118,24 @@ async def run_duel_scheduler(now):
             state["duel_last_result"] = f"斗法已关闭：{completed_count}/{total_count}"
         save_state()
         return
+    if (
+        str(state.get("duel_log_reconcile_day") or "") == _duel_day_key(now)
+        and int(state.get("duel_observed_mind_remaining", -1)) == 0
+    ):
+        completion = _complete_duel_batch(now)
+        state["duel_last_result"] = "今日神念已耗尽"
+        state["duel_last_error"] = ""
+        save_state()
+        if completion["restoring"]:
+            await send_audit_log("✅ 今日神念已耗尽，开始恢复原法宝配装。", scope="identity", limit=200)
+        return
     if total_count <= 0:
         if not _duel_next_time_blocks(now):
             _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
 
-    if loadout_config and not await _run_controlled_loadout_prepare(now, loadout_config):
+    loadout_prepare_due = float(state.get("next_duel_time", 0) or 0) <= float(now) + DUEL_TIANXING_PREPARE_LEAD_SEC
+    if loadout_config and loadout_prepare_due and not await _run_controlled_loadout_prepare(now, loadout_config):
         return
 
     reply_to_msg_id = int(state.get("duel_reply_to_msg_id", 0) or 0)
@@ -1859,6 +2176,13 @@ async def run_duel_scheduler(now):
                 prepared = await _prepare_duel_tianxing_route(now, due_at=open_at)
                 if not prepared:
                     return
+        save_state()
+        return
+
+    participant_block = _active_duel_participant_block(target, now)
+    if participant_block:
+        _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+        state["duel_last_error"] = participant_block
         save_state()
         return
 
@@ -1949,6 +2273,8 @@ __all__ = [
     "collect_identity_rows_for_duel_presets",
     "estimate_duel_capacity",
     "get_duel_min_xiuwei",
+    "get_duel_current_target",
+    "get_duel_daily_limited_targets",
     "get_duel_reserve_xiuwei",
     "get_duel_status_text",
     "get_duel_window_bounds",
