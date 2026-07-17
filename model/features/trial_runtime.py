@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from ..runtime import send_audit_log
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_display_name, get_identity_enabled, get_send_as_profile
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_display_name, is_cave_public_identity_available, get_send_as_profile
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from .trial_miniapp import extract_trial_miniapp_launch, run_trial_miniapp_production_flow
@@ -378,8 +378,8 @@ async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_fa
         return False
     global_enabled = get_global_enabled()
     maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
-    identity_enabled = get_identity_enabled(identity_id)
-    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
+    identity_available = is_cave_public_identity_available(identity_id)
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_available:
         revoke_trial_miniapp_manual_run(identity_id)
         reason = "全局暂停" if not global_enabled else "身份已停用"
         await send_audit_log(f"🧪 天机试炼 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)

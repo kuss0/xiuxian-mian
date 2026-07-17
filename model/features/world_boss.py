@@ -27,6 +27,7 @@ from ..state import (
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
+    is_cave_public_identity_available,
     get_miniapp_auto_config,
     get_send_as_profile,
     get_world_boss_run_state,
@@ -894,7 +895,7 @@ def _enabled_identity_ids():
 def _miniapp_entry_candidate_identity_ids():
     result = []
     for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
+        if not is_cave_public_identity_available(identity_id):
             continue
         try:
             get_identity_state(identity_id)

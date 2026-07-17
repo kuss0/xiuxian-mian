@@ -1179,8 +1179,8 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
     identity_id = int(get_current_identity_id() or 0)
     global_enabled = get_global_enabled()
     maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
-    identity_enabled = get_identity_enabled(identity_id)
-    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
+    identity_available = is_cave_public_identity_available(identity_id)
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_available:
         reason = "全局暂停" if not global_enabled else "身份已停用"
         state["fishing_last_result"] = f"{reason}，MiniApp HTTP 接管已跳过"
         state["fishing_last_error"] = ""

@@ -1898,8 +1898,8 @@ async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, ma
         return False
     global_enabled = get_global_enabled()
     maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
-    identity_enabled = get_identity_enabled(identity_id)
-    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_enabled:
+    identity_available = is_cave_public_identity_available(identity_id)
+    if (not global_enabled and not maintenance_miniapp_allowed) or not identity_available:
         revoke_cave_treasure_miniapp_manual_run(identity_id)
         reason = "全局暂停" if not global_enabled else "身份已停用"
         await send_audit_log(f"🕳️ 洞府寻宝 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)
