@@ -7558,7 +7558,7 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
         "deep_start": 1,
         "deep_force": 1,
         "small_world": 2,
-        "small_world_harvest": 2,
+        "small_world_harvest": 0,
         "fishing": 3,
         "stargazer": 4,
         "treasure": 5,

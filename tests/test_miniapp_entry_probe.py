@@ -1259,6 +1259,17 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_next_public_harvest_at"] = now - 1
             self.assertFalse(ui._cave_public_background_action_due("small_world", 1001, now))
 
+    def test_cave_public_due_harvest_precedes_deep_retreat_backlog(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["small_world_next_public_harvest_at"] = now - 1
+            state_module.state["next_deep_retreat_time"] = now - 3600
+
+        harvest_key = ui._cave_public_background_candidate_sort_key("small_world_harvest", 1001, now)
+        deep_key = ui._cave_public_background_candidate_sort_key("deep_status", 1001, now)
+        self.assertLess(harvest_key, deep_key)
+
     def test_cave_public_background_prioritizes_oldest_phaseful_actions(self):
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(1001)
