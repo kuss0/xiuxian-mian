@@ -371,6 +371,11 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(10 * 60 + duel.CD_BUFFER_SEC + 180, delay)
 
+    def test_duel_progress_label_avoids_impossible_fraction_when_manual_facts_exceed_config(self):
+        self.assertEqual("3/3", duel._duel_progress_label(3, 3))
+        self.assertEqual("4 场（配置 3）", duel._duel_progress_label(4, 3))
+        self.assertEqual("4 场", duel._duel_progress_label(4, 0))
+
     def test_duel_win_result_uses_only_batch_stagger(self):
         text = "【天道战报·文字版】\n胜者：@Lpprceqei\n败者：@ccahen"
         with patch.object(duel, "_duel_batch_stagger_sec", return_value=240):

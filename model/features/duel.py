@@ -480,6 +480,16 @@ def _consume_observed_duel_progress():
         state["duel_observed_baseline_count"] = observed
 
 
+def _duel_progress_label(completed, total):
+    completed = max(0, int(completed or 0))
+    total = max(0, int(total or 0))
+    if total <= 0:
+        return f"{completed} 场"
+    if completed <= total:
+        return f"{completed}/{total}"
+    return f"{completed} 场（配置 {total}）"
+
+
 def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
@@ -982,11 +992,11 @@ async def _run_controlled_loadout_restore(now, config):
             save_state()
             if state.get("duel_enabled"):
                 message = (
-                    f"✅ WA 今日斗法完成（{completed}/{total}），原法宝配装已恢复，"
+                    f"✅ WA 今日斗法完成（{_duel_progress_label(completed, total)}），原法宝配装已恢复，"
                     f"次日批次→{fmt_abs_ts(state['next_duel_time'])}。"
                 )
             else:
-                message = f"✅ WA 斗法已关闭（{completed}/{total}），原法宝配装已恢复。"
+                message = f"✅ WA 斗法已关闭（{_duel_progress_label(completed, total)}），原法宝配装已恢复。"
             await send_audit_log(
                 message,
                 scope="identity",
@@ -1863,7 +1873,7 @@ def get_duel_status_text():
         f"- 已启用：{'是' if state.get('duel_enabled') else '否'}",
         f"- 当前目标：{target}",
         f"- 目标池：{target_display}",
-        f"- 次数：{completed_count}/{total_count if total_count > 0 else '未配置'}",
+        f"- 次数：{_duel_progress_label(completed_count, total_count)}",
         f"- 下次执行：{fmt_abs_ts(state.get('next_duel_time', 0))}（{fmt_remaining(state.get('next_duel_time', 0))}）",
         f"- 执行窗口：{get_duel_window_label()}（本地时区，UI 可改）",
         f"- 境界门槛：{DUEL_JIEDAN_MIN_REALM}可打；元婴须{DUEL_YUANYING_MIN_REALM}及以上",
@@ -2036,21 +2046,21 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
             save_state()
             if completion["restoring"]:
                 await send_audit_log(
-                    f"✅ 今日斗法完成：{completion['completed_count']}/{total_count}，开始恢复原法宝配装",
+                    f"✅ 今日斗法完成：{_duel_progress_label(completion['completed_count'], total_count)}，开始恢复原法宝配装",
                     scope="identity",
                     limit=220,
                 )
                 return True
             if completion["daily"]:
                 await send_audit_log(
-                    f"✅ 今日斗法完成：{completion['completed_count']}/{total_count}，"
+                    f"✅ 今日斗法完成：{_duel_progress_label(completion['completed_count'], total_count)}，"
                     f"次日批次→{fmt_abs_ts(completion['next_duel_time'])}",
                     scope="identity",
                     limit=220,
                 )
                 return True
             await send_audit_log(
-                f"✅ 斗法已关闭：{completion['completed_count']}/{total_count}",
+                f"✅ 斗法已关闭：{_duel_progress_label(completion['completed_count'], total_count)}",
                 scope="identity",
                 limit=180,
             )
@@ -2135,11 +2145,11 @@ async def run_duel_scheduler(now):
             pass
         elif completion["daily"]:
             state["duel_last_result"] = (
-                f"今日任务完成：{completed_count}/{total_count}；"
+                f"今日任务完成：{_duel_progress_label(completed_count, total_count)}；"
                 f"次日批次→{fmt_abs_ts(completion['next_duel_time'])}"
             )
         else:
-            state["duel_last_result"] = f"斗法已关闭：{completed_count}/{total_count}"
+            state["duel_last_result"] = f"斗法已关闭：{_duel_progress_label(completed_count, total_count)}"
         save_state()
         return
     if (
