@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import app
+from model import runtime
 from model import state as state_module
 
 
@@ -38,15 +39,23 @@ class _SendAsProbeClient:
 class ChannelSendAsHealthTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._invalid_until_snapshot = copy.deepcopy(runtime._SEND_AS_PEER_INVALID_UNTIL)
+        self._cohort_invalid_until_snapshot = copy.deepcopy(runtime._CHANNEL_SEND_AS_INVALID_UNTIL)
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module._meta_state["identity_account_map"] = {}
         state_module._meta_state["channel_send_as_health"] = {}
+        runtime._SEND_AS_PEER_INVALID_UNTIL.clear()
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL.clear()
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        runtime._SEND_AS_PEER_INVALID_UNTIL.clear()
+        runtime._SEND_AS_PEER_INVALID_UNTIL.update(self._invalid_until_snapshot)
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL.clear()
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL.update(self._cohort_invalid_until_snapshot)
         super().tearDown()
 
     def test_public_cave_entry_allows_channel_freeze_but_not_manual_disable(self):
@@ -84,6 +93,8 @@ class ChannelSendAsHealthTests(unittest.IsolatedAsyncioTestCase):
             "restore_identity_ids": [first_id, second_id],
             "frozen_identity_ids": [first_id, second_id],
         })
+        runtime._SEND_AS_PEER_INVALID_UNTIL[first_id] = now + 1800
+        runtime._CHANNEL_SEND_AS_INVALID_UNTIL[(account_id, game_group_id)] = now + 1800
 
         with (
             patch.object(app, "get_registered_client", return_value=_SendAsProbeClient([first_id, second_id])),
@@ -100,6 +111,12 @@ class ChannelSendAsHealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state_module.get_identity_enabled(second_id))
         self.assertEqual("open", state_module.get_channel_send_as_health()["status"])
         self.assertEqual(2, initialize_mock.call_count)
+        self.assertEqual(0.0, runtime._send_as_peer_invalid_until(
+            first_id,
+            account_id=account_id,
+            game_group_id=game_group_id,
+            now=now,
+        ))
         spread_mock.assert_called_once_with(now, reason="频道身份恢复")
         throttle_mock.assert_called_once_with(
             now,

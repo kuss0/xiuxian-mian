@@ -83,6 +83,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             copy.deepcopy(runtime._GAME_SEND_BLOCK_LAST),
             copy.deepcopy(runtime._SEND_AS_PEER_INVALID_UNTIL),
             copy.deepcopy(runtime._CHANNEL_SEND_AS_INVALID_UNTIL),
+            copy.deepcopy(runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS),
             dict(runtime._ACCOUNT_RPC_LOCKS),
             runtime.is_game_send_quiesced(),
         )
@@ -93,6 +94,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module._meta_state["identity_account_map"] = {}
+        runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.clear()
 
     def tearDown(self):
         runtime._GAME_SEND_LOCK = self._queue_snapshot[0]
@@ -110,9 +112,11 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._SEND_AS_PEER_INVALID_UNTIL.update(copy.deepcopy(self._queue_snapshot[7]))
         runtime._CHANNEL_SEND_AS_INVALID_UNTIL.clear()
         runtime._CHANNEL_SEND_AS_INVALID_UNTIL.update(copy.deepcopy(self._queue_snapshot[8]))
+        runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.clear()
+        runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.update(copy.deepcopy(self._queue_snapshot[9]))
         runtime._ACCOUNT_RPC_LOCKS.clear()
-        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[9])
-        runtime.set_game_send_quiesced(self._queue_snapshot[10])
+        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[10])
+        runtime.set_game_send_quiesced(self._queue_snapshot[11])
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -308,7 +312,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime._GAME_SEND_LOCK.locked())
         self.assertEqual(2, len(client.sent_requests))
 
-    async def test_send_as_peer_invalid_is_definitely_unsent_and_centrally_backed_off(self):
+    async def test_send_as_peer_invalid_only_backs_off_the_failing_identity(self):
         send_as_id = 301299112
         sibling_send_as_id = 301299113
         account_id = 7001
@@ -349,23 +353,64 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIsNone(first)
-        self.assertIsNone(second)
-        self.assertEqual(1, len(client.sent_requests))
+        self.assertEqual(910001, second.id)
+        self.assertEqual(2, len(client.sent_requests))
         block = runtime.classify_game_send_block(send_as_id, ".野外历练 谨慎")
         self.assertEqual("send_as_peer_invalid", block["code"])
         self.assertEqual("unsent", block["status"])
         self.assertTrue(block["definitely_unsent"])
         self.assertGreater(block["blocked_until"], runtime.time.time())
-        backed_off = runtime.classify_game_send_block(sibling_send_as_id, ".天机盘")
-        self.assertEqual("send_as_peer_invalid", backed_off["code"])
-        self.assertEqual("unsent", backed_off["status"])
-        self.assertEqual(block["blocked_until"], backed_off["blocked_until"])
-        self.assertFalse(state_module.get_identity_enabled(send_as_id))
-        self.assertFalse(state_module.get_identity_enabled(sibling_send_as_id))
+        self.assertNotEqual(
+            "send_as_peer_invalid",
+            runtime.classify_game_send_block(sibling_send_as_id, ".天机盘")["code"],
+        )
+        self.assertTrue(state_module.get_identity_enabled(send_as_id))
+        self.assertTrue(state_module.get_identity_enabled(sibling_send_as_id))
+        health = state_module.get_channel_send_as_health()
+        self.assertNotEqual("closed", health.get("status"))
+
+    async def test_distinct_send_as_failures_close_the_whole_channel(self):
+        account_id = 7001
+        identity_ids = [301299111, 301299112, 301299113]
+        for identity_id in [account_id, *identity_ids]:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.set_identity_account(identity_id, account_id)
+        client = _FakeClient([
+            runtime.SendAsPeerInvalidError(request=None),
+            runtime.SendAsPeerInvalidError(request=None),
+            runtime.SendAsPeerInvalidError(request=None),
+        ])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=0),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            for identity_id in identity_ids:
+                result = await runtime.send_game_command(
+                    ".天机盘",
+                    send_as_id=identity_id,
+                    priority="probe",
+                    track=False,
+                )
+                self.assertIsNone(result)
+
         health = state_module.get_channel_send_as_health()
         self.assertEqual("closed", health["status"])
         self.assertEqual(account_id, health["account_id"])
-        self.assertEqual([send_as_id, sibling_send_as_id], health["restore_identity_ids"])
+        self.assertEqual(identity_ids, health["restore_identity_ids"])
+        self.assertTrue(all(not state_module.get_identity_enabled(i) for i in identity_ids))
 
     async def test_send_as_peer_invalid_text_variant_is_definitely_unsent(self):
         send_as_id = 301299112

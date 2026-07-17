@@ -216,6 +216,8 @@ from .runtime import (
     account_rpc_slot,
     check_bot_health_timeout,
     clear_pending_by_reply,
+    _clear_channel_send_as_invalid_observations,
+    _clear_send_as_peer_invalid,
     console_log,
     GAME_SEND_RPC_TIMEOUT_SEC,
     GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC,
@@ -429,6 +431,11 @@ async def run_channel_send_as_health_scheduler(now):
 
     restored = 0
     for identity_id in restored_identity_ids:
+        _clear_send_as_peer_invalid(
+            identity_id,
+            account_id=account_id,
+            game_group_id=game_group_id,
+        )
         if identity_id in get_identity_ids() and not get_identity_enabled(identity_id):
             set_identity_enabled(identity_id, True)
             initialize_identity_runtime(identity_id, now)
@@ -451,6 +458,8 @@ async def run_channel_send_as_health_scheduler(now):
             activate_if_missing=True,
         )
     fully_open = not remaining_restore_ids
+    if fully_open:
+        _clear_channel_send_as_invalid_observations(account_id, game_group_id)
     set_channel_send_as_health({
         "status": "open" if fully_open else "closed",
         "account_id": account_id,

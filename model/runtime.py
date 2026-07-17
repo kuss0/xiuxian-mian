@@ -377,6 +377,7 @@ _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _GAME_SEND_BLOCK_LAST = {}
 _SEND_AS_PEER_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_UNTIL = {}
+_CHANNEL_SEND_AS_INVALID_OBSERVATIONS = {}
 _GAME_SEND_QUIESCED = False
 GAME_SEND_UNKNOWN_BLOCK_CODES = {"send_timeout", "send_exception"}
 GAME_SEND_UNSENT_BLOCK_CODES = {
@@ -407,6 +408,8 @@ LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 60
 SEND_AS_PEER_INVALID_BACKOFF_SEC = 30 * 60
 CHANNEL_SEND_AS_PROBE_INTERVAL_SEC = 5 * 60
+CHANNEL_SEND_AS_GLOBAL_FAILURE_WINDOW_SEC = 90
+CHANNEL_SEND_AS_GLOBAL_FAILURE_THRESHOLD = 3
 GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
@@ -558,14 +561,44 @@ def _mark_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=Non
     until = now + SEND_AS_PEER_INVALID_BACKOFF_SEC
     identity_id = int(send_as_id or 0)
     _SEND_AS_PEER_INVALID_UNTIL[identity_id] = until
-    cohort_key = _channel_send_as_invalid_key(
-        identity_id,
+    return until
+
+
+def _note_channel_send_as_invalid_observation(
+    send_as_id, *, account_id=None, game_group_id=None, now=None
+):
+    """Count distinct identities before escalating a send-as failure globally."""
+    now = float(now or time.time())
+    key = _channel_send_as_invalid_key(
+        send_as_id,
         account_id=account_id,
         game_group_id=game_group_id,
     )
-    if cohort_key:
-        _CHANNEL_SEND_AS_INVALID_UNTIL[cohort_key] = until
-    return until
+    if not key:
+        return 0
+    observations = _CHANNEL_SEND_AS_INVALID_OBSERVATIONS.setdefault(key, {})
+    cutoff = now - CHANNEL_SEND_AS_GLOBAL_FAILURE_WINDOW_SEC
+    for identity_id, observed_at in list(observations.items()):
+        if float(observed_at or 0) < cutoff:
+            observations.pop(identity_id, None)
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        identity_id = 0
+    if identity_id > 0:
+        observations[identity_id] = now
+    if not observations:
+        _CHANNEL_SEND_AS_INVALID_OBSERVATIONS.pop(key, None)
+    return len(observations)
+
+
+def _clear_channel_send_as_invalid_observations(account_id=None, game_group_id=None):
+    try:
+        key = (int(account_id or 0), int(game_group_id or 0))
+    except (TypeError, ValueError, OverflowError):
+        return
+    if key[0] > 0 and key[1] != 0:
+        _CHANNEL_SEND_AS_INVALID_OBSERVATIONS.pop(key, None)
 
 
 def _clear_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=None):
@@ -3312,12 +3345,28 @@ async def _ensure_account_client_ready(tc):
 
 
 async def _handle_send_as_peer_invalid(command, *, send_as_id, account_id, error):
-    until = _mark_send_as_peer_invalid(send_as_id, account_id=account_id)
-    newly_closed, frozen_count = _freeze_channel_send_as_identities(
-        account_id,
-        get_game_group_id(),
-        now=time.time(),
+    now = time.time()
+    game_group_id = get_game_group_id()
+    until = _mark_send_as_peer_invalid(
+        send_as_id,
+        account_id=account_id,
+        game_group_id=game_group_id,
+        now=now,
     )
+    failure_count = _note_channel_send_as_invalid_observation(
+        send_as_id,
+        account_id=account_id,
+        game_group_id=game_group_id,
+        now=now,
+    )
+    newly_closed = False
+    frozen_count = 0
+    if failure_count >= CHANNEL_SEND_AS_GLOBAL_FAILURE_THRESHOLD:
+        newly_closed, frozen_count = _freeze_channel_send_as_identities(
+            account_id,
+            game_group_id,
+            now=now,
+        )
     _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
     if newly_closed:
         await send_audit_log(
