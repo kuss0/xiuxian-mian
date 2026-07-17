@@ -147,6 +147,25 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
     def test_controlled_loadout_accepts_already_unequipped_reply(self):
         self.assertTrue(duel._loadout_unequip_reply("你当前并未祭出任何法宝。"))
 
+    def test_controlled_loadout_exact_anchor_recovers_reply_across_restart_gap(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        reply = {
+            "message_id": 245535,
+            "reply_to_msg_id": 245532,
+            "text": "你已祭出【元合五极山】。",
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_magic_sent_at"] = 245532
+            with patch.object(duel, "find_message_log_replies", return_value=[reply]) as recover_mock:
+                found = duel._find_loadout_reply(now, lambda text: "元合五极山" in text)
+
+        self.assertEqual(reply, found)
+        self.assertEqual(
+            duel.DUEL_LOADOUT_RECOVERY_LOOKBACK_SEC,
+            recover_mock.call_args.kwargs["lookback_sec"],
+        )
+
     async def test_baiji_controlled_loadout_confirms_unequipped_without_equipping(self):
         identity_id = self._prepare_identity(301299112)
         state_module.update_send_as_profile(identity_id, username="jfdffdddd1")

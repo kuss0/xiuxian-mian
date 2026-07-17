@@ -121,6 +121,7 @@ RE_DUEL_TARGET_WINS_REMAINING = re.compile(r"对此人剩余胜场[:：]\s*(?P<r
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
+DUEL_LOADOUT_RECOVERY_LOOKBACK_SEC = 24 * 3600
 DUEL_LOADOUT_REPLY_TIMEOUT_SEC = 120
 DUEL_LOADOUT_STEP_DELAY_SEC = 8
 DUEL_LOADOUT_PHASE_PREFIX = "斗法配装:"
@@ -847,7 +848,7 @@ def _find_loadout_reply(now, predicate):
     replies = find_message_log_replies(
         reply_to_msg_id,
         now,
-        lookback_sec=DUEL_LOG_REPLAY_LOOKBACK_SEC,
+        lookback_sec=DUEL_LOADOUT_RECOVERY_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
         predicate=lambda entry: predicate(str((entry or {}).get("text") or "")),
     )
