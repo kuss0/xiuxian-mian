@@ -136,6 +136,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["@cupaopao"], duel.normalize_duel_targets("@cupaopao, cupaopao"))
         self.assertEqual(".斗法 @cupaopao", duel.build_duel_command("@cupaopao"))
 
+    def test_parse_int_accepts_sqlite_real_message_ids(self):
+        self.assertEqual(245402, duel._parse_int(245402.0))
+        self.assertEqual(245402, duel._parse_int("245402.0"))
+
     def test_controlled_loadout_requires_exact_current_equipment(self):
         self.assertTrue(duel._loadout_reply_matches("你已祭出【玄铁剑】。\n当前祭出：【玄铁剑】\n神识御宝：1/26", ("玄铁剑",)))
         self.assertFalse(duel._loadout_reply_matches("当前祭出：【玄铁剑】、【金光砖】", ("玄铁剑",)))

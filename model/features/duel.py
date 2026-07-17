@@ -160,7 +160,8 @@ _DUEL_DAY_LOG_CACHE = {"day": "", "refreshed_at": 0.0, "entries": []}
 
 def _parse_int(value):
     try:
-        return int(str(value or "0").replace(",", ""))
+        raw = str(value or "0").replace(",", "").strip()
+        return int(float(raw)) if "." in raw else int(raw)
     except (TypeError, ValueError):
         return 0
 
