@@ -191,7 +191,10 @@ async def _send_due_tianti_climb_after_status(send_as_id, delay=None, reserved=F
             return
         console_log("☁️ 天阶状态显示可登，接续排队登天阶。")
 
-    msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=1, send_as_id=send_as_id, priority="chain")
+    # The climb state advances to the next long CD immediately after a
+    # successful send. A transport-level retry after a silent reply can climb
+    # twice, so leave reconciliation to the next status cycle.
+    msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=0, send_as_id=send_as_id, priority="chain")
     with use_identity(send_as_id):
         if not msg:
             _clear_tianti_climb_send_inflight(send_as_id)
@@ -1075,7 +1078,7 @@ async def run_tianti_scheduler(now):
         send_as_id = int(get_current_identity_id() or 0)
         if not _reserve_tianti_climb_send(now, send_as_id=send_as_id):
             return
-        msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=1)
+        msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=0)
         if not msg:
             _clear_tianti_climb_send_inflight(send_as_id)
             _set_tianti_next_climb_time(time.time() + RETRY_MAX_SEC, persist=True)

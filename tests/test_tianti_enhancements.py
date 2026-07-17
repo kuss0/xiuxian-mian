@@ -482,6 +482,30 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_GANGFENG, max_retry=1)
             self.assertEqual(9466042, state_module.state["tianti_last_gangfeng_msg_id"])
 
+    def test_due_climb_disables_transport_retry_after_advancing_local_cd(self):
+        send_as_id = 95028
+        now = 20_000.0
+        sent_at = now + 0.5
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466043, sent_at=sent_at))) as send_mock, \
+                patch.object(tianti, "save_state"), \
+                patch.object(tianti, "console_log"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_wenxin_enabled"] = False
+            state_module.state["tianti_gangfeng_enabled"] = False
+            state_module.state["next_tianti_climb_time"] = now - 1
+            state_module.state["next_tianti_status_time"] = now + 3600
+            state_module.state["tianti_last_status_seen_at"] = now
+            state_module.state["tianti_cooldown_text"] = "可立即登阶"
+
+            asyncio.run(tianti.run_tianti_scheduler(now))
+
+            send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_CLIMB, max_retry=0)
+            self.assertEqual(9466043, state_module.state["tianti_last_climb_msg_id"])
+            self.assertGreater(state_module.state["next_tianti_climb_time"], sent_at)
+
     def test_climb_reply_with_gangfeng_wait_updates_climb_gate(self):
         send_as_id = 95012
         now = 12_000.0
