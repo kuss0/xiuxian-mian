@@ -100,6 +100,65 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
     def test_controlled_loadout_accepts_already_unequipped_reply(self):
         self.assertTrue(duel._loadout_unequip_reply("你当前并未祭出任何法宝。"))
 
+    async def test_baiji_controlled_loadout_confirms_unequipped_without_equipping(self):
+        identity_id = self._prepare_identity(301299112)
+        state_module.update_send_as_profile(identity_id, username="jfdffdddd1")
+        now = 1_700_000_000.0
+        config = duel.DUEL_CONTROLLED_LOADOUTS[identity_id]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = ""
+
+            sent_msg = SimpleNamespace(id=1000, sent_at=now)
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                prepared = await duel._run_controlled_loadout_prepare(now, config)
+
+            self.assertFalse(prepared)
+            send_mock.assert_awaited_once_with(".卸下法宝", track=False, max_retry=0, source_module="斗法配装")
+            self.assertEqual("斗法配装:prepare_unequip_wait", state_module.state["duel_last_result"])
+
+            with (
+                patch.object(duel, "_find_loadout_reply", return_value={"text": "你当前并未祭出任何法宝。"}),
+                patch.object(duel, "send_game_command", new=AsyncMock()) as second_send_mock,
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                prepared = await duel._run_controlled_loadout_prepare(now + 10, config)
+
+            self.assertFalse(prepared)
+            second_send_mock.assert_not_awaited()
+            audit_mock.assert_awaited_once()
+            self.assertTrue(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
+
+            prepared = await duel._run_controlled_loadout_prepare(now + 20, config)
+            self.assertTrue(prepared)
+
+    def test_baiji_batch_completion_keeps_unequipped_without_restore_commands(self):
+        identity_id = self._prepare_identity(301299112)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+
+            completion = duel._complete_duel_batch(now)
+
+            self.assertFalse(completion["restoring"])
+            self.assertTrue(completion["daily"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertFalse(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:restored", state_module.state["duel_last_result"])
+            self.assertGreater(state_module.state["next_duel_time"], now)
+
     async def test_wa_controlled_loadout_confirms_only_xuantie_before_duel(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

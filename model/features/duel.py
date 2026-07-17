@@ -124,6 +124,13 @@ DUEL_DEFAULT_WINDOW_END_MINUTE = 23 * 60 + 59
 DUEL_CAPACITY_SELF_INTERVAL_SEC = DUEL_SAME_TARGET_COOLDOWN_SEC + DUEL_BATCH_STAGGER_MIN_SEC
 DUEL_CAPACITY_TARGET_INTERVAL_SEC = DUEL_SAME_TARGET_COOLDOWN_SEC + DUEL_TARGET_CONTENTION_BUFFER_SEC
 DUEL_CONTROLLED_LOADOUTS = {
+    301299112: {
+        # 吧唧作为修为转移目标时保持空装；批次结束后也不自动穿回。
+        "battle": (),
+        "restore": (),
+        "unequip_only": True,
+        "keep_unequipped": True,
+    },
     8659059191: {
         "battle": ("玄铁剑",),
         "restore": (
@@ -392,12 +399,18 @@ def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
     loadout_config = _controlled_loadout_config()
-    restoring = bool(loadout_config and state.get("duel_unequip_prepared"))
+    keep_unequipped = bool(loadout_config and loadout_config.get("keep_unequipped"))
+    loadout_prepared = bool(loadout_config and state.get("duel_unequip_prepared"))
+    restoring = bool(loadout_prepared and not keep_unequipped)
     if restoring:
         _clear_loadout_pending()
         _set_loadout_phase("restore_needed")
         state["next_duel_time"] = float(now + DUEL_LOADOUT_STEP_DELAY_SEC)
     else:
+        if loadout_prepared:
+            _clear_loadout_pending()
+            state["duel_unequip_prepared"] = False
+            _set_loadout_phase("restored")
         state["duel_completed_count"] = 0
         state["next_duel_time"] = _next_daily_duel_time(now) if state.get("duel_enabled") else 0
     return {
@@ -514,7 +527,8 @@ async def _stop_loadout_batch(message, *, restore=False):
 async def _run_controlled_loadout_prepare(now, config):
     phase = _loadout_phase()
     battle_items = tuple(config.get("battle") or ())
-    if not battle_items:
+    unequip_only = bool(config.get("unequip_only"))
+    if not battle_items and not unequip_only:
         return True
     if state.get("duel_unequip_prepared"):
         return True
@@ -528,9 +542,16 @@ async def _run_controlled_loadout_prepare(now, config):
         reply = _find_loadout_reply(now, _loadout_unequip_reply)
         if reply:
             _clear_loadout_pending()
-            _set_loadout_phase("prepare_equip")
+            if unequip_only:
+                state["duel_unequip_prepared"] = True
+                state["duel_last_error"] = ""
+                _set_loadout_phase("battle_ready")
+            else:
+                _set_loadout_phase("prepare_equip")
             _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
             save_state()
+            if unequip_only:
+                await send_audit_log("🗡️ 斗法配装已确认：当前未祭出法宝。", scope="identity", limit=180)
             return False
         if float(state.get("duel_magic_due_at", 0) or 0) <= now:
             await _stop_loadout_batch("斗法配装卸装回包超时，未进入斗法")
@@ -546,7 +567,7 @@ async def _run_controlled_loadout_prepare(now, config):
             _set_loadout_phase("battle_ready")
             _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
             save_state()
-            await send_audit_log("🗡️ WA 斗法配装已确认：仅祭出玄铁剑。", scope="identity", limit=180)
+            await send_audit_log("🗡️ 斗法配装已确认：仅祭出玄铁剑。", scope="identity", limit=180)
             return False
         if float(state.get("duel_magic_due_at", 0) or 0) <= now:
             await _stop_loadout_batch("斗法配装未确认仅祭出玄铁剑，已停止批次")
