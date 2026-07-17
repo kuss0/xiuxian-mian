@@ -12,6 +12,7 @@ from ..config import (
     CMD_WANXIN_ASSIST_BANNER,
     CMD_WANXIN_ASSIST_IDENTIFY,
     CMD_WANXIN_ASSIST_STRIP,
+    CMD_WANXIN_CANCEL_COMMISSION,
     CMD_WANXIN_DEDUCE,
     CMD_WANXIN_HELP,
     CMD_WANXIN_MOON_GREET,
@@ -33,6 +34,7 @@ from ..runtime import classify_game_send_block, console_log, send_audit_log, sen
 from ..state import (
     get_current_identity_id,
     get_identity_display_name,
+    get_identity_enabled,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
@@ -68,11 +70,14 @@ WANXIN_MOON_SEAL_MIN_AFFINITY = WANXIN_MOON_VOYAGE_AFFINITY_RESERVE + WANXIN_MOO
 WANXIN_ANCHOR_MAX_AGE_SEC = 24 * 3600
 WANXIN_UNAVAILABLE_BACKOFF_SEC = 24 * 3600
 WANXIN_PHASEFUL_DEFER_SEC = 5 * 60
+WANXIN_COMMISSION_TTL_SEC = 24 * 3600
+WANXIN_COMMISSION_CANCEL_RETRY_SEC = 10 * 60
 
 WANXIN_ACTION_VISIT = "visit"
 WANXIN_ACTION_PROTECT = "protect"
 WANXIN_ACTION_DEDUCE = "deduce"
 WANXIN_ACTION_PUBLISH = "publish"
+WANXIN_ACTION_CANCEL = "cancel"
 WANXIN_ACTION_ACCEPT = "accept"
 WANXIN_ACTION_IDENTIFY = "identify"
 WANXIN_ACTION_BANNER = "banner"
@@ -99,6 +104,7 @@ WANXIN_ACTION_COMMANDS = {
     WANXIN_ACTION_PROTECT: CMD_WANXIN_PROTECT,
     WANXIN_ACTION_DEDUCE: CMD_WANXIN_DEDUCE,
     WANXIN_ACTION_PUBLISH: CMD_WANXIN_PUBLISH_COMMISSION,
+    WANXIN_ACTION_CANCEL: CMD_WANXIN_CANCEL_COMMISSION,
     WANXIN_ACTION_ACCEPT: CMD_WANXIN_ACCEPT_COMMISSION,
     WANXIN_ACTION_IDENTIFY: CMD_WANXIN_ASSIST_IDENTIFY,
     WANXIN_ACTION_BANNER: CMD_WANXIN_ASSIST_BANNER,
@@ -115,6 +121,7 @@ WANXIN_ACTION_LABELS = {
     WANXIN_ACTION_PROTECT: "护持神魂",
     WANXIN_ACTION_DEDUCE: "推演封魂咒",
     WANXIN_ACTION_PUBLISH: "发布解咒委托",
+    WANXIN_ACTION_CANCEL: "取消解咒委托",
     WANXIN_ACTION_ACCEPT: "接取解咒委托",
     WANXIN_ACTION_IDENTIFY: "辨认咒纹",
     WANXIN_ACTION_BANNER: "借幡镇魂",
@@ -131,6 +138,7 @@ WANXIN_ACTION_FAMILIES = {
     WANXIN_ACTION_PROTECT: "wanxin_protect",
     WANXIN_ACTION_DEDUCE: "wanxin_deduce",
     WANXIN_ACTION_PUBLISH: "wanxin_commission",
+    WANXIN_ACTION_CANCEL: "wanxin_cancel",
     WANXIN_ACTION_ACCEPT: "wanxin_accept",
     WANXIN_ACTION_IDENTIFY: "wanxin_assist_identify",
     WANXIN_ACTION_BANNER: "wanxin_assist_banner",
@@ -270,6 +278,10 @@ def _default_wanxin_commission():
         "accepted_at": 0,
         "accept_msg_id": 0,
         "helper_username": "",
+        "claimed_elsewhere": False,
+        "claim_helper_username": "",
+        "cancel_due_at": 0,
+        "cancel_msg_id": 0,
     }
 
 
@@ -363,7 +375,10 @@ def normalize_wanxin_observation(value=None):
     commission["published_at"] = max(0.0, _safe_float(commission.get("published_at"), 0))
     commission["accepted_at"] = max(0.0, _safe_float(commission.get("accepted_at"), 0))
     commission["accepted"] = _normalize_bool(commission.get("accepted"), False)
-    for key in ("owner_username", "helper_username"):
+    commission["claimed_elsewhere"] = _normalize_bool(commission.get("claimed_elsewhere"), False)
+    commission["cancel_due_at"] = max(0.0, _safe_float(commission.get("cancel_due_at"), 0))
+    commission["cancel_msg_id"] = max(0, _safe_int(commission.get("cancel_msg_id"), 0))
+    for key in ("owner_username", "helper_username", "claim_helper_username"):
         commission[key] = str(commission.get(key) or "").strip().lstrip("@")
     observed["commission"] = commission
 
@@ -435,14 +450,25 @@ def _owner_username(send_as_id=None):
     return str(profile.get("username") or "").strip().lstrip("@")
 
 
+def _identity_username_keys(send_as_id):
+    profile = get_send_as_profile(send_as_id)
+    values = [profile.get("username")]
+    aliases = profile.get("username_aliases")
+    if isinstance(aliases, (list, tuple, set)):
+        values.extend(aliases)
+    return {
+        str(value or "").strip().lstrip("@").casefold()
+        for value in values
+        if str(value or "").strip().lstrip("@")
+    }
+
+
 def _find_identity_by_username(username):
     target = str(username or "").strip().lstrip("@").casefold()
     if not target:
         return 0
     for identity_id in get_identity_ids():
-        profile = get_send_as_profile(identity_id)
-        candidate = str(profile.get("username") or "").strip().lstrip("@").casefold()
-        if candidate and candidate == target:
+        if target in _identity_username_keys(identity_id):
             return int(identity_id)
     return 0
 
@@ -481,6 +507,10 @@ def looks_like_wanxin_text(text):
         "封魂咒",
         "南宫婉封魂",
         "解咒委托",
+        "委托不存在或已被他人接取",
+        "委托已被接取",
+        "委托已过期",
+        "可取消的解咒委托",
         "咒契协定",
         "阴罗辨咒",
         "借幡镇魂",
@@ -659,6 +689,34 @@ def parse_wanxin_text(text, now=None, family=""):
             "commission_id": _safe_int(match.group("id"), 0) if match else 0,
             "available": "yes",
             "summary": "委托已发布",
+        })
+        return parsed
+    if "解咒委托已取消" in raw or "当前没有可取消的解咒委托" in raw:
+        parsed.update({
+            "type": "commission_cancelled",
+            "available": "yes",
+            "summary": "委托已取消" if "已取消" in raw else "当前无可取消委托",
+        })
+        return parsed
+    if "委托已被接取" in raw and "无法直接取消" in raw:
+        parsed.update({
+            "type": "commission_cancel_blocked",
+            "available": "yes",
+            "summary": "委托尚未满协定期限",
+        })
+        return parsed
+    if "该委托已过期" in raw and "取消解咒委托" in raw:
+        parsed.update({
+            "type": "commission_expired",
+            "available": "yes",
+            "summary": "委托已过期，等待发布者取消",
+        })
+        return parsed
+    if "该委托不存在或已被他人接取" in raw:
+        parsed.update({
+            "type": "commission_claimed_elsewhere",
+            "available": "yes",
+            "summary": "委托已被他人接取",
         })
         return parsed
     if "你已有进行中的解咒委托" in raw:
@@ -888,6 +946,39 @@ def _mark_commission_invalid(observed, now, reason=""):
     _schedule_next(observed, now)
 
 
+def _commission_cancel_due_at(commission, now):
+    published_at = float((commission or {}).get("published_at", 0) or 0)
+    if published_at > 0:
+        return published_at + WANXIN_COMMISSION_TTL_SEC + CD_BUFFER_SEC
+    return float(now + WANXIN_COMMISSION_TTL_SEC + CD_BUFFER_SEC)
+
+
+def _mark_commission_claimed_elsewhere(observed, now, helper_username="", reason=""):
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else _default_wanxin_commission()
+    commission["accepted"] = False
+    commission["accepted_at"] = 0
+    commission["helper_username"] = ""
+    commission["claimed_elsewhere"] = True
+    commission["claim_helper_username"] = str(helper_username or "").strip().lstrip("@")
+    commission["cancel_due_at"] = max(
+        float(commission.get("cancel_due_at", 0) or 0),
+        _commission_cancel_due_at(commission, now),
+    )
+    observed["commission"] = commission
+    _clear_pending(observed)
+    observed["auto_last_action"] = WANXIN_ACTION_ACCEPT
+    observed["auto_last_result"] = reason or "委托已被他人接取"
+    observed["auto_last_error"] = ""
+    observed["auto_next_time"] = float(commission["cancel_due_at"])
+    _push_recent(
+        observed,
+        now,
+        WANXIN_ACTION_ACCEPT,
+        "claimed_elsewhere",
+        f"helper={commission['claim_helper_username'] or 'unknown'} cancel_at={fmt_abs_ts(commission['cancel_due_at'])}",
+    )
+
+
 def _consume_commission(observed):
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else _default_wanxin_commission()
     owner_username = str(commission.get("owner_username") or _owner_username() or "").strip().lstrip("@")
@@ -901,6 +992,72 @@ def _consume_commission(observed):
     assist["identified_commission_id"] = 0
     assist["bannered_commission_id"] = 0
     observed["assist"] = assist
+
+
+def _assist_identity_ready(observed):
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
+    return bool(
+        assist_send_as_id > 0
+        and has_identity(assist_send_as_id)
+        and get_identity_enabled(assist_send_as_id)
+        and _is_yinluo_identity(assist_send_as_id)
+    )
+
+
+def _recover_external_commission_claim_from_log(observed, now):
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    if int(commission.get("id", 0) or 0) <= 0 or commission.get("accepted") or commission.get("claimed_elsewhere"):
+        return False
+    published_at = float(commission.get("published_at", 0) or 0)
+    if published_at <= 0:
+        return False
+    owner_usernames = _identity_username_keys(get_current_identity_id())
+    stored_owner = str(commission.get("owner_username") or "").strip().lstrip("@").casefold()
+    if stored_owner:
+        owner_usernames.add(stored_owner)
+    if not owner_usernames:
+        return False
+    assist_send_as_id = int((observed.get("assist") or {}).get("send_as_id", 0) or 0)
+    assist_usernames = _identity_username_keys(assist_send_as_id)
+    end_ts = min(float(now), published_at + WANXIN_COMMISSION_TTL_SEC + CD_BUFFER_SEC)
+    for entry, entry_ts in _iter_message_log_entries_between(max(0.0, published_at - 5), end_ts):
+        if str(entry.get("event_type") or "") not in {"message", "edit"}:
+            continue
+        parsed = parse_wanxin_text(entry.get("text") or "", now=entry_ts)
+        if not parsed or parsed.get("type") != "commission_accepted":
+            continue
+        target = str(parsed.get("target_username") or "").strip().lstrip("@").casefold()
+        helper = str(parsed.get("helper_username") or "").strip().lstrip("@").casefold()
+        if target not in owner_usernames or (helper and helper in assist_usernames):
+            continue
+        _mark_commission_claimed_elsewhere(
+            observed,
+            entry_ts,
+            parsed.get("helper_username") or "",
+            "委托已被其他阴罗咒师接取",
+        )
+        return True
+    accept_msg_id = int(commission.get("accept_msg_id", 0) or 0)
+    if accept_msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        accept_msg_id,
+        now,
+        lookback_sec=WANXIN_COMMISSION_TTL_SEC + 3600,
+        lookahead_sec=30,
+        predicate=_is_wanxin_reply_log_entry,
+    )
+    for entry in replies:
+        parsed = parse_wanxin_text(entry.get("text") or "", now=float(entry.get("ts_epoch") or now), family="wanxin_accept")
+        if parsed and parsed.get("type") in {"commission_claimed_elsewhere", "commission_expired"}:
+            _mark_commission_claimed_elsewhere(
+                observed,
+                float(entry.get("ts_epoch") or now),
+                reason=parsed.get("summary") or "委托已被他人接取",
+            )
+            return True
+    return False
 
 
 def _schedule_next(observed, now, delay_sec=WANXIN_CHAIN_STEP_SEC, *, result="", error=""):
@@ -1297,6 +1454,8 @@ def _owner_needs_commission(observed, now):
     config = normalize_wanxin_auto_config(observed.get("auto_config"))
     if not config.get("publish_enabled") or not config.get("assist_enabled"):
         return False
+    if not _assist_identity_ready(observed):
+        return False
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
     if int(commission.get("id", 0) or 0) > 0:
         return False
@@ -1309,7 +1468,22 @@ def _owner_needs_commission(observed, now):
 def _owner_needs_accept(observed):
     config = normalize_wanxin_auto_config(observed.get("auto_config"))
     commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
-    return bool(config.get("assist_enabled") and int(commission.get("id", 0) or 0) > 0 and not commission.get("accepted"))
+    return bool(
+        config.get("assist_enabled")
+        and _assist_identity_ready(observed)
+        and int(commission.get("id", 0) or 0) > 0
+        and not commission.get("accepted")
+        and not commission.get("claimed_elsewhere")
+    )
+
+
+def _owner_needs_cancel(observed, now):
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    return bool(
+        int(commission.get("id", 0) or 0) > 0
+        and commission.get("claimed_elsewhere")
+        and float(commission.get("cancel_due_at", 0) or 0) <= now
+    )
 
 
 def _commission_accept_evidence_valid(observed):
@@ -1364,6 +1538,17 @@ async def run_wanxin_scheduler(now):
             return
         if not (observed.get("commission") or {}).get("owner_username"):
             observed["commission"]["owner_username"] = _owner_username()
+        if _recover_external_commission_claim_from_log(observed, now):
+            _set_observed(observed)
+            save_state()
+            return
+        if _owner_needs_cancel(observed, now):
+            await _send_owner_action(observed, WANXIN_ACTION_CANCEL, now)
+            if int((observed.get("pending") or {}).get("msg_id", 0) or 0) > 0:
+                observed["commission"]["cancel_msg_id"] = int(observed["pending"]["msg_id"])
+            _set_observed(observed)
+            save_state()
+            return
         if _owner_needs_commission(observed, now):
             reward = int(observed.get("auto_config", {}).get("reward_lingshi", 1) or 1)
             await _send_owner_action(
@@ -1533,6 +1718,10 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         if ptype == "commission_published" or not commission.get("published_at"):
             commission["published_at"] = float(now)
         commission["owner_username"] = commission.get("owner_username") or _owner_username()
+        commission["claimed_elsewhere"] = False
+        commission["claim_helper_username"] = ""
+        commission["cancel_due_at"] = 0
+        commission["cancel_msg_id"] = 0
         if int(getattr(reply_to, "id", 0) or 0) > 0:
             commission["publish_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
         if commission["id"] != previous_commission_id:
@@ -1542,6 +1731,27 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         observed["auto_last_error"] = "" if commission["id"] else "委托存在但未解析到ID"
         observed["auto_next_time"] = float(now)
         _clear_pending(observed)
+    elif ptype == "commission_cancelled":
+        _consume_commission(observed)
+        observed["auto_last_action"] = WANXIN_ACTION_CANCEL
+        observed["auto_last_result"] = parsed.get("summary") or "委托已取消"
+        observed["auto_last_error"] = ""
+        _clear_pending(observed)
+        _schedule_next(observed, now)
+    elif ptype == "commission_cancel_blocked":
+        commission = observed["commission"]
+        commission["claimed_elsewhere"] = True
+        commission["cancel_due_at"] = max(
+            _commission_cancel_due_at(commission, now),
+            now + WANXIN_COMMISSION_CANCEL_RETRY_SEC,
+        )
+        observed["auto_last_action"] = WANXIN_ACTION_CANCEL
+        observed["auto_last_result"] = parsed.get("summary") or "委托尚未到期"
+        observed["auto_last_error"] = ""
+        observed["auto_next_time"] = float(commission["cancel_due_at"])
+        _clear_pending(observed)
+    elif ptype in {"commission_claimed_elsewhere", "commission_expired"}:
+        _mark_commission_claimed_elsewhere(observed, now, reason=parsed.get("summary") or "委托已被他人接取")
     elif ptype in {"panel", "help", "moon_panel", "moon_awakened"}:
         if ptype in {"moon_panel", "moon_awakened"}:
             observed["moon_awakened"] = True
@@ -1627,15 +1837,29 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
         ptype = parsed.get("type")
         if ptype == "commission_accepted":
             commission = observed["commission"]
-            commission["accepted"] = True
-            commission["accepted_at"] = float(now)
-            commission["helper_username"] = parsed.get("helper_username") or commission.get("helper_username") or ""
-            if result_msg_id:
-                commission["accept_msg_id"] = int(result_msg_id)
-            observed["auto_last_result"] = f"咒契已成：@{commission['helper_username'] or '阴罗咒师'}"
-            observed["auto_last_error"] = ""
-            _clear_pending(observed)
-            _schedule_next(observed, now)
+            helper_username = parsed.get("helper_username") or ""
+            assist_send_as_id = int((observed.get("assist") or {}).get("send_as_id", 0) or 0)
+            assist_usernames = _identity_username_keys(assist_send_as_id)
+            if helper_username and assist_usernames and helper_username.casefold() not in assist_usernames:
+                _mark_commission_claimed_elsewhere(
+                    observed,
+                    now,
+                    helper_username,
+                    f"委托被 @{helper_username} 接取",
+                )
+            else:
+                commission["accepted"] = True
+                commission["accepted_at"] = float(now)
+                commission["helper_username"] = helper_username or commission.get("helper_username") or ""
+                commission["claimed_elsewhere"] = False
+                commission["claim_helper_username"] = ""
+                commission["cancel_due_at"] = 0
+                if result_msg_id:
+                    commission["accept_msg_id"] = int(result_msg_id)
+                observed["auto_last_result"] = f"咒契已成：@{commission['helper_username'] or '阴罗咒师'}"
+                observed["auto_last_error"] = ""
+                _clear_pending(observed)
+                _schedule_next(observed, now)
         elif ptype in {"assist_identify_success", "assist_banner_success", "assist_strip_success", "assist_strip_failed"}:
             if ptype == "assist_identify_success":
                 action = WANXIN_ACTION_IDENTIFY
@@ -1695,6 +1919,8 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
         elif ptype == "commission_invalid":
             action = _matching_pending_action(observed, matched_family)
             _mark_commission_invalid(observed, now, parsed.get("summary") or "咒契失效")
+        elif ptype in {"commission_claimed_elsewhere", "commission_expired"}:
+            _mark_commission_claimed_elsewhere(observed, now, reason=parsed.get("summary") or "委托已被他人接取")
         elif ptype == "cooldown":
             next_time = float(parsed.get("next_time", 0) or now + WANXIN_RECOVERY_RETRY_SEC)
             action = parsed.get("cooldown_action") or action
@@ -1810,6 +2036,9 @@ def get_wanxin_ui_state(now=None):
             "helper_username": commission.get("helper_username") or "",
             "publish_msg_id": int(commission.get("publish_msg_id", 0) or 0),
             "accepted_at": fmt_abs_ts(commission.get("accepted_at", 0) or 0),
+            "claimed_elsewhere": bool(commission.get("claimed_elsewhere")),
+            "claim_helper_username": commission.get("claim_helper_username") or "",
+            "cancel_due_at": fmt_abs_ts(commission.get("cancel_due_at", 0) or 0),
         },
         "assist": {
             "send_as_id": int(assist.get("send_as_id", 0) or 0),
@@ -1844,7 +2073,7 @@ def get_wanxin_status_text():
         f"- 下次探望：{fmt_abs_ts(observed.get('next_visit_time', 0))}（{fmt_remaining(observed.get('next_visit_time', 0))}）",
         f"- 下次护持：{fmt_abs_ts(observed.get('next_protect_time', 0))}（{fmt_remaining(observed.get('next_protect_time', 0))}）",
         f"- 下次推演：{fmt_abs_ts(observed.get('next_deduce_time', 0))}（{fmt_remaining(observed.get('next_deduce_time', 0))}）",
-        f"- 委托：ID {commission.get('id') or '无'}｜{'已接取' if commission.get('accepted') else '未接取'}",
+        f"- 委托：ID {commission.get('id') or '无'}｜{'他人接取，待取消' if commission.get('claimed_elsewhere') else ('已接取' if commission.get('accepted') else '未接取')}",
         f"- 阴罗协助：{assist.get('send_as_id') or '未配置'}｜辨咒 {fmt_abs_ts(assist.get('next_identify_time', 0))}｜借幡 {fmt_abs_ts(assist.get('next_banner_time', 0))}｜剥离 {fmt_abs_ts(assist.get('next_strip_time', 0))}",
         f"- 锚点：{assist.get('last_anchor_msg_id') or '无'}",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
@@ -1852,6 +2081,8 @@ def get_wanxin_status_text():
     if observed.get("pending"):
         pending = observed["pending"]
         lines.append(f"- 待回复：{WANXIN_ACTION_LABELS.get(pending.get('action'), pending.get('action'))} msg={pending.get('msg_id')} due={fmt_abs_ts(pending.get('reply_due_at', 0))}")
+    if commission.get("claimed_elsewhere"):
+        lines.append(f"- 委托解锁：{fmt_abs_ts(commission.get('cancel_due_at', 0))}（{fmt_remaining(commission.get('cancel_due_at', 0))}）")
     if observed.get("auto_last_result"):
         lines.append(f"- 最近结果：{observed.get('auto_last_result')}")
     if observed.get("auto_last_error"):

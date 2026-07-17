@@ -1119,11 +1119,22 @@
 
   async function refreshTransferPanelIfOpen() {
     if (!isTransferModalOpen()) return;
-    const runtime = snapshot().storage_bag_transfer || {};
-    const batchRuntime = runtime.batch || {};
-    if (!runtime.running && !batchRuntime.running) return;
-    if (typeof refreshState === 'function') await refreshState({ silent: true, keepFlash: true });
-    renderTransferPanel();
+    try {
+      const response = await fetch('/api/state', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      const data = typeof parseApiResponse === 'function'
+        ? await parseApiResponse(response)
+        : await response.json();
+      if (!data || !data.snapshot) return;
+      if (typeof applySnapshot === 'function') {
+        applySnapshot(data.snapshot, { keepFlash: true });
+      }
+      renderTransferPanel();
+    } catch (_error) {
+      // The global refresh path will surface persistent API or auth failures.
+    }
   }
 
   document.addEventListener('click', function (event) {

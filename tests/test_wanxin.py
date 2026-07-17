@@ -130,6 +130,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wanxin_protect", action_guard.resolve_action_key(".护持神魂"))
         self.assertEqual("wanxin_deduce", action_guard.resolve_action_key(".推演封魂咒"))
         self.assertEqual("wanxin_commission", action_guard.resolve_action_key(".发布解咒委托 66"))
+        self.assertEqual("wanxin_cancel", action_guard.resolve_action_key(".取消解咒委托"))
         self.assertEqual("wanxin_accept", action_guard.resolve_action_key(".接取解咒委托 5"))
         self.assertEqual("wanxin_assist_identify", action_guard.resolve_action_key(".辨认咒纹"))
         self.assertEqual("wanxin_assist_banner", action_guard.resolve_action_key(".借幡镇魂"))
@@ -277,6 +278,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scheduler_publishes_commission_with_configured_reward(self):
         identity_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_000.0
         fake_msg = SimpleNamespace(id=7001, sent_at=now)
         with state_module.use_identity(identity_id):
@@ -285,6 +287,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "auto_config": {"reward_lingshi": 66, "publish_enabled": True, "assist_enabled": True},
                 "auto_next_time": now - 1,
                 "soul_seal": 5,
+                "assist": {"send_as_id": helper_id},
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
@@ -298,6 +301,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scheduler_publishes_when_strip_cycle_is_due_even_at_zero_seal(self):
         owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        state_module.update_send_as_profile(owner_id, username_aliases=["WalterWA2000"])
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_010.0
         with state_module.use_identity(owner_id):
@@ -331,6 +335,30 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["wanxin_observation"]
             self.assertEqual(0, observed["commission"]["id"])
             self.assertEqual("publish", observed["pending"]["action"])
+
+    async def test_scheduler_does_not_publish_when_helper_identity_is_disabled(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        state_module.set_identity_enabled(helper_id, False)
+        now = 1_800_000_015.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "auto_config": {"publish_enabled": True, "assist_enabled": True},
+                "commission": {"id": 0, "owner_username": "WalterWA2000"},
+                "assist": {"send_as_id": helper_id, "strip_enabled": True, "next_strip_time": now - 1},
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
 
     async def test_scheduler_waits_to_publish_until_strip_is_due(self):
         identity_id = self._prepare_identity()
@@ -891,6 +919,93 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(169760, observed["commission"]["accept_msg_id"])
             self.assertEqual({}, observed["pending"])
         self.assertIn(helper_id, [call.kwargs.get("send_as_id") for call in close_guard.call_args_list])
+
+    async def test_external_helper_claim_waits_until_24h_cancel_boundary(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        state_module.update_send_as_profile(owner_id, username_aliases=["WalterWA2000"])
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        listener_id = self._prepare_identity(301299112, username="jfdffdddd")
+        published_at = 1_800_000_000.0
+        accepted_at = published_at + 3 * 3600
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "commission": {
+                    "id": 144,
+                    "published_at": published_at,
+                    "owner_username": "WalterWA2000",
+                },
+                "assist": {"send_as_id": helper_id},
+            }
+
+        with state_module.use_identity(listener_id), patch.object(wanxin, "save_state"):
+            handled = await wanxin.handle_wanxin_reply(
+                "【咒契协定已成】\n阴罗宗弟子 @DaxCph 已接取 @WalterWA2000 的解咒委托。",
+                accepted_at,
+                matched_family="wanxin_accept",
+                result_msg_id=217964,
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
+            self.assertTrue(observed["commission"]["claimed_elsewhere"])
+            self.assertEqual("DaxCph", observed["commission"]["claim_helper_username"])
+            self.assertEqual(
+                published_at + wanxin.WANXIN_COMMISSION_TTL_SEC + wanxin.CD_BUFFER_SEC,
+                observed["commission"]["cancel_due_at"],
+            )
+            self.assertEqual(observed["commission"]["cancel_due_at"], observed["auto_next_time"])
+
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(observed["commission"]["cancel_due_at"] - 1)
+            send_mock.assert_not_awaited()
+
+    async def test_claimed_commission_cancels_after_24h_then_can_republish(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        published_at = 1_800_000_000.0
+        due_at = published_at + wanxin.WANXIN_COMMISSION_TTL_SEC + wanxin.CD_BUFFER_SEC
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": due_at,
+                "next_visit_time": due_at + 3600,
+                "next_protect_time": due_at + 3600,
+                "next_deduce_time": due_at + 3600,
+                "auto_config": {"publish_enabled": True, "assist_enabled": True},
+                "commission": {
+                    "id": 144,
+                    "published_at": published_at,
+                    "owner_username": "WalterWA2000",
+                    "claimed_elsewhere": True,
+                    "cancel_due_at": due_at,
+                },
+                "assist": {"send_as_id": helper_id, "strip_enabled": True, "next_strip_time": published_at},
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7601, sent_at=due_at))) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(due_at)
+            self.assertEqual(".取消解咒委托", send_mock.await_args.args[0])
+            self.assertEqual("cancel", state_module.state["wanxin_observation"]["pending"]["action"])
+
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "解咒委托已取消，已退回 1 灵石。",
+                    due_at + 1,
+                    reply_to=SimpleNamespace(id=7601, raw_text=".取消解咒委托"),
+                    matched_family="wanxin_cancel",
+                    result_msg_id=7602,
+                )
+            self.assertTrue(handled)
+            observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
+            self.assertEqual(0, observed["commission"]["id"])
+            self.assertFalse(observed["commission"]["claimed_elsewhere"])
 
     async def test_scheduler_targets_identify_with_owner_mention(self):
         owner_id = self._prepare_identity()

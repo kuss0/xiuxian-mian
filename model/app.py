@@ -737,6 +737,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "wanxin_protect": ("护持神魂", "神魂护持", "魂封", "月魄"),
     "wanxin_deduce": ("推演封魂咒", "封魂咒纹", "咒源", "玄冰丹方"),
     "wanxin_commission": ("解咒委托", "委托 ID", "已有进行中的解咒委托"),
+    "wanxin_cancel": ("取消解咒委托", "委托已取消", "暂无可取消的解咒委托"),
     "wanxin_accept": ("咒契协定", "已接取", "解咒委托"),
     "wanxin_assist_identify": ("阴罗辨咒", "辨认咒纹", "咒源", "咒师贡献"),
     "wanxin_assist_banner": ("借幡镇魂", "魂封", "月魄", "咒师贡献"),

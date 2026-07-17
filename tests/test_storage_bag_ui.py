@@ -71,6 +71,20 @@ def test_storage_bag_transfer_runtime_allows_queueing_next_plan():
     assert "当前已有储物袋转移任务执行中" not in start_transfer
 
 
+def test_storage_bag_transfer_modal_refreshes_runtime_even_after_batch_finishes():
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+
+    refresh_panel = script.split("async function refreshTransferPanelIfOpen", 1)[1].split(
+        "document.addEventListener('click'", 1
+    )[0]
+
+    assert "fetch('/api/state'" in refresh_panel
+    assert "cache: 'no-store'" in refresh_panel
+    assert "applySnapshot(data.snapshot, { keepFlash: true })" in refresh_panel
+    assert "if (!runtime.running && !batchRuntime.running) return" not in refresh_panel
+    assert "refreshState({ silent: true" not in refresh_panel
+
+
 def test_storage_bag_transfer_keeps_user_selected_target_even_when_it_was_source():
     script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
     normalize_defaults = script.split("function normalizeTransferDefaults", 1)[1].split(
