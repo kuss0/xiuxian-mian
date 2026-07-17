@@ -273,9 +273,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertIn("境界至少需为元婴后期", state_module.state["duel_last_error"])
+            self.assertIn("元婴须达到元婴后期", state_module.state["duel_last_error"])
 
-        identity_id = self._prepare_identity(8659059192, realm="元婴后期", xiuwei_current=600000)
+        identity_id = self._prepare_identity(8659059192, realm="元婴后期", xiuwei_current=150000)
         with state_module.use_identity(identity_id):
             state_module.state["duel_enabled"] = True
             state_module.state["duel_target"] = "@cupaopao"
@@ -287,21 +287,353 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertIn("斗法前需至少 660000 修为", state_module.state["duel_last_error"])
+            self.assertIn("斗法前需至少 200000 修为", state_module.state["duel_last_error"])
 
-    def test_profile_gate_allows_realms_above_minimum(self):
-        for offset, realm in enumerate(("元婴后期", "化神初期", "化神后期大圆满")):
-            identity_id = self._prepare_identity(8659059200 + offset, realm=realm, xiuwei_current=900000)
+    def test_profile_gate_allows_jiedan_late_and_yuanying_late_plus(self):
+        for offset, realm in enumerate(("结丹后期", "元婴后期", "化神初期", "化神后期大圆满")):
+            identity_id = self._prepare_identity(8659059200 + offset, realm=realm, xiuwei_current=250000)
             with state_module.use_identity(identity_id):
                 self.assertEqual("", duel._profile_gate_reason())
+
+    def test_profile_gate_blocks_yuanying_early_and_mid(self):
+        for offset, realm in enumerate(("元婴初期", "元婴中期")):
+            identity_id = self._prepare_identity(8659059220 + offset, realm=realm, xiuwei_current=900000)
+            with state_module.use_identity(identity_id):
+                reason = duel._profile_gate_reason()
+                self.assertIn("元婴须达到元婴后期", reason)
+                self.assertIn(realm, reason)
+
+    def test_profile_gate_blocks_below_jiedan_late(self):
+        identity_id = self._prepare_identity(8659059230, realm="结丹中期", xiuwei_current=900000)
+        with state_module.use_identity(identity_id):
+            self.assertIn("境界至少需为结丹后期", duel._profile_gate_reason())
 
     def test_profile_gate_blocks_unknown_realm(self):
         identity_id = self._prepare_identity(8659059210, realm="未知境界", xiuwei_current=900000)
         with state_module.use_identity(identity_id):
             self.assertIn("当前=未知境界", duel._profile_gate_reason())
 
+    def test_reserve_xiuwei_default_and_ui_override(self):
+        identity_id = self._prepare_identity(8659059240, realm="元婴后期", xiuwei_current=250000)
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_reserve_xiuwei"] = 0
+            self.assertEqual(200000, duel.get_duel_reserve_xiuwei())
+            self.assertEqual("", duel._profile_gate_reason())
+
+            with patch.object(duel, "save_state"):
+                duel.apply_duel_config(reserve_xiuwei=400000, persist=True)
+            self.assertEqual(400000, state_module.state["duel_reserve_xiuwei"])
+            self.assertEqual(400000, duel.get_duel_reserve_xiuwei())
+            self.assertIn("斗法前需至少 400000 修为", duel._profile_gate_reason())
+
+            with patch.object(duel, "save_state"):
+                duel.apply_duel_config(reserve_xiuwei="", persist=True)
+            self.assertEqual(0, state_module.state["duel_reserve_xiuwei"])
+            self.assertEqual(200000, duel.get_duel_reserve_xiuwei())
+            self.assertEqual("", duel._profile_gate_reason())
+
+    def test_window_normalize_label_and_bounds(self):
+        self.assertEqual(0, duel.normalize_duel_window_minute(-1, 0))
+        self.assertEqual(23 * 60 + 59, duel.normalize_duel_window_minute(9999, 0))
+        self.assertEqual(8 * 60 + 30, duel.normalize_duel_window_minute(8 * 60 + 30, 0))
+        self.assertEqual("08:30-22:00", duel.get_duel_window_label(start_minute=8 * 60 + 30, end_minute=22 * 60))
+
+        # 固定本地日：2024-01-15 12:00 Asia/Shanghai ≈ 1705291200 附近，用 bounds 反推。
+        noon_local = datetime(2024, 1, 15, 12, 0, 0, tzinfo=duel.TZ_LOCAL)
+        now = noon_local.timestamp()
+        start_ts, end_ts = duel.get_duel_window_bounds(now, start_minute=9 * 60, end_minute=18 * 60)
+        self.assertTrue(duel.is_within_duel_exec_window(now, start_minute=9 * 60, end_minute=18 * 60))
+        self.assertFalse(duel.is_within_duel_exec_window(start_ts - 1, start_minute=9 * 60, end_minute=18 * 60))
+        self.assertFalse(duel.is_within_duel_exec_window(end_ts + 1, start_minute=9 * 60, end_minute=18 * 60))
+        # 窗口已过 → 次日开窗
+        after = end_ts + 60
+        open_at = duel.next_duel_exec_window_open(after, start_minute=9 * 60, end_minute=18 * 60)
+        self.assertAlmostEqual(start_ts + 24 * 3600, open_at, places=0)
+
+    def test_estimate_duel_capacity_ok_and_overflow(self):
+        # 全日窗 + 10 场：本号间隔约 13 分，应足够。
+        ok = duel.estimate_duel_capacity(total_count=10, start_minute=0, end_minute=23 * 60 + 59)
+        self.assertTrue(ok["ok"])
+        self.assertGreaterEqual(ok["self_max"], 10)
+        self.assertEqual("", ok["reason"])
+
+        # 60 分钟窗：self_max ≈ 3600/780+1 = 5，10 场应不足。
+        tight = duel.estimate_duel_capacity(total_count=10, start_minute=12 * 60, end_minute=13 * 60)
+        self.assertFalse(tight["ok"])
+        self.assertIn("身份次数", tight["reason"])
+        self.assertLess(tight["self_max"], 10)
+
+        # 同目标合计超共享 CD 容量。
+        target = duel.estimate_duel_capacity(
+            total_count=2,
+            start_minute=0,
+            end_minute=30,  # 30 分钟
+            target_hits=10,
+        )
+        self.assertFalse(target["ok"])
+        self.assertIn("同目标合计", target["reason"])
+
+        # 零宽窗口：最多 1 场瞬时。
+        zero = duel.estimate_duel_capacity(total_count=1, start_minute=10 * 60, end_minute=10 * 60)
+        self.assertTrue(zero["ok"])
+        self.assertEqual(1, zero["self_max"])
+        zero_fail = duel.estimate_duel_capacity(total_count=2, start_minute=10 * 60, end_minute=10 * 60)
+        self.assertFalse(zero_fail["ok"])
+
+    def test_apply_duel_config_window_minutes(self):
+        identity_id = self._prepare_identity(8659059250, realm="元婴后期", xiuwei_current=300000)
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_window_start_minute"] = 0
+            state_module.state["duel_window_end_minute"] = 1439
+            with patch.object(duel, "save_state"):
+                config = duel.apply_duel_config(
+                    total_count=10,
+                    window_start_minute=9 * 60,
+                    window_end_minute=21 * 60 + 30,
+                    persist=True,
+                )
+            self.assertEqual(9 * 60, state_module.state["duel_window_start_minute"])
+            self.assertEqual(21 * 60 + 30, state_module.state["duel_window_end_minute"])
+            self.assertEqual("09:00-21:30", config["window_label"])
+            self.assertEqual(9 * 60, config["window_start_minute"])
+            self.assertIn("capacity", config)
+            # end < start 被钳到 start
+            with patch.object(duel, "save_state"):
+                duel.apply_duel_config(window_start_minute=20 * 60, window_end_minute=8 * 60, persist=True)
+            self.assertEqual(20 * 60, state_module.state["duel_window_start_minute"])
+            self.assertEqual(20 * 60, state_module.state["duel_window_end_minute"])
+
+    def test_plan_duel_presets_yuanying_jiedan_and_excluded(self):
+        plan = duel.plan_duel_presets(
+            [
+                {
+                    "send_as_id": 1001,
+                    "realm": "元婴后期",
+                    "username": "yuanying_a",
+                    "label": "元婴A",
+                },
+                {
+                    "send_as_id": 1002,
+                    "realm": "元婴后期",
+                    "username": "yuanying_b",
+                    "label": "元婴B",
+                },
+                {
+                    "send_as_id": 2001,
+                    "realm": "结丹后期",
+                    "username": "jiedan_1",
+                    "label": "结丹1",
+                },
+                {
+                    "send_as_id": 2002,
+                    "realm": "结丹后期",
+                    "username": "jiedan_2",
+                    "label": "结丹2",
+                },
+                {
+                    "send_as_id": 2003,
+                    "realm": "结丹后期",
+                    "username": "jiedan_3",
+                    "label": "结丹3",
+                },
+                {
+                    "send_as_id": 301299112,
+                    "realm": "元婴后期",
+                    "username": "jfdffdddd",
+                    "label": "吧唧",
+                },
+                {
+                    "send_as_id": 8659059191,
+                    "realm": "元婴后期",
+                    "username": "walterwa2000",
+                    "label": "WA",
+                },
+                {
+                    "send_as_id": 3001,
+                    "realm": "元婴中期",
+                    "username": "mid_only",
+                    "label": "中期",
+                },
+            ]
+        )
+        by_id = {row["send_as_id"]: row for row in plan["rows"]}
+        self.assertEqual(["@yuanying_a", "@yuanying_b"], plan["yuanying_targets"])
+        self.assertEqual(3, plan["jiedan_count"])
+
+        self.assertTrue(by_id[1001]["duel_enabled"])
+        self.assertEqual("@ccahen", by_id[1001]["duel_target"])
+        self.assertEqual(10, by_id[1001]["duel_total_count"])
+        self.assertEqual("yuanying", by_id[1001]["band"])
+
+        self.assertTrue(by_id[2001]["duel_enabled"])
+        self.assertEqual("@yuanying_a", by_id[2001]["duel_target"])
+        self.assertEqual("@yuanying_b", by_id[2002]["duel_target"])
+        self.assertEqual("@yuanying_a", by_id[2003]["duel_target"])
+        self.assertEqual(10, by_id[2001]["duel_total_count"])
+
+        self.assertFalse(by_id[301299112]["duel_enabled"])
+        self.assertEqual("excluded", by_id[301299112]["role"])
+        self.assertFalse(by_id[8659059191]["duel_enabled"])
+        self.assertEqual("excluded", by_id[8659059191]["role"])
+
+        self.assertFalse(by_id[3001]["duel_enabled"])
+        self.assertEqual("none", by_id[3001]["role"])
+
+        # 分组可视化 + 同目标负载 + 容量字段（吸收上游 group 思路）
+        groups = plan["groups"]
+        self.assertEqual(2, len(groups["yuanying_sources"]))
+        self.assertEqual(3, len(groups["jiedan_sources"]))
+        self.assertIn(301299112, groups["excluded"])
+        self.assertIn(8659059191, groups["excluded"])
+        self.assertIn(3001, groups["disabled"])
+        # 元婴均打 @ccahen×10×2=20；结丹打元婴 a/b 各 20/10
+        self.assertEqual(20, groups["target_hits"]["@ccahen"])
+        self.assertEqual(20, groups["target_hits"]["@yuanying_a"])
+        self.assertEqual(10, groups["target_hits"]["@yuanying_b"])
+        self.assertIn("capacity", by_id[1001])
+        self.assertTrue(by_id[1001]["capacity"].get("ok") or by_id[1001]["capacity"].get("reason"))
+        self.assertTrue(by_id[3001]["capacity"].get("skipped"))
+
+    def test_apply_duel_preset_row_writes_config(self):
+        identity_id = self._prepare_identity(99001001, realm="元婴后期", xiuwei_current=300000)
+        state_module.update_send_as_profile(identity_id, username="lab_yuanying")
+        row = {
+            "send_as_id": identity_id,
+            "band": "yuanying",
+            "role": "yuanying",
+            "duel_enabled": True,
+            "duel_target": "@ccahen",
+            "duel_total_count": 10,
+            "reason": "元婴后预设打 @ccahen ×10",
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = False
+            state_module.state["duel_target"] = ""
+            state_module.state["duel_total_count"] = 0
+            # 稳妥：预设不得改写天星斗法线开关
+            state_module.state["tianxing_auto_config"] = {"duel_route_enabled": True}
+            with patch.object(duel, "save_state"):
+                result = duel.apply_duel_preset_row(row, now=1_700_000_000.0, persist=True, force=True)
+            self.assertTrue(result["applied"])
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual("@ccahen", state_module.state["duel_target"])
+            self.assertEqual(10, state_module.state["duel_total_count"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertTrue(state_module.state["tianxing_auto_config"]["duel_route_enabled"])
+
+    def test_apply_duel_preset_disable_does_not_cancel_tianxing_route(self):
+        """排除预设关斗法 ≠ 关模块：不得 cancel 天星斗法线。"""
+        identity_id = self._prepare_identity(99001002, realm="元婴后期", xiuwei_current=300000)
+        now = 1_700_000_000.0
+        row = {
+            "send_as_id": identity_id,
+            "band": "yuanying",
+            "role": "excluded",
+            "duel_enabled": False,
+            "duel_target": "",
+            "duel_total_count": 0,
+            "reason": "吧唧/WA 预设关闭",
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["tianxing_auto_config"] = {"duel_route_enabled": True}
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 10,
+            }
+            with patch.object(duel, "save_state"):
+                result = duel.apply_duel_preset_row(row, now=now, persist=True, force=True)
+            self.assertTrue(result["applied"])
+            self.assertFalse(state_module.state["duel_enabled"])
+            self.assertTrue(state_module.state["tianxing_auto_config"]["duel_route_enabled"])
+            self.assertEqual("斗法", state_module.state["tianxing_observation"]["current_prediction"])
+
+    async def test_scheduler_outside_window_defers_and_may_prepare_tianxing(self):
+        """窗外不发送；改期到开窗后仍可按 lead 提前备天星（稳妥对齐原版 future-due）。"""
+        identity_id = self._prepare_identity(8659059260, realm="元婴后期", xiuwei_current=300000)
+        # 本地 03:00，窗 09:00-18:00
+        now_local = datetime(2024, 1, 15, 3, 0, 0, tzinfo=duel.TZ_LOCAL)
+        now = now_local.timestamp()
+        open_at = duel.get_duel_window_bounds(now, start_minute=9 * 60, end_minute=18 * 60)[0]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["next_duel_time"] = now - 1
+            state_module.state["duel_window_start_minute"] = 9 * 60
+            state_module.state["duel_window_end_minute"] = 18 * 60
+            with (
+                patch.object(duel, "_prepare_duel_tianxing_route", new=AsyncMock(return_value=True)) as prep_mock,
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertAlmostEqual(open_at, state_module.state["next_duel_time"], places=0)
+            self.assertIn("不在斗法执行窗口", state_module.state["duel_last_error"])
+            # 03:00 距 09:00 远大于 60s lead，consume window 为空 → 不调用 prepare
+            prep_mock.assert_not_awaited()
+
+        # 进入 lead：开窗前 30s 应触发 prepare(due=open_at)，仍不发送
+        near = open_at - 30
+        with state_module.use_identity(identity_id):
+            state_module.state["next_duel_time"] = near - 1
+            state_module.state["duel_last_error"] = ""
+            with (
+                patch.object(duel, "_prepare_duel_tianxing_route", new=AsyncMock(return_value=True)) as prep_mock,
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(near)
+
+            send_mock.assert_not_awaited()
+            prep_mock.assert_awaited()
+            self.assertAlmostEqual(open_at, prep_mock.await_args.kwargs.get("due_at") or prep_mock.await_args.args[1], places=0)
+
+    async def test_manual_enable_applies_preset_when_empty(self):
+        yy_id = 9911001
+        jd_id = 9911002
+        for send_as_id, realm, username in (
+            (yy_id, "元婴后期", "lab_yy"),
+            (jd_id, "结丹后期", "lab_jd"),
+        ):
+            state_module.ensure_identity_registered(send_as_id)
+            state_module.update_send_as_profile(
+                send_as_id,
+                username=username,
+                realm=realm,
+                xiuwei_current=300000,
+            )
+            with state_module.use_identity(send_as_id):
+                state_module.state["duel_enabled"] = False
+                state_module.state["duel_target"] = ""
+                state_module.state["duel_total_count"] = 0
+                state_module.state["duel_completed_count"] = 0
+                state_module.state["next_duel_time"] = 0
+
+        with patch.object(control, "save_state"):
+            ok_yy, _ = await control.set_module_enabled("斗法", True, send_as_id=yy_id)
+            ok_jd, _ = await control.set_module_enabled("斗法", True, send_as_id=jd_id)
+        self.assertTrue(ok_yy)
+        self.assertTrue(ok_jd)
+
+        with state_module.use_identity(yy_id):
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual("@ccahen", state_module.state["duel_target"])
+            self.assertEqual(10, state_module.state["duel_total_count"])
+        with state_module.use_identity(jd_id):
+            self.assertTrue(state_module.state["duel_enabled"])
+            self.assertEqual("@lab_yy", state_module.state["duel_target"])
+            self.assertEqual(10, state_module.state["duel_total_count"])
+
     async def test_scheduler_reconciles_consumed_prediction_before_xiuwei_gate(self):
-        identity_id = self._prepare_identity(xiuwei_current=604056)
+        # 修为仍高于 20 万门槛，本用例只验证天星预判消费，不触发修为 gate。
+        identity_id = self._prepare_identity(xiuwei_current=250000)
         now = 1_780_000_000.0
         report_at = now - 3600
         with state_module.use_identity(identity_id):
@@ -957,6 +1289,68 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now + 5)
 
             send_mock.assert_not_awaited()
+
+    async def test_phaseful_settlement_on_duel_root_stays_intermediate_until_final_report(self):
+        identity_id = self._prepare_identity(3765328695)
+        state_module.update_send_as_profile(identity_id, username="Lpprceqei")
+        now = 1_700_000_000.0
+        root_msg_id = 226300
+        reply_to = SimpleNamespace(id=root_msg_id, raw_text=".斗法 @ccahen")
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_reply_to_msg_id"] = root_msg_id
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            state_module.state["duel_started_at"] = now - 5
+            state_module.state["duel_last_result"] = "已发送"
+
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+                patch.object(duel, "_duel_batch_stagger_sec", return_value=5 * 60),
+            ):
+                settlement_handled = await duel.handle_duel_reply(
+                    "【元婴闭关结算】\n你的元婴闭关已经结束。",
+                    now,
+                    reply_to=reply_to,
+                    result_msg_id=226301,
+                )
+
+                self.assertFalse(settlement_handled)
+                self.assertEqual(root_msg_id, state_module.state["duel_reply_to_msg_id"])
+                self.assertEqual(0, state_module.state["duel_completed_count"])
+                self.assertEqual("已发送", state_module.state["duel_last_result"])
+
+                waiting_handled = await duel.handle_duel_reply(
+                    "正在锁定对手天机，请稍候...",
+                    now + 1,
+                    reply_to=reply_to,
+                    result_msg_id=226302,
+                )
+                self.assertTrue(waiting_handled)
+                self.assertEqual(root_msg_id, state_module.state["duel_reply_to_msg_id"])
+                self.assertEqual(226302, state_module.state["duel_open_msg_id"])
+
+                final_handled = await duel.handle_duel_reply(
+                    "【天道战报·文字版】\n"
+                    "攻方：@Lpprceqei · 元婴后期\n"
+                    "守方：@ccahen · 化神后期\n"
+                    "胜者：@ccahen | 余血 100/100万\n"
+                    "败者：@Lpprceqei | 余血 0/100万 | 损失修为 -6.0万",
+                    now + 61,
+                    reply_to=reply_to,
+                    result_msg_id=226309,
+                )
+
+            self.assertTrue(final_handled)
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+            self.assertEqual(226309, state_module.state["duel_last_msg_id"])
+            self.assertIn("斗法结束，胜者 @ccahen", state_module.state["duel_last_result"])
+            self.assertEqual(640000, state_module.get_send_as_profile(identity_id)["xiuwei_current"])
+            audit_mock.assert_awaited_once()
 
     async def test_reply_timeout_uses_random_long_cooldown(self):
         identity_id = self._prepare_identity()

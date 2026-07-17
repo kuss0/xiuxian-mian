@@ -2835,6 +2835,36 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
     def test_summary_replay_accepts_duel_with_target(self):
         self.assertTrue(_phaseful._is_summary_replayable_command(".斗法 @ccahen"))
 
+    def test_summary_finalize_drops_immediate_duel_replay_while_duel_owns_pending(self):
+        send_as_id = 8659059227
+        now = 1_700_001_150.0
+        old_msg_id = 9338519
+        command = ".斗法 @ccahen"
+        self._prepare_identity(send_as_id, "DuelIntermediate")
+
+        payload = {
+            "cmd": command,
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": "normal",
+            "max_retry": 0,
+            "send_intent": {"source_module": "斗法"},
+        }
+        _phaseful._SUMMARY_CONSUMED_COMMANDS[send_as_id] = payload
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_reply_to_msg_id"] = old_msg_id
+            state_module.state["duel_reply_due_at"] = now + 120
+            with patch.object(_phaseful, "_fire_and_forget") as fire_mock:
+                _phaseful._schedule_summary_consumed_command_replay(yuanying.YUANYING_SPEC, now)
+
+        self.assertNotIn(send_as_id, _phaseful._SUMMARY_CONSUMED_COMMANDS)
+        fire_mock.assert_not_called()
+
     async def test_summary_replay_duel_rebuilds_pending_state_once(self):
         send_as_id = 8659059227
         now = 1_700_001_150.0

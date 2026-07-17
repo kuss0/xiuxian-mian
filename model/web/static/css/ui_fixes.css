@@ -1822,6 +1822,26 @@
   flex: 1 1 220px;
 }
 
+.module-setting-hint {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: #0b1220;
+  color: #94a3b8;
+  font-size: var(--ui-type-control, 12px);
+  line-height: 1.45;
+}
+
+.module-setting-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+}
+
 .module-setting-current {
   display: inline-flex;
   align-items: center;

@@ -224,7 +224,16 @@ from .features.explore_rift import (
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.mulan import clear_mulan_state, get_mulan_status_text, schedule_mulan_initial_check
 from .features.wanxin import clear_wanxin_state, get_wanxin_status_text, schedule_wanxin_initial_check
-from .features.duel import apply_duel_config, cancel_duel_tianxing_route, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
+from .features.duel import (
+    apply_duel_config,
+    apply_duel_preset_row,
+    cancel_duel_tianxing_route,
+    clear_duel_state,
+    collect_identity_rows_for_duel_presets,
+    get_duel_status_text,
+    plan_duel_presets,
+    schedule_duel_initial_check,
+)
 from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
@@ -2026,6 +2035,23 @@ def _manual_enable_duel_module_state(now):
     state["duel_last_error"] = ""
     total_count = int(state.get("duel_total_count", 0) or 0)
     completed_count = int(state.get("duel_completed_count", 0) or 0)
+    has_target = bool(str(state.get("duel_target") or "").strip())
+    # 空配置时套用角色预设（结丹后/元婴后×10；吧唧/WA 预设关会在 plan 里体现）。
+    if total_count <= 0 and not has_target:
+        plan = plan_duel_presets(collect_identity_rows_for_duel_presets())
+        current_id = int(get_current_identity_id() or 0)
+        row = next(
+            (item for item in (plan.get("rows") or ()) if int(item.get("send_as_id") or 0) == current_id),
+            None,
+        )
+        if row is not None:
+            apply_duel_preset_row(row, now=now, persist=False, force=True)
+            if not row.get("duel_enabled"):
+                # 预设关闭身份：保持关，避免 UI 打开后立刻开打。
+                state["duel_enabled"] = False
+                return
+            total_count = int(state.get("duel_total_count", 0) or 0)
+            completed_count = int(state.get("duel_completed_count", 0) or 0)
     if total_count > 0 and completed_count >= total_count:
         state["duel_completed_count"] = 0
     if float(state.get("next_duel_time", 0) or 0) > now:

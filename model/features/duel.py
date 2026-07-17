@@ -12,10 +12,12 @@ from ..state import (
     REALM_SORT_ORDER,
     get_current_identity_id,
     get_duel_target_cooldowns,
+    get_identity_ids,
     get_send_as_profile,
     set_duel_target_cooldowns,
     state,
     update_send_as_profile,
+    use_identity,
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .tianxing import (
@@ -28,10 +30,28 @@ from .tianxing import (
 )
 
 
-DUEL_MIN_REALM = "元婴后期"
-DUEL_RESERVE_XIUWEI = 600_000
-DUEL_MAX_LOSS_XIUWEI = 60_000
-DUEL_MIN_XIUWEI = DUEL_RESERVE_XIUWEI + DUEL_MAX_LOSS_XIUWEI
+# Gate: 结丹后期可打；元婴须元婴后期及以上（元婴初/中期不可）。
+# 修为保留默认 20 万地板，可在 UI 按身份覆盖（state.duel_reserve_xiuwei）。
+DUEL_JIEDAN_MIN_REALM = "结丹后期"
+DUEL_YUANYING_MIN_REALM = "元婴后期"
+DUEL_MIN_REALM = DUEL_JIEDAN_MIN_REALM  # status/UI 展示用最低可参战境界
+DUEL_RESERVE_XIUWEI = 200_000
+DUEL_MAX_CONFIG_RESERVE_XIUWEI = 100_000_000
+DUEL_MAX_LOSS_XIUWEI = 0
+DUEL_MIN_XIUWEI = DUEL_RESERVE_XIUWEI  # 默认门槛；运行时以 get_duel_min_xiuwei() 为准
+DUEL_PRESET_TOTAL_COUNT = 10
+DUEL_PRESET_YUANYING_TARGET = "@ccahen"
+# 默认关闭斗法的身份（吧唧 / WA）；其余结丹后、元婴后由预设打开。
+DUEL_PRESET_EXCLUDED_IDENTITY_IDS = frozenset({301299112, 8659059191})
+DUEL_PRESET_EXCLUDED_USERNAMES = frozenset(
+    {
+        "jfdffdddd",
+        "jfdffdddd1",
+        "walterwa2000",
+        "wa2000",
+    }
+)
+DUEL_PRESET_EXCLUDED_LABELS = frozenset({"吧唧", "wa2000", "walterwa2000"})
 # Real final reports can arrive just after two minutes; keep the pending state
 # alive long enough for the normal reply path before log recovery is needed.
 DUEL_REPLY_TIMEOUT_SEC = 150
@@ -58,6 +78,11 @@ DUEL_READY_PREFIX = "⚔️ 法宝齐出！"
 DUEL_REPORT_PREFIX = "【天道战报·文字版】"
 DUEL_FINAL_PREFIX = "【斗法终局】"
 DUEL_SETTLING_TEXT = "战斗结束，正在整理天道战报"
+DUEL_PHASEFUL_INTERMEDIATE_MARKERS = (
+    "元婴闭关结算",
+    "元神归窍总结",
+    "深度闭关总结",
+)
 DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
     "凭借神通侥幸逃脱",
     "侥幸逃脱",
@@ -89,8 +114,15 @@ DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
 DUEL_LOADOUT_REPLY_TIMEOUT_SEC = 120
 DUEL_LOADOUT_STEP_DELAY_SEC = 8
 DUEL_LOADOUT_PHASE_PREFIX = "斗法配装:"
+# 批次打完后，次日重开的散列偏移（兼容旧逻辑）。
 DUEL_DAILY_WINDOW_START_MINUTE = 15
 DUEL_DAILY_WINDOW_SPAN_SEC = 2 * 60 * 60
+# 可配执行时间窗（分钟，本地时区）。默认全天，UI 可收窄（吸收上游 group_duel 窗口思路）。
+DUEL_DEFAULT_WINDOW_START_MINUTE = 0
+DUEL_DEFAULT_WINDOW_END_MINUTE = 23 * 60 + 59
+# 容量预检：单身份最小间隔 ≈ 同目标 CD + 批次错峰下限；同目标全账号共享间隔更严。
+DUEL_CAPACITY_SELF_INTERVAL_SEC = DUEL_SAME_TARGET_COOLDOWN_SEC + DUEL_BATCH_STAGGER_MIN_SEC
+DUEL_CAPACITY_TARGET_INTERVAL_SEC = DUEL_SAME_TARGET_COOLDOWN_SEC + DUEL_TARGET_CONTENTION_BUFFER_SEC
 DUEL_CONTROLLED_LOADOUTS = {
     8659059191: {
         "battle": ("玄铁剑",),
@@ -207,16 +239,152 @@ def _schedule_next_duel(now, delay_sec):
     return state["next_duel_time"]
 
 
+def normalize_duel_window_minute(value, default):
+    try:
+        minute = int(value)
+    except (TypeError, ValueError):
+        minute = int(default)
+    return max(0, min(23 * 60 + 59, minute))
+
+
+def get_duel_window_start_minute():
+    raw = state.get("duel_window_start_minute", None)
+    if raw in (None, ""):
+        return int(DUEL_DEFAULT_WINDOW_START_MINUTE)
+    return normalize_duel_window_minute(raw, DUEL_DEFAULT_WINDOW_START_MINUTE)
+
+
+def get_duel_window_end_minute():
+    raw = state.get("duel_window_end_minute", None)
+    if raw in (None, ""):
+        return int(DUEL_DEFAULT_WINDOW_END_MINUTE)
+    return normalize_duel_window_minute(raw, DUEL_DEFAULT_WINDOW_END_MINUTE)
+
+
+def get_duel_window_label(*, start_minute=None, end_minute=None):
+    start_minute = normalize_duel_window_minute(
+        start_minute if start_minute is not None else get_duel_window_start_minute(),
+        DUEL_DEFAULT_WINDOW_START_MINUTE,
+    )
+    end_minute = normalize_duel_window_minute(
+        end_minute if end_minute is not None else get_duel_window_end_minute(),
+        DUEL_DEFAULT_WINDOW_END_MINUTE,
+    )
+    return f"{start_minute // 60:02d}:{start_minute % 60:02d}-{end_minute // 60:02d}:{end_minute % 60:02d}"
+
+
+def get_duel_window_bounds(now=None, *, start_minute=None, end_minute=None):
+    """Return (window_start_ts, window_end_ts) for the local calendar day of now."""
+    local_now = datetime.fromtimestamp(float(now if now is not None else time.time()), TZ_LOCAL)
+    start_minute = normalize_duel_window_minute(
+        start_minute if start_minute is not None else get_duel_window_start_minute(),
+        DUEL_DEFAULT_WINDOW_START_MINUTE,
+    )
+    end_minute = normalize_duel_window_minute(
+        end_minute if end_minute is not None else get_duel_window_end_minute(),
+        DUEL_DEFAULT_WINDOW_END_MINUTE,
+    )
+    if end_minute < start_minute:
+        end_minute = start_minute
+    start = local_now.replace(hour=start_minute // 60, minute=start_minute % 60, second=0, microsecond=0)
+    end = local_now.replace(hour=end_minute // 60, minute=end_minute % 60, second=0, microsecond=0)
+    return float(start.timestamp()), float(end.timestamp())
+
+
+def is_within_duel_exec_window(now=None, *, start_minute=None, end_minute=None):
+    now = float(now if now is not None else time.time())
+    window_start, window_end = get_duel_window_bounds(now, start_minute=start_minute, end_minute=end_minute)
+    return window_start <= now <= window_end
+
+
+def next_duel_exec_window_open(now=None, *, start_minute=None, end_minute=None):
+    """Next timestamp when the execution window opens (today or tomorrow)."""
+    now = float(now if now is not None else time.time())
+    window_start, window_end = get_duel_window_bounds(now, start_minute=start_minute, end_minute=end_minute)
+    if now < window_start:
+        return window_start
+    if now <= window_end:
+        return now
+    # 已过今日窗口：跳到次日开始。
+    return window_start + 24 * 3600
+
+
+def estimate_duel_capacity(
+    *,
+    total_count,
+    start_minute=None,
+    end_minute=None,
+    target_hits=None,
+    self_interval_sec=None,
+    target_interval_sec=None,
+):
+    """Offline capacity estimate for a same-day batch (absorb upstream group_duel idea).
+
+    total_count: fights this identity wants today.
+    target_hits: optional total fights (all identities) planned against the same target.
+
+    稳妥语义：**纯提示，不拦截发送/不改配置**。
+    只按斗法 CD 粗算，不含天星推命/改命耗时；开了 duel_route 时数字可能偏乐观。
+    """
+    start_minute = normalize_duel_window_minute(
+        start_minute if start_minute is not None else DUEL_DEFAULT_WINDOW_START_MINUTE,
+        DUEL_DEFAULT_WINDOW_START_MINUTE,
+    )
+    end_minute = normalize_duel_window_minute(
+        end_minute if end_minute is not None else DUEL_DEFAULT_WINDOW_END_MINUTE,
+        DUEL_DEFAULT_WINDOW_END_MINUTE,
+    )
+    if end_minute < start_minute:
+        end_minute = start_minute
+    span_sec = max(0, (end_minute - start_minute) * 60)
+    self_interval = max(1, int(self_interval_sec or DUEL_CAPACITY_SELF_INTERVAL_SEC))
+    target_interval = max(1, int(target_interval_sec or DUEL_CAPACITY_TARGET_INTERVAL_SEC))
+    self_max = (span_sec // self_interval) + 1 if span_sec > 0 or total_count <= 1 else 0
+    if span_sec == 0:
+        self_max = 1 if int(total_count or 0) <= 1 else 0
+    target_max = (span_sec // target_interval) + 1 if span_sec > 0 else (1 if int(target_hits or 0) <= 1 else 0)
+    if span_sec == 0 and int(target_hits or 0) <= 1:
+        target_max = 1
+    needed = max(0, int(total_count or 0))
+    hits = max(0, int(target_hits if target_hits is not None else needed))
+    self_ok = needed <= self_max
+    target_ok = hits <= target_max
+    reasons = []
+    if not self_ok:
+        reasons.append(
+            f"身份次数 {needed} 超过窗口容量约 {self_max}（间隔≥{self_interval // 60}分，窗口 {get_duel_window_label(start_minute=start_minute, end_minute=end_minute)}）"
+        )
+    if target_hits is not None and not target_ok:
+        reasons.append(
+            f"同目标合计 {hits} 场超过共享 CD 容量约 {target_max}（间隔≥{target_interval // 60}分）"
+        )
+    return {
+        "ok": bool(self_ok and target_ok),
+        "window_label": get_duel_window_label(start_minute=start_minute, end_minute=end_minute),
+        "window_span_sec": span_sec,
+        "total_count": needed,
+        "self_max": int(self_max),
+        "self_interval_sec": self_interval,
+        "target_hits": hits,
+        "target_max": int(target_max),
+        "target_interval_sec": target_interval,
+        "reason": "；".join(reasons),
+    }
+
+
 def _next_daily_duel_time(now):
     local_now = datetime.fromtimestamp(float(now), TZ_LOCAL)
+    start_minute = get_duel_window_start_minute()
+    # 次日批次：落在执行窗口起点附近，再加身份散列，避免全员同一秒。
     next_day = (local_now + timedelta(days=1)).replace(
-        hour=0,
-        minute=DUEL_DAILY_WINDOW_START_MINUTE,
+        hour=start_minute // 60,
+        minute=start_minute % 60,
         second=0,
         microsecond=0,
     )
     identity_id = int(get_current_identity_id() or 0)
-    offset = identity_id % (DUEL_DAILY_WINDOW_SPAN_SEC + 1)
+    span = max(1, min(DUEL_DAILY_WINDOW_SPAN_SEC, max(60, (get_duel_window_end_minute() - start_minute) * 60)))
+    offset = identity_id % (span + 1)
     return float(next_day.timestamp() + offset)
 
 
@@ -466,17 +634,360 @@ def _set_duel_error(message, *, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, no
         mark_dirty()
 
 
+def _realm_gate_reason(realm):
+    realm = str(realm or "").strip()
+    if realm not in REALM_SORT_ORDER:
+        return f"境界至少需为{DUEL_JIEDAN_MIN_REALM}（元婴须{DUEL_YUANYING_MIN_REALM}），当前={realm or '未知'}"
+    realm_index = REALM_SORT_ORDER.index(realm)
+    jiedan_index = REALM_SORT_ORDER.index(DUEL_JIEDAN_MIN_REALM)
+    yuanying_index = REALM_SORT_ORDER.index(DUEL_YUANYING_MIN_REALM)
+    if realm_index == jiedan_index or realm_index >= yuanying_index:
+        return ""
+    if jiedan_index < realm_index < yuanying_index:
+        return f"元婴须达到{DUEL_YUANYING_MIN_REALM}，当前={realm}"
+    return f"境界至少需为{DUEL_JIEDAN_MIN_REALM}，当前={realm}"
+
+
+def normalize_duel_reserve_xiuwei(value, *, default=None):
+    """Normalize UI/state reserve; blank/None falls back to default (module 20万)."""
+    if value is None:
+        return int(default if default is not None else DUEL_RESERVE_XIUWEI)
+    if isinstance(value, str) and not str(value).strip():
+        return int(default if default is not None else DUEL_RESERVE_XIUWEI)
+    amount = max(0, _parse_int(value))
+    return min(amount, DUEL_MAX_CONFIG_RESERVE_XIUWEI)
+
+
+def get_duel_reserve_xiuwei():
+    """Effective reserve floor for current identity (UI-configurable)."""
+    raw = state.get("duel_reserve_xiuwei", 0)
+    # 0 / missing = 使用模块默认，避免老身份迁移后变成「无保留」。
+    if raw in (None, "", 0, "0"):
+        return int(DUEL_RESERVE_XIUWEI)
+    return normalize_duel_reserve_xiuwei(raw)
+
+
+def get_duel_min_xiuwei():
+    """Effective min xiuwei gate (= reserve under current reserve-only policy)."""
+    return get_duel_reserve_xiuwei()
+
+
 def _profile_gate_reason():
     profile = get_send_as_profile(get_current_identity_id()) or {}
     realm = str(profile.get("realm") or "").strip()
     xiuwei_current = _parse_int(profile.get("xiuwei_current", 0))
-    min_realm_index = REALM_SORT_ORDER.index(DUEL_MIN_REALM)
-    if realm not in REALM_SORT_ORDER or REALM_SORT_ORDER.index(realm) < min_realm_index:
-        return f"境界至少需为{DUEL_MIN_REALM}，当前={realm or '未知'}"
-    if xiuwei_current < DUEL_MIN_XIUWEI:
+    realm_reason = _realm_gate_reason(realm)
+    if realm_reason:
+        return realm_reason
+    min_xiuwei = get_duel_min_xiuwei()
+    reserve = get_duel_reserve_xiuwei()
+    if xiuwei_current < min_xiuwei:
         current_text = xiuwei_current if xiuwei_current > 0 else "未知"
-        return f"斗法前需至少 {DUEL_MIN_XIUWEI} 修为（保留 {DUEL_RESERVE_XIUWEI} + 单场风险 {DUEL_MAX_LOSS_XIUWEI}），当前={current_text}"
+        return f"斗法前需至少 {min_xiuwei} 修为（保留 {reserve}），当前={current_text}"
     return ""
+
+
+def _normalize_identity_token(value):
+    return str(value or "").strip().lstrip("@").casefold()
+
+
+def is_duel_preset_excluded_identity(send_as_id=None, *, username="", label="", daohao=""):
+    identity_id = int(send_as_id or 0)
+    if identity_id > 0 and identity_id in DUEL_PRESET_EXCLUDED_IDENTITY_IDS:
+        return True
+    tokens = {
+        _normalize_identity_token(username),
+        _normalize_identity_token(label),
+        _normalize_identity_token(daohao),
+    }
+    tokens.discard("")
+    if tokens & DUEL_PRESET_EXCLUDED_USERNAMES:
+        return True
+    if tokens & {_normalize_identity_token(item) for item in DUEL_PRESET_EXCLUDED_LABELS}:
+        return True
+    return False
+
+
+def classify_duel_preset_band(realm):
+    """Return preset band: jiedan | yuanying | none."""
+    realm = str(realm or "").strip()
+    if realm not in REALM_SORT_ORDER:
+        return "none"
+    realm_index = REALM_SORT_ORDER.index(realm)
+    jiedan_index = REALM_SORT_ORDER.index(DUEL_JIEDAN_MIN_REALM)
+    yuanying_index = REALM_SORT_ORDER.index(DUEL_YUANYING_MIN_REALM)
+    if realm_index == jiedan_index:
+        return "jiedan"
+    if realm_index >= yuanying_index:
+        return "yuanying"
+    return "none"
+
+
+def _identity_duel_username(profile):
+    profile = profile or {}
+    username = str(profile.get("username") or "").strip().lstrip("@")
+    if username:
+        return username
+    label = str(profile.get("label") or "").strip().lstrip("@")
+    return label
+
+
+def plan_duel_presets(identity_rows):
+    """Build offline/lab preset rows. Does not write state.
+
+    identity_rows: iterable of dict-like with send_as_id, realm, username, label, daohao.
+    """
+    rows = []
+    for raw in identity_rows or ():
+        item = dict(raw or {})
+        send_as_id = int(item.get("send_as_id") or 0)
+        if send_as_id <= 0:
+            continue
+        rows.append(
+            {
+                "send_as_id": send_as_id,
+                "realm": str(item.get("realm") or "").strip(),
+                "username": str(item.get("username") or "").strip(),
+                "label": str(item.get("label") or "").strip(),
+                "daohao": str(item.get("daohao") or "").strip(),
+            }
+        )
+    rows.sort(key=lambda item: (item["send_as_id"], item["username"]))
+
+    yuanying_targets = []
+    jiedan_ids = []
+    plan = []
+    for item in rows:
+        excluded = is_duel_preset_excluded_identity(
+            item["send_as_id"],
+            username=item["username"],
+            label=item["label"],
+            daohao=item["daohao"],
+        )
+        band = classify_duel_preset_band(item["realm"])
+        if excluded:
+            plan.append(
+                {
+                    "send_as_id": item["send_as_id"],
+                    "band": band,
+                    "role": "excluded",
+                    "duel_enabled": False,
+                    "duel_target": "",
+                    "duel_total_count": 0,
+                    "reason": "吧唧/WA 预设关闭",
+                }
+            )
+            continue
+        if band == "yuanying":
+            token = _identity_duel_username(item)
+            if token:
+                yuanying_targets.append(normalize_duel_target(token))
+            plan.append(
+                {
+                    "send_as_id": item["send_as_id"],
+                    "band": band,
+                    "role": "yuanying",
+                    "duel_enabled": True,
+                    "duel_target": DUEL_PRESET_YUANYING_TARGET,
+                    "duel_total_count": DUEL_PRESET_TOTAL_COUNT,
+                    "reason": f"元婴后预设打 {DUEL_PRESET_YUANYING_TARGET} ×{DUEL_PRESET_TOTAL_COUNT}",
+                }
+            )
+            continue
+        if band == "jiedan":
+            jiedan_ids.append(item["send_as_id"])
+            plan.append(
+                {
+                    "send_as_id": item["send_as_id"],
+                    "band": band,
+                    "role": "jiedan",
+                    "duel_enabled": True,
+                    "duel_target": "",  # filled below
+                    "duel_total_count": DUEL_PRESET_TOTAL_COUNT,
+                    "reason": "结丹后预设均分打元婴号",
+                }
+            )
+            continue
+        plan.append(
+            {
+                "send_as_id": item["send_as_id"],
+                "band": band,
+                "role": "none",
+                "duel_enabled": False,
+                "duel_target": "",
+                "duel_total_count": 0,
+                "reason": "境界不在结丹后/元婴后预设带",
+            }
+        )
+
+    # 稳定去重后的元婴目标池，供结丹均分。
+    seen_targets = set()
+    unique_yuanying_targets = []
+    for target in yuanying_targets:
+        key = target.casefold()
+        if not target or key in seen_targets:
+            continue
+        seen_targets.add(key)
+        unique_yuanying_targets.append(target)
+
+    jiedan_ids = sorted(jiedan_ids)
+    by_id = {item["send_as_id"]: item for item in plan}
+    if unique_yuanying_targets:
+        for index, send_as_id in enumerate(jiedan_ids):
+            target = unique_yuanying_targets[index % len(unique_yuanying_targets)]
+            row = by_id[send_as_id]
+            row["duel_target"] = target
+            row["reason"] = (
+                f"结丹后预设打元婴 {target} ×{DUEL_PRESET_TOTAL_COUNT}"
+                f"（{index + 1}/{len(jiedan_ids)} → 池 {len(unique_yuanying_targets)}）"
+            )
+    else:
+        for send_as_id in jiedan_ids:
+            row = by_id[send_as_id]
+            row["duel_enabled"] = False
+            row["duel_total_count"] = 0
+            row["reason"] = "结丹后预设需要至少一个元婴目标，当前池为空"
+
+    # 同目标负载 + 日容量预检（吸收上游 group_duel：排不下要提示）。
+    target_hits = {}
+    for row in plan:
+        if not row.get("duel_enabled"):
+            continue
+        key = normalize_duel_target(row.get("duel_target") or "").casefold()
+        if not key:
+            continue
+        target_hits[key] = target_hits.get(key, 0) + max(0, int(row.get("duel_total_count") or 0))
+
+    for row in plan:
+        if not row.get("duel_enabled"):
+            row["capacity"] = {"ok": True, "reason": "", "skipped": True}
+            continue
+        target_key = normalize_duel_target(row.get("duel_target") or "").casefold()
+        capacity = estimate_duel_capacity(
+            total_count=row.get("duel_total_count") or 0,
+            start_minute=DUEL_DEFAULT_WINDOW_START_MINUTE,
+            end_minute=DUEL_DEFAULT_WINDOW_END_MINUTE,
+            target_hits=target_hits.get(target_key) if target_key else None,
+        )
+        row["capacity"] = capacity
+        if not capacity.get("ok"):
+            row["reason"] = f"{row.get('reason') or ''}｜容量警告：{capacity.get('reason') or '不足'}".lstrip("｜")
+
+    # 可视化分组摘要（上游 group 卡思路：发起带 / 目标池）。
+    groups = {
+        "yuanying_sources": [
+            {
+                "send_as_id": row["send_as_id"],
+                "target": row.get("duel_target") or "",
+                "count": int(row.get("duel_total_count") or 0),
+            }
+            for row in plan
+            if row.get("role") == "yuanying" and row.get("duel_enabled")
+        ],
+        "jiedan_sources": [
+            {
+                "send_as_id": row["send_as_id"],
+                "target": row.get("duel_target") or "",
+                "count": int(row.get("duel_total_count") or 0),
+            }
+            for row in plan
+            if row.get("role") == "jiedan" and row.get("duel_enabled")
+        ],
+        "excluded": [row["send_as_id"] for row in plan if row.get("role") == "excluded"],
+        "disabled": [row["send_as_id"] for row in plan if row.get("role") == "none" or not row.get("duel_enabled")],
+        "target_hits": dict(sorted(target_hits.items())),
+    }
+
+    return {
+        "yuanying_targets": list(unique_yuanying_targets),
+        "jiedan_count": len(jiedan_ids),
+        "groups": groups,
+        "rows": [by_id[item["send_as_id"]] for item in rows if item["send_as_id"] in by_id],
+    }
+
+
+def collect_identity_rows_for_duel_presets():
+    """Snapshot current registered identities for preset planning (read-only)."""
+    rows = []
+    for send_as_id in get_identity_ids():
+        profile = get_send_as_profile(send_as_id) or {}
+        rows.append(
+            {
+                "send_as_id": int(send_as_id),
+                "realm": str(profile.get("realm") or "").strip(),
+                "username": str(profile.get("username") or "").strip(),
+                "label": str(profile.get("label") or "").strip(),
+                "daohao": str(profile.get("daohao") or "").strip(),
+            }
+        )
+    return rows
+
+
+def apply_duel_preset_row(row, *, now=None, persist=True, force=False):
+    """Apply one planned preset row onto the current identity context.
+
+    稳妥：只写斗法开关/目标/次数（及进度重置），**绝不**改
+    ``tianxing_auto_config.duel_route_enabled`` 或任何天星推命/时间线状态。
+    天星斗法线仍按原版：默认关，需人在天星配置里显式打开。
+    """
+    now = float(now if now is not None else time.time())
+    row = dict(row or {})
+    enabled = bool(row.get("duel_enabled"))
+    target = str(row.get("duel_target") or "").strip()
+    total_count = max(0, _parse_int(row.get("duel_total_count")))
+    if not force:
+        has_custom = bool(str(state.get("duel_target") or "").strip()) or int(
+            state.get("duel_total_count", 0) or 0
+        ) > 0
+        if has_custom and state.get("duel_enabled"):
+            return {
+                "applied": False,
+                "reason": "已有斗法配置，跳过预设（force=False）",
+                "row": row,
+            }
+    state["duel_enabled"] = enabled
+    if enabled:
+        apply_duel_config(
+            target=target,
+            total_count=total_count,
+            reset_progress=True,
+            now=now,
+            persist=False,
+        )
+        if float(state.get("next_duel_time", 0) or 0) <= now:
+            state["next_duel_time"] = float(now + random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+        state["duel_last_error"] = ""
+        state["duel_last_result"] = str(row.get("reason") or "已应用斗法预设")
+    else:
+        # 只关斗法模块开关与配置；不走 cancel_duel_tianxing_route，
+        # 避免「套用排除预设」误关用户已开的天星斗法线（关模块仍走 control 原路径）。
+        state["duel_enabled"] = False
+        state["duel_target"] = target
+        state["duel_total_count"] = total_count
+        state["duel_completed_count"] = 0
+        state["next_duel_time"] = 0
+        _clear_duel_pending()
+        state["duel_last_result"] = str(row.get("reason") or "预设关闭斗法")
+    if persist:
+        save_state()
+    else:
+        mark_dirty()
+    return {"applied": True, "reason": row.get("reason") or "", "row": row}
+
+
+def apply_duel_presets_for_all_identities(*, now=None, persist=True, force=False):
+    """Apply planned presets to every registered identity. Lab/main-AI tool path."""
+    now = float(now if now is not None else time.time())
+    plan = plan_duel_presets(collect_identity_rows_for_duel_presets())
+    results = []
+    for row in plan.get("rows") or ():
+        with use_identity(int(row["send_as_id"])):
+            results.append(apply_duel_preset_row(row, now=now, persist=False, force=force))
+    if persist:
+        save_state()
+    else:
+        mark_dirty()
+    return {"plan": plan, "results": results}
 
 
 def _target_gate_reason(target):
@@ -537,6 +1048,13 @@ def is_duel_reply_text(text):
         or raw.startswith(DUEL_SETTLING_TEXT)
         or _has_duel_terminal_attempt_keyword(raw)
     )
+
+
+def _is_phaseful_settlement_text(text):
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if any(marker in compact for marker in DUEL_PHASEFUL_INTERMEDIATE_MARKERS):
+        return True
+    return "天道感应：检测到" in compact and "功成圆满，神魂正在归位" in compact
 
 
 def _first_line(text):
@@ -856,9 +1374,15 @@ def clear_duel_state(*, persist=False, keep_last_error=False, keep_config=True):
     last_error = state.get("duel_last_error") if keep_last_error else ""
     target = state.get("duel_target", "") if keep_config else ""
     total_count = int(state.get("duel_total_count", 0) or 0) if keep_config else 0
+    reserve_xiuwei = int(state.get("duel_reserve_xiuwei", 0) or 0) if keep_config else 0
+    window_start = int(state.get("duel_window_start_minute", DUEL_DEFAULT_WINDOW_START_MINUTE) or 0) if keep_config else DUEL_DEFAULT_WINDOW_START_MINUTE
+    window_end = int(state.get("duel_window_end_minute", DUEL_DEFAULT_WINDOW_END_MINUTE) or 0) if keep_config else DUEL_DEFAULT_WINDOW_END_MINUTE
     state["next_duel_time"] = 0
     state["duel_target"] = target
     state["duel_total_count"] = total_count
+    state["duel_reserve_xiuwei"] = reserve_xiuwei
+    state["duel_window_start_minute"] = window_start
+    state["duel_window_end_minute"] = window_end
     state["duel_completed_count"] = 0
     _clear_duel_pending()
     state["duel_last_msg_id"] = 0
@@ -870,15 +1394,52 @@ def clear_duel_state(*, persist=False, keep_last_error=False, keep_config=True):
         mark_dirty()
 
 
-def apply_duel_config(target=None, total_count=None, *, reset_progress=False, now=None, persist=True):
+def apply_duel_config(
+    target=None,
+    total_count=None,
+    *,
+    reserve_xiuwei=None,
+    window_start_minute=None,
+    window_end_minute=None,
+    reset_progress=False,
+    now=None,
+    persist=True,
+):
     if target is not None:
         state["duel_target"] = " ".join(normalize_duel_targets(target))
     if total_count is not None:
         state["duel_total_count"] = max(0, _parse_int(total_count))
+    if reserve_xiuwei is not None:
+        # 显式写入；空串回落默认并落库为 0（表示用默认）
+        if isinstance(reserve_xiuwei, str) and not str(reserve_xiuwei).strip():
+            state["duel_reserve_xiuwei"] = 0
+        else:
+            amount = normalize_duel_reserve_xiuwei(reserve_xiuwei)
+            # 与默认相同也写具体值，方便 UI 回显一致；0 仍表示「跟随默认」仅在未配置时
+            state["duel_reserve_xiuwei"] = int(amount)
+    if window_start_minute is not None or window_end_minute is not None:
+        start = normalize_duel_window_minute(
+            window_start_minute if window_start_minute is not None else get_duel_window_start_minute(),
+            DUEL_DEFAULT_WINDOW_START_MINUTE,
+        )
+        end = normalize_duel_window_minute(
+            window_end_minute if window_end_minute is not None else get_duel_window_end_minute(),
+            DUEL_DEFAULT_WINDOW_END_MINUTE,
+        )
+        if end < start:
+            end = start
+        state["duel_window_start_minute"] = start
+        state["duel_window_end_minute"] = end
     if reset_progress:
         state["duel_completed_count"] = 0
     if now is not None and state.get("duel_enabled") and not _duel_next_time_blocks(now):
         state["next_duel_time"] = float(now + 1)
+    capacity = estimate_duel_capacity(
+        total_count=state.get("duel_total_count", 0) or 0,
+        start_minute=get_duel_window_start_minute(),
+        end_minute=get_duel_window_end_minute(),
+        target_hits=None,
+    )
     if persist:
         save_state()
     else:
@@ -888,6 +1449,12 @@ def apply_duel_config(target=None, total_count=None, *, reset_progress=False, no
         "targets": _target_tokens(),
         "total_count": int(state.get("duel_total_count", 0) or 0),
         "completed_count": int(state.get("duel_completed_count", 0) or 0),
+        "reserve_xiuwei": get_duel_reserve_xiuwei(),
+        "reserve_xiuwei_configured": int(state.get("duel_reserve_xiuwei", 0) or 0),
+        "window_start_minute": get_duel_window_start_minute(),
+        "window_end_minute": get_duel_window_end_minute(),
+        "window_label": get_duel_window_label(),
+        "capacity": capacity,
     }
 
 
@@ -905,7 +1472,10 @@ def get_duel_status_text():
         f"- 目标池：{target_display}",
         f"- 次数：{completed_count}/{total_count if total_count > 0 else '未配置'}",
         f"- 下次执行：{fmt_abs_ts(state.get('next_duel_time', 0))}（{fmt_remaining(state.get('next_duel_time', 0))}）",
-        f"- 境界门槛：{DUEL_MIN_REALM}及以上，且修为 >{DUEL_MIN_XIUWEI}",
+        f"- 执行窗口：{get_duel_window_label()}（本地时区，UI 可改）",
+        f"- 境界门槛：{DUEL_JIEDAN_MIN_REALM}可打；元婴须{DUEL_YUANYING_MIN_REALM}及以上",
+        f"- 修为门槛：保留 {get_duel_reserve_xiuwei()}（当前需 ≥ {get_duel_min_xiuwei()}；默认 {DUEL_RESERVE_XIUWEI}，UI 可改）",
+        f"- 预设：元婴→{DUEL_PRESET_YUANYING_TARGET}×{DUEL_PRESET_TOTAL_COUNT}；结丹后均分打元婴号×{DUEL_PRESET_TOTAL_COUNT}；吧唧/WA 默认关",
         f"- 当前境界：{profile.get('realm') or '未知'}",
         f"- 当前修为：{_parse_int(profile.get('xiuwei_current', 0)) or '未知'}",
         f"- 待回复命令ID：{int(state.get('duel_reply_to_msg_id', 0) or 0) or '无'}",
@@ -977,6 +1547,12 @@ async def handle_duel_target_observation(text, now, event=None):
 async def _handle_duel_text(text, now, *, result_msg_id=0):
     raw_text = str(text or "").strip()
     if not raw_text:
+        return False
+
+    # A due Yuanying/deep-retreat settlement may be emitted as the first reply
+    # to the duel command root. The game can then continue the same duel chain,
+    # so this is intermediate evidence, not a duel terminal result.
+    if _is_phaseful_settlement_text(raw_text):
         return False
 
     if raw_text.startswith(DUEL_WAITING_PREFIX):
@@ -1156,6 +1732,23 @@ async def run_duel_scheduler(now):
     if _duel_next_time_blocks(now):
         return
 
+    # 可配执行时间窗外不发起新斗法（进行中 pending 仍由上面超时/补偿路径处理）。
+    # 默认全天窗时本分支不触发，行为与原版一致。
+    # 稳妥：改期到开窗后，若已进入 lead，按原版 future-due 路径提前备天星，本 tick 仍不发送。
+    if not is_within_duel_exec_window(now):
+        open_at = next_duel_exec_window_open(now)
+        delay = max(1.0, open_at - now)
+        _schedule_next_duel(now, delay)
+        state["duel_last_error"] = f"不在斗法执行窗口 {get_duel_window_label()}，下次 {fmt_abs_ts(open_at)}"
+        if open_at > now:
+            windows = build_tianxing_consume_window("斗法", now=now, due_at=open_at, reason="斗法")
+            if windows:
+                prepared = await _prepare_duel_tianxing_route(now, due_at=open_at)
+                if not prepared:
+                    return
+        save_state()
+        return
+
     target_cooldown_until = _target_cooldown_until(target)
     if target_cooldown_until > now:
         _schedule_next_duel(now, (target_cooldown_until - now) + _duel_batch_stagger_sec())
@@ -1219,22 +1812,49 @@ def schedule_duel_initial_check(now, *, persist=False, keep_last_error=True):
 
 __all__ = [
     "CMD_DUEL",
+    "DUEL_CAPACITY_SELF_INTERVAL_SEC",
+    "DUEL_CAPACITY_TARGET_INTERVAL_SEC",
+    "DUEL_DEFAULT_WINDOW_END_MINUTE",
+    "DUEL_DEFAULT_WINDOW_START_MINUTE",
+    "DUEL_JIEDAN_MIN_REALM",
+    "DUEL_MAX_CONFIG_RESERVE_XIUWEI",
     "DUEL_MIN_REALM",
     "DUEL_MIN_XIUWEI",
     "DUEL_NORMAL_COOLDOWN_SEC",
+    "DUEL_PRESET_TOTAL_COUNT",
+    "DUEL_PRESET_YUANYING_TARGET",
+    "DUEL_RESERVE_XIUWEI",
     "DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC",
+    "DUEL_YUANYING_MIN_REALM",
     "apply_duel_config",
+    "apply_duel_preset_row",
+    "apply_duel_presets_for_all_identities",
     "build_duel_command",
     "cancel_duel_tianxing_route",
+    "classify_duel_preset_band",
     "clear_duel_state",
+    "collect_identity_rows_for_duel_presets",
+    "estimate_duel_capacity",
+    "get_duel_min_xiuwei",
+    "get_duel_reserve_xiuwei",
     "get_duel_status_text",
+    "get_duel_window_bounds",
+    "get_duel_window_end_minute",
+    "get_duel_window_label",
+    "get_duel_window_start_minute",
     "handle_duel_broadcast",
     "handle_duel_target_observation",
     "handle_duel_reply",
+    "is_duel_preset_excluded_identity",
     "is_duel_reply_text",
+    "is_within_duel_exec_window",
+    "next_duel_exec_window_open",
+    "normalize_duel_reserve_xiuwei",
     "normalize_duel_target",
     "normalize_duel_targets",
+    "normalize_duel_window_minute",
     "parse_duel_result_summary",
+    "plan_duel_presets",
     "run_duel_scheduler",
     "schedule_duel_initial_check",
 ]

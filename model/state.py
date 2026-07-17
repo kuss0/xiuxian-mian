@@ -67,7 +67,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_rebirth_choice_mode", "explore_rift_rebirth_preferred_root_type", "explore_rift_rebirth_preferred_attrs", "explore_rift_rebirth_blind_index", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
     "mulan_phase", "mulan_reply_to_msg_id", "mulan_reply_due_at", "mulan_pending_ids", "mulan_report_texts", "mulan_report_day", "mulan_current_id", "mulan_public_id", "mulan_public_text", "mulan_support_action", "mulan_sent_at", "mulan_last_msg_id", "mulan_last_command", "mulan_last_result", "mulan_last_error", "mulan_cycle_count",
-    "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_phaseful_retry_count", "duel_last_msg_id", "duel_last_result", "duel_last_error", "duel_unequip_prepared",
+    "duel_target", "duel_total_count", "duel_completed_count", "duel_reserve_xiuwei", "duel_window_start_minute", "duel_window_end_minute", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_phaseful_retry_count", "duel_last_msg_id", "duel_last_result", "duel_last_error", "duel_unequip_prepared",
     "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_daily_catch_summary_json", "fishing_daily_summary_day", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_cancel_after_sec", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_valuable_drop_reminders", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
@@ -659,6 +659,11 @@ IDENTITY_STATE_TEMPLATE = {
     "duel_target": "",
     "duel_total_count": 0,
     "duel_completed_count": 0,
+    # 0 = 未单独配置，运行时回落 duel.DUEL_RESERVE_XIUWEI（默认 20 万）
+    "duel_reserve_xiuwei": 0,
+    # 执行时间窗（本地时区分钟）；默认 00:00-23:59
+    "duel_window_start_minute": 0,
+    "duel_window_end_minute": 23 * 60 + 59,
     "duel_reply_to_msg_id": 0,
     "duel_reply_due_at": 0,
     "duel_open_msg_id": 0,

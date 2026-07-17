@@ -757,6 +757,13 @@ def _schedule_summary_consumed_command_replay(spec, now):
     payload = _SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
     if not payload:
         return
+    # Duel owns a phaseful first reply as an intermediate event and keeps its
+    # original pending command alive. Immediate phaseful replay can therefore
+    # create a duplicate fight while the original chain is still progressing.
+    # Let duel log recovery and its reply deadline remain the single retry owner.
+    if _is_duel_replay_command((payload or {}).get("cmd")):
+        _SUMMARY_CONSUMED_COMMANDS.pop(send_as_id, None)
+        return
     if _has_other_summary_observation(spec):
         _fire_and_forget(
             _delayed_summary_consumed_command_replay_check(

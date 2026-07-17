@@ -1017,6 +1017,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_total_count INTEGER NOT NULL DEFAULT 0")
     if "duel_completed_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_completed_count INTEGER NOT NULL DEFAULT 0")
+    if "duel_reserve_xiuwei" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reserve_xiuwei INTEGER NOT NULL DEFAULT 0")
+    if "duel_window_start_minute" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_window_start_minute INTEGER NOT NULL DEFAULT 0")
+    if "duel_window_end_minute" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_window_end_minute INTEGER NOT NULL DEFAULT 1439")
     if "duel_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "duel_reply_due_at" not in runtime_columns:
@@ -1764,6 +1770,9 @@ def init_db():
             duel_target TEXT NOT NULL DEFAULT '',
             duel_total_count INTEGER NOT NULL DEFAULT 0,
             duel_completed_count INTEGER NOT NULL DEFAULT 0,
+            duel_reserve_xiuwei INTEGER NOT NULL DEFAULT 0,
+            duel_window_start_minute INTEGER NOT NULL DEFAULT 0,
+            duel_window_end_minute INTEGER NOT NULL DEFAULT 1439,
             duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             duel_reply_due_at REAL NOT NULL DEFAULT 0,
             duel_open_msg_id INTEGER NOT NULL DEFAULT 0,

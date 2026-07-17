@@ -171,12 +171,31 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "renderDuelConfig(identity)" in script
     assert "data-duel-config=\"target\"" in script
     assert "data-duel-config=\"total_count\"" in script
+    assert "data-duel-config=\"reserve_xiuwei\"" in script
+    assert "data-duel-config=\"window_start_time\"" in script
+    assert "data-duel-config=\"window_end_time\"" in script
     assert "data-duel-config=\"reset_progress\"" in script
     assert "data-save-duel-config" in script
+    assert "data-apply-duel-preset" in script
     assert "/api/duel-config" in script
+    assert "/api/duel-preset-apply" in script
     assert "submitDuelConfig" in script
+    assert "submitApplyDuelPreset" in script
+    assert "window_start_minute" in script
+    assert "window_end_minute" in script
     assert "identity.duel_next_time" in script
     assert "identity.duel_last_error" in script
+    assert "identity.duel_preset_band" in script
+    assert "identity.duel_gate_hint" in script
+    assert "identity.duel_reserve_xiuwei" in script
+    assert "identity.duel_capacity" in script
+    assert "identity.duel_preset_preview" in script
+    assert "duel_preset_plan" in script
+    assert "容量预检" in script
+    assert "仅预估不拦截" in script
+    assert "预设预览" in script
+    assert "同目标负载" in script
+    assert "reserve_xiuwei" in script
     assert "data-divination-daily-limit" in script
     assert "windowInlineConfig('点卯', checkinWin)" in script
     assert "windowInlineConfig('闯塔', towerWin)" in script

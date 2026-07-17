@@ -132,7 +132,29 @@ from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
-from .features.duel import apply_duel_config, normalize_duel_target, normalize_duel_targets
+from .features.duel import (
+    DUEL_DEFAULT_WINDOW_END_MINUTE,
+    DUEL_DEFAULT_WINDOW_START_MINUTE,
+    DUEL_JIEDAN_MIN_REALM,
+    DUEL_PRESET_TOTAL_COUNT,
+    DUEL_PRESET_YUANYING_TARGET,
+    DUEL_RESERVE_XIUWEI,
+    DUEL_YUANYING_MIN_REALM,
+    apply_duel_config,
+    apply_duel_preset_row,
+    classify_duel_preset_band,
+    collect_identity_rows_for_duel_presets,
+    estimate_duel_capacity,
+    get_duel_min_xiuwei,
+    get_duel_reserve_xiuwei,
+    get_duel_window_end_minute,
+    get_duel_window_label,
+    get_duel_window_start_minute,
+    is_duel_preset_excluded_identity,
+    normalize_duel_target,
+    normalize_duel_targets,
+    plan_duel_presets,
+)
 from .features.fishing import (
     FISHING_BAITS,
     FISHING_CHUMS,
@@ -4567,6 +4589,38 @@ def get_identity_ui_snapshot(send_as_id):
             "duel_next_time": fmt_abs_ts(identity_state.get("next_duel_time", 0) or 0),
             "duel_last_result": identity_state.get("duel_last_result") or "",
             "duel_last_error": identity_state.get("duel_last_error") or "",
+            "duel_reserve_xiuwei": int(get_duel_reserve_xiuwei()),
+            "duel_reserve_xiuwei_configured": int(identity_state.get("duel_reserve_xiuwei", 0) or 0),
+            "duel_reserve_xiuwei_default": int(DUEL_RESERVE_XIUWEI),
+            "duel_min_xiuwei": int(get_duel_min_xiuwei()),
+            "duel_window_start_minute": int(get_duel_window_start_minute()),
+            "duel_window_end_minute": int(get_duel_window_end_minute()),
+            "duel_window_label": get_duel_window_label(),
+            "duel_window_start_default": int(DUEL_DEFAULT_WINDOW_START_MINUTE),
+            "duel_window_end_default": int(DUEL_DEFAULT_WINDOW_END_MINUTE),
+            "duel_capacity": estimate_duel_capacity(
+                total_count=identity_state.get("duel_total_count", 0) or 0,
+                start_minute=get_duel_window_start_minute(),
+                end_minute=get_duel_window_end_minute(),
+            ),
+            "duel_jiedan_min_realm": DUEL_JIEDAN_MIN_REALM,
+            "duel_yuanying_min_realm": DUEL_YUANYING_MIN_REALM,
+            "duel_preset_total_count": int(DUEL_PRESET_TOTAL_COUNT),
+            "duel_preset_yuanying_target": DUEL_PRESET_YUANYING_TARGET,
+            "duel_preset_band": classify_duel_preset_band(profile.get("realm") or ""),
+            "duel_preset_excluded": is_duel_preset_excluded_identity(
+                send_as_id,
+                username=profile.get("username") or "",
+                label=profile.get("label") or "",
+                daohao=profile.get("daohao") or "",
+            ),
+            # 由 get_ui_snapshot 统一注入，避免每身份重复 plan。
+            "duel_preset_preview": {},
+            "duel_gate_hint": (
+                f"{DUEL_JIEDAN_MIN_REALM}可打；元婴须{DUEL_YUANYING_MIN_REALM}+；"
+                f"修为保留可配（默认 {DUEL_RESERVE_XIUWEI}，当前 {get_duel_reserve_xiuwei()}）；"
+                f"执行窗 {get_duel_window_label()}"
+            ),
             "fishing": get_fishing_ui_snapshot(send_as_id, identity_state),
             "divination_daily_limit": get_divination_daily_limit(send_as_id),
             "explore_rift_rebirth": {
@@ -4710,6 +4764,10 @@ def get_identity_ui_snapshot(send_as_id):
 
 
 def get_ui_snapshot(session_token=None):
+    duel_plan = plan_duel_presets(collect_identity_rows_for_duel_presets())
+    duel_preview_by_id = {
+        int(row.get("send_as_id") or 0): row for row in (duel_plan.get("rows") or ())
+    }
     identities = sorted(
         (get_identity_ui_snapshot(identity_id) for identity_id in get_identity_ids()),
         key=lambda identity: get_realm_sort_key(
@@ -4719,11 +4777,20 @@ def get_ui_snapshot(session_token=None):
             xiuwei_current=identity.get("xiuwei_current", 0),
         ),
     )
+    for identity in identities:
+        preview = duel_preview_by_id.get(int(identity.get("send_as_id") or 0)) or {}
+        identity["duel_preset_preview"] = preview
     startup_alerts = get_startup_module_alerts()
     if session_token:
         startup_alerts = consume_unseen_startup_alerts(session_token, startup_alerts)
     return {
         "generated_at": datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
+        "duel_preset_plan": {
+            "yuanying_targets": list(duel_plan.get("yuanying_targets") or ()),
+            "jiedan_count": int(duel_plan.get("jiedan_count") or 0),
+            "groups": duel_plan.get("groups") or {},
+            "target_hits": (duel_plan.get("groups") or {}).get("target_hits") or {},
+        },
         "ui_url": UI_PUBLIC_BASE_URL,
         "account_user_id": state.get("my_user_id") or 0,
         "game_group_id": get_game_group_id(),
@@ -5075,7 +5142,16 @@ async def ui_set_module_enabled(send_as_id, module_name, enabled):
     return True, f"已{action_text}{module_name}[{get_identity_display_name(send_as_id)}]"
 
 
-async def ui_set_duel_config(send_as_id, *, target=None, total_count=None, reset_progress=False):
+async def ui_set_duel_config(
+    send_as_id,
+    *,
+    target=None,
+    total_count=None,
+    reserve_xiuwei=None,
+    window_start_minute=None,
+    window_end_minute=None,
+    reset_progress=False,
+):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
@@ -5085,12 +5161,49 @@ async def ui_set_duel_config(send_as_id, *, target=None, total_count=None, reset
         config = apply_duel_config(
             target=target,
             total_count=total_count,
+            reserve_xiuwei=reserve_xiuwei,
+            window_start_minute=window_start_minute,
+            window_end_minute=window_end_minute,
             reset_progress=bool(reset_progress),
             now=time.time(),
             persist=True,
         )
     count_text = config["total_count"] if config["total_count"] > 0 else "未配置"
-    return True, f"斗法配置已更新：{config['target'] or '未配置'}｜次数 {count_text}"
+    reserve_text = config.get("reserve_xiuwei") or DUEL_RESERVE_XIUWEI
+    capacity = config.get("capacity") or {}
+    capacity_note = ""
+    # 稳妥：容量仅提示，保存始终成功，不因 capacity.ok=False 拒绝配置。
+    if config.get("total_count") and not capacity.get("ok"):
+        capacity_note = f"｜容量提示（不拦截）：{capacity.get('reason') or '不足'}"
+    return (
+        True,
+        f"斗法配置已更新：{config['target'] or '未配置'}｜次数 {count_text}｜"
+        f"修为保留 {reserve_text}｜窗口 {config.get('window_label') or '-'}{capacity_note}",
+    )
+
+
+async def ui_apply_duel_preset(send_as_id, *, force=True):
+    """Apply role preset for one identity (UI). Does not bulk-touch other ids."""
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    plan = plan_duel_presets(collect_identity_rows_for_duel_presets())
+    row = next(
+        (item for item in (plan.get("rows") or ()) if int(item.get("send_as_id") or 0) == send_as_id),
+        None,
+    )
+    if row is None:
+        return False, "未找到该身份的斗法预设"
+    with use_identity(send_as_id):
+        result = apply_duel_preset_row(row, now=time.time(), persist=True, force=bool(force))
+    if not result.get("applied"):
+        return False, str(result.get("reason") or "未应用预设")
+    enabled_text = "开启" if row.get("duel_enabled") else "关闭"
+    return (
+        True,
+        f"已套用斗法预设（{enabled_text}）：{row.get('duel_target') or '无目标'}｜"
+        f"次数 {row.get('duel_total_count') or 0}｜{row.get('reason') or ''}",
+    )
 
 
 async def ui_set_pet_name(send_as_id, pet_name, pet_warm_name=None, pet_trial_name=None):
@@ -9003,7 +9116,35 @@ async def handle_ui_http(reader, writer):
                             send_as_id,
                             target=payload.get("target") if "target" in payload else None,
                             total_count=payload.get("total_count") if "total_count" in payload else None,
+                            reserve_xiuwei=(
+                                payload.get("reserve_xiuwei") if "reserve_xiuwei" in payload else None
+                            ),
+                            window_start_minute=(
+                                payload.get("window_start_minute")
+                                if "window_start_minute" in payload
+                                else None
+                            ),
+                            window_end_minute=(
+                                payload.get("window_end_minute")
+                                if "window_end_minute" in payload
+                                else None
+                            ),
                             reset_progress=_coerce_ui_bool(payload.get("reset_progress")),
+                        )
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/duel-preset-apply":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_apply_duel_preset(
+                            send_as_id,
+                            force=_coerce_ui_bool(payload.get("force", True)),
                         )
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/second-soul-choice-config":
@@ -9260,6 +9401,7 @@ __all__ = [
     "ui_set_yinluo_auto_config",
     "ui_set_module_window",
     "ui_set_pet_name",
+    "ui_apply_duel_preset",
     "ui_set_duel_config",
     "ui_set_small_world_feature_enabled",
     "ui_set_small_world_barrier_config",

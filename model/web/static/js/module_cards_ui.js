@@ -151,8 +151,70 @@
     '</label>';
   }
 
+  function minuteToTimeValue(minute){
+    var total = Math.max(0, Math.min(1439, parseInt(minute, 10) || 0));
+    var hour = Math.floor(total / 60);
+    var min = total % 60;
+    return (hour < 10 ? '0' : '')+hour+':'+(min < 10 ? '0' : '')+min;
+  }
+
+  function timeValueToMinute(value, fallback){
+    var raw = String(value || '').trim();
+    var match = raw.match(/^(\d{1,2}):(\d{2})$/);
+    if(!match){
+      return fallback;
+    }
+    var hour = parseInt(match[1], 10);
+    var min = parseInt(match[2], 10);
+    if(isNaN(hour) || isNaN(min) || hour < 0 || hour > 23 || min < 0 || min > 59){
+      return fallback;
+    }
+    return hour * 60 + min;
+  }
+
   function renderDuelConfig(identity){
+    var band = identity.duel_preset_band || 'none';
+    var bandLabel = band === 'yuanying' ? '元婴带' : (band === 'jiedan' ? '结丹带' : '非预设带');
+    if(identity.duel_preset_excluded){
+      bandLabel = '吧唧/WA（预设关闭）';
+    }
+    var defaultReserve = identity.duel_reserve_xiuwei_default || 200000;
+    var reserveValue = identity.duel_reserve_xiuwei || defaultReserve;
+    var windowStart = identity.duel_window_start_minute;
+    if(windowStart === undefined || windowStart === null || windowStart === ''){
+      windowStart = identity.duel_window_start_default || 0;
+    }
+    var windowEnd = identity.duel_window_end_minute;
+    if(windowEnd === undefined || windowEnd === null || windowEnd === ''){
+      windowEnd = identity.duel_window_end_default || 1439;
+    }
+    var capacity = identity.duel_capacity || {};
+    var capacityOk = capacity.ok !== false;
+    // 稳妥：容量仅 UI 提示，不拦截保存/发送；不含天星推命耗时。
+    var capacityText = capacityOk
+      ? ('可排约 '+String(capacity.self_max || '-')+' 场（本号，仅预估不拦截）｜窗口 '+String(identity.duel_window_label || '-'))
+      : ('预估不足（不拦截）：'+(capacity.reason || '窗口/次数冲突'));
+    var preview = identity.duel_preset_preview || {};
+    var previewTarget = preview.duel_target || '';
+    var previewCount = preview.duel_total_count || 0;
+    var previewReason = preview.reason || '';
+    var presetHint = identity.duel_gate_hint || ('结丹后期可打；元婴须元婴后期+；修为保留可配（默认 '+defaultReserve+'）');
+    var defaultTarget = identity.duel_preset_yuanying_target || '@ccahen';
+    var defaultCount = identity.duel_preset_total_count || 10;
+    var plan = (typeof appState !== 'undefined' && appState.snapshot && appState.snapshot.duel_preset_plan) || {};
+    var targetHits = plan.target_hits || {};
+    var hitPairs = Object.keys(targetHits).map(function(key){
+      return key+'×'+targetHits[key];
+    }).slice(0, 6);
+    var hitText = hitPairs.length ? hitPairs.join('，') : '暂无';
     return ''+
+      '<div class="module-setting-hint">'+esc(presetHint)+'</div>'+
+      currentChoiceText('角色带', bandLabel)+
+      '<label class="module-setting-field"><span>修为保留</span><input class="text-input module-hour-input" type="number" min="0" max="100000000" step="10000" value="'+esc(reserveValue)+'" placeholder="'+esc(defaultReserve)+'" data-duel-config="reserve_xiuwei" title="低于此修为不发起斗法；默认 '+esc(defaultReserve)+'"></label>'+
+      currentChoiceText('默认保留', String(defaultReserve))+
+      '<label class="module-setting-field"><span>窗口起</span><input class="text-input module-hour-input" type="time" value="'+esc(minuteToTimeValue(windowStart))+'" data-duel-config="window_start_time" title="本地时区执行窗口开始"></label>'+
+      '<label class="module-setting-field"><span>窗口止</span><input class="text-input module-hour-input" type="time" value="'+esc(minuteToTimeValue(windowEnd))+'" data-duel-config="window_end_time" title="本地时区执行窗口结束"></label>'+
+      currentChoiceText('容量预检', capacityText)+
       '<label class="module-setting-field module-setting-field-wide"><span>目标池</span><input class="text-input module-name-input" type="text" value="'+esc(identity.duel_target || '')+'" placeholder="@target1 @target2" data-duel-config="target"></label>'+
       '<label class="module-setting-field"><span>总次数</span><input class="text-input module-hour-input" type="number" min="1" max="200" step="1" value="'+esc(identity.duel_total_count || '')+'" data-duel-config="total_count"></label>'+
       '<label class="checkbox-inline checkbox-inline-small module-setting-checkbox"><input type="checkbox" data-duel-config="reset_progress" /> 重置进度</label>'+
@@ -160,7 +222,13 @@
       currentChoiceText('下次执行', identity.duel_next_time || '未设置')+
       currentChoiceText('最近结果', identity.duel_last_result || '无')+
       currentChoiceText('最近异常', identity.duel_last_error || '无')+
-      '<button type="button" class="btn btn-secondary" data-save-duel-config="1">保存斗法设置</button>';
+      currentChoiceText('预设预览', (previewTarget ? (previewTarget+'×'+previewCount) : '关闭/无')+(previewReason ? '｜'+previewReason : ''))+
+      currentChoiceText('同目标负载', hitText)+
+      currentChoiceText('预设说明', '元婴→'+defaultTarget+'×'+defaultCount+'；结丹后均分打元婴号×'+defaultCount+'；吧唧/WA 默认关')+
+      '<div class="module-setting-actions">'+
+      '<button type="button" class="btn btn-secondary" data-save-duel-config="1">保存斗法设置</button>'+
+      '<button type="button" class="btn btn-secondary" data-apply-duel-preset="1">套用角色预设</button>'+
+      '</div>';
   }
 
   function wanxinCheckbox(key, label, checked){
@@ -970,11 +1038,27 @@
       return;
     }
     var config = collectDuelConfig();
+    var identity = (appState.snapshot && appState.snapshot.identities || []).find(function(item){
+      return String(item.send_as_id) === String(appState.selectedId);
+    }) || {};
+    var windowStart = timeValueToMinute(
+      config.window_start_time,
+      identity.duel_window_start_minute != null ? identity.duel_window_start_minute : 0
+    );
+    var windowEnd = timeValueToMinute(
+      config.window_end_time,
+      identity.duel_window_end_minute != null ? identity.duel_window_end_minute : 1439
+    );
     try{
       var data = await postJson('/api/duel-config', {
         send_as_id: appState.selectedId,
         target: config.target || '',
         total_count: config.total_count || '',
+        reserve_xiuwei: (config.reserve_xiuwei === undefined || config.reserve_xiuwei === null || config.reserve_xiuwei === '')
+          ? ''
+          : config.reserve_xiuwei,
+        window_start_minute: windowStart,
+        window_end_minute: windowEnd,
         reset_progress: !!config.reset_progress
       });
       if(typeof updateFlash === 'function'){
@@ -986,6 +1070,31 @@
     }catch(error){
       if(typeof updateFlash === 'function'){
         updateFlash((error && error.message) || '斗法设置更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
+  async function submitApplyDuelPreset(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    try{
+      var data = await postJson('/api/duel-preset-apply', {
+        send_as_id: appState.selectedId,
+        force: true
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已套用斗法角色预设', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '斗法角色预设套用失败', true);
       }
       if(typeof renderAll === 'function'){
         renderAll();
@@ -1075,6 +1184,10 @@
     }
     if(event.target.closest('[data-save-duel-config]')){
       submitDuelConfig();
+      return;
+    }
+    if(event.target.closest('[data-apply-duel-preset]')){
+      submitApplyDuelPreset();
       return;
     }
     var openBtn = event.target.closest('[data-open-module-settings]');
