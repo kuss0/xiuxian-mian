@@ -233,6 +233,7 @@ from .features.duel import (
     get_duel_status_text,
     plan_duel_presets,
     schedule_duel_initial_check,
+    seed_controlled_duel_loadout_prepare,
 )
 from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
@@ -2054,6 +2055,7 @@ def _manual_enable_duel_module_state(now):
             completed_count = int(state.get("duel_completed_count", 0) or 0)
     if total_count > 0 and completed_count >= total_count:
         state["duel_completed_count"] = 0
+    seed_controlled_duel_loadout_prepare()
     if float(state.get("next_duel_time", 0) or 0) > now:
         return
     state["duel_reply_to_msg_id"] = 0

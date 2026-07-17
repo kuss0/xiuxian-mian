@@ -52,6 +52,44 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_module.state["duel_enabled"])
             self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertGreater(state_module.state["next_duel_time"], 0)
+            self.assertEqual("斗法配装:prepare", state_module.state["duel_last_result"])
+
+    async def test_manual_reenable_seeds_baiji_unequip_prepare(self):
+        identity_id = self._prepare_identity(301299112)
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = False
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["next_duel_time"] = 0
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = ""
+
+        with patch.object(control, "save_state"):
+            ok, _message = await control.set_module_enabled("斗法", True, send_as_id=identity_id)
+
+        self.assertTrue(ok)
+        with state_module.use_identity(identity_id):
+            self.assertEqual("斗法配装:prepare", state_module.state["duel_last_result"])
+            self.assertFalse(state_module.state["duel_unequip_prepared"])
+
+    def test_duel_config_seeds_only_controlled_identity_loadout(self):
+        now = 1_700_000_000.0
+        for identity_id, expected in ((301299112, "斗法配装:prepare"), (99001999, "")):
+            self._prepare_identity(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["duel_enabled"] = True
+                state_module.state["duel_last_result"] = ""
+                state_module.state["duel_unequip_prepared"] = False
+                with patch.object(duel, "save_state"):
+                    duel.apply_duel_config(
+                        target="@ccahen",
+                        total_count=5,
+                        reset_progress=True,
+                        now=now,
+                        persist=True,
+                    )
+                self.assertEqual(expected, state_module.state["duel_last_result"])
 
     def test_manual_disable_cancels_tianxing_duel_timeline(self):
         identity_id = self._prepare_identity()
@@ -1768,7 +1806,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
             )
 
-    async def test_per_target_limit_reply_counts_attempt_and_uses_long_cooldown(self):
+    async def test_per_target_limit_reply_ends_single_target_day_without_counting_attempt(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         text = "天道不公，但亦有其则！你今日对 @cupaopao 出手次数过多，已被法则限制！"
@@ -1791,17 +1829,43 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual(2, state_module.state["duel_completed_count"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
             self.assertEqual(text, state_module.state["duel_last_result"])
-            self.assertEqual(text, state_module.state["duel_last_error"])
-            self.assertGreaterEqual(
-                state_module.state["next_duel_time"],
-                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+            self.assertEqual("", state_module.state["duel_last_error"])
+            self.assertEqual(["@cupaopao"], state_module.state["duel_daily_limited_targets"])
+            self.assertEqual(
+                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
+                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
             )
-            self.assertLessEqual(
-                state_module.state["next_duel_time"],
-                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
-            )
+
+    async def test_per_target_limit_reply_switches_to_another_configured_target(self):
+        identity_id = self._prepare_identity(99002000)
+        now = 1_700_000_000.0
+        text = "天道不公，但亦有其则！你今日对 @first 出手次数过多，已被法则限制！"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@first @second"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @first"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual("@second", duel._target_token(now))
+            self.assertGreaterEqual(state_module.state["next_duel_time"], now + duel.DUEL_RECOVERY_MIN_SEC)
+            self.assertLessEqual(state_module.state["next_duel_time"], now + duel.DUEL_RECOVERY_MAX_SEC)
+            self.assertIn("切换至 @second", audit_mock.await_args.args[0])
 
     async def test_message_log_recovery_accepts_terminal_non_report_reply(self):
         identity_id = self._prepare_identity()

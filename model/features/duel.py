@@ -108,6 +108,7 @@ RE_DUEL_WINNER = re.compile(r"(?:胜者[:：]\s*|胜者：)(@[^\s|]+)")
 RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
 RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|分钟|秒)(?:\d+\s*(?:小时|分钟|秒))*)")
 RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>万)?")
+RE_DUEL_DAILY_LIMIT_TARGET = re.compile(r"今日对\s+(?P<target>@[^\s，。！？、；：:,.!?]+)\s+出手次数过多")
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
@@ -181,12 +182,44 @@ def normalize_duel_targets(value):
     return targets
 
 
-def _target_token():
+def _duel_day_key(now):
+    return datetime.fromtimestamp(float(now), TZ_LOCAL).date().isoformat()
+
+
+def _daily_limited_targets(now):
+    day_key = _duel_day_key(now)
+    if str(state.get("duel_daily_limit_day") or "") != day_key:
+        state["duel_daily_limit_day"] = day_key
+        state["duel_daily_limited_targets"] = []
+        return set()
+    raw = state.get("duel_daily_limited_targets") or []
+    if not isinstance(raw, (list, tuple, set)):
+        raw = normalize_duel_targets(raw)
+    return {_target_cooldown_key(target) for target in raw if normalize_duel_target(target)}
+
+
+def _mark_target_daily_limited(target, now):
+    limited = _daily_limited_targets(now)
+    normalized = normalize_duel_target(target)
+    key = _target_cooldown_key(normalized)
+    if key:
+        limited.add(key)
+    state["duel_daily_limited_targets"] = sorted(limited)
+    return limited
+
+
+def _target_token(now=None):
     targets = _target_tokens()
     if not targets:
         return ""
+    now = float(now if now is not None else time.time())
+    limited = _daily_limited_targets(now)
     completed = max(0, int(state.get("duel_completed_count", 0) or 0))
-    return targets[completed % len(targets)]
+    for offset in range(len(targets)):
+        target = targets[(completed + offset) % len(targets)]
+        if _target_cooldown_key(target) not in limited:
+            return target
+    return ""
 
 
 def _target_tokens():
@@ -440,6 +473,24 @@ def _controlled_loadout_config():
     return config
 
 
+def seed_controlled_duel_loadout_prepare():
+    """Arm loadout preparation after an explicit enable/configuration change."""
+    config = DUEL_CONTROLLED_LOADOUTS.get(int(get_current_identity_id() or 0))
+    if not config or not state.get("duel_enabled"):
+        return False
+    if _parse_int(state.get("duel_reply_to_msg_id", 0)) > 0 or _parse_int(state.get("duel_open_msg_id", 0)) > 0:
+        return False
+    phase = _loadout_phase()
+    if state.get("duel_unequip_prepared") or phase.endswith("battle_ready"):
+        return False
+    if phase.startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore"):
+        return False
+    _clear_loadout_pending()
+    state["duel_unequip_prepared"] = False
+    _set_loadout_phase("prepare")
+    return True
+
+
 def _loadout_phase():
     result = str(state.get("duel_last_result") or "")
     return result if result.startswith(DUEL_LOADOUT_PHASE_PREFIX) else ""
@@ -502,7 +553,7 @@ async def _send_loadout_command(command, now, waiting_phase):
         state["duel_last_error"] = "斗法配装发送状态未知，已停止批次"
         _set_loadout_phase("error")
         save_state()
-        await send_audit_log("⛔ 斗法配装发送状态未知，已停止 WA 批次。", scope="identity", limit=200)
+        await send_audit_log("⛔ 斗法配装发送状态未知，已停止受控斗法批次。", scope="identity", limit=200)
         return False
     sent_at = float(getattr(msg, "sent_at", 0) or time.time())
     state["duel_magic_sent_at"] = int(getattr(msg, "id", 0) or 0)
@@ -989,6 +1040,8 @@ def apply_duel_preset_row(row, *, now=None, persist=True, force=False):
         state["next_duel_time"] = 0
         _clear_duel_pending()
         state["duel_last_result"] = str(row.get("reason") or "预设关闭斗法")
+    if enabled:
+        seed_controlled_duel_loadout_prepare()
     if persist:
         save_state()
     else:
@@ -1132,7 +1185,7 @@ def _has_duel_terminal_attempt_keyword(text):
 
 def _duel_counts_as_attempt(text):
     raw = str(text or "").strip()
-    if _is_target_named_cooldown(raw):
+    if _is_target_named_cooldown(raw) or "出手次数过多" in raw:
         return False
     return _is_duel_report_text(raw) or _has_duel_terminal_attempt_keyword(raw)
 
@@ -1455,6 +1508,7 @@ def apply_duel_config(
         state["duel_completed_count"] = 0
     if now is not None and state.get("duel_enabled") and not _duel_next_time_blocks(now):
         state["next_duel_time"] = float(now + 1)
+    seed_controlled_duel_loadout_prepare()
     capacity = estimate_duel_capacity(
         total_count=state.get("duel_total_count", 0) or 0,
         start_minute=get_duel_window_start_minute(),
@@ -1547,7 +1601,7 @@ async def handle_duel_target_observation(text, now, event=None):
     raw = str(text or "")
     if not (raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX)):
         return False
-    target = _target_token()
+    target = _target_token(now)
     if not target or not _tag_in_text(raw, target.lstrip("@")):
         return False
     until = _set_target_cooldown(
@@ -1593,7 +1647,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
         save_state()
         return True
 
-    target = _target_token()
+    target = _target_token(now)
     pending_command_msg_id = _parse_int(state.get("duel_reply_to_msg_id", 0))
     summary = parse_duel_result_summary(raw_text)
     weak_or_unknown = _is_weak_or_unknown_result(raw_text)
@@ -1615,6 +1669,37 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
         )
     else:
         _clear_target_reservation(target, pending_command_msg_id)
+    if "出手次数过多" in raw_text:
+        limit_match = RE_DUEL_DAILY_LIMIT_TARGET.search(raw_text)
+        limited_target = normalize_duel_target(limit_match.group("target") if limit_match else target)
+        _mark_target_daily_limited(limited_target, now)
+        next_target = _target_token(now)
+        state["duel_last_error"] = ""
+        if next_target:
+            _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+            save_state()
+            await send_audit_log(
+                f"🗡️ 目标 {limited_target} 今日出手额度已满，切换至 {next_target}。",
+                scope="identity",
+                limit=220,
+            )
+            return True
+        completion = _complete_duel_batch(now)
+        save_state()
+        if completion["restoring"]:
+            await send_audit_log(
+                f"✅ 今日可用斗法目标均已封顶（完成 {completion['completed_count']} 场），开始恢复原法宝配装。",
+                scope="identity",
+                limit=240,
+            )
+            return True
+        await send_audit_log(
+            f"✅ 今日可用斗法目标均已封顶（完成 {completion['completed_count']} 场），"
+            f"次日批次→{fmt_abs_ts(completion['next_duel_time'])}。",
+            scope="identity",
+            limit=240,
+        )
+        return True
     if _duel_counts_as_attempt(raw_text):
         state["duel_completed_count"] = int(state.get("duel_completed_count", 0) or 0) + 1
         total_count = int(state.get("duel_total_count", 0) or 0)
@@ -1693,7 +1778,14 @@ async def run_duel_scheduler(now):
         if not _duel_next_time_blocks(now):
             _set_duel_error("斗法目标未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
-    target = _target_token()
+    target = _target_token(now)
+    if not target:
+        if not _duel_next_time_blocks(now):
+            state["next_duel_time"] = _next_daily_duel_time(now)
+            state["duel_last_error"] = ""
+            state["duel_last_result"] = f"今日可用斗法目标均已封顶；次日批次→{fmt_abs_ts(state['next_duel_time'])}"
+            save_state()
+        return
     target_gate_reason = _target_gate_reason(target)
     if target_gate_reason:
         if not _duel_next_time_blocks(now):
@@ -1878,4 +1970,5 @@ __all__ = [
     "plan_duel_presets",
     "run_duel_scheduler",
     "schedule_duel_initial_check",
+    "seed_controlled_duel_loadout_prepare",
 ]
