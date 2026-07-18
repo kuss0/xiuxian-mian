@@ -5083,7 +5083,7 @@ def _make_json_payload(ok, *, message="", error="", snapshot=None, extra=None):
         payload["snapshot"] = snapshot
     if isinstance(extra, dict):
         payload.update(extra)
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _render_login_page(message=""):
@@ -8740,7 +8740,14 @@ async def handle_ui_http(reader, writer):
                         _write_json_bad_request(writer, "缺少 send_as_id 或 module 参数", auth_headers)
                     else:
                         ok, message = await ui_set_module_enabled(send_as_id, module_name, enabled)
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            include_snapshot=not _coerce_ui_bool(payload.get("omit_snapshot")),
+                        )
             elif path == "/api/jiyin-choice":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -9170,7 +9177,14 @@ async def handle_ui_http(reader, writer):
                             ),
                             reset_progress=_coerce_ui_bool(payload.get("reset_progress")),
                         )
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+                        _write_json_result(
+                            writer,
+                            ok,
+                            message,
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            include_snapshot=not _coerce_ui_bool(payload.get("omit_snapshot")),
+                        )
             elif path == "/api/duel-preset-apply":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)

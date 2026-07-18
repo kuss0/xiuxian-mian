@@ -1071,13 +1071,20 @@
           : config.reserve_xiuwei,
         window_start_minute: windowStart,
         window_end_minute: windowEnd,
-        reset_progress: !!config.reset_progress
+        reset_progress: !!config.reset_progress,
+        omit_snapshot: true
       });
       if(typeof updateFlash === 'function'){
         updateFlash(data.message || '已更新斗法设置', false);
       }
-      if(typeof applySnapshot === 'function'){
+      if(data.snapshot && typeof applySnapshot === 'function'){
         applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }else{
+        identity.duel_target = config.target || '';
+        identity.duel_total_count = Number(config.total_count || identity.duel_total_count || 0);
+        identity.duel_reserve_xiuwei_configured = Number(config.reserve_xiuwei || 0);
+        identity.duel_window_start_minute = windowStart;
+        identity.duel_window_end_minute = windowEnd;
       }
     }catch(error){
       if(typeof updateFlash === 'function'){
@@ -1168,6 +1175,68 @@
       }
     }
   }
+
+  async function submitFastModuleToggle(button){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var moduleName = button.getAttribute('data-module') || '';
+    var enabled = button.getAttribute('data-enabled') === '1';
+    if(!moduleName){
+      return;
+    }
+    button.disabled = true;
+    try{
+      var data = await postJson('/api/toggle', {
+        send_as_id: appState.selectedId,
+        module: moduleName,
+        enabled: enabled,
+        omit_snapshot: true
+      });
+      var identity = (appState.snapshot && appState.snapshot.identities || []).find(function(item){
+        return String(item.send_as_id) === String(appState.selectedId);
+      });
+      var moduleItem = identity && (identity.modules || []).find(function(item){
+        return item.name === moduleName;
+      });
+      if(moduleItem){
+        moduleItem.enabled = enabled;
+      }
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新模块状态', false);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+      if(typeof refreshState === 'function'){
+        window.setTimeout(function(){
+          refreshState({silent: true, keepFlash: true});
+        }, 100);
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '模块切换失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }finally{
+      button.disabled = false;
+    }
+  }
+
+  document.addEventListener('click', function(event){
+    if(!event.target || !event.target.closest){
+      return;
+    }
+    var toggleButton = event.target.closest('[data-toggle-module]');
+    if(!toggleButton){
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    submitFastModuleToggle(toggleButton);
+  }, true);
 
   document.addEventListener('click', function(event){
     if(!event.target || !event.target.closest){
