@@ -24,6 +24,7 @@ phase 状态机:
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -44,9 +45,10 @@ from ..config import (
     SECOND_SOUL_TRAIN_CD_SEC,
 )
 from ..identity_levels import parse_second_soul_level_text, update_identity_level_record
+from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
 
@@ -62,6 +64,7 @@ SECOND_SOUL_CHOICE_STRATEGIES = {
     "stable": ("稳固道心", CMD_SECOND_SOUL_CHOICE_STABLE),
     "break": ("强行突破", CMD_SECOND_SOUL_CHOICE_BREAK),
 }
+SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC = 60 * 60
 
 
 def _phase():
@@ -912,6 +915,62 @@ async def handle_second_soul_recovery_broadcast(text, now):
 
 # ============== scheduler ==============
 
+def _second_soul_pending_replay_spec(phase):
+    return {
+        "status_pending": ("second_soul_status_msg_id", CMD_SECOND_SOUL_STATUS, "second_soul_status", handle_second_soul_status_reply),
+        "train_pending": ("second_soul_train_msg_id", CMD_SECOND_SOUL_TRAIN, "second_soul_train", handle_second_soul_train_reply),
+        "purge_pending": ("second_soul_purge_msg_id", CMD_SECOND_SOUL_PURGE, "second_soul_purge", handle_second_soul_purge_reply),
+        "purge_status_pending": ("second_soul_purge_status_msg_id", CMD_SECOND_SOUL_DEMON_STATUS, "second_soul_demon_status", handle_second_soul_demon_status_reply),
+    }.get(str(phase or ""))
+
+
+async def _recover_second_soul_pending_from_message_log(now, phase):
+    spec = _second_soul_pending_replay_spec(phase)
+    if not spec:
+        return False
+    state_key, command, family, handler = spec
+    msg_id = int(state.get(state_key, 0) or 0)
+    if msg_id <= 0:
+        recovered = recover_sent_command_from_message_log(
+            command,
+            get_current_identity_id(),
+            now,
+            start_ts=max(0.0, float(now or 0) - SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC),
+            game_group_id=get_game_group_id(),
+            topic_id=get_game_topic_id(),
+            lookback_sec=SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC,
+            lookahead_sec=5,
+        )
+        msg_id = int((recovered or {}).get("message_id") or 0)
+        if msg_id <= 0:
+            return False
+        state[state_key] = msg_id
+        save_state()
+    replies = find_message_log_replies(
+        msg_id,
+        now,
+        lookback_sec=SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=5,
+        predicate=lambda entry: (
+            str((entry or {}).get("event_type") or "") in {"message", "edit"}
+            and int((entry or {}).get("chat_id") or 0) == int(get_game_group_id() or 0)
+            and bool((entry or {}).get("sender_is_bot"))
+        ),
+    )
+    reply_to = SimpleNamespace(id=msg_id, raw_text=command)
+    for entry in replies:
+        before_phase = _phase()
+        handled = await handler(
+            str((entry or {}).get("text") or ""),
+            float((entry or {}).get("ts_epoch") or now),
+            reply_to,
+            matched_family=family,
+        )
+        if handled or _phase() != before_phase:
+            console_log(f"🌀 第二元神 {phase} 日志回捞成功，原消息ID={msg_id}。")
+            return True
+    return False
+
 async def run_second_soul_scheduler(now):
     if not state.get("second_soul_enabled", False):
         return
@@ -952,6 +1011,8 @@ async def run_second_soul_scheduler(now):
         due_at = float(state.get("second_soul_purge_due_at", 0) or 0)
         if due_at > now:
             return
+        if await _recover_second_soul_pending_from_message_log(now, phase):
+            return
         attempts = int(state.get("second_soul_purge_attempts", 0) or 0)
         if attempts <= 1:
             await send_audit_log("🌀 第二元神镇魔未收到回复，补查五子同心魔确认魔染。")
@@ -969,6 +1030,8 @@ async def run_second_soul_scheduler(now):
         due_at = float(state.get("second_soul_purge_due_at", 0) or 0)
         if due_at > now:
             return
+        if await _recover_second_soul_pending_from_message_log(now, phase):
+            return
         _finish_purge_ready(now, last_error="五子同心魔查询无回复，停止自动镇魔")
         save_state()
         await send_audit_log(
@@ -982,6 +1045,8 @@ async def run_second_soul_scheduler(now):
         # 到 30-60 分钟慢速自愈点后，清掉旧 pending，回到 idle 重新查一次；
         # 修炼等待超时也不直接补发 .元神修炼，避免重复修炼指令。
         if state.get("next_second_soul_time", 0) > now:
+            return
+        if await _recover_second_soul_pending_from_message_log(now, phase):
             return
         clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN})
         _set_phase("idle")

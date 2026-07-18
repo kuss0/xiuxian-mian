@@ -273,6 +273,45 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertIn("补发已达 1 次上限", state_module.state["pet_formation_last_error"])
             self.assertEqual(now + 61 + pet.PET_FORMATION_RETRY_BACKOFF_SEC, state_module.state["next_pet_formation_time"])
 
+    async def test_pet_formation_timeout_recovers_logged_success_before_retry(self):
+        send_as_id = 8659059194
+        now = 8300.0
+        state_module.ensure_identity_registered(send_as_id)
+        sent_entry = {
+            "message_id": 7005,
+            "event_type": "sent",
+            "text": ".布下剑阵",
+            "source_module": "布下剑阵",
+        }
+        reply_entry = {
+            "message_id": 7006,
+            "reply_to_msg_id": 7005,
+            "event_type": "message",
+            "chat_id": state_module.get_game_group_id(),
+            "sender_is_bot": True,
+            "text": "剑阵已成！你消耗了 2000 点修为，布下了【大庚剑阵】！",
+            "ts_epoch": now - 1,
+        }
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_formation_enabled"] = True
+            state_module.state["next_pet_formation_time"] = now - 1
+            state_module.state["pet_formation_last_error"] = "布下剑阵已发送，等待回执确认"
+            state_module.state["pet_formation_retry_count"] = 0
+            state_module.state["pending_tasks"] = {}
+
+            with patch.object(pet, "find_recent_message_log_command", return_value=sent_entry), patch.object(
+                pet, "find_message_log_replies", return_value=[reply_entry]
+            ), patch.object(pet, "send_game_command", new=AsyncMock()) as send_mock, patch.object(
+                pet, "save_state"
+            ), patch.object(pet, "console_log"):
+                await pet.run_pet_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now - 1 + pet.PET_FORMATION_BUFF_SEC, state_module.state["next_pet_formation_time"])
+            self.assertEqual("", state_module.state["pet_formation_last_error"])
+            self.assertEqual(0, state_module.state["pet_formation_retry_count"])
+
     async def test_pet_formation_success_sets_twelve_hour_timer(self):
         send_as_id = 8659059194
         now = 8300.0

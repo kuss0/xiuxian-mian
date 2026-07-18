@@ -547,6 +547,47 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 4 + 600, state_module.state["next_second_soul_time"])
             self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
 
+    async def test_train_timeout_recovers_unknown_send_and_logged_reply(self):
+        send_as_id = 8659059206
+        now = 9400.0
+        state_module.ensure_identity_registered(send_as_id)
+        recovered_command = {
+            "message_id": 301,
+            "text": CMD_SECOND_SOUL_TRAIN,
+            "ts_epoch": now - 40,
+        }
+        recovered_reply = {
+            "message_id": 302,
+            "reply_to_msg_id": 301,
+            "event_type": "message",
+            "chat_id": state_module.get_game_group_id(),
+            "sender_is_bot": True,
+            "text": "你的第二元神已开始闭关修炼，本次修炼将持续24小时。",
+            "ts_epoch": now - 39,
+        }
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "train_pending"
+            state_module.state["next_second_soul_time"] = now - 1
+            state_module.state["second_soul_train_msg_id"] = 0
+
+        with (
+            patch.object(second_soul, "recover_sent_command_from_message_log", return_value=recovered_command),
+            patch.object(second_soul, "find_message_log_replies", return_value=[recovered_reply]),
+            patch.object(second_soul, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+            patch.object(second_soul, "console_log"),
+            state_module.use_identity(send_as_id),
+        ):
+            await second_soul.run_second_soul_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("cultivating", state_module.state["second_soul_phase"])
+            self.assertGreater(state_module.state["next_second_soul_time"], now + 23 * 3600)
+            self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

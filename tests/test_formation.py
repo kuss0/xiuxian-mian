@@ -341,6 +341,41 @@ class FormationTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_formation_time"],
             )
 
+    async def test_sent_reply_timeout_recovers_logged_success_edit(self):
+        now = 1_700_000_000.0
+        identity_id = self._prepare_identity(username="rexy1205")
+        self._record_invite(now)
+        with state_module.use_identity(identity_id):
+            state_module.state["formation_enabled"] = True
+            state_module.state["next_formation_time"] = now - 1
+            with (
+                patch.object(formation.random, "uniform", return_value=0),
+                patch.object(formation, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7897749))),
+                patch.object(formation, "save_state"),
+            ):
+                await formation.run_formation_scheduler(now)
+                await formation.run_formation_scheduler(now)
+
+        success_entry = {
+            "event_type": "edit",
+            "message_id": 7897745,
+            "chat_id": state_module.get_game_group_id(),
+            "reply_to_msg_id": 7897744,
+            "text": real_text("formation.success.edit"),
+            "ts_epoch": now + 10,
+        }
+        with state_module.use_identity(identity_id), patch.object(
+            formation, "find_message_log_replies", return_value=[]
+        ), patch.object(formation, "find_message_log_message", return_value=success_entry), patch.object(
+            formation, "save_state"
+        ):
+            await formation.run_formation_scheduler(now + FORMATION_ASSIST_REPLY_TIMEOUT_SEC + 1)
+
+            self.assertEqual(0, state_module.state["formation_pending_invite_msg_id"])
+            self.assertEqual(0, state_module.state["formation_pending_assist_msg_id"])
+            self.assertEqual(now + 10 + FORMATION_SUCCESS_COOLDOWN_SEC, state_module.state["formation_cooldown_until"])
+            self.assertNotEqual("助阵回复超时", state_module.state["formation_last_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

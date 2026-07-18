@@ -2,11 +2,13 @@ import asyncio
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, CMD_PET_FORMATION, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
+from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
-from ..state import get_current_identity_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, get_pet_formation_command, state
+from ..state import get_current_identity_id, get_game_group_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, get_pet_formation_command, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_text_delta
@@ -30,6 +32,7 @@ PET_WARM_RESOURCE_KEY = "pet_warm"
 PET_WARM_CD = 6 * 3600
 PET_FORMATION_BUFF_SEC = 12 * 3600
 PET_FORMATION_RETRY_BACKOFF_SEC = 15 * 60
+PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC = 5 * 60
 
 
 def _set_pet_next_time(next_time):
@@ -336,6 +339,50 @@ async def handle_pet_formation_reply(text, now, reply_to, matched_family=None):
     return False
 
 
+async def _recover_pet_formation_reply_from_message_log(now):
+    if "等待回执" not in str(state.get("pet_formation_last_error") or ""):
+        return False
+    identity_id = get_current_identity_id()
+    command = get_pet_formation_command()
+    sent = find_recent_message_log_command(
+        now,
+        sender_id=identity_id,
+        start_ts=max(0.0, float(now or 0) - PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC),
+        lookahead_sec=5,
+        command_predicate=lambda entry: (
+            str((entry or {}).get("event_type") or "") == "sent"
+            and str((entry or {}).get("text") or "").strip() == command
+            and str((entry or {}).get("source_module") or "") == "布下剑阵"
+        ),
+    )
+    command_msg_id = int((sent or {}).get("message_id") or 0)
+    if command_msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        command_msg_id,
+        now,
+        lookback_sec=PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=5,
+        predicate=lambda entry: (
+            str((entry or {}).get("event_type") or "") in {"message", "edit"}
+            and int((entry or {}).get("chat_id") or 0) == int(get_game_group_id() or 0)
+            and bool((entry or {}).get("sender_is_bot"))
+        ),
+    )
+    reply_to = SimpleNamespace(id=command_msg_id, raw_text=command)
+    for entry in replies:
+        handled = await handle_pet_formation_reply(
+            str((entry or {}).get("text") or ""),
+            float((entry or {}).get("ts_epoch") or now),
+            reply_to,
+            matched_family="pet_formation",
+        )
+        if handled:
+            console_log(f"🗡️ 布下剑阵日志回捞成功，原消息ID={command_msg_id}。")
+            return True
+    return False
+
+
 async def run_pet_scheduler(now):
     if _PET_SCHEDULER_LOCK.locked():
         return
@@ -345,6 +392,8 @@ async def run_pet_scheduler(now):
 
 async def _run_pet_scheduler(now):
     if state.get("pet_formation_enabled") and not _pet_next_time_blocks("next_pet_formation_time", now):
+        if await _recover_pet_formation_reply_from_message_log(now):
+            return
         if _has_pending_pet_command(CMD_PET_FORMATION):
             return
         retry_count = max(0, int(state.get("pet_formation_retry_count", 0) or 0))

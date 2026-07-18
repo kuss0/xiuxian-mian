@@ -13,11 +13,13 @@ from ..config import (
     FORMATION_RECOVERY_DELAY_SEC,
     FORMATION_SUCCESS_COOLDOWN_SEC,
 )
+from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, has_active_reply_dispatch, send_game_command
 from ..state import (
     get_current_identity_id,
     get_formation_run_state,
+    get_game_group_id,
     get_identity_account,
     get_identity_display_name,
     get_identity_enabled,
@@ -527,6 +529,69 @@ def _cleanup_run_state(now=None):
     return run_state
 
 
+def _recover_timed_out_formation_replies(now):
+    now = float(now or time.time())
+    game_group_id = int(get_game_group_id() or 0)
+    snapshot = _normalize_run_state()
+    recovered = 0
+    for identity_key, attempts in list((snapshot.get("attempted_assists") or {}).items()):
+        try:
+            identity_id = int(identity_key)
+        except (TypeError, ValueError):
+            continue
+        for invite_key, attempt in list((attempts or {}).items()):
+            if str((attempt or {}).get("status") or "") != "sent":
+                continue
+            deadline = float((attempt or {}).get("reply_deadline_at") or 0)
+            if deadline <= 0 or now <= deadline:
+                continue
+            command_msg_id = int((attempt or {}).get("command_msg_id") or 0)
+            try:
+                invite_msg_id = int(invite_key)
+            except (TypeError, ValueError):
+                invite_msg_id = 0
+            entries = find_message_log_replies(
+                command_msg_id,
+                now,
+                lookback_sec=max(300, int(now - float((attempt or {}).get("sent_at") or deadline) + 60)),
+                lookahead_sec=5,
+                predicate=lambda entry: (
+                    str((entry or {}).get("event_type") or "") in {"message", "edit"}
+                    and int((entry or {}).get("chat_id") or 0) == game_group_id
+                ),
+            )
+            invite_entry = find_message_log_message(
+                invite_msg_id,
+                now,
+                lookback_sec=max(300, int(now - float((attempt or {}).get("updated_at") or deadline) + 60)),
+                lookahead_sec=5,
+                predicate=lambda entry: (
+                    str((entry or {}).get("event_type") or "") in {"message", "edit"}
+                    and int((entry or {}).get("chat_id") or 0) == game_group_id
+                ),
+            )
+            if invite_entry:
+                entries.append(invite_entry)
+            for entry in entries:
+                text = str((entry or {}).get("text") or "")
+                if not is_formation_reply_text(text):
+                    continue
+                before_pending = int(get_identity_state(identity_id).get("formation_pending_assist_msg_id", 0) or 0)
+                apply_formation_reply_snapshot(
+                    CMD_FORMATION_ASSIST,
+                    text,
+                    float((entry or {}).get("ts_epoch") or now),
+                    reply_to_msg_id=int((entry or {}).get("reply_to_msg_id") or command_msg_id),
+                    message_id=int((entry or {}).get("message_id") or 0),
+                    identity_id_hint=identity_id,
+                )
+                after_pending = int(get_identity_state(identity_id).get("formation_pending_assist_msg_id", 0) or 0)
+                if before_pending > 0 and after_pending <= 0:
+                    recovered += 1
+                    break
+    return recovered
+
+
 def _is_current_identity_assist_ready(now):
     identity_id = int(get_current_identity_id() or 0)
     if identity_id <= 0 or not has_identity(identity_id):
@@ -605,6 +670,7 @@ async def _send_assist(identity_id, invite, now, run_state):
 
 
 async def run_formation_scheduler(now):
+    _recover_timed_out_formation_replies(now)
     run_state = _cleanup_run_state(now)
     if not _is_current_identity_assist_ready(now):
         return
