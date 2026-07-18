@@ -74,6 +74,18 @@ def _write_listener_heartbeat(extra=None):
         print(traceback.format_exc(), flush=True)
 
 
+def _cleanup_listener_heartbeat_temp_files():
+    path = Path(LISTENER_HEARTBEAT_FILE)
+    try:
+        for candidate in path.parent.glob(f".{path.name}.*.tmp"):
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _listener_runtime_status():
     registered = _listener_stats.get("registered_accounts") or []
     targets = _listener_stats.get("target_accounts") or []
@@ -276,13 +288,19 @@ async def _connect_saved_accounts():
     return connected
 
 
-async def _retry_failed_accounts_loop(stop_event, accounts):
+async def _retry_failed_accounts_loop(stop_event):
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=LISTENER_ACCOUNT_RETRY_INTERVAL_SEC)
             break
         except asyncio.TimeoutError:
             pass
+        loaded = load_state()
+        if not loaded and has_persisted_identity_rows():
+            _write_listener_heartbeat({"status": "degraded_state_load_failed"})
+            continue
+        accounts = get_accounts()
+        _listener_stats["target_accounts"] = _listener_account_ids(accounts)
         registered = set(int(item) for item in (_listener_stats.get("registered_accounts") or []))
         for account_id in list(_listener_stats.get("target_accounts") or []):
             account_id = int(account_id)
@@ -334,9 +352,10 @@ async def main():
     heartbeat_task = None
     retry_task = None
     try:
+        _cleanup_listener_heartbeat_temp_files()
         await _connect_saved_accounts()
         heartbeat_task = asyncio.create_task(_heartbeat_loop(stop_event))
-        retry_task = asyncio.create_task(_retry_failed_accounts_loop(stop_event, get_accounts()))
+        retry_task = asyncio.create_task(_retry_failed_accounts_loop(stop_event))
         await stop_event.wait()
     finally:
         if retry_task and not retry_task.done():

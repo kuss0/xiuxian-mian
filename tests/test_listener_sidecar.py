@@ -111,3 +111,38 @@ class ListenerSidecarTests(unittest.TestCase):
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
+
+    def test_retry_loop_refreshes_accounts_from_state(self):
+        import asyncio
+
+        async def run_case():
+            stop_event = asyncio.Event()
+            listener_sidecar._listener_stats["registered_accounts"] = []
+            listener_sidecar._listener_stats["target_accounts"] = [1]
+
+            async def fake_connect(account_id, _account):
+                self.assertEqual(2, account_id)
+                stop_event.set()
+                return True
+
+            with (
+                patch.object(listener_sidecar, "LISTENER_ACCOUNT_RETRY_INTERVAL_SEC", 0.01),
+                patch.object(listener_sidecar, "load_state", return_value=True),
+                patch.object(listener_sidecar, "get_accounts", return_value={"2": {}}),
+                patch.object(listener_sidecar, "_listener_account_ids", return_value=[2]),
+                patch.object(listener_sidecar, "_connect_listener_account", new=AsyncMock(side_effect=fake_connect)),
+                patch.object(listener_sidecar, "_write_listener_heartbeat"),
+            ):
+                await listener_sidecar._retry_failed_accounts_loop(stop_event)
+
+        asyncio.run(run_case())
+        self.assertEqual([2], listener_sidecar._listener_stats["target_accounts"])
+
+    def test_heartbeat_cleanup_removes_crash_leftovers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            heartbeat = Path(tmpdir) / "listener_heartbeat.json"
+            stale = heartbeat.parent / ".listener_heartbeat.json.123.456.tmp"
+            stale.write_text("stale", encoding="utf-8")
+            with patch.object(listener_sidecar, "LISTENER_HEARTBEAT_FILE", str(heartbeat)):
+                listener_sidecar._cleanup_listener_heartbeat_temp_files()
+            self.assertFalse(stale.exists())
