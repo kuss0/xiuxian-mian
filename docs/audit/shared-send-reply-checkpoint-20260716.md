@@ -109,3 +109,45 @@ Live validation for WA/Wise completed without a manual game command:
   `success`, empty `auto_last_error`, and the next one-hour cooldown.
 - Post-validation health observer returned `ok`; watchdog remained `ok` and the
   restart journal contained no runtime error.
+
+## 7. 2026-07-18 business-semantic closeout
+
+Tool: `tools/business_semantic_report.py`
+
+The tool is read-only. It consumes persisted script send roots, game Bot
+replies/edits, and sanitized MiniApp capture records. It does not import the
+runtime scheduler, send Telegram commands, or call MiniApp HTTP endpoints.
+
+Three-day MiniApp evidence through 2026-07-18:
+
+- 2,608 actual HTTP attempts.
+- Maximum 60-second request window: 48 / 90.
+- Saturated windows: 0.
+- Capture errors retained for review: 5 `app`, 12 `transient`.
+- 202 World Boss `*_business` evidence rows were excluded because they are not
+  network requests. Counting them would falsely report 96 requests/minute.
+
+Three-day small-world evidence:
+
+- 31 script-owned small-world command roots and 21 directly bound panel replies.
+- 16 non-zero faith changes between adjacent bound panels.
+- None can be fully reconstructed to the later panel value from a same-identity
+  command reply or a named disaster broadcast in the persisted log.
+- The latest WA sample is 98 to 86. A directly bound manifest reply in the
+  interval would have raised the modeled value to 100, so the later loss remains
+  explicitly unexplained instead of being hidden by the successful manifest.
+
+`unexplained` here means that the persisted evidence is insufficient to attribute
+the delta. It is not automatically classified as a scheduler bug, and it does
+not authorize a status query or retry. The sample remains available for later
+passive correlation.
+
+Focused validation:
+
+```text
+176 passed, 10 subtests passed
+```
+
+This closes the instrumentation and evidence debt in item 5. Ongoing semantic
+monitoring continues, CommandAttempt remains shadow-only, and Gate 4 remains
+closed.
