@@ -1060,6 +1060,51 @@ def _recover_external_commission_claim_from_log(observed, now):
     return False
 
 
+def _recover_claimed_commission_completion_from_log(observed, now):
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    if int(commission.get("id", 0) or 0) <= 0 or not commission.get("claimed_elsewhere"):
+        return False
+    published_at = float(commission.get("published_at", 0) or 0)
+    if published_at <= 0:
+        return False
+    owner_usernames = _identity_username_keys(get_current_identity_id())
+    stored_owner = str(commission.get("owner_username") or "").strip().lstrip("@").casefold()
+    if stored_owner:
+        owner_usernames.add(stored_owner)
+    if not owner_usernames:
+        return False
+    end_ts = min(float(now), published_at + WANXIN_COMMISSION_TTL_SEC + 3600)
+    latest = None
+    for entry, entry_ts in _iter_message_log_entries_between(max(0.0, published_at - 5), end_ts):
+        if str(entry.get("event_type") or "") not in {"message", "edit"}:
+            continue
+        parsed = parse_wanxin_text(entry.get("text") or "", now=entry_ts)
+        if not parsed or parsed.get("type") not in {"assist_strip_success", "assist_strip_failed"}:
+            continue
+        target = str(parsed.get("target_username") or "").strip().lstrip("@").casefold()
+        if target not in owner_usernames:
+            continue
+        latest = (parsed, entry_ts)
+    if not latest:
+        return False
+    parsed, entry_ts = latest
+    _apply_panel_values(observed, parsed.get("values") or {}, entry_ts)
+    _consume_commission(observed)
+    observed["auto_last_action"] = WANXIN_ACTION_STRIP
+    observed["auto_last_result"] = "外部咒师已完成剥离，委托已结清"
+    observed["auto_last_error"] = ""
+    _clear_pending(observed)
+    _schedule_next(observed, now, result=observed["auto_last_result"])
+    _push_recent(
+        observed,
+        entry_ts,
+        WANXIN_ACTION_STRIP,
+        "external_completed",
+        parsed.get("summary") or "剥离已完成",
+    )
+    return True
+
+
 def _schedule_next(observed, now, delay_sec=WANXIN_CHAIN_STEP_SEC, *, result="", error=""):
     observed["auto_next_time"] = float(now + max(1, delay_sec))
     if result:
@@ -1539,6 +1584,10 @@ async def run_wanxin_scheduler(now):
         if not (observed.get("commission") or {}).get("owner_username"):
             observed["commission"]["owner_username"] = _owner_username()
         if _recover_external_commission_claim_from_log(observed, now):
+            _set_observed(observed)
+            save_state()
+            return
+        if _recover_claimed_commission_completion_from_log(observed, now):
             _set_observed(observed)
             save_state()
             return

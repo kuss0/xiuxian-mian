@@ -1007,6 +1007,102 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, observed["commission"]["id"])
             self.assertFalse(observed["commission"]["claimed_elsewhere"])
 
+    async def test_claimed_commission_completed_by_external_helper_is_not_cancelled(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        state_module.update_send_as_profile(owner_id, username_aliases=["WalterWA2000"])
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        published_at = datetime(2026, 7, 17, 8, 8, 53, tzinfo=wanxin.TZ_LOCAL).timestamp()
+        due_at = published_at + wanxin.WANXIN_COMMISSION_TTL_SEC + wanxin.CD_BUFFER_SEC
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-17.log"
+            log_path.write_text(
+                json.dumps(
+                    {
+                        "ts": "2026-07-17 11:14:10 UTC+8",
+                        "event_type": "message",
+                        "message_id": 218120,
+                        "text": "【剥离咒源成功】\n"
+                        "@DaxCph 以阴罗幡截住咒源反噬，替 @WalterWA2000 剥下一段阴罗残咒。\n"
+                        "魂封 -8，咒源 +14。\n\n阶段：玄冰丹方（封魂未解）\n"
+                        "婉心：120\n魂封：0\n月魄：52\n咒源：120",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with state_module.use_identity(owner_id):
+                state_module.state["wanxin_enabled"] = True
+                state_module.state["wanxin_observation"] = {
+                    "auto_next_time": due_at,
+                    "next_visit_time": due_at + 3600,
+                    "next_protect_time": due_at + 3600,
+                    "next_deduce_time": due_at + 3600,
+                    "auto_config": {"publish_enabled": True, "assist_enabled": True},
+                    "commission": {
+                        "id": 145,
+                        "published_at": published_at,
+                        "owner_username": "WalterWA2000",
+                        "claimed_elsewhere": True,
+                        "claim_helper_username": "DaxCph",
+                        "cancel_due_at": due_at,
+                    },
+                    "assist": {"send_as_id": helper_id, "strip_enabled": True},
+                }
+                with (
+                    patch.object(wanxin, "MESSAGES_DIR", tmpdir),
+                    patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(wanxin, "save_state"),
+                ):
+                    await wanxin.run_wanxin_scheduler(due_at)
+
+                send_mock.assert_not_awaited()
+                observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
+                self.assertEqual(0, observed["commission"]["id"])
+                self.assertFalse(observed["commission"]["claimed_elsewhere"])
+                self.assertEqual("外部咒师已完成剥离，委托已结清", observed["auto_last_result"])
+                self.assertEqual(0, observed["soul_seal"])
+                self.assertEqual(52, observed["moon_soul"])
+
+    async def test_no_cancelable_commission_reply_clears_stale_contract(self):
+        owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        now = 1_800_000_400.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "pending": {
+                    "action": "cancel",
+                    "family": "wanxin_cancel",
+                    "msg_id": 248154,
+                    "send_as_id": owner_id,
+                    "reply_due_at": now + 90,
+                },
+                "commission": {
+                    "id": 145,
+                    "published_at": now - wanxin.WANXIN_COMMISSION_TTL_SEC,
+                    "owner_username": "WalterWA20000",
+                    "claimed_elsewhere": True,
+                    "cancel_due_at": now,
+                    "cancel_msg_id": 248154,
+                },
+            }
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "你当前没有可取消的解咒委托。",
+                    now,
+                    reply_to=SimpleNamespace(id=248154, raw_text=".取消解咒委托"),
+                    matched_family="wanxin_cancel",
+                    result_msg_id=248155,
+                )
+
+            self.assertTrue(handled)
+            observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
+            self.assertEqual(0, observed["commission"]["id"])
+            self.assertFalse(observed["commission"]["claimed_elsewhere"])
+            self.assertEqual({}, observed["pending"])
+            self.assertEqual("当前无可取消委托", observed["auto_last_result"])
+            self.assertEqual("", observed["auto_last_error"])
+
     async def test_scheduler_targets_identify_with_owner_mention(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
