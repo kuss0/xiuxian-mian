@@ -42,8 +42,10 @@ DUEL_YUANYING_MIN_REALM = "元婴后期"
 DUEL_MIN_REALM = DUEL_JIEDAN_MIN_REALM  # status/UI 展示用最低可参战境界
 DUEL_RESERVE_XIUWEI = 200_000
 DUEL_MAX_CONFIG_RESERVE_XIUWEI = 100_000_000
-DUEL_MAX_LOSS_XIUWEI = 0
-DUEL_MIN_XIUWEI = DUEL_RESERVE_XIUWEI  # 默认门槛；运行时以 get_duel_min_xiuwei() 为准
+DUEL_MAX_LOSS_XIUWEI = 60_000
+DUEL_MIN_USEFUL_TRANSFER_XIUWEI = 10_000
+DUEL_RESOURCE_RECOVERY_XIUWEI = 200_000
+DUEL_MIN_XIUWEI = DUEL_RESERVE_XIUWEI + DUEL_MAX_LOSS_XIUWEI
 DUEL_PRESET_TOTAL_COUNT = 10
 DUEL_PRESET_YUANYING_TARGET = "@ccahen"
 # 默认关闭斗法的身份（吧唧 / WA）；其余结丹后、元婴后由预设打开。
@@ -303,17 +305,22 @@ def _clear_target_reservation(target, command_msg_id=0):
         return False
     if command_msg_id and int(record.get("command_msg_id", 0) or 0) != int(command_msg_id):
         return False
-    pair_fields = {
+    preserved_fields = {
         field: record.get(field)
         for field in (
             "pair_batch_owner_identity_id",
             "pair_batch_defender_identity_id",
             "pair_batch_until",
+            "recent_loss_xiuwei",
+            "resource_depleted_at",
+            "resource_depleted_xiuwei",
+            "resource_recovery_xiuwei",
+            "resource_last_loss_msg_id",
         )
         if record.get(field)
     }
-    if pair_fields:
-        records[key] = pair_fields
+    if preserved_fields:
+        records[key] = preserved_fields
     else:
         records.pop(key, None)
     set_duel_target_cooldowns(records)
@@ -1320,8 +1327,52 @@ def get_duel_reserve_xiuwei():
 
 
 def get_duel_min_xiuwei():
-    """Effective min xiuwei gate (= reserve under current reserve-only policy)."""
-    return get_duel_reserve_xiuwei()
+    """Effective self gate: configured reserve plus observed single-loss risk."""
+    return get_duel_reserve_xiuwei() + _duel_loss_risk_for_identity(get_current_identity_id())
+
+
+def _duel_resource_record_for_identity(identity_id):
+    profile = get_send_as_profile(identity_id) or {}
+    username = str(profile.get("username") or "").strip()
+    if not username:
+        return {}
+    return _get_target_cooldown_record(username)
+
+
+def _duel_loss_risk_for_identity(identity_id):
+    record = _duel_resource_record_for_identity(identity_id)
+    return max(DUEL_MAX_LOSS_XIUWEI, _parse_int(record.get("recent_loss_xiuwei", 0)))
+
+
+def _duel_resource_gate_reason(identity_id, *, role):
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0:
+        return ""
+    with use_identity(identity_id):
+        profile = get_send_as_profile(identity_id) or {}
+        username = str(profile.get("username") or identity_id).strip().lstrip("@")
+        current = _parse_int(profile.get("xiuwei_current", 0))
+        reserve = get_duel_reserve_xiuwei()
+        risk = _duel_loss_risk_for_identity(identity_id)
+    record = _duel_resource_record_for_identity(identity_id)
+    depleted_at = float(record.get("resource_depleted_at", 0) or 0)
+    depleted_xiuwei = _parse_int(record.get("resource_depleted_xiuwei", 0))
+    recovery = max(
+        DUEL_RESOURCE_RECOVERY_XIUWEI,
+        _parse_int(record.get("resource_recovery_xiuwei", 0)),
+        risk,
+    )
+    if depleted_at > 0 and (current <= 0 or current < depleted_xiuwei + recovery):
+        return (
+            f"{role} @{username} 可转移修为已接近耗尽，"
+            f"当前={current or '未知'}，需恢复至至少 {depleted_xiuwei + recovery}"
+        )
+    minimum = reserve + risk
+    if current <= 0:
+        return f"{role} @{username} 剩余修为未知，暂不斗法"
+    if current < minimum:
+        return f"{role} @{username} 剩余修为不足，需至少 {minimum}（保留 {reserve} + 风险 {risk}），当前={current}"
+    return ""
 
 
 def _profile_gate_reason():
@@ -1331,12 +1382,7 @@ def _profile_gate_reason():
     realm_reason = _realm_gate_reason(realm)
     if realm_reason:
         return realm_reason
-    min_xiuwei = get_duel_min_xiuwei()
-    reserve = get_duel_reserve_xiuwei()
-    if xiuwei_current < min_xiuwei:
-        current_text = xiuwei_current if xiuwei_current > 0 else "未知"
-        return f"斗法前需至少 {min_xiuwei} 修为（保留 {reserve}），当前={current_text}"
-    return ""
+    return _duel_resource_gate_reason(get_current_identity_id(), role="发起方")
 
 
 def _normalize_identity_token(value):
@@ -1656,6 +1702,11 @@ def _target_gate_reason(target):
     current_id = str(get_current_identity_id() or "").strip()
     if current_id and target == current_id:
         return f"斗法目标不能是自己：{target}"
+    target_id = _managed_target_identity_id(target)
+    if target_id > 0:
+        resource_reason = _duel_resource_gate_reason(target_id, role="守方")
+        if resource_reason:
+            return resource_reason
     return ""
 
 
@@ -1865,25 +1916,66 @@ def _duel_report_delay_upper_bound(text):
     return base + CD_BUFFER_SEC + DUEL_BATCH_STAGGER_MAX_SEC
 
 
-def _apply_duel_xiuwei_loss(text):
+def _duel_xiuwei_loss_fact(text):
     raw = str(text or "")
     loser = RE_DUEL_LOSER.search(raw)
     loss = RE_DUEL_XIUWEI_LOSS.search(raw)
     if not loser or not loss:
-        return 0
-    profile = get_send_as_profile(get_current_identity_id()) or {}
-    username = str(profile.get("username") or "").strip().lstrip("@").casefold()
-    if not username or loser.group(1).strip().lstrip("@").casefold() != username:
-        return 0
+        return "", 0
     amount = float(loss.group("amount") or 0)
     if loss.group("unit"):
         amount *= 10_000
     amount = max(0, int(round(amount)))
+    return normalize_duel_target(loser.group(1)), amount
+
+
+def _apply_duel_xiuwei_loss(text):
+    loser, amount = _duel_xiuwei_loss_fact(text)
+    profile = get_send_as_profile(get_current_identity_id()) or {}
+    username = str(profile.get("username") or "").strip().lstrip("@").casefold()
+    if not username or loser.strip().lstrip("@").casefold() != username:
+        return 0
     current = _parse_int(profile.get("xiuwei_current", 0))
     if amount <= 0 or current <= 0:
         return 0
     update_send_as_profile(get_current_identity_id(), xiuwei_current=max(0, current - amount))
     return amount
+
+
+def _record_managed_duel_loss(text, now, *, result_msg_id=0, apply_profile_loss=True):
+    loser, amount = _duel_xiuwei_loss_fact(text)
+    loser_id = _managed_target_identity_id(loser)
+    if loser_id <= 0 or amount <= 0:
+        return False, 0
+    current_id = int(get_current_identity_id() or 0)
+    with use_identity(loser_id):
+        profile = get_send_as_profile(loser_id) or {}
+        canonical_loser = normalize_duel_target(profile.get("username") or loser)
+        current = _parse_int(profile.get("xiuwei_current", 0))
+        reserve = get_duel_reserve_xiuwei()
+    key = _target_cooldown_key(canonical_loser)
+    records = dict(get_duel_target_cooldowns())
+    record = dict(records.get(key) or {})
+    result_msg_id = int(result_msg_id or 0)
+    if result_msg_id > 0 and result_msg_id <= int(record.get("resource_last_loss_msg_id", 0) or 0):
+        return False, 0
+    if apply_profile_loss and current > 0:
+        current = max(0, current - amount)
+        update_send_as_profile(loser_id, xiuwei_current=current)
+    if amount >= DUEL_MIN_USEFUL_TRANSFER_XIUWEI:
+        record["recent_loss_xiuwei"] = amount
+    else:
+        recent_loss = max(DUEL_MAX_LOSS_XIUWEI, _parse_int(record.get("recent_loss_xiuwei", 0)))
+        record.update(
+            resource_depleted_at=float(now),
+            resource_depleted_xiuwei=current,
+            resource_recovery_xiuwei=max(DUEL_RESOURCE_RECOVERY_XIUWEI, reserve, recent_loss),
+        )
+    if result_msg_id > 0:
+        record["resource_last_loss_msg_id"] = result_msg_id
+    records[key] = record
+    set_duel_target_cooldowns(records)
+    return True, amount if loser_id == current_id else 0
 
 
 def _duel_next_time_blocks(now):
@@ -2251,7 +2343,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     pending_command_msg_id = _parse_int(state.get("duel_reply_to_msg_id", 0))
     summary = parse_duel_result_summary(raw_text)
     weak_or_unknown = _is_weak_or_unknown_result(raw_text)
-    xiuwei_loss = _apply_duel_xiuwei_loss(raw_text)
+    _, xiuwei_loss = _record_managed_duel_loss(raw_text, now, result_msg_id=result_msg_id)
     _clear_duel_pending()
     state["duel_last_msg_id"] = int(result_msg_id or 0)
     state["duel_last_result"] = summary

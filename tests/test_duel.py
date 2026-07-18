@@ -542,11 +542,12 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertIn("斗法前需至少 200000 修为", state_module.state["duel_last_error"])
+            self.assertIn("需至少 260000", state_module.state["duel_last_error"])
+            self.assertIn("保留 200000 + 风险 60000", state_module.state["duel_last_error"])
 
     def test_profile_gate_allows_jiedan_late_and_yuanying_late_plus(self):
         for offset, realm in enumerate(("结丹后期", "元婴后期", "化神初期", "化神后期大圆满")):
-            identity_id = self._prepare_identity(8659059200 + offset, realm=realm, xiuwei_current=250000)
+            identity_id = self._prepare_identity(8659059200 + offset, realm=realm, xiuwei_current=260000)
             with state_module.use_identity(identity_id):
                 self.assertEqual("", duel._profile_gate_reason())
 
@@ -569,7 +570,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("当前=未知境界", duel._profile_gate_reason())
 
     def test_reserve_xiuwei_default_and_ui_override(self):
-        identity_id = self._prepare_identity(8659059240, realm="元婴后期", xiuwei_current=250000)
+        identity_id = self._prepare_identity(8659059240, realm="元婴后期", xiuwei_current=260000)
         with state_module.use_identity(identity_id):
             state_module.state["duel_reserve_xiuwei"] = 0
             self.assertEqual(200000, duel.get_duel_reserve_xiuwei())
@@ -579,13 +580,98 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 duel.apply_duel_config(reserve_xiuwei=400000, persist=True)
             self.assertEqual(400000, state_module.state["duel_reserve_xiuwei"])
             self.assertEqual(400000, duel.get_duel_reserve_xiuwei())
-            self.assertIn("斗法前需至少 400000 修为", duel._profile_gate_reason())
+            self.assertIn("需至少 460000", duel._profile_gate_reason())
 
             with patch.object(duel, "save_state"):
                 duel.apply_duel_config(reserve_xiuwei="", persist=True)
             self.assertEqual(0, state_module.state["duel_reserve_xiuwei"])
             self.assertEqual(200000, duel.get_duel_reserve_xiuwei())
             self.assertEqual("", duel._profile_gate_reason())
+
+    def test_managed_target_gate_checks_target_reserve_and_loss_risk(self):
+        attacker_id = self._prepare_identity(99002001, xiuwei_current=900000)
+        target_id = self._prepare_identity(99002002, realm="化神初期", xiuwei_current=250000)
+        state_module.update_send_as_profile(attacker_id, username="high_attacker")
+        state_module.update_send_as_profile(target_id, username="low_target")
+
+        with state_module.use_identity(attacker_id):
+            reason = duel._target_gate_reason("@low_target")
+
+        self.assertIn("守方 @low_target 剩余修为不足", reason)
+        self.assertIn("保留 200000 + 风险 60000", reason)
+
+    def test_tiny_managed_loss_marks_resource_depleted_until_recovered(self):
+        attacker_id = self._prepare_identity(99002003, xiuwei_current=900000)
+        target_id = self._prepare_identity(99002004, realm="化神初期", xiuwei_current=700000)
+        state_module.update_send_as_profile(attacker_id, username="high_attacker")
+        state_module.update_send_as_profile(target_id, username="low_target")
+        now = 1_700_000_000.0
+        text = (
+            "【天道战报·文字版】\n"
+            "胜者：@high_attacker\n"
+            "败者：@low_target | 损失修为 -120"
+        )
+
+        with state_module.use_identity(attacker_id):
+            changed, current_loss = duel._record_managed_duel_loss(text, now, result_msg_id=4001)
+            reason = duel._target_gate_reason("@low_target")
+
+        self.assertTrue(changed)
+        self.assertEqual(0, current_loss)
+        self.assertIn("可转移修为已接近耗尽", reason)
+        target_profile = state_module.get_send_as_profile(target_id)
+        self.assertEqual(699880, target_profile["xiuwei_current"])
+        record = state_module.get_duel_target_cooldowns()["@low_target"]
+        self.assertEqual(now, record["resource_depleted_at"])
+        self.assertEqual(699880, record["resource_depleted_xiuwei"])
+        self.assertEqual(duel.DUEL_RESOURCE_RECOVERY_XIUWEI, record["resource_recovery_xiuwei"])
+
+        state_module.update_send_as_profile(target_id, xiuwei_current=899880)
+        with state_module.use_identity(attacker_id):
+            self.assertEqual("", duel._target_gate_reason("@low_target"))
+
+    def test_useful_managed_loss_becomes_next_loss_risk(self):
+        attacker_id = self._prepare_identity(99002005, xiuwei_current=900000)
+        target_id = self._prepare_identity(99002006, realm="化神初期", xiuwei_current=700000)
+        state_module.update_send_as_profile(attacker_id, username="high_attacker")
+        state_module.update_send_as_profile(target_id, username="low_target")
+        now = 1_700_000_000.0
+        text = (
+            "【天道战报·文字版】\n"
+            "胜者：@high_attacker\n"
+            "败者：@low_target | 损失修为 -24.0万"
+        )
+
+        with state_module.use_identity(attacker_id):
+            changed, current_loss = duel._record_managed_duel_loss(text, now, result_msg_id=4002)
+            self.assertTrue(changed)
+            self.assertEqual(0, current_loss)
+
+        record = state_module.get_duel_target_cooldowns()["@low_target"]
+        self.assertEqual(240000, record["recent_loss_xiuwei"])
+        state_module.update_send_as_profile(target_id, xiuwei_current=430000)
+        with state_module.use_identity(attacker_id):
+            reason = duel._target_gate_reason("@low_target")
+        self.assertIn("需至少 440000", reason)
+
+    def test_managed_loss_replay_is_idempotent_by_result_message_id(self):
+        attacker_id = self._prepare_identity(99002007, xiuwei_current=900000)
+        target_id = self._prepare_identity(99002008, realm="化神初期", xiuwei_current=700000)
+        state_module.update_send_as_profile(attacker_id, username="high_attacker")
+        state_module.update_send_as_profile(target_id, username="low_target")
+        text = (
+            "【天道战报·文字版】\n"
+            "胜者：@high_attacker\n"
+            "败者：@low_target | 损失修为 -6.0万"
+        )
+
+        with state_module.use_identity(attacker_id):
+            first = duel._record_managed_duel_loss(text, 1_700_000_000.0, result_msg_id=4010)
+            second = duel._record_managed_duel_loss(text, 1_700_000_010.0, result_msg_id=4010)
+
+        self.assertEqual((True, 0), first)
+        self.assertEqual((False, 0), second)
+        self.assertEqual(640000, state_module.get_send_as_profile(target_id)["xiuwei_current"])
 
     def test_window_normalize_label_and_bounds(self):
         self.assertEqual(0, duel.normalize_duel_window_minute(-1, 0))
