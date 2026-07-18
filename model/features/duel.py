@@ -1749,6 +1749,18 @@ def _tag_in_text(text, tag):
     return re.search(pattern, str(text or ""), re.I) is not None
 
 
+def _aliases_in_text(text, aliases):
+    return any(_tag_in_text(text, alias) for alias in aliases or ())
+
+
+def _identity_tag_in_text(text, identity_id):
+    return _aliases_in_text(text, _profile_username_keys(identity_id))
+
+
+def _target_tag_in_text(text, target):
+    return _aliases_in_text(text, _username_alias_keys(target))
+
+
 def is_duel_reply_text(text):
     raw = str(text or "").strip()
     return (
@@ -1837,10 +1849,10 @@ def _is_duel_prediction_consuming_result(text):
 
 def _is_target_named_cooldown(text):
     raw = str(text or "")
-    target = _target_token().lstrip("@")
+    target = _target_token()
     return bool(
         target
-        and _tag_in_text(raw, target)
+        and _target_tag_in_text(raw, target)
         and ("元神尚未平复" in raw or "无法再次斗法" in raw)
     )
 
@@ -2280,12 +2292,11 @@ async def handle_duel_broadcast(text, now, event=None, result_msg_id=0):
     raw = str(text or "")
     if not (raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX)):
         return False
-    profile = get_send_as_profile(get_current_identity_id()) or {}
-    username = str(profile.get("username") or "").strip().lstrip("@")
-    target = _target_token().lstrip("@")
-    if username and not _tag_in_text(raw, username):
+    identity_id = get_current_identity_id()
+    target = _target_token()
+    if _profile_username_keys(identity_id) and not _identity_tag_in_text(raw, identity_id):
         return False
-    if target and not _tag_in_text(raw, target):
+    if target and not _target_tag_in_text(raw, target):
         return False
     if result_msg_id <= 0 and event is not None:
         result_msg_id = int(getattr(event, "id", 0) or 0)
@@ -2299,7 +2310,7 @@ async def handle_duel_target_observation(text, now, event=None):
     if not (raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX)):
         return False
     target = _target_token(now)
-    if not target or not _tag_in_text(raw, target.lstrip("@")):
+    if not target or not _target_tag_in_text(raw, target):
         return False
     until = _set_target_cooldown(
         target,

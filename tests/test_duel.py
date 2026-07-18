@@ -2263,6 +2263,91 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             save_mock.assert_called_once()
             console_mock.assert_called_once()
 
+    async def test_manual_report_with_old_target_username_refreshes_current_target_lock(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(
+            baiji_id,
+            username="jfdffdddd1",
+            username_aliases=["jfdffdddd"],
+        )
+        state_module.update_send_as_profile(
+            wa_id,
+            username="WalterWA20000",
+            username_aliases=["WalterWA2000"],
+        )
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            with (
+                patch.object(duel, "console_log"),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_target_observation(
+                    "【天道战报·文字版】\n"
+                    "攻方：@WalterWA2000 · 惊慕\n"
+                    "守方：@jfdffdddd · 空尘子\n"
+                    "胜者：@WalterWA2000\n败者：@jfdffdddd",
+                    now,
+                    event=SimpleNamespace(id=244648),
+                )
+
+            self.assertTrue(handled)
+            target_lock = state_module.get_duel_target_cooldowns()["@jfdffdddd1"]
+            self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC, target_lock["until"])
+
+            state_module.state["next_duel_time"] = now + 8 * 60
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 8 * 60)
+
+            send_mock.assert_not_awaited()
+            self.assertIn("仍在斗法冷却", state_module.state["duel_last_error"])
+            self.assertGreater(state_module.state["next_duel_time"], target_lock["until"])
+
+    async def test_alias_aware_broadcast_accepts_old_attacker_and_target_names(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(
+            baiji_id,
+            username="jfdffdddd1",
+            username_aliases=["jfdffdddd"],
+        )
+        state_module.update_send_as_profile(
+            wa_id,
+            username="WalterWA20000",
+            username_aliases=["WalterWA2000"],
+        )
+        now = 1_700_000_000.0
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_reply_to_msg_id"] = 244642
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_broadcast(
+                    "【天道战报·文字版】\n"
+                    "攻方：@WalterWA2000 · 惊慕\n"
+                    "守方：@jfdffdddd · 空尘子\n"
+                    "胜者：@WalterWA2000\n败者：@jfdffdddd",
+                    now,
+                    event=SimpleNamespace(id=244648),
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(1, state_module.state["duel_completed_count"])
+
     async def test_broadcast_outside_pending_window_is_ignored(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
