@@ -1,19 +1,44 @@
+import asyncio
 import re
+import time
 from collections import OrderedDict
 
-from ..runtime import console_log
+from ..runtime import console_log, send_audit_log
 
 
 RED_PACKET_MONITOR_CHAT_USERNAME = "ja_netfilter_group"
 RE_RED_PACKET_COMMAND = re.compile(
     r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)\s+(?P<count>\d+)\s*$"
 )
+RE_RED_PACKET_CREATED = re.compile(
+    r"【LDC\s*红包】.*?(?P<amount>\d+(?:\.\d+)?)\s*LDC\s*/\s*"
+    r"(?P<count>\d+)\s*份"
+)
 _SEEN_CANDIDATES = OrderedDict()
 _SEEN_CANDIDATE_LIMIT = 1000
+_PENDING_COMMANDS = OrderedDict()
+_PENDING_COMMAND_LIMIT = 100
+_PENDING_COMMAND_TTL_SEC = 120
+_ALERTED_PACKETS = OrderedDict()
+_ALERTED_PACKET_LIMIT = 500
+_RED_PACKET_ALERT_THRESHOLD = 50.0
+_RED_PACKET_ALERT_COUNT = 3
+_RED_PACKET_ALERT_INTERVAL_SEC = 2.0
+_ALERT_TASKS = set()
 
 
 def parse_red_packet_command(text):
     match = RE_RED_PACKET_COMMAND.match(str(text or ""))
+    if not match:
+        return None
+    return {
+        "amount": float(match.group("amount")),
+        "count": int(match.group("count")),
+    }
+
+
+def parse_red_packet_created(text):
+    match = RE_RED_PACKET_CREATED.search(str(text or ""))
     if not match:
         return None
     return {
@@ -49,6 +74,115 @@ def _claim_candidate(chat_id, message_id, event_type, text):
     return True
 
 
+def _prune_pending_commands(now):
+    cutoff = float(now) - _PENDING_COMMAND_TTL_SEC
+    for key, item in list(_PENDING_COMMANDS.items()):
+        if float(item.get("created_at", 0) or 0) < cutoff:
+            _PENDING_COMMANDS.pop(key, None)
+
+
+def _remember_pending_command(chat_id, message_id, parsed, now):
+    if not parsed or parsed["amount"] < _RED_PACKET_ALERT_THRESHOLD:
+        return
+    key = (int(chat_id or 0), int(message_id or 0))
+    _PENDING_COMMANDS[key] = {
+        "created_at": float(now),
+        "amount": float(parsed["amount"]),
+        "count": int(parsed["count"]),
+        "topic_id": 0,
+    }
+    while len(_PENDING_COMMANDS) > _PENDING_COMMAND_LIMIT:
+        _PENDING_COMMANDS.popitem(last=False)
+
+
+def _claim_pending_created_packet(chat_id, message_id, parsed, now):
+    _prune_pending_commands(now)
+    amount = float(parsed["amount"])
+    count = int(parsed["count"])
+    for command_key, item in list(_PENDING_COMMANDS.items()):
+        if command_key[0] != int(chat_id or 0):
+            continue
+        if item["amount"] != amount or item["count"] != count:
+            continue
+        if int(command_key[1]) >= int(message_id or 0):
+            continue
+        _PENDING_COMMANDS.pop(command_key, None)
+        packet_key = (int(chat_id or 0), int(message_id or 0))
+        if packet_key in _ALERTED_PACKETS:
+            return None
+        _ALERTED_PACKETS[packet_key] = None
+        while len(_ALERTED_PACKETS) > _ALERTED_PACKET_LIMIT:
+            _ALERTED_PACKETS.popitem(last=False)
+        return {
+            "packet_key": packet_key,
+            "topic_id": int(item.get("topic_id", 0) or 0),
+        }
+    return None
+
+
+def _event_topic_id(event):
+    message = getattr(event, "message", None)
+    reply_to = getattr(message, "reply_to", None)
+    if reply_to is None:
+        return 0
+    return int(
+        getattr(reply_to, "reply_to_top_id", 0)
+        or getattr(reply_to, "reply_to_msg_id", 0)
+        or 0
+    )
+
+
+def _red_packet_message_url(topic_id, message_id):
+    base = f"https://t.me/{RED_PACKET_MONITOR_CHAT_USERNAME}"
+    if int(topic_id or 0) > 0:
+        return f"{base}/{int(topic_id)}/{int(message_id)}"
+    return f"{base}/{int(message_id)}"
+
+
+async def _send_red_packet_alerts(chat_id, topic_id, message_id, sender_id, parsed):
+    message_url = _red_packet_message_url(topic_id, message_id)
+    for index in range(1, _RED_PACKET_ALERT_COUNT + 1):
+        try:
+            await send_audit_log(
+                "🧧 红包提醒｜来源群={chat_id}｜金额={amount:g} LDC｜数量={count} 份｜"
+                "第 {index}/{total} 次提醒，请尽快抢｜{message_url}"
+                .format(
+                    chat_id=int(chat_id or 0),
+                    amount=float(parsed["amount"]),
+                    count=int(parsed["count"]),
+                    index=index,
+                    total=_RED_PACKET_ALERT_COUNT,
+                    message_url=message_url,
+                ),
+                scope="global",
+                priority="high",
+                limit=240,
+            )
+        except Exception as exc:
+            console_log(
+                f"🧧 红包提醒发送失败｜msg={int(message_id or 0)}｜{type(exc).__name__}: {exc}",
+                scope="global",
+                limit=240,
+            )
+        if index < _RED_PACKET_ALERT_COUNT:
+            await asyncio.sleep(_RED_PACKET_ALERT_INTERVAL_SEC)
+
+
+def _schedule_red_packet_alert(chat_id, topic_id, message_id, sender_id, parsed):
+    task = asyncio.create_task(
+        _send_red_packet_alerts(chat_id, topic_id, message_id, sender_id, parsed)
+    )
+    _ALERT_TASKS.add(task)
+    task.add_done_callback(_ALERT_TASKS.discard)
+
+
+async def drain_red_packet_alert_tasks():
+    """测试辅助：等待当前已排队的有限提醒完成。"""
+    tasks = tuple(_ALERT_TASKS)
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
 async def observe_red_packet_candidate(event, *, event_type="message"):
     text = str(getattr(event, "raw_text", "") or "").strip()
     if "红包" not in text:
@@ -61,6 +195,25 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
     if not _claim_candidate(chat_id, message_id, event_type, safe_text):
         return True
     parsed = parse_red_packet_command(text)
+    now = time.time()
+    _prune_pending_commands(now)
+    if parsed:
+        _remember_pending_command(chat_id, message_id, parsed, now)
+        pending = _PENDING_COMMANDS.get((chat_id, message_id))
+        if pending is not None:
+            pending["topic_id"] = _event_topic_id(event)
+    created = parse_red_packet_created(text)
+    if created and created["amount"] >= _RED_PACKET_ALERT_THRESHOLD:
+        matched = _claim_pending_created_packet(chat_id, message_id, created, now)
+        if matched:
+            topic_id = _event_topic_id(event) or int(matched.get("topic_id", 0) or 0)
+            _schedule_red_packet_alert(
+                chat_id,
+                topic_id,
+                message_id,
+                int(getattr(event, "sender_id", 0) or 0),
+                created,
+            )
     parsed_text = (
         f"amount={parsed['amount']:g} count={parsed['count']}"
         if parsed
@@ -80,4 +233,6 @@ __all__ = [
     "RED_PACKET_MONITOR_CHAT_USERNAME",
     "observe_red_packet_candidate",
     "parse_red_packet_command",
+    "parse_red_packet_created",
+    "drain_red_packet_alert_tasks",
 ]
