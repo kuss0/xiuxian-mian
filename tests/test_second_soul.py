@@ -206,6 +206,64 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, state_module.state["second_soul_purge_attempts"])
             self.assertEqual(61, state_module.state["second_soul_purge_msg_id"])
 
+    async def test_return_broadcast_purges_at_default_threshold_boundary(self):
+        send_as_id = 8659059295
+        now = 5050.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="ThresholdSoul")
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "cultivating"
+            self.assertEqual(60, second_soul.get_second_soul_purge_threshold())
+
+        text = (
+            "【第二元神归位】\n"
+            "道友 @ThresholdSoul 的第二元神已结束修炼，回归窍中温养。\n"
+            "五子流转：同心 100→100，魔染 58→60。"
+        )
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=62, sent_at=now + 1))) as send_mock,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+        ):
+            handled = await second_soul.handle_second_soul_return_broadcast(text, now)
+
+        self.assertTrue(handled)
+        send_mock.assert_awaited_once_with(
+            CMD_SECOND_SOUL_PURGE,
+            track=False,
+            send_as_id=send_as_id,
+            priority="chain",
+        )
+
+    async def test_return_broadcast_below_threshold_or_unknown_does_not_purge(self):
+        for offset, suffix in enumerate(("五子流转：同心 100→100，魔染 58→59。", "本轮修炼平稳结束。")):
+            send_as_id = 8659059296 + offset
+            username = f"SafeThresholdSoul{offset}"
+            now = 5100.0 + offset
+            state_module.ensure_identity_registered(send_as_id)
+            state_module.update_send_as_profile(send_as_id, username=username)
+            with state_module.use_identity(send_as_id):
+                state_module.state["second_soul_enabled"] = True
+                state_module.state["second_soul_phase"] = "cultivating"
+
+            text = (
+                "【第二元神归位】\n"
+                f"道友 @{username} 的第二元神已结束修炼，回归窍中温养。\n"
+                f"{suffix}"
+            )
+            with (
+                patch.object(second_soul, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+                patch.object(second_soul, "save_state"),
+            ):
+                handled = await second_soul.handle_second_soul_return_broadcast(text, now)
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            with state_module.use_identity(send_as_id):
+                self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
+
     async def test_purge_no_reply_queries_demon_status_once(self):
         send_as_id = 8659059196
         now = 6000.0

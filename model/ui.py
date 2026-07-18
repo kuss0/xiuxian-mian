@@ -4701,6 +4701,7 @@ def get_identity_ui_snapshot(send_as_id):
             },
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
             "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
+            "second_soul_purge_threshold": max(1, min(100, int(identity_state.get("second_soul_purge_threshold", 60) or 60))),
             "second_soul_choice_strategy_choices": [
                 {"value": "stable", "label": "稳固道心"},
                 {"value": "break", "label": "强行突破"},
@@ -5586,13 +5587,21 @@ async def ui_set_wild_training_strategy(send_as_id, choice):
     return ok, f"{message}[{get_identity_display_name(send_as_id)}]" if ok else message
 
 
-async def ui_set_second_soul_choice_config(send_as_id, *, auto_choice_enabled=None, strategy=None):
+async def ui_set_second_soul_choice_config(send_as_id, *, auto_choice_enabled=None, strategy=None, purge_threshold=None):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
     strategy = str(strategy or "").strip().lower()
     if strategy and strategy not in {"stable", "break"}:
         return False, "无效的第二元神心魔抉择策略"
+    normalized_purge_threshold = None
+    if purge_threshold not in {None, ""}:
+        try:
+            normalized_purge_threshold = int(purge_threshold)
+        except (TypeError, ValueError):
+            return False, "自动镇魔阈值必须是 1-100 的整数"
+        if not 1 <= normalized_purge_threshold <= 100:
+            return False, "自动镇魔阈值必须是 1-100 的整数"
     changed = []
     with use_identity(send_as_id):
         if auto_choice_enabled is not None:
@@ -5602,6 +5611,9 @@ async def ui_set_second_soul_choice_config(send_as_id, *, auto_choice_enabled=No
         if strategy:
             state["second_soul_choice_strategy"] = strategy
             changed.append(f"策略={'稳固道心' if strategy == 'stable' else '强行突破'}")
+        if normalized_purge_threshold is not None:
+            state["second_soul_purge_threshold"] = normalized_purge_threshold
+            changed.append(f"自动镇魔阈值={normalized_purge_threshold}")
         save_state()
     if not changed:
         return False, "没有可更新的第二元神心魔抉择配置"
@@ -9217,6 +9229,7 @@ async def handle_ui_http(reader, writer):
                             send_as_id,
                             auto_choice_enabled=payload.get("auto_choice_enabled") if "auto_choice_enabled" in payload else None,
                             strategy=payload.get("strategy"),
+                            purge_threshold=payload.get("purge_threshold") if "purge_threshold" in payload else None,
                         )
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-sync":

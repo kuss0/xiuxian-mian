@@ -31,7 +31,7 @@ _identity_context_active = contextvars.ContextVar("identity_context_active", def
 
 IDENTITY_MODULE_COLUMNS = [
     "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "mulan_enabled", "wanxin_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_high_stock_silence_enabled", "small_world_barrier_enabled", "small_world_barrier_min_stock", "small_world_barrier_guard_before_min", "small_world_barrier_min_interval_hours", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
-    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
+    "second_soul_enabled", "second_soul_auto_choice_enabled", "second_soul_purge_threshold", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
@@ -769,6 +769,7 @@ IDENTITY_STATE_TEMPLATE = {
     # 第二元神模块
     "second_soul_enabled": False,
     "second_soul_auto_choice_enabled": True,
+    "second_soul_purge_threshold": 60,
     "second_soul_phase": "idle",  # idle|status_pending|ready_to_train|train_pending|cultivating|heart_demon_pending|injured|not_unlocked|purge_pending|purge_status_pending
     "second_soul_choice_strategy": "stable",
     "next_second_soul_time": 0,

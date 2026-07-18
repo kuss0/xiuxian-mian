@@ -34,6 +34,25 @@ class ControlBoolCoercionTests(unittest.TestCase):
         self.assertFalse(state_module.get_identity_enabled(send_as_id))
         self.assertIn("暂停身份", message)
 
+    def test_second_soul_purge_threshold_ui_validates_and_persists(self):
+        send_as_id = 990302
+        state_module.ensure_identity_registered(send_as_id)
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message = asyncio.run(
+                ui.ui_set_second_soul_choice_config(send_as_id, purge_threshold="60")
+            )
+            invalid_ok, invalid_message = asyncio.run(
+                ui.ui_set_second_soul_choice_config(send_as_id, purge_threshold="0")
+            )
+
+        self.assertTrue(ok, message)
+        self.assertIn("自动镇魔阈值=60", message)
+        self.assertFalse(invalid_ok)
+        self.assertIn("1-100", invalid_message)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(60, state_module.state["second_soul_purge_threshold"])
+
     def test_direct_global_toggle_treats_form_false_string_as_disabled(self):
         state_module.set_global_enabled(True)
         for identity_id in (990311, 990312):

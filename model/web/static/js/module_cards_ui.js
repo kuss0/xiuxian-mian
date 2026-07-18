@@ -850,13 +850,21 @@
           );
       }else if(module.name === '第二元神'){
         var choices = identity.second_soul_choice_strategy_choices || [{value:'stable',label:'稳固道心'},{value:'break',label:'强行突破'}];
-        moduleNote = '<div class="module-note">心魔：'+(identity.second_soul_auto_choice_enabled ? '自动' : '手动')+' / '+esc((identity.second_soul_choice_strategy === 'break') ? '强行突破' : '稳固道心')+'</div>';
+        var purgeThreshold = Number(identity.second_soul_purge_threshold || 60);
+        moduleNote = '<div class="module-note">心魔：'+(identity.second_soul_auto_choice_enabled ? '自动' : '手动')+' / '+esc((identity.second_soul_choice_strategy === 'break') ? '强行突破' : '稳固道心')+'｜镇魔 ≥ '+esc(purgeThreshold)+'</div>';
         primaryTools = renderSecondSoulChoiceSwitch(identity);
-        settingsTools = settingSection(
-          '心魔抉择策略',
-          '自动抉择开启时，遇到第二元神心魔分支会按这里选择；稳固道心更保守，强行突破更激进。',
-          '<label class="module-setting-field"><span>策略</span><select class="text-input second-soul-choice-select" data-second-soul-choice-strategy="1">'+optionHtml(choices, identity.second_soul_choice_strategy)+'</select></label>'
-        );
+        settingsTools =
+          settingSection(
+            '心魔抉择策略',
+            '自动抉择开启时，遇到第二元神心魔分支会按这里选择；稳固道心更保守，强行突破更激进。',
+            '<label class="module-setting-field"><span>策略</span><select class="text-input second-soul-choice-select" data-second-soul-choice-strategy="1">'+optionHtml(choices, identity.second_soul_choice_strategy)+'</select></label>'
+          )+
+          settingSection(
+            '自动镇魔阈值',
+            '只有真实回复中解析到魔染达到阈值时才会自动镇魔；未读取到魔染不会触发。',
+            '<label class="module-setting-field"><span>魔染 ≥</span><input class="text-input" type="number" min="1" max="100" step="1" value="'+esc(purgeThreshold)+'" data-second-soul-purge-threshold="1"></label>'+
+            '<button type="button" class="btn btn-secondary" data-save-second-soul-purge-threshold="1">保存阈值</button>'
+          );
       }else if(module.name === '太一'){
         var nsEnabled = !!identity.taiyi_node_search_enabled;
         primaryTools =
@@ -1176,6 +1184,32 @@
     }
   }
 
+  async function submitSecondSoulPurgeThreshold(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var input = document.querySelector('[data-second-soul-purge-threshold]');
+    try{
+      var data = await postJson('/api/second-soul-choice-config', {
+        send_as_id: appState.selectedId,
+        purge_threshold: input ? input.value : 60
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新自动镇魔阈值', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '自动镇魔阈值更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   async function submitFastModuleToggle(button){
     if(typeof postJson !== 'function' || typeof appState === 'undefined'){
       return;
@@ -1253,6 +1287,10 @@
     }
     if(event.target.closest('[data-save-explore-rift-rebirth-config]')){
       submitExploreRiftRebirthConfig();
+      return;
+    }
+    if(event.target.closest('[data-save-second-soul-purge-threshold]')){
+      submitSecondSoulPurgeThreshold();
       return;
     }
     if(event.target.closest('[data-save-tianxing-config]')){

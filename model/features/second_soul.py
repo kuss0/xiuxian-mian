@@ -55,7 +55,7 @@ RE_SECOND_SOUL_PANEL_HEAD = re.compile(r"【你的第二元神[：:]")
 RE_SECOND_SOUL_STATUS_LINE = re.compile(r"状态[：:]\s*([^\n)]+?)(?:\s*[(（]剩余[：:]\s*([^)）\n]+)[)）])?\s*(?:\n|$)")
 RE_SECOND_SOUL_MORAN = re.compile(r"魔染(?:度)?\s*[:：]?\s*(\d+)(?:\s*(?:→|->|=>)\s*(\d+))?")
 RE_AT_USERNAME = re.compile(r"@([A-Za-z0-9_]+)")
-SECOND_SOUL_PURGE_THRESHOLD = 90
+SECOND_SOUL_PURGE_THRESHOLD_DEFAULT = 60
 SECOND_SOUL_PURGE_REPLY_TIMEOUT_SEC = 120
 SECOND_SOUL_PURGE_MAX_ATTEMPTS = 2
 SECOND_SOUL_CHOICE_STRATEGIES = {
@@ -90,6 +90,14 @@ def _choice_command():
 
 def _choice_label():
     return SECOND_SOUL_CHOICE_STRATEGIES[_choice_strategy()][0]
+
+
+def get_second_soul_purge_threshold():
+    try:
+        value = int(state.get("second_soul_purge_threshold", SECOND_SOUL_PURGE_THRESHOLD_DEFAULT))
+    except (TypeError, ValueError):
+        value = SECOND_SOUL_PURGE_THRESHOLD_DEFAULT
+    return max(1, min(100, value))
 
 
 def _next_pending_timeout(now):
@@ -364,6 +372,7 @@ def get_second_soul_status_text():
     moran = int(state.get("second_soul_moran_value", 0) or 0)
     if moran:
         lines.append(f"- 魔染：{moran}")
+    lines.append(f"- 自动镇魔阈值：魔染 ≥ {get_second_soul_purge_threshold()}")
     last_err = state.get("second_soul_last_error", "")
     if last_err:
         lines.append(f"- 最近异常：{last_err}")
@@ -508,7 +517,7 @@ async def handle_second_soul_purge_reply(text, now, reply_to, matched_family=Non
         return True
     moran = _remember_moran_from_text(text)
     if moran is not None:
-        if moran >= SECOND_SOUL_PURGE_THRESHOLD and int(state.get("second_soul_purge_attempts", 0) or 0) < SECOND_SOUL_PURGE_MAX_ATTEMPTS:
+        if moran >= get_second_soul_purge_threshold() and int(state.get("second_soul_purge_attempts", 0) or 0) < SECOND_SOUL_PURGE_MAX_ATTEMPTS:
             send_as_id = get_current_identity_id()
             save_state()
             await send_audit_log(
@@ -553,7 +562,8 @@ async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_fam
         _finish_purge_ready(now, last_error="五子同心魔回复未解析到魔染")
         save_state()
         return True
-    if moran >= SECOND_SOUL_PURGE_THRESHOLD and int(state.get("second_soul_purge_attempts", 0) or 0) < SECOND_SOUL_PURGE_MAX_ATTEMPTS:
+    threshold = get_second_soul_purge_threshold()
+    if moran >= threshold and int(state.get("second_soul_purge_attempts", 0) or 0) < SECOND_SOUL_PURGE_MAX_ATTEMPTS:
         send_as_id = get_current_identity_id()
         save_state()
         await _send_second_soul_purge(
@@ -564,7 +574,7 @@ async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_fam
         return True
     _finish_purge_ready(now, moran=moran)
     save_state()
-    if moran >= SECOND_SOUL_PURGE_THRESHOLD:
+    if moran >= threshold:
         await send_audit_log(
             f"⚠️ 第二元神魔染仍为 {moran}，但自动镇魔已达上限，停止补发并恢复修炼队列。",
             scope="identity", send_as_id=get_current_identity_id(), limit=260,
@@ -820,7 +830,7 @@ async def handle_second_soul_return_broadcast(text, now):
         _remember_broadcast("return", text, now)
         moran = _remember_moran_from_text(text)
         phase = _phase()
-        if moran is not None and moran >= SECOND_SOUL_PURGE_THRESHOLD:
+        if moran is not None and moran >= get_second_soul_purge_threshold():
             _mark_ready_to_train(now)
             _reset_purge_state(keep_moran=True)
             should_purge = True
@@ -1064,6 +1074,7 @@ async def run_second_soul_bootstrap_check(now):
 
 
 __all__ = [
+    "get_second_soul_purge_threshold",
     "get_second_soul_status_text",
     "handle_second_soul_choice_result_broadcast",
     "handle_second_soul_demon_status_reply",

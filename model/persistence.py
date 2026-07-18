@@ -1221,6 +1221,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_enabled INTEGER NOT NULL DEFAULT 0")
     if "second_soul_auto_choice_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1")
+    if "second_soul_purge_threshold" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_purge_threshold INTEGER NOT NULL DEFAULT 60")
     if "second_soul_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_phase TEXT NOT NULL DEFAULT 'idle'")
     if "second_soul_choice_strategy" not in runtime_columns:
@@ -1424,6 +1426,7 @@ def init_db():
             dungeon_join_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1,
+            second_soul_purge_threshold INTEGER NOT NULL DEFAULT 60,
             wendao_enabled INTEGER NOT NULL DEFAULT 0,
             duel_enabled INTEGER NOT NULL DEFAULT 0,
             fishing_enabled INTEGER NOT NULL DEFAULT 0,

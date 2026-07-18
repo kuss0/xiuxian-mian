@@ -132,6 +132,46 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 with state_module.use_identity(identity_id):
                     self.assertTrue(state_module.state["small_world_high_stock_silence_enabled"])
 
+    def test_second_soul_purge_threshold_defaults_migrates_and_roundtrips(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990007
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    self.assertEqual(60, state_module.state["second_soul_purge_threshold"])
+                    state_module.state["second_soul_purge_threshold"] = 72
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                row = conn.execute(
+                    "SELECT second_soul_purge_threshold FROM identity_module_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual(72, int(row["second_soul_purge_threshold"]))
+
+                conn.execute("ALTER TABLE identity_module_state DROP COLUMN second_soul_purge_threshold")
+                conn.commit()
+                persistence._schema_columns_ensured_key = None
+                persistence._ensure_schema_columns(conn)
+                migrated = conn.execute(
+                    "SELECT second_soul_purge_threshold FROM identity_module_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual(60, int(migrated["second_soul_purge_threshold"]))
+
+                conn.execute(
+                    "UPDATE identity_module_state SET second_soul_purge_threshold = 72 WHERE send_as_id = ?",
+                    (identity_id,),
+                )
+                conn.commit()
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+                with state_module.use_identity(identity_id):
+                    self.assertEqual(72, state_module.state["second_soul_purge_threshold"])
+
     def test_small_world_public_request_guard_roundtrips(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

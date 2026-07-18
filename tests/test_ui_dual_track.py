@@ -211,6 +211,9 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "data-explore-rift-rebirth-config=\"preferred_root_type\"" in script
     assert "data-save-explore-rift-rebirth-config" in script
     assert "/api/explore-rift-rebirth-config" in script
+    assert "data-second-soul-purge-threshold" in script
+    assert "data-save-second-soul-purge-threshold" in script
+    assert "submitSecondSoulPurgeThreshold" in script
     assert "identity.jiyin_effective_choice_label" in script
     assert "identity.nanlong_effective_choice_label" in script
     assert "settingCheckbox('timeline_enabled', '启用时间线'" in script
