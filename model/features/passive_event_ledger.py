@@ -21,6 +21,7 @@ PASSIVE_EVENT_RETENTION_DAYS = PASSIVE_EVENT_LEDGER_RETENTION_DAYS
 PASSIVE_EVENT_MAX_BYTES = max(0, int(PASSIVE_EVENT_LEDGER_MAX_MB or 0)) * 1024 * 1024
 PASSIVE_EVENT_CLEANUP_INTERVAL_SEC = LOG_RETENTION_CLEANUP_INTERVAL_SEC
 PASSIVE_EVENT_ITER_LIMIT_CAP = 10000
+PASSIVE_EVENT_TAIL_READ_CHUNK_BYTES = 64 * 1024
 
 _last_cleanup_at = 0.0
 
@@ -181,20 +182,43 @@ def append_passive_event(
     return True
 
 
+def _read_tail_lines(path, limit):
+    safe_limit = max(1, int(limit or 1))
+    try:
+        with open(path, "rb") as fp:
+            fp.seek(0, os.SEEK_END)
+            position = fp.tell()
+            chunks = []
+            newline_count = 0
+            while position > 0 and newline_count <= safe_limit:
+                read_size = min(PASSIVE_EVENT_TAIL_READ_CHUNK_BYTES, position)
+                position -= read_size
+                fp.seek(position)
+                chunk = fp.read(read_size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+    except OSError:
+        return []
+    raw = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+    return raw.splitlines()[-safe_limit:]
+
+
 def iter_passive_events(path=None, limit=100):
     safe_limit = max(1, min(int(limit or 100), PASSIVE_EVENT_ITER_LIMIT_CAP))
     source_paths = [path] if path else _recent_ledger_paths()
     if not source_paths:
         source_paths = [get_passive_event_ledger_path()]
-    lines = []
-    for source_path in source_paths:
-        try:
-            with open(source_path, "r", encoding="utf-8", errors="replace") as fp:
-                lines.extend(fp.readlines())
-                if len(lines) > safe_limit:
-                    lines = lines[-safe_limit:]
-        except OSError:
+    chunks = []
+    remaining = safe_limit
+    for source_path in reversed(source_paths):
+        tail = _read_tail_lines(source_path, remaining)
+        if not tail:
             continue
+        chunks.append(tail)
+        remaining -= len(tail)
+        if remaining <= 0:
+            break
+    lines = [line for chunk in reversed(chunks) for line in chunk]
     events = []
     for line in lines:
         line = line.strip()

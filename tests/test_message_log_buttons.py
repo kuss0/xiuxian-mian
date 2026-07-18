@@ -408,6 +408,17 @@ class MessageLogButtonTests(unittest.TestCase):
                 patch.object(app_message_log, "get_all_clients", return_value={93001: listener_client}):
             self.assertEqual(93001, app_message_log._get_replica_event_listener_account_id(event))
 
+    def test_replica_sent_log_uses_replica_scope(self):
+        with patch.object(app_message_log, "_write_message_log") as write_mock:
+            app_message_log._append_sent_replica_group_message_log(
+                -100920,
+                92006,
+                ".查询副本",
+                listener_account_id=93001,
+            )
+
+        self.assertEqual("replica", write_mock.call_args.kwargs["scope"])
+
     def test_replica_dispatch_group_message_log_uses_separate_claim_scope(self):
         listener_client = SimpleNamespace(name="dispatch-listener")
         event = SimpleNamespace(

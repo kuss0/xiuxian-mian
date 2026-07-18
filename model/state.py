@@ -953,6 +953,19 @@ def remove_identity(send_as_id):
     if identity_account_map.pop(str(send_as_id), None) is not None:
         set_identity_account_map(identity_account_map)
         removed = True
+    dao_path_records = get_tianjige_dao_path_records()
+    if dao_path_records.pop(str(send_as_id), None) is not None:
+        set_tianjige_dao_path_records(dao_path_records)
+        removed = True
+    watchers = get_quiz_learning_watchers()
+    filtered_watchers = {
+        key: item
+        for key, item in watchers.items()
+        if not isinstance(item, dict) or int(item.get("identity_id") or 0) != send_as_id
+    }
+    if len(filtered_watchers) != len(watchers):
+        set_quiz_learning_watchers(filtered_watchers)
+        removed = True
     if not has_active_identity_context() and int(_current_identity_id.get() or 0) == send_as_id:
         fallback_identity_id = int((_meta_state["identity_ids"] or [0])[0] or 0)
         _current_identity_id.set(fallback_identity_id)
@@ -1011,7 +1024,7 @@ def _coerce_send_as_profile_field(field_name, value):
         return normalized if normalized in TIANTI_RANK_CHOICES else TIANTI_RANK_CHOICES[0]
     if field_name == "pet_name":
         return (value or "").strip() or DEFAULT_PET_NAME
-    if field_name == "pet_trial_name":
+    if field_name in {"pet_warm_name", "pet_trial_name"}:
         return (value or "").strip()
     if field_name in {"sect_updated_at", "sect_contribution_updated_at"}:
         return float(value or 0)

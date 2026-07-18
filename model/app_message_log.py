@@ -407,7 +407,7 @@ def _append_sent_replica_group_message_log(chat_id, msg_id, text, listener_accou
     button_rows = _normalize_sent_button_log_rows(buttons)
     if button_rows:
         payload["buttons"] = button_rows
-    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload)
+    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload, scope="replica")
 
 
 def _normalize_inline_keyboard_buttons(buttons):

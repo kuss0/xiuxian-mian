@@ -3128,6 +3128,7 @@ def delete_identity_from_db(send_as_id):
 def save_state():
     global _state_dirty, _last_flush_time
     shadow_sample = None
+    conn = None
     try:
         init_db()
         conn = get_db_conn()
@@ -3160,6 +3161,11 @@ def save_state():
         _mark_persistence_save_ok()
         return True
     except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                traceback.print_exc()
         _mark_persistence_save_failed(exc)
         traceback.print_exc()
         return False

@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +44,19 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
         persistence._db_conn = None
         persistence._db_initialized = False
         persistence._schema_columns_ensured_key = None
+
+    def test_save_state_rolls_back_after_write_path_exception(self):
+        conn = Mock()
+        with (
+            patch.object(persistence, "init_db"),
+            patch.object(persistence, "get_db_conn", return_value=conn),
+            patch.object(persistence, "_ensure_schema_columns", side_effect=RuntimeError("write failed")),
+            patch.object(persistence, "_mark_persistence_save_failed"),
+            patch.object(persistence.traceback, "print_exc"),
+        ):
+            self.assertFalse(persistence.save_state())
+
+        conn.rollback.assert_called_once_with()
 
     def test_state_db_connection_uses_busy_timeout_and_wal(self):
         with tempfile.TemporaryDirectory() as tmpdir:

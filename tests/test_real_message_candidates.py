@@ -49,6 +49,21 @@ def test_candidate_report_suggests_missing_family_samples(tmp_path):
     assert "挣脱心印" in suggestion["payload"]["text"]
 
 
+def test_candidate_report_reads_json_lines_from_log_files(tmp_path):
+    source = tmp_path / "2026-07-18.log"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture)
+    _write_jsonl(
+        source,
+        [{"family": "hehuan_escape", "msg_id": 1003, "matched_text": "你强行挣脱心印束缚。"}],
+    )
+
+    report = build_candidate_sample_suggestions([source], fixture_path=fixture)
+
+    assert report["total"] == 1
+    assert report["suggestions"][0]["payload"]["family"] == "hehuan_escape"
+
+
 def test_candidate_report_skips_archived_tree_family_by_default(tmp_path):
     source = tmp_path / "passive.jsonl"
     _write_jsonl(

@@ -604,6 +604,27 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual("taiyi", events[0]["module"])
         self.assertEqual("taiyi_yindao", events[0]["family"])
 
+    def test_passive_event_ledger_reads_only_newest_cross_day_tail(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = Path(tmpdir) / "2026-07-16.jsonl"
+            second = Path(tmpdir) / "2026-07-17.jsonl"
+            first.write_text(
+                "".join(json.dumps({"seq": seq, "summary": "x" * 40}) + "\n" for seq in (1, 2)),
+                encoding="utf-8",
+            )
+            second.write_text(
+                "".join(json.dumps({"seq": seq, "summary": "y" * 40}) + "\n" for seq in (3, 4, 5)),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir),
+                patch.object(passive_event_ledger, "PASSIVE_EVENT_TAIL_READ_CHUNK_BYTES", 16),
+            ):
+                events = passive_event_ledger.iter_passive_events(limit=4)
+
+        self.assertEqual([2, 3, 4, 5], [event["seq"] for event in events])
+
 
 class WorkflowLogUtilityTests(unittest.TestCase):
     def test_workflow_log_roundtrip_uses_test_state_dir_from_env(self):
