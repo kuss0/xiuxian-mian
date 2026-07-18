@@ -2465,6 +2465,7 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
         now,
         lookback_sec=lookback,
         lookahead_sec=10,
+        chat_id=get_game_group_id(),
         predicate=_tianxing_log_reply_predicate,
     )
     if not replies:
@@ -2521,6 +2522,7 @@ def _recover_tianxing_daily_observe_from_message_log(observed, now):
             now,
             lookback_sec=max(900, int(max(0.0, float(now or time.time()) - float(command.get("ts_epoch") or day_start)) + 300)),
             lookahead_sec=10,
+            chat_id=get_game_group_id(),
             predicate=_tianxing_log_reply_predicate,
         )
         for reply in reversed(replies):

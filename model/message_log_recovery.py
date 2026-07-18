@@ -72,15 +72,18 @@ def iter_message_log_entries_between(start_ts, end_ts, *, messages_dir=None):
         day += timedelta(days=1)
 
 
-def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, messages_dir=None):
+def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=0, messages_dir=None):
     command_msg_id = int(command_msg_id or 0)
     if command_msg_id <= 0:
         return []
+    chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
     start_ts = max(0.0, end_ts - max(1, int(lookback_sec or 1)))
     matches = []
     for entry, entry_ts in iter_message_log_entries_between(start_ts, end_ts, messages_dir=messages_dir):
         if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
+            continue
+        if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
             continue
         if predicate is not None and not predicate(entry):
             continue
@@ -141,15 +144,18 @@ def find_message_log_replies_tail(
     return matches
 
 
-def find_message_log_message(msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, messages_dir=None):
+def find_message_log_message(msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=0, messages_dir=None):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return None
+    chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
     start_ts = max(0.0, end_ts - max(1, int(lookback_sec or 1)))
     found = None
     for entry, entry_ts in iter_message_log_entries_between(start_ts, end_ts, messages_dir=messages_dir):
         if int((entry or {}).get("message_id") or 0) != msg_id:
+            continue
+        if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
             continue
         if predicate is not None and not predicate(entry):
             continue
@@ -158,8 +164,9 @@ def find_message_log_message(msg_id, now, *, lookback_sec=900, lookahead_sec=30,
     return found
 
 
-def find_recent_message_log_command(now, *, sender_id=0, command_predicate=None, start_ts=0, lookback_sec=900, lookahead_sec=30, messages_dir=None):
+def find_recent_message_log_command(now, *, sender_id=0, command_predicate=None, start_ts=0, lookback_sec=900, lookahead_sec=30, chat_id=0, messages_dir=None):
     sender_id = int(sender_id or 0)
+    chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
     start_ts = float(start_ts or 0)
     if start_ts <= 0:
@@ -168,6 +175,8 @@ def find_recent_message_log_command(now, *, sender_id=0, command_predicate=None,
     for entry, entry_ts in iter_message_log_entries_between(start_ts, end_ts, messages_dir=messages_dir):
         if sender_id > 0 and int((entry or {}).get("sender_id") or 0) != sender_id:
             continue
+        if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
+            continue
         if command_predicate is not None and not command_predicate(entry):
             continue
         found = dict(entry)
@@ -175,8 +184,9 @@ def find_recent_message_log_command(now, *, sender_id=0, command_predicate=None,
     return found
 
 
-def find_recent_message_log_commands(now, *, sender_id=0, command_predicate=None, start_ts=0, lookback_sec=900, lookahead_sec=30, messages_dir=None):
+def find_recent_message_log_commands(now, *, sender_id=0, command_predicate=None, start_ts=0, lookback_sec=900, lookahead_sec=30, chat_id=0, messages_dir=None):
     sender_id = int(sender_id or 0)
+    chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
     start_ts = float(start_ts or 0)
     if start_ts <= 0:
@@ -184,6 +194,8 @@ def find_recent_message_log_commands(now, *, sender_id=0, command_predicate=None
     matches = []
     for entry, entry_ts in iter_message_log_entries_between(start_ts, end_ts, messages_dir=messages_dir):
         if sender_id > 0 and int((entry or {}).get("sender_id") or 0) != sender_id:
+            continue
+        if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
             continue
         if command_predicate is not None and not command_predicate(entry):
             continue

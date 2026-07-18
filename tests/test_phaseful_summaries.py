@@ -839,6 +839,22 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 source_module="元婴",
             )
             replies_mock.assert_called_once()
+            reply_predicate = replies_mock.call_args.kwargs["predicate"]
+            self.assertTrue(reply_predicate({
+                "event_type": "message",
+                "chat_id": state_module.get_game_group_id(),
+                "sender_is_bot": True,
+            }))
+            self.assertFalse(reply_predicate({
+                "event_type": "message",
+                "chat_id": -1009999999999,
+                "sender_is_bot": True,
+            }))
+            self.assertFalse(reply_predicate({
+                "event_type": "message",
+                "chat_id": state_module.get_game_group_id(),
+                "sender_is_bot": False,
+            }))
             self.assertEqual("running", state_module.state["yuanying_phase"])
             self.assertGreater(state_module.state["next_yuanying_time"], now + yuanying.YUANYING_CD)
             self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])

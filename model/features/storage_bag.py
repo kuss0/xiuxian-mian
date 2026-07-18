@@ -2496,6 +2496,7 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
         now,
         lookback_sec=max(15 * 60, STORAGE_TRANSFER_REPLY_TIMEOUT_SEC * 10),
         lookahead_sec=30,
+        chat_id=get_game_group_id(),
         predicate=_is_storage_transfer_reply_log_entry,
     )
     if not replies:

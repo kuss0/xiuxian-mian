@@ -1191,6 +1191,7 @@ async def _recover_small_world_reply_from_log(now, *, msg_id=0, family="", comma
         now,
         lookback_sec=SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_small_world_reply_log_entry,
     )
     if not replies:

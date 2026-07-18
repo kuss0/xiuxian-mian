@@ -15,7 +15,7 @@ from ..config import (
 from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_send_as_profile, state
+from ..state import get_current_identity_id, get_game_group_id, get_send_as_profile, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
 
@@ -284,6 +284,7 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
             now,
             lookback_sec=WENDAO_LOG_REPLAY_LOOKBACK_SEC,
             lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
+            chat_id=get_game_group_id(),
             predicate=_is_wendao_reply_log_entry,
         )
         if entry and not _is_same_pending_ack(entry, pending_result_msg_id):
@@ -301,6 +302,7 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
         now,
         lookback_sec=WENDAO_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_wendao_reply_log_entry,
     )
     handled_any = False

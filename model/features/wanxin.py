@@ -33,6 +33,7 @@ from ..persistence import save_state
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_game_group_id,
     get_identity_display_name,
     get_identity_enabled,
     get_identity_ids,
@@ -1046,6 +1047,7 @@ def _recover_external_commission_claim_from_log(observed, now):
         now,
         lookback_sec=WANXIN_COMMISSION_TTL_SEC + 3600,
         lookahead_sec=30,
+        chat_id=get_game_group_id(),
         predicate=_is_wanxin_reply_log_entry,
     )
     for entry in replies:
@@ -1237,6 +1239,7 @@ async def _recover_wanxin_pending_from_message_log(observed, now):
         now,
         lookback_sec=max(15 * 60, WANXIN_REPLY_TIMEOUT_SEC * 5),
         lookahead_sec=30,
+        chat_id=get_game_group_id(),
         predicate=_is_wanxin_reply_log_entry,
     )
     if not replies:

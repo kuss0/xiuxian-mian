@@ -349,6 +349,7 @@ async def _recover_pet_formation_reply_from_message_log(now):
         sender_id=identity_id,
         start_ts=max(0.0, float(now or 0) - PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC),
         lookahead_sec=5,
+        chat_id=get_game_group_id(),
         command_predicate=lambda entry: (
             str((entry or {}).get("event_type") or "") == "sent"
             and str((entry or {}).get("text") or "").strip() == command

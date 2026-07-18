@@ -17,6 +17,7 @@ from ..state import (
     REALM_SORT_ORDER,
     get_current_identity_id,
     get_duel_target_cooldowns,
+    get_game_group_id,
     get_identity_ids,
     get_send_as_profile,
     set_duel_target_cooldowns,
@@ -1081,6 +1082,7 @@ def _find_loadout_reply(now, predicate):
         now,
         lookback_sec=DUEL_LOADOUT_RECOVERY_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=lambda entry: predicate(str((entry or {}).get("text") or "")),
     )
     if replies:
@@ -2015,6 +2017,7 @@ def _reconcile_consumed_duel_prediction_from_last_report(now):
         now,
         lookback_sec=DUEL_TIANXING_RECONCILE_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=lambda entry: _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")),
     )
     report_at = float((report or {}).get("ts_epoch", 0) or 0)
@@ -2458,6 +2461,7 @@ async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
         now,
         lookback_sec=DUEL_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_duel_reply_log_entry,
     )
     handled_any = False

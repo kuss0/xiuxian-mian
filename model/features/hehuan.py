@@ -1212,6 +1212,7 @@ def _recover_hehuan_pending_from_message_log(observed, now):
         now,
         lookback_sec=HEHUAN_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_hehuan_recoverable_reply_log_entry,
     )
     if not replies:

@@ -8,7 +8,7 @@ from ..config import CMD_TOWER, RETRY_MAX_SEC
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_module_window_hours, get_pending_command, state
+from ..state import format_window_text, get_game_group_id, get_module_window_hours, get_pending_command, state
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 
 
@@ -70,6 +70,7 @@ async def _recover_tower_pending_from_message_log(now):
         now,
         lookback_sec=TOWER_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=TOWER_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_tower_reply_log_entry,
     )
     if not replies:

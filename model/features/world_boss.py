@@ -23,6 +23,7 @@ from ..state import (
     REALM_SORT_INDEX,
     YUANYING_MIN_REALM_INDEX,
     get_current_identity_id,
+    get_game_group_id,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
@@ -1231,6 +1232,7 @@ async def _recover_world_boss_pending_from_message_log(identity_id, identity_sta
         now,
         lookback_sec=max(15 * 60, WORLD_BOSS_REPLY_TIMEOUT_SEC * 5),
         lookahead_sec=30,
+        chat_id=get_game_group_id(),
         predicate=_is_world_boss_reply_log_entry,
     )
     if not replies:

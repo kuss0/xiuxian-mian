@@ -31,6 +31,7 @@ from ..runtime import (
 from ..webapp_core import MiniAppCaptureStore
 from ..state import (
     get_current_identity_id,
+    get_game_group_id,
     get_global_enabled,
     get_global_pause_source,
     get_identity_enabled,
@@ -1319,6 +1320,7 @@ def _fishing_command_for_msg(command_msg_id, now):
         now,
         lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
     )
     return str((entry or {}).get("text") or "").strip()
 
@@ -1332,6 +1334,7 @@ async def _recover_fishing_pending_from_message_log(now):
         now,
         lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_fishing_reply_log_entry,
     )
     if not replies:
@@ -1362,6 +1365,7 @@ def _recent_logged_fishing_command(now):
         start_ts=max(0.0, start_ts),
         lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         command_predicate=lambda entry: fishing_behavior.command_phase(str((entry or {}).get("text") or "").strip()) != "idle",
     )
 

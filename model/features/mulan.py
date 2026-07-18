@@ -24,7 +24,7 @@ from ..action_guard import close_action as close_action_guard_action
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import classify_game_send_block, console_log, mark_bot_health_suspect, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
-from ..state import _meta_state, get_current_identity_id, get_identity_account, has_identity, state
+from ..state import _meta_state, get_current_identity_id, get_game_group_id, get_identity_account, has_identity, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
 
@@ -1063,6 +1063,7 @@ async def _recover_mulan_pending_from_message_log(now, phase, reply_to_msg_id):
         now,
         lookback_sec=max(15 * 60, MULAN_REPLY_TIMEOUT_SEC * 5),
         lookahead_sec=30,
+        chat_id=get_game_group_id(),
         predicate=_is_mulan_reply_log_entry,
     )
     if not replies:

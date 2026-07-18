@@ -4505,12 +4505,18 @@ def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
     if sent_at <= 0:
         sent_at = max(0.0, now - max(300, RETRY_MAX_SEC + 60))
     lookback_sec = max(300, min(6 * 3600, int(max(0.0, now - sent_at) + 180)))
+    game_group_id = int(get_game_group_id() or 0)
     replies = find_message_log_replies(
         msg_id,
         now,
         lookback_sec=lookback_sec,
         lookahead_sec=30,
-        predicate=lambda entry: _is_logged_game_bot_reply(entry) or _message_log_reply_matches_command(cmd, entry),
+        chat_id=game_group_id,
+        predicate=lambda entry: (
+            str((entry or {}).get("event_type") or "") in {"message", "edit"}
+            and int((entry or {}).get("chat_id") or 0) == game_group_id
+            and (_is_logged_game_bot_reply(entry) or _message_log_reply_matches_command(cmd, entry))
+        ),
     )
     if not replies:
         return None

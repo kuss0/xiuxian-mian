@@ -20,6 +20,7 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_game_group_id,
     get_identity_enabled,
     get_identity_ids,
     get_nanlong_choice,
@@ -509,6 +510,7 @@ async def _recover_nanlong_pending_reply_from_log(now):
         now,
         lookback_sec=NANLONG_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=NANLONG_LOG_REPLAY_LOOKAHEAD_SEC,
+        chat_id=get_game_group_id(),
         predicate=_is_nanlong_recovery_log_entry,
     )
     if not replies:

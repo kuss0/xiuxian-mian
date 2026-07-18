@@ -173,12 +173,18 @@ async def _replay_recovered_phaseful_replies(spec, command, msg, now=None):
     if msg_id <= 0:
         return False
     now = float(now if now is not None else time.time())
+    game_group_id = int(get_game_group_id() or 0)
     replies = find_message_log_replies(
         msg_id,
         now,
         lookback_sec=PHASEFUL_SEND_TIMEOUT_RECOVERY_LOOKBACK_SEC,
         lookahead_sec=PHASEFUL_SEND_TIMEOUT_RECOVERY_LOOKAHEAD_SEC,
-        predicate=lambda entry: str((entry or {}).get("event_type") or "") in {"message", "edit"},
+        chat_id=game_group_id,
+        predicate=lambda entry: (
+            str((entry or {}).get("event_type") or "") in {"message", "edit"}
+            and int((entry or {}).get("chat_id") or 0) == game_group_id
+            and bool((entry or {}).get("sender_is_bot"))
+        ),
     )
     if not replies:
         return False
