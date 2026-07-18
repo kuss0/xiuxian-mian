@@ -8309,6 +8309,60 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(1, len(send_calls))
         self.assertEqual(".加入苍坤洞府 16", send_calls[0].args[0])
 
+    def test_lightweight_join_fast_retry_skips_after_full_reply(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        first_id = self._register_replica_identity(991202, "first")
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "16",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        reply_entry = {
+            "event_type": "message",
+            "reply_to_msg_id": 778,
+            "text": "此落云秘圃队伍已经满员。",
+        }
+
+        async def run_test():
+            scanned_chat_ids = []
+
+            def iter_replies(_start_ts, _end_ts, chat_id=0):
+                scanned_chat_ids.append(chat_id)
+                return iter([reply_entry])
+
+            with patch(
+                "model.app_replica._iter_game_message_log_entries_between",
+                side_effect=iter_replies,
+            ), patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock, patch(
+                "model.app_replica.send_audit_log", new=AsyncMock()
+            ):
+                retried = await app_replica._retry_lightweight_game_command_once(
+                    "join",
+                    first_id,
+                    app_replica._REPLICA_KIND_LUOYUN,
+                    "16",
+                    ".加入落云秘圃 16",
+                    -100777,
+                    88006,
+                    778,
+                    delay_sec=0,
+                )
+                return retried, send_mock.await_count, scanned_chat_ids
+
+        retried, send_count, scanned_chat_ids = asyncio.run(run_test())
+
+        self.assertFalse(retried)
+        self.assertEqual(0, send_count)
+        self.assertEqual([state_module.get_game_group_id()], scanned_chat_ids)
+
     def test_lightweight_join_reclick_releases_stale_pending_once(self):
         identity_id = self._register_replica_identity(991202, "first")
         now = time.time()
@@ -8498,6 +8552,53 @@ class ReplicaAbsorbTests(unittest.TestCase):
         saved_room = app_replica._get_lightweight_last_room(-100777, now=now + 1)
         self.assertEqual(779, saved_room["dissolve_retry_msg_id"])
         self.assertEqual(779, saved_room["dissolve_msg_id"])
+
+    def test_lightweight_dissolve_fast_retry_skips_after_direct_reply(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "dissolve_requested",
+            "room_id": "16",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "dissolve_requested_at": now,
+            "dissolve_msg_id": 778,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        reply_entry = {
+            "event_type": "edit",
+            "reply_to_msg_id": 778,
+            "text": "由 @leader 开启的苍坤洞府已经解散。",
+        }
+
+        async def run_test():
+            with patch(
+                "model.app_replica._iter_game_message_log_entries_between",
+                return_value=iter([reply_entry]),
+            ), patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock, patch(
+                "model.app_replica.send_audit_log", new=AsyncMock()
+            ):
+                retried = await app_replica._retry_lightweight_game_command_once(
+                    "dissolve",
+                    leader_id,
+                    app_replica._REPLICA_KIND_CANGKUN,
+                    "16",
+                    ".解散苍坤洞府",
+                    -100777,
+                    88006,
+                    778,
+                    delay_sec=0,
+                )
+                return retried, send_mock.await_count
+
+        retried, send_count = asyncio.run(run_test())
+
+        self.assertFalse(retried)
+        self.assertEqual(0, send_count)
 
     def test_lightweight_dissolve_fast_retry_skips_after_confirmation(self):
         leader_id = self._register_replica_identity(991201, "leader")

@@ -67,6 +67,7 @@ from .runtime import (
 from .state import (
     REALM_SORT_ORDER,
     get_global_enabled,
+    get_game_group_id,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
@@ -12666,6 +12667,8 @@ def _should_fast_retry_lightweight_dissolve(identity_id, replica_kind, room_id, 
 def _should_fast_retry_lightweight_game_command(action, identity_id, replica_kind, room_id, chat_id, first_msg_id, now):
     action = str(action or "").strip()
     if action not in _REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS:
+        return False
+    if _has_recent_game_reply_to_message(first_msg_id, now=now, chat_id=get_game_group_id()):
         return False
     if action == "open":
         return _should_fast_retry_lightweight_open(identity_id, replica_kind, room_id, chat_id, first_msg_id, now)
