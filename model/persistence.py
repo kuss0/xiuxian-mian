@@ -5,6 +5,7 @@ import sqlite3
 import time
 import traceback
 
+from . import persistence_shadow
 from .config import DB_FILE, DB_SCHEMA_VERSION, DIVINATION_DEFAULT_DAILY_LIMIT, FLUSH_INTERVAL_SEC, RETRY_LIMIT
 from .delayed_actions import (
     DELAYED_ACTIONS_STATE_KEY,
@@ -2229,6 +2230,66 @@ def _deserialize_db_value(key, value):
     return value
 
 
+def _build_persistence_shadow_snapshots():
+    meta_snapshot = {
+        key: encoder(getter())
+        for key, (getter, encoder, _decoder) in _META_STATE_CODEC.items()
+    }
+    identity_snapshots = {}
+    for send_as_id in get_identity_ids():
+        identity_snapshots[int(send_as_id)] = persistence_shadow.build_identity_snapshot(
+            profile=get_send_as_profile(send_as_id),
+            identity_state=get_identity_state(send_as_id),
+            module_columns=tuple(IDENTITY_MODULE_COLUMNS),
+            timer_columns=tuple(IDENTITY_TIMER_COLUMNS),
+            runtime_columns=tuple(IDENTITY_RUNTIME_COLUMNS),
+            serialize_value=_serialize_db_value,
+            pending_command=get_pending_command,
+            retry_limit=RETRY_LIMIT,
+        )
+    return meta_snapshot, identity_snapshots
+
+
+def _read_live_guard_saved_at():
+    try:
+        with open(LIVE_GUARD_MANIFEST_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return float(payload.get("saved_at", 0) or 0) if isinstance(payload, dict) else 0.0
+    except Exception:
+        return 0.0
+
+
+def _initialize_persistence_shadow():
+    if not persistence_shadow.is_enabled():
+        return
+    try:
+        meta_snapshot, identity_snapshots = _build_persistence_shadow_snapshots()
+    except Exception:
+        persistence_shadow.safe_note_error()
+        return
+    persistence_shadow.safe_initialize(
+        db_key=os.path.abspath(DB_FILE),
+        meta_snapshot=meta_snapshot,
+        identity_snapshots=identity_snapshots,
+        initial_backup_at=_read_live_guard_saved_at(),
+    )
+
+
+def _capture_persistence_shadow():
+    if not persistence_shadow.is_enabled():
+        return None
+    try:
+        meta_snapshot, identity_snapshots = _build_persistence_shadow_snapshots()
+    except Exception:
+        persistence_shadow.safe_note_error()
+        return None
+    return persistence_shadow.safe_capture(
+        db_key=os.path.abspath(DB_FILE),
+        meta_snapshot=meta_snapshot,
+        identity_snapshots=identity_snapshots,
+    )
+
+
 def upsert_identity_to_db(send_as_id):
     conn = get_db_conn()
     _ensure_schema_columns_ready(conn)
@@ -3066,6 +3127,7 @@ def delete_identity_from_db(send_as_id):
 
 def save_state():
     global _state_dirty, _last_flush_time
+    shadow_sample = None
     try:
         init_db()
         conn = get_db_conn()
@@ -3085,12 +3147,14 @@ def save_state():
             )
             conn.rollback()
             return False
+        shadow_sample = _capture_persistence_shadow()
         for send_as_id in sorted(existing_ids - current_ids):
             delete_identity_from_db(send_as_id)
         for send_as_id in get_identity_ids():
             upsert_identity_to_db(send_as_id)
         conn.commit()
         _write_live_guard_backup(conn)
+        persistence_shadow.safe_commit(shadow_sample)
         _state_dirty = False
         _last_flush_time = time.time()
         _mark_persistence_save_ok()
@@ -3214,6 +3278,7 @@ def load_state():
                 upsert_identity_to_db(send_as_id)
             conn.commit()
 
+        _initialize_persistence_shadow()
         _mark_persistence_save_ok()
         return True
     except Exception as exc:
