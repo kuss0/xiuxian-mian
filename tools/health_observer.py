@@ -34,7 +34,11 @@ OPTIONAL_INACTIVE_SERVICES = {
 }
 LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
-WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
+WARN_PATTERN = re.compile(
+    r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|安全锁|全局锁|锁死|阻断",
+    re.I,
+)
+PASSIVE_OBSERVATION_CONTEXT_PATTERN = re.compile(r"红包候选观察(?:｜|\|)", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
     r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:)|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
     re.I,
@@ -503,6 +507,8 @@ def _is_benign_disconnected_traceback_block(lines: list[str], index: int) -> boo
 
 def is_hard_journal_line(line: str) -> bool:
     text = str(line or "")
+    if PASSIVE_OBSERVATION_CONTEXT_PATTERN.search(text):
+        return False
     if BENIGN_HARD_CONTEXT_PATTERN.search(text):
         return False
     if TELETHON_WRONG_SESSION_PATTERN.search(text):
@@ -512,6 +518,8 @@ def is_hard_journal_line(line: str) -> bool:
 
 def is_warn_journal_line(line: str) -> bool:
     text = str(line or "")
+    if PASSIVE_OBSERVATION_CONTEXT_PATTERN.search(text):
+        return False
     if is_hard_journal_line(text):
         return False
     if BENIGN_WARN_CONTEXT_PATTERN.search(text):

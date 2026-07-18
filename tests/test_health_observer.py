@@ -10,6 +10,34 @@ from tools import health_observer
 
 
 class HealthObserverTests(unittest.TestCase):
+    def test_warn_journal_ignores_benign_locked_wording(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "💡 定向红包已锁定给 @someone，份数自动调整为 1 份。"
+            )
+        )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "本次梦兆锁定：【虚天残图】线路。"
+            )
+        )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "🧧 红包候选观察｜type=message｜text=本次讨红包已过期。"
+            )
+        )
+
+    def test_journal_ignores_alert_words_inside_passive_red_packet_observation(self):
+        line = "🧧 红包候选观察｜type=message｜text=ERROR FUSED 风暴 超时"
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertFalse(health_observer.is_warn_journal_line(line))
+
+    def test_warn_journal_keeps_explicit_lock_and_block_signals(self):
+        self.assertTrue(health_observer.is_warn_journal_line("全局安全锁已触发"))
+        self.assertTrue(health_observer.is_warn_journal_line("状态机锁死，等待人工处理"))
+        self.assertTrue(health_observer.is_warn_journal_line("天星预检阻断斗法"))
+
     def test_read_journal_matches_limits_journalctl_input(self):
         with patch.object(health_observer, "run_command", return_value=(0, "recent line\n", "")) as run:
             result = health_observer.read_journal_matches(
