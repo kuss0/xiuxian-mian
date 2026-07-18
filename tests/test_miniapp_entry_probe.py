@@ -509,6 +509,34 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(extra["entry_attempts"]))
         self.assertEqual(2, run_mock.await_count)
 
+    async def test_cave_public_entry_run_opens_circuit_without_retrying_upstream_502(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._close_cave_public_upstream_circuit()
+            with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
+                        "ok": False,
+                        "message": "洞府天机试炼身份读取失败：HTTP 502 returned non JSON",
+                        "extra": {},
+                    })) as run_mock:
+                ok, message, extra = await ui.ui_run_cave_public_entry(
+                    1001,
+                    "trial",
+                    "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+                )
+
+            self.assertFalse(ok)
+            self.assertIn("HTTP 502", message)
+            self.assertEqual(0, extra["entry_index"])
+            self.assertEqual(1, len(extra["entry_attempts"]))
+            run_mock.assert_awaited_once()
+            self.assertGreater(ui._cave_public_background_state["circuit_open_until"], time.time())
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
     async def test_cave_public_entry_run_does_not_fallback_for_business_completion(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
@@ -651,6 +679,82 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.update(background_snapshot)
             ui._cave_public_background_retry_at.clear()
             ui._cave_public_background_retry_at.update(retry_snapshot)
+
+    async def test_cave_public_background_scheduler_holds_all_actions_while_circuit_open(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            now = 1_700_000_000.0
+            ui._cave_public_background_state.update({
+                "running": False,
+                "next_run_at": 0,
+                "circuit_open_until": now + 600,
+                "circuit_reason": "HTTP 502 returned non JSON",
+            })
+            with patch.object(ui, "_fire_and_forget") as fire_mock:
+                result = await ui._run_cave_public_background_scheduler(now, {
+                    "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+                    "cave_public_stargazer_enabled": True,
+                })
+
+            self.assertFalse(result["started"])
+            self.assertEqual("upstream_circuit_open", result["reason"])
+            self.assertEqual(now + 600, result["retry_at"])
+            fire_mock.assert_not_called()
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
+    async def test_cave_public_success_closes_upstream_circuit(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._cave_public_background_state.update({
+                "circuit_open_until": time.time() + 600,
+                "circuit_reason": "HTTP 502 returned non JSON",
+                "next_run_at": time.time() + 600,
+            })
+            with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
+                        "ok": True,
+                        "message": "洞府天机试炼公共入口：完成",
+                        "extra": {},
+                    })):
+                ok, _message, _extra = await ui.ui_run_cave_public_entry(
+                    1001,
+                    "trial",
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                )
+
+            self.assertTrue(ok)
+            self.assertEqual(0, ui._cave_public_background_state["circuit_open_until"])
+            self.assertEqual("", ui._cave_public_background_state["circuit_reason"])
+            self.assertLessEqual(ui._cave_public_background_state["next_run_at"], time.time() + 60)
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
+    async def test_miniapp_daily_scheduler_holds_tree_and_batches_while_circuit_open(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            now = 1_700_000_000.0
+            ui._cave_public_background_state.update({
+                "running": False,
+                "circuit_open_until": now + 600,
+                "circuit_reason": "HTTP 502 returned non JSON",
+            })
+            tree_mock = AsyncMock(return_value={"started": True})
+            with patch.object(ui, "normalize_miniapp_auto_config", return_value={}), \
+                    patch.object(ui, "get_miniapp_auto_config_snapshot", return_value={}), \
+                    patch.object(ui, "get_global_enabled", return_value=True), \
+                    patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=tree_mock):
+                result = await ui.run_miniapp_daily_scheduler(now)
+
+            self.assertFalse(result["started"])
+            self.assertEqual("upstream_circuit_open", result["reason"])
+            tree_mock.assert_not_awaited()
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
 
     async def test_cave_public_background_marks_treasure_daily_exhausted_from_success(self):
         identity_id = 1001

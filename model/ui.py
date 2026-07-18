@@ -346,8 +346,11 @@ _cave_public_background_state = {
     "cursor": 0,
     "last_action": "",
     "last_result": "",
+    "circuit_open_until": 0,
+    "circuit_reason": "",
 }
 _cave_public_background_retry_at = {}
+CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC = 10 * 60
 # A successful MiniApp response is authoritative for the current process even
 # if a concurrent state snapshot save temporarily races with it. Keep this
 # short-lived marker as a second guard; the persisted miniapp state remains the
@@ -6974,11 +6977,16 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 return False, "洞府公共入口动作无效", {}
             message = str(result.get("message") or "")
             attempted.append({"index": index, "ok": bool(result.get("ok")), "message": message[:120]})
-            if result.get("ok") or not _is_cave_public_entry_health_failure(message):
+            health_failure = _is_cave_public_entry_health_failure(message)
+            if result.get("ok") or not health_failure:
+                _close_cave_public_upstream_circuit()
                 extra = dict(result.get("extra") or {})
                 extra["entry_index"] = index
                 extra["entry_attempts"] = attempted
                 return bool(result.get("ok")), message, extra
+            if _is_cave_public_upstream_failure(message):
+                _open_cave_public_upstream_circuit(message)
+                break
             if index + 1 < len(candidate_urls):
                 console_log(
                     f"🧩 洞府公共入口候选失效，切换备用：{get_identity_display_name(identity_id)}｜{normalized_action}｜{message[:120]}",
@@ -6987,7 +6995,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                     limit=220,
                 )
         extra = dict(result.get("extra") or {})
-        extra["entry_index"] = max(0, len(candidate_urls) - 1)
+        extra["entry_index"] = max(0, len(attempted) - 1)
         extra["entry_attempts"] = attempted
         return bool(result.get("ok")), str(result.get("message") or ""), extra
 
@@ -7011,6 +7019,46 @@ def _is_cave_public_entry_health_failure(message):
         "未返回可用 URL",
         "未开放落云灵树入口",
     ))
+
+
+def _is_cave_public_upstream_failure(message):
+    text = str(message or "")
+    lowered = text.casefold()
+    return bool(
+        re.search(r"\bhttp\s+5\d\d\b", lowered)
+        or "server_error" in lowered
+        or "read timed out" in lowered
+        or "connect timeout" in lowered
+        or "connection reset" in lowered
+        or "connection refused" in lowered
+        or "remote disconnected" in lowered
+        or "cannot connect to host" in lowered
+        or "temporary failure in name resolution" in lowered
+    )
+
+
+def _open_cave_public_upstream_circuit(message, now=None):
+    opened_at = float(now or time.time())
+    open_until = opened_at + CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC
+    _cave_public_background_state.update({
+        "circuit_open_until": open_until,
+        "circuit_reason": str(message or "上游不可用")[:240],
+        "next_run_at": max(
+            float(_cave_public_background_state.get("next_run_at", 0) or 0),
+            open_until,
+        ),
+    })
+    return open_until
+
+
+def _close_cave_public_upstream_circuit():
+    now = time.time()
+    next_run_at = float(_cave_public_background_state.get("next_run_at", 0) or 0)
+    _cave_public_background_state.update({
+        "circuit_open_until": 0,
+        "circuit_reason": "",
+        "next_run_at": min(next_run_at, now + 60) if next_run_at > 0 else 0,
+    })
 
 
 def _normalize_cave_public_batch_delay(value):
@@ -7309,6 +7357,20 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
                     priority="low" if ok else "normal",
                     limit=420,
                 )
+            if not ok and _is_cave_public_upstream_failure(message):
+                _set_cave_public_batch_state(
+                    running=False,
+                    finished_at=time.time(),
+                    current="",
+                    last_result=f"上游熔断：{result_text}",
+                )
+                await send_audit_log(
+                    f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止，10 分钟后仅放行单次恢复探测。",
+                    scope="global",
+                    priority="normal",
+                    limit=320,
+                )
+                return
             if index < total:
                 await asyncio.sleep(delay_sec)
     except Exception as exc:
@@ -7645,9 +7707,10 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
         if action in {"deep_status", "deep_settle"} and not ok:
             retry_sec = 30 * 60
         _cave_public_background_retry_at[(retry_action, int(identity_id))] = finished_at + retry_sec
+        circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
         _cave_public_background_state.update({
             "running": False,
-            "next_run_at": finished_at + delay_sec,
+            "next_run_at": max(finished_at + delay_sec, circuit_open_until),
             "last_action": f"{identity_id}:{action}",
             "last_result": str(message or "")[:240],
         })
@@ -7667,6 +7730,13 @@ async def _run_cave_public_background_scheduler(now, config):
         return {"started": False, "reason": "public_entry_url_missing"}
     if _cave_public_batch_state.get("running") or _cave_public_background_state.get("running") or _cave_public_ui_run_lock.locked():
         return {"started": False, "reason": "cave_public_busy"}
+    circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
+    if now < circuit_open_until:
+        return {
+            "started": False,
+            "reason": "upstream_circuit_open",
+            "retry_at": circuit_open_until,
+        }
     if now < float(_cave_public_background_state.get("next_run_at", 0) or 0):
         return {"started": False, "reason": "background_throttled"}
 
@@ -7784,8 +7854,16 @@ async def _run_tree_public_daily_worker(identity_id, entry_urls, *, day_key, op_
             )
             extra = dict(final_result.get("extra") or {})
             if final_result.get("ok") or extra.get("result"):
+                _close_cave_public_upstream_circuit()
                 return final_result
-            if index + 1 >= len(entry_urls) or not _is_cave_public_entry_health_failure(final_result.get("message")):
+            message = str(final_result.get("message") or "")
+            if not _is_cave_public_entry_health_failure(message):
+                _close_cave_public_upstream_circuit()
+                break
+            if _is_cave_public_upstream_failure(message):
+                _open_cave_public_upstream_circuit(message)
+                break
+            if index + 1 >= len(entry_urls):
                 break
     except Exception as exc:
         final_result = {"ok": False, "message": f"{type(exc).__name__}: {exc}", "extra": {}}
@@ -7943,6 +8021,13 @@ async def run_miniapp_daily_scheduler(now):
     config = get_miniapp_auto_config_snapshot(now)
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
+    circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
+    if float(now) < circuit_open_until:
+        return {
+            "started": False,
+            "reason": "upstream_circuit_open",
+            "retry_at": circuit_open_until,
+        }
 
     tree_daily = await _run_tree_miniapp_daily_scheduler(now, raw_config)
     if tree_daily.get("started"):
