@@ -847,6 +847,10 @@ def _duel_day_log_entries(now):
     return list(entries)
 
 
+def _invalidate_duel_day_log_cache():
+    _DUEL_DAY_LOG_CACHE.update(day="", refreshed_at=0.0, entries=[])
+
+
 def _derive_duel_log_evidence(entries, identity_id, *, now=None):
     identity_id = int(identity_id or 0)
     now = float(now if now is not None else time.time())
@@ -1044,6 +1048,7 @@ def reconcile_duel_from_message_log(now, *, force=False):
         loadout.get("kind") == "equipped"
         and state.get("duel_enabled")
         and not _has_active_duel_window(now)
+        and not _loadout_phase().endswith("_wait")
         and not _loadout_phase().startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore")
     ):
         desired_phase = (
@@ -1071,6 +1076,8 @@ def _find_loadout_reply(now, predicate):
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
         predicate=lambda entry: predicate(str((entry or {}).get("text") or "")),
     )
+    if replies:
+        _invalidate_duel_day_log_cache()
     return replies[-1] if replies else None
 
 

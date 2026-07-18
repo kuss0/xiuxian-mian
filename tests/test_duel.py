@@ -1363,6 +1363,55 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法配装:restore_equip_wait:0", state_module.state["duel_last_result"])
             self.assertFalse(state_module.state["duel_unequip_prepared"])
 
+    def test_log_reconcile_does_not_override_pending_unequip_with_stale_equip_reply(self):
+        identity_id = self._prepare_identity(301299112)
+        now = 1_700_000_000.0
+        entries = [
+            {
+                "event_type": "sent",
+                "message_id": 320,
+                "sender_id": identity_id,
+                "text": ".装备 玄天斩灵剑",
+                "ts_epoch": now - 30,
+            },
+            {
+                "event_type": "message",
+                "message_id": 321,
+                "reply_to_msg_id": 320,
+                "text": "你已祭出【玄天斩灵剑】。\n当前祭出：【玄天斩灵剑】",
+                "ts_epoch": now - 29,
+            },
+        ]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@target"
+            state_module.state["next_duel_time"] = now + 3600
+            state_module.state["duel_last_result"] = "斗法配装:prepare_unequip_wait"
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_magic_sent_at"] = 322
+            state_module.state["duel_magic_due_at"] = now + 120
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries):
+                duel.reconcile_duel_from_message_log(now, force=True)
+
+            self.assertEqual("斗法配装:prepare_unequip_wait", state_module.state["duel_last_result"])
+            self.assertFalse(state_module.state["duel_unequip_prepared"])
+            self.assertEqual(322, state_module.state["duel_magic_sent_at"])
+
+    def test_loadout_reply_invalidates_duel_log_cache(self):
+        identity_id = self._prepare_identity(301299112)
+        now = 1_700_000_000.0
+        reply = {"message_id": 331, "text": "你当前并未祭出任何法宝。", "ts_epoch": now}
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_magic_sent_at"] = 330
+            duel._DUEL_DAY_LOG_CACHE.update(day="2023-11-14", refreshed_at=now, entries=[{"message_id": 1}])
+            with patch.object(duel, "find_message_log_replies", return_value=[reply]):
+                found = duel._find_loadout_reply(now, duel._loadout_unequip_reply)
+
+        self.assertEqual(reply, found)
+        self.assertEqual("", duel._DUEL_DAY_LOG_CACHE["day"])
+        self.assertEqual(0.0, duel._DUEL_DAY_LOG_CACHE["refreshed_at"])
+        self.assertEqual([], duel._DUEL_DAY_LOG_CACHE["entries"])
+
     def test_completed_batch_consumes_observed_progress_baseline(self):
         identity_id = self._prepare_identity(8659059191)
         now = 1_700_000_000.0
