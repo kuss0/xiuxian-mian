@@ -11,12 +11,20 @@ from model.features import passive_inbox
 class _MemoryReader:
     def __init__(self, request_bytes):
         self._request_bytes = request_bytes
+        self.readexactly_calls = 0
 
     async def readuntil(self, separator):
         return self._request_bytes
 
     async def readexactly(self, size):
+        self.readexactly_calls += 1
         return b""
+
+
+class _SlowHeaderReader(_MemoryReader):
+    async def readuntil(self, separator):
+        await asyncio.sleep(1)
+        return self._request_bytes
 
 
 class _MemoryWriter:
@@ -87,3 +95,30 @@ def test_setup_mode_fake_session_is_loopback_only():
     assert "LOGIN" in remote_response
     assert "SETUP" not in remote_response
     assert "SETUP" in local_response
+
+
+def test_ui_rejects_oversized_body_before_reading_it():
+    request = (
+        b"POST /api/login/exchange HTTP/1.1\r\n"
+        b"Host: example\r\n"
+        + f"Content-Length: {ui.UI_HTTP_MAX_BODY_BYTES + 1}\r\n\r\n".encode("ascii")
+    )
+    reader = _MemoryReader(request)
+    writer = _MemoryWriter(("127.0.0.1", 49152))
+
+    asyncio.run(ui.handle_ui_http(reader, writer))
+
+    response = bytes(writer.body).decode("utf-8", errors="ignore")
+    assert "413 Payload Too Large" in response
+    assert reader.readexactly_calls == 0
+
+
+def test_ui_times_out_incomplete_request_headers():
+    reader = _SlowHeaderReader(b"")
+    writer = _MemoryWriter(("127.0.0.1", 49152))
+
+    with patch.object(ui, "UI_HTTP_HEADER_TIMEOUT_SEC", 0.01):
+        asyncio.run(ui.handle_ui_http(reader, writer))
+
+    response = bytes(writer.body).decode("utf-8", errors="ignore")
+    assert "408 Request Timeout" in response

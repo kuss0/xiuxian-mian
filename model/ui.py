@@ -5818,6 +5818,7 @@ ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC = 12
 ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC = 15
 ACCOUNT_LOGIN_QR_REUSE_MIN_REMAINING_SEC = 10
 ACCOUNT_LOGIN_PHONE_CODE_CONFIRM_WAIT_SEC = 8
+ACCOUNT_LOGIN_PHONE_PENDING_TTL_SEC = 15 * 60
 
 
 def _get_pending_login_lock(session_key):
@@ -6043,7 +6044,7 @@ async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_file
         return
 
     current_task = asyncio.current_task()
-    for task_key in ("wait_task", "prepare_task", "phone_code_task"):
+    for task_key in ("wait_task", "prepare_task", "phone_code_task", "expiry_task"):
         pending_task = pending.get(task_key)
         if pending_task and pending_task is not current_task and not pending_task.done():
             pending_task.cancel()
@@ -6067,6 +6068,20 @@ def _set_pending_login_state(session_key, flow_id=None, **updates):
     next_pending.update(updates)
     _pending_login[session_key] = next_pending
     return True
+
+
+async def _expire_pending_phone_login(session_key, flow_id):
+    try:
+        await asyncio.sleep(ACCOUNT_LOGIN_PHONE_PENDING_TTL_SEC)
+    except asyncio.CancelledError:
+        return
+    async with _get_pending_login_lock(session_key):
+        pending = _pending_login.get(session_key) or {}
+        if pending.get("mode") != "phone":
+            return
+        if str(pending.get("flow_id") or "") != str(flow_id or ""):
+            return
+        await _clear_pending_login(session_key, remove_temp_files=True)
 
 
 def _build_qr_svg_markup(qr_url):
@@ -6376,6 +6391,7 @@ async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None)
             "qr_expires_at": 0,
             "wait_task": None,
             "phone_code_task": None,
+            "expiry_task": None,
             "flow_id": flow_id,
             "account_id": 0,
             "api_id": parsed_api_id,
@@ -6387,6 +6403,8 @@ async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None)
             await _clear_pending_login(session_key, remove_temp_files=True)
             return False, _format_account_login_error("发送验证码失败", e), None
 
+        expiry_task = asyncio.create_task(_expire_pending_phone_login(session_key, flow_id))
+        _set_pending_login_state(session_key, flow_id, expiry_task=expiry_task)
         phone_code_task = asyncio.create_task(_send_pending_phone_code(session_key, flow_id, tc, phone))
         _set_pending_login_state(session_key, flow_id, phone_code_task=phone_code_task)
         try:
@@ -8015,6 +8033,20 @@ def _write_json_bad_request(writer, message, extra_headers=None):
     _write_response(writer, "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8", extra_headers=extra_headers)
 
 
+UI_HTTP_HEADER_TIMEOUT_SEC = 10
+UI_HTTP_BODY_TIMEOUT_SEC = 15
+UI_HTTP_MAX_HEADER_BYTES = 64 * 1024
+UI_HTTP_MAX_BODY_BYTES = 1024 * 1024
+
+
+def _write_request_timeout(writer):
+    _write_response(writer, "HTTP/1.1 408 Request Timeout", "Request Timeout", content_type="text/plain; charset=utf-8")
+
+
+def _write_payload_too_large(writer):
+    _write_response(writer, "HTTP/1.1 413 Payload Too Large", "Payload Too Large", content_type="text/plain; charset=utf-8")
+
+
 def _write_json_result(writer, ok, message, *, session_token=None, extra_headers=None, extra=None, include_snapshot=True):
     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
     body = _make_json_payload(
@@ -8043,7 +8075,13 @@ async def handle_ui_http(reader, writer):
     path = ""
     try:
         try:
-            request_head = await reader.readuntil(b"\r\n\r\n")
+            request_head = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"),
+                timeout=UI_HTTP_HEADER_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            _write_request_timeout(writer)
+            return
         except asyncio.IncompleteReadError as e:
             request_head = e.partial
         except Exception:
@@ -8052,6 +8090,10 @@ async def handle_ui_http(reader, writer):
                 await writer.wait_closed()
             except (ConnectionResetError, BrokenPipeError, OSError):
                 pass
+            return
+
+        if len(request_head) > UI_HTTP_MAX_HEADER_BYTES:
+            _write_payload_too_large(writer)
             return
 
         header_text = request_head.decode("utf-8", errors="ignore")
@@ -8078,13 +8120,24 @@ async def handle_ui_http(reader, writer):
         try:
             content_length = max(0, int(headers.get("content-length", "0") or 0))
         except (TypeError, ValueError):
-            content_length = 0
+            _write_json_bad_request(writer, "Content-Length 非法")
+            return
+        if content_length > UI_HTTP_MAX_BODY_BYTES:
+            _write_payload_too_large(writer)
+            return
         body_bytes = b""
         if content_length > 0:
             try:
-                body_bytes = await reader.readexactly(content_length)
-            except asyncio.IncompleteReadError as e:
-                body_bytes = e.partial
+                body_bytes = await asyncio.wait_for(
+                    reader.readexactly(content_length),
+                    timeout=UI_HTTP_BODY_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                _write_request_timeout(writer)
+                return
+            except asyncio.IncompleteReadError:
+                _write_json_bad_request(writer, "请求体不完整")
+                return
 
         payload = _parse_request_body(headers, body_bytes)
         now = time.time()
@@ -9415,7 +9468,12 @@ async def start_ui_server():
     global _ui_server
     if _ui_server is not None:
         return _ui_server
-    _ui_server = await asyncio.start_server(handle_ui_http, UI_HOST, UI_PORT)
+    _ui_server = await asyncio.start_server(
+        handle_ui_http,
+        UI_HOST,
+        UI_PORT,
+        limit=UI_HTTP_MAX_HEADER_BYTES + 1,
+    )
     sockets = _ui_server.sockets or []
     bind_text = ", ".join(str(sock.getsockname()) for sock in sockets) or f"{UI_HOST}:{UI_PORT}"
     await send_audit_log(f"🖥️ UI 已启动：{bind_text}", scope="global")

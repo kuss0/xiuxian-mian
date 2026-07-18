@@ -201,6 +201,24 @@ class AccountLoginConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("hash-123", pending_after["phone_code_hash"])
         self.assertIsNone(pending_after["phone_code_task"])
 
+    async def test_phone_pending_login_expires_and_disconnects(self):
+        client = _FakePhoneLoginClient()
+        with (
+            patch.object(ui, "create_account_client", return_value=client),
+            patch.object(ui, "ACCOUNT_LOGIN_PHONE_PENDING_TTL_SEC", 0.01),
+            patch.object(ui, "_cleanup_pending_temp_session_files") as cleanup_mock,
+        ):
+            ok, _message, _extra = await ui.ui_account_login_start(
+                "+8613800138000",
+                "phone-expire",
+            )
+            self.assertTrue(ok)
+            await asyncio.sleep(0.03)
+
+        self.assertNotIn("phone-expire", ui._pending_login)
+        self.assertGreaterEqual(client.disconnect_count, 1)
+        cleanup_mock.assert_called_with("phone-expire")
+
     async def test_phone_verify_waits_for_delayed_code_hash(self):
         client = _FakePhoneLoginClient(code_delay=0.03)
         with patch.object(ui, "create_account_client", return_value=client), \
