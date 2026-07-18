@@ -1,4 +1,5 @@
 import atexit
+import asyncio
 import copy
 import json
 import sys
@@ -1057,6 +1058,59 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             await concubine.run_concubine_scheduler(now + 1)
 
         mock_send.assert_not_awaited()
+        self.assertEqual(today, state_module.state["concubine_gift_attempt_day"])
+
+    async def test_concurrent_scheduler_starts_only_one_gift_recovery_chain(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(
+            affinity=240,
+            dream_due_at=now + 3600,
+            tianji_due_at=now + 3600,
+        )
+        today = concubine._local_day_key(now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_greet_day"] = today
+
+        sent_msg = SimpleNamespace(id=501, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await asyncio.gather(
+                concubine.run_concubine_scheduler(now),
+                concubine.run_concubine_scheduler(now),
+            )
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("gift_status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(501, state_module.state["concubine_gift_status_msg_id"])
+        self.assertEqual(today, state_module.state["concubine_gift_attempt_day"])
+
+    async def test_restart_clears_gift_pending_anchor_without_restarting_same_day(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(
+            affinity=240,
+            dream_due_at=now + 3600,
+            tianji_due_at=now + 3600,
+        )
+        today = concubine._local_day_key(now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_greet_day"] = today
+            identity_state["concubine_gift_attempt_day"] = today
+            identity_state["concubine_phase"] = "gift_pending"
+            identity_state["concubine_gift_msg_id"] = 701
+            identity_state["concubine_gift_amount"] = 60
+            identity_state["next_concubine_time"] = now - 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+            concubine.restore_concubine_runtime(now)
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_awaited()
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_gift_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_gift_amount"])
         self.assertEqual(today, state_module.state["concubine_gift_attempt_day"])
 
     def test_concubine_persisted_message_ids_route_to_reply_families(self):
