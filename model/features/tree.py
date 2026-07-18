@@ -2,6 +2,7 @@ import asyncio
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -24,9 +25,10 @@ from ..config import (
     TREE_GUARD_SELECTION_WINDOW_SEC,
     is_account_offline,
 )
+from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, classify_game_send_block, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -50,6 +52,7 @@ TREE_MATURE_CONFIRM_DELAY_MAX_SEC = 30
 TREE_HARVEST_ABNORMAL_CHECK_MIN_SEC = 60
 TREE_HARVEST_ABNORMAL_CHECK_MAX_SEC = 180
 TREE_HARVEST_RETRY_LIMIT = 1
+TREE_HARVEST_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 TREE_IRRIGATION_RETRY_LIMIT = 1
 TREE_IRRIGATION_REPLY_TIMEOUT_SEC = 30
 TREE_PULSE_REPLY_TIMEOUT_SEC = 45
@@ -587,6 +590,53 @@ def _has_tree_harvest_inflight(now=None):
     return float(state.get("tree_harvest_inflight_until", 0) or 0) > now
 
 
+def _tree_harvest_recovery_due(now):
+    inflight_until = float(state.get("tree_harvest_inflight_until", 0) or 0)
+    return inflight_until > 0 and inflight_until <= float(now or time.time())
+
+
+async def _recover_tree_harvest_from_message_log(now):
+    identity_id = get_current_identity_id()
+    game_group_id = int(get_game_group_id() or 0)
+    sent = recover_sent_command_from_message_log(
+        CMD_TREE_HARVEST,
+        identity_id,
+        now,
+        start_ts=max(0.0, float(now or 0) - TREE_HARVEST_LOG_REPLAY_LOOKBACK_SEC),
+        game_group_id=game_group_id,
+        topic_id=get_game_topic_id(),
+        lookback_sec=TREE_HARVEST_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=5,
+    )
+    command_msg_id = int((sent or {}).get("message_id") or 0)
+    if command_msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        command_msg_id,
+        now,
+        lookback_sec=TREE_HARVEST_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=5,
+        predicate=lambda entry: (
+            str((entry or {}).get("event_type") or "") in {"message", "edit"}
+            and int((entry or {}).get("chat_id") or 0) == game_group_id
+            and bool((entry or {}).get("sender_is_bot"))
+        ),
+    )
+    reply_to = SimpleNamespace(id=command_msg_id, raw_text=CMD_TREE_HARVEST)
+    for entry in replies:
+        handled = await handle_tree_harvest_reply(
+            str((entry or {}).get("text") or ""),
+            float((entry or {}).get("ts_epoch") or now),
+            reply_to,
+            matched_family="tree_harvest",
+            current_msg_id=int((entry or {}).get("message_id") or 0),
+        )
+        if handled:
+            console_log(f"🍒 灵树采摘日志回捞成功，原消息ID={command_msg_id}。")
+            return True
+    return False
+
+
 def _tree_bootstrap_check_is_useful():
     if state["is_maturing"] and state["is_harvested"] and not state["is_invading"] and not state["pending_irrigation"]:
         return False
@@ -651,6 +701,8 @@ async def _send_tree_harvest(now=None):
     now = float(now if now is not None else time.time())
     if not state["tree_enabled"] or not state["is_maturing"] or state["is_harvested"]:
         return False
+    if _tree_harvest_recovery_due(now) and await _recover_tree_harvest_from_message_log(now):
+        return False
     if _has_tree_harvest_inflight(now):
         return False
 
@@ -698,6 +750,9 @@ async def queue_tree_harvest_for_identity_ids(identity_ids, now=None, *, reason=
                 skipped += 1
                 continue
             _mark_tree_maturing_from_trusted_signal(now)
+            if _tree_harvest_recovery_due(now) and await _recover_tree_harvest_from_message_log(now):
+                skipped += 1
+                continue
             if state["is_harvested"] or _has_tree_harvest_inflight(now):
                 skipped += 1
                 continue

@@ -247,6 +247,55 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             audit_mock.assert_awaited_once()
             self.assertEqual(0, state_module.state["tree_harvest_inflight_until"])
 
+    async def test_harvest_recovers_logged_success_before_resend(self):
+        now = 2200.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        sent_entry = {
+            "message_id": 7100,
+            "event_type": "sent",
+            "text": tree.CMD_TREE_HARVEST,
+        }
+        reply_entry = {
+            "message_id": 7101,
+            "reply_to_msg_id": 7100,
+            "event_type": "message",
+            "chat_id": state_module.get_game_group_id(),
+            "sender_is_bot": True,
+            "text": "你摘下一枚【天雷灵果】！\n修为增长：+12000",
+            "ts_epoch": now - 10,
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = True
+            state_module.state["is_harvested"] = False
+            state_module.state["tree_harvest_inflight_until"] = now - 1
+            with (
+                patch.object(tree, "recover_sent_command_from_message_log", return_value=sent_entry) as recover_mock,
+                patch.object(tree, "find_message_log_replies", return_value=[reply_entry]),
+                patch.object(tree, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tree, "send_audit_log", new=AsyncMock()),
+                patch.object(tree, "save_state"),
+                patch.object(tree, "console_log"),
+            ):
+                sent = await tree._send_tree_harvest(now)
+
+            self.assertFalse(sent)
+            send_mock.assert_not_awaited()
+            self.assertTrue(state_module.state["is_harvested"])
+            self.assertEqual(0, state_module.state["tree_harvest_inflight_until"])
+            self.assertEqual(7101, state_module.state["tree_last_harvest_result_msg_id"])
+            recover_mock.assert_called_once_with(
+                tree.CMD_TREE_HARVEST,
+                identity_id,
+                now,
+                start_ts=now - tree.TREE_HARVEST_LOG_REPLAY_LOOKBACK_SEC,
+                game_group_id=state_module.get_game_group_id(),
+                topic_id=state_module.get_game_topic_id(),
+                lookback_sec=tree.TREE_HARVEST_LOG_REPLAY_LOOKBACK_SEC,
+                lookahead_sec=5,
+            )
+
     async def test_unowned_final_branch_board_queues_only_local_unclaimed_tree_identity(self):
         now = 1000.0
         identity_ids = [3756719391, 3800619925]

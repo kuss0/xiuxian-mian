@@ -268,6 +268,41 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertTrue(str(state_module.state["tianti_wenxin_last_trigger_key"]).startswith(tianti.get_day_key(now)))
             save_mock.assert_called()
 
+    def test_wenxin_gate_recovers_logged_reply_before_new_action(self):
+        send_as_id = 95019
+        now = datetime(2026, 5, 27, 19, 31, 0, tzinfo=tianti.TZ_LOCAL).timestamp()
+        state_module.ensure_identity_registered(send_as_id)
+        reply_entry = {
+            "event_type": "message",
+            "message_id": 9466031,
+            "reply_to_msg_id": 9466030,
+            "chat_id": state_module.get_game_group_id(),
+            "sender_is_bot": True,
+            "text": (
+                "【问心台回响】\n"
+                "你于问心台前静坐良久，最终凝出一道【澄明】之印。\n"
+                "下次登天阶时，成功率显著提升。\n"
+                "你因此获得了 20 点宗门贡献。"
+            ),
+            "ts_epoch": now - 30,
+        }
+
+        with state_module.use_identity(send_as_id), patch.object(
+            tianti, "find_message_log_replies", return_value=[reply_entry]
+        ), patch.object(tianti, "send_game_command", new=AsyncMock()) as send_mock, patch.object(
+            tianti, "send_audit_log", new=AsyncMock()
+        ), patch.object(tianti, "save_state"), patch.object(tianti, "console_log"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_last_wenxin_msg_id"] = 9466030
+            state_module.state["next_tianti_wenxin_time"] = now - 1
+
+            asyncio.run(tianti.run_tianti_scheduler(now))
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("今日已问心，下次登天阶奖励提升", state_module.state["tianti_wenxin_status"])
+            self.assertEqual(tianti.get_day_key(now), state_module.state["tianti_last_wenxin_day"])
+
     def test_stale_status_snapshot_does_not_sync_before_due_gangfeng(self):
         send_as_id = 95010
         now = 10_000.0

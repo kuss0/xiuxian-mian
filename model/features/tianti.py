@@ -3,6 +3,7 @@ import random
 import re
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from ..config import (
     CMD_TIANTI_CLIMB,
@@ -16,9 +17,10 @@ from ..config import (
     TIANTI_RANK_CD_SECONDS,
     TZ_LOCAL,
 )
+from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_pending_command, get_tianti_rank_choice, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_pending_command, get_tianti_rank_choice, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 
@@ -51,6 +53,7 @@ TIANTI_GANGFENG_INFLIGHT_GATE_SEC = RETRY_MAX_SEC + 10
 TIANTI_WENXIN_INFLIGHT_GATE_SEC = RETRY_MAX_SEC + 10
 TIANTI_WENXIN_DAY_END_FALLBACK_SEC = 45 * 60
 _TIANTI_CLIMB_INFLIGHT_UNTIL = {}
+TIANTI_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 
 
 def _set_tianti_next_wenxin_time(next_time, *, persist=False):
@@ -1011,12 +1014,66 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
     return False
 
 
+async def _recover_due_tianti_replies(now):
+    specs = (
+        ("next_tianti_wenxin_time", "tianti_last_wenxin_msg_id", CMD_TIANTI_WENXIN, "tianti_wenxin"),
+        ("next_tianti_gangfeng_time", "tianti_last_gangfeng_msg_id", CMD_TIANTI_GANGFENG, "tianti_gangfeng"),
+        ("next_tianti_status_time", "tianti_status_reply_to_msg_id", CMD_TIANTI_STATUS, "tianti_status"),
+    )
+    game_group_id = int(get_game_group_id() or 0)
+    for due_key, msg_key, command, family in specs:
+        due_at = float(state.get(due_key, 0) or 0)
+        if due_at <= 0 or due_at > float(now or 0):
+            continue
+        msg_id = int(state.get(msg_key, 0) or 0)
+        if msg_id <= 0:
+            recovered = recover_sent_command_from_message_log(
+                command,
+                get_current_identity_id(),
+                now,
+                start_ts=max(0.0, float(now or 0) - TIANTI_LOG_REPLAY_LOOKBACK_SEC),
+                game_group_id=game_group_id,
+                topic_id=get_game_topic_id(),
+                lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC,
+                lookahead_sec=5,
+            )
+            msg_id = int((recovered or {}).get("message_id") or 0)
+            if msg_id <= 0:
+                continue
+            state[msg_key] = msg_id
+            save_state()
+        replies = find_message_log_replies(
+            msg_id,
+            now,
+            lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC,
+            lookahead_sec=5,
+            predicate=lambda entry: (
+                str((entry or {}).get("event_type") or "") in {"message", "edit"}
+                and int((entry or {}).get("chat_id") or 0) == game_group_id
+                and bool((entry or {}).get("sender_is_bot"))
+            ),
+        )
+        reply_to = SimpleNamespace(id=msg_id, raw_text=command)
+        for entry in replies:
+            if await handle_tianti_reply(
+                str((entry or {}).get("text") or ""),
+                float((entry or {}).get("ts_epoch") or now),
+                reply_to,
+                matched_family=family,
+            ):
+                console_log(f"☁️ 登天阶 {family} 日志回捞成功，原消息ID={msg_id}。")
+                return True
+    return False
+
+
 async def run_tianti_scheduler(now):
     if not state.get("tianti_enabled"):
         return
 
     if _ensure_tianti_wenxin_daily_state(now):
         mark_dirty()
+    if await _recover_due_tianti_replies(now):
+        return
     _calc_tianti_wenxin_plan(now)
 
     should_trigger_wenxin, wenxin_state = _should_trigger_tianti_wenxin(now)
