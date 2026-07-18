@@ -1394,13 +1394,14 @@ def _storage_bag_api_identity_lookup():
     for identity_id in get_identity_ids():
         identity_id = int(identity_id)
         profile = get_send_as_profile(identity_id)
-        candidates = (
+        candidates = [
             str(identity_id),
             profile.get("username"),
             profile.get("label"),
             profile.get("daohao"),
             get_identity_ui_display_name(identity_id),
-        )
+        ]
+        candidates.extend(profile.get("username_aliases") or [])
         for candidate in candidates:
             key = str(candidate or "").strip().lstrip("@").casefold()
             if key:
@@ -1437,6 +1438,7 @@ def _storage_bag_api_cultivator_candidates(identity_id):
     profile = get_send_as_profile(identity_id)
     raw_candidates = [
         (profile.get("username"), False),
+        *((alias, False) for alias in (profile.get("username_aliases") or [])),
         (profile.get("label"), True),
         (profile.get("daohao"), True),
         (get_identity_display_name(identity_id), True),
@@ -2253,12 +2255,15 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         return None
     if allowed_ids is not None and identity_id not in allowed_ids:
         return None
+    current_profile = get_send_as_profile(identity_id)
     profile_updates = _tianjige_profile_updates_from_row(row)
+    if str(current_profile.get("username") or "").strip():
+        profile_updates.pop("username", None)
     if profile_updates:
         profile_updates["sect_updated_at"] = time.time()
         profile = update_send_as_profile(identity_id, **profile_updates)
     else:
-        profile = get_send_as_profile(identity_id)
+        profile = current_profile
     username = _tianjige_string(row.get("username") or profile.get("username"))
     dao_name = _tianjige_string(row.get("dao_name") or row.get("daohao") or profile.get("daohao"))
     cultivation_level = _tianjige_string(row.get("cultivation_level") or row.get("level") or profile.get("realm"))
@@ -2747,8 +2752,6 @@ async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_i
                     total_skipped += 1
                     continue
             candidate_success = False
-            if not refresh_all and identity_id == int(target_identity_id or 0):
-                candidates = candidates[:1] if candidates else []
             for candidate in candidates:
                 try:
                     api_result = await fetch_storage_bag_result(active_config, build_cultivator_path(candidate))

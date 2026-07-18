@@ -5291,6 +5291,10 @@ def _match_identity_profile_owner(text):
             str(profile.get("username") or "").strip().casefold().lstrip("@"),
             str(profile.get("label") or "").strip().casefold().lstrip("@"),
         ]
+        candidates.extend(
+            str(alias or "").strip().casefold().lstrip("@")
+            for alias in (profile.get("username_aliases") or [])
+        )
         if username_key in candidates:
             matched.append(identity_id)
     return matched[0] if len(matched) == 1 else None

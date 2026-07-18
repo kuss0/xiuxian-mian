@@ -99,6 +99,20 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("333.8万", profile["battle_power_text"])
         self.assertEqual(3338000, profile["battle_power_value"])
 
+    async def test_passive_profile_card_matches_previous_username_alias(self):
+        state_module.update_send_as_profile(
+            1001,
+            username="jfdffdddd1",
+            username_aliases=["jfdffdddd"],
+        )
+        with patch.object(control, "save_state"):
+            handled = await control.handle_passive_identity_profile_card(COMBINED_CARD, 1_700_000_000)
+
+        self.assertTrue(handled)
+        profile = state_module.get_send_as_profile(1001)
+        self.assertEqual("jfdffdddd1", profile["username"])
+        self.assertEqual("空尘子", profile["daohao"])
+
     async def test_refresh_identity_info_sends_level_read_commands(self):
         messages = [
             SimpleNamespace(id=11, sent_at=100.0),

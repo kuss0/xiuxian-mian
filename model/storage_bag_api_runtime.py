@@ -64,13 +64,14 @@ def storage_bag_api_identity_lookup():
     for identity_id in get_identity_ids():
         identity_id = int(identity_id)
         profile = get_send_as_profile(identity_id)
-        candidates = (
+        candidates = [
             str(identity_id),
             profile.get("username"),
             profile.get("label"),
             profile.get("daohao"),
             get_identity_ui_display_name(identity_id),
-        )
+        ]
+        candidates.extend(profile.get("username_aliases") or [])
         for candidate in candidates:
             key = str(candidate or "").strip().lstrip("@").casefold()
             if key:
@@ -107,6 +108,7 @@ def storage_bag_api_cultivator_candidates(identity_id):
     profile = get_send_as_profile(identity_id)
     raw_candidates = [
         (profile.get("username"), False),
+        *((alias, False) for alias in (profile.get("username_aliases") or [])),
         (profile.get("label"), True),
         (profile.get("daohao"), True),
         (get_identity_display_name(identity_id), True),

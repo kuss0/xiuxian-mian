@@ -121,6 +121,75 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             "dao_path_skipped_count": 0,
         })
 
+    def test_api_identity_candidates_and_lookup_include_username_aliases(self):
+        state_module.update_send_as_profile(
+            self.identity_id,
+            username="source_new",
+            username_aliases=["source"],
+        )
+
+        self.assertEqual(
+            ["source_new", "source", "来源号", "青源"],
+            storage_bag_api_runtime.storage_bag_api_cultivator_candidates(self.identity_id)[:4],
+        )
+        self.assertEqual(
+            ["source_new", "source", "来源号", "青源"],
+            ui._storage_bag_api_cultivator_candidates(self.identity_id)[:4],
+        )
+        self.assertEqual(
+            self.identity_id,
+            storage_bag_api_runtime.storage_bag_api_identity_lookup()["source"],
+        )
+        self.assertEqual(self.identity_id, ui._storage_bag_api_identity_lookup()["source"])
+
+    async def test_single_identity_refresh_falls_back_to_previous_username(self):
+        state_module.update_send_as_profile(
+            self.identity_id,
+            username="source_new",
+            username_aliases=["source"],
+        )
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-from-html",
+        })
+        old_name_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "telegram_id": self.identity_id,
+                "username": "source",
+                "dao_name": "青源",
+                "cultivation_level": "化神中期",
+                "cultivation_points": 987654,
+                "status": "normal",
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/cultivator/source",
+        )
+        call_paths = []
+
+        async def fake_fetch(config, path):
+            call_paths.append(path)
+            if path == "/api/cultivator/source_new":
+                raise storage_bag_api_client.StorageBagApiError("HTTP 404", status_code=404)
+            if path == "/api/cultivator/source":
+                return old_name_result
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("model.ui.fetch_storage_bag_result", new=fake_fetch):
+            ok, message, _snapshot = await ui.ui_refresh_identity_from_api(self.identity_id)
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        self.assertEqual(
+            ["/api/cultivator/source_new", "/api/cultivator/source"],
+            call_paths,
+        )
+        profile = state_module.get_send_as_profile(self.identity_id)
+        self.assertEqual("source_new", profile["username"])
+        self.assertIn("source", profile["username_aliases"])
+
     def test_storage_bag_api_snapshot_hides_credentials(self):
         ui.ui_set_storage_bag_api_config({
             "base_url": "https://example.invalid/",
