@@ -253,6 +253,47 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
         audit_text = audit_mock.await_args.args[0]
         self.assertIn("考验超时", audit_text)
 
+    async def test_waiting_result_recovers_logged_reply_before_retry(self):
+        now = 1_700_000_040.0
+        state_module.state["tianji_quiz_pending"] = {
+            "-100:321": {
+                "target": "@local_user",
+                "identity_id": 910001,
+                "question": self.QUESTION,
+                "options": self.OPTIONS,
+                "answer": "B",
+                "due_at": now - 1,
+                "deadline_at": now + 80,
+                "created_at": now - 40,
+                "msg_id": 321,
+                "chat_id": -100,
+                "retry_count": 0,
+                "phase": "waiting_result",
+                "sent_msg_id": 555,
+                "sent_at": now - 20,
+                "result_due_at": now - 1,
+            }
+        }
+        logged_result = {
+            "event_type": "message",
+            "message_id": 556,
+            "chat_id": -100,
+            "reply_to_msg_id": 555,
+            "text": "考验通过！你的气息已恢复正常。",
+        }
+
+        with patch.object(
+            tianji_quiz,
+            "iter_message_log_entries_between",
+            return_value=iter([(logged_result, now - 5)]),
+        ), patch.object(tianji_quiz, "send_game_command", new=AsyncMock()) as send_mock, patch.object(
+            tianji_quiz, "send_audit_log", new=AsyncMock()
+        ), patch.object(tianji_quiz, "save_state"):
+            await tianji_quiz.run_tianji_quiz_scheduler(now)
+
+        self.assertEqual({}, state_module.state["tianji_quiz_pending"])
+        send_mock.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

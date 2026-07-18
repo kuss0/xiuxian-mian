@@ -267,6 +267,59 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
         send_answer_mock.assert_not_awaited()
         self.assertIn("题库内超时未作答", audit_mock.await_args.args[0])
 
+    async def test_confirmation_timeout_recovers_logged_result_before_retry(self):
+        identity_id = 10001
+        now = 1_700_000_120.0
+        question = "乾蓝冰焰在原著中最初是封附在何种通天灵宝之外？"
+        options = {"A": "虚天鼎", "B": "掌天瓶", "C": "太乙青山", "D": "大五行幻世轮"}
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="li", enabled=True)
+        state_module.set_quiz_learning_watchers({
+            "li": {
+                "target_tag": "@li",
+                "identity_id": identity_id,
+                "question": question,
+                "options": options,
+                "expire_at": now + 300,
+                "matched_answer": "A",
+            }
+        })
+        logged_result = {
+            "event_type": "edit",
+            "message_id": 9451970,
+            "chat_id": -1001680975844,
+            "reply_to_msg_id": 0,
+            "text": "【玄骨夺焰·答对】\n@li 的答案 A 完全正确！",
+        }
+        with state_module.use_identity(identity_id):
+            pending_state = {
+                "quiz_enabled": True,
+                "quiz_question": question,
+                "quiz_options": options,
+                "quiz_answer": "A",
+                "quiz_phase": quiz.QUIZ_PHASE_WAITING_RESULT,
+                "quiz_reply_to_msg_id": 9451968,
+                "quiz_chat_id": -1001680975844,
+                "next_quiz_time": now - 1,
+                "quiz_retry_count": 0,
+            }
+            for key, value in pending_state.items():
+                state_module.state[key] = value
+            with patch.object(
+                quiz,
+                "iter_message_log_entries_between",
+                return_value=iter([(logged_result, now - 10)]),
+            ), patch.object(quiz, "send_audit_log", new=AsyncMock()), patch.object(
+                quiz, "save_state"
+            ), patch.object(quiz, "save_quiz_learning_watchers_state"), patch.object(
+                quiz, "_send_quiz_answer", new=AsyncMock()
+            ) as send_mock, patch.object(quiz, "_match_quiz_answer", return_value=("A", "exact_question")):
+                await quiz.run_quiz_scheduler(now)
+
+            self.assertEqual(0, state_module.state["quiz_reply_to_msg_id"])
+            self.assertEqual("", state_module.state["quiz_phase"])
+            send_mock.assert_not_awaited()
+
     async def test_external_bank_timeout_logs_learning_only(self):
         question = "韩立能把虚天鼎从乾蓝冰焰池中拉出的关键倚仗是什么？"
         options = {"A": "血玉蜘蛛", "B": "啼魂兽", "C": "风雷翅", "D": "玄骨魔幡"}

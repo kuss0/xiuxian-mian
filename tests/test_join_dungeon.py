@@ -780,6 +780,42 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, record["retry_count"])
         self.assertEqual(100, record["pending_msg_id"])
 
+    async def test_fast_retry_join_skips_after_logged_full_reply(self):
+        identity_id = self._prepare_identity()
+        now = time.time()
+        join_dungeon._mark_join_sent(identity_id, "414", now, msg_id=99)
+        full_reply = {
+            "event_type": "message",
+            "message_id": 100,
+            "chat_id": -100,
+            "sender_id": 7900199668,
+            "sender_is_bot": True,
+            "reply_to_msg_id": 99,
+            "text": "此落云秘圃队伍已经满员。",
+        }
+
+        def find_replies(msg_id, _now, **kwargs):
+            predicate = kwargs.get("predicate")
+            return [full_reply] if msg_id == 99 and predicate and predicate(full_reply) else []
+
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), patch.object(
+            join_dungeon, "find_message_log_replies", side_effect=find_replies
+        ) as recovery_mock, patch.object(join_dungeon, "send_game_command", new=AsyncMock()) as send_mock, patch.object(
+            join_dungeon, "send_audit_log", new=AsyncMock()
+        ):
+            retried = await join_dungeon._retry_join_once(
+                identity_id,
+                "414",
+                join_dungeon.DUNGEON_KIND_LUOYUN,
+                ".加入落云秘圃 414",
+                99,
+                delay_sec=0,
+            )
+
+        self.assertFalse(retried)
+        recovery_mock.assert_called_once()
+        send_mock.assert_not_awaited()
+
     async def test_cooldown_reply_blocks_later_join(self):
         identity_id = self._prepare_identity()
         now = 18000.0

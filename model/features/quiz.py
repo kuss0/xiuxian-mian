@@ -4,6 +4,7 @@ import re
 import time
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC, RE_WHITESPACE
+from ..message_log_recovery import iter_message_log_entries_between
 from ..persistence import mark_dirty, save_quiz_ai_config_state, save_quiz_learning_watchers_state, save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
 from ..runtime import account_rpc_slot, mono, send_audit_log, send_game_command
@@ -53,6 +54,7 @@ QUIZ_PHASE_QUEUED_ANSWER = "queued_answer"
 QUIZ_PHASE_WAITING_RESULT = "waiting_result"
 QUIZ_ANSWER_METHOD_BUTTON = "button"
 QUIZ_ANSWER_METHOD_COMMAND = "command"
+QUIZ_RESULT_LOG_LOOKBACK_SEC = 10 * 60
 
 _QUIZ_BANK = None
 _QUIZ_BANK_INDEX = None
@@ -592,6 +594,31 @@ async def _confirm_quiz_answer_result(parsed, watcher):
     return True
 
 
+async def _recover_quiz_result_from_message_log(now):
+    identity_id = get_current_identity_id()
+    chat_id = int(state.get("quiz_chat_id", 0) or 0)
+    start_ts = max(0.0, float(now or 0) - QUIZ_RESULT_LOG_LOOKBACK_SEC)
+    prompt_seen_at = float(state.get("quiz_last_matched_at", 0) or 0)
+    result_due_at = float(state.get("next_quiz_time", 0) or 0)
+    answer_sent_at = result_due_at - QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC if result_due_at > 0 else 0
+    start_ts = max(start_ts, prompt_seen_at - 2, answer_sent_at - 5)
+    for entry, entry_ts in iter_message_log_entries_between(start_ts, float(now or 0) + 5):
+        if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
+            continue
+        if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
+            continue
+        text = str((entry or {}).get("text") or "")
+        parsed = _parse_quiz_result(text)
+        if not parsed and not RE_QUIZ_RESULT_TIMEOUT.search(text):
+            continue
+        if _find_quiz_identity_id(text, enabled_only=False) != identity_id:
+            continue
+        if await handle_quiz_result_broadcast(text, now=entry_ts or now):
+            if int(state.get("quiz_reply_to_msg_id", 0) or 0) <= 0:
+                return True
+    return False
+
+
 async def _handle_quiz_pending_timeout(now):
     question = state.get("quiz_question") or "未记录题目"
     options_text = _format_quiz_options(_get_quiz_state_options())
@@ -669,6 +696,8 @@ async def _handle_quiz_answer_confirmation_timeout(now):
     reply_to_msg_id = int(state.get("quiz_reply_to_msg_id", 0) or 0)
     retry_count = _get_quiz_retry_count()
     identity_id = get_current_identity_id()
+    if await _recover_quiz_result_from_message_log(now):
+        return
     if _quiz_deadline_blocks_send(now):
         deadline_at = _get_quiz_deadline_at()
         state["quiz_last_error"] = "题目已过安全作答窗口，停止重试"

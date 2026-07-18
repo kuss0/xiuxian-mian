@@ -4,8 +4,10 @@ import os
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import TIANJI_QUIZ_BANK_FILE
+from ..message_log_recovery import iter_message_log_entries_between
 from ..persistence import save_state
 from ..runtime import mono, send_audit_log, send_game_command
 from ..state import get_identity_ids, get_send_as_tags, state
@@ -21,6 +23,7 @@ TIANJI_QUIZ_RESULT_TIMEOUT_SEC = 20
 TIANJI_QUIZ_RETRY_DELAY_MIN_SEC = 5
 TIANJI_QUIZ_RETRY_DELAY_MAX_SEC = 15
 TIANJI_QUIZ_MAX_RETRY_COUNT = 1
+TIANJI_QUIZ_RESULT_LOG_LOOKBACK_SEC = 10 * 60
 RE_TIANJI_TARGET = re.compile(r"@([^\s，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+)")
 RE_TIANJI_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_TIANJI_TIMEOUT_MIN = re.compile(r"请在\s*(\d+)\s*分钟")
@@ -560,6 +563,39 @@ async def handle_tianji_quiz_prompt(text, now=None, event=None):
     return True
 
 
+async def _recover_tianji_quiz_result_from_message_log(item, now):
+    item = item if isinstance(item, dict) else {}
+    chat_id = int(item.get("chat_id", 0) or 0)
+    sent_msg_id = int(item.get("sent_msg_id", 0) or 0)
+    target_key = _normalize_identity_text(item.get("target"))
+    start_ts = max(0.0, float(now or 0) - TIANJI_QUIZ_RESULT_LOG_LOOKBACK_SEC)
+    start_ts = max(start_ts, float(item.get("sent_at", 0) or 0) - 5)
+    for entry, entry_ts in iter_message_log_entries_between(start_ts, float(now or 0) + 5):
+        if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
+            continue
+        if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
+            continue
+        text = str((entry or {}).get("text") or "")
+        parsed_result = _parse_tianji_quiz_result(text)
+        reply_to_msg_id = int((entry or {}).get("reply_to_msg_id", 0) or 0)
+        direct_reply = sent_msg_id > 0 and reply_to_msg_id == sent_msg_id
+        target_match = bool(
+            parsed_result
+            and target_key
+            and _normalize_identity_text(parsed_result.get("target")) == target_key
+        )
+        if not direct_reply and not target_match:
+            continue
+        event = SimpleNamespace(reply_to=SimpleNamespace(reply_to_msg_id=reply_to_msg_id))
+        if await handle_tianji_quiz_result_broadcast(
+            text,
+            now=entry_ts or now,
+            event=event,
+        ):
+            return True
+    return False
+
+
 def _schedule_tianji_quiz_retry(item, now):
     retry_count = int((item or {}).get("retry_count", 0) or 0) + 1
     delay_sec = random.uniform(TIANJI_QUIZ_RETRY_DELAY_MIN_SEC, TIANJI_QUIZ_RETRY_DELAY_MAX_SEC)
@@ -617,6 +653,10 @@ async def _run_tianji_quiz_scheduler_locked(now):
             continue
 
         if phase == "waiting_result":
+            if await _recover_tianji_quiz_result_from_message_log(item, now):
+                pending.pop(pending_key, None)
+                changed = True
+                continue
             if retry_count >= TIANJI_QUIZ_MAX_RETRY_COUNT:
                 pending.pop(pending_key, None)
                 changed = True

@@ -12,6 +12,7 @@ from ..config import (
     CMD_REPLICA_KUNWU_JOIN,
     CMD_REPLICA_LUOYUN_JOIN,
 )
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import (
@@ -59,6 +60,7 @@ DUNGEON_COOLDOWN_BUFFER_SEC = 30
 DUNGEON_FAILURE_GRACE_SEC = 3 * 60
 DUNGEON_JOIN_FAST_RETRY_DELAY_SEC = 2.5
 DUNGEON_JOIN_FAST_RETRY_LIMIT = 1
+DUNGEON_JOIN_LOG_REPLY_LOOKBACK_SEC = 5 * 60
 
 _JOIN_COMMANDS_RE = "|".join(re.escape(meta["join_command"]) for meta in DUNGEON_KIND_META.values())
 _DUNGEON_ID_RE = re.compile(rf"(?:(?:副本|房间)ID\s*[:：]\s*|(?:{_JOIN_COMMANDS_RE})\s+)(\d+)")
@@ -1116,6 +1118,32 @@ def _release_join_reservation(identity_id, dungeon_id):
         _join_keys.pop(key, None)
 
 
+def _has_logged_join_reply(first_msg_id, now):
+    first_msg_id = int(first_msg_id or 0)
+    if first_msg_id <= 0:
+        return False
+    game_group_id = int(get_game_group_id() or 0)
+    bot_ids = {int(bot_id or 0) for bot_id in get_game_bot_ids() if int(bot_id or 0) > 0}
+
+    def is_game_bot_reply(entry):
+        if game_group_id and int((entry or {}).get("chat_id") or 0) != game_group_id:
+            return False
+        if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
+            return False
+        sender_id = int((entry or {}).get("sender_id") or 0)
+        return bool((entry or {}).get("sender_is_bot")) or sender_id in bot_ids
+
+    return bool(
+        find_message_log_replies(
+            first_msg_id,
+            now,
+            lookback_sec=DUNGEON_JOIN_LOG_REPLY_LOOKBACK_SEC,
+            lookahead_sec=5,
+            predicate=is_game_bot_reply,
+        )
+    )
+
+
 def _should_fast_retry_join(identity_id, dungeon_id, first_msg_id, now):
     key = (int(identity_id), str(dungeon_id))
     item = _join_keys.get(key) or {}
@@ -1129,6 +1157,8 @@ def _should_fast_retry_join(identity_id, dungeon_id, first_msg_id, now):
     if str(record.get("pending_room_id") or "") != str(dungeon_id or ""):
         return False
     if first_msg_id and int(record.get("pending_msg_id") or 0) != int(first_msg_id or 0):
+        return False
+    if _has_logged_join_reply(first_msg_id, now):
         return False
     if float(record.get("pending_until") or 0) <= float(now or 0):
         return False
