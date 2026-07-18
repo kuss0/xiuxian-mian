@@ -189,6 +189,7 @@ from .features.wild_training import (
     run_wild_training_phaseful_cleanup_scheduler,
     run_wild_training_scheduler,
 )
+from .features.red_packet_monitor import observe_red_packet_candidate
 from .persistence import (
     flush_if_dirty,
     get_persistence_write_failure,
@@ -3092,6 +3093,7 @@ register_game_command_sent_observer(_observe_sent_for_early_reply_replay)
 
 @client.on(events.NewMessage())
 async def on_message(event):
+    await observe_red_packet_candidate(event, event_type="message")
     if _append_replica_group_message_log(event, event_type="message"):
         now = time.time()
         text = event.raw_text or ""
@@ -3240,6 +3242,7 @@ async def on_message(event):
 
 @client.on(events.MessageEdited())
 async def on_message_edited(event):
+    await observe_red_packet_candidate(event, event_type="edit")
     if _append_replica_group_message_log(event, event_type="edit"):
         now = time.time()
         text = event.raw_text or ""
