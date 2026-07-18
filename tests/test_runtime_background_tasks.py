@@ -3,7 +3,7 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -191,6 +191,26 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.LOG_BOT_POLL_SERVER_TIMEOUT_SEC, observed["payload"]["timeout"])
         self.assertEqual(runtime.LOG_BOT_POLL_READ_TIMEOUT_SEC, observed["read_timeout"])
         self.assertLess(runtime.LOG_BOT_POLL_READ_TIMEOUT_SEC, 20)
+
+    async def test_notification_channel_uses_log_bot_without_account_fallback(self):
+        runtime._LOG_BOT_BACKOFF_UNTIL = 0
+        send_mock = MagicMock(return_value=(True, ""))
+        with patch.object(runtime, "LOG_BOT_TOKEN", "token"), patch.object(
+            runtime,
+            "_send_chat_via_log_bot",
+            new=send_mock,
+        ):
+            ok = await runtime.send_log_bot_notification(
+                -1004412426741,
+                "test notification",
+                link_preview=False,
+            )
+
+        self.assertTrue(ok)
+        send_mock.assert_called_once()
+        self.assertEqual(-1004412426741, send_mock.call_args.args[0])
+        self.assertEqual("test notification", send_mock.call_args.args[1])
+        self.assertFalse(send_mock.call_args.kwargs["link_preview"])
 
     async def test_failed_low_priority_summary_restores_details(self):
         send_mock = AsyncMock(return_value=False)

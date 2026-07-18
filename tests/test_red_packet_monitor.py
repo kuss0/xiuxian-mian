@@ -101,6 +101,10 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(red_packet_monitor, "console_log"), patch.object(
             red_packet_monitor, "send_audit_log", new=AsyncMock()
         ) as audit_mock, patch.object(
+            red_packet_monitor,
+            "send_log_bot_notification",
+            new=AsyncMock(return_value=True),
+        ) as channel_mock, patch.object(
             red_packet_monitor, "_RED_PACKET_ALERT_INTERVAL_SEC", 0
         ), patch.object(red_packet_monitor, "_RED_PACKET_ALERT_COUNT", 3):
             await red_packet_monitor.observe_red_packet_candidate(command)
@@ -108,6 +112,13 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             await red_packet_monitor.drain_red_packet_alert_tasks()
 
         self.assertEqual(3, audit_mock.await_count)
+        self.assertEqual(3, channel_mock.await_count)
+        self.assertTrue(
+            all(
+                call.args[0] == red_packet_monitor.RED_PACKET_NOTIFICATION_CHAT_ID
+                for call in channel_mock.await_args_list
+            )
+        )
         self.assertTrue(all(call.kwargs["priority"] == "high" for call in audit_mock.await_args_list))
         self.assertTrue(
             all(
@@ -147,7 +158,11 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(red_packet_monitor, "console_log"), patch.object(
             red_packet_monitor, "send_audit_log", new=AsyncMock()
-        ) as audit_mock:
+        ) as audit_mock, patch.object(
+            red_packet_monitor,
+            "send_log_bot_notification",
+            new=AsyncMock(return_value=True),
+        ) as channel_mock:
             await red_packet_monitor.observe_red_packet_candidate(command)
             await red_packet_monitor.observe_red_packet_candidate(blocked)
             await red_packet_monitor.observe_red_packet_candidate(low_command)
@@ -155,6 +170,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             await red_packet_monitor.drain_red_packet_alert_tasks()
 
         audit_mock.assert_not_awaited()
+        channel_mock.assert_not_awaited()
 
     async def test_other_group_is_ignored(self):
         event = SimpleNamespace(

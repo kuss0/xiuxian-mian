@@ -2207,11 +2207,17 @@ def _normalize_inline_keyboard_buttons(buttons):
     return rows
 
 
-def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
+def _send_chat_via_log_bot(chat_id, text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
     if not LOG_BOT_TOKEN:
         return False, "missing bot token"
+    try:
+        target_chat_id = int(chat_id)
+    except (TypeError, ValueError):
+        return False, "invalid chat id"
+    if target_chat_id == 0:
+        return False, "invalid chat id"
     payload = {
-        "chat_id": str(LOG_GROUP_ID),
+        "chat_id": str(target_chat_id),
         "text": text,
         "disable_web_page_preview": not link_preview,
     }
@@ -2249,6 +2255,18 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
     if isinstance(data, dict) and data.get("ok") is True:
         return True, ""
     return False, body or "bot api returned non-ok response"
+
+
+def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
+    return _send_chat_via_log_bot(
+        LOG_GROUP_ID,
+        text,
+        reply_to_msg_id=reply_to_msg_id,
+        message_thread_id=message_thread_id,
+        link_preview=link_preview,
+        parse_mode=parse_mode,
+        buttons=buttons,
+    )
 
 
 _LOG_BOT_BACKOFF_UNTIL = 0.0
@@ -2370,6 +2388,42 @@ async def run_log_bot_callback_poller(callback_handler, stop_event=None):
                 traceback.print_exc()
         if not updates:
             await asyncio.sleep(0)
+
+
+async def send_log_bot_notification(chat_id, text, *, link_preview=False, parse_mode=None, buttons=None):
+    """Send to a fixed notification chat through the log Bot only."""
+    if not LOG_BOT_TOKEN:
+        print(f"send_log_bot_notification missing bot token | chat={chat_id}")
+        return False
+    if time.time() < _LOG_BOT_BACKOFF_UNTIL:
+        print(f"send_log_bot_notification bot backoff active | chat={chat_id}")
+        return False
+    try:
+        ok, error_text = await asyncio.wait_for(
+            asyncio.to_thread(
+                _send_chat_via_log_bot,
+                chat_id,
+                text,
+                link_preview=link_preview,
+                parse_mode=parse_mode,
+                buttons=buttons,
+            ),
+            timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        print(f"send_log_bot_notification timeout | chat={chat_id}")
+        return False
+    except Exception as exc:
+        print(f"send_log_bot_notification failed: {exc} | chat={chat_id}")
+        return False
+    if ok:
+        return True
+    retry_after = _mark_log_bot_backoff(error_text)
+    if retry_after:
+        print(f"send_log_bot_notification bot backoff {retry_after}s: {error_text} | chat={chat_id}")
+    else:
+        print(f"send_log_bot_notification rejected: {error_text} | chat={chat_id}")
+    return False
 
 
 async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
@@ -4734,6 +4788,7 @@ __all__ = [
     "run_retry_scheduler",
     "schedule_cleanup",
     "send_audit_log",
+    "send_log_bot_notification",
     "send_game_command",
     "set_game_send_quiesced",
     "should_pause_for_bot_health",

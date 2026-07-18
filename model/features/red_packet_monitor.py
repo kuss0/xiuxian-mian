@@ -3,10 +3,11 @@ import re
 import time
 from collections import OrderedDict
 
-from ..runtime import console_log, send_audit_log
+from ..runtime import console_log, send_audit_log, send_log_bot_notification
 
 
 RED_PACKET_MONITOR_CHAT_USERNAME = "ja_netfilter_group"
+RED_PACKET_NOTIFICATION_CHAT_ID = -1004412426741
 RE_RED_PACKET_COMMAND = re.compile(
     r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)\s+(?P<count>\d+)\s*$"
 )
@@ -142,18 +143,21 @@ def _red_packet_message_url(topic_id, message_id):
 async def _send_red_packet_alerts(chat_id, topic_id, message_id, sender_id, parsed):
     message_url = _red_packet_message_url(topic_id, message_id)
     for index in range(1, _RED_PACKET_ALERT_COUNT + 1):
+        alert_text = (
+            "🧧 红包提醒｜来源群={chat_id}｜金额={amount:g} LDC｜数量={count} 份｜"
+            "第 {index}/{total} 次提醒，请尽快抢｜{message_url}"
+            .format(
+                chat_id=int(chat_id or 0),
+                amount=float(parsed["amount"]),
+                count=int(parsed["count"]),
+                index=index,
+                total=_RED_PACKET_ALERT_COUNT,
+                message_url=message_url,
+            )
+        )
         try:
             await send_audit_log(
-                "🧧 红包提醒｜来源群={chat_id}｜金额={amount:g} LDC｜数量={count} 份｜"
-                "第 {index}/{total} 次提醒，请尽快抢｜{message_url}"
-                .format(
-                    chat_id=int(chat_id or 0),
-                    amount=float(parsed["amount"]),
-                    count=int(parsed["count"]),
-                    index=index,
-                    total=_RED_PACKET_ALERT_COUNT,
-                    message_url=message_url,
-                ),
+                alert_text,
                 scope="global",
                 priority="high",
                 limit=240,
@@ -161,6 +165,25 @@ async def _send_red_packet_alerts(chat_id, topic_id, message_id, sender_id, pars
         except Exception as exc:
             console_log(
                 f"🧧 红包提醒发送失败｜msg={int(message_id or 0)}｜{type(exc).__name__}: {exc}",
+                scope="global",
+                limit=240,
+            )
+        try:
+            sent = await send_log_bot_notification(
+                RED_PACKET_NOTIFICATION_CHAT_ID,
+                alert_text,
+                link_preview=False,
+            )
+            if not sent:
+                console_log(
+                    f"🧧 红包通知渠道发送失败｜chat={RED_PACKET_NOTIFICATION_CHAT_ID}｜msg={int(message_id or 0)}",
+                    scope="global",
+                    limit=240,
+                )
+        except Exception as exc:
+            console_log(
+                f"🧧 红包通知渠道异常｜chat={RED_PACKET_NOTIFICATION_CHAT_ID}｜"
+                f"{type(exc).__name__}: {exc}",
                 scope="global",
                 limit=240,
             )
@@ -231,6 +254,7 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
 
 __all__ = [
     "RED_PACKET_MONITOR_CHAT_USERNAME",
+    "RED_PACKET_NOTIFICATION_CHAT_ID",
     "observe_red_packet_candidate",
     "parse_red_packet_command",
     "parse_red_packet_created",
