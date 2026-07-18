@@ -441,6 +441,44 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(state_module.state["next_duel_time"], now)
             self.assertIn("恢复原法宝配装", audit_mock.await_args.args[0])
 
+    async def test_no_available_target_restores_wa_even_when_next_time_is_tomorrow(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@target"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 1
+            state_module.state["duel_daily_limit_day"] = duel._duel_day_key(now)
+            state_module.state["duel_daily_limited_targets"] = ["@target"]
+            state_module.state["next_duel_time"] = now + 12 * 3600
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+            self.assertGreater(state_module.state["next_duel_time"], now)
+            self.assertIn("开始恢复原法宝配装", audit_mock.await_args.args[0])
+
+    def test_complete_restored_wa_does_not_queue_restore_again(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = "斗法配装:restored"
+
+            completion = duel._complete_duel_batch(now)
+
+            self.assertFalse(completion["restoring"])
+            self.assertEqual("斗法配装:restored", state_module.state["duel_last_result"])
+
     async def test_wa_restore_schedules_next_daily_batch_when_enabled(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -471,6 +509,26 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
             )
             self.assertIn("次日批次", audit_mock.await_args.args[0])
+
+    async def test_wa_restore_skips_redundant_unequip_when_empty_is_confirmed(self):
+        identity_id = self._prepare_identity(8659059191)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:restore_needed"
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel._run_controlled_loadout_restore(
+                    now,
+                    duel.DUEL_CONTROLLED_LOADOUTS[identity_id],
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            self.assertEqual("斗法配装:restore_equip:0", state_module.state["duel_last_result"])
 
     def test_duel_result_delay_uses_real_weakness_and_batch_stagger(self):
         text = (

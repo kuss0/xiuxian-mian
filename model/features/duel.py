@@ -685,7 +685,7 @@ def _complete_duel_batch(now):
     keep_unequipped = bool(loadout_config and loadout_config.get("keep_unequipped"))
     loadout_prepared = bool(loadout_config and state.get("duel_unequip_prepared"))
     restore_items = tuple((loadout_config or {}).get("restore") or ())
-    restoring = bool(loadout_config and restore_items and not keep_unequipped)
+    restoring = bool(loadout_prepared and restore_items and not keep_unequipped)
     _release_all_managed_pair_batches(now, queue_restore=True)
     _consume_observed_duel_progress()
     if restoring:
@@ -1223,6 +1223,12 @@ async def _run_controlled_loadout_restore(now, config):
         return False
     restore_items = tuple(config.get("restore") or ())
     if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}restore_needed":
+        if state.get("duel_unequip_prepared"):
+            _clear_loadout_pending()
+            _set_loadout_phase("restore_equip:0")
+            _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
+            save_state()
+            return True
         await _send_loadout_command(".卸下法宝", now, "restore_unequip_wait")
         return True
     if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}restore_unequip_wait":
@@ -2474,11 +2480,19 @@ async def run_duel_scheduler(now):
         return
     target = _target_token(now)
     if not target:
-        if not _duel_next_time_blocks(now):
-            state["next_duel_time"] = _next_daily_duel_time(now)
-            state["duel_last_error"] = ""
-            state["duel_last_result"] = f"今日可用斗法目标均已封顶；次日批次→{fmt_abs_ts(state['next_duel_time'])}"
+        completion = _complete_duel_batch(now)
+        state["duel_last_error"] = ""
+        if completion["restoring"]:
+            state["duel_last_result"] = f"{DUEL_LOADOUT_PHASE_PREFIX}restore_needed"
             save_state()
+            await send_audit_log(
+                f"✅ 今日可用斗法目标均已封顶（完成 {completion['completed_count']} 场），开始恢复原法宝配装。",
+                scope="identity",
+                limit=240,
+            )
+            return
+        state["duel_last_result"] = f"今日可用斗法目标均已封顶；次日批次→{fmt_abs_ts(state['next_duel_time'])}"
+        save_state()
         return
     target_gate_reason = _target_gate_reason(target)
     if target_gate_reason:
