@@ -983,10 +983,24 @@ def reconcile_duel_from_message_log(now, *, force=False):
     report = evidence.get("last_report") or {}
     report_text = str(report.get("text") or "")
     report_msg_id = _parse_int(report.get("message_id"))
+    report_at = float(report.get("ts_epoch") or 0)
     if report_msg_id > int(state.get("duel_last_msg_id", 0) or 0):
         state["duel_last_msg_id"] = report_msg_id
         state["duel_last_result"] = parse_duel_result_summary(report_text)
         state["duel_last_error"] = ""
+        changed = True
+    total_count = max(0, int(state.get("duel_total_count", 0) or 0))
+    completed_count = max(0, int(state.get("duel_completed_count", 0) or 0))
+    expected_due_upper = report_at + _duel_report_delay_upper_bound(report_text) if report_at else 0
+    if (
+        report_text
+        and expected_due_upper > 0
+        and total_count > completed_count
+        and _target_token(now)
+        and not int(state.get("duel_reply_to_msg_id", 0) or 0)
+        and float(state.get("next_duel_time", 0) or 0) > expected_due_upper
+    ):
+        state["next_duel_time"] = max(now, expected_due_upper)
         changed = True
     defender = RE_DUEL_DEFENDER.search(report_text)
     if defender:
@@ -1829,13 +1843,19 @@ def _duel_next_delay_from_result(text, weak_or_unknown):
     stagger = _duel_batch_stagger_sec()
     if _is_duel_report_text(raw):
         weakness = RE_DUEL_WEAKNESS.search(raw)
-        if weakness and weak_or_unknown:
+        if weakness:
             return parse_wait_time(weakness.group("wait")) + CD_BUFFER_SEC + stagger
-        if not weak_or_unknown:
-            return DUEL_SAME_TARGET_COOLDOWN_SEC + CD_BUFFER_SEC + stagger
+        return DUEL_SAME_TARGET_COOLDOWN_SEC + CD_BUFFER_SEC + stagger
     if has_wait_time(raw):
         return parse_wait_time(raw) + CD_BUFFER_SEC
     return _duel_result_cooldown_sec(weak_or_unknown) + CD_BUFFER_SEC
+
+
+def _duel_report_delay_upper_bound(text):
+    raw = str(text or "")
+    weakness = RE_DUEL_WEAKNESS.search(raw)
+    base = parse_wait_time(weakness.group("wait")) if weakness else DUEL_SAME_TARGET_COOLDOWN_SEC
+    return base + CD_BUFFER_SEC + DUEL_BATCH_STAGGER_MAX_SEC
 
 
 def _apply_duel_xiuwei_loss(text):
@@ -2232,7 +2252,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     if xiuwei_loss > 0:
         state["duel_last_result"] = f"{summary}｜修为-{xiuwei_loss}"
     normal_target_cooldown = _is_target_named_cooldown(raw_text)
-    state["duel_last_error"] = "" if (not weak_or_unknown or normal_target_cooldown) else summary
+    state["duel_last_error"] = "" if (_is_duel_report_text(raw_text) or not weak_or_unknown or normal_target_cooldown) else summary
     if _target_cooldown_confirmed_by_text(raw_text):
         _set_target_cooldown(
             target,

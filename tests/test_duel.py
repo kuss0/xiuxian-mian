@@ -496,6 +496,13 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(duel.DUEL_SAME_TARGET_COOLDOWN_SEC + duel.CD_BUFFER_SEC + 240, delay)
 
+    def test_duel_loss_without_explicit_weakness_uses_target_cooldown(self):
+        text = "【天道战报·文字版】\n胜者：@ccahen\n败者：@Lpprceqei"
+        with patch.object(duel, "_duel_batch_stagger_sec", return_value=240):
+            delay = duel._duel_next_delay_from_result(text, True)
+
+        self.assertEqual(duel.DUEL_SAME_TARGET_COOLDOWN_SEC + duel.CD_BUFFER_SEC + 240, delay)
+
     def test_duel_loss_updates_local_xiuwei_estimate(self):
         identity_id = self._prepare_identity(xiuwei_current=700000)
         text = "【天道战报·文字版】\n胜者：@ccahen\n败者：@walterwa2000 | 损失修为 -6.0万"
@@ -1287,6 +1294,50 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(6, state_module.state["duel_observed_mind_remaining"])
             self.assertTrue(state_module.state["duel_unequip_prepared"])
             self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
+
+    def test_log_reconcile_caps_stale_long_delay_after_complete_report(self):
+        identity_id = self._prepare_identity(301299112)
+        state_module.update_send_as_profile(identity_id, username="jfdffdddd1")
+        now = 1_700_000_000.0
+        report_at = now - 20
+        entries = [
+            {
+                "event_type": "sent",
+                "message_id": 250,
+                "sender_id": identity_id,
+                "text": ".斗法 @target",
+                "ts_epoch": report_at - 10,
+            },
+            {
+                "event_type": "message",
+                "message_id": 251,
+                "reply_to_msg_id": 250,
+                "text": (
+                    "【天道战报·文字版】\n"
+                    "攻方：@jfdffdddd1\n"
+                    "守方：@target\n"
+                    "胜者：@target"
+                ),
+                "ts_epoch": report_at,
+            },
+        ]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@target"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["next_duel_time"] = now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries):
+                changed = duel.reconcile_duel_from_message_log(now, force=True)
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                report_at
+                + duel.DUEL_SAME_TARGET_COOLDOWN_SEC
+                + duel.CD_BUFFER_SEC
+                + duel.DUEL_BATCH_STAGGER_MAX_SEC,
+                state_module.state["next_duel_time"],
+            )
 
     def test_log_reconcile_does_not_override_restore_phase_with_equip_reply(self):
         identity_id = self._prepare_identity(8659059191)
@@ -2095,7 +2146,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual(now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC + duel.CD_BUFFER_SEC + 5 * 60, state_module.state["next_duel_time"])
 
-    async def test_winner_not_self_without_loser_line_uses_long_cooldown(self):
+    async def test_winner_not_self_without_loser_line_uses_target_cooldown(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -2105,6 +2156,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
             with (
                 patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "_duel_batch_stagger_sec", return_value=5 * 60),
                 patch.object(duel, "save_state"),
             ):
                 handled = await duel.handle_duel_reply(
@@ -2115,15 +2167,11 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertGreaterEqual(
+            self.assertEqual(
                 state_module.state["next_duel_time"],
-                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC + duel.CD_BUFFER_SEC,
+                now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC + duel.CD_BUFFER_SEC + 5 * 60,
             )
-            self.assertLessEqual(
-                state_module.state["next_duel_time"],
-                now + duel.DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MAX_SEC + duel.CD_BUFFER_SEC,
-            )
-            self.assertEqual("斗法结束，胜者 @cupaopao", state_module.state["duel_last_error"])
+            self.assertEqual("", state_module.state["duel_last_error"])
 
     async def test_failure_reply_uses_long_cooldown(self):
         identity_id = self._prepare_identity()
