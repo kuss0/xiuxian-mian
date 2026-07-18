@@ -297,6 +297,119 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertEqual(now + 3600, state_module.state["next_duel_time"])
 
+    async def test_managed_defender_is_unequipped_before_duel_send(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = "斗法配装:restored"
+            state_module.state["next_duel_time"] = now + 3600
+        with state_module.use_identity(baiji_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@WalterWA20000"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            state_module.state["next_duel_time"] = now - 1
+            send_mock = AsyncMock(
+                side_effect=(
+                    SimpleNamespace(id=1000, sent_at=now),
+                    SimpleNamespace(id=1001, sent_at=now + 20),
+                )
+            )
+            with (
+                patch.object(duel, "send_game_command", new=send_mock),
+                patch.object(duel, "_prepare_duel_tianxing_route", new=AsyncMock(return_value=True)),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+                self.assertEqual(".卸下法宝", send_mock.await_args_list[0].args[0])
+                self.assertEqual(1, send_mock.await_count)
+
+                with patch.object(duel, "_find_loadout_reply", return_value={"text": "你已收回当前祭出的所有法宝。"}):
+                    await duel.run_duel_scheduler(now + 10)
+                self.assertEqual(1, send_mock.await_count)
+
+                await duel.run_duel_scheduler(now + 20)
+                self.assertEqual(".斗法 @WalterWA20000", send_mock.await_args_list[1].args[0])
+
+        with state_module.use_identity(wa_id):
+            self.assertTrue(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
+        pair = state_module.get_duel_target_cooldowns()["@walterwa20000"]
+        self.assertEqual(baiji_id, pair["pair_batch_owner_identity_id"])
+        self.assertEqual(wa_id, pair["pair_batch_defender_identity_id"])
+
+    async def test_managed_defender_cannot_start_reverse_duel_during_pair_batch(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(baiji_id):
+            target_id, reason = duel._claim_managed_target_pair_batch("@WalterWA20000", now)
+        self.assertEqual(wa_id, target_id)
+        self.assertEqual("", reason)
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            state_module.state["next_duel_time"] = now - 1
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "_prepare_duel_tianxing_route", new=AsyncMock(return_value=True)) as tianxing_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 1)
+
+            send_mock.assert_not_awaited()
+            tianxing_mock.assert_not_awaited()
+            self.assertIn("受控互斗批次", state_module.state["duel_last_error"])
+
+    def test_pair_batch_completion_queues_managed_defender_restore(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            state_module.state["next_duel_time"] = now + 3600
+        with state_module.use_identity(baiji_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@WalterWA20000"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 5
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            target_id, reason = duel._claim_managed_target_pair_batch("@WalterWA20000", now)
+            self.assertEqual((wa_id, ""), (target_id, reason))
+            completion = duel._complete_duel_batch(now + 1)
+
+        self.assertFalse(completion["restoring"])
+        with state_module.use_identity(wa_id):
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+            self.assertEqual(now + 1 + duel.DUEL_LOADOUT_STEP_DELAY_SEC, state_module.state["next_duel_time"])
+        pair = state_module.get_duel_target_cooldowns().get("@walterwa20000") or {}
+        self.assertNotIn("pair_batch_owner_identity_id", pair)
+
     async def test_wa_batch_completion_enters_restore_without_disabling(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

@@ -73,6 +73,7 @@ DUEL_BATCH_STAGGER_MIN_SEC = 3 * 60
 DUEL_BATCH_STAGGER_MAX_SEC = 8 * 60
 DUEL_SAME_TARGET_COOLDOWN_SEC = 10 * 60
 DUEL_TARGET_CONTENTION_BUFFER_SEC = 5 * 60
+DUEL_PAIR_BATCH_HOLD_SEC = 6 * 3600
 DUEL_TIANXING_PREPARE_LEAD_SEC = 60
 DUEL_TARGET_RESERVATION_SEC = max(
     DUEL_SAME_TARGET_COOLDOWN_SEC,
@@ -280,14 +281,16 @@ def _set_target_cooldown(target, until, *, confirmed, command_msg_id=0, reciproc
     if reciprocal and float(until or 0) >= current_reciprocal_until:
         reciprocal_until = float(until or 0)
         reciprocal_owner_id = int(get_current_identity_id() or 0)
-    records[key] = {
+    next_record = dict(current) if isinstance(current, dict) else {}
+    next_record.update({
         "until": max(current_until, float(until or 0)),
         "confirmed": bool(confirmed),
         "owner_identity_id": int(get_current_identity_id() or 0),
         "command_msg_id": int(command_msg_id or 0),
         "reciprocal_until": reciprocal_until,
         "reciprocal_owner_identity_id": reciprocal_owner_id,
-    }
+    })
+    records[key] = next_record
     set_duel_target_cooldowns(records)
     return float(records[key]["until"])
 
@@ -300,7 +303,19 @@ def _clear_target_reservation(target, command_msg_id=0):
         return False
     if command_msg_id and int(record.get("command_msg_id", 0) or 0) != int(command_msg_id):
         return False
-    records.pop(key, None)
+    pair_fields = {
+        field: record.get(field)
+        for field in (
+            "pair_batch_owner_identity_id",
+            "pair_batch_defender_identity_id",
+            "pair_batch_until",
+        )
+        if record.get(field)
+    }
+    if pair_fields:
+        records[key] = pair_fields
+    else:
+        records.pop(key, None)
     set_duel_target_cooldowns(records)
     return True
 
@@ -315,6 +330,125 @@ def _username_alias_keys(value):
     return aliases
 
 
+def _managed_target_identity_id(target):
+    target_key = _username_key(target)
+    if not target_key:
+        return 0
+    for identity_id in get_identity_ids():
+        profile = get_send_as_profile(identity_id) or {}
+        if _username_key(profile.get("username")) == target_key:
+            return int(identity_id)
+    for identity_id in get_identity_ids():
+        if target_key in _profile_username_keys(identity_id):
+            return int(identity_id)
+    return 0
+
+
+def _active_pair_batch_record(target, now):
+    record = _get_target_cooldown_record(target)
+    until = float(record.get("pair_batch_until", 0) or 0)
+    owner_id = int(record.get("pair_batch_owner_identity_id", 0) or 0)
+    defender_id = int(record.get("pair_batch_defender_identity_id", 0) or 0)
+    if until <= float(now) or owner_id <= 0 or defender_id <= 0:
+        return {}
+    return {
+        "owner_identity_id": owner_id,
+        "defender_identity_id": defender_id,
+        "until": until,
+    }
+
+
+def _claim_managed_target_pair_batch(target, now):
+    target_id = _managed_target_identity_id(target)
+    current_id = int(get_current_identity_id() or 0)
+    if target_id <= 0 or target_id == current_id:
+        return target_id, ""
+    active = _active_pair_batch_record(target, now)
+    if active:
+        if (
+            int(active.get("owner_identity_id", 0) or 0) == current_id
+            and int(active.get("defender_identity_id", 0) or 0) == target_id
+        ):
+            return target_id, ""
+        return target_id, "目标正处于其他受控斗法批次"
+    with use_identity(target_id):
+        if _parse_int(state.get("duel_reply_to_msg_id", 0)) > 0 or _parse_int(state.get("duel_open_msg_id", 0)) > 0:
+            return target_id, "目标自身斗法仍在进行"
+        if int(state.get("duel_completed_count", 0) or 0) > 0:
+            return target_id, "目标自身斗法批次已有进度"
+        phase = _loadout_phase()
+        if phase.startswith(f"{DUEL_LOADOUT_PHASE_PREFIX}restore") and phase != f"{DUEL_LOADOUT_PHASE_PREFIX}restored":
+            return target_id, "目标正在恢复法宝"
+    key = _target_cooldown_key(target)
+    records = dict(get_duel_target_cooldowns())
+    record = dict(records.get(key) or {})
+    record["pair_batch_owner_identity_id"] = current_id
+    record["pair_batch_defender_identity_id"] = target_id
+    record["pair_batch_until"] = float(now) + DUEL_PAIR_BATCH_HOLD_SEC
+    records[key] = record
+    set_duel_target_cooldowns(records)
+    return target_id, ""
+
+
+def _queue_pair_defender_restore(target_id, now):
+    target_id = int(target_id or 0)
+    if target_id <= 0:
+        return False
+    with use_identity(target_id):
+        config = DUEL_CONTROLLED_LOADOUTS.get(target_id, DUEL_DEFAULT_LOADOUT)
+        restore_items = tuple(config.get("restore") or ())
+        if not restore_items or config.get("keep_unequipped"):
+            return False
+        if not state.get("duel_unequip_prepared") and _loadout_phase() != f"{DUEL_LOADOUT_PHASE_PREFIX}battle_ready":
+            return False
+        _clear_loadout_pending()
+        _set_loadout_phase("restore_needed")
+        state["next_duel_time"] = float(now + DUEL_LOADOUT_STEP_DELAY_SEC)
+        mark_dirty()
+        return True
+
+
+def _release_managed_target_pair_batch(target, now, *, queue_restore=True):
+    key = _target_cooldown_key(target)
+    records = dict(get_duel_target_cooldowns())
+    record = records.get(key)
+    if not isinstance(record, dict):
+        return False
+    current_id = int(get_current_identity_id() or 0)
+    if int(record.get("pair_batch_owner_identity_id", 0) or 0) != current_id:
+        return False
+    target_id = int(record.get("pair_batch_defender_identity_id", 0) or 0)
+    if queue_restore:
+        _queue_pair_defender_restore(target_id, now)
+    for field in (
+        "pair_batch_owner_identity_id",
+        "pair_batch_defender_identity_id",
+        "pair_batch_until",
+    ):
+        record.pop(field, None)
+    records[key] = record
+    set_duel_target_cooldowns(records)
+    return True
+
+
+def _release_all_managed_pair_batches(now, *, queue_restore=True):
+    current_id = int(get_current_identity_id() or 0)
+    targets = [
+        target
+        for target, record in get_duel_target_cooldowns().items()
+        if isinstance(record, dict)
+        and int(record.get("pair_batch_owner_identity_id", 0) or 0) == current_id
+    ]
+    changed = False
+    for target in targets:
+        changed = _release_managed_target_pair_batch(
+            target,
+            now,
+            queue_restore=queue_restore,
+        ) or changed
+    return changed
+
+
 def _active_duel_participant_block(target, now):
     current_id = int(get_current_identity_id() or 0)
     self_aliases = _profile_username_keys(current_id)
@@ -325,6 +459,20 @@ def _active_duel_participant_block(target, now):
         owner_id = int(record.get("owner_identity_id", 0) or 0)
         owner_aliases = _profile_username_keys(owner_id)
         active_target_aliases = _username_alias_keys(active_target)
+        pair_until = float(record.get("pair_batch_until", 0) or 0)
+        pair_owner_id = int(record.get("pair_batch_owner_identity_id", 0) or 0)
+        pair_defender_id = int(record.get("pair_batch_defender_identity_id", 0) or 0)
+        if pair_until > float(now) and pair_owner_id > 0 and pair_defender_id > 0:
+            pair_owner_aliases = _profile_username_keys(pair_owner_id)
+            pair_defender_aliases = _profile_username_keys(pair_defender_id)
+            if current_id != pair_owner_id and (
+                (
+                    current_id == pair_defender_id
+                    and target_aliases.intersection(pair_owner_aliases)
+                )
+                or target_aliases.intersection(pair_defender_aliases)
+            ):
+                return f"目标 {normalize_duel_target(target)} 处于受控互斗批次"
         if record.get("confirmed"):
             reciprocal_until = float(record.get("reciprocal_until", 0) or 0)
             if reciprocal_until <= float(now):
@@ -531,6 +679,7 @@ def _complete_duel_batch(now):
     loadout_prepared = bool(loadout_config and state.get("duel_unequip_prepared"))
     restore_items = tuple((loadout_config or {}).get("restore") or ())
     restoring = bool(loadout_config and restore_items and not keep_unequipped)
+    _release_all_managed_pair_batches(now, queue_restore=True)
     _consume_observed_duel_progress()
     if restoring:
         _clear_loadout_pending()
@@ -911,7 +1060,7 @@ def _find_loadout_reply(now, predicate):
     return replies[-1] if replies else None
 
 
-async def _send_loadout_command(command, now, waiting_phase):
+async def _send_loadout_command(command, now, waiting_phase, *, disable_on_unknown=True):
     msg = await send_game_command(command, track=False, max_retry=0, source_module="斗法配装")
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), command)
@@ -920,7 +1069,8 @@ async def _send_loadout_command(command, now, waiting_phase):
             _schedule_next_duel(now, DUEL_RECOVERY_MIN_SEC)
             save_state()
             return False
-        state["duel_enabled"] = False
+        if disable_on_unknown:
+            state["duel_enabled"] = False
         state["duel_last_error"] = "斗法配装发送状态未知，已停止批次"
         _set_loadout_phase("error")
         save_state()
@@ -936,8 +1086,10 @@ async def _send_loadout_command(command, now, waiting_phase):
     return True
 
 
-async def _stop_loadout_batch(message, *, restore=False):
-    state["duel_enabled"] = False
+async def _stop_loadout_batch(message, *, restore=False, disable_module=True):
+    if disable_module:
+        state["duel_enabled"] = False
+        _release_all_managed_pair_batches(time.time(), queue_restore=True)
     state["duel_unequip_prepared"] = False
     state["duel_last_error"] = message
     _clear_loadout_pending()
@@ -946,7 +1098,7 @@ async def _stop_loadout_batch(message, *, restore=False):
     await send_audit_log(f"⛔ {message}", scope="identity", limit=220)
 
 
-async def _run_controlled_loadout_prepare(now, config):
+async def _run_controlled_loadout_prepare(now, config, *, disable_on_error=True):
     phase = _loadout_phase()
     battle_items = tuple(config.get("battle") or ())
     unequip_only = bool(config.get("unequip_only"))
@@ -959,7 +1111,12 @@ async def _run_controlled_loadout_prepare(now, config):
         f"{DUEL_LOADOUT_PHASE_PREFIX}restored",
         f"{DUEL_LOADOUT_PHASE_PREFIX}error",
     }:
-        return await _send_loadout_command(".卸下法宝", now, "prepare_unequip_wait") and False
+        return await _send_loadout_command(
+            ".卸下法宝",
+            now,
+            "prepare_unequip_wait",
+            disable_on_unknown=disable_on_error,
+        ) and False
     if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}prepare_unequip_wait":
         reply = _find_loadout_reply(now, _loadout_unequip_reply)
         if reply:
@@ -976,10 +1133,18 @@ async def _run_controlled_loadout_prepare(now, config):
                 await send_audit_log("🗡️ 斗法配装已确认：当前未祭出法宝。", scope="identity", limit=180)
             return False
         if float(state.get("duel_magic_due_at", 0) or 0) <= now:
-            await _stop_loadout_batch("斗法配装卸装回包超时，未进入斗法")
+            await _stop_loadout_batch(
+                "斗法配装卸装回包超时，未进入斗法",
+                disable_module=disable_on_error,
+            )
         return False
     if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}prepare_equip":
-        return await _send_loadout_command(f".装备 {battle_items[0]}", now, "prepare_equip_wait") and False
+        return await _send_loadout_command(
+            f".装备 {battle_items[0]}",
+            now,
+            "prepare_equip_wait",
+            disable_on_unknown=disable_on_error,
+        ) and False
     if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}prepare_equip_wait":
         reply = _find_loadout_reply(now, lambda text: _loadout_reply_matches(text, battle_items))
         if reply:
@@ -992,12 +1157,34 @@ async def _run_controlled_loadout_prepare(now, config):
             await send_audit_log("🗡️ 斗法配装已确认：仅祭出玄铁剑。", scope="identity", limit=180)
             return False
         if float(state.get("duel_magic_due_at", 0) or 0) <= now:
-            await _stop_loadout_batch("斗法配装未确认仅祭出玄铁剑，已停止批次")
+            await _stop_loadout_batch(
+                "斗法配装未确认仅祭出玄铁剑，已停止批次",
+                disable_module=disable_on_error,
+            )
         return False
     if phase == f"{DUEL_LOADOUT_PHASE_PREFIX}battle_ready":
         state["duel_unequip_prepared"] = True
         return True
     return False
+
+
+async def _prepare_managed_target_loadout(target, now):
+    target_id, reason = _claim_managed_target_pair_batch(target, now)
+    if target_id <= 0:
+        return True, ""
+    if reason:
+        return False, reason
+    with use_identity(target_id):
+        config = DUEL_CONTROLLED_LOADOUTS.get(target_id, DUEL_DEFAULT_LOADOUT)
+        prepared = await _run_controlled_loadout_prepare(now, config, disable_on_error=False)
+        if prepared:
+            return True, ""
+        if _loadout_phase() in {
+            f"{DUEL_LOADOUT_PHASE_PREFIX}error",
+            f"{DUEL_LOADOUT_PHASE_PREFIX}restore_error",
+        }:
+            return False, state.get("duel_last_error") or "目标卸装失败"
+        return False, "等待目标卸下法宝并确认"
 
 
 async def _run_controlled_loadout_restore(now, config):
@@ -1823,6 +2010,7 @@ def clear_duel_state(*, persist=False, keep_last_error=False, keep_config=True):
     reserve_xiuwei = int(state.get("duel_reserve_xiuwei", 0) or 0) if keep_config else 0
     window_start = int(state.get("duel_window_start_minute", DUEL_DEFAULT_WINDOW_START_MINUTE) or 0) if keep_config else DUEL_DEFAULT_WINDOW_START_MINUTE
     window_end = int(state.get("duel_window_end_minute", DUEL_DEFAULT_WINDOW_END_MINUTE) or 0) if keep_config else DUEL_DEFAULT_WINDOW_END_MINUTE
+    _release_all_managed_pair_batches(time.time(), queue_restore=True)
     state["next_duel_time"] = 0
     state["duel_target"] = target
     state["duel_total_count"] = total_count
@@ -2236,6 +2424,13 @@ async def run_duel_scheduler(now):
         await send_audit_log(f"⚠️ 斗法回复超时，消息ID={reply_to_msg_id}，进入长冷却。", scope="identity", limit=220)
         return
 
+    participant_block = _active_duel_participant_block(target, now)
+    if participant_block:
+        _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+        state["duel_last_error"] = participant_block
+        save_state()
+        return
+
     next_duel_time = float(state.get("next_duel_time", 0) or 0)
     if next_duel_time > now:
         windows = build_tianxing_consume_window("斗法", now=now, due_at=next_duel_time, reason="斗法")
@@ -2261,13 +2456,6 @@ async def run_duel_scheduler(now):
         save_state()
         return
 
-    participant_block = _active_duel_participant_block(target, now)
-    if participant_block:
-        _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
-        state["duel_last_error"] = participant_block
-        save_state()
-        return
-
     target_cooldown_until = _target_cooldown_until(target)
     if target_cooldown_until > now:
         _schedule_next_duel(now, (target_cooldown_until - now) + _duel_batch_stagger_sec())
@@ -2276,6 +2464,16 @@ async def run_duel_scheduler(now):
         return
 
     if not await _prepare_duel_tianxing_route(now, due_at=now):
+        return
+
+    target_loadout_ready, target_loadout_reason = await _prepare_managed_target_loadout(target, now)
+    if not target_loadout_ready:
+        if target_loadout_reason and "失败" in target_loadout_reason:
+            state["duel_enabled"] = False
+            _release_managed_target_pair_batch(target, now, queue_restore=False)
+        _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
+        state["duel_last_error"] = target_loadout_reason or "等待目标卸下法宝"
+        save_state()
         return
 
     command = build_duel_command(target)
