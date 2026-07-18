@@ -51,6 +51,7 @@ HEHUAN_UNSENT_BLOCK_CODES = {
     "global_disabled",
     "dungeon_quiet",
     "account_offline",
+    "account_unbound",
     "account_client_missing",
     "account_client_not_ready",
     "account_session_error",

@@ -134,6 +134,26 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("supervisor_quiesce", block["code"])
         self.assertEqual("unsent", block["status"])
 
+    async def test_unbound_identity_never_falls_back_to_another_account(self):
+        send_as_id = 301299112
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.state["global_enabled"] = True
+
+        with (
+            patch.object(runtime, "_get_any_authed_client_with_account") as fallback_mock,
+            patch.object(runtime, "_log_identity_unbound_blocked", new=AsyncMock()) as log_mock,
+            patch.object(runtime, "_close_guard_for_unsent_command") as close_guard_mock,
+        ):
+            result = await runtime.send_game_command(".观星台", track=False, send_as_id=send_as_id)
+
+        self.assertIsNone(result)
+        fallback_mock.assert_not_called()
+        log_mock.assert_awaited_once_with(".观星台", send_as_id=send_as_id)
+        close_guard_mock.assert_called_once_with(".观星台", send_as_id, "account_unbound")
+        block = runtime.classify_game_send_block(send_as_id, ".观星台")
+        self.assertEqual("account_unbound", block["code"])
+        self.assertEqual("unsent", block["status"])
+
     async def test_idle_global_slot_sends_without_artificial_wait(self):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = 10.0
@@ -841,6 +861,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = runtime.time.monotonic()
         state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, 7001)
         client = _FakeClient(["ok"])
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["action_guard_sessions"] = {
@@ -862,7 +883,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "get_game_group_id", return_value=123456),
                 patch.object(runtime, "get_game_topic_id", return_value=0),
                 patch.object(runtime, "get_global_enabled", return_value=True),
-                patch.object(runtime, "_get_any_authed_client_with_account", return_value=(0, client)),
+                patch.object(runtime, "get_registered_client", return_value=client),
                 patch.object(runtime, "_get_send_gap_range", return_value=(10.0, 10.0)),
                 patch.object(runtime.random, "uniform", return_value=10.0),
                 patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),

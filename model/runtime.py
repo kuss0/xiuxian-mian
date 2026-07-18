@@ -376,6 +376,7 @@ _GAME_COMMAND_SENT_OBSERVERS = []
 _GAME_COMMAND_PRE_SEND_GUARDS = []
 _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _GAME_SEND_BLOCK_LAST = {}
+_IDENTITY_UNBOUND_AUDIT_LAST = {}
 _SEND_AS_PEER_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_OBSERVATIONS = {}
@@ -388,6 +389,7 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "global_recovery_cooldown",
     "dungeon_quiet",
     "account_offline",
+    "account_unbound",
     "account_client_missing",
     "account_client_not_ready",
     "account_session_error",
@@ -3462,6 +3464,24 @@ async def _log_account_offline_blocked(command, *, send_as_id, account_id, reaso
     )
 
 
+async def _log_identity_unbound_blocked(command, *, send_as_id):
+    now = time.time()
+    send_as_id = int(send_as_id or 0)
+    last_at = float(_IDENTITY_UNBOUND_AUDIT_LAST.get(send_as_id, 0) or 0)
+    if now - last_at < ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC:
+        return
+    _IDENTITY_UNBOUND_AUDIT_LAST[send_as_id] = now
+    await send_audit_log(
+        (
+            f"🚫 身份未绑定登录账号：{get_send_as_label(send_as_id)}｜"
+            f"跳过 {_truncate_log_text(command, limit=32)}"
+        ),
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=220,
+    )
+
+
 def _is_weakness_reply(text):
     raw = str(text or "")
     if "虚弱状态" not in raw:
@@ -3854,6 +3874,18 @@ async def _send_game_command_impl(
             _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
             return None
 
+        if account_id <= 0:
+            _close_guard_for_unsent_command(command, send_as_id, "account_unbound")
+            await _log_identity_unbound_blocked(command, send_as_id=send_as_id)
+            _record_game_send_block(
+                send_as_id,
+                command,
+                "account_unbound",
+                "身份未绑定登录账号",
+                definitely_unsent=True,
+            )
+            return None
+
         if account_id and is_account_offline(account_id):
             await _log_account_offline_blocked(
                 command,
@@ -3932,22 +3964,19 @@ async def _send_game_command_impl(
             _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
             return None
 
-        if account_id:
-            active_client = get_registered_client(account_id)
-            if active_client is None:
-                reason = "账号 client 未注册或启动失败"
-                mark_account_offline(account_id, reason)
-                await _log_account_offline_blocked(
-                    command,
-                    send_as_id=send_as_id,
-                    account_id=account_id,
-                    reason=reason,
-                    force=True,
-                )
-                _record_game_send_block(send_as_id, command, "account_client_missing", reason)
-                return None
-        else:
-            account_id, active_client = _get_any_authed_client_with_account()
+        active_client = get_registered_client(account_id)
+        if active_client is None:
+            reason = "账号 client 未注册或启动失败"
+            mark_account_offline(account_id, reason)
+            await _log_account_offline_blocked(
+                command,
+                send_as_id=send_as_id,
+                account_id=account_id,
+                reason=reason,
+                force=True,
+            )
+            _record_game_send_block(send_as_id, command, "account_client_missing", reason)
+            return None
         game_group_id = get_game_group_id()
         if not game_group_id:
             raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")

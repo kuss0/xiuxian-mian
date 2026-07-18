@@ -4766,7 +4766,7 @@ def _tianxing_timeline_unsent_block_retry(send_block, now):
 
     if code == "global_disabled":
         retry_at = now + TIANXING_TIMELINE_GLOBAL_DISABLED_RETRY_SEC
-    elif code in {"identity_weak", "account_offline", "account_client_missing", "account_client_not_ready", "account_session_error"}:
+    elif code in {"identity_weak", "account_offline", "account_unbound", "account_client_missing", "account_client_not_ready", "account_session_error"}:
         retry_at = now + TIANXING_TIMELINE_IDENTITY_BLOCK_RETRY_SEC
     else:
         retry_at = now + TIANXING_TIMELINE_BLOCKED_RETRY_SEC
