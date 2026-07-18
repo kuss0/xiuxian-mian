@@ -688,8 +688,8 @@ def _complete_duel_batch(now):
     else:
         if loadout_prepared:
             _clear_loadout_pending()
-            state["duel_unequip_prepared"] = False
-            _set_loadout_phase("restored")
+            state["duel_unequip_prepared"] = keep_unequipped
+            _set_loadout_phase("battle_ready" if keep_unequipped else "restored")
         state["duel_completed_count"] = 0
         state["next_duel_time"] = _next_daily_duel_time(now) if state.get("duel_enabled") else 0
     return {

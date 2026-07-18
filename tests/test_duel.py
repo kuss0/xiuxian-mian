@@ -221,8 +221,8 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(completion["restoring"])
             self.assertTrue(completion["daily"])
             self.assertEqual(0, state_module.state["duel_completed_count"])
-            self.assertFalse(state_module.state["duel_unequip_prepared"])
-            self.assertEqual("斗法配装:restored", state_module.state["duel_last_result"])
+            self.assertTrue(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
             self.assertGreater(state_module.state["next_duel_time"], now)
 
     async def test_wa_controlled_loadout_confirms_unequipped_before_duel(self):
