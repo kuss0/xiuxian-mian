@@ -1010,6 +1010,112 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertIn("当前身份正被", state_module.state["duel_last_error"])
 
+    async def test_completed_duel_blocks_reverse_pair_until_target_cooldown_expires(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@jfdffdddd1"
+            state_module.state["duel_total_count"] = 3
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    "【天道战报·文字版】\n"
+                    "攻方：@WalterWA2000 · 惊慕\n"
+                    "守方：@jfdffdddd · 空尘子\n"
+                    "🏁 终局结算\n胜者：@WalterWA2000\n败者：@jfdffdddd",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @jfdffdddd1"),
+                    result_msg_id=22030,
+                )
+            self.assertTrue(handled)
+
+        with state_module.use_identity(baiji_id):
+            block = duel._active_duel_participant_block("@WalterWA20000", now + 1)
+            self.assertIn("互斗冷却中", block)
+
+    def test_target_cooldown_without_report_does_not_create_reverse_pair_lock(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            duel._set_target_cooldown(
+                "@jfdffdddd1",
+                now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC,
+                confirmed=True,
+                command_msg_id=22027,
+                reciprocal=False,
+            )
+        with state_module.use_identity(baiji_id):
+            self.assertFalse(duel._active_duel_participant_block("@WalterWA20000", now + 1))
+
+    def test_completed_pair_cooldown_does_not_block_unrelated_attacker(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        third_id = 3823558636
+        state_module.ensure_identity_registered(third_id)
+        state_module._meta_state["identity_states"][third_id] = state_module.new_identity_state()
+        state_module.set_identity_account(third_id, third_id)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        state_module.update_send_as_profile(third_id, username="third_dueler")
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            duel._set_target_cooldown(
+                "@jfdffdddd1",
+                now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC,
+                confirmed=True,
+                command_msg_id=22027,
+                reciprocal=True,
+            )
+        with state_module.use_identity(third_id):
+            self.assertFalse(duel._active_duel_participant_block("@WalterWA20000", now + 1))
+
+    def test_plain_target_update_does_not_transfer_existing_pair_lock_to_new_owner(self):
+        baiji_id = self._prepare_identity(301299112)
+        wa_id = self._prepare_identity(8659059191)
+        third_id = 3823558636
+        state_module.ensure_identity_registered(third_id)
+        state_module._meta_state["identity_states"][third_id] = state_module.new_identity_state()
+        state_module.set_identity_account(third_id, third_id)
+        state_module.update_send_as_profile(baiji_id, username="jfdffdddd1", username_aliases=["jfdffdddd"])
+        state_module.update_send_as_profile(wa_id, username="WalterWA20000", username_aliases=["WalterWA2000"])
+        state_module.update_send_as_profile(third_id, username="third_dueler")
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(wa_id):
+            duel._set_target_cooldown(
+                "@jfdffdddd1",
+                now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC,
+                confirmed=True,
+                reciprocal=True,
+            )
+        with state_module.use_identity(third_id):
+            duel._set_target_cooldown(
+                "@jfdffdddd1",
+                now + duel.DUEL_SAME_TARGET_COOLDOWN_SEC,
+                confirmed=True,
+                reciprocal=False,
+            )
+        with state_module.use_identity(baiji_id):
+            self.assertIn(
+                "互斗冷却中",
+                duel._active_duel_participant_block("@WalterWA20000", now + 1),
+            )
+            self.assertFalse(duel._active_duel_participant_block("@third_dueler", now + 1))
+
     def test_manual_duel_log_evidence_rebuilds_progress_and_loadout(self):
         baiji_id = self._prepare_identity(301299112)
         wa_id = self._prepare_identity(8659059191)

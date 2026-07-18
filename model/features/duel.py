@@ -258,18 +258,35 @@ def _target_cooldown_until(target):
     return float(_get_target_cooldown_record(target).get("until", 0) or 0)
 
 
-def _set_target_cooldown(target, until, *, confirmed, command_msg_id=0):
+def _set_target_cooldown(target, until, *, confirmed, command_msg_id=0, reciprocal=False):
     key = _target_cooldown_key(target)
     if not key:
         return 0
     records = dict(get_duel_target_cooldowns())
     current = records.get(key) or {}
     current_until = float(current.get("until", 0) or 0) if isinstance(current, dict) else float(current or 0)
+    current_reciprocal_until = (
+        float(current.get("reciprocal_until", 0) or 0)
+        if isinstance(current, dict)
+        else 0
+    )
+    current_reciprocal_owner_id = (
+        int(current.get("reciprocal_owner_identity_id", 0) or 0)
+        if isinstance(current, dict)
+        else 0
+    )
+    reciprocal_until = current_reciprocal_until
+    reciprocal_owner_id = current_reciprocal_owner_id
+    if reciprocal and float(until or 0) >= current_reciprocal_until:
+        reciprocal_until = float(until or 0)
+        reciprocal_owner_id = int(get_current_identity_id() or 0)
     records[key] = {
         "until": max(current_until, float(until or 0)),
         "confirmed": bool(confirmed),
         "owner_identity_id": int(get_current_identity_id() or 0),
         "command_msg_id": int(command_msg_id or 0),
+        "reciprocal_until": reciprocal_until,
+        "reciprocal_owner_identity_id": reciprocal_owner_id,
     }
     set_duel_target_cooldowns(records)
     return float(records[key]["until"])
@@ -303,13 +320,29 @@ def _active_duel_participant_block(target, now):
     self_aliases = _profile_username_keys(current_id)
     target_aliases = _username_alias_keys(target)
     for active_target, record in get_duel_target_cooldowns().items():
-        if not isinstance(record, dict) or record.get("confirmed"):
-            continue
-        if float(record.get("until", 0) or 0) <= float(now):
+        if not isinstance(record, dict):
             continue
         owner_id = int(record.get("owner_identity_id", 0) or 0)
         owner_aliases = _profile_username_keys(owner_id)
         active_target_aliases = _username_alias_keys(active_target)
+        if record.get("confirmed"):
+            reciprocal_until = float(record.get("reciprocal_until", 0) or 0)
+            if reciprocal_until <= float(now):
+                continue
+            reciprocal_owner_id = int(record.get("reciprocal_owner_identity_id", 0) or 0)
+            reciprocal_owner_aliases = _profile_username_keys(reciprocal_owner_id)
+            if (
+                current_id != reciprocal_owner_id
+                and self_aliases.intersection(active_target_aliases)
+                and target_aliases.intersection(reciprocal_owner_aliases)
+            ):
+                return (
+                    f"与目标 {normalize_duel_target(target)} 的互斗冷却中，"
+                    f"需等待 {fmt_remaining(reciprocal_until)}"
+                )
+            continue
+        if float(record.get("until", 0) or 0) <= float(now):
+            continue
         if current_id != owner_id and self_aliases.intersection(active_target_aliases):
             return f"当前身份正被 {next(iter(owner_aliases), owner_id)} 发起斗法"
         if target_aliases.intersection(owner_aliases):
@@ -608,6 +641,13 @@ def _profile_username_keys(identity_id):
     return {_username_key(value) for value in values if _username_key(value)}
 
 
+def _is_current_identity_attacker(text):
+    match = RE_DUEL_ATTACKER.search(str(text or ""))
+    if not match:
+        return False
+    return _username_key(match.group("username")) in _profile_username_keys(get_current_identity_id())
+
+
 def _configured_target_aliases():
     mapping = {}
     profiles = []
@@ -806,7 +846,13 @@ def reconcile_duel_from_message_log(now, *, force=False):
         until = float(report.get("ts_epoch") or 0) + DUEL_SAME_TARGET_COOLDOWN_SEC
         if until > now:
             before = _get_target_cooldown_record(target)
-            _set_target_cooldown(target, until, confirmed=True, command_msg_id=0)
+            _set_target_cooldown(
+                target,
+                until,
+                confirmed=True,
+                command_msg_id=0,
+                reciprocal=_is_current_identity_attacker(report_text),
+            )
             if float(before.get("until", 0) or 0) < until or not before.get("confirmed"):
                 changed = True
     for open_duel in evidence.get("open_duels") or []:
@@ -1947,6 +1993,7 @@ async def handle_duel_target_observation(text, now, event=None):
         float(now) + DUEL_SAME_TARGET_COOLDOWN_SEC,
         confirmed=True,
         command_msg_id=0,
+        reciprocal=_is_current_identity_attacker(raw),
     )
     save_state()
     console_log(
@@ -2004,6 +2051,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
             now + _target_cooldown_delay_from_text(raw_text),
             confirmed=True,
             command_msg_id=pending_command_msg_id,
+            reciprocal=_is_duel_report_text(raw_text) and _is_current_identity_attacker(raw_text),
         )
     else:
         _clear_target_reservation(target, pending_command_msg_id)
