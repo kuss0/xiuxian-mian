@@ -1439,6 +1439,43 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_module.state["duel_unequip_prepared"])
             self.assertEqual("斗法配装:battle_ready", state_module.state["duel_last_result"])
 
+    def test_daily_mind_exhausted_log_evidence_marks_zero_without_counting_attempt(self):
+        identity_id = self._prepare_identity(301299112)
+        state_module.update_send_as_profile(identity_id, username="jfdffdddd1")
+        now = 1_700_000_000.0
+        entries = [
+            {
+                "event_type": "sent",
+                "message_id": 286562,
+                "sender_id": identity_id,
+                "text": ".斗法 @target",
+                "ts_epoch": now - 10,
+            },
+            {
+                "event_type": "message",
+                "message_id": 286564,
+                "reply_to_msg_id": 286562,
+                "text": "正在锁定对手天机，请稍候...",
+                "ts_epoch": now - 8,
+            },
+            {
+                "event_type": "edit",
+                "message_id": 286564,
+                "reply_to_msg_id": 286562,
+                "text": "你今日神念消耗过剧，已无力再战！请打坐调息，明日再来。",
+                "ts_epoch": now - 5,
+            },
+        ]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_target"] = "@target"
+            evidence = duel._derive_duel_log_evidence(entries, identity_id, now=now)
+
+        self.assertEqual(0, evidence["completed"])
+        self.assertEqual(0, evidence["manual_completed"])
+        self.assertEqual(0, evidence["mind_remaining"])
+        self.assertEqual(286562, evidence["last_command_msg_id"])
+        self.assertEqual([], evidence["open_duels"])
+
     def test_log_reconcile_caps_stale_long_delay_after_complete_report(self):
         identity_id = self._prepare_identity(301299112)
         state_module.update_send_as_profile(identity_id, username="jfdffdddd1")
@@ -2635,12 +2672,135 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
             self.assertEqual(text, state_module.state["duel_last_error"])
 
+    async def test_daily_mind_exhausted_edit_closes_pending_without_counting_new_attempt(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = "你今日神念消耗过剧，已无力再战！请打坐调息，明日再来。\n（每日可主动斗法 10 次）"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 9
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @cupaopao"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["duel_observed_mind_remaining"])
+            self.assertEqual(duel._duel_day_key(now), state_module.state["duel_log_reconcile_day"])
+            self.assertEqual(9, state_module.state["duel_completed_count"])
+            self.assertGreater(state_module.state["next_duel_time"], now)
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+            audit_mock.assert_awaited_once()
+
+    async def test_message_log_recovery_replays_waiting_then_daily_exhausted_edit_once(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        terminal = "你今日神念消耗过剧，已无力再战！请打坐调息，明日再来。"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 9
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now - 1
+            with (
+                patch.object(
+                    duel,
+                    "find_message_log_replies",
+                    return_value=[
+                        {"text": "正在锁定对手天机，请稍候...", "ts_epoch": now - 3, "message_id": 22028},
+                        {"text": terminal, "ts_epoch": now - 2, "message_id": 22028},
+                    ],
+                ),
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel._recover_duel_pending_from_message_log(now, 22027)
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+
+    async def test_scheduler_recovers_pending_before_daily_mind_zero_batch_gate(self):
+        identity_id = self._prepare_identity(99002001)
+        now = 1_700_000_000.0
+        terminal = "你今日神念消耗过剧，已无力再战！请打坐调息，明日再来。"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 9
+            state_module.state["duel_log_reconcile_day"] = duel._duel_day_key(now)
+            state_module.state["duel_observed_mind_remaining"] = 0
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now - 1
+            with (
+                patch.object(duel, "reconcile_duel_from_message_log", return_value=False),
+                patch.object(
+                    duel,
+                    "find_message_log_replies",
+                    return_value=[{"text": terminal, "ts_epoch": now - 2, "message_id": 22028}],
+                ),
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual("今日神念已耗尽", state_module.state["duel_last_result"])
+
+    async def test_send_rechecks_daily_mind_gate_after_async_preparation(self):
+        identity_id = self._prepare_identity(99002002)
+        now = 1_700_000_000.0
+
+        async def exhaust_mind_during_prepare(*_args, **_kwargs):
+            state_module.state["duel_log_reconcile_day"] = duel._duel_day_key(now)
+            state_module.state["duel_observed_mind_remaining"] = 0
+            return True
+
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@external_target"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            state_module.state["next_duel_time"] = now - 1
+            state_module.state["duel_log_reconcile_day"] = duel._duel_day_key(now)
+            state_module.state["duel_observed_mind_remaining"] = 1
+            with (
+                patch.object(duel, "reconcile_duel_from_message_log", return_value=False),
+                patch.object(duel, "_prepare_duel_tianxing_route", new=AsyncMock(side_effect=exhaust_mind_during_prepare)),
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+                patch.object(duel.time, "time", return_value=now),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["duel_reply_to_msg_id"])
+
     def test_terminal_non_report_texts_are_recognized_for_log_recovery(self):
         samples = [
             "面对境界压制，@fanrenxiuxian_06 凭借神通侥幸逃脱！(成功率: 19%)",
             "锁定目标时遭遇天机反噬，失败了: Could not find the input entity for PeerUser(user_id=8155156921)",
             "天道不公，但亦有其则！你今日对 @real 出手次数过多，已被法则限制！",
             "对方尚未踏入仙途，此番出手恐有失身份。",
+            "你今日神念消耗过剧，已无力再战！请打坐调息，明日再来。",
         ]
         for sample in samples:
             with self.subTest(sample=sample):

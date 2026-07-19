@@ -100,6 +100,8 @@ DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
     "神念不足",
     "神念已耗尽",
     "神念耗尽",
+    "神念消耗过剧",
+    "无力再战",
     "无法再次斗法",
     "元神尚未平复",
     "虚弱",
@@ -108,6 +110,10 @@ DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
     "对方正在斗法",
     "你已在斗法",
     "小隐于野",
+)
+DUEL_DAILY_MIND_EXHAUSTED_KEYWORDS = (
+    "神念消耗过剧",
+    "无力再战",
 )
 DUEL_TARGET_CONSUMING_TERMINAL_KEYWORDS = (
     "凭借神通侥幸逃脱",
@@ -679,6 +685,13 @@ def _duel_progress_label(completed, total):
     return f"{completed} 场（配置 {total}）"
 
 
+def _duel_daily_mind_exhausted(now):
+    return (
+        str(state.get("duel_log_reconcile_day") or "") == _duel_day_key(now)
+        and int(state.get("duel_observed_mind_remaining", -1)) == 0
+    )
+
+
 def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
@@ -921,6 +934,9 @@ def _derive_duel_log_evidence(entries, identity_id, *, now=None):
             limit_match = RE_DUEL_DAILY_LIMIT_TARGET.search(terminal_text)
             limited = normalize_duel_target(limit_match.group("target") if limit_match else canonical_target)
             limited_targets.add(target_aliases.get(_username_key(limited), limited))
+            continue
+        if _is_daily_mind_exhausted_text(terminal_text):
+            mind_remaining = 0
             continue
         defender_key = ""
         if _is_duel_report_text(terminal_text):
@@ -1813,6 +1829,8 @@ def _is_weak_or_unknown_result(text):
             "神念不足",
             "神念已耗尽",
             "神念耗尽",
+            "神念消耗过剧",
+            "无力再战",
             "无法再次斗法",
             "元神尚未平复",
             "无法锁定对手",
@@ -1832,6 +1850,11 @@ def _is_duel_report_text(text):
 def _has_duel_terminal_attempt_keyword(text):
     raw = str(text or "")
     return any(keyword in raw for keyword in DUEL_TERMINAL_ATTEMPT_KEYWORDS)
+
+
+def _is_daily_mind_exhausted_text(text):
+    raw = str(text or "")
+    return any(keyword in raw for keyword in DUEL_DAILY_MIND_EXHAUSTED_KEYWORDS)
 
 
 def _duel_counts_as_attempt(text):
@@ -1897,7 +1920,13 @@ def parse_duel_result_summary(text):
         return _first_line(raw)[:80] or "斗法出手次数受限"
     if "凭借神通侥幸逃脱" in raw or "侥幸逃脱" in raw:
         return _first_line(raw)[:80] or "目标侥幸逃脱"
-    if "神念不足" in raw or "神念已耗尽" in raw or "神念耗尽" in raw:
+    if (
+        "神念不足" in raw
+        or "神念已耗尽" in raw
+        or "神念耗尽" in raw
+        or "神念消耗过剧" in raw
+        or "无力再战" in raw
+    ):
         return _first_line(raw)[:80] or "神念不足"
     return _first_line(raw)[:80] or "未知"
 
@@ -2368,6 +2397,28 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     state["duel_last_msg_id"] = int(result_msg_id or 0)
     state["duel_last_result"] = summary
     state["duel_phaseful_retry_count"] = 0
+    if _is_daily_mind_exhausted_text(raw_text):
+        state["duel_observed_mind_remaining"] = 0
+        state["duel_log_reconcile_day"] = _duel_day_key(now)
+        state["duel_log_reconcile_at"] = float(now)
+        state["duel_last_error"] = ""
+        completion = _complete_duel_batch(now)
+        if not completion["restoring"]:
+            state["duel_last_result"] = "今日神念已耗尽"
+        save_state()
+        if completion["restoring"]:
+            await send_audit_log(
+                "✅ 今日神念已耗尽，开始恢复原法宝配装。",
+                scope="identity",
+                limit=200,
+            )
+        else:
+            await send_audit_log(
+                f"✅ 今日神念已耗尽，斗法批次结束，次日批次→{fmt_abs_ts(completion['next_duel_time'])}。",
+                scope="identity",
+                limit=240,
+            )
+        return True
     if xiuwei_loss > 0:
         state["duel_last_result"] = f"{summary}｜修为-{xiuwei_loss}"
     normal_target_cooldown = _is_target_named_cooldown(raw_text)
@@ -2523,7 +2574,9 @@ async def run_duel_scheduler(now):
 
     total_count = int(state.get("duel_total_count", 0) or 0)
     completed_count = int(state.get("duel_completed_count", 0) or 0)
-    if total_count > 0 and completed_count >= total_count:
+    reply_to_msg_id = int(state.get("duel_reply_to_msg_id", 0) or 0)
+    reply_due_at = float(state.get("duel_reply_due_at", 0) or 0)
+    if reply_to_msg_id <= 0 and total_count > 0 and completed_count >= total_count:
         completion = _complete_duel_batch(now)
         if completion["restoring"]:
             pass
@@ -2536,12 +2589,10 @@ async def run_duel_scheduler(now):
             state["duel_last_result"] = f"斗法已关闭：{_duel_progress_label(completed_count, total_count)}"
         save_state()
         return
-    if (
-        str(state.get("duel_log_reconcile_day") or "") == _duel_day_key(now)
-        and int(state.get("duel_observed_mind_remaining", -1)) == 0
-    ):
+    if reply_to_msg_id <= 0 and _duel_daily_mind_exhausted(now):
         completion = _complete_duel_batch(now)
-        state["duel_last_result"] = "今日神念已耗尽"
+        if not completion["restoring"]:
+            state["duel_last_result"] = "今日神念已耗尽"
         state["duel_last_error"] = ""
         save_state()
         if completion["restoring"]:
@@ -2556,8 +2607,6 @@ async def run_duel_scheduler(now):
     if loadout_config and loadout_prepare_due and not await _run_controlled_loadout_prepare(now, loadout_config):
         return
 
-    reply_to_msg_id = int(state.get("duel_reply_to_msg_id", 0) or 0)
-    reply_due_at = float(state.get("duel_reply_due_at", 0) or 0)
     if reply_to_msg_id > 0:
         if reply_due_at > now:
             return
@@ -2622,6 +2671,10 @@ async def run_duel_scheduler(now):
         _schedule_next_duel(now, DUEL_LOADOUT_STEP_DELAY_SEC)
         state["duel_last_error"] = target_loadout_reason or "等待目标卸下法宝"
         save_state()
+        return
+
+    send_now = time.time()
+    if _duel_daily_mind_exhausted(send_now) or _duel_next_time_blocks(send_now):
         return
 
     command = build_duel_command(target)
