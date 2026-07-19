@@ -4,11 +4,11 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CMD_WILD_TRAINING, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CMD_WILD_TRAINING, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
-from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
+from ..timing import fmt_abs_ts, fmt_remaining
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ SUMMARY_BLOCKING_PHASES = {"queued_launch"}
 _REGISTERED_SPECS = []
 _SUMMARY_CONSUMED_COMMANDS = {}
 
-SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TOWER, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN}
+SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN}
 SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
 SUMMARY_REPLAY_DELAY_MIN_SEC = 9
 SUMMARY_REPLAY_DELAY_MAX_SEC = 18
@@ -591,24 +591,6 @@ def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
         set_concubine_phase("idle")
         return True
 
-    if command != CMD_TOWER:
-        return True
-    from .tower import TOWER_RETRY_LIMIT
-
-    if not state.get("tower_enabled"):
-        return False
-    if str(state.get("last_tower_day") or "") == get_day_key(now):
-        return False
-    if _has_pending_command(CMD_TOWER, ignore_msg_id=old_msg_id):
-        return False
-    retry_count = int(state.get("tower_retry_count", 0) or 0)
-    if retry_count >= TOWER_RETRY_LIMIT:
-        return False
-    if int(state.get("last_tower_msg_id", 0) or 0) == int(old_msg_id or 0):
-        state["last_tower_msg_id"] = 0
-    state["tower_reply_due_at"] = 0
-    state["tower_retry_count"] = max(retry_count, 1)
-    state["next_tower_time"] = float(now)
     return True
 
 
@@ -673,16 +655,7 @@ def _finalize_replayed_command_state(command, msg):
         state["concubine_voyage_last_error"] = ""
         return True
 
-    if command != CMD_TOWER or not msg:
-        return False
-    from .tower import TOWER_REPLY_TIMEOUT_SEC
-
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-    due_at = sent_at + TOWER_REPLY_TIMEOUT_SEC
-    state["last_tower_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["tower_reply_due_at"] = due_at
-    state["next_tower_time"] = due_at
-    return True
+    return False
 
 
 async def _replay_summary_consumed_command(send_as_id, payload):
@@ -704,11 +677,6 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     send_intent = _summary_replay_send_intent((payload or {}).get("send_intent", {}))
     for key, value in _summary_replay_intent(send_as_id, msg_id, command).items():
         send_intent.setdefault(key, value)
-    if command == CMD_TOWER:
-        track = False
-        max_retry = 0
-        send_intent.setdefault("source_module", "闯塔")
-
     with use_identity(send_as_id):
         now = time.time()
         if command == CMD_TREE_WATER and float(state.get("next_irr_time", 0) or 0) > now + SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC:

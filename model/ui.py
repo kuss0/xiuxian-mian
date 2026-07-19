@@ -104,6 +104,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_fishing,
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
+    run_cave_public_tower,
     run_cave_public_tree,
     run_cave_public_treasure,
     run_cave_public_trial,
@@ -6962,6 +6963,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 result = await run_cave_public_fishing(identity_id, url)
             elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
                 result = await run_cave_public_stargazer(identity_id, url)
+            elif normalized_action in {"tower", "pagoda"}:
+                result = await run_cave_public_tower(identity_id, url)
             elif normalized_action in {"tree", "spirit_tree", "luoyun_tree"}:
                 result = await run_cave_public_tree(
                     identity_id,

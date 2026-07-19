@@ -4,6 +4,7 @@ from .fishing_miniapp import build_fishing_miniapp_adapter, build_fishing_miniap
 from .stargazer_miniapp import build_stargazer_miniapp_adapter, build_stargazer_miniapp_flow_plan
 from .tree_miniapp import build_tree_miniapp_adapter, build_tree_miniapp_flow_plan
 from .trial_miniapp import build_trial_miniapp_adapter, build_trial_miniapp_flow_plan
+from .tower_miniapp import build_tower_miniapp_adapter, build_tower_miniapp_flow_plan
 from .world_boss_miniapp import build_world_boss_miniapp_adapter, build_world_boss_miniapp_flow_plan
 
 
@@ -15,6 +16,7 @@ def build_known_miniapp_registry():
         build_world_boss_miniapp_adapter(),
         build_stargazer_miniapp_adapter(),
         build_tree_miniapp_adapter(),
+        build_tower_miniapp_adapter(),
     ))
 
 
@@ -26,6 +28,7 @@ def build_known_miniapp_flow_plans():
         "tree": build_tree_miniapp_flow_plan(),
         "trial": build_trial_miniapp_flow_plan(),
         "world_boss": build_world_boss_miniapp_flow_plan(),
+        "tower": build_tower_miniapp_flow_plan(),
     }
 
 
@@ -37,4 +40,5 @@ __all__ = [
     "build_tree_miniapp_adapter",
     "build_trial_miniapp_adapter",
     "build_world_boss_miniapp_adapter",
+    "build_tower_miniapp_adapter",
 ]

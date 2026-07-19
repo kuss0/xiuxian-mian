@@ -199,6 +199,8 @@ _MANIFESTS = (
     ModuleManifest("探寻裂缝", MODULE_KEY_MAP["探寻裂缝"], replay_modules=("explore_rift",), reply_families=("explore_rift",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("点卯", MODULE_KEY_MAP["点卯"], reply_families=("checkin",), replay_required=False, duplicate_guard="daily_state"),
     ModuleManifest("宗门传功", MODULE_KEY_MAP["宗门传功"], reply_families=("sect_teach",), replay_required=False, duplicate_guard="daily_state"),
+    # Keep the historical aliases for audit/sample compatibility. Runtime no
+    # longer registers a tower reply handler or replays the text command.
     ModuleManifest("闯塔", MODULE_KEY_MAP["闯塔"], replay_modules=("tower",), reply_families=("tower",), replay_required=False, duplicate_guard="daily_state"),
     ModuleManifest(
         "第二元神",

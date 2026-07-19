@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import action_guard, control, runtime, ui
-from model.features import _phaseful, concubine, deep_retreat, duel, tianxing, tower, wild_training, yuanying
+from model.features import _phaseful, concubine, deep_retreat, duel, tianxing, wild_training, yuanying
 
 
 class _StateIsolationMixin:
@@ -3089,11 +3089,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         send_mock.assert_not_awaited()
 
-    async def test_summary_replay_tower_sets_explicit_wait_state(self):
+    async def test_summary_replay_tower_is_disabled_after_miniapp_migration(self):
         send_as_id = 8659059223
         now = 1_700_000_800.0
         old_msg_id = 9338484
-        new_msg_id = 9338485
         self._prepare_identity(send_as_id, "TowerReplay")
 
         with state_module.use_identity(send_as_id):
@@ -3123,75 +3122,6 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             "max_retry": 0,
             "send_intent": {"source_module": "闯塔"},
         }
-        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
-        with (
-            patch.object(_phaseful.time, "time", return_value=now),
-            patch.object(_phaseful.random, "uniform", return_value=0),
-            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
-            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
-            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
-            patch.object(_phaseful, "save_state"),
-        ):
-            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
-
-        send_mock.assert_awaited_once_with(
-            ".闯塔",
-            track=False,
-            send_as_id=send_as_id,
-            priority="retry",
-            max_retry=0,
-            source_module="闯塔",
-            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:.闯塔",
-            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
-        )
-        with state_module.use_identity(send_as_id):
-            self.assertEqual(new_msg_id, state_module.state["last_tower_msg_id"])
-            self.assertEqual(1, state_module.state["tower_retry_count"])
-            self.assertEqual(now + 1 + tower.TOWER_REPLY_TIMEOUT_SEC, state_module.state["tower_reply_due_at"])
-            self.assertEqual(state_module.state["tower_reply_due_at"], state_module.state["next_tower_time"])
-            self.assertNotIn(old_msg_id, state_module.state["pending_tasks"])
-
-    async def test_summary_replay_tower_skips_done_today_or_other_pending(self):
-        send_as_id = 8659059224
-        now = 1_700_000_900.0
-        old_msg_id = 9338494
-        other_msg_id = 9338495
-        self._prepare_identity(send_as_id, "TowerReplaySkip")
-
-        payload = {
-            "cmd": ".闯塔",
-            "msg_id": old_msg_id,
-            "sent_at": now - 30,
-            "track": False,
-            "reply_to": 0,
-            "priority": None,
-            "max_retry": 0,
-        }
-        with state_module.use_identity(send_as_id):
-            state_module.state["tower_enabled"] = True
-            state_module.state["last_tower_day"] = _phaseful.get_day_key(now)
-            state_module.state["last_tower_msg_id"] = old_msg_id
-
-        with (
-            patch.object(_phaseful.time, "time", return_value=now),
-            patch.object(_phaseful.random, "uniform", return_value=0),
-            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
-            patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
-            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
-            patch.object(_phaseful, "save_state"),
-        ):
-            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
-
-        send_mock.assert_not_awaited()
-
-        with state_module.use_identity(send_as_id):
-            state_module.state["last_tower_day"] = ""
-            state_module.state["tower_retry_count"] = 0
-            state_module.state["pending_tasks"] = {
-                old_msg_id: {"cmd": ".闯塔", "sent_at": now - 30, "retry": 0, "timeout": 10},
-                other_msg_id: {"cmd": ".闯塔", "sent_at": now - 10, "retry": 0, "timeout": 10},
-            }
-
         with (
             patch.object(_phaseful.time, "time", return_value=now),
             patch.object(_phaseful.random, "uniform", return_value=0),
@@ -3204,8 +3134,9 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         send_mock.assert_not_awaited()
         with state_module.use_identity(send_as_id):
-            self.assertNotIn(old_msg_id, state_module.state["pending_tasks"])
-            self.assertIn(other_msg_id, state_module.state["pending_tasks"])
+            self.assertEqual(old_msg_id, state_module.state["last_tower_msg_id"])
+            self.assertEqual(0, state_module.state["tower_retry_count"])
+            self.assertIn(old_msg_id, state_module.state["pending_tasks"])
 
 
 class YuanyingPublicMiniAppGateTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):

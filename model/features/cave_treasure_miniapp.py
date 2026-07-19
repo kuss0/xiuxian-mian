@@ -71,7 +71,7 @@ CAVE_SMALL_WORLD_ACTIONS = frozenset({
     "recall_beast",
 })
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({CMD_YUANYING, CMD_YUANYING_STATUS})
-CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial", "fishing"})
+CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial", "fishing", "pagoda"})
 
 _RATIO_RE = re.compile(r"(?P<label>神识|出手|次数|游戏|局数)?\s*[:：]?\s*(?P<a>\d+)\s*/\s*(?P<b>\d+)")
 _TARGET_RE = re.compile(r"(?:第|#)?\s*(?P<target>\d{1,2})\s*(?:个|号|处|位)")

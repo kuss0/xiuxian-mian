@@ -29,6 +29,7 @@ from .trial_runtime import _format_trial_summary, _trial_batch_materials, _trial
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
+from .tower_miniapp import build_tower_launch_args, run_tower_miniapp_production_flow
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
@@ -312,6 +313,40 @@ def _find_tree_external_app_in_cave_payload(value):
     return {}
 
 
+def _find_tower_external_app_in_cave_payload(value):
+    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    for group in external.get("groups") or ():
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("apps") or ():
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()
+            title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
+            action = str(item.get("action") or "").strip().lower()
+            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+            is_tower = (
+                key in {"pagoda", "tower", "liuli_pagoda"}
+                or action == "pagoda"
+                or "问心塔" in title
+                or "琉璃塔" in title
+                or "xianxia-pagoda" in url
+                or "startapp=pagoda_" in url
+            )
+            if not is_tower:
+                continue
+            return {
+                "action": "pagoda" if action == "pagoda" or url in {"", "#"} else "",
+                "url": url,
+                "title": title or key,
+                "available": bool(item.get("available", True)),
+                "key": key,
+            }
+    return {}
+
+
 def _tree_launch_from_external_app(external_app):
     url = str((external_app or {}).get("url") or "").strip()
     if not url:
@@ -346,6 +381,26 @@ def _stargazer_launch_from_external_app(external_app):
         "title": str((external_app or {}).get("title") or "").strip(),
         "safe_summary": launch.safe_summary(),
     }
+
+
+def _find_tower_launch_in_cave_payload(value):
+    for item in _iter_dicts(value):
+        url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+        if not url:
+            continue
+        if url.startswith("/"):
+            url = urljoin("https://asc.aiopenai.app/", url)
+        elif "://" not in url:
+            url = urljoin("https://asc.aiopenai.app/miniapp/xianxia-dwelling", url)
+        launch, _args = build_tower_launch_args(url)
+        if launch.allowed and launch.start_param:
+            return {
+                "token": launch.start_param,
+                "webview_url": launch.webview_url,
+                "title": str(item.get("title") or item.get("buttonText") or item.get("key") or "").strip(),
+                "safe_summary": launch.safe_summary(),
+            }
+    return {}
 
 
 def _selected_player_error(overview, identity_id):
@@ -1191,6 +1246,12 @@ def _capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+def _tower_capture_store(now):
+    day_key = get_day_key(now)
+    path = CAVE_TREASURE_MINIAPP_CAPTURE_DIR / f"tower-{day_key}.jsonl"
+    return MiniAppCaptureStore(path, keep_memory=False)
+
+
 async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now=None, harvest_only=False):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -1549,6 +1610,135 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             "extra": {
                 "trial_title": launch.get("title", ""),
                 "settled_count": settled_count,
+                "gains": gains,
+                "rewards": rewards,
+            },
+        }
+
+
+async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
+    """Run one identity's daily tower challenge through the dwelling entry."""
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_tower_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府琉璃问心塔身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
+            return {"ok": False, "message": message, "extra": {}}
+        init_data = session.get("init_data") or ""
+        selected_player_id = session.get("player_id")
+        cave_result = dict(session.get("result") or {})
+        cave_data = dict(cave_result.get("data") or {})
+        raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
+        external_app = _find_tower_external_app_in_cave_payload(raw)
+        if not external_app or not external_app.get("available"):
+            message = "洞府公共入口未开放琉璃问心塔"
+            await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
+            return {"ok": False, "message": message, "extra": {}}
+
+        launch = {}
+        if external_app.get("action"):
+            external_result = await run_cave_external_action_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                action=external_app["action"],
+                player_id=selected_player_id,
+                init_data=init_data,
+                capture_sink=_capture_store(now),
+                capture_source=f"cave_public_tower_external:{identity_id}",
+            )
+            if not external_result.get("ok"):
+                message = f"洞府琉璃问心塔动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
+                await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
+                return {"ok": False, "message": message, "extra": {}}
+            launch = _find_tower_launch_in_cave_payload(external_result.get("data") or {})
+        elif external_app.get("url"):
+            launch = _find_tower_launch_in_cave_payload(external_app)
+        if not launch:
+            message = "洞府琉璃问心塔入口未返回可用 URL"
+            await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
+            return {"ok": False, "message": message, "extra": {}}
+
+        result = await run_tower_miniapp_production_flow(
+            identity_id,
+            token=launch.get("token"),
+            init_data=init_data,
+            capture_sink=_tower_capture_store(now),
+            capture_source=f"cave_public_tower:{identity_id}",
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        tower_state = data.get("state") if isinstance(data.get("state"), dict) else {}
+        replay = data.get("replay") if isinstance(data.get("replay"), dict) else {}
+        gains = dict(data.get("gains") or {})
+        rewards = dict(data.get("rewards") or {})
+        phase = "completed" if result.get("ok") else "blocked"
+        record_miniapp_state(
+            identity_id,
+            "tower",
+            {
+                "phase": phase,
+                "status": result.get("status") or "",
+                "challenged": bool(data.get("challenged")),
+                "dao_name": tower_state.get("dao_name") or "",
+                "today_highest": tower_state.get("today_highest", 0),
+                "record_highest": tower_state.get("record_highest", 0),
+                "cleared_count": replay.get("cleared_count", 0),
+                "end_floor": replay.get("end_floor", 0),
+                "failed_floor": replay.get("failed_floor", 0),
+                "gains": gains,
+                "rewards": rewards,
+                "error": result.get("error") or "",
+            },
+            source="cave_public_tower",
+            source_id=f"tower:{identity_id}:{int(now)}",
+            now=now,
+            outputs=("daily_counter", "tower_progress", "rewards"),
+            replaces_commands=(".闯塔", ".继续闯塔"),
+        )
+        if result.get("status") == "done_today":
+            message = "洞府琉璃问心塔：今日已完成或已止步，未重铸道心"
+        elif result.get("ok"):
+            message = (
+                f"洞府琉璃问心塔：通过 {replay.get('cleared_count', 0)} 层"
+                f"｜止步 {replay.get('failed_floor') or '未止步'} 层"
+                f"｜修为 +{gains.get('修为', 0)}｜塔印 +{gains.get('塔印', 0)}"
+            )
+        else:
+            message = f"洞府琉璃问心塔失败：{result.get('error') or result.get('status') or 'unknown'}"
+        await send_audit_log(
+            f"🗼 {message}",
+            scope="identity",
+            send_as_id=identity_id,
+            priority="low" if result.get("ok") else "normal",
+            limit=280,
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "message": message,
+            "extra": {
+                "status": result.get("status") or "",
+                "state": tower_state,
+                "replay": replay,
                 "gains": gains,
                 "rewards": rewards,
             },
@@ -2047,12 +2237,15 @@ __all__ = [
     "run_cave_public_fishing",
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",
+    "run_cave_public_tower",
     "run_cave_public_treasure",
     "run_cave_public_trial",
     "run_cave_public_yuanying",
     "sync_cave_deep_seclusion_action_result",
     "sync_cave_tianjige_yuanying_result",
     "_find_trial_launch_in_cave_payload",
+    "_find_tower_external_app_in_cave_payload",
+    "_find_tower_launch_in_cave_payload",
     "_cave_treasure_inventory_items",
     "_record_cave_deep_retreat_state",
     "_record_cave_small_world_state",

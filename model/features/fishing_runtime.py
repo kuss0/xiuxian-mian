@@ -18,11 +18,10 @@ from ..config import (
     CMD_FISHING_STATUS,
     TZ_LOCAL,
 )
-from ..message_log_recovery import find_message_log_message, find_message_log_replies, find_recent_message_log_command
+from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import (
     SEND_PRIORITY_EVENT_BURST,
-    SEND_PRIORITY_URGENT_REACTIVE,
     console_log,
     send_audit_log,
     send_game_command,
@@ -59,8 +58,6 @@ from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_d
 
 FISHING_REPLY_TIMEOUT_SEC = 90
 FISHING_FAST_REPLY_TIMEOUT_SEC = 14
-FISHING_STATUS_REPLY_TIMEOUT_SEC = 5
-FISHING_ACTION_REPLY_TIMEOUT_SEC = 20
 FISHING_SETUP_REPLY_TIMEOUT_SEC = 20
 FISHING_ACTION_DELAY_MIN_SEC = 5
 FISHING_ACTION_DELAY_MAX_SEC = 12
@@ -96,13 +93,10 @@ FISHING_VALUABLE_KEYWORDS = (
     "真仙试锋",
 )
 FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS = fishing_behavior.FISHING_MAX_DAILY_LIMIT
-_FOLLOWUP_TASKS = {}
-_RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
 _RECENT_COMMANDS = {}
 FISHING_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 FISHING_LOG_REPLAY_LOOKAHEAD_SEC = 30
-FISHING_SEND_UNKNOWN_WAIT_SEC = 90
 FISHING_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 
 
@@ -1158,14 +1152,33 @@ def _fishing_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
-def _is_miniapp_rod_text_followup_blocked(command):
+def _is_deprecated_automated_rod_command(command):
     raw = str(command or "").strip()
-    if not raw.startswith((CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_CANCEL)):
+    return raw.startswith((
+        CMD_FISHING_STATUS,
+        CMD_FISHING_PROBE,
+        CMD_FISHING_LIFT,
+        CMD_FISHING_CANCEL,
+    ))
+
+
+def _discard_deprecated_rod_automation(now, command=""):
+    pending = str(command or state.get("fishing_pending_action") or "").strip()
+    if not _is_deprecated_automated_rod_command(pending):
         return False
-    phase = str(state.get("fishing_phase") or "").strip()
-    last_result = str(state.get("fishing_last_result") or "")
-    last_error = str(state.get("fishing_last_error") or "")
-    return phase == "miniapp" or "MiniApp" in last_result or "MiniApp" in last_error
+    last_result = str(state.get("fishing_last_result") or "").strip()
+    status_msg_id = _parse_int(state.get("fishing_status_msg_id", 0))
+    updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
+    updates.update({
+        "fishing_started_at": 0,
+        "fishing_status_msg_id": status_msg_id,
+        "fishing_last_result": last_result or "旧文本竿内自动链已清理，等待公共 MiniApp",
+        "fishing_last_error": "",
+        "next_fishing_time": _miniapp_failure_backoff(now),
+    })
+    _apply_updates(updates)
+    mark_dirty()
+    return True
 
 
 async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_id=0):
@@ -1187,8 +1200,6 @@ async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_i
         "next_fishing_time": _miniapp_failure_backoff(now),
     })
     _apply_updates(updates)
-    _cancel_fishing_followup(get_current_identity_id())
-    _cancel_fishing_recovery(get_current_identity_id())
     save_state()
     await send_audit_log(
         "🎣 灵溪垂钓 MiniApp 入口未接管，已停止本竿文本后续；等待下一轮入口，不回退 .钓鱼状态/.提竿。",
@@ -1232,8 +1243,6 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
         return True
     async with lock:
         max_rounds = _remaining_miniapp_chain_rounds(now)
-        _cancel_fishing_followup(identity_id)
-        _cancel_fishing_recovery(identity_id)
         state["fishing_phase"] = "miniapp"
         state["fishing_reply_to_msg_id"] = 0
         state["fishing_reply_due_at"] = 0
@@ -1271,49 +1280,26 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
 
 def _priority_for_fishing_command(command):
     raw = str(command or "").strip()
-    if raw.startswith(CMD_FISHING_STATUS):
-        return SEND_PRIORITY_URGENT_REACTIVE
-    if raw.startswith((CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_CANCEL, CMD_FISHING_OPEN, CMD_FISHING_BASKET)):
+    if raw.startswith((CMD_FISHING_OPEN, CMD_FISHING_BASKET)):
         return SEND_PRIORITY_EVENT_BURST
     return None
 
 
 def _reply_timeout_for_fishing_command(command):
     raw = str(command or "").strip()
-    if raw.startswith((CMD_FISHING_STATUS, CMD_FISHING_PROBE)):
-        return FISHING_STATUS_REPLY_TIMEOUT_SEC
     if raw.startswith(CMD_FISHING):
         return FISHING_FAST_REPLY_TIMEOUT_SEC
-    if raw.startswith((CMD_FISHING_LIFT, CMD_FISHING_CANCEL)):
-        return FISHING_ACTION_REPLY_TIMEOUT_SEC
     if raw.startswith((CMD_FISHING_BUY_BAIT, CMD_FISHING_CHUM)):
         return FISHING_SETUP_REPLY_TIMEOUT_SEC
     return FISHING_REPLY_TIMEOUT_SEC
 
 
-def _fishing_followup_key(send_as_id):
+def _fishing_identity_key(send_as_id):
     return int(send_as_id or 0)
 
 
-def _cancel_fishing_followup(send_as_id):
-    task = _FOLLOWUP_TASKS.pop(_fishing_followup_key(send_as_id), None)
-    if task and not task.done():
-        task.cancel()
-
-
-def _cancel_fishing_recovery(send_as_id):
-    task = _RECOVERY_TASKS.pop(_fishing_followup_key(send_as_id), None)
-    if task and not task.done():
-        task.cancel()
-
-
-def _has_fishing_followup(send_as_id):
-    task = _FOLLOWUP_TASKS.get(_fishing_followup_key(send_as_id))
-    return bool(task and not task.done())
-
-
 def _fishing_send_lock(send_as_id):
-    key = _fishing_followup_key(send_as_id)
+    key = _fishing_identity_key(send_as_id)
     lock = _SEND_LOCKS.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -1322,7 +1308,7 @@ def _fishing_send_lock(send_as_id):
 
 
 def _recent_fishing_command_blocks(command, now):
-    recent = _RECENT_COMMANDS.get(_fishing_followup_key(get_current_identity_id())) or {}
+    recent = _RECENT_COMMANDS.get(_fishing_identity_key(get_current_identity_id())) or {}
     if str(recent.get("command") or "").strip() != str(command or "").strip():
         return False
     sent_at = float(recent.get("sent_at") or 0)
@@ -1330,7 +1316,7 @@ def _recent_fishing_command_blocks(command, now):
 
 
 def _remember_fishing_command(command, sent_at, msg_id):
-    _RECENT_COMMANDS[_fishing_followup_key(get_current_identity_id())] = {
+    _RECENT_COMMANDS[_fishing_identity_key(get_current_identity_id())] = {
         "command": str(command or "").strip(),
         "sent_at": float(sent_at or time.time()),
         "msg_id": int(msg_id or 0),
@@ -1345,7 +1331,7 @@ def _is_fishing_reply_log_entry(entry):
 
 
 def _fishing_command_for_msg(command_msg_id, now):
-    recent = _RECENT_COMMANDS.get(_fishing_followup_key(get_current_identity_id())) or {}
+    recent = _RECENT_COMMANDS.get(_fishing_identity_key(get_current_identity_id())) or {}
     if int(recent.get("msg_id") or 0) == int(command_msg_id or 0):
         command = str(recent.get("command") or "").strip()
         if command:
@@ -1390,109 +1376,6 @@ async def _recover_fishing_pending_from_message_log(now):
     return ""
 
 
-def _recent_logged_fishing_command(now):
-    send_as_id = int(get_current_identity_id() or 0)
-    wait_until = float(state.get("fishing_reply_due_at", 0) or 0)
-    start_ts = wait_until - FISHING_SEND_UNKNOWN_WAIT_SEC - 30 if wait_until > 0 else 0
-    return find_recent_message_log_command(
-        now,
-        sender_id=send_as_id,
-        start_ts=max(0.0, start_ts),
-        lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
-        lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
-        command_predicate=lambda entry: fishing_behavior.command_phase(str((entry or {}).get("text") or "").strip()) != "idle",
-    )
-
-
-def _schedule_fishing_followup(send_as_id, command, due_at):
-    command = str(command or "").strip()
-    if not command:
-        return False
-    send_as_id = int(send_as_id or get_current_identity_id() or 0)
-    due_at = float(due_at or 0)
-    if send_as_id <= 0 or due_at <= 0:
-        return False
-    key = _fishing_followup_key(send_as_id)
-    _cancel_fishing_followup(send_as_id)
-    task = asyncio.create_task(_run_fishing_followup(send_as_id, command, due_at))
-    _FOLLOWUP_TASKS[key] = task
-
-    def _done(done_task):
-        if _FOLLOWUP_TASKS.get(key) is done_task:
-            _FOLLOWUP_TASKS.pop(key, None)
-        try:
-            exc = done_task.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is not None:
-            console_log(f"⚠️ 灵溪垂钓短链任务异常：{str(exc)[:120]}", scope="identity", limit=180)
-
-    task.add_done_callback(_done)
-    return True
-
-
-def _schedule_fishing_recovery(send_as_id, msg_id, due_at):
-    send_as_id = int(send_as_id or get_current_identity_id() or 0)
-    msg_id = int(msg_id or 0)
-    due_at = float(due_at or 0)
-    if send_as_id <= 0 or msg_id <= 0 or due_at <= 0:
-        return False
-    key = _fishing_followup_key(send_as_id)
-    _cancel_fishing_recovery(send_as_id)
-    task = asyncio.create_task(_run_fishing_recovery(send_as_id, msg_id, due_at))
-    _RECOVERY_TASKS[key] = task
-
-    def _done(done_task):
-        if _RECOVERY_TASKS.get(key) is done_task:
-            _RECOVERY_TASKS.pop(key, None)
-        try:
-            exc = done_task.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is not None:
-            console_log(f"⚠️ 灵溪垂钓恢复任务异常：{str(exc)[:120]}", scope="identity", limit=180)
-
-    task.add_done_callback(_done)
-    return True
-
-
-async def _run_fishing_followup(send_as_id, command, due_at):
-    wait_sec = max(0.0, float(due_at or 0) - time.time())
-    if wait_sec > 0:
-        await asyncio.sleep(wait_sec)
-    with use_identity(send_as_id):
-        if not state.get("fishing_enabled"):
-            return
-        if _cave_public_fishing_is_authoritative(send_as_id):
-            _hold_legacy_fishing_for_miniapp(time.time())
-            return
-        if str(state.get("fishing_pending_action") or "").strip() != command:
-            return
-        if _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0 and float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
-            return
-        if _defer_new_fishing_for_capacity(time.time(), command):
-            return
-        await _send_fishing_command(command, time.time())
-
-
-async def _run_fishing_recovery(send_as_id, msg_id, due_at):
-    wait_sec = max(0.0, float(due_at or 0) - time.time())
-    if wait_sec > 0:
-        await asyncio.sleep(wait_sec)
-    with use_identity(send_as_id):
-        if not state.get("fishing_enabled"):
-            return
-        if _cave_public_fishing_is_authoritative(send_as_id):
-            _hold_legacy_fishing_for_miniapp(time.time())
-            return
-        if _parse_int(state.get("fishing_reply_to_msg_id", 0)) != int(msg_id or 0):
-            return
-        if float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
-            return
-        await run_fishing_scheduler(time.time())
-
-
 def is_fishing_reply_text(text):
     return fishing_behavior.is_fishing_reply_text(text)
 
@@ -1506,8 +1389,6 @@ def _active_chum_plan_kwargs():
 
 
 def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=True):
-    _cancel_fishing_followup(get_current_identity_id())
-    _cancel_fishing_recovery(get_current_identity_id())
     last_error = state.get("fishing_last_error") if keep_last_error else ""
     config_values = {}
     if keep_config:
@@ -1601,28 +1482,6 @@ def get_fishing_status_text():
 async def _emit_effect_audits(effect, *, limit=180):
     for message in effect.audit_messages or ():
         await send_audit_log(message, scope="identity", limit=limit)
-
-
-async def _run_immediate_fishing_commands(commands):
-    ran = False
-    for command in commands or ():
-        command = str(command or "").strip()
-        if not command:
-            continue
-        await _send_fishing_command(command, time.time())
-        ran = True
-    return ran
-
-
-def _maybe_schedule_pending_fishing_action():
-    if _cave_public_fishing_is_authoritative():
-        _hold_legacy_fishing_for_miniapp(time.time())
-        return False
-    command = str(state.get("fishing_pending_action") or "").strip()
-    due_at = float(state.get("next_fishing_time", 0) or 0)
-    if not command or due_at <= 0:
-        return False
-    return _schedule_fishing_followup(get_current_identity_id(), command, due_at)
 
 
 async def _run_pending_fishing_transfer(now):
@@ -1744,7 +1603,6 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
             result_msg_id=int(result_msg_id or _parse_int(getattr(reply_to, "id", 0)) or 0),
         ):
             save_state()
-        _cancel_fishing_followup(get_current_identity_id())
         await _emit_effect_audits(effect)
         return True
 
@@ -1786,13 +1644,8 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
     _apply_effect(effect)
     if _queue_fishing_valuable_drop_reminders(raw_text, now, result_msg_id=result_msg_id):
         save_state()
-    _cancel_fishing_followup(get_current_identity_id())
-    _cancel_fishing_recovery(get_current_identity_id())
+    _discard_deprecated_rod_automation(now)
     await _emit_effect_audits(effect)
-    if effect.immediate_commands:
-        await _run_immediate_fishing_commands(effect.immediate_commands)
-    else:
-        _maybe_schedule_pending_fishing_action()
     return True
 
 
@@ -1811,20 +1664,12 @@ async def _send_fishing_command_locked(command, now):
         _hold_legacy_fishing_for_miniapp(now)
         return False
     phase = fishing_behavior.command_phase(command)
-    if _is_miniapp_rod_text_followup_blocked(command):
-        updates = fishing_behavior.clear_pending_updates()
-        updates.update({
-            "fishing_started_at": 0,
-            "fishing_last_result": "MiniApp 钓鱼本竿：文本提竿后续已停止",
-            "fishing_last_error": f"MiniApp 本竿文本后续已拦截：{command}",
-            "next_fishing_time": _miniapp_failure_backoff(now),
-        })
-        _apply_updates(updates)
+    if _is_deprecated_automated_rod_command(command):
+        _discard_deprecated_rod_automation(now, command)
         save_state()
-        await send_audit_log(
-            f"🎣 灵溪垂钓 MiniApp 本竿文本后续已拦截：{command}；旧钓鱼配置/鱼篓/买饵/打窝/开鱼仍保留。",
+        console_log(
+            f"🎣 灵溪垂钓已丢弃过期文本自动动作：{command}；主动钓鱼只走公共 MiniApp。",
             scope="identity",
-            priority="low",
             limit=220,
         )
         return False
@@ -1883,8 +1728,6 @@ async def _send_fishing_command_locked(command, now):
         reply_timeout_sec=_reply_timeout_for_fishing_command(command),
     )
     _apply_effect(effect)
-    if int(state.get("fishing_reply_to_msg_id", 0) or 0) == msg_id and float(state.get("fishing_reply_due_at", 0) or 0) > 0:
-        _schedule_fishing_recovery(get_current_identity_id(), msg_id, state.get("fishing_reply_due_at", 0))
     console_log(
         f"🎣 灵溪垂钓已发送：{command}，等待回复→{fmt_abs_ts(state['fishing_reply_due_at'])}",
         scope="identity",
@@ -1929,16 +1772,13 @@ async def run_fishing_scheduler(now):
     if effect.command:
         if _defer_new_fishing_for_capacity(now, effect.command):
             return
-        if _priority_for_fishing_command(effect.command) and _has_fishing_followup(get_current_identity_id()):
-            return
         _apply_effect(effect, persist=False)
-        if str(effect.command or "").strip():
-            _cancel_fishing_followup(get_current_identity_id())
         await _send_fishing_command(effect.command, now)
         return
 
     _apply_effect(effect)
-    _maybe_schedule_pending_fishing_action()
+    if _discard_deprecated_rod_automation(now):
+        save_state()
     await _emit_effect_audits(effect, limit=220)
 
 

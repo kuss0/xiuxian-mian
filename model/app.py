@@ -133,7 +133,7 @@ from .features.stargazer import (
     run_stargazer_scheduler,
 )
 from .features.storage_bag import handle_storage_bag_reply, handle_storage_bag_transfer_reply, is_storage_transfer_waiting_reply, run_storage_bag_transfer_scheduler
-from .features.tower import handle_tower_reply, run_tower_scheduler
+from .features.tower import run_tower_scheduler
 from .features.explore_rift import handle_explore_rift_reply, run_explore_rift_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
@@ -2927,7 +2927,6 @@ async def _handle_routed_reply_event(
             handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_tower_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any

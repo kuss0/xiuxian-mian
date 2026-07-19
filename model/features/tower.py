@@ -1,335 +1,285 @@
+"""琉璃问心塔 scheduler.
+
+The tower moved to the dwelling MiniApp.  This module intentionally keeps the
+old identity switch, daily window, and completion timer, but has no text-command
+send or reply-retry path.  A run is one serialized public-entry HTTP workflow.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import math
-import random
 import time
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
-from ..config import CMD_TOWER, RETRY_MAX_SEC
-from ..message_log_recovery import find_message_log_replies
+from ..miniapp_state import get_miniapp_state_snapshot
 from ..persistence import mark_dirty, save_state
-from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_game_group_id, get_module_window_hours, get_pending_command, state
+from ..runtime import console_log, send_audit_log
+from ..state import (
+    get_current_identity_id,
+    format_window_text,
+    get_miniapp_auto_config,
+    get_module_window_hours,
+    state,
+    use_identity,
+)
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
+from .cave_treasure_runtime import run_cave_public_tower
 
 
-TOWER_DONE_HINTS = ("已经闯过", "已闯塔", "已在塔中", "你今日已挑战失败，道心受挫。")
-TOWER_REPLY_TIMEOUT_SEC = 120
-TOWER_REPLAY_DELAY_MIN_SEC = 2
-TOWER_REPLAY_DELAY_MAX_SEC = 5
-TOWER_RETRY_LIMIT = 1
-TOWER_DUPLICATE_SEND_GUARD_SEC = TOWER_REPLY_TIMEOUT_SEC
-TOWER_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
-TOWER_LOG_REPLAY_LOOKAHEAD_SEC = 30
+TOWER_MINIAPP_RUN_LEASE_SEC = 30 * 60
+TOWER_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
+TOWER_MINIAPP_MAX_FAILURE_BACKOFF_SEC = 4 * 60 * 60
+TOWER_MINIAPP_ENTRY_RETRY_SEC = 60 * 60
+TOWER_MINIAPP_MIN_GAP_SEC = 5
+TOWER_MINIAPP_UPSTREAM_CIRCUIT_SEC = 10 * 60
+
+_TOWER_TASKS = {}
+_TOWER_RUN_LOCK = None
+_TOWER_LAST_RUN_AT = 0.0
+_TOWER_UPSTREAM_CIRCUIT_UNTIL = 0.0
+_TOWER_PREFERRED_ENTRY_INDEX = 0
 
 
-def _read_tower_timestamp(field_name):
-    raw_value = state.get(field_name, 0)
-    if raw_value is None or raw_value == "":
+def _tower_run_lock():
+    global _TOWER_RUN_LOCK
+    if _TOWER_RUN_LOCK is None:
+        _TOWER_RUN_LOCK = asyncio.Lock()
+    return _TOWER_RUN_LOCK
+
+
+def _read_timestamp(field_name):
+    raw = state.get(field_name, 0)
+    if raw in (None, ""):
         return 0.0, False
     try:
-        value = float(raw_value)
-    except (TypeError, ValueError):
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
         return 0.0, True
     if not math.isfinite(value):
         return 0.0, True
     return value, False
 
 
-def _schedule_tower_next_day(now):
+def _is_tower_window_time(ts):
+    start_hour_utc, end_hour_utc = get_module_window_hours("闯塔")
+    current = datetime.fromtimestamp(float(ts), timezone.utc)
+    start = current.replace(hour=start_hour_utc, minute=0, second=0, microsecond=0)
+    end = current.replace(hour=end_hour_utc, minute=0, second=0, microsecond=0)
+    return start <= current < end
+
+
+def _configured_entry_urls():
+    config = get_miniapp_auto_config()
+    values = config.get("cave_public_entry_urls") or config.get("cave_public_entry_url") or ()
+    if isinstance(values, str):
+        values = [values]
+    result = []
+    for value in values or ():
+        value = str(value or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _is_upstream_failure(message):
+    text = str(message or "").casefold()
+    return any(item in text for item in (
+        "http 5", "server_error", "timeout", "connection reset", "connection refused",
+        "cannot connect", "remote disconnected", "上游", "会话初始化失败",
+    ))
+
+
+def _is_entry_health_failure(message):
+    text = str(message or "")
+    return _is_upstream_failure(text) or any(item in text for item in (
+        "入口 URL 无效", "身份读取失败", "入口未返回", "动态入口获取失败", "未开放琉璃问心塔",
+    ))
+
+
+def _ordered_entry_urls(urls):
+    if not urls:
+        return []
+    index = max(0, min(len(urls) - 1, int(_TOWER_PREFERRED_ENTRY_INDEX or 0)))
+    return urls[index:] + urls[:index]
+
+
+def _schedule_next_day(now):
     return schedule_next_tower_after_completion(now, persist=False)
 
 
-def _is_tower_window_time(ts):
-    start_hour_utc, end_hour_utc = get_module_window_hours("闯塔")
-    utc_time = datetime.fromtimestamp(float(ts), timezone.utc)
-    day_start = utc_time.replace(hour=start_hour_utc, minute=0, second=0, microsecond=0)
-    day_end = utc_time.replace(hour=end_hour_utc, minute=0, second=0, microsecond=0)
-    return day_start <= utc_time < day_end
-
-
-def _is_tower_reply(reply_to, matched_family=None):
-    if matched_family == "tower":
-        return True
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    return CMD_TOWER in orig_cmd
-
-
-def _is_tower_reply_log_entry(entry):
-    raw_text = str((entry or {}).get("text") or "").strip()
-    if not raw_text:
-        return False
-    return "琉璃问心塔" in raw_text or "试炼古塔" in raw_text or any(keyword in raw_text for keyword in TOWER_DONE_HINTS)
-
-
-async def _recover_tower_pending_from_message_log(now):
-    msg_id = int(state.get("last_tower_msg_id", 0) or 0)
-    if msg_id <= 0:
-        return False
-    replies = find_message_log_replies(
-        msg_id,
-        now,
-        lookback_sec=TOWER_LOG_REPLAY_LOOKBACK_SEC,
-        lookahead_sec=TOWER_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
-        predicate=_is_tower_reply_log_entry,
-    )
-    if not replies:
-        return False
-    reply_to = SimpleNamespace(id=msg_id, raw_text=CMD_TOWER)
-    handled_any = False
-    for entry in replies:
-        handled = await handle_tower_reply(
-            entry.get("text") or "",
-            float(entry.get("ts_epoch") or now),
-            reply_to,
-            matched_family="tower",
-        )
-        handled_any = handled_any or handled
-    if handled_any:
-        console_log(f"🗼 闯塔日志补偿：已采纳超时回包，消息ID={msg_id}", scope="identity", limit=180)
-    return handled_any
-
-
-def _has_tower_pending():
-    pending_tasks = state.get("pending_tasks", {})
-    last_msg_id = int(state.get("last_tower_msg_id", 0) or 0)
-    if last_msg_id > 0 and last_msg_id in pending_tasks:
-        return True
-    for pending in pending_tasks.values():
-        if get_pending_command(pending) == CMD_TOWER:
-            return True
-    return False
-
-
-def _clear_tower_waiting():
+def _clear_legacy_waiting():
     state["last_tower_msg_id"] = 0
     state["tower_reply_due_at"] = 0
 
 
-def _mark_tower_command_attempt(now):
-    attempted_at = float(now or time.time())
-    state["last_tower_command_sent_at"] = attempted_at
-    state["tower_reply_due_at"] = attempted_at + TOWER_REPLY_TIMEOUT_SEC
-    state["next_tower_time"] = state["tower_reply_due_at"]
-
-
-def _mark_tower_sent_waiting(msg_id, sent_at=None):
-    msg_id = int(msg_id or 0)
-    if msg_id <= 0:
-        return
-    sent_at = float(sent_at if sent_at is not None else time.time())
-    due_at = sent_at + TOWER_REPLY_TIMEOUT_SEC
-    state["last_tower_command_sent_at"] = sent_at
-    state["last_tower_msg_id"] = msg_id
-    state["tower_reply_due_at"] = due_at
-    state["next_tower_time"] = due_at
-
-
-def _mark_tower_done_today(now):
-    day_key = get_day_key(now)
-    next_tower_time = float(state.get("next_tower_time", 0) or 0)
-    already_done = state.get("last_tower_day") == day_key
-    state["last_tower_day"] = day_key
-    _clear_tower_waiting()
+def _mark_done_today(now):
+    state["last_tower_day"] = get_day_key(now)
     state["tower_retry_count"] = 0
-    if already_done and next_tower_time > now and get_day_key(next_tower_time) != day_key:
-        next_ts = next_tower_time
-    else:
-        next_ts = _schedule_tower_next_day(now)
+    _clear_legacy_waiting()
+    next_ts = _schedule_next_day(now)
     save_state()
     return next_ts
 
 
+def _set_failure_retry(now, *, entry_missing=False):
+    retry_count = int(state.get("tower_retry_count", 0) or 0) + 1
+    state["tower_retry_count"] = retry_count
+    _clear_legacy_waiting()
+    if entry_missing:
+        delay = TOWER_MINIAPP_ENTRY_RETRY_SEC
+    else:
+        delay = min(
+            TOWER_MINIAPP_MAX_FAILURE_BACKOFF_SEC,
+            TOWER_MINIAPP_FAILURE_BACKOFF_SEC * (2 ** min(retry_count - 1, 3)),
+        )
+    state["next_tower_time"] = float(now) + delay
+    save_state()
+    return state["next_tower_time"]
 
-def _normalize_tower_schedule(now):
-    day_key = get_day_key(now)
-    next_tower_time, next_tower_time_dirty = _read_tower_timestamp("next_tower_time")
-    reply_due_at, reply_due_at_dirty = _read_tower_timestamp("tower_reply_due_at")
-    if next_tower_time_dirty or reply_due_at_dirty:
-        return 0.0, True
-    if _has_tower_pending():
-        return next_tower_time, True
 
-    last_msg_id = int(state.get("last_tower_msg_id", 0) or 0)
-    retry_count = int(state.get("tower_retry_count", 0) or 0)
-    if last_msg_id > 0 or reply_due_at > 0:
-        if str(state.get("last_tower_day") or "") == day_key:
-            _clear_tower_waiting()
-            state["tower_retry_count"] = 0
-            if next_tower_time <= 0 or get_day_key(next_tower_time) == day_key:
-                next_tower_time = _schedule_tower_next_day(now)
-            mark_dirty()
-            return next_tower_time, True
-        if reply_due_at > 0 and now < reply_due_at:
-            return reply_due_at, True
-        _clear_tower_waiting()
-        if retry_count < TOWER_RETRY_LIMIT:
-            state["tower_retry_count"] = retry_count + 1
-            state["next_tower_time"] = now + random.uniform(TOWER_REPLAY_DELAY_MIN_SEC, TOWER_REPLAY_DELAY_MAX_SEC)
-            mark_dirty()
-            return float(state.get("next_tower_time", 0) or 0), True
-        state["tower_retry_count"] = 0
-        _schedule_tower_next_day(now)
-        mark_dirty()
-        return float(state.get("next_tower_time", 0) or 0), True
-
-    last_sent_at = float(state.get("last_tower_command_sent_at", 0) or 0)
-    if last_sent_at > 0 and get_day_key(last_sent_at) == day_key and state.get("last_tower_day") != day_key:
-        duplicate_guard_until = last_sent_at + TOWER_DUPLICATE_SEND_GUARD_SEC
-        if now < duplicate_guard_until:
-            state["tower_reply_due_at"] = duplicate_guard_until
-            state["next_tower_time"] = duplicate_guard_until
-            mark_dirty()
-            return duplicate_guard_until, True
-        if retry_count < TOWER_RETRY_LIMIT and next_tower_time <= now:
-            state["tower_retry_count"] = retry_count + 1
-            state["next_tower_time"] = now + random.uniform(TOWER_REPLAY_DELAY_MIN_SEC, TOWER_REPLAY_DELAY_MAX_SEC)
-            mark_dirty()
-            return float(state.get("next_tower_time", 0) or 0), True
-
-    if state["last_tower_day"] == day_key:
-        if next_tower_time <= 0 or get_day_key(next_tower_time) == day_key:
-            next_tower_time = _schedule_tower_next_day(now)
-            save_state()
-        return next_tower_time, True
-
-    if next_tower_time <= 0:
-        state["last_tower_day"] = ""
-        _clear_tower_waiting()
-        state["tower_retry_count"] = 0
-        schedule_next_tower(now, persist=False)
-        mark_dirty()
-        return float(state.get("next_tower_time", 0) or 0), True
-
-    if retry_count > 0:
-        if get_day_key(next_tower_time) == day_key and now <= next_tower_time + TOWER_REPLY_TIMEOUT_SEC:
-            return next_tower_time, now < next_tower_time
-        state["tower_retry_count"] = 0
-        _clear_tower_waiting()
-        _schedule_tower_next_day(now)
-        mark_dirty()
-        return float(state.get("next_tower_time", 0) or 0), True
-
-    if not _is_tower_window_time(next_tower_time):
-        state["last_tower_day"] = ""
-        _clear_tower_waiting()
-        state["tower_retry_count"] = 0
-        schedule_next_tower(now, persist=False)
-        mark_dirty()
-        return float(state.get("next_tower_time", 0) or 0), True
-
-    if now >= next_tower_time and not _is_tower_window_time(now):
-        schedule_next_tower(now, persist=False)
-        mark_dirty()
-        return float(state.get("next_tower_time", 0) or 0), True
-
-    return next_tower_time, False
-
+def _latest_tower_record():
+    snapshot = get_miniapp_state_snapshot(game_key="tower")
+    rows = snapshot.get("rows") or []
+    current_identity = int(get_current_identity_id() or 0)
+    for row in rows:
+        if current_identity and int(row.get("identity_id", 0) or 0) == current_identity:
+            return row.get("state") or {}
+    return rows[-1].get("state") if rows else {}
 
 
 def get_tower_status_text():
     today_key = get_day_key()
+    latest = _latest_tower_record()
     lines = [
-        "🗼 闯塔",
-        f"- 今日是否已完成：{'是' if state['last_tower_day'] == today_key else '否'}",
-        f"- 下次执行：{fmt_abs_ts(state['next_tower_time'])}（{fmt_remaining(state['next_tower_time'])}）",
+        "🗼 闯塔 MiniApp",
+        f"- 今日是否已完成：{'是' if state.get('last_tower_day') == today_key else '否'}",
+        f"- 下次执行：{fmt_abs_ts(state.get('next_tower_time', 0))}（{fmt_remaining(state.get('next_tower_time', 0))}）",
         f"- 执行窗口：{format_window_text('闯塔')}",
-        f"- 上次执行日：{state['last_tower_day'] or '未记录'}",
-        f"- 上次发送：{fmt_abs_ts(state.get('last_tower_command_sent_at', 0))}（{fmt_remaining(state.get('last_tower_command_sent_at', 0))}）",
-        f"- 回复等待：{fmt_abs_ts(state.get('tower_reply_due_at', 0))}（{fmt_remaining(state.get('tower_reply_due_at', 0))}）",
-        f"- 补发次数：{int(state.get('tower_retry_count', 0) or 0)}/{TOWER_RETRY_LIMIT}",
+        f"- 上次 MiniApp 启动：{fmt_abs_ts(state.get('last_tower_command_sent_at', 0))}",
+        f"- 最近阶段：{latest.get('phase') or '未运行'}｜通过 {latest.get('cleared_count', 0)} 层",
+        f"- 最近收益：修为 +{(latest.get('gains') or {}).get('修为', 0)}｜塔印 +{(latest.get('gains') or {}).get('塔印', 0)}",
+        "- 自动链：公共洞府入口 → pagoda start → challenge（不自动重铸）",
     ]
     return "\n".join(lines)
 
 
-async def handle_tower_reply(text, now, reply_to, matched_family=None):
-    if not state["tower_enabled"]:
+def _normalize_tower_schedule(now):
+    next_ts, next_dirty = _read_timestamp("next_tower_time")
+    lease_ts, lease_dirty = _read_timestamp("tower_reply_due_at")
+    if next_dirty or lease_dirty:
+        return next_ts, True
+    if state.get("last_tower_day") == get_day_key(now):
+        if next_ts <= now or get_day_key(next_ts) == get_day_key(now):
+            return _schedule_next_day(now), True
+        return next_ts, True
+    if next_ts <= 0:
+        schedule_next_tower(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_tower_time", 0) or 0), True
+    if lease_ts > now:
+        return lease_ts, True
+    if not _is_tower_window_time(next_ts):
+        schedule_next_tower(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_tower_time", 0) or 0), True
+    if now >= next_ts and not _is_tower_window_time(now):
+        schedule_next_tower(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_tower_time", 0) or 0), True
+    return next_ts, False
+
+
+async def _run_tower_worker(identity_id, urls, *, scheduled_at):
+    global _TOWER_LAST_RUN_AT, _TOWER_UPSTREAM_CIRCUIT_UNTIL, _TOWER_PREFERRED_ENTRY_INDEX
+    try:
+        async with _tower_run_lock():
+            now = time.time()
+            if now < _TOWER_UPSTREAM_CIRCUIT_UNTIL:
+                with use_identity(identity_id):
+                    _set_failure_retry(now)
+                return
+            gap = now - _TOWER_LAST_RUN_AT
+            if gap < TOWER_MINIAPP_MIN_GAP_SEC:
+                await asyncio.sleep(TOWER_MINIAPP_MIN_GAP_SEC - gap)
+            ordered = _ordered_entry_urls(urls)
+            result = {"ok": False, "message": "无公共入口", "extra": {}}
+            for offset, url in enumerate(ordered[:3]):
+                result = await run_cave_public_tower(identity_id, url, now=time.time())
+                if result.get("ok") or not _is_entry_health_failure(result.get("message")):
+                    if result.get("ok"):
+                        _TOWER_PREFERRED_ENTRY_INDEX = (int(_TOWER_PREFERRED_ENTRY_INDEX or 0) + offset) % max(1, len(urls))
+                    break
+                if _is_upstream_failure(result.get("message")):
+                    _TOWER_UPSTREAM_CIRCUIT_UNTIL = time.time() + TOWER_MINIAPP_UPSTREAM_CIRCUIT_SEC
+                    break
+            _TOWER_LAST_RUN_AT = time.time()
+        with use_identity(identity_id):
+            if result.get("ok"):
+                next_ts = _mark_done_today(time.time())
+                console_log(f"🗼 闯塔 MiniApp 完成，下一次→{fmt_abs_ts(next_ts)}", scope="identity", limit=220)
+            else:
+                entry_missing = "公共入口" in str(result.get("message") or "")
+                next_ts = _set_failure_retry(time.time(), entry_missing=entry_missing)
+                await send_audit_log(
+                    f"⚠️ 闯塔 MiniApp 未完成：{str(result.get('message') or 'unknown')[:180]}，延后至 {fmt_abs_ts(next_ts)}",
+                    scope="identity",
+                    send_as_id=identity_id,
+                    priority="normal",
+                    limit=240,
+                )
+    except Exception as exc:
+        with use_identity(identity_id):
+            next_ts = _set_failure_retry(time.time())
+        console_log(f"⚠️ 闯塔 MiniApp 后台异常：{type(exc).__name__}: {exc}，延后至 {fmt_abs_ts(next_ts)}", scope="identity", limit=240)
+
+
+def _launch_tower_worker(identity_id, urls, *, scheduled_at):
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0 or identity_id in _TOWER_TASKS:
         return False
+    task = asyncio.create_task(_run_tower_worker(identity_id, list(urls), scheduled_at=scheduled_at))
+    _TOWER_TASKS[identity_id] = task
 
-    if not _is_tower_reply(reply_to, matched_family=matched_family):
-        return False
+    def _done(done_task):
+        _TOWER_TASKS.pop(identity_id, None)
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            console_log(f"⚠️ 闯塔 MiniApp 任务异常：{type(exc).__name__}: {exc}", scope="identity", limit=220)
 
-    next_ts = state["next_tower_time"]
-    if next_ts <= now:
-        next_ts = schedule_next_tower(now)
-
-    if reply_to:
-        state["last_tower_msg_id"] = int(reply_to.id or 0)
-
-    is_success_text = "【琉璃问心塔】" in text or "【试炼古塔" in text
-    is_done_text = any(keyword in text for keyword in TOWER_DONE_HINTS)
-    if is_success_text or is_done_text:
-        already_done = state.get("last_tower_day") == get_day_key(now)
-        clear_pending_tasks_by_commands({CMD_TOWER})
-        next_ts = _mark_tower_done_today(now)
-        if not already_done:
-            label = "闯塔成功" if is_success_text else "今日已完成"
-            await send_audit_log(f"🗼 {label}→{fmt_abs_ts(next_ts)}")
-        return True
-
-    mark_dirty()
-    console_log(f"🗼 收到闯塔回复→{fmt_abs_ts(next_ts)}")
+    task.add_done_callback(_done)
     return True
 
 
 async def run_tower_scheduler(now):
-    if not state["tower_enabled"]:
+    """Queue one serialized MiniApp run when the legacy tower window is due."""
+    if not state.get("tower_enabled"):
         return
-
-    last_msg_id = int(state.get("last_tower_msg_id", 0) or 0)
-    reply_due_at = float(state.get("tower_reply_due_at", 0) or 0)
-    if last_msg_id > 0 and reply_due_at > 0 and now >= reply_due_at:
-        if await _recover_tower_pending_from_message_log(now):
-            save_state()
-            return
-
-    next_tower_time, should_return = _normalize_tower_schedule(now)
-    if should_return:
+    next_ts, should_return = _normalize_tower_schedule(float(now or time.time()))
+    if should_return or float(now or time.time()) < next_ts:
         return
-
-    if now >= next_tower_time:
-        send_priority = "retry" if int(state.get("tower_retry_count", 0) or 0) > 0 else None
-        _mark_tower_command_attempt(now)
-        save_state()
-        msg = await send_game_command(CMD_TOWER, track=False, max_retry=0, priority=send_priority, source_module="闯塔")
-        if not msg:
-            failed_at = time.time()
-            send_block = classify_game_send_block(command=CMD_TOWER)
-            if send_block.get("status") == "unsent":
-                state["last_tower_command_sent_at"] = 0
-                state["tower_reply_due_at"] = 0
-                state["next_tower_time"] = failed_at + RETRY_MAX_SEC
-                save_state()
-                console_log(
-                    f"🗼 闯塔未发送：{send_block.get('code') or 'runtime_block'}，延后至 {fmt_abs_ts(state['next_tower_time'])}"
-                )
-                return
-            if send_block.get("status") == "unknown":
-                state["last_tower_msg_id"] = 0
-                state["tower_reply_due_at"] = max(
-                    float(state.get("tower_reply_due_at", 0) or 0),
-                    failed_at + TOWER_REPLY_TIMEOUT_SEC,
-                )
-                state["next_tower_time"] = state["tower_reply_due_at"]
-                save_state()
-                await send_audit_log(
-                    f"⚠️ 闯塔发送状态未知，等待被动回复至 {fmt_abs_ts(state['tower_reply_due_at'])}。"
-                )
-                return
-            state["last_tower_command_sent_at"] = 0
-            state["tower_reply_due_at"] = 0
-            state["next_tower_time"] = failed_at + RETRY_MAX_SEC
-            save_state()
-            await send_audit_log("❌ 闯塔发送失败，稍后重试。")
-            return
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        _mark_tower_sent_waiting(msg.id, sent_at=sent_at)
-        save_state()
-        console_log(f"🗼 执行闯塔，等待回复→{fmt_abs_ts(state['next_tower_time'])}")
+    identity_id = int(get_current_identity_id() or 0)
+    urls = _configured_entry_urls()
+    if not urls:
+        next_retry = _set_failure_retry(float(now or time.time()), entry_missing=True)
+        console_log(f"⚠️ 闯塔 MiniApp 缺少洞府公共入口，延后至 {fmt_abs_ts(next_retry)}", scope="identity", limit=220)
+        return
+    if time.time() < _TOWER_UPSTREAM_CIRCUIT_UNTIL:
+        state["next_tower_time"] = _TOWER_UPSTREAM_CIRCUIT_UNTIL
+        state["tower_reply_due_at"] = _TOWER_UPSTREAM_CIRCUIT_UNTIL
+        mark_dirty()
+        return
+    lease_at = time.time() + TOWER_MINIAPP_RUN_LEASE_SEC
+    state["last_tower_command_sent_at"] = time.time()
+    state["tower_reply_due_at"] = lease_at
+    state["next_tower_time"] = lease_at
+    save_state()
+    if not _launch_tower_worker(identity_id, urls, scheduled_at=float(now or time.time())):
+        return
+    console_log("🗼 闯塔 MiniApp 已排队：洞府公共入口，等待串行执行", scope="identity", limit=220)
 
 
-__all__ = [
-    "get_tower_status_text",
-    "handle_tower_reply",
-    "run_tower_scheduler",
-]
+__all__ = ["get_tower_status_text", "run_tower_scheduler"]

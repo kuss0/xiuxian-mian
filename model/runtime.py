@@ -4608,6 +4608,14 @@ async def run_retry_scheduler(now, send_as_id=None):
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                 continue
+            if cmd == CMD_TOWER:
+                # The tower is a dwelling MiniApp workflow now.  Old persisted
+                # pending rows must be retired, never replayed into the group.
+                with use_identity(identity_id) as identity_state:
+                    if msg_id in identity_state["pending_tasks"]:
+                        identity_state["pending_tasks"].pop(msg_id, None)
+                        mark_dirty()
+                continue
             send_time = float((item or {}).get("sent_at", 0) or 0)
             threshold = float((item or {}).get("timeout", 0) or 0)
             retry = int((item or {}).get("retry", 0) or 0)
