@@ -475,6 +475,7 @@ def clear_wild_training_state(*, persist=False, keep_last_error=False):
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_completed_at"] = 0
     state["wild_training_last_error"] = last_error or ""
+    state["wild_training_tianxing_prepare_retry_at"] = 0
     if persist:
         save_state()
     else:

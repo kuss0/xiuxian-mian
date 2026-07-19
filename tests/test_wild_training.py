@@ -94,6 +94,16 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(send_mock.await_args.kwargs["op_id"].startswith("wild-training-panel-calibration-"))
 
+    def test_clear_state_removes_tianxing_prepare_retry(self):
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_tianxing_prepare_retry_at"] = 1_700_000_900.0
+
+        with state_module.use_identity(send_as_id), patch.object(wild_training, "mark_dirty"):
+            wild_training.clear_wild_training_state(persist=False, keep_last_error=True)
+
+        self.assertEqual(0, state_module.state["wild_training_tianxing_prepare_retry_at"])
+
     async def test_start_notice_keeps_pending_for_final_edit(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_000.0
