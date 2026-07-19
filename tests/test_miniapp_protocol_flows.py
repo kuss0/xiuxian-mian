@@ -103,6 +103,20 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                         "title": "钓鱼 / 天机试炼 / 赛事",
                         "buttonText": "看外府",
                         "commands": [".钓鱼", ".天机试炼", ".诸天杯"],
+                    }, {
+                        "key": "sect_tasks",
+                        "title": "宗门任务 / 外交 / 俸禄",
+                        "status": "pending",
+                        "buttonText": "待迁移",
+                        "note": "点卯已迁入天机阁；任务提交与外交仍待迁移。",
+                        "commands": [".宗门任务", ".提交任务", ".宗门外交"],
+                    }, {
+                        "key": "sect_target_magic",
+                        "title": "夺舍 / 咒术 / 双修邀约",
+                        "status": "group_only",
+                        "buttonText": "群内保留",
+                        "note": "暂不从天机阁输入框直通。",
+                        "commands": [".夺舍", ".下咒"],
                     }],
                 },
                 "externalApps": {
@@ -196,7 +210,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertTrue(parsed["small_world"]["can_manifest"])
         self.assertEqual("whitelist_only", parsed["command_center"]["security"]["mode"])
         self.assertFalse(parsed["command_center"]["security"]["direct_raw_command"])
-        self.assertEqual(2, parsed["command_center"]["entry_count"])
+        self.assertEqual(4, parsed["command_center"]["entry_count"])
         self.assertEqual(["formation_self"], [item["key"] for item in parsed["command_center"]["tianjige_entries"]])
         self.assertEqual(".布阵", parsed["command_center"]["tianjige_entries"][0]["commands"][1])
         self.assertEqual(["farm", "trial"], [app["start_kind"] for app in parsed["external_apps"]])

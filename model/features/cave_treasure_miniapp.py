@@ -650,9 +650,8 @@ def _parse_command_center(account):
     tianjige_entries = [
         entry
         for entry in entries
-        if "天机阁" in (entry.get("button_text") or "")
-        or "天机阁" in (entry.get("note") or "")
-        or entry.get("target_tab") == "command"
+        if entry.get("target_tab") == "command"
+        or (entry.get("button_text") or "").strip() == "到天机阁"
     ]
     return {
         "entry_count": len(entries),
