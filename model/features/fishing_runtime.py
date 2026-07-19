@@ -38,6 +38,7 @@ from ..state import (
     get_identity_display_name,
     get_identity_ids,
     get_identity_state,
+    get_miniapp_auto_config,
     is_cave_public_auto_enabled,
     is_cave_public_identity_available,
     get_send_as_profile,
@@ -118,6 +119,40 @@ def _parse_int(value, default=0):
 
 def _state_snapshot():
     return dict(state.items())
+
+
+def _cave_public_fishing_is_authoritative(send_as_id=None):
+    try:
+        identity_id = int(send_as_id or get_current_identity_id() or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if identity_id <= 0:
+        return False
+    config = get_miniapp_auto_config()
+    urls = config.get("cave_public_entry_urls") or config.get("cave_public_entry_url") or []
+    if isinstance(urls, str):
+        has_entry = bool(urls.strip())
+    else:
+        has_entry = any(str(value or "").strip() for value in urls)
+    selected_ids = {
+        int(value)
+        for value in (config.get("cave_public_fishing_identity_ids") or ())
+        if str(value or "").strip().lstrip("-").isdigit()
+    }
+    return bool(has_entry and identity_id in selected_ids)
+
+
+def _hold_legacy_fishing_for_miniapp(now):
+    updates = fishing_behavior.clear_pending_updates()
+    updates.update({
+        "fishing_phase": "idle",
+        "fishing_started_at": 0,
+        "fishing_last_result": "公共 MiniApp 为主动钓鱼唯一出口",
+        "fishing_last_error": "公共 MiniApp 未运行或上游熔断，旧文本钓鱼已禁止回退",
+        "next_fishing_time": float(now + FISHING_MINIAPP_FAILURE_BACKOFF_SEC),
+    })
+    _apply_updates(updates)
+    mark_dirty()
 
 
 def _format_count_map(counts):
@@ -1429,6 +1464,9 @@ async def _run_fishing_followup(send_as_id, command, due_at):
     with use_identity(send_as_id):
         if not state.get("fishing_enabled"):
             return
+        if _cave_public_fishing_is_authoritative(send_as_id):
+            _hold_legacy_fishing_for_miniapp(time.time())
+            return
         if str(state.get("fishing_pending_action") or "").strip() != command:
             return
         if _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0 and float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
@@ -1444,6 +1482,9 @@ async def _run_fishing_recovery(send_as_id, msg_id, due_at):
         await asyncio.sleep(wait_sec)
     with use_identity(send_as_id):
         if not state.get("fishing_enabled"):
+            return
+        if _cave_public_fishing_is_authoritative(send_as_id):
+            _hold_legacy_fishing_for_miniapp(time.time())
             return
         if _parse_int(state.get("fishing_reply_to_msg_id", 0)) != int(msg_id or 0):
             return
@@ -1574,6 +1615,9 @@ async def _run_immediate_fishing_commands(commands):
 
 
 def _maybe_schedule_pending_fishing_action():
+    if _cave_public_fishing_is_authoritative():
+        _hold_legacy_fishing_for_miniapp(time.time())
+        return False
     command = str(state.get("fishing_pending_action") or "").strip()
     due_at = float(state.get("next_fishing_time", 0) or 0)
     if not command or due_at <= 0:
@@ -1763,6 +1807,9 @@ async def _send_fishing_command(command, now):
 
 
 async def _send_fishing_command_locked(command, now):
+    if _cave_public_fishing_is_authoritative():
+        _hold_legacy_fishing_for_miniapp(now)
+        return False
     phase = fishing_behavior.command_phase(command)
     if _is_miniapp_rod_text_followup_blocked(command):
         updates = fishing_behavior.clear_pending_updates()
@@ -1856,7 +1903,9 @@ async def run_fishing_scheduler(now):
     if await _run_pending_fishing_transfer(now):
         return
 
-    if is_cave_public_auto_enabled("fishing", get_current_identity_id()):
+    if _cave_public_fishing_is_authoritative(get_current_identity_id()):
+        if not is_cave_public_auto_enabled("fishing", get_current_identity_id()):
+            _hold_legacy_fishing_for_miniapp(now)
         return
 
     reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))

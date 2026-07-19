@@ -117,6 +117,54 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
             self.assertEqual("fishing", state_module.state["fishing_phase"])
 
+    async def test_selected_public_miniapp_identity_never_falls_back_to_text_scheduler(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"],
+            "cave_public_fishing_enabled": False,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_reply_to_msg_id"] = 22027
+            state_module.state["fishing_reply_due_at"] = now - 1
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+            state_module.state["next_fishing_time"] = now - 1
+            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock:
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual("", state_module.state["fishing_pending_action"])
+            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+            self.assertIn("禁止回退", state_module.state["fishing_last_error"])
+
+    async def test_selected_public_miniapp_identity_cancels_queued_text_followup(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"],
+            "cave_public_fishing_enabled": True,
+            "cave_public_fishing_identity_ids": [identity_id],
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now
+            with (
+                patch.object(fishing_runtime.time, "time", return_value=now),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await fishing_runtime._run_fishing_followup(identity_id, ".提竿", now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual("", state_module.state["fishing_pending_action"])
+            self.assertIn("唯一出口", state_module.state["fishing_last_result"])
+
     async def test_scheduler_defers_new_fishing_when_miniapp_capacity_full(self):
         identity_id = self._prepare_identity()
         other_id = self._prepare_identity(10001)
