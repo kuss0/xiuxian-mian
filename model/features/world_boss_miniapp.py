@@ -44,6 +44,8 @@ WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
 WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1020
 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1160
 WORLD_BOSS_RELEASE_LEAD_MS = 120
+WORLD_BOSS_RTT_SAMPLE_COUNT = 6
+WORLD_BOSS_FINAL_WINDOW_MARGIN_MS = 80
 WORLD_BOSS_DEFAULT_HIT_MS = 560
 WORLD_BOSS_JOIN_WINDOW_SEC = 60.0
 WORLD_BOSS_JOIN_READY_LEAD_SEC = 3.0
@@ -535,11 +537,8 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
                 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS,
             ))
         perfect_ms = max(0, _int_value(window.get("perfectMs"), 150))
-        # The page holds a persistent connection; the HTTP automation still
-        # pays a small dispatch/transport delay before the server evaluates the
-        # hit. Submit slightly before the visual center and keep release timing
-        # deterministic. Hold duration remains randomized inside the accepted
-        # high-damage band.
+        # The HTTP request is emitted on release, so use a small initial lead
+        # and let the battle loop refine it from observed round-trip latency.
         release_lead_ms = min(WORLD_BOSS_RELEASE_LEAD_MS, max(0, perfect_ms - 30))
         elapsed_ms = max(0, center_ms - release_lead_ms)
         plan.append({
@@ -551,6 +550,7 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
             "perfectMs": perfect_ms,
             "hitMs": hit_ms,
             "chargeStartMs": max(0, elapsed_ms - hold_ms),
+            "releaseLeadMs": release_lead_ms,
             "stance": WORLD_BOSS_STANCE,
         })
     plan.sort(key=lambda item: (item["elapsedMs"], item["windowId"]))
@@ -568,6 +568,30 @@ def filter_world_boss_action_plan(plan, current_elapsed_ms, *, grace_ms=0):
         for action in plan or ()
         if _int_value((action or {}).get("elapsedMs"), -1) - cutoff_ms >= WORLD_BOSS_PERFECT_HOLD_MIN_MS
     ]
+
+
+def _adaptive_world_boss_release_lead_ms(action, recent_rtt_ms, *, final_window=False):
+    action = dict(action or {})
+    base_lead_ms = max(0, _int_value(action.get("releaseLeadMs"), WORLD_BOSS_RELEASE_LEAD_MS))
+    samples = [
+        max(0.0, _float_value(value, 0.0))
+        for value in list(recent_rtt_ms or ())[-WORLD_BOSS_RTT_SAMPLE_COUNT:]
+        if _float_value(value, 0.0) > 0
+    ]
+    if not samples:
+        return base_lead_ms
+    latency_lead_ms = int(round(max(samples) / 2.0))
+    if final_window:
+        max_lead_ms = max(
+            base_lead_ms,
+            _int_value(action.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS) - WORLD_BOSS_FINAL_WINDOW_MARGIN_MS,
+        )
+    else:
+        max_lead_ms = max(
+            base_lead_ms,
+            _int_value(action.get("perfectMs"), 150) - 30,
+        )
+    return max(base_lead_ms, min(max_lead_ms, latency_lead_ms))
 
 
 def _nested_mappings(data):
@@ -890,7 +914,23 @@ def _world_boss_finish_business_summary(data, *, hit_summary=None):
         "action_limit": hit_summary.get("action_limit"),
         "actions_remaining": hit_summary.get("actions_remaining"),
         "actions_used": hit_summary.get("actions_used"),
+        "planned_window_count": max(0, _int_value(hit_summary.get("planned_window_count"), 0)),
+        "rejected_window_count": max(0, _int_value(hit_summary.get("rejected_window_count"), 0)),
     })
+    authoritative_counts = [
+        _int_value(summary.get(key), 0)
+        for key in ("realtime_hit_count", "hits")
+        if summary.get(key) is not None
+    ]
+    completed_window_count = max(authoritative_counts) if authoritative_counts else max(
+        0,
+        _int_value(summary.get("attempted_hit_count"), 0),
+    )
+    summary["completed_window_count"] = completed_window_count
+    planned_window_count = _int_value(summary.get("planned_window_count"), 0)
+    summary["full_window_run"] = bool(
+        planned_window_count > 0 and completed_window_count >= planned_window_count
+    )
     return summary
 
 
@@ -1346,6 +1386,8 @@ def run_world_boss_joined_battle_lab_flow(
         "accepted_hit_count": 0,
         "accepted_perfect_count": 0,
         "accepted_damage_yi": 0.0,
+        "planned_window_count": len(full_plan),
+        "rejected_window_count": 0,
         "action_limit": None,
         "actions_remaining": None,
         "actions_used": None,
@@ -1387,9 +1429,19 @@ def run_world_boss_joined_battle_lab_flow(
                 break
 
     process_missed_windows(initial_elapsed_ms)
-    for action in plan:
+    recent_hit_rtt_ms = [round_trip_ms] if single_battle_protocol and round_trip_ms > 0 else []
+    for action_index, action in enumerate(plan):
         if dead:
             break
+        action = dict(action)
+        release_lead_ms = _adaptive_world_boss_release_lead_ms(
+            action,
+            recent_hit_rtt_ms,
+            final_window=action_index == len(plan) - 1,
+        )
+        action["elapsedMs"] = max(0, _int_value(action.get("centerMs")) - release_lead_ms)
+        action["chargeStartMs"] = max(0, action["elapsedMs"] - _int_value(action.get("holdMs")))
+        action["releaseLeadMs"] = release_lead_ms
         current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
         process_missed_windows(current_elapsed_ms)
         if dead:
@@ -1430,6 +1482,7 @@ def run_world_boss_joined_battle_lab_flow(
             "wait_before_charge_ms": wait_before_charge_ms,
             "hold_ms": hold_ms,
             "release_elapsed_ms": release_elapsed_ms,
+            "release_lead_ms": release_lead_ms,
         })
         hit_request = build_world_boss_miniapp_request(
             "hit",
@@ -1441,6 +1494,7 @@ def run_world_boss_joined_battle_lab_flow(
             hold_ms=executed_action["holdMs"],
             adapter=adapter,
         )
+        hit_started_at = float(clock())
         hit_result = execute_miniapp_http_request(
             hit_request,
             transport,
@@ -1450,6 +1504,9 @@ def run_world_boss_joined_battle_lab_flow(
             capture_source=capture_source,
             step_key="hit",
         )
+        hit_round_trip_ms = max(0.0, (float(clock()) - hit_started_at) * 1000.0)
+        if hit_round_trip_ms > 0:
+            recent_hit_rtt_ms.append(hit_round_trip_ms)
         _append_http_event(events, "hit", hit_result)
         if not hit_result.ok:
             status = classify_world_boss_miniapp_error(hit_result.error)
@@ -1467,6 +1524,7 @@ def run_world_boss_joined_battle_lab_flow(
                 # never retry it; record the page-equivalent miss and keep
                 # the rest of the timeline eligible for one final finish.
                 processed_window_ids.add(action["windowId"])
+                server_hit_summary["rejected_window_count"] += 1
                 client_stats["combo"] = 0
                 player_hp = max(0, player_hp - _world_boss_counter_damage(challenge))
                 events.append({

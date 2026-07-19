@@ -235,6 +235,10 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual("settled", result["status"])
         self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
         self.assertTrue(any(event["step"] == "server_rejected_window" for event in result["events"]))
+        summary = result["data"]["result"]
+        self.assertEqual(2, summary["planned_window_count"])
+        self.assertEqual(1, summary["rejected_window_count"])
+        self.assertFalse(summary["full_window_run"])
 
     def test_strict_error_classification(self):
         for error_type in world_boss_miniapp.WORLD_BOSS_ERROR_TYPES:
@@ -421,6 +425,53 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(2, proof["clientStats"]["dodges"])
         self.assertEqual(2, proof["clientStats"]["bestCombo"])
         self.assertGreaterEqual(proof["durationMs"], 3000 + 560 + 2200)
+
+    def test_slow_hit_responses_do_not_shift_later_release_centers(self):
+        calls = []
+        hit_elapsed_ms = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "challenge": {
+                        "challengeId": "challenge-slow-hit",
+                        "windows": [
+                            {"id": "w1", "centerMs": 1500, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w2", "centerMs": 7200, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w3", "centerMs": 12900, "hitMs": 620, "perfectMs": 210},
+                        ],
+                    },
+                }
+            if endpoint == "hit":
+                hit_elapsed_ms.append(request["payload"]["elapsedMs"])
+                clock.sleep(1.3)
+                return 200, {"ok": True, "hit": {"perfect": True, "damageYi": 100}}
+            if endpoint == "finish":
+                return 200, {
+                    "ok": True,
+                    "result": {"score": 100, "hits": 3, "perfects": 3, "realtime_hit_count": 3},
+                }
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_SLOW_HIT",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        for actual, expected in zip(hit_elapsed_ms, (1380, 7020, 12360)):
+            self.assertAlmostEqual(expected, actual, delta=1)
+        self.assertEqual(3, result["data"]["result"]["completed_window_count"])
+        self.assertTrue(result["data"]["result"]["full_window_run"])
 
     def test_joined_battle_polls_until_room_is_locked(self):
         calls = []
@@ -1014,6 +1065,8 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(["start", "hit", "hit", "finish"], calls)
         self.assertEqual(2, result["data"]["result"]["accepted_hit_count"])
         self.assertEqual(300, result["data"]["result"]["accepted_damage_yi"])
+        self.assertEqual(3, result["data"]["result"]["planned_window_count"])
+        self.assertFalse(result["data"]["result"]["full_window_run"])
         serialized = json.dumps(captures.records, ensure_ascii=False)
         self.assertIn('"attempt_consumed": true', serialized)
         self.assertIn('"realtime_damage_yi": 300.0', serialized)
@@ -1061,6 +1114,46 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual("settled_zero_contribution", result["status"])
         self.assertEqual(1, result["data"]["result"]["accepted_hit_count"])
+
+    def test_finish_hit_count_overrides_successful_http_attempt_count(self):
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle"},
+                    "challenge": {
+                        "challengeId": "challenge-authoritative-hits",
+                        "windows": [
+                            {"id": "w1", "centerMs": 1500},
+                            {"id": "w2", "centerMs": 7200},
+                        ],
+                    },
+                }
+            if endpoint == "hit":
+                return 200, {"ok": True, "hit": {"perfect": True, "damageYi": 100}}
+            if endpoint == "finish":
+                return 200, {
+                    "ok": True,
+                    "result": {"score": 100, "hits": 1, "perfects": 1, "realtime_hit_count": 1},
+                }
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_AUTHORITATIVE_HITS",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        summary = result["data"]["result"]
+        self.assertEqual(2, summary["attempted_hit_count"])
+        self.assertEqual(1, summary["completed_window_count"])
+        self.assertFalse(summary["full_window_run"])
 
 
 if __name__ == "__main__":
