@@ -168,6 +168,22 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
             }
             self.assertEqual("深入", wild_training._effective_wild_training_strategy(now))
 
+    def test_no_cooldown_followup_cannot_reuse_consumed_tianxing_prediction(self):
+        now = 1_700_000_000.0
+        self._enable(now=now, strategy="谨慎", tianxing=True)
+        with state_module.use_identity(991201) as identity_state:
+            identity_state["tianxing_observation"] = {
+                "current_prediction": "探索",
+                "current_prediction_until": now + 8 * 3600,
+                "current_prediction_set_at": now - 30,
+                "prediction_consumed_route": "探索",
+                "prediction_consumed_at": now - 10,
+                "current_change": "探索",
+                "current_change_until": now + 6 * 3600,
+            }
+            self.assertFalse(wild_training._has_active_tianxing_explore_prediction(now))
+            self.assertTrue(wild_training._has_active_tianxing_explore_change(now))
+
     async def test_tianxing_result_is_consumed_from_miniapp_raw_message(self):
         now = 1_700_000_000.0
         self._enable(now=now, tianxing=True)

@@ -54,6 +54,7 @@ CAVE_SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
 CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
 CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
 CAVE_YUANYING_STATUS_RECHECK_SEC = 30 * 60
+WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC = 60
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
@@ -1297,8 +1298,8 @@ def _wild_training_post_action_next_time(wild, action_result, *, now):
     if daily_count < 0:
         daily_count = _parse_int(action_result.get("dailyCount"), 0)
     daily_remaining = _parse_int(wild.get("daily_remaining"), max(0, daily_limit - daily_count))
-    if daily_limit > 0 and daily_remaining > 0:
-        return float(now) + (24 * 3600 / daily_limit)
+    if daily_remaining > 0 and bool(wild.get("available", True)):
+        return float(now) + WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC
     return float(now) + 30 * 60
 
 

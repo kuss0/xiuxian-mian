@@ -124,7 +124,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         inventory = state_module.get_inventory_delta_records()
         self.assertTrue(any((row.get("items") or {}).get("养魂木") == 1 for row in inventory.values()))
 
-    def test_wild_training_derives_twelve_hour_cadence_from_two_daily_runs(self):
+    def test_wild_training_requeues_when_server_reports_no_cooldown(self):
         now = 1_700_000_000.0
         next_time = cave_treasure_runtime._wild_training_post_action_next_time(
             {
@@ -138,7 +138,25 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             {"dailyCount": 1, "dailyLimit": 2},
             now=now,
         )
-        self.assertEqual(now + 12 * 3600, next_time)
+        self.assertEqual(now + cave_treasure_runtime.WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC, next_time)
+
+    def test_wild_training_waits_for_reset_after_daily_runs_are_exhausted(self):
+        now = 1_700_000_000.0
+        reset_at = now + 8 * 3600
+        next_time = cave_treasure_runtime._wild_training_post_action_next_time(
+            {
+                "available": False,
+                "daily_count": 2,
+                "daily_limit": 2,
+                "daily_remaining": 0,
+                "remaining_seconds": 0,
+                "ready_at": 0,
+                "reset_at": reset_at * 1000,
+            },
+            {"dailyCount": 2, "dailyLimit": 2},
+            now=now,
+        )
+        self.assertEqual(reset_at, next_time)
 
     async def test_public_wild_training_rejects_action_response_for_wrong_identity(self):
         now = 1_700_000_000.0
