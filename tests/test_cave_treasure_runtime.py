@@ -43,6 +43,85 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
 
+    async def test_public_wild_training_executes_once_and_returns_server_cooldown(self):
+        now = 1_700_000_000.0
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["wild_training_enabled"] = True
+        session = {
+            "ok": True,
+            "init_data": "query_id=abc&hash=SECRET",
+            "player_id": 1001,
+            "result": {
+                "data": {
+                    "overview": {
+                        "journey": {
+                            "wild_experience": {
+                                "available": True,
+                                "daily_count": 0,
+                                "daily_limit": 2,
+                                "daily_remaining": 2,
+                                "remaining_seconds": 0,
+                                "ready_at": 0,
+                                "reset_at": 1_700_086_400_000,
+                                "modes": [],
+                            },
+                        },
+                    },
+                    "raw": {},
+                },
+            },
+        }
+        action_result = {
+            "ok": True,
+            "account": {
+                "journey": {
+                    "serverTime": 1_700_000_005_000,
+                    "wildExperience": {
+                        "available": False,
+                        "dailyCount": 1,
+                        "dailyLimit": 2,
+                        "dailyRemaining": 1,
+                        "remainingSeconds": 43200,
+                        "readyAt": 1_700_043_205_000,
+                        "resetAt": 1_700_086_400_000,
+                        "modes": [],
+                    },
+                },
+            },
+            "actionResult": {
+                "ok": True,
+                "completed": True,
+                "title": "妖兽遭遇",
+                "message": "历练完成",
+                "cultivationDelta": 2860,
+                "loot": [{"name": "养魂木", "quantity": 1}],
+            },
+        }
+        flow_result = {"ok": True, "status": "acted", "data": action_result}
+
+        with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_journey_action_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock:
+            result = await cave_treasure_runtime.run_cave_public_wild_training(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                "深入",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["extra"]["acted"])
+        self.assertTrue(result["extra"]["completed"])
+        self.assertEqual(now + 43200, result["extra"]["next_time"])
+        flow_mock.assert_awaited_once()
+        self.assertEqual("wild_experience", flow_mock.await_args.kwargs["action"])
+        self.assertEqual("deep", flow_mock.await_args.kwargs["mode"])
+        miniapp_record = state_module.get_miniapp_state_records()["1001:wild_training"]
+        self.assertEqual([".野外历练"], miniapp_record["replaces_commands"])
+        inventory = state_module.get_inventory_delta_records()
+        self.assertTrue(any((row.get("items") or {}).get("养魂木") == 1 for row in inventory.values()))
+
     async def test_cave_entry_ignored_without_manual_authorization(self):
         with state_module.use_identity(1001):
             with patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock()) as flow_mock:

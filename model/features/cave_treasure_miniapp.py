@@ -40,6 +40,7 @@ CAVE_TREASURE_MINIAPP_ENDPOINTS = {
     "external": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}external",
     "command_center": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}command-center",
     "deep_seclusion": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}deep-seclusion",
+    "journey": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}journey",
     "small_world": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}small-world",
     "hunt": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt",
     "hunt_reveal": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}hunt/reveal",
@@ -70,6 +71,9 @@ CAVE_SMALL_WORLD_ACTIONS = frozenset({
     "foster_beast",
     "recall_beast",
 })
+CAVE_JOURNEY_ACTIONS = frozenset({"wild_experience", "set_encounter_mode"})
+CAVE_WILD_EXPERIENCE_MODES = frozenset({"cautious", "balanced", "deep"})
+CAVE_ENCOUNTER_MODES = frozenset({"cautious", "balanced", "plunder", "off"})
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({CMD_YUANYING, CMD_YUANYING_STATUS})
 CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial", "fishing", "pagoda"})
 
@@ -256,6 +260,47 @@ def normalize_cave_small_world_action(action):
     if normalized not in CAVE_SMALL_WORLD_ACTIONS:
         raise ValueError("洞府小世界动作不在白名单")
     return normalized
+
+
+def normalize_cave_journey_action(action):
+    normalized = re.sub(r"\s+", "_", str(action or "").strip().lower())
+    if normalized not in CAVE_JOURNEY_ACTIONS:
+        raise ValueError("洞府游历动作不在白名单")
+    return normalized
+
+
+def normalize_cave_wild_experience_mode(mode):
+    normalized = str(mode or "").strip().lower()
+    if normalized not in CAVE_WILD_EXPERIENCE_MODES:
+        raise ValueError("野外历练策略不在白名单")
+    return normalized
+
+
+def build_cave_journey_action_request(
+    action,
+    *,
+    mode,
+    token,
+    init_data_session=None,
+    init_data="",
+    adapter=None,
+):
+    normalized_action = normalize_cave_journey_action(action)
+    normalized_mode = (
+        normalize_cave_wild_experience_mode(mode)
+        if normalized_action == "wild_experience"
+        else str(mode or "").strip().lower()
+    )
+    if normalized_action == "set_encounter_mode" and normalized_mode not in CAVE_ENCOUNTER_MODES:
+        raise ValueError("天机遭遇策略不在白名单")
+    return build_cave_treasure_miniapp_request(
+        "journey",
+        token=token,
+        init_data_session=init_data_session,
+        init_data=init_data,
+        payload={"action": normalized_action, "mode": normalized_mode},
+        adapter=adapter,
+    )
 
 
 def build_cave_small_world_action_request(
@@ -676,6 +721,7 @@ def parse_cave_dwelling_overview(data):
     dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
     identity = root.get("identity") if isinstance(root.get("identity"), dict) else {}
     small_world = account.get("smallWorld") if isinstance(account.get("smallWorld"), dict) else {}
+    journey = account.get("journey") if isinstance(account.get("journey"), dict) else {}
     hunt_panel = dwelling.get("hunt") if isinstance(dwelling.get("hunt"), dict) else {}
     meditation = dwelling.get("meditation") if isinstance(dwelling.get("meditation"), dict) else {}
     deep = meditation.get("deepSeclusion") if isinstance(meditation.get("deepSeclusion"), dict) else {}
@@ -732,8 +778,44 @@ def parse_cave_dwelling_overview(data):
             "deep_seclusion_active": bool(standard.get("deepSeclusionActive")),
         },
         "small_world": _parse_cave_small_world_overview(small_world),
+        "journey": _parse_cave_journey_overview(journey),
         "external_apps": _parse_external_apps(account),
         "command_center": _parse_command_center(account),
+    }
+
+
+def _parse_cave_journey_overview(journey):
+    if not isinstance(journey, dict):
+        return {}
+    wild = journey.get("wildExperience") if isinstance(journey.get("wildExperience"), dict) else {}
+    modes = []
+    for item in wild.get("modes") or ():
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip().lower()
+        if key not in CAVE_WILD_EXPERIENCE_MODES:
+            continue
+        modes.append({
+            "key": key,
+            "label": sanitize_webapp_secret_text(item.get("label") or "", limit=20),
+            "risk": sanitize_webapp_secret_text(item.get("risk") or "", limit=20),
+            "reward": sanitize_webapp_secret_text(item.get("reward") or "", limit=40),
+            "description": sanitize_webapp_secret_text(item.get("description") or "", limit=160),
+        })
+    return {
+        "server_time": _coerce_int(journey.get("serverTime"), 0),
+        "wild_experience": {
+            "available": bool(wild.get("available")),
+            "daily_count": _coerce_int(wild.get("dailyCount"), 0),
+            "daily_limit": _coerce_int(wild.get("dailyLimit"), 0),
+            "daily_remaining": _coerce_int(wild.get("dailyRemaining"), 0),
+            "cooldown_hours": _coerce_float(wild.get("cooldownHours"), 0.0),
+            "remaining_seconds": _coerce_int(wild.get("remainingSeconds"), 0),
+            "last_at": _coerce_int(wild.get("lastAt"), 0),
+            "ready_at": _coerce_int(wild.get("readyAt"), 0),
+            "reset_at": _coerce_int(wild.get("resetAt"), 0),
+            "modes": modes,
+        },
     }
 
 
@@ -1385,6 +1467,55 @@ async def run_cave_small_world_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_cave_journey_action_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    action,
+    mode,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    init_data="",
+):
+    """Execute one whitelisted journey action without replaying an uncertain POST."""
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        request = build_cave_journey_action_request(
+            action,
+            mode=mode,
+            token=token,
+            init_data=init_data,
+            adapter=adapter,
+        )
+        result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            transport or _requests_transport,
+            backoff_sec=(),
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"journey:{normalize_cave_journey_action(action)}",
+        )
+        if not result.ok:
+            return _flow_result(False, "failed", error=result.error, data=result.data, events=[{"step": "journey", "ok": False}])
+        return _flow_result(True, "acted", data=result.data, events=[{"step": "journey", "ok": True}])
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 async def run_cave_tianjige_command_production_flow(
     identity_id,
     *,
@@ -1542,10 +1673,13 @@ __all__ = [
     "build_cave_treasure_miniapp_adapter",
     "build_cave_treasure_miniapp_flow_plan",
     "build_cave_treasure_miniapp_request",
+    "build_cave_journey_action_request",
     "choose_cave_treasure_action",
     "extract_cave_treasure_miniapp_launch",
     "normalize_cave_tianjige_command",
     "normalize_cave_external_action",
+    "normalize_cave_journey_action",
+    "normalize_cave_wild_experience_mode",
     "parse_cave_dwelling_overview",
     "parse_cave_treasure_state",
     "build_cave_small_world_action_request",
@@ -1555,6 +1689,7 @@ __all__ = [
     "run_cave_dwelling_start_production_flow",
     "run_cave_external_action_production_flow",
     "run_cave_small_world_production_flow",
+    "run_cave_journey_action_production_flow",
     "run_cave_tianjige_command_production_flow",
     "run_cave_treasure_miniapp_lab_flow",
     "run_cave_treasure_miniapp_production_flow",

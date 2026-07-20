@@ -8,6 +8,56 @@ from model.features import cave_treasure_miniapp, fishing_miniapp, stargazer_min
 
 
 class MiniAppProtocolFlowTests(unittest.TestCase):
+    def test_cave_journey_wild_experience_uses_strict_mode_and_server_state(self):
+        parsed = cave_treasure_miniapp.parse_cave_dwelling_overview({
+            "ok": True,
+            "account": {
+                "journey": {
+                    "serverTime": 1784500000000,
+                    "wildExperience": {
+                        "available": False,
+                        "dailyCount": 1,
+                        "dailyLimit": 2,
+                        "dailyRemaining": 1,
+                        "remainingSeconds": 43200,
+                        "lastAt": 1784490000000,
+                        "readyAt": 1784543200000,
+                        "resetAt": 1784563200000,
+                        "modes": [
+                            {"key": "cautious", "label": "谨慎", "risk": "低", "reward": "偏低"},
+                            {"key": "balanced", "label": "均衡", "risk": "中", "reward": "常规"},
+                            {"key": "deep", "label": "深入", "risk": "高", "reward": "较高"},
+                        ],
+                    },
+                },
+            },
+        })
+        wild = parsed["journey"]["wild_experience"]
+        self.assertFalse(wild["available"])
+        self.assertEqual(43200, wild["remaining_seconds"])
+        self.assertEqual(1784543200000, wild["ready_at"])
+        self.assertEqual({"cautious", "balanced", "deep"}, {item["key"] for item in wild["modes"]})
+
+        request = cave_treasure_miniapp.build_cave_journey_action_request(
+            "wild_experience",
+            mode="deep",
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+        self.assertEqual("journey", request["safe_summary"]["endpoint"])
+        self.assertEqual({"action", "mode"}, set(request["payload"]) - {"token", "initData"})
+        self.assertEqual("wild_experience", request["payload"]["action"])
+        self.assertEqual("deep", request["payload"]["mode"])
+        self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
+
+        with self.assertRaises(ValueError):
+            cave_treasure_miniapp.build_cave_journey_action_request(
+                "wild_experience",
+                mode="unsafe",
+                token="df_SECRET999",
+                init_data="query_id=abc",
+            )
+
     def test_cave_small_world_parses_real_nested_dashboard_and_scoped_request(self):
         parsed = cave_treasure_miniapp.parse_cave_dwelling_overview({
             "ok": True,

@@ -245,7 +245,6 @@ from .app_replica import (
     format_log_group_replica_panel,
 )
 from .features.wild_training import (
-    WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
     WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
     WILD_TRAINING_RETRY_MAX_SEC,
@@ -445,14 +444,6 @@ RECOVERY_TRANSIENT_SEND_FAILURE_SPECS = (
         "phase_field": "fishing_phase",
         "phase_value": "idle",
         "result_field": "fishing_last_result",
-    },
-    {
-        "error_field": "wild_training_last_error",
-        "timer_field": "next_wild_training_time",
-        "markers": ("野外历练发送失败", "野外历练补发发送失败"),
-        "clear_fields": ("wild_training_reply_to_msg_id", "wild_training_reply_due_at"),
-        "counter_fields": ("wild_training_retry_count",),
-        "result_field": "wild_training_last_result",
     },
     {
         "error_field": "pet_formation_last_error",
@@ -719,19 +710,6 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
             retry_count = 0
         if retry_count > 0 and not _state_positive_int("wild_training_reply_to_msg_id"):
             return now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
-        try:
-            last_completed_at = float(state.get("wild_training_last_completed_at", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            last_completed_at = 0
-        try:
-            last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            last_result_at = 0
-        cooldown_anchor_at = max(last_completed_at, last_result_at)
-        if cooldown_anchor_at > 0:
-            true_due = cooldown_anchor_at + WILD_TRAINING_CYCLE_MIN_SEC
-            if true_due > now:
-                return true_due
         return now + random.uniform(WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC, WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC)
 
     if timer_key == "next_tianti_climb_time" and _is_tianti_ready_to_climb_snapshot():
@@ -4454,22 +4432,10 @@ def initialize_identity_runtime(send_as_id, now=None):
             state["wild_training_reply_to_msg_id"] = 0
             state["wild_training_reply_due_at"] = 0
             state["wild_training_retry_count"] = 0
-            try:
-                last_completed_at = float(state.get("wild_training_last_completed_at", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                last_completed_at = 0
-            try:
-                last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                last_result_at = 0
-            cooldown_anchor_at = max(last_completed_at, last_result_at)
-            if cooldown_anchor_at > 0 and cooldown_anchor_at + WILD_TRAINING_CYCLE_MIN_SEC > now:
-                state["next_wild_training_time"] = cooldown_anchor_at + WILD_TRAINING_CYCLE_MIN_SEC
-            else:
-                state["next_wild_training_time"] = now + random.uniform(
-                    WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
-                    WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
-                )
+            state["next_wild_training_time"] = now + random.uniform(
+                WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
+                WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
+            )
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:

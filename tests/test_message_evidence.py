@@ -317,7 +317,7 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual(1, snapshot["total"])
         self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
 
-    def test_routed_wild_training_reply_is_not_applied_again_by_passive_inbox(self):
+    def test_archived_command_wild_training_reply_is_ignored_by_passive_inbox(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)
         identity_id = 3907536807
         text = "\n".join([
@@ -378,13 +378,13 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
                     event_type="edit",
                 ))
 
-            self.assertTrue(handled)
+            self.assertFalse(handled)
             with state_module.use_identity(identity_id):
-                self.assertEqual("修为+4486 ｜ 奖励:二级妖丹x1", state_module.state["wild_training_last_result"])
-                self.assertGreater(state_module.state["next_wild_training_time"], 1_783_060_400.0)
+                self.assertEqual("旧结果", state_module.state["wild_training_last_result"])
+                self.assertEqual(0, state_module.state["next_wild_training_time"])
             snapshot = passive_inbox.get_passive_inbox_snapshot()
-            self.assertEqual(1, snapshot["changed"])
-            self.assertEqual(1, snapshot["modules"]["wild_training"])
+            self.assertEqual(0, snapshot["changed"])
+            self.assertEqual(0, snapshot["modules"].get("wild_training", 0))
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)

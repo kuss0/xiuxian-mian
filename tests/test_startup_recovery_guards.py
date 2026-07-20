@@ -165,7 +165,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 1, state_module.state["next_wild_training_time"])
 
-    def test_startup_spread_recovers_wild_training_from_recent_real_result(self):
+    def test_startup_spread_schedules_miniapp_probe_after_recent_result(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
         result_at = now - 30 * 60
@@ -181,9 +181,9 @@ class StartupRecoveryGuardTests(unittest.TestCase):
 
         self.assertEqual(1, changed)
         with state_module.use_identity(send_as_id):
-            self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+            self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
 
-    def test_startup_spread_recovers_wild_training_from_completed_anchor_after_status_overwrite(self):
+    def test_startup_spread_ignores_legacy_completed_anchor(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
         result_at = now - 30 * 60
@@ -200,7 +200,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
 
         self.assertEqual(1, changed)
         with state_module.use_identity(send_as_id):
-            self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+            self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
 
     def test_startup_spread_keeps_due_wild_training_retry_short(self):
         now = 1_700_000_000.0
@@ -515,41 +515,23 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(now + 600, state_module.state["next_small_world_time"])
             self.assertIn("遗留等待已恢复清理", state_module.state["small_world_last_error"])
 
-    def test_action_guard_keeps_live_reply_wait_but_allows_after_module_timeout(self):
+    def test_startup_clears_legacy_wild_training_pending_for_miniapp(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
-        command = wild_training.get_wild_training_command("谨慎")
         with state_module.use_identity(send_as_id):
             self._disable_modules()
             state_module.state["wild_training_enabled"] = True
             state_module.state["wild_training_reply_to_msg_id"] = 123
             state_module.state["wild_training_reply_due_at"] = now + 300
-            state_module.state["action_guard_sessions"] = {
-                "wild_training": {
-                    "action_key": "wild_training",
-                    "attempt": 1,
-                    "last_sent_at": now - 180,
-                    "first_sent_at": now - 180,
-                    "next_allowed_at": now - 1,
-                    "last_msg_id": 123,
-                    "last_command": command,
-                }
-            }
+            state_module.state["next_wild_training_time"] = 0
 
-        allowed, reason = action_guard.before_send(command, send_as_id=send_as_id, now=now)
+        with patch.object(control.random, "uniform", return_value=300):
+            control.initialize_identity_runtime(send_as_id, now)
 
-        self.assertFalse(allowed)
-        self.assertIn("等待游戏回复", reason)
         with state_module.use_identity(send_as_id):
-            self.assertIn("wild_training", state_module.state["action_guard_sessions"])
-            state_module.state["wild_training_reply_due_at"] = now - 1
-
-        allowed, reason = action_guard.before_send(command, send_as_id=send_as_id, now=now)
-
-        self.assertTrue(allowed, reason)
-        with state_module.use_identity(send_as_id):
-            session = state_module.state["action_guard_sessions"].get("wild_training") or {}
-            self.assertEqual(0, int(session.get("attempt", 0) or 0))
+            self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+            self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
 
     def test_action_guard_reconciles_hehuan_pending_deadline_for_retry(self):
         now = 1_700_000_000.0

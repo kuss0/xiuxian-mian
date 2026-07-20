@@ -16,10 +16,12 @@ from . import deep_retreat, fishing_behavior, stargazer, tree_runtime, yuanying
 from .cave_treasure_miniapp import (
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
+    parse_cave_dwelling_overview,
     request_cave_treasure_miniapp_init_data,
     run_cave_deep_seclusion_action_production_flow,
     run_cave_dwelling_start_production_flow,
     run_cave_external_action_production_flow,
+    run_cave_journey_action_production_flow,
     run_cave_small_world_production_flow,
     run_cave_tianjige_command_production_flow,
     run_cave_treasure_miniapp_production_flow,
@@ -1252,6 +1254,217 @@ def _tower_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+_WILD_TRAINING_MODE_MAP = {
+    "谨慎": "cautious",
+    "均衡": "balanced",
+    "深入": "deep",
+}
+
+
+def _server_epoch_seconds(value):
+    try:
+        timestamp = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000.0
+    return max(0.0, timestamp)
+
+
+def _wild_training_server_next_time(wild, *, now):
+    wild = wild if isinstance(wild, dict) else {}
+    remaining = max(0, _parse_int(wild.get("remaining_seconds"), 0))
+    if remaining > 0:
+        return float(now) + remaining
+    ready_at = _server_epoch_seconds(wild.get("ready_at"))
+    if ready_at > float(now):
+        return ready_at
+    if _parse_int(wild.get("daily_remaining"), 0) <= 0:
+        reset_at = _server_epoch_seconds(wild.get("reset_at"))
+        if reset_at > float(now):
+            return reset_at
+    return 0.0
+
+
+def _wild_training_action_summary(action_result):
+    action_result = action_result if isinstance(action_result, dict) else {}
+    title = str(action_result.get("title") or "野外历练").strip()
+    cultivation_delta = _parse_int(action_result.get("cultivationDelta"), 0)
+    rewards, gains = _collect_materials(action_result)
+    parts = []
+    if cultivation_delta:
+        parts.append(f"修为{cultivation_delta:+d}")
+    for name, amount in sorted(gains.items()):
+        if name == "修为" and cultivation_delta:
+            continue
+        if int(amount or 0):
+            parts.append(f"{name}+{int(amount)}")
+    for name, amount in sorted(rewards.items()):
+        if int(amount or 0) > 0:
+            parts.append(f"{name}x{int(amount)}")
+    if action_result.get("fateProtected"):
+        parts.append("改命脱险")
+    message = str(action_result.get("message") or action_result.get("rawMessage") or "").strip()
+    return title, "｜".join(parts) or message or "状态已更新", rewards, gains
+
+
+def _record_cave_wild_training_state(identity_id, *, strategy, mode, wild, action_result, phase, now):
+    payload = {
+        "phase": str(phase or ""),
+        "strategy": str(strategy or ""),
+        "mode": str(mode or ""),
+        "wild": dict(wild or {}),
+        "result": {
+            key: action_result.get(key)
+            for key in (
+                "ok", "completed", "type", "outcome", "title", "message", "rawMessage",
+                "cultivationDelta", "successRate", "fateProtected", "dailyCount", "dailyLimit",
+            )
+            if key in (action_result or {})
+        },
+    }
+    return record_miniapp_state(
+        identity_id,
+        "wild_training",
+        payload,
+        source="cave_dwelling_journey",
+        source_id=f"wild_training:{int(identity_id)}:{stable_payload_digest(payload)}",
+        now=now,
+        outputs=("module_snapshot", "daily_counter", "inventory_delta"),
+        replaces_commands=(".野外历练",),
+    )
+
+
+async def run_cave_public_wild_training(identity_id, public_entry_url, strategy, *, now=None):
+    """Read the authoritative journey state and execute at most one wild-training action."""
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    strategy = str(strategy or "").strip()
+    mode = _WILD_TRAINING_MODE_MAP.get(strategy, "")
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not mode:
+        return {"ok": False, "message": "野外历练策略无效", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    with use_identity(identity_id):
+        if not state.get("wild_training_enabled"):
+            return {"ok": False, "message": "野外历练模块已关闭", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_wild_training_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            return {
+                "ok": False,
+                "message": f"洞府野外历练身份读取失败：{session.get('error') or 'unknown'}",
+                "extra": {"phase": "session_failed"},
+            }
+        session_data = dict((session.get("result") or {}).get("data") or {})
+        before_overview = session_data.get("overview") if isinstance(session_data.get("overview"), dict) else {}
+        before_journey = before_overview.get("journey") if isinstance(before_overview.get("journey"), dict) else {}
+        before_wild = before_journey.get("wild_experience") if isinstance(before_journey.get("wild_experience"), dict) else {}
+        server_next_time = _wild_training_server_next_time(before_wild, now=now)
+        available = bool(before_wild.get("available"))
+        daily_remaining = _parse_int(before_wild.get("daily_remaining"), 0)
+        if not before_wild:
+            return {"ok": False, "message": "洞府游历页未返回野外历练状态", "extra": {"phase": "state_missing"}}
+        if not available or daily_remaining <= 0 or server_next_time > now:
+            next_time = server_next_time or (now + 30 * 60)
+            _record_cave_wild_training_state(
+                identity_id,
+                strategy=strategy,
+                mode=mode,
+                wild=before_wild,
+                action_result={},
+                phase="cooldown",
+                now=now,
+            )
+            return {
+                "ok": True,
+                "message": "MiniApp 野外历练尚未到期",
+                "extra": {
+                    "acted": False,
+                    "phase": "cooldown",
+                    "wild": before_wild,
+                    "next_time": next_time,
+                    "strategy": strategy,
+                    "mode": mode,
+                },
+            }
+
+        result = await run_cave_journey_action_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            action="wild_experience",
+            mode=mode,
+            init_data=session.get("init_data") or "",
+            capture_sink=_capture_store(now),
+            capture_source=f"cave_public_wild_training:{identity_id}",
+        )
+        raw = result.get("data") if isinstance(result.get("data"), dict) else {}
+        after_overview = parse_cave_dwelling_overview(raw) if raw else {}
+        after_journey = after_overview.get("journey") if isinstance(after_overview.get("journey"), dict) else {}
+        after_wild = after_journey.get("wild_experience") if isinstance(after_journey.get("wild_experience"), dict) else {}
+        if not after_wild:
+            after_wild = dict(before_wild)
+        action_result = raw.get("actionResult") if isinstance(raw.get("actionResult"), dict) else {}
+        action_error = str(action_result.get("error") or "").strip()
+        completed = bool(result.get("ok")) and bool(action_result.get("ok", True)) and action_result.get("completed") is not False
+        next_time = _wild_training_server_next_time(after_wild, now=now)
+        if next_time <= now:
+            next_time = now + 30 * 60
+        title, summary, rewards, gains = _wild_training_action_summary(action_result)
+        phase = "completed" if completed else ("action_unknown" if not result.get("ok") else "blocked")
+        _record_cave_wild_training_state(
+            identity_id,
+            strategy=strategy,
+            mode=mode,
+            wild=after_wild,
+            action_result=action_result,
+            phase=phase,
+            now=now,
+        )
+        if completed and rewards:
+            record_inventory_delta(
+                identity_id,
+                source="wild_training_miniapp",
+                source_id=f"wild_training:{identity_id}:{stable_payload_digest(action_result)}",
+                items=rewards,
+                now=now,
+                source_summary={"strategy": strategy, "title": title, "gains": gains},
+            )
+        return {
+            "ok": completed,
+            "message": f"{title}｜{summary}" if completed else (action_error or result.get("error") or summary or "野外历练未完成"),
+            "extra": {
+                "acted": True,
+                "completed": completed,
+                "phase": phase,
+                "wild": after_wild,
+                "before_wild": before_wild,
+                "action_result": action_result,
+                "next_time": next_time,
+                "strategy": strategy,
+                "mode": mode,
+                "transport_ok": bool(result.get("ok")),
+            },
+        }
+
+
 async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now=None, harvest_only=False):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -2240,6 +2453,7 @@ __all__ = [
     "run_cave_public_tower",
     "run_cave_public_treasure",
     "run_cave_public_trial",
+    "run_cave_public_wild_training",
     "run_cave_public_yuanying",
     "sync_cave_deep_seclusion_action_result",
     "sync_cave_tianjige_yuanying_result",

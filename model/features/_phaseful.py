@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CMD_WILD_TRAINING, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
@@ -397,12 +397,7 @@ def mark_launch_command_sent(spec, sent_at):
 
 def _is_summary_replayable_command(command):
     command = str(command or "").strip()
-    return command in SUMMARY_REPLAYABLE_COMMANDS or _is_wild_training_replay_command(command) or _is_duel_replay_command(command)
-
-
-def _is_wild_training_replay_command(command):
-    command = str(command or "").strip()
-    return command == CMD_WILD_TRAINING or command.startswith(f"{CMD_WILD_TRAINING} ")
+    return command in SUMMARY_REPLAYABLE_COMMANDS or _is_duel_replay_command(command)
 
 
 def _is_duel_replay_command(command):
@@ -543,21 +538,6 @@ def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
         state["duel_last_error"] = ""
         return True
 
-    if _is_wild_training_replay_command(command):
-        if not state.get("wild_training_enabled"):
-            return False
-        if int(state.get("wild_training_reply_to_msg_id", 0) or 0) != int(old_msg_id or 0):
-            return False
-        retry_count = int(state.get("wild_training_retry_count", 0) or 0)
-        if retry_count >= 1:
-            return False
-        state["wild_training_reply_to_msg_id"] = 0
-        state["wild_training_reply_due_at"] = 0
-        state["wild_training_retry_count"] = 1
-        state["next_wild_training_time"] = float(now)
-        state["wild_training_last_error"] = ""
-        return True
-
     if command == CMD_CONCUBINE_DREAM:
         from ..config import CONCUBINE_PHASE_TIMEOUT_SEC
         from .concubine import _phase as concubine_phase
@@ -617,20 +597,6 @@ def _finalize_replayed_command_state(command, msg):
             confirmed=False,
             command_msg_id=msg_id,
         )
-        return True
-
-    if _is_wild_training_replay_command(command) and msg:
-        from .wild_training import WILD_TRAINING_REPLY_TIMEOUT_SEC
-
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        msg_id = int(getattr(msg, "id", 0) or 0)
-        strategy = command[len(CMD_WILD_TRAINING):].strip() or "谨慎"
-        state["wild_training_reply_to_msg_id"] = msg_id
-        state["wild_training_reply_due_at"] = sent_at + WILD_TRAINING_REPLY_TIMEOUT_SEC
-        state["wild_training_last_msg_id"] = msg_id
-        state["wild_training_last_result"] = f"已发送：{strategy}"
-        state["wild_training_last_result_at"] = 0
-        state["wild_training_last_error"] = ""
         return True
 
     if command == CMD_CONCUBINE_DREAM and msg:

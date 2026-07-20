@@ -826,7 +826,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(identity_id, now)], seen)
 
-    async def test_due_wild_training_fast_scan_clamps_released_tianxing_route_after_short_retry(self):
+    async def test_due_wild_training_fast_scan_preserves_server_cooldown_after_release(self):
         identity_id = 991788
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(identity_id)
@@ -856,18 +856,18 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         ):
             await app._run_due_wild_training_retry_schedulers(now, limit=1)
 
-        scheduler_mock.assert_awaited_once_with(now)
-        mark_dirty_mock.assert_called_once()
-        self.assertEqual([(identity_id, now)], seen)
+        scheduler_mock.assert_not_awaited()
+        mark_dirty_mock.assert_not_called()
+        self.assertEqual([], seen)
         with state_module.use_identity(identity_id):
-            self.assertEqual(now, state_module.state["next_wild_training_time"])
-            self.assertIn("立即消费窗口", state_module.state["wild_training_last_error"])
+            self.assertEqual(now + 120, state_module.state["next_wild_training_time"])
+            self.assertIn("等待天星时间线", state_module.state["wild_training_last_error"])
 
     async def test_due_wild_training_fast_scan_does_not_clamp_released_tianxing_before_true_cd(self):
         identity_id = 991781
         now = 1_700_000_000.0
-        completed_at = now - app.WILD_TRAINING_CYCLE_MIN_SEC + 180
-        true_due_at = completed_at + app.WILD_TRAINING_CYCLE_MIN_SEC
+        completed_at = now - 3600
+        true_due_at = now + 180
         state_module.ensure_identity_registered(identity_id)
         with state_module.use_identity(identity_id):
             state_module.state["wild_training_enabled"] = True
@@ -983,7 +983,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_not_awaited()
         self.assertEqual([(identity_id, now)], seen)
 
-    async def test_due_wild_training_retry_fast_scan_clamps_stretched_retry_timer(self):
+    async def test_due_wild_training_retry_fast_scan_preserves_miniapp_backoff(self):
         identity_id = 991785
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(identity_id)
@@ -1006,10 +1006,9 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             await app._run_due_wild_training_retry_schedulers(now)
 
         scheduler_mock.assert_not_awaited()
-        mark_dirty_mock.assert_called_once()
+        mark_dirty_mock.assert_not_called()
         with state_module.use_identity(identity_id):
-            self.assertEqual(now + 120, state_module.state["next_wild_training_time"])
-            self.assertIn("短补发窗口", state_module.state["wild_training_last_error"])
+            self.assertEqual(now + 20 * 60, state_module.state["next_wild_training_time"])
 
     async def test_due_concubine_fast_scan_prioritizes_earliest_due(self):
         later_identity_id = 991830

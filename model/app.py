@@ -180,12 +180,10 @@ from .features.fishing_runtime import (
     run_fishing_scheduler,
 )
 from .features.wild_training import (
-    WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RETRY_MAX_SEC,
     WILD_TRAINING_RETRY_MIN_SEC,
     WILD_TRAINING_SEND_TIMEOUT_SEC,
     _tianxing_prepare_retry_blocks,
-    handle_wild_training_reply,
     run_wild_training_phaseful_cleanup_scheduler,
     run_wild_training_scheduler,
 )
@@ -1958,7 +1956,6 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                 continue
             if pending_msg_id > 0:
                 continue
-            retry_count = int(state.get("wild_training_retry_count", 0) or 0)
             try:
                 next_time = float(state.get("next_wild_training_time", 0) or 0)
             except (TypeError, ValueError, OverflowError):
@@ -1997,10 +1994,6 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                         ):
                             candidates.append((0, next_time, scan_index, identity_id, scheduler_now, "run"))
                             continue
-                if retry_count > 0 and next_time > scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5:
-                    state["next_wild_training_time"] = scheduler_now + WILD_TRAINING_RETRY_MIN_SEC
-                    state["wild_training_last_error"] = "野外历练补发计时器被恢复错峰拉长，已压回短补发窗口"
-                    mark_dirty()
                 continue
             priority = 1 if state.get("tianxing_enabled") else 2
             candidates.append((priority, next_time, scan_index, identity_id, scheduler_now, "run"))
@@ -2050,17 +2043,10 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
 
 
 def _wild_training_completed_cooldown_due_at():
-    anchors = []
-    for key in ("wild_training_last_completed_at", "wild_training_last_result_at"):
-        try:
-            value = float(state.get(key, 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            value = 0.0
-        if value > 0:
-            anchors.append(value)
-    if not anchors:
+    try:
+        return max(0.0, float(state.get("next_wild_training_time", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-    return max(anchors) + WILD_TRAINING_CYCLE_MIN_SEC
 
 
 async def _run_due_wild_training_candidate(identity_id, scheduler_now, action):
@@ -2924,7 +2910,6 @@ async def _handle_routed_reply_event(
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_formation_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_ranch_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any

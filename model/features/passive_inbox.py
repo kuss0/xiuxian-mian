@@ -25,7 +25,6 @@ from . import tianxing as tianxing_mod
 from . import tianti as tianti_mod
 from . import tower as tower_mod
 from . import tree as tree_mod
-from . import wild_training as wild_training_mod
 from . import yinluo as yinluo_mod
 from .passive_event_ledger import append_passive_event
 
@@ -1193,36 +1192,6 @@ def _apply_storage_bag_passive(text, now):
     return True, identity_id
 
 
-def _apply_wild_training_passive(text, now, family, *, reply_context=None, current_msg_id=0):
-    raw_text = str(text or "").strip()
-    if family != "wild_training" and not raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE):
-        return False
-    if _routed_reply_already_handled(reply_context):
-        return False
-    if has_wait_time(raw_text) and any(keyword in raw_text for keyword in wild_training_mod.WILD_TRAINING_CD_KEYWORDS):
-        wait_sec = parse_wait_time(raw_text)
-        state["next_wild_training_time"] = float(now + wait_sec + wild_training_mod.CD_BUFFER_SEC)
-        state["wild_training_reply_to_msg_id"] = 0
-        state["wild_training_reply_due_at"] = 0
-        state["wild_training_retry_count"] = 0
-        state["wild_training_last_result"] = "冷却中"
-        state["wild_training_last_error"] = ""
-        return True
-    if wild_training_mod._is_start_notice(raw_text):
-        state["wild_training_last_result"] = wild_training_mod._start_summary(raw_text)
-        state["wild_training_last_error"] = ""
-        if float(state.get("wild_training_reply_due_at", 0) or 0) <= now:
-            state["wild_training_reply_due_at"] = float(now + wild_training_mod.WILD_TRAINING_REPLY_TIMEOUT_SEC)
-        return True
-    if not wild_training_mod._is_result_notice(raw_text):
-        return False
-    msg_id = int(current_msg_id or 0) or _context_msg_id(reply_context, "reply_to_msg_id")
-    if wild_training_mod._is_duplicate_wild_training_result(raw_text, msg_id):
-        return True
-    wild_training_mod._apply_wild_training_result(raw_text, now, msg_id)
-    return True
-
-
 def _apply_tower_passive(text, now, family):
     if family != "tower":
         return False
@@ -1371,7 +1340,6 @@ def _looks_like_supported_passive(text, family):
         or tianxing_mod.looks_like_tianxing_text(raw_text)
         or yinluo_mod.looks_like_yinluo_text(raw_text)
         or concubine_mod._is_heart_anchor_lost_text(raw_text)
-        or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE)
     ):
         return True
     return False
@@ -1668,11 +1636,6 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             module_changed = _apply_tree_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append("tree")
-            changed = module_changed or changed
-        if family == "wild_training" or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE):
-            module_changed = _apply_wild_training_passive(raw_text, now, family, reply_context=reply_context, current_msg_id=observed_msg_id)
-            if module_changed:
-                changed_modules.append("wild_training")
             changed = module_changed or changed
         if family in {"checkin", "sect_teach"}:
             module_changed = _apply_checkin_passive(raw_text, now, family)
