@@ -42,12 +42,14 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             "wild_experience",
             mode="deep",
             token="df_SECRET999",
+            player_id=8659059191,
             init_data="query_id=abc&hash=VERY_SECRET",
         )
         self.assertEqual("journey", request["safe_summary"]["endpoint"])
-        self.assertEqual({"action", "mode"}, set(request["payload"]) - {"token", "initData"})
+        self.assertEqual({"action", "mode", "playerId"}, set(request["payload"]) - {"token", "initData"})
         self.assertEqual("wild_experience", request["payload"]["action"])
         self.assertEqual("deep", request["payload"]["mode"])
+        self.assertEqual(8659059191, request["payload"]["playerId"])
         self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
 
         with self.assertRaises(ValueError):

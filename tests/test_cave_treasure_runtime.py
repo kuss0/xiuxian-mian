@@ -74,6 +74,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         action_result = {
             "ok": True,
             "account": {
+                "playerId": 1001,
                 "journey": {
                     "serverTime": 1_700_000_005_000,
                     "wildExperience": {
@@ -117,10 +118,61 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         flow_mock.assert_awaited_once()
         self.assertEqual("wild_experience", flow_mock.await_args.kwargs["action"])
         self.assertEqual("deep", flow_mock.await_args.kwargs["mode"])
+        self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
         miniapp_record = state_module.get_miniapp_state_records()["1001:wild_training"]
         self.assertEqual([".野外历练"], miniapp_record["replaces_commands"])
         inventory = state_module.get_inventory_delta_records()
         self.assertTrue(any((row.get("items") or {}).get("养魂木") == 1 for row in inventory.values()))
+
+    def test_wild_training_derives_twelve_hour_cadence_from_two_daily_runs(self):
+        now = 1_700_000_000.0
+        next_time = cave_treasure_runtime._wild_training_post_action_next_time(
+            {
+                "available": True,
+                "daily_count": 1,
+                "daily_limit": 2,
+                "daily_remaining": 1,
+                "remaining_seconds": 0,
+                "ready_at": 0,
+            },
+            {"dailyCount": 1, "dailyLimit": 2},
+            now=now,
+        )
+        self.assertEqual(now + 12 * 3600, next_time)
+
+    async def test_public_wild_training_rejects_action_response_for_wrong_identity(self):
+        now = 1_700_000_000.0
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["wild_training_enabled"] = True
+        session = {
+            "ok": True,
+            "init_data": "query_id=abc",
+            "player_id": 1001,
+            "result": {"data": {"overview": {"journey": {"wild_experience": {
+                "available": True, "daily_count": 0, "daily_limit": 2,
+                "daily_remaining": 2, "remaining_seconds": 0,
+            }}}}},
+        }
+        flow_result = {"ok": True, "data": {
+            "ok": True,
+            "account": {"playerId": 9999, "journey": {"wildExperience": {
+                "available": True, "dailyCount": 1, "dailyLimit": 2,
+                "dailyRemaining": 1, "remainingSeconds": 0,
+            }}},
+            "actionResult": {"ok": True, "completed": True, "title": "妖兽遭遇"},
+        }}
+        with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_journey_action_production_flow", new=AsyncMock(return_value=flow_result)):
+            result = await cave_treasure_runtime.run_cave_public_wild_training(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                "谨慎",
+                now=now,
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("身份校验失败", result["message"])
 
     async def test_cave_entry_ignored_without_manual_authorization(self):
         with state_module.use_identity(1001):

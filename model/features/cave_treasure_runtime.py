@@ -1286,11 +1286,39 @@ def _wild_training_server_next_time(wild, *, now):
     return 0.0
 
 
+def _wild_training_post_action_next_time(wild, action_result, *, now):
+    next_time = _wild_training_server_next_time(wild, now=now)
+    if next_time > float(now):
+        return next_time
+    wild = wild if isinstance(wild, dict) else {}
+    action_result = action_result if isinstance(action_result, dict) else {}
+    daily_limit = _parse_int(wild.get("daily_limit"), 0) or _parse_int(action_result.get("dailyLimit"), 0)
+    daily_count = _parse_int(wild.get("daily_count"), -1)
+    if daily_count < 0:
+        daily_count = _parse_int(action_result.get("dailyCount"), 0)
+    daily_remaining = _parse_int(wild.get("daily_remaining"), max(0, daily_limit - daily_count))
+    if daily_limit > 0 and daily_remaining > 0:
+        return float(now) + (24 * 3600 / daily_limit)
+    return float(now) + 30 * 60
+
+
 def _wild_training_action_summary(action_result):
     action_result = action_result if isinstance(action_result, dict) else {}
     title = str(action_result.get("title") or "野外历练").strip()
     cultivation_delta = _parse_int(action_result.get("cultivationDelta"), 0)
-    rewards, gains = _collect_materials(action_result)
+    rewards = {}
+    for item in action_result.get("loot") or ():
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("itemId") or "").strip()
+        amount = _parse_int(item.get("quantity", item.get("qty", item.get("count", 1))), 1)
+        if name and amount > 0:
+            rewards[name] = rewards.get(name, 0) + amount
+    gains = {}
+    for key, label in (("tianjiGain", "天机"), ("contributionGain", "贡献")):
+        amount = _parse_int(action_result.get(key), 0)
+        if amount:
+            gains[label] = amount
     parts = []
     if cultivation_delta:
         parts.append(f"修为{cultivation_delta:+d}")
@@ -1411,22 +1439,27 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
             webview_url=webview_url,
             action="wild_experience",
             mode=mode,
+            player_id=session.get("player_id"),
             init_data=session.get("init_data") or "",
             capture_sink=_capture_store(now),
             capture_source=f"cave_public_wild_training:{identity_id}",
         )
         raw = result.get("data") if isinstance(result.get("data"), dict) else {}
         after_overview = parse_cave_dwelling_overview(raw) if raw else {}
+        action_player_error = _selected_player_error(after_overview, identity_id) if after_overview else "洞府动作回包缺少身份"
         after_journey = after_overview.get("journey") if isinstance(after_overview.get("journey"), dict) else {}
         after_wild = after_journey.get("wild_experience") if isinstance(after_journey.get("wild_experience"), dict) else {}
         if not after_wild:
             after_wild = dict(before_wild)
         action_result = raw.get("actionResult") if isinstance(raw.get("actionResult"), dict) else {}
         action_error = str(action_result.get("error") or "").strip()
-        completed = bool(result.get("ok")) and bool(action_result.get("ok", True)) and action_result.get("completed") is not False
-        next_time = _wild_training_server_next_time(after_wild, now=now)
-        if next_time <= now:
-            next_time = now + 30 * 60
+        completed = (
+            bool(result.get("ok"))
+            and not action_player_error
+            and bool(action_result.get("ok", True))
+            and action_result.get("completed") is not False
+        )
+        next_time = _wild_training_post_action_next_time(after_wild, action_result, now=now)
         title, summary, rewards, gains = _wild_training_action_summary(action_result)
         phase = "completed" if completed else ("action_unknown" if not result.get("ok") else "blocked")
         _record_cave_wild_training_state(
@@ -1449,7 +1482,7 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
             )
         return {
             "ok": completed,
-            "message": f"{title}｜{summary}" if completed else (action_error or result.get("error") or summary or "野外历练未完成"),
+            "message": f"{title}｜{summary}" if completed else (action_player_error or action_error or result.get("error") or summary or "野外历练未完成"),
             "extra": {
                 "acted": True,
                 "completed": completed,

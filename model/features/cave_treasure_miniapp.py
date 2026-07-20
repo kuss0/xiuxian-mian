@@ -281,6 +281,7 @@ def build_cave_journey_action_request(
     *,
     mode,
     token,
+    player_id=None,
     init_data_session=None,
     init_data="",
     adapter=None,
@@ -298,7 +299,11 @@ def build_cave_journey_action_request(
         token=token,
         init_data_session=init_data_session,
         init_data=init_data,
-        payload={"action": normalized_action, "mode": normalized_mode},
+        payload={
+            "action": normalized_action,
+            "mode": normalized_mode,
+            **({"playerId": int(player_id)} if player_id not in (None, "") else {}),
+        },
         adapter=adapter,
     )
 
@@ -1474,6 +1479,7 @@ async def run_cave_journey_action_production_flow(
     webview_url,
     action,
     mode,
+    player_id=None,
     transport=None,
     adapter=None,
     sleeper=None,
@@ -1496,6 +1502,7 @@ async def run_cave_journey_action_production_flow(
             action,
             mode=mode,
             token=token,
+            player_id=player_id,
             init_data=init_data,
             adapter=adapter,
         )
