@@ -2224,6 +2224,32 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("斗法回复超时", state_module.state["duel_last_error"])
             self.assertEqual(now + 40 * 60 + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
 
+    async def test_confirmed_open_duel_waits_up_to_ten_minutes_for_final_report(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 2
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_open_msg_id"] = 22028
+            state_module.state["duel_started_at"] = now - 180
+            state_module.state["duel_reply_due_at"] = now - 1
+            with (
+                patch.object(duel, "find_message_log_replies", return_value=[]) as recover_mock,
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            recover_mock.assert_not_called()
+            self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
+            self.assertEqual(now + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
+            self.assertEqual("法宝齐出，等待最终战报", state_module.state["duel_last_result"])
+            self.assertEqual("", state_module.state["duel_last_error"])
+
     async def test_end_broadcast_counts_completion_and_rolls_to_next_day(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

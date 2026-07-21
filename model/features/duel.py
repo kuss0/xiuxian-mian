@@ -63,6 +63,10 @@ DUEL_PRESET_EXCLUDED_LABELS = frozenset({"吧唧", "wa2000", "walterwa2000"})
 # Real final reports can arrive just after two minutes; keep the pending state
 # alive long enough for the normal reply path before log recovery is needed.
 DUEL_REPLY_TIMEOUT_SEC = 150
+# A ready/settling reply proves the duel was consumed. Final reports may be
+# edited in substantially later, so keep that confirmed battle pending without
+# resending for a bounded window.
+DUEL_CONFIRMED_OPEN_MAX_WAIT_SEC = 10 * 60
 DUEL_NORMAL_COOLDOWN_MIN_SEC = 18 * 60
 DUEL_NORMAL_COOLDOWN_MAX_SEC = 32 * 60
 DUEL_WEAK_OR_UNKNOWN_COOLDOWN_MIN_SEC = 30 * 60
@@ -2633,6 +2637,19 @@ async def run_duel_scheduler(now):
 
     if reply_to_msg_id > 0:
         if reply_due_at > now:
+            return
+        duel_started_at = float(state.get("duel_started_at", 0) or 0)
+        open_msg_id = int(state.get("duel_open_msg_id", 0) or 0)
+        confirmed_open_until = duel_started_at + DUEL_CONFIRMED_OPEN_MAX_WAIT_SEC if duel_started_at > 0 else 0
+        if open_msg_id > 0 and confirmed_open_until > now:
+            state["duel_reply_due_at"] = min(
+                confirmed_open_until,
+                float(now) + DUEL_REPLY_TIMEOUT_SEC,
+            )
+            state["next_duel_time"] = state["duel_reply_due_at"]
+            state["duel_last_result"] = "法宝齐出，等待最终战报"
+            state["duel_last_error"] = ""
+            save_state()
             return
         if await _recover_duel_pending_from_message_log(now, reply_to_msg_id):
             save_state()
