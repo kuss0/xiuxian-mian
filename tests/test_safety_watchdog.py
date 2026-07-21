@@ -1711,6 +1711,26 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_concubine_heart_retry_then_server_skips_to_round_three_does_not_fuse(self):
+        now = time.time()
+        sender_id = 7538826434
+        prompt_msg_id = 343160
+
+        def heart_choice(round_no, try_no):
+            chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round{round_no}"
+            return {
+                "priority": "retry" if try_no else "urgent_reactive",
+                "op_id": f"{chain_id}:try{try_no}:.稳",
+                "chain_id": chain_id,
+            }
+
+        events = [
+            _event(now - 33, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 1)),
+            _event(now, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(3, 0)),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
     def test_concubine_heart_duplicate_controlled_retry_still_fuses(self):
         now = time.time()
         sender_id = 8659059191

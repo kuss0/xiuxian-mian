@@ -398,7 +398,7 @@ def is_safe_heart_global_gap_pair(prev: dict, cur: dict) -> bool:
                 return False
             if cur_round == prev_round and cur_try == prev_try + 1:
                 return True
-            return cur_round == prev_round + 1 and cur_try == 0
+            return cur_round > prev_round and cur_try == 0
         prev_reply = int(prev.get("reply_to_msg_id", 0) or 0)
         cur_reply = int(cur.get("reply_to_msg_id", 0) or 0)
         return prev_reply > 0 and prev_reply == cur_reply
@@ -622,6 +622,8 @@ def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
     if is_phaseful_replay_command(text):
         return False
     if is_safe_storage_bag_retry_repeat(prev, cur, text):
+        return True
+    if parse_heart_choice_op(prev) and parse_heart_choice_op(cur) and is_safe_heart_global_gap_pair(prev, cur):
         return True
     if str(prev.get("priority") or "").strip().lower() == "retry":
         return False
