@@ -1435,6 +1435,8 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     module_pending_samples: list[dict[str, object]] = []
     global_paused = False
     global_pause_source = ""
+    recovery_hold_until = 0.0
+    recovery_throttle_until = 0.0
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
@@ -1442,6 +1444,10 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             meta_state = read_meta_state(conn)
             global_paused = str(meta_state.get("global_enabled") or "1").strip().lower() in {"0", "false", "off"}
             global_pause_source = str(meta_state.get("global_pause_source") or "").strip()
+            recovery_hold_until = parse_optional_epoch(meta_state.get("global_recovery_hold_until"))
+            recovery_throttle_until = parse_optional_epoch(meta_state.get("global_recovery_throttle_until"))
+            recovery_active = now < max(recovery_hold_until, recovery_throttle_until)
+            scheduling_suppressed = global_paused or recovery_active
             pending_rows = conn.execute(
                 """
                 SELECT send_as_id, cmd, sent_at, timeout, retry, max_retry, source_module
@@ -1493,7 +1499,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 concubine_phase = str(row["concubine_phase"] or "")
                 next_concubine_time = float(row["next_concubine_time"] or 0)
                 if (
-                    not global_paused
+                    not scheduling_suppressed
                     and concubine_phase.endswith(PENDING_PHASE_SUFFIX)
                     and next_concubine_time > 0
                     and now > next_concubine_time + 300
@@ -1512,7 +1518,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 ):
                     phase = str(row[phase_key] or "")
                     next_time = float(row[next_key] or 0)
-                    if not global_paused and phase in PHASEFUL_ATTENTION_PHASES and next_time > 0 and now > next_time + 300:
+                    if not scheduling_suppressed and phase in PHASEFUL_ATTENTION_PHASES and next_time > 0 and now > next_time + 300:
                         stuck_phases.append({
                             "identity_id": identity_id,
                             "username": username,
@@ -1530,7 +1536,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "phase": "reply_wait",
                         "overdue_sec": int(now - tower_due),
                     })
-            full_module_summary = build_module_summary(conn, now, limit=1000, global_paused=global_paused)
+            full_module_summary = build_module_summary(conn, now, limit=1000, global_paused=scheduling_suppressed)
             module_pending_total, module_pending_samples = summarize_module_pending(full_module_summary)
             module_summary = full_module_summary[:120]
     except sqlite3.Error as exc:
@@ -1603,6 +1609,8 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "module_summary": module_summary,
         "global_paused": global_paused,
         "global_pause_source": global_pause_source,
+        "recovery_hold_until": recovery_hold_until,
+        "recovery_throttle_until": recovery_throttle_until,
         "alerts": alerts,
     }
 
