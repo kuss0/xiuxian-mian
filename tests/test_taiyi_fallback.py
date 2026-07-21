@@ -338,6 +338,31 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                 summaries = self._inbox_summaries(inbox_mock)
                 self.assertTrue(any("引道发送状态未知" in summary for summary in summaries))
 
+    async def test_yindao_supervisor_quiesce_does_not_count_as_failure(self):
+        now = 1_700_000_182.0
+        send_as_id = self._prepare_identity("idle", entered_at=0)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["next_taiyi_cycle_time"] = now - 1
+            state_module.state["taiyi_last_error"] = "old error"
+            with (
+                patch.object(taiyi, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(taiyi, "classify_game_send_block", return_value={"status": "unsent", "code": "supervisor_quiesce"}),
+                patch.object(taiyi.time, "time", return_value=now + 2),
+                patch.object(taiyi, "_record_failure") as failure_mock,
+                patch.object(taiyi, "_check_failure_breaker", new=AsyncMock()) as breaker_mock,
+                patch.object(taiyi, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(taiyi, "save_state"),
+            ):
+                await taiyi.run_taiyi_scheduler(now)
+
+            self.assertEqual("idle", state_module.state["taiyi_phase"])
+            self.assertEqual(now + 2 + 60, state_module.state["next_taiyi_cycle_time"])
+            self.assertEqual("", state_module.state["taiyi_last_error"])
+            failure_mock.assert_not_called()
+            breaker_mock.assert_not_awaited()
+            self.assertIn("supervisor_quiesce", audit_mock.await_args.args[0])
+
     async def test_node_search_send_timeout_keeps_pending_for_late_reply(self):
         now = 1_700_000_185.0
         send_as_id = self._prepare_identity("search_scheduled", entered_at=now - 10)

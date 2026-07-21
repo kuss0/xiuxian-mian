@@ -87,6 +87,13 @@ TAIYI_PENDING_PHASE_LABELS = {
     "define_pending": "定星",
 }
 TAIYI_MODULE_LOADED_AT = time.time()
+TAIYI_TRANSIENT_UNSENT_CODES = {
+    "send_queue_timeout", "send_prepare_timeout", "global_disabled",
+    "global_recovery_cooldown", "dungeon_quiet", "account_offline",
+    "account_unbound", "account_client_missing", "account_client_not_ready",
+    "account_session_error", "send_as_peer_invalid", "bot_health",
+    "identity_weak", "pre_send_guard", "action_guard", "supervisor_quiesce",
+}
 
 
 def _phase():
@@ -193,6 +200,13 @@ def _classify_taiyi_none_send(command):
     return classify_game_send_block(get_current_identity_id(), command)
 
 
+def _taiyi_transient_unsent_code(send_block):
+    code = str((send_block or {}).get("code") or "").strip()
+    if str((send_block or {}).get("status") or "") == "unsent" and code in TAIYI_TRANSIENT_UNSENT_CODES:
+        return code
+    return ""
+
+
 def _mark_taiyi_unknown_send(command, phase, msg_key, sent_at, label):
     _set_phase(phase, sent_at)
     state[msg_key] = 0
@@ -216,9 +230,16 @@ async def _send_taiyi_search(now):
         if str(send_block.get("status") or "") == "unknown":
             _mark_taiyi_unknown_send(CMD_NODE_SEARCH, "search_pending", "taiyi_node_search_msg_id", sent_at, "搜寻节点")
             return True
+        block_code = _taiyi_transient_unsent_code(send_block)
         _set_phase("idle", sent_at)
         state["next_taiyi_cycle_time"] = sent_at + TAIYI_RESOURCE_RETRY_SEC
         state["taiyi_node_search_msg_id"] = 0
+        if block_code:
+            state["taiyi_last_error"] = ""
+            _record_taiyi_event("搜寻节点运行保护拦截", command=CMD_NODE_SEARCH, phase="idle", reason=block_code)
+            save_state()
+            await send_audit_log(f"🌀 太一搜寻节点被运行保护拦截（{block_code}），1h 后再排队。")
+            return False
         _record_taiyi_event("搜寻节点发送失败", command=CMD_NODE_SEARCH, phase="idle")
         _record_failure(sent_at, "搜寻节点发送失败")
         save_state()
@@ -953,10 +974,17 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
             if str(send_block.get("status") or "") == "unknown":
                 _mark_taiyi_unknown_send(command, "define_pending", "taiyi_node_define_msg_id", sent_at, "定星")
                 return
+            block_code = _taiyi_transient_unsent_code(send_block)
             state["taiyi_pending_node_name"] = ""
             state["taiyi_node_define_msg_id"] = 0
             _set_phase("idle", sent_at)
             state["next_taiyi_cycle_time"] = sent_at + TAIYI_RESOURCE_RETRY_SEC
+            if block_code:
+                state["taiyi_last_error"] = ""
+                _record_taiyi_event("定星运行保护拦截", command=command, phase="idle", reason=block_code)
+                save_state()
+                await send_audit_log(f"🌀 太一定星被运行保护拦截（{block_code}），1h 后再排队。")
+                return
             _record_failure(sent_at, "定星发送失败")
             save_state()
             await send_audit_log("❌ 太一定星发送失败，1h 后重试。")
@@ -1232,10 +1260,17 @@ async def run_taiyi_scheduler(now):
         if str(send_block.get("status") or "") == "unknown":
             _mark_taiyi_unknown_send(cmd, "yindao_pending", "taiyi_yindao_msg_id", sent_at, "引道")
             return
+        block_code = _taiyi_transient_unsent_code(send_block)
         # 发送失败：回退 idle 短退避
         _set_phase("idle", sent_at)
         state["next_taiyi_cycle_time"] = sent_at + 60  # 1min 后重试
         _clear_chain_msg_ids()
+        if block_code:
+            state["taiyi_last_error"] = ""
+            _record_taiyi_event("引道运行保护拦截", command=cmd, phase="idle", reason=block_code)
+            save_state()
+            await send_audit_log(f"🌀 太一引道被运行保护拦截（{block_code}），1min 后再排队。")
+            return
         _record_taiyi_event("引道发送失败", command=cmd, phase="idle")
         _record_failure(sent_at, "引道发送失败")
         save_state()
