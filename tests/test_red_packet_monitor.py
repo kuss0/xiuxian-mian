@@ -21,6 +21,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         red_packet_monitor._SEEN_CANDIDATES.clear()
         red_packet_monitor._SEEN_CANDIDATES.update(self._seen_snapshot)
         red_packet_monitor._PENDING_COMMANDS.clear()
+        red_packet_monitor._PENDING_CREATED.clear()
         red_packet_monitor._ALERTED_PACKETS.clear()
 
     def test_parse_exact_red_packet_command(self):
@@ -184,3 +185,41 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(red_packet_monitor, "console_log") as log_mock:
             self.assertFalse(await red_packet_monitor.observe_red_packet_candidate(event))
         log_mock.assert_not_called()
+
+    async def test_created_packet_before_command_is_matched_afterward(self):
+        created = SimpleNamespace(
+            raw_text="🧧 【LDC 红包】｜@user 88.00 LDC / 20 份 请直接点击下方按钮抢红包",
+            chat=SimpleNamespace(username="ja_netfilter_group"),
+            chat_id=-100123,
+            id=458361,
+            sender_id=456,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
+        )
+        command = SimpleNamespace(
+            raw_text=".发红包 88 20",
+            chat=SimpleNamespace(username="ja_netfilter_group"),
+            chat_id=-100123,
+            id=458360,
+            sender_id=123,
+        )
+        with patch.object(red_packet_monitor, "console_log"), patch.object(
+            red_packet_monitor, "send_audit_log", new=AsyncMock()
+        ) as audit_mock, patch.object(
+            red_packet_monitor,
+            "send_log_bot_notification",
+            new=AsyncMock(return_value=True),
+        ) as channel_mock, patch.object(
+            red_packet_monitor, "_RED_PACKET_ALERT_INTERVAL_SEC", 0
+        ):
+            await red_packet_monitor.observe_red_packet_candidate(created)
+            await red_packet_monitor.observe_red_packet_candidate(command)
+            await red_packet_monitor.drain_red_packet_alert_tasks()
+
+        self.assertEqual(3, audit_mock.await_count)
+        self.assertEqual(3, channel_mock.await_count)
+        self.assertTrue(
+            all(
+                "https://t.me/ja_netfilter_group/458347/458361" in call.args[0]
+                for call in audit_mock.await_args_list
+            )
+        )

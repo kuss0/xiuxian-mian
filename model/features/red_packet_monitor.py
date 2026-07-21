@@ -20,6 +20,8 @@ _SEEN_CANDIDATE_LIMIT = 1000
 _PENDING_COMMANDS = OrderedDict()
 _PENDING_COMMAND_LIMIT = 100
 _PENDING_COMMAND_TTL_SEC = 120
+_PENDING_CREATED = OrderedDict()
+_PENDING_CREATED_LIMIT = 100
 _ALERTED_PACKETS = OrderedDict()
 _ALERTED_PACKET_LIMIT = 500
 _RED_PACKET_ALERT_THRESHOLD = 50.0
@@ -80,6 +82,9 @@ def _prune_pending_commands(now):
     for key, item in list(_PENDING_COMMANDS.items()):
         if float(item.get("created_at", 0) or 0) < cutoff:
             _PENDING_COMMANDS.pop(key, None)
+    for key, item in list(_PENDING_CREATED.items()):
+        if float(item.get("created_at", 0) or 0) < cutoff:
+            _PENDING_CREATED.pop(key, None)
 
 
 def _remember_pending_command(chat_id, message_id, parsed, now):
@@ -116,6 +121,44 @@ def _claim_pending_created_packet(chat_id, message_id, parsed, now):
             _ALERTED_PACKETS.popitem(last=False)
         return {
             "packet_key": packet_key,
+            "topic_id": int(item.get("topic_id", 0) or 0),
+        }
+    return None
+
+
+def _remember_pending_created(chat_id, message_id, sender_id, topic_id, parsed, now):
+    key = (int(chat_id or 0), int(message_id or 0))
+    _PENDING_CREATED[key] = {
+        "created_at": float(now),
+        "amount": float(parsed["amount"]),
+        "count": int(parsed["count"]),
+        "sender_id": int(sender_id or 0),
+        "topic_id": int(topic_id or 0),
+    }
+    while len(_PENDING_CREATED) > _PENDING_CREATED_LIMIT:
+        _PENDING_CREATED.popitem(last=False)
+
+
+def _claim_pending_command_for_created(chat_id, command_message_id, parsed, now):
+    _prune_pending_commands(now)
+    amount = float(parsed["amount"])
+    count = int(parsed["count"])
+    for packet_key, item in list(_PENDING_CREATED.items()):
+        if packet_key[0] != int(chat_id or 0):
+            continue
+        if packet_key[1] <= int(command_message_id or 0):
+            continue
+        if item["amount"] != amount or item["count"] != count:
+            continue
+        _PENDING_CREATED.pop(packet_key, None)
+        if packet_key in _ALERTED_PACKETS:
+            return None
+        _ALERTED_PACKETS[packet_key] = None
+        while len(_ALERTED_PACKETS) > _ALERTED_PACKET_LIMIT:
+            _ALERTED_PACKETS.popitem(last=False)
+        return {
+            "message_id": packet_key[1],
+            "sender_id": int(item.get("sender_id", 0) or 0),
             "topic_id": int(item.get("topic_id", 0) or 0),
         }
     return None
@@ -225,7 +268,18 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
         pending = _PENDING_COMMANDS.get((chat_id, message_id))
         if pending is not None:
             pending["topic_id"] = _event_topic_id(event)
+        matched_created = _claim_pending_command_for_created(chat_id, message_id, parsed, now)
+        if matched_created:
+            _PENDING_COMMANDS.pop((chat_id, message_id), None)
+            _schedule_red_packet_alert(
+                chat_id,
+                int(matched_created.get("topic_id", 0) or 0),
+                int(matched_created.get("message_id", 0) or 0),
+                int(matched_created.get("sender_id", 0) or 0),
+                parsed,
+            )
     created = parse_red_packet_created(text)
+    created_status = ""
     if created and created["amount"] >= _RED_PACKET_ALERT_THRESHOLD:
         matched = _claim_pending_created_packet(chat_id, message_id, created, now)
         if matched:
@@ -237,6 +291,17 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
                 int(getattr(event, "sender_id", 0) or 0),
                 created,
             )
+            created_status = "created=matched"
+        else:
+            _remember_pending_created(
+                chat_id,
+                message_id,
+                int(getattr(event, "sender_id", 0) or 0),
+                _event_topic_id(event),
+                created,
+                now,
+            )
+            created_status = "created=waiting_command"
     parsed_text = (
         f"amount={parsed['amount']:g} count={parsed['count']}"
         if parsed
@@ -245,7 +310,7 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
     console_log(
         f"🧧 红包候选观察｜type={event_type}｜chat={chat_id}｜msg={message_id}｜"
         f"sender={int(getattr(event, 'sender_id', 0) or 0)}｜"
-        f"{parsed_text}｜text={safe_text}",
+        f"{parsed_text}{('｜' + created_status) if created_status else ''}｜text={safe_text}",
         scope="global",
         limit=720,
     )

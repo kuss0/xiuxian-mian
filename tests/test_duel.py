@@ -377,6 +377,42 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             tianxing_mock.assert_not_awaited()
             self.assertIn("受控互斗批次", state_module.state["duel_last_error"])
 
+    async def test_pair_batch_waiter_does_not_unequip_before_lock_is_released(self):
+        owner_id = self._prepare_identity(99002101)
+        target_id = self._prepare_identity(99002102, realm="元婴后期")
+        waiter_id = self._prepare_identity(99002103)
+        state_module.update_send_as_profile(owner_id, username="owner")
+        state_module.update_send_as_profile(target_id, username="shared_target")
+        state_module.update_send_as_profile(waiter_id, username="waiter")
+        now = 1_700_000_000.0
+        state_module.set_duel_target_cooldowns({})
+        with state_module.use_identity(owner_id):
+            self.assertEqual(
+                (target_id, ""),
+                duel._claim_managed_target_pair_batch("@shared_target", now),
+            )
+        with state_module.use_identity(waiter_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@shared_target"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_unequip_prepared"] = False
+            state_module.state["duel_last_result"] = "斗法配装:prepare"
+            state_module.state["next_duel_time"] = now - 1
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now + 1)
+
+            send_mock.assert_not_awaited()
+            self.assertFalse(state_module.state["duel_unequip_prepared"])
+            self.assertEqual("斗法配装:prepare", state_module.state["duel_last_result"])
+            self.assertIn("受控互斗批次", state_module.state["duel_last_error"])
+            self.assertGreaterEqual(
+                state_module.state["next_duel_time"],
+                now + 1 + duel.DUEL_SAME_TARGET_COOLDOWN_SEC,
+            )
+
     def test_pair_batch_completion_queues_managed_defender_restore(self):
         baiji_id = self._prepare_identity(301299112)
         wa_id = self._prepare_identity(8659059191)
@@ -687,6 +723,21 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         state_module.update_send_as_profile(target_id, xiuwei_current=899880)
         with state_module.use_identity(attacker_id):
             self.assertEqual("", duel._target_gate_reason("@low_target"))
+
+    def test_defender_depletion_record_does_not_block_same_identity_as_attacker(self):
+        identity_id = self._prepare_identity(99002009, xiuwei_current=2_411_942)
+        state_module.update_send_as_profile(identity_id, username="myios17")
+        state_module.set_duel_target_cooldowns({
+            "@myios17": {
+                "resource_depleted_at": 1_700_000_000.0,
+                "resource_depleted_xiuwei": 2_411_942,
+                "resource_recovery_xiuwei": 200_000,
+                "recent_loss_xiuwei": 60_000,
+            }
+        })
+
+        with state_module.use_identity(identity_id):
+            self.assertEqual("", duel._profile_gate_reason())
 
     def test_useful_managed_loss_becomes_next_loss_risk(self):
         attacker_id = self._prepare_identity(99002005, xiuwei_current=900000)

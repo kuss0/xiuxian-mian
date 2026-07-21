@@ -1390,7 +1390,7 @@ def _duel_resource_gate_reason(identity_id, *, role):
         _parse_int(record.get("resource_recovery_xiuwei", 0)),
         risk,
     )
-    if depleted_at > 0 and (current <= 0 or current < depleted_xiuwei + recovery):
+    if role == "守方" and depleted_at > 0 and (current <= 0 or current < depleted_xiuwei + recovery):
         return (
             f"{role} @{username} 可转移修为已接近耗尽，"
             f"当前={current or '未知'}，需恢复至至少 {depleted_xiuwei + recovery}"
@@ -2588,12 +2588,16 @@ async def run_duel_scheduler(now):
     if target_gate_reason:
         if not _duel_next_time_blocks(now):
             _set_duel_error(target_gate_reason, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
+        _release_all_managed_pair_batches(now, queue_restore=True)
+        save_state()
         return
 
     gate_reason = _profile_gate_reason()
     if gate_reason:
         if not _duel_next_time_blocks(now):
             _set_duel_error(gate_reason, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
+        _release_all_managed_pair_batches(now, queue_restore=True)
+        save_state()
         return
 
     total_count = int(state.get("duel_total_count", 0) or 0)
@@ -2627,10 +2631,6 @@ async def run_duel_scheduler(now):
             _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
 
-    loadout_prepare_due = float(state.get("next_duel_time", 0) or 0) <= float(now) + DUEL_TIANXING_PREPARE_LEAD_SEC
-    if loadout_config and loadout_prepare_due and not await _run_controlled_loadout_prepare(now, loadout_config):
-        return
-
     if reply_to_msg_id > 0:
         if reply_due_at > now:
             return
@@ -2647,9 +2647,16 @@ async def run_duel_scheduler(now):
 
     participant_block = _active_duel_participant_block(target, now)
     if participant_block:
-        _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+        retry_delay = DUEL_SAME_TARGET_COOLDOWN_SEC + (
+            int(get_current_identity_id() or 0) % DUEL_SAME_TARGET_COOLDOWN_SEC
+        )
+        _schedule_next_duel(now, retry_delay)
         state["duel_last_error"] = participant_block
         save_state()
+        return
+
+    loadout_prepare_due = float(state.get("next_duel_time", 0) or 0) <= float(now) + DUEL_TIANXING_PREPARE_LEAD_SEC
+    if loadout_config and loadout_prepare_due and not await _run_controlled_loadout_prepare(now, loadout_config):
         return
 
     next_duel_time = float(state.get("next_duel_time", 0) or 0)
