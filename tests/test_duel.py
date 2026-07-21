@@ -2644,6 +2644,38 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(state_module.state["next_duel_time"], now + duel.DUEL_RECOVERY_MAX_SEC)
             self.assertIn("切换至 @second", audit_mock.await_args.args[0])
 
+    async def test_rolling_24h_target_limit_stops_current_role_until_next_day(self):
+        identity_id = self._prepare_identity(99002001)
+        now = 1_700_000_000.0
+        text = "天道有则！你与 @Lpprceqei 在24小时内已交锋过多，暂不可再次斗法！"
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@Lpprceqei @backup"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 5
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @Lpprceqei"),
+                    result_msg_id=22029,
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["duel_completed_count"])
+            self.assertEqual(["@lpprceqei"], state_module.state["duel_daily_limited_targets"])
+            self.assertIn("24 小时交锋额度已满", state_module.state["duel_last_result"])
+            self.assertGreater(state_module.state["next_duel_time"], now)
+            self.assertEqual(
+                datetime.fromtimestamp(state_module.state["next_duel_time"], duel.TZ_LOCAL).date(),
+                datetime.fromtimestamp(now, duel.TZ_LOCAL).date() + timedelta(days=1),
+            )
+
     async def test_message_log_recovery_accepts_terminal_non_report_reply(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -2799,6 +2831,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             "面对境界压制，@fanrenxiuxian_06 凭借神通侥幸逃脱！(成功率: 19%)",
             "锁定目标时遭遇天机反噬，失败了: Could not find the input entity for PeerUser(user_id=8155156921)",
             "天道不公，但亦有其则！你今日对 @real 出手次数过多，已被法则限制！",
+            "天道有则！你与 @Lpprceqei 在24小时内已交锋过多，暂不可再次斗法！",
             "对方尚未踏入仙途，此番出手恐有失身份。",
             "你今日神念消耗过剧，已无力再战！请打坐调息，明日再来。",
         ]

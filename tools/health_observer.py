@@ -1088,6 +1088,19 @@ def normalize_json_state_for_health(field: str, payload: dict[str, object], now:
         return normalized
 
     if field_name != "tianxing_observation":
+        if field_name == "tianxing_timeline_state":
+            phase = str(normalized.get("phase") or "").strip()
+            active_step = normalized.get("active_step")
+            last_error = str(normalized.get("last_error") or "").strip()
+            if (
+                phase == "blocked_replan"
+                and not active_step
+                and "放行已被下游动作消费" in last_error
+            ):
+                # The previous deadline belongs to a consumed route. It must
+                # not keep the read-only health observer in a warning state.
+                normalized["deadline_at"] = 0
+            return normalized
         return normalized
 
     fixed_star = str(normalized.get("fixed_star") or "").strip()

@@ -1850,6 +1850,40 @@ class HealthObserverTests(unittest.TestCase):
         tianxing = next(item for item in summary if item["module"] == "tianxing")
         self.assertEqual("ok", tianxing["status"])
 
+    def test_module_summary_ignores_consumed_tianxing_deadline_after_replan(self):
+        now = 1_780_500_000.0
+        timeline = json.dumps({
+            "phase": "blocked_replan",
+            "route": "探索",
+            "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+            "deadline_at": now - 3600,
+            "active_step": {},
+        }, ensure_ascii=False)
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, tianxing_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    tianxing_observation TEXT NOT NULL DEFAULT '{}',
+                    tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
+                    tianxing_auto_config TEXT NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tutuerduoxiao')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, tianxing_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id, tianxing_timeline_state) VALUES(42, ?)", (timeline,))
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        tianxing = next(item for item in summary if item["module"] == "tianxing")
+        self.assertEqual("ok", tianxing["status"])
+
     def test_module_summary_ignores_tianxing_send_failure_when_prediction_is_stable(self):
         now = 1_780_500_000.0
         observation = json.dumps({

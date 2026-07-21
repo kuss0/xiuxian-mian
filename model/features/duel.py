@@ -97,6 +97,7 @@ DUEL_TERMINAL_ATTEMPT_KEYWORDS = (
     "侥幸逃脱",
     "锁定目标时遭遇天机反噬",
     "出手次数过多",
+    "24小时内已交锋过多",
     "神念不足",
     "神念已耗尽",
     "神念耗尽",
@@ -124,6 +125,9 @@ RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
 RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|分钟|秒)(?:\d+\s*(?:小时|分钟|秒))*)")
 RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>万)?")
 RE_DUEL_DAILY_LIMIT_TARGET = re.compile(r"今日对\s+(?P<target>@[^\s，。！？、；：:,.!?]+)\s+出手次数过多")
+RE_DUEL_ROLLING_LIMIT_TARGET = re.compile(
+    r"你与\s*(?P<target>@[^\s，。！？、；：:,.!?]+)\s*在\s*24\s*小时内已交锋过多"
+)
 RE_DUEL_ATTACKER = re.compile(r"攻方[:：]\s*(?P<username>@[^\s·|]+)")
 RE_DUEL_DEFENDER = re.compile(r"守方[:：]\s*(?P<username>@[^\s·|]+)")
 RE_DUEL_MIND_REMAINING = re.compile(r"今日(?:剩余)?神念[:：]\s*(?P<remaining>\d+)\s*/\s*(?P<total>\d+)")
@@ -1859,9 +1863,23 @@ def _is_daily_mind_exhausted_text(text):
 
 def _duel_counts_as_attempt(text):
     raw = str(text or "").strip()
-    if _is_target_named_cooldown(raw) or "出手次数过多" in raw:
+    if _is_target_named_cooldown(raw) or _is_per_target_duel_limit_text(raw):
         return False
     return _is_duel_report_text(raw) or _has_duel_terminal_attempt_keyword(raw)
+
+
+def _is_per_target_duel_limit_text(text):
+    raw = str(text or "")
+    return "出手次数过多" in raw or bool(re.search(r"24\s*小时内已交锋过多", raw))
+
+
+def _per_target_duel_limit_target(text, fallback=""):
+    raw = str(text or "")
+    for pattern in (RE_DUEL_DAILY_LIMIT_TARGET, RE_DUEL_ROLLING_LIMIT_TARGET):
+        match = pattern.search(raw)
+        if match:
+            return normalize_duel_target(match.group("target"))
+    return normalize_duel_target(fallback)
 
 
 def _is_duel_prediction_consuming_result(text):
@@ -2433,11 +2451,11 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
         )
     else:
         _clear_target_reservation(target, pending_command_msg_id)
-    if "出手次数过多" in raw_text:
-        limit_match = RE_DUEL_DAILY_LIMIT_TARGET.search(raw_text)
-        limited_target = normalize_duel_target(limit_match.group("target") if limit_match else target)
+    if _is_per_target_duel_limit_text(raw_text):
+        limited_target = _per_target_duel_limit_target(raw_text, target)
         _mark_target_daily_limited(limited_target, now)
-        next_target = _target_token(now)
+        rolling_24h_limit = bool(RE_DUEL_ROLLING_LIMIT_TARGET.search(raw_text))
+        next_target = "" if rolling_24h_limit else _target_token(now)
         state["duel_last_error"] = ""
         if next_target:
             _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
@@ -2449,6 +2467,12 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
             )
             return True
         completion = _complete_duel_batch(now)
+        if not completion["restoring"]:
+            limit_label = "24 小时交锋额度" if rolling_24h_limit else "今日出手额度"
+            state["duel_last_result"] = (
+                f"目标 {limited_target} {limit_label}已满；"
+                f"次日批次→{fmt_abs_ts(completion['next_duel_time'])}"
+            )
         save_state()
         if completion["restoring"]:
             await send_audit_log(
