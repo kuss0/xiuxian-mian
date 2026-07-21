@@ -546,6 +546,33 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
             self.assertEqual(now + 4 + 600, state_module.state["next_second_soul_time"])
             self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
+            self.assertEqual("", state_module.state["second_soul_last_error"])
+
+    async def test_train_global_recovery_hold_is_not_a_business_error(self):
+        send_as_id = 8659059210
+        now = 9350.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "ready_to_train"
+            state_module.state["next_second_soul_time"] = now - 1
+            state_module.state["second_soul_last_error"] = "old error"
+
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=None)),
+            patch.object(second_soul, "classify_game_send_block", return_value={"status": "unsent", "code": "global_recovery_cooldown"}),
+            patch.object(second_soul.time, "time", return_value=now + 2),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(second_soul, "save_state"),
+            state_module.use_identity(send_as_id),
+        ):
+            await second_soul.run_second_soul_scheduler(now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
+            self.assertEqual(now + 2 + 600, state_module.state["next_second_soul_time"])
+            self.assertEqual("", state_module.state["second_soul_last_error"])
+        self.assertIn("global_recovery_cooldown", audit_mock.await_args.args[0])
 
     async def test_train_timeout_recovers_unknown_send_and_logged_reply(self):
         send_as_id = 8659059206

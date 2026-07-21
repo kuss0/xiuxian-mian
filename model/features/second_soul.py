@@ -65,6 +65,13 @@ SECOND_SOUL_CHOICE_STRATEGIES = {
     "break": ("强行突破", CMD_SECOND_SOUL_CHOICE_BREAK),
 }
 SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC = 60 * 60
+SECOND_SOUL_TRANSIENT_UNSENT_CODES = {
+    "send_queue_timeout", "send_prepare_timeout", "global_disabled",
+    "global_recovery_cooldown", "dungeon_quiet", "account_offline",
+    "account_unbound", "account_client_missing", "account_client_not_ready",
+    "account_session_error", "send_as_peer_invalid", "bot_health",
+    "identity_weak", "pre_send_guard", "action_guard", "supervisor_quiesce",
+}
 
 
 def _phase():
@@ -105,10 +112,6 @@ def get_second_soul_purge_threshold():
 
 def _next_pending_timeout(now):
     return now + random.uniform(SECOND_SOUL_PENDING_TIMEOUT_MIN, SECOND_SOUL_PENDING_TIMEOUT_MAX)
-
-
-def _send_was_definitely_unsent(send_as_id, command):
-    return classify_game_send_block(send_as_id, command).get("status") == "unsent"
 
 
 def _is_current_reply(reply_to, state_key):
@@ -222,7 +225,8 @@ async def _send_second_soul_purge(send_as_id, now, *, reason=""):
                 scope="identity", send_as_id=send_as_id, limit=240,
             )
             return True
-        if not _send_was_definitely_unsent(send_as_id, CMD_SECOND_SOUL_PURGE):
+        block = classify_game_send_block(send_as_id, CMD_SECOND_SOUL_PURGE)
+        if block.get("status") != "unsent":
             state["second_soul_purge_msg_id"] = 0
             state["second_soul_last_error"] = "元神镇魔发送状态未知，等待回复或到点查魔染"
             save_state()
@@ -231,6 +235,19 @@ async def _send_second_soul_purge(send_as_id, now, *, reason=""):
                 scope="identity", send_as_id=send_as_id, limit=240,
             )
             return True
+        block_code = str(block.get("code") or "").strip()
+        if block_code in SECOND_SOUL_TRANSIENT_UNSENT_CODES:
+            state["second_soul_purge_attempts"] = max(0, attempts - 1)
+            state["second_soul_purge_due_at"] = 0
+            _set_phase("idle")
+            state["next_second_soul_time"] = sent_at + 600
+            state["second_soul_last_error"] = ""
+            save_state()
+            await send_audit_log(
+                f"🌀 第二元神镇魔被运行保护拦截（{block_code}），未计次数，10 分钟后重查状态。",
+                scope="identity", send_as_id=send_as_id, limit=240,
+            )
+            return False
         state["second_soul_last_error"] = "发送 .元神镇魔 失败，稍后查魔染"
         save_state()
         await send_audit_log(
@@ -264,7 +281,8 @@ async def _send_second_soul_demon_status(send_as_id, now):
             save_state()
             console_log("🌀 已发 .五子同心魔 查第二元神魔染。")
             return True
-        if not _send_was_definitely_unsent(send_as_id, CMD_SECOND_SOUL_DEMON_STATUS):
+        block = classify_game_send_block(send_as_id, CMD_SECOND_SOUL_DEMON_STATUS)
+        if block.get("status") != "unsent":
             state["second_soul_purge_status_msg_id"] = 0
             state["second_soul_last_error"] = "五子同心魔查询发送状态未知，等待回复或超时自愈"
             save_state()
@@ -273,6 +291,18 @@ async def _send_second_soul_demon_status(send_as_id, now):
                 scope="identity", send_as_id=send_as_id, limit=240,
             )
             return True
+        block_code = str(block.get("code") or "").strip()
+        if block_code in SECOND_SOUL_TRANSIENT_UNSENT_CODES:
+            state["second_soul_purge_due_at"] = 0
+            _set_phase("idle")
+            state["next_second_soul_time"] = sent_at + 600
+            state["second_soul_last_error"] = ""
+            save_state()
+            await send_audit_log(
+                f"🌀 第二元神查魔染被运行保护拦截（{block_code}），10 分钟后重查状态。",
+                scope="identity", send_as_id=send_as_id, limit=240,
+            )
+            return False
         state["second_soul_last_error"] = "发送 .五子同心魔 失败，停止自动镇魔"
         _finish_purge_ready(sent_at, last_error=state["second_soul_last_error"])
         save_state()
@@ -1074,7 +1104,8 @@ async def run_second_soul_scheduler(now):
         msg = await send_game_command(CMD_SECOND_SOUL_TRAIN, track=False, priority="chain")
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            if not _send_was_definitely_unsent(get_current_identity_id(), CMD_SECOND_SOUL_TRAIN):
+            block = classify_game_send_block(get_current_identity_id(), CMD_SECOND_SOUL_TRAIN)
+            if block.get("status") != "unsent":
                 _set_phase("train_pending")
                 state["second_soul_last_error"] = "元神修炼发送状态未知，等待确认或超时自愈"
                 state["next_second_soul_time"] = _next_pending_timeout(sent_at)
@@ -1083,11 +1114,17 @@ async def run_second_soul_scheduler(now):
                 await send_audit_log("🌀 第二元神修炼发送状态未知，保持确认等待。")
                 return
             _set_phase("ready_to_train")
-            state["second_soul_last_error"] = "发送 .元神修炼 失败"
+            block_code = str(block.get("code") or "").strip()
+            state["second_soul_last_error"] = (
+                "" if block_code in SECOND_SOUL_TRANSIENT_UNSENT_CODES else "发送 .元神修炼 失败"
+            )
             state["next_second_soul_time"] = sent_at + 600
             state["second_soul_train_msg_id"] = 0
             save_state()
-            await send_audit_log("❌ 第二元神修炼发送失败，10 分钟后重试。")
+            if block_code in SECOND_SOUL_TRANSIENT_UNSENT_CODES:
+                await send_audit_log(f"🌀 第二元神修炼被运行保护拦截（{block_code}），10 分钟后再排队。")
+            else:
+                await send_audit_log("❌ 第二元神修炼发送失败，10 分钟后重试。")
         else:
             _set_phase("train_pending")
             state["second_soul_train_msg_id"] = int(getattr(msg, "id", 0) or 0)
@@ -1108,7 +1145,8 @@ async def run_second_soul_scheduler(now):
     msg = await send_game_command(CMD_SECOND_SOUL_STATUS, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
-        if not _send_was_definitely_unsent(get_current_identity_id(), CMD_SECOND_SOUL_STATUS):
+        block = classify_game_send_block(get_current_identity_id(), CMD_SECOND_SOUL_STATUS)
+        if block.get("status") != "unsent":
             _set_phase("status_pending")
             state["next_second_soul_time"] = _next_pending_timeout(sent_at)
             state["second_soul_status_msg_id"] = 0
@@ -1119,10 +1157,16 @@ async def run_second_soul_scheduler(now):
         # 发送失败：回退到 idle，下个 scheduler tick 重试
         _set_phase("idle")
         state["next_second_soul_time"] = sent_at + 60  # 1min 后重试
-        state["second_soul_last_error"] = "发送 .第二元神 失败"
+        block_code = str(block.get("code") or "").strip()
+        state["second_soul_last_error"] = (
+            "" if block_code in SECOND_SOUL_TRANSIENT_UNSENT_CODES else "发送 .第二元神 失败"
+        )
         _clear_pending_msg_ids()
         save_state()
-        await send_audit_log("❌ 第二元神状态查询发送失败，1min 后重试。")
+        if block_code in SECOND_SOUL_TRANSIENT_UNSENT_CODES:
+            await send_audit_log(f"🌀 第二元神状态查询被运行保护拦截（{block_code}），1min 后再排队。")
+        else:
+            await send_audit_log("❌ 第二元神状态查询发送失败，1min 后重试。")
     else:
         _set_phase("status_pending")
         state["second_soul_status_msg_id"] = int(getattr(msg, "id", 0) or 0)

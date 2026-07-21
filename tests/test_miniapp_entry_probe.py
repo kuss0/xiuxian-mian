@@ -950,6 +950,40 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)
 
+    async def test_cave_public_trial_batch_stops_after_two_matching_entry_failures(self):
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        background_snapshot = dict(ui._cave_public_background_state)
+        calls = []
+
+        async def run_entry(identity_id, action, _url):
+            calls.append((identity_id, action))
+            return False, "洞府天机试炼入口读取完成，但外府试炼入口不可用", {}
+
+        try:
+            ui._close_cave_public_upstream_circuit()
+            with patch.object(ui, "get_identity_display_name", side_effect=lambda identity_id: f"角色{identity_id}"), \
+                    patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
+                    patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock:
+                await ui._run_cave_public_entry_batch(
+                    "cave_public_trial_fail_fast",
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    [1001, 1002, 1003],
+                    ["trial"],
+                    0,
+                )
+
+            self.assertEqual([(1001, "trial"), (1002, "trial")], calls)
+            self.assertFalse(ui._cave_public_batch_state["running"])
+            self.assertEqual(2, ui._cave_public_batch_state["completed"])
+            self.assertEqual(2, ui._cave_public_batch_state["failed"])
+            self.assertGreater(ui._cave_public_background_state["circuit_open_until"], time.time())
+            self.assertTrue(any("连续 2 个身份" in str(call.args[0]) for call in audit_mock.await_args_list))
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
     async def test_trial_batch_run_uses_enabled_identities_and_background_task(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001, 1002, 1003]), \
                 patch.object(ui, "get_identity_enabled", side_effect=lambda identity_id: identity_id != 1002), \

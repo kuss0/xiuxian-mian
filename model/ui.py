@@ -7336,6 +7336,8 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
         succeeded = 0
         failed = 0
         outcomes = {}
+        repeated_fail_key = ""
+        repeated_fail_count = 0
         for index, (identity_id, action) in enumerate(steps, start=1):
             display = get_identity_display_name(identity_id)
             current = f"{index}/{total} {display} {action}"
@@ -7372,6 +7374,34 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
                     scope="global",
                     priority="normal",
                     limit=320,
+                )
+                return
+            fail_key = ""
+            if not ok and action == "trial" and "外府试炼入口不可用" in str(message or ""):
+                fail_key = "trial_external_entry_unavailable"
+            if fail_key:
+                if fail_key == repeated_fail_key:
+                    repeated_fail_count += 1
+                else:
+                    repeated_fail_key = fail_key
+                    repeated_fail_count = 1
+            else:
+                repeated_fail_key = ""
+                repeated_fail_count = 0
+            if repeated_fail_count >= 2:
+                retry_at = _open_cave_public_upstream_circuit(message)
+                _set_cave_public_batch_state(
+                    running=False,
+                    finished_at=time.time(),
+                    current="",
+                    last_result=f"入口熔断：{result_text}",
+                )
+                await send_audit_log(
+                    f"🧯 洞府天机试炼连续 {repeated_fail_count} 个身份返回外府入口不可用，"
+                    f"串行批次已在 {index}/{total} 中止，入口冷却至 {fmt_abs_ts(retry_at)}。",
+                    scope="global",
+                    priority="normal",
+                    limit=340,
                 )
                 return
             if index < total:
