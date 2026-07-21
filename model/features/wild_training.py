@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import time
 
@@ -21,6 +22,7 @@ from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_miniapp_auto_config,
+    get_miniapp_state_records,
     get_wild_training_strategy,
     set_wild_training_strategy,
     state,
@@ -56,7 +58,11 @@ WILD_TRAINING_MINIAPP_RUN_LEASE_SEC = 20 * 60
 WILD_TRAINING_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
 WILD_TRAINING_MINIAPP_MAX_FAILURE_BACKOFF_SEC = 4 * 60 * 60
 WILD_TRAINING_MINIAPP_ENTRY_RETRY_SEC = 60 * 60
-WILD_TRAINING_MINIAPP_MIN_GAP_SEC = 5
+WILD_TRAINING_MINIAPP_MIN_GAP_SEC = 30
+WILD_TRAINING_MINIAPP_BUSY_RETRY_MIN_SEC = 2 * 60
+WILD_TRAINING_MINIAPP_BUSY_RETRY_MAX_SEC = 5 * 60
+WILD_TRAINING_DAILY_SPREAD_MIN_SEC = 30 * 60
+WILD_TRAINING_DAILY_SPREAD_MAX_SEC = 90 * 60
 
 _WILD_TRAINING_LOCKS = {}
 _WILD_TRAINING_MINIAPP_TASKS = {}
@@ -183,6 +189,76 @@ def _schedule_retry(now):
         WILD_TRAINING_RETRY_MIN_SEC,
         WILD_TRAINING_RETRY_MAX_SEC,
     )
+
+
+def _server_timestamp(value):
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if parsed > 10_000_000_000:
+        parsed /= 1000.0
+    return max(0.0, parsed)
+
+
+def _daily_reset_spread_target(identity_id, wild):
+    wild = wild if isinstance(wild, dict) else {}
+    try:
+        daily_remaining = int(wild.get("daily_remaining", -1))
+        daily_count = int(wild.get("daily_count", -1))
+        daily_limit = int(wild.get("daily_limit", -1))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, 0.0
+    if daily_remaining != 0 or daily_limit <= 0 or daily_count < daily_limit:
+        return 0.0, 0.0
+    reset_at = _server_timestamp(wild.get("reset_at") or wild.get("ready_at"))
+    if reset_at <= 0:
+        return 0.0, 0.0
+    spread_span = WILD_TRAINING_DAILY_SPREAD_MAX_SEC - WILD_TRAINING_DAILY_SPREAD_MIN_SEC
+    digest = hashlib.sha256(f"{int(identity_id or 0)}:{int(reset_at)}".encode("ascii")).digest()
+    spread = WILD_TRAINING_DAILY_SPREAD_MIN_SEC + int.from_bytes(digest[:8], "big") % (spread_span + 1)
+    return reset_at, reset_at + spread
+
+
+def _spread_server_next_time(identity_id, next_time, wild):
+    _reset_at, spread_target = _daily_reset_spread_target(identity_id, wild)
+    return max(float(next_time or 0), spread_target)
+
+
+def reconcile_wild_training_daily_reset_spread(now):
+    """Spread old exact-reset timers without overriding a later failure backoff."""
+    identity_id = int(get_current_identity_id() or 0)
+    record = dict(get_miniapp_state_records().get(f"{identity_id}:wild_training") or {})
+    record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
+    wild = record_state.get("wild") if isinstance(record_state.get("wild"), dict) else {}
+    reset_at, spread_target = _daily_reset_spread_target(identity_id, wild)
+    try:
+        next_time = float(state.get("next_wild_training_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    now = float(now or time.time())
+    if (
+        spread_target <= now
+        or next_time <= 0
+        or next_time >= spread_target
+        or next_time > reset_at + 5 * 60
+    ):
+        return False
+    state["next_wild_training_time"] = spread_target
+    mark_dirty()
+    return True
+
+
+def _schedule_miniapp_busy_retry(now, reason="洞府公共入口繁忙"):
+    state["next_wild_training_time"] = float(now) + random.uniform(
+        WILD_TRAINING_MINIAPP_BUSY_RETRY_MIN_SEC,
+        WILD_TRAINING_MINIAPP_BUSY_RETRY_MAX_SEC,
+    )
+    state["wild_training_last_result"] = "MiniApp 串行等待"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = ""
+    save_state()
+    return state["next_wild_training_time"]
 
 
 def _recent_craft_prediction_consume_attempt_for_due(due_at, now):
@@ -364,7 +440,12 @@ def _wild_training_result_text(action_result):
 
 async def _apply_miniapp_result(result, now):
     extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
-    next_time = float(extra.get("next_time", 0) or 0)
+    wild = extra.get("wild") if isinstance(extra.get("wild"), dict) else {}
+    next_time = _spread_server_next_time(
+        get_current_identity_id(),
+        float(extra.get("next_time", 0) or 0),
+        wild,
+    )
     if result.get("ok") and not extra.get("acted"):
         state["wild_training_retry_count"] = 0
         state["next_wild_training_time"] = max(float(now) + 60, next_time or float(now) + 30 * 60)
@@ -408,6 +489,9 @@ async def _apply_miniapp_result(result, now):
         state["wild_training_last_error"] = str(result.get("message") or "野外历练当前不可执行")[:240]
         save_state()
         return "cooldown"
+    if not extra.get("acted") and "操作执行中" in str(result.get("message") or ""):
+        _schedule_miniapp_busy_retry(now, result.get("message"))
+        return "busy"
     if extra.get("acted") and not extra.get("transport_ok") and state.get("tianxing_enabled"):
         mark_tianxing_route_result_unknown(
             "探索",
@@ -418,7 +502,13 @@ async def _apply_miniapp_result(result, now):
     return "failed"
 
 
-async def _run_wild_training_miniapp_worker(identity_id, urls, strategy):
+def _wild_training_miniapp_worker_busy():
+    if any(not task.done() for task in _WILD_TRAINING_MINIAPP_TASKS.values()):
+        return True
+    return bool(_WILD_TRAINING_MINIAPP_RUN_LOCK and _WILD_TRAINING_MINIAPP_RUN_LOCK.locked())
+
+
+async def _run_wild_training_miniapp_worker(identity_id, urls, due_at):
     global _WILD_TRAINING_MINIAPP_LAST_RUN_AT
     result = {"ok": False, "message": "无公共洞府入口", "extra": {"phase": "entry_missing"}}
     try:
@@ -426,6 +516,15 @@ async def _run_wild_training_miniapp_worker(identity_id, urls, strategy):
         if _WILD_TRAINING_MINIAPP_RUN_LOCK is None:
             _WILD_TRAINING_MINIAPP_RUN_LOCK = asyncio.Lock()
         async with _WILD_TRAINING_MINIAPP_RUN_LOCK:
+            with use_identity(identity_id):
+                worker_now = time.time()
+                if not state.get("wild_training_enabled"):
+                    return
+                if not await _prepare_wild_training_tianxing_route(worker_now, due_at=due_at):
+                    return
+                strategy = _effective_wild_training_strategy(worker_now)
+                if strategy == "深入" and not await _guard_deep_wild_training_send(worker_now):
+                    return
             gap = time.time() - float(_WILD_TRAINING_MINIAPP_LAST_RUN_AT or 0)
             if gap < WILD_TRAINING_MINIAPP_MIN_GAP_SEC:
                 await asyncio.sleep(WILD_TRAINING_MINIAPP_MIN_GAP_SEC - gap)
@@ -458,11 +557,11 @@ async def _run_wild_training_miniapp_worker(identity_id, urls, strategy):
         console_log(f"⚠️ MiniApp 野外后台异常：{type(exc).__name__}: {exc}，复查→{fmt_abs_ts(next_time)}", scope="identity", limit=260)
 
 
-def _launch_wild_training_miniapp_worker(identity_id, urls, strategy):
+def _launch_wild_training_miniapp_worker(identity_id, urls, due_at):
     identity_id = int(identity_id or 0)
-    if identity_id <= 0 or identity_id in _WILD_TRAINING_MINIAPP_TASKS:
+    if identity_id <= 0 or _wild_training_miniapp_worker_busy():
         return False
-    task = asyncio.create_task(_run_wild_training_miniapp_worker(identity_id, list(urls), strategy))
+    task = asyncio.create_task(_run_wild_training_miniapp_worker(identity_id, list(urls), float(due_at or time.time())))
     _WILD_TRAINING_MINIAPP_TASKS[identity_id] = task
 
     def _done(done_task):
@@ -482,6 +581,7 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
     if not state.get("wild_training_enabled"):
         return
     now = float(now or time.time())
+    reconcile_wild_training_daily_reset_spread(now)
     # Any old command state is inert and must not block the MiniApp route.
     state["wild_training_reply_to_msg_id"] = 0
     state["wild_training_reply_due_at"] = 0
@@ -494,31 +594,33 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
         save_state()
         return
     if next_time > now:
+        if _wild_training_miniapp_worker_busy():
+            return
         windows = build_tianxing_consume_window(
             "探索", now=now, due_at=next_time, reason="野外历练", require_change_fate=True
         )
         if windows and not _tianxing_prepare_retry_blocks(now):
             await _prepare_wild_training_tianxing_route(now, due_at=next_time)
         return
-    if not await _prepare_wild_training_tianxing_route(now, due_at=now):
-        return
-    strategy = _effective_wild_training_strategy(now)
-    if strategy == "深入" and not await _guard_deep_wild_training_send(now):
-        return
     urls = _wild_training_public_entry_urls()
     if not urls:
         _set_miniapp_failure(now, "缺少洞府公共入口", entry_missing=True)
         return
     identity_id = int(get_current_identity_id() or 0)
-    if identity_id in _WILD_TRAINING_MINIAPP_TASKS:
+    if _wild_training_miniapp_worker_busy():
+        _schedule_miniapp_busy_retry(now)
         return
+    due_at = next_time
+    strategy = normalize_wild_training_strategy(get_wild_training_strategy())
     state["next_wild_training_time"] = now + WILD_TRAINING_MINIAPP_RUN_LEASE_SEC
-    state["wild_training_last_result"] = f"MiniApp 已排队：{strategy}"
+    state["wild_training_last_result"] = f"MiniApp 串行执行：{strategy}"
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = ""
     save_state()
-    if _launch_wild_training_miniapp_worker(identity_id, urls, strategy):
-        console_log(f"🏞️ MiniApp 野外已排队：{strategy}", scope="identity", limit=220)
+    if _launch_wild_training_miniapp_worker(identity_id, urls, due_at):
+        console_log(f"🏞️ MiniApp 野外开始串行执行：{strategy}", scope="identity", limit=220)
+    else:
+        _schedule_miniapp_busy_retry(now)
 
 
 async def run_wild_training_phaseful_cleanup_scheduler(now):
@@ -552,5 +654,6 @@ __all__ = [
     "run_wild_training_phaseful_cleanup_scheduler",
     "run_wild_training_scheduler",
     "schedule_wild_training_initial_check",
+    "reconcile_wild_training_daily_reset_spread",
     "_tianxing_prepare_retry_blocks",
 ]

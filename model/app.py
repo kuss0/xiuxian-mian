@@ -184,6 +184,7 @@ from .features.wild_training import (
     WILD_TRAINING_RETRY_MIN_SEC,
     WILD_TRAINING_SEND_TIMEOUT_SEC,
     _tianxing_prepare_retry_blocks,
+    reconcile_wild_training_daily_reset_spread,
     run_wild_training_phaseful_cleanup_scheduler,
     run_wild_training_scheduler,
 )
@@ -1946,6 +1947,7 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                 continue
             if not state.get("wild_training_enabled"):
                 continue
+            reconcile_wild_training_daily_reset_spread(scheduler_now)
             pending_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
             try:
                 reply_due_at = float(state.get("wild_training_reply_due_at", 0) or 0)

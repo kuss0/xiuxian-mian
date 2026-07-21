@@ -15,6 +15,7 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["send_as_profiles"] = {}
         state_module.ensure_identity_registered(991201)
         state_module.update_send_as_profile(991201, username="wild")
+        wild_training._WILD_TRAINING_LOCKS.clear()
         wild_training._WILD_TRAINING_MINIAPP_TASKS.clear()
         wild_training._WILD_TRAINING_MINIAPP_RUN_LOCK = None
         wild_training._WILD_TRAINING_MINIAPP_LAST_RUN_AT = 0
@@ -143,15 +144,143 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, state_module.state["wild_training_retry_count"])
         self.assertEqual(now + wild_training.WILD_TRAINING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_wild_training_time"])
 
-    async def test_tianxing_route_must_release_before_miniapp_queue(self):
+    async def test_tianxing_route_is_prepared_inside_the_single_worker(self):
         now = 1_700_000_000.0
         self._enable(now=now, strategy="深入", tianxing=True)
         with state_module.use_identity(991201), \
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]), \
                 patch.object(wild_training, "_prepare_wild_training_tianxing_route", new=AsyncMock(return_value=False)) as prep_mock, \
-                patch.object(wild_training, "_launch_wild_training_miniapp_worker") as launch_mock:
+                patch.object(wild_training, "run_cave_public_wild_training", new=AsyncMock()) as run_mock, \
+                patch.object(wild_training.time, "time", return_value=now), \
+                patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
+            prep_mock.assert_not_awaited()
+            await asyncio.sleep(0)
         prep_mock.assert_awaited_once()
-        launch_mock.assert_not_called()
+        run_mock.assert_not_awaited()
+
+    async def test_busy_worker_does_not_prepare_tianxing_or_create_waiting_task(self):
+        now = 1_700_000_000.0
+        self._enable(now=now, strategy="深入", tianxing=True)
+        blocker = asyncio.Event()
+        existing = asyncio.create_task(blocker.wait())
+        wild_training._WILD_TRAINING_MINIAPP_TASKS[777001] = existing
+        with state_module.use_identity(991201), \
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]), \
+                patch.object(wild_training, "_prepare_wild_training_tianxing_route", new=AsyncMock(return_value=True)) as prep_mock, \
+                patch.object(wild_training.random, "uniform", return_value=180), \
+                patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+        prep_mock.assert_not_awaited()
+        self.assertEqual([777001], list(wild_training._WILD_TRAINING_MINIAPP_TASKS))
+        self.assertEqual(now + 180, state_module.state["next_wild_training_time"])
+        blocker.set()
+        await existing
+
+    async def test_same_reset_for_22_identities_creates_only_one_worker(self):
+        now = 1_700_000_000.0
+        identity_ids = [991201 + offset for offset in range(22)]
+        for identity_id in identity_ids[1:]:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username=f"wild{identity_id}")
+        for identity_id in identity_ids:
+            with state_module.use_identity(identity_id) as identity_state:
+                identity_state["wild_training_enabled"] = True
+                identity_state["wild_training_strategy"] = "谨慎"
+                identity_state["next_wild_training_time"] = now
+                identity_state["tianxing_enabled"] = False
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_worker(_identity_id, _urls, _due_at):
+            started.set()
+            await release.wait()
+
+        with patch.object(wild_training, "_wild_training_public_entry_urls", return_value=["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]), \
+                patch.object(wild_training, "_run_wild_training_miniapp_worker", new=blocked_worker), \
+                patch.object(wild_training.random, "uniform", return_value=180), \
+                patch.object(wild_training, "save_state"):
+            with state_module.use_identity(identity_ids[0]):
+                await wild_training.run_wild_training_scheduler(now)
+            await started.wait()
+            for identity_id in identity_ids[1:]:
+                with state_module.use_identity(identity_id):
+                    await wild_training.run_wild_training_scheduler(now)
+
+        self.assertEqual(1, len(wild_training._WILD_TRAINING_MINIAPP_TASKS))
+        for identity_id in identity_ids[1:]:
+            with state_module.use_identity(identity_id):
+                self.assertEqual(now + 180, state_module.state["next_wild_training_time"])
+        release.set()
+        await asyncio.gather(*wild_training._WILD_TRAINING_MINIAPP_TASKS.values())
+
+    async def test_daily_limit_reset_is_spread_but_same_day_followup_is_not(self):
+        now = 1_700_000_000.0
+        reset_at = now + 43_200
+        self._enable(now=now)
+        exhausted = {
+            "ok": True,
+            "message": "第二轮完成",
+            "extra": {
+                "acted": True,
+                "completed": True,
+                "strategy": "谨慎",
+                "next_time": reset_at,
+                "wild": {
+                    "daily_count": 2,
+                    "daily_limit": 2,
+                    "daily_remaining": 0,
+                    "reset_at": reset_at * 1000,
+                },
+            },
+        }
+        with state_module.use_identity(991201), patch.object(wild_training, "save_state"):
+            await wild_training._apply_miniapp_result(exhausted, now)
+            spread_time = state_module.state["next_wild_training_time"]
+        self.assertGreaterEqual(spread_time, reset_at + wild_training.WILD_TRAINING_DAILY_SPREAD_MIN_SEC)
+        self.assertLessEqual(spread_time, reset_at + wild_training.WILD_TRAINING_DAILY_SPREAD_MAX_SEC)
+
+        followup = {
+            "ok": True,
+            "message": "第一轮完成",
+            "extra": {
+                "acted": True,
+                "completed": True,
+                "strategy": "谨慎",
+                "next_time": now + 60,
+                "wild": {"daily_count": 1, "daily_limit": 2, "daily_remaining": 1},
+            },
+        }
+        with state_module.use_identity(991201), patch.object(wild_training, "save_state"):
+            await wild_training._apply_miniapp_result(followup, now)
+        self.assertEqual(now + 60, state_module.state["next_wild_training_time"])
+
+    def test_reconcile_spreads_existing_exact_reset_but_preserves_later_backoff(self):
+        now = 1_700_000_000.0
+        reset_at = now + 43_200
+        wild = {
+            "daily_count": 2,
+            "daily_limit": 2,
+            "daily_remaining": 0,
+            "reset_at": reset_at * 1000,
+        }
+        state_module.set_miniapp_state_records({
+            "991201:wild_training": {"state": {"wild": wild}},
+        })
+        self._enable(now=reset_at)
+        with state_module.use_identity(991201), patch.object(wild_training, "mark_dirty"):
+            changed = wild_training.reconcile_wild_training_daily_reset_spread(now)
+            spread_time = state_module.state["next_wild_training_time"]
+        self.assertTrue(changed)
+        self.assertGreaterEqual(spread_time, reset_at + wild_training.WILD_TRAINING_DAILY_SPREAD_MIN_SEC)
+
+        with state_module.use_identity(991201) as identity_state:
+            identity_state["next_wild_training_time"] = reset_at + 4 * 3600
+        with state_module.use_identity(991201), patch.object(wild_training, "mark_dirty"):
+            changed = wild_training.reconcile_wild_training_daily_reset_spread(now)
+        self.assertFalse(changed)
+        self.assertEqual(reset_at + 4 * 3600, state_module.state["next_wild_training_time"])
 
     def test_tianxing_preserves_configured_mode_and_only_downgrades_unprotected_deep(self):
         now = 1_700_000_000.0
