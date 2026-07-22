@@ -1,4 +1,5 @@
 import atexit
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -134,6 +135,74 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "external_entry_not_automated" in script
     assert "自动上线" not in script
     assert "已上线" not in script
+
+
+def test_runtime_health_snapshot_merges_live_bot_and_module_pending_state(tmp_path):
+    health_dir = tmp_path / "health_observer"
+    health_dir.mkdir()
+    (health_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "ts": "2026-07-19 17:00:00",
+                "health": {"score": 100, "level": "ok", "risk_reasons": []},
+                "business": {
+                    "message_state": {"sent_count": 9},
+                    "db_state": {
+                        "pending_total": 0,
+                        "module_pending_total": 2,
+                        "module_summary": [],
+                    },
+                },
+                "listener": {
+                    "status": "degraded_no_connected_accounts",
+                    "age_sec": 4,
+                    "registered_accounts": [],
+                    "failed_accounts": [{"account_id": 1}],
+                },
+                "evidence_refs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with (
+        patch.object(ui, "STATE_DIR", str(tmp_path)),
+        patch.object(ui, "get_global_enabled", return_value=False),
+        patch.object(ui, "get_global_pause_source", return_value="bot_health_monitor"),
+        patch.object(
+            ui,
+            "get_bot_health_snapshot",
+            return_value={
+                "state": "paused",
+                "reason": "600 秒无 bot 回复",
+                "changed_at": 1_700_000_000,
+                "waiting_since": 0,
+                "last_seen_at": 1_699_999_000,
+                "probe_sent_at": 0,
+                "probe_msg_id": 0,
+            },
+        ),
+    ):
+        snapshot = ui.get_runtime_health_snapshot()
+
+    assert snapshot["pending_total"] == 0
+    assert snapshot["module_pending_total"] == 2
+    assert snapshot["bot_health"]["state"] == "paused"
+    assert snapshot["global_enabled"] is False
+    assert snapshot["global_pause_source"] == "bot_health_monitor"
+    assert snapshot["listener"]["status"] == "degraded_no_connected_accounts"
+    assert snapshot["listener"]["failed_account_count"] == 1
+
+
+def test_runtime_health_ui_surfaces_live_bot_and_both_pending_counts():
+    script = (PROJECT_ROOT / "model/web/static/js/runtime_health_ui.js").read_text(encoding="utf-8")
+
+    assert "游戏 Bot" in script
+    assert "global_pause_source" in script
+    assert "module_pending_total" in script
+    assert "任务 pending" in script
+    assert "模块 pending" in script
 
 
 def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal():

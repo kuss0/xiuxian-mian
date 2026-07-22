@@ -184,7 +184,7 @@ from .official_schedule import (
     replace_planned_batch as replace_official_schedule_planned_batch,
 )
 from .persistence import save_state
-from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_bot_health_snapshot, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .storage_bag_api_client import (
     REFRESH_PATH as STORAGE_BAG_API_REFRESH_PATH,
     VERIFY_PATH as STORAGE_BAG_API_VERIFY_PATH,
@@ -1243,6 +1243,21 @@ def get_quiz_ai_snapshot():
 
 def get_runtime_health_snapshot():
     path = os.path.join(STATE_DIR, "health_observer", "latest.json")
+    live_bot_health = get_bot_health_snapshot()
+    live_bot_health = {
+        "state": str(live_bot_health.get("state") or "unknown"),
+        "reason": str(live_bot_health.get("reason") or ""),
+        "changed_at": fmt_abs_ts(live_bot_health.get("changed_at") or 0),
+        "waiting_since": fmt_abs_ts(live_bot_health.get("waiting_since") or 0),
+        "last_seen_at": fmt_abs_ts(live_bot_health.get("last_seen_at") or 0),
+        "probe_sent_at": fmt_abs_ts(live_bot_health.get("probe_sent_at") or 0),
+        "probe_msg_id": int(live_bot_health.get("probe_msg_id") or 0),
+    }
+    live_control = {
+        "global_enabled": bool(get_global_enabled()),
+        "global_pause_source": str(get_global_pause_source() or ""),
+        "bot_health": live_bot_health,
+    }
     fallback = {
         "available": False,
         "status": "unknown",
@@ -1250,6 +1265,10 @@ def get_runtime_health_snapshot():
         "module_summary": [],
         "evidence_refs": [],
         "path": path,
+        "pending_total": 0,
+        "module_pending_total": 0,
+        "listener": {},
+        **live_control,
     }
     try:
         with open(path, "r", encoding="utf-8") as fp:
@@ -1264,6 +1283,7 @@ def get_runtime_health_snapshot():
     message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
     module_summary = db_state.get("module_summary") if isinstance(db_state.get("module_summary"), list) else []
     evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
+    listener = payload.get("listener") if isinstance(payload.get("listener"), dict) else {}
     return {
         "available": True,
         "status": payload.get("status") or "unknown",
@@ -1279,7 +1299,15 @@ def get_runtime_health_snapshot():
         "evidence_refs": evidence_refs[:12],
         "sent_count": int(message_state.get("sent_count") or 0),
         "pending_total": int(db_state.get("pending_total") or 0),
+        "module_pending_total": int(db_state.get("module_pending_total") or 0),
+        "listener": {
+            "status": str(listener.get("status") or "unknown"),
+            "age_sec": int(listener.get("age_sec") or 0),
+            "registered_accounts": list(listener.get("registered_accounts") or []),
+            "failed_account_count": len(listener.get("failed_accounts") or []),
+        },
         "path": path,
+        **live_control,
     }
 
 

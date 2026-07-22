@@ -27,6 +27,32 @@
     return 'runtime-health-unknown';
   }
 
+  function effectiveLevel(snapshot) {
+    const health = snapshot.health || {};
+    const botState = String((snapshot.bot_health || {}).state || '').toLowerCase();
+    if (snapshot.global_enabled === false && snapshot.global_pause_source === 'bot_health_monitor') return 'error';
+    if (botState === 'paused') return 'error';
+    if (botState === 'suspect' || botState === 'probing' || botState === 'recovering') return 'warn';
+    return health.level || snapshot.status || 'unknown';
+  }
+
+  function renderLiveState(snapshot) {
+    const botHealth = snapshot.bot_health || {};
+    const listener = snapshot.listener || {};
+    const botState = botHealth.state || 'unknown';
+    const globalState = snapshot.global_enabled === false ? 'paused' : 'enabled';
+    const listenerState = listener.status || 'unknown';
+    const botTitle = botHealth.reason ? botState + ' · ' + botHealth.reason : botState;
+    const pauseTitle = snapshot.global_pause_source
+      ? globalState + ' · ' + snapshot.global_pause_source
+      : globalState;
+    return '<div class="runtime-health-live">'
+      + '<span title="' + esc(botTitle) + '">游戏 Bot <strong>' + esc(botState) + '</strong></span>'
+      + '<span title="' + esc(pauseTitle) + '">全局 <strong>' + esc(globalState) + '</strong></span>'
+      + '<span title="' + esc(listenerState) + '">Listener <strong>' + esc(listenerState) + '</strong></span>'
+      + '</div>';
+  }
+
   function renderRiskList(risks) {
     const items = Array.isArray(risks) ? risks.slice(0, 4) : [];
     if (!items.length) return '<div class="runtime-health-empty">暂无风险</div>';
@@ -72,7 +98,7 @@
     const snapshot = getRuntimeHealthSnapshot();
     const health = snapshot.health || {};
     const score = health.score == null ? '-' : health.score;
-    const level = health.level || snapshot.status || 'unknown';
+    const level = effectiveLevel(snapshot);
     const available = !!snapshot.available;
     const riskCount = Array.isArray(health.risk_reasons) ? health.risk_reasons.length : 0;
     return ''
@@ -80,9 +106,11 @@
       + '<div><h2>运行健康</h2><div class="meta">只读审计包｜' + esc(snapshot.ts || '未生成') + '</div></div>'
       + '<div class="runtime-health-score ' + esc(levelClass(level)) + '"><strong>' + esc(score) + '</strong><span>' + esc(level) + '</span></div>'
       + '</div>'
+      + renderLiveState(snapshot)
       + '<div class="runtime-health-stats">'
       + '<div><strong>' + esc(snapshot.sent_count || 0) + '</strong><span>近窗发送</span></div>'
-      + '<div><strong>' + esc(snapshot.pending_total || 0) + '</strong><span>pending</span></div>'
+      + '<div><strong>' + esc(snapshot.pending_total || 0) + '</strong><span>任务 pending</span></div>'
+      + '<div><strong>' + esc(snapshot.module_pending_total || 0) + '</strong><span>模块 pending</span></div>'
       + '<div><strong>' + esc(riskCount) + '</strong><span>风险</span></div>'
       + '</div>'
       + (available ? '' : '<div class="runtime-health-empty runtime-health-wide">health_observer 尚未生成 latest.json</div>')
