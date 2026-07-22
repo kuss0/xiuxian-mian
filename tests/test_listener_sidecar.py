@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from model import listener_sidecar
@@ -146,3 +147,24 @@ class ListenerSidecarTests(unittest.TestCase):
             with patch.object(listener_sidecar, "LISTENER_HEARTBEAT_FILE", str(heartbeat)):
                 listener_sidecar._cleanup_listener_heartbeat_temp_files()
             self.assertFalse(stale.exists())
+
+    def test_normal_events_defer_heartbeat_write_to_periodic_loop(self):
+        async def run_case():
+            event = SimpleNamespace(chat_id=-1001680975844, id=12345)
+            with (
+                patch.object(listener_sidecar, "_append_replica_group_message_log", return_value=False),
+                patch.object(listener_sidecar, "_append_replica_dispatch_group_message_log", return_value=False),
+                patch.object(listener_sidecar, "_append_game_group_message_log", return_value=True) as append_mock,
+                patch.object(listener_sidecar, "_write_listener_heartbeat") as heartbeat_mock,
+            ):
+                await listener_sidecar._handle_listener_event(event, "message")
+            append_mock.assert_called_once_with(event, event_type="message")
+            heartbeat_mock.assert_not_called()
+
+        asyncio = __import__("asyncio")
+        snapshot = copy.deepcopy(listener_sidecar._listener_stats)
+        try:
+            asyncio.run(run_case())
+        finally:
+            listener_sidecar._listener_stats.clear()
+            listener_sidecar._listener_stats.update(snapshot)

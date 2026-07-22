@@ -234,16 +234,14 @@ async def _handle_listener_event(event, event_type):
         _listener_stats["last_message_id"] = int(getattr(event, "id", 0) or 0)
 
         if _append_replica_group_message_log(event, event_type=event_type):
-            _write_listener_heartbeat()
             return
         if _append_replica_dispatch_group_message_log(event, event_type=event_type):
-            _write_listener_heartbeat()
             return
         _append_game_group_message_log(event, event_type=event_type)
-        _write_listener_heartbeat()
     except Exception:
-        print(traceback.format_exc(), flush=True)
-        _write_listener_heartbeat({"last_error": traceback.format_exc()[-1000:]})
+        error = traceback.format_exc()
+        print(error, flush=True)
+        _write_listener_heartbeat({"last_error": error[-1000:]})
 
 
 def _register_listener_handlers(tc):
