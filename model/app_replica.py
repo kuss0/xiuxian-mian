@@ -5064,13 +5064,12 @@ def _get_identity_id_by_replica_username(username, *, include_disabled=True):
     username = _normalize_replica_username(username)
     if not username:
         return 0
-    for identity_id in get_identity_ids():
-        if not include_disabled and not get_identity_enabled(identity_id):
-            continue
-        profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-        if profile_username == username:
-            return int(identity_id)
-    return 0
+    identity_ids = [
+        int(identity_id)
+        for identity_id in get_identity_ids()
+        if include_disabled or get_identity_enabled(identity_id)
+    ]
+    return int(_index_replica_identity_usernames(identity_ids).get(username) or 0)
 
 
 def _parse_replica_cooldown_until_ts(text):
@@ -8613,11 +8612,9 @@ def _parse_replica_join_room_id(text):
 
 
 def _get_replica_identity_ids_by_username():
-    identity_ids_by_username = {}
-    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
-        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-        identity_ids_by_username[username] = identity_id
-    return identity_ids_by_username
+    return _index_replica_identity_usernames(
+        _get_replica_candidate_identity_ids(require_username=True)
+    )
 
 
 def _map_replica_usernames_to_identity_ids(usernames):
@@ -14186,16 +14183,49 @@ def _normalize_replica_username(username):
     return username.lower()
 
 
-def _get_enabled_replica_identity_ids_by_username(participant_identity_ids=None, fallback_to_all=True):
+def _get_replica_identity_usernames(identity_id):
+    profile = get_send_as_profile(identity_id) or {}
+    raw_aliases = profile.get("username_aliases") or []
+    if isinstance(raw_aliases, str):
+        raw_aliases = [raw_aliases]
+    values = [profile.get("username"), *raw_aliases]
+    usernames = []
+    seen = set()
+    for value in values:
+        username = _normalize_replica_username(value)
+        if not username or username in seen:
+            continue
+        seen.add(username)
+        usernames.append(username)
+    return usernames
+
+
+def _index_replica_identity_usernames(identity_ids):
+    profiles = []
     identity_ids_by_username = {}
-    for identity_id in _get_replica_candidate_identity_ids(
-        require_username=True,
-        participant_identity_ids=participant_identity_ids,
-        fallback_to_all=fallback_to_all,
-    ):
-        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-        identity_ids_by_username[username] = identity_id
+    for identity_id in identity_ids or []:
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0:
+            continue
+        usernames = _get_replica_identity_usernames(identity_id)
+        if not usernames:
+            continue
+        profiles.append((identity_id, usernames))
+        identity_ids_by_username[usernames[0]] = identity_id
+    for identity_id, usernames in profiles:
+        for alias in usernames[1:]:
+            identity_ids_by_username.setdefault(alias, identity_id)
     return identity_ids_by_username
+
+
+def _get_enabled_replica_identity_ids_by_username(participant_identity_ids=None, fallback_to_all=True):
+    return _index_replica_identity_usernames(
+        _get_replica_candidate_identity_ids(
+            require_username=True,
+            participant_identity_ids=participant_identity_ids,
+            fallback_to_all=fallback_to_all,
+        )
+    )
 
 
 def _parse_replica_dispatch_command(raw_text):

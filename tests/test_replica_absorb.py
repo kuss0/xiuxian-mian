@@ -4528,6 +4528,57 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual({".苍坤抉择 1", ".苍坤抉择 2", ".苍坤抉择 3"}, {payload["command"] for payload in payloads})
         self.assertEqual({leader_id}, {payload["identity_id"] for payload in payloads})
 
+    def test_cangkun_stage_resolves_historical_leader_username(self):
+        leader_id = self._register_replica_identity(991201, "jfdffdddd1", professions="咒师")
+        state_module.update_send_as_profile(leader_id, username_aliases=["jfdffdddd"])
+        member_id = self._register_replica_identity(991202, "myios17", professions="破军")
+        state_module.set_replica_participant_identity_ids([leader_id, member_id])
+        now = 2000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【苍坤上人洞府·集结】\n"
+            "@jfdffdddd 以【苍坤残图】锁定了太妙神禁的薄弱方位！\n"
+            "房间ID: 431",
+            now=now - 600,
+            msg_id=342067,
+        )
+        app_replica._mark_replica_team_joined_from_text(
+            "@myios17 已加入苍坤上人洞府队伍！\n"
+            "当前队伍 (2/5):\n"
+            "- @jfdffdddd (咒师)\n"
+            "- @myios17 (破军)",
+            now=now - 599,
+            msg_id=342073,
+        )
+        state_module.set_replica_group_ids([-100777])
+        state_module.set_replica_listener_account_map({"-100777": 9001})
+        text = (
+            "【苍坤上人洞府·第一幕】\n"
+            "持识者：@jfdffdddd、@myios17 | 可调神识：6178\n\n"
+            "1 · 匿踪潜行\n"
+            "2 · 伪装混入\n"
+            "3 · 强闯速进\n\n"
+            "请队长使用 .苍坤抉择 1/2/3 做出第一步选择。"
+        )
+        event = SimpleNamespace(id=342085, chat_id=-100123, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(event, now)
+                return handled, notice_mock.await_args.args[1], notice_mock.await_args.kwargs["buttons"]
+
+        handled, notice_text, buttons = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("苍坤后续抉择：第一幕", notice_text)
+        self.assertIn("@jfdffdddd", notice_text)
+        payloads = [
+            app_replica._get_replica_button_action(button["callback_data"])[1]["payload"]
+            for row in buttons
+            for button in row
+        ]
+        self.assertEqual({leader_id}, {payload["identity_id"] for payload in payloads})
+        self.assertEqual(leader_id, app_replica._get_identity_id_by_replica_username("@jfdffdddd"))
+        self.assertEqual(leader_id, app_replica._get_replica_identity_ids_by_username()["@jfdffdddd"])
+
     def test_cangkun_fifth_stage_advice_blocks_greed_when_warning_high(self):
         text = (
             "当前状态：神魂稳度 94 / 慕兰警戒 63 / 贪念 35 / 卷轴线索 3\n\n"
