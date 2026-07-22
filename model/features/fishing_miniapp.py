@@ -38,6 +38,9 @@ FISHING_MINIAPP_ENDPOINTS = {
     "result": f"{FISHING_MINIAPP_API_PATH_PREFIX}result",
     "next": f"{FISHING_MINIAPP_API_PATH_PREFIX}next",
     "shop": f"{FISHING_MINIAPP_API_PATH_PREFIX}shop",
+    "buy_bait": f"{FISHING_MINIAPP_API_PATH_PREFIX}buy-bait",
+    "chum": f"{FISHING_MINIAPP_API_PATH_PREFIX}chum",
+    "open": f"{FISHING_MINIAPP_API_PATH_PREFIX}open",
 }
 FISHING_MINIAPP_START_PARAM_PATTERN = r"(?:fish_)?[A-Za-z0-9_-]{4,160}"
 FISHING_MINIAPP_DEFAULT_SCORE_LOW = 92
@@ -75,6 +78,16 @@ FISHING_MINIAPP_DAILY_LIMIT_ERRORS = {
     "次数已尽",
     "次数用完",
 }
+FISHING_MINIAPP_NO_ROD_MARKERS = (
+    "需先在商城购买鱼竿",
+    "需要先在商城购买鱼竿",
+    "请先购买鱼竿",
+    "未持有鱼竿",
+    "没有鱼竿",
+    "fishing_rod_missing",
+    "no_rod",
+    "rod_missing",
+)
 
 
 def build_fishing_miniapp_adapter(*, api_base_url=FISHING_MINIAPP_DEFAULT_API_BASE_URL, bot_username=FISHING_MINIAPP_DEFAULT_BOT_USERNAME):
@@ -415,6 +428,8 @@ def build_fishing_miniapp_flow_plan():
 
 def classify_fishing_miniapp_error(error):
     code = str(error or "").strip()
+    if _fishing_no_rod_reason(code):
+        return "no_rod"
     if code in FISHING_MINIAPP_ALREADY_SETTLED_ERRORS:
         return "already_settled"
     if code in FISHING_MINIAPP_EXPIRED_ERRORS:
@@ -424,6 +439,34 @@ def classify_fishing_miniapp_error(error):
     if code in FISHING_MINIAPP_DAILY_LIMIT_ERRORS or any(keyword in code for keyword in FISHING_MINIAPP_DAILY_LIMIT_ERRORS):
         return "daily_limit"
     return "failed"
+
+
+def _iter_fishing_response_texts(value, *, depth=0):
+    if depth > 5:
+        return
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key or "").strip().lower()
+            if key_text in {
+                "error", "message", "rawmessage", "raw_message", "statusmessage",
+                "status_text", "description", "reason", "errorcode", "error_code",
+            } and isinstance(child, (str, int, float)):
+                yield str(child)
+            else:
+                yield from _iter_fishing_response_texts(child, depth=depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_fishing_response_texts(child, depth=depth + 1)
+    elif isinstance(value, str):
+        yield value
+
+
+def _fishing_no_rod_reason(value):
+    for text in _iter_fishing_response_texts(value):
+        normalized = str(text or "").strip().lower()
+        if any(str(marker).lower() in normalized for marker in FISHING_MINIAPP_NO_ROD_MARKERS):
+            return str(text or "未持有鱼竿").strip()[:180]
+    return ""
 
 
 def _rand_float(rng, low, high):
@@ -517,6 +560,19 @@ def _extract_start_view(data):
         "bite_in_ms": bite_at - server_now,
         "challenge": challenge,
     }
+
+
+def _no_rod_flow_result(data, events):
+    reason = _fishing_no_rod_reason(data)
+    if not reason:
+        return None
+    return _flow_result(
+        False,
+        "no_rod",
+        error=reason,
+        data={"terminal_skip": True, "rod_required": True},
+        events=events,
+    )
 
 
 def _flow_result(ok, status, *, error="", data=None, events=None, proof=None, active_token=""):
@@ -915,6 +971,9 @@ def run_fishing_miniapp_lab_flow(
     if not start_result.ok:
         status = classify_fishing_miniapp_error(start_result.error)
         return _flow_result(False, status, error=start_result.error, events=events)
+    no_rod = _no_rod_flow_result(start_result.data, events)
+    if no_rod:
+        return no_rod
 
     view = _extract_start_view(start_result.data)
     if view["phase"] == "lobby" and view["challenge"] is None:
@@ -945,6 +1004,9 @@ def run_fishing_miniapp_lab_flow(
         if not start_result.ok:
             status = classify_fishing_miniapp_error(start_result.error)
             return _flow_result(False, status, error=start_result.error, events=events)
+        no_rod = _no_rod_flow_result(start_result.data, events)
+        if no_rod:
+            return no_rod
         view = _extract_start_view(start_result.data)
     if view["challenge"] is None:
         if view["phase"] == "expired":
@@ -968,6 +1030,9 @@ def run_fishing_miniapp_lab_flow(
         if not start_result.ok:
             status = classify_fishing_miniapp_error(start_result.error)
             return _flow_result(False, status, error=start_result.error, events=events)
+        no_rod = _no_rod_flow_result(start_result.data, events)
+        if no_rod:
+            return no_rod
         view = _extract_start_view(start_result.data)
 
     challenge = view["challenge"]

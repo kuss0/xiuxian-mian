@@ -748,6 +748,41 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("MiniApp not_ready", state_module.state["fishing_last_error"])
             self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
 
+    async def test_miniapp_no_rod_skips_identity_without_error_or_daily_consumption(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 6, 7, 55, 0)
+        flow_result = {
+            "ok": False,
+            "status": "no_rod",
+            "error": "你需要先在商城购买鱼竿",
+            "data": {"terminal_skip": True, "rod_required": True},
+            "events": [{"step": "start_waiting", "ok": True}],
+        }
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_daily_limit"] = 5
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 2
+            with (
+                patch.object(fishing_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=flow_result)),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
+                handled = await fishing_runtime.handle_fishing_miniapp_entry(
+                    self._miniapp_event(),
+                    "【灵溪垂钓】钓者：@WalterWA2000，请点击按钮进入小程序",
+                    now,
+                    result_msg_id=33002,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(2, state_module.state["fishing_daily_count"])
+            self.assertEqual("未持有鱼竿，今日跳过", state_module.state["fishing_last_result"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertNotIn("MiniApp 异常", "\n".join(str(call.args[0]) for call in audit_mock.await_args_list if call.args))
+
     async def test_miniapp_partial_not_ready_counts_only_settled_rounds(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 7, 54, 40)

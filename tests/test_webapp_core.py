@@ -458,6 +458,34 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("query_id=abc", summary_text)
         self.assertIn("initData", request["safe_summary"]["secret_keys"])
 
+    def test_fishing_miniapp_no_rod_is_terminal_and_action_endpoints_are_declared(self):
+        adapter = fishing_miniapp.build_fishing_miniapp_adapter()
+        self.assertEqual(
+            "/api/miniapp/xianxia-fishing/buy-bait",
+            adapter.api_endpoint("buy_bait"),
+        )
+        self.assertEqual("no_rod", fishing_miniapp.classify_fishing_miniapp_error("需先在商城购买鱼竿"))
+        calls = []
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 200, {
+                "ok": True,
+                "message": "你需要先在商城购买鱼竿",
+                "session": {"phase": "idle"},
+            }
+
+        result = fishing_miniapp.run_fishing_miniapp_lab_flow(
+            token="fish_ROD_TEST",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            transport=transport,
+            sleeper=lambda _delay: None,
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual("no_rod", result["status"])
+        self.assertEqual(["start"], calls)
+        self.assertTrue(result["data"]["terminal_skip"])
+
     def test_miniapp_http_request_safe_summary_does_not_log_header_values(self):
         adapter = fishing_miniapp.build_fishing_miniapp_adapter()
         request = webapp_core.build_miniapp_http_request(

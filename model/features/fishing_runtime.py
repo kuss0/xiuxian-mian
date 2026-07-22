@@ -657,6 +657,8 @@ def _format_miniapp_result_summary(result):
     result = dict(result or {})
     status = str(result.get("status") or "unknown").strip() or "unknown"
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if status == "no_rod":
+        return "未持有鱼竿，今日跳过"
     settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
     round_prefix = f"{settled_count}竿｜" if settled_count > 1 else ""
     if result.get("ok"):
@@ -1033,6 +1035,21 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     status = str(result.get("status") or "").strip()
     completed_ok = ok or status == "daily_limit"
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if status == "no_rod":
+        updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
+        updates.update({
+            "fishing_phase": "idle",
+            "fishing_last_msg_id": int(result_msg_id or 0),
+            "fishing_last_result": "未持有鱼竿，今日跳过",
+            "fishing_last_error": "",
+            "next_fishing_time": fishing_behavior.next_fishing_daily_limit_check_timestamp(
+                now,
+                random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
+            ),
+        })
+        _apply_updates(updates)
+        save_state()
+        return updates["fishing_last_result"]
     catches = extract_fishing_miniapp_catches(data)
     updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
     updates["fishing_phase"] = "idle"
@@ -1271,7 +1288,8 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
         result = dict(result or {})
         summary = _apply_fishing_miniapp_result(result, now, result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0))
         await _send_fishing_miniapp_harvest_summary(result)
-        if not result.get("ok") or str(result.get("status") or "").strip() in {"next_failed", "next_unavailable"}:
+        status = str(result.get("status") or "").strip()
+        if (not result.get("ok") or status in {"next_failed", "next_unavailable"}) and status != "no_rod":
             await send_audit_log(f"🎣 灵溪垂钓 MiniApp 异常：{summary}", scope="identity", limit=240)
         else:
             await _send_fishing_daily_completion_summary(now)
