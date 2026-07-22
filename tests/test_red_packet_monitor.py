@@ -39,6 +39,18 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
                 "🧧 【LDC 红包】｜@user 10.00 LDC / 5 份 请直接点击下方按钮抢红包"
             ),
         )
+        self.assertEqual(
+            {"amount": 100.0, "count": 8},
+            red_packet_monitor.parse_red_packet_created(
+                "🧧 【LDC 红包】｜@incomingsnow 100.00 LDC / 8 份 请直接点击下方按钮抢红包 需已绑定论坛｜30 分钟"
+            ),
+        )
+        self.assertEqual(
+            {"amount": 100.0, "count": 8},
+            red_packet_monitor.parse_red_packet_created(
+                "🧧【LDC\u00a0红包】 @incomingsnow １００.００ LDC／８ 个"
+            ),
+        )
         self.assertIsNone(red_packet_monitor.parse_red_packet_created("红包已抢完"))
 
     async def test_target_group_candidate_is_observed_once_across_clients(self):
@@ -223,3 +235,38 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
                 for call in audit_mock.await_args_list
             )
         )
+
+    async def test_real_world_card_text_matches_command_and_alerts(self):
+        command = SimpleNamespace(
+            raw_text=".发红包 100 8",
+            chat=SimpleNamespace(username="ja_netfilter_group"),
+            chat_id=-1001680975844,
+            id=11691305,
+            sender_id=7876882550,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
+        )
+        created = SimpleNamespace(
+            raw_text="🧧 【LDC 红包】｜@incomingsnow 100.00 LDC / 8 份 请直接点击下方按钮抢红包 需已绑定论坛｜30 分钟",
+            chat=SimpleNamespace(username="ja_netfilter_group"),
+            chat_id=-1001680975844,
+            id=11691310,
+            sender_id=8388633812,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
+        )
+        with patch.object(red_packet_monitor, "console_log"), patch.object(
+            red_packet_monitor, "send_audit_log", new=AsyncMock()
+        ) as audit_mock, patch.object(
+            red_packet_monitor,
+            "send_log_bot_notification",
+            new=AsyncMock(return_value=True),
+        ) as channel_mock, patch.object(
+            red_packet_monitor, "_RED_PACKET_ALERT_INTERVAL_SEC", 0
+        ):
+            await red_packet_monitor.observe_red_packet_candidate(command)
+            await red_packet_monitor.observe_red_packet_candidate(created)
+            await red_packet_monitor.drain_red_packet_alert_tasks()
+
+        self.assertEqual(3, audit_mock.await_count)
+        self.assertEqual(3, channel_mock.await_count)
+        self.assertTrue(all("100 LDC" in call.args[0] for call in audit_mock.await_args_list))
+        self.assertTrue(all("/458347/11691310" in call.args[0] for call in audit_mock.await_args_list))

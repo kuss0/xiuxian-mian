@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
+from ..config import CMD_TIANTI_STATUS
 from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
@@ -12,7 +13,7 @@ from ..runtime import send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from . import deep_retreat, fishing_behavior, stargazer, tree_runtime, yuanying
+from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yuanying
 from .cave_treasure_miniapp import (
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
@@ -2307,6 +2308,75 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
         }
 
 
+async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=None):
+    """Read `.天阶状态` through Tianjige and calibrate the existing reducer."""
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    with use_identity(identity_id):
+        if not state.get("tianti_enabled"):
+            return {"ok": False, "message": "天阶模块已关闭", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_tianti_status_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府天机阁天阶状态身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"☁️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
+            return {"ok": False, "message": message, "extra": {}}
+
+        result = await run_cave_tianjige_command_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            command=CMD_TIANTI_STATUS,
+            init_data=session.get("init_data") or "",
+            player_id=session.get("player_id"),
+            capture_sink=_capture_store(now),
+            capture_source=f"cave_public_tianjige_tianti_status:{identity_id}",
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        message = extract_cave_tianjige_command_message(data)
+        if not result.get("ok") or not message:
+            error_text = result.get("error") or result.get("status") or "天机阁未返回天阶状态文案"
+            final_message = f"洞府天机阁天阶状态未确认：{error_text}"
+            await send_audit_log(f"☁️ {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
+            return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
+
+        with use_identity(identity_id):
+            sync_result = tianti.sync_tianti_miniapp_status(message, now=now)
+        if not sync_result.get("handled"):
+            final_message = "洞府天机阁天阶状态回包未匹配现有解析器，保留原状态"
+            await send_audit_log(f"☁️ {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
+            return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
+
+        final_message = "洞府天机阁天阶状态已同步（只读，不触发登阶）"
+        await send_audit_log(
+            f"☁️ {final_message}｜进度 {sync_result.get('payload', {}).get('progress_current', 0)}/{sync_result.get('payload', {}).get('progress_total', 0)}",
+            scope="identity",
+            send_as_id=identity_id,
+            priority="low",
+            limit=300,
+        )
+        return {"ok": True, "message": final_message, "extra": {"sync": sync_result}}
+
+
 async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -2585,6 +2655,7 @@ __all__ = [
     "run_cave_public_fishing",
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",
+    "run_cave_public_tianti_status",
     "run_cave_public_tower",
     "run_cave_public_treasure",
     "run_cave_public_trial",

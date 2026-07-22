@@ -663,6 +663,36 @@ async def sync_tianti_status(send_as_id):
     return True, f"已发送天阶状态同步指令[{send_as_id}]，等待回复"
 
 
+def sync_tianti_miniapp_status(raw_text, now=None, *, message_id=0):
+    """Apply a read-only Tianjige status reply without triggering a send.
+
+    The normal group reply handler may immediately chain a ready status into
+    `.登天阶`. A command-center status read is only a state calibration source,
+    so it must update the existing reducer while leaving scheduling to the
+    normal tianti scheduler.
+    """
+    now = float(now or time.time())
+    payload = _parse_tianti_panel(str(raw_text or ""))
+    if not payload:
+        return {"handled": False, "reason": "panel_unrecognized", "payload": {}}
+
+    _ensure_tianti_wenxin_daily_state(now)
+    changed = _mark_tianti_status_synced(
+        now,
+        SimpleNamespace(id=int(message_id or 0)) if int(message_id or 0) > 0 else None,
+    )
+    changed = _apply_tianti_panel_payload(payload, now=now) or changed
+    _calc_tianti_wenxin_plan(now)
+    state["tianti_last_error"] = ""
+    save_state()
+    return {
+        "handled": True,
+        "changed": bool(changed),
+        "payload": dict(payload),
+        "message": "天阶状态已由洞府天机阁同步",
+    }
+
+
 def _is_tianti_reply(text, reply_to, matched_family=None):
     if matched_family in {"tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"}:
         return True
@@ -1155,5 +1185,6 @@ __all__ = [
     "get_tianti_status_text",
     "handle_tianti_reply",
     "run_tianti_scheduler",
+    "sync_tianti_miniapp_status",
     "sync_tianti_status",
 ]

@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import cave_treasure_miniapp, cave_treasure_runtime, deep_retreat, yuanying
+from model.features import cave_treasure_miniapp, cave_treasure_runtime, deep_retreat, tianti, yuanying
 
 
 def _cave_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=df_SECRET999"):
@@ -1250,6 +1250,43 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
         self.assertEqual("command_center:.元婴出窍", execute_mock.call_args.kwargs["step_key"])
+
+    async def test_public_tianti_status_replays_read_only_panel_without_climb(self):
+        now = 1_700_000_500.0
+        raw_message = (
+            "【凌霄云阶】\n"
+            "当前进度：3 / 12 阶\n"
+            "已完成周天：1 轮\n"
+            "罡风淬体：2 / 12 层\n"
+            "登阶冷却：可用\n"
+            "问心状态：今日尚未问心"
+        )
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["tianti_enabled"] = True
+
+        session = {
+            "ok": True,
+            "init_data": "query_id=abc&hash=SECRET",
+            "player_id": 1001,
+        }
+        result = {"ok": True, "data": {"actionResult": {"ok": True, "rawMessage": raw_message}}}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            response = await cave_treasure_runtime.run_cave_public_tianti_status(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertIn("只读，不触发登阶", response["message"])
+        self.assertEqual(".天阶状态", flow_mock.await_args.kwargs["command"])
+        self.assertEqual(3, state_module.state["tianti_progress_current"])
+        self.assertEqual(12, state_module.state["tianti_progress_total"])
+        self.assertEqual(1, state_module.state["tianti_cycle_count"])
+        self.assertEqual(0, state_module.state["tianti_last_climb_msg_id"])
 
     async def test_deep_seclusion_action_flow_disables_http_retries(self):
         http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已结算"}})

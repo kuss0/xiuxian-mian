@@ -104,6 +104,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_fishing,
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
+    run_cave_public_tianti_status,
     run_cave_public_tower,
     run_cave_public_tree,
     run_cave_public_treasure,
@@ -6991,6 +6992,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 )
             elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
                 result = await run_cave_public_yuanying(identity_id, url)
+            elif normalized_action in {"tianti_status", "tianjie_status"}:
+                result = await run_cave_public_tianti_status(identity_id, url)
             elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
                 deep_action = normalized_action.replace("deep_", "", 1)
                 result = await run_cave_public_deep_retreat_action(identity_id, url, deep_action)

@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+import unicodedata
 from collections import OrderedDict
 
 from ..runtime import console_log, send_audit_log, send_log_bot_notification
@@ -12,8 +13,8 @@ RE_RED_PACKET_COMMAND = re.compile(
     r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)\s+(?P<count>\d+)\s*$"
 )
 RE_RED_PACKET_CREATED = re.compile(
-    r"【LDC\s*红包】.*?(?P<amount>\d+(?:\.\d+)?)\s*LDC\s*/\s*"
-    r"(?P<count>\d+)\s*份"
+    r"红包.*?(?P<amount>\d+(?:\.\d+)?)\s*LDC\s*/\s*"
+    r"(?P<count>\d+)\s*(?:份|个)"
 )
 _SEEN_CANDIDATES = OrderedDict()
 _SEEN_CANDIDATE_LIMIT = 1000
@@ -31,7 +32,8 @@ _ALERT_TASKS = set()
 
 
 def parse_red_packet_command(text):
-    match = RE_RED_PACKET_COMMAND.match(str(text or ""))
+    normalized_text = unicodedata.normalize("NFKC", str(text or "")).replace("\u200b", "")
+    match = RE_RED_PACKET_COMMAND.match(normalized_text)
     if not match:
         return None
     return {
@@ -41,7 +43,8 @@ def parse_red_packet_command(text):
 
 
 def parse_red_packet_created(text):
-    match = RE_RED_PACKET_CREATED.search(str(text or ""))
+    normalized_text = unicodedata.normalize("NFKC", str(text or "")).replace("\u200b", "")
+    match = RE_RED_PACKET_CREATED.search(normalized_text)
     if not match:
         return None
     return {

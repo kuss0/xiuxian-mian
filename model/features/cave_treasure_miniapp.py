@@ -9,7 +9,13 @@ import time
 import requests
 from telethon import functions
 
-from ..config import CMD_YUANYING, CMD_YUANYING_STATUS, MESSAGES_DIR, TG_REQUESTS_PROXIES
+from ..config import (
+    CMD_TIANTI_STATUS,
+    CMD_YUANYING,
+    CMD_YUANYING_STATUS,
+    MESSAGES_DIR,
+    TG_REQUESTS_PROXIES,
+)
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..state import get_game_bot_ids
 from ..webapp_core import (
@@ -76,7 +82,12 @@ CAVE_SMALL_WORLD_ACTIONS = frozenset({
 CAVE_JOURNEY_ACTIONS = frozenset({"wild_experience", "set_encounter_mode"})
 CAVE_WILD_EXPERIENCE_MODES = frozenset({"cautious", "balanced", "deep"})
 CAVE_ENCOUNTER_MODES = frozenset({"cautious", "balanced", "plunder", "off"})
-CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({CMD_YUANYING, CMD_YUANYING_STATUS})
+CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({CMD_TIANTI_STATUS})
+CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
+    CMD_TIANTI_STATUS,
+    CMD_YUANYING,
+    CMD_YUANYING_STATUS,
+})
 CAVE_EXTERNAL_ACTIONS = frozenset({"trial", "tianji_trial", "fishing", "pagoda"})
 
 _RATIO_RE = re.compile(r"(?P<label>神识|出手|次数|游戏|局数)?\s*[:：]?\s*(?P<a>\d+)\s*/\s*(?P<b>\d+)")
@@ -200,7 +211,7 @@ def build_cave_treasure_miniapp_request(endpoint, *, token, init_data_session=No
 def normalize_cave_tianjige_command(command):
     normalized = re.sub(r"\s+", " ", str(command or "").strip())
     if normalized not in CAVE_TIANJIGE_ALLOWED_COMMANDS:
-        raise ValueError("洞府天机阁自动化仅允许 .元婴状态 / .元婴出窍")
+        raise ValueError("洞府天机阁自动化仅允许已审核白名单指令")
     return normalized
 
 
@@ -1815,6 +1826,7 @@ __all__ = [
     "CAVE_TREASURE_MINIAPP_GAME_KEY",
     "CAVE_TREASURE_MINIAPP_ENDPOINTS",
     "CAVE_EXTERNAL_ACTIONS",
+    "CAVE_TIANJIGE_READ_ONLY_COMMANDS",
     "CAVE_TIANJIGE_ALLOWED_COMMANDS",
     "build_cave_deep_seclusion_action_request",
     "build_cave_external_action_request",
