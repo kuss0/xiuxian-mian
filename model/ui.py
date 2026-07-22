@@ -352,9 +352,8 @@ _cave_public_background_state = {
     "circuit_reason": "",
 }
 _cave_public_background_retry_at = {}
-_ui_state_get_cache = {}
+_ui_state_get_cache = {"expires_at": 0.0, "snapshot": None}
 UI_STATE_GET_CACHE_SEC = 5.0
-UI_STATE_GET_CACHE_MAX_ENTRIES = 4
 CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC = 10 * 60
 # A successful MiniApp response is authoritative for the current process even
 # if a concurrent state snapshot save temporarily races with it. Keep this
@@ -4789,12 +4788,16 @@ def get_identity_ui_snapshot(send_as_id):
 
 
 def get_ui_snapshot(session_token=None, *, use_cache=False):
-    cache_key = str(session_token or "")
     cache_now = time.monotonic()
     if use_cache:
-        cached = _ui_state_get_cache.get(cache_key) or {}
+        cached = _ui_state_get_cache
         if float(cached.get("expires_at", 0) or 0) > cache_now and isinstance(cached.get("snapshot"), dict):
-            return cached["snapshot"]
+            snapshot = dict(cached["snapshot"])
+            startup_alerts = get_startup_module_alerts()
+            if session_token:
+                startup_alerts = consume_unseen_startup_alerts(session_token, startup_alerts)
+            snapshot["startup_alerts"] = startup_alerts
+            return snapshot
     duel_plan = plan_duel_presets(collect_identity_rows_for_duel_presets())
     duel_preview_by_id = {
         int(row.get("send_as_id") or 0): row for row in (duel_plan.get("rows") or ())
@@ -4812,8 +4815,6 @@ def get_ui_snapshot(session_token=None, *, use_cache=False):
         preview = duel_preview_by_id.get(int(identity.get("send_as_id") or 0)) or {}
         identity["duel_preset_preview"] = preview
     startup_alerts = get_startup_module_alerts()
-    if session_token:
-        startup_alerts = consume_unseen_startup_alerts(session_token, startup_alerts)
     snapshot = {
         "generated_at": datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
         "duel_preset_plan": {
@@ -4865,18 +4866,14 @@ def get_ui_snapshot(session_token=None, *, use_cache=False):
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),
     }
-    _ui_state_get_cache[cache_key] = {
+    _ui_state_get_cache.update({
         "expires_at": cache_now + UI_STATE_GET_CACHE_SEC,
         "snapshot": snapshot,
-    }
-    if len(_ui_state_get_cache) > UI_STATE_GET_CACHE_MAX_ENTRIES:
-        oldest_keys = sorted(
-            _ui_state_get_cache,
-            key=lambda key: float((_ui_state_get_cache.get(key) or {}).get("expires_at", 0) or 0),
-        )
-        for old_key in oldest_keys[:-UI_STATE_GET_CACHE_MAX_ENTRIES]:
-            _ui_state_get_cache.pop(old_key, None)
-    return snapshot
+    })
+    result = dict(snapshot)
+    if session_token:
+        result["startup_alerts"] = consume_unseen_startup_alerts(session_token, startup_alerts)
+    return result
 
 
 def ui_preview_official_schedule(payload):
