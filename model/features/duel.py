@@ -2638,6 +2638,10 @@ async def run_duel_scheduler(now):
     if reply_to_msg_id > 0:
         if reply_due_at > now:
             return
+        if await _recover_duel_pending_from_message_log(now, reply_to_msg_id):
+            save_state()
+            await send_audit_log(f"🗡️ 斗法日志补偿：已采纳超时回包，消息ID={reply_to_msg_id}", scope="identity", limit=220)
+            return
         duel_started_at = float(state.get("duel_started_at", 0) or 0)
         open_msg_id = int(state.get("duel_open_msg_id", 0) or 0)
         confirmed_open_until = duel_started_at + DUEL_CONFIRMED_OPEN_MAX_WAIT_SEC if duel_started_at > 0 else 0
@@ -2650,10 +2654,6 @@ async def run_duel_scheduler(now):
             state["duel_last_result"] = "法宝齐出，等待最终战报"
             state["duel_last_error"] = ""
             save_state()
-            return
-        if await _recover_duel_pending_from_message_log(now, reply_to_msg_id):
-            save_state()
-            await send_audit_log(f"🗡️ 斗法日志补偿：已采纳超时回包，消息ID={reply_to_msg_id}", scope="identity", limit=220)
             return
         _clear_duel_pending()
         state["duel_last_error"] = "斗法回复超时"

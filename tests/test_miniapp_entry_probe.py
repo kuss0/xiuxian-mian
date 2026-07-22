@@ -638,6 +638,19 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, now))
 
+    def test_cave_public_stargazer_background_respects_global_entry_block(self):
+        identity_id = 3765328695
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+        with patch.object(ui, "get_cave_public_stargazer_entry_block", return_value={
+            "blocked": True,
+            "blocked_until": now + 1800,
+            "failure_count": 0,
+        }):
+            self.assertFalse(ui._cave_public_background_action_due("stargazer", identity_id, now))
+
     async def test_cave_public_background_scheduler_queues_without_waiting_for_http(self):
         identity_id = 1001
         state_module.ensure_identity_registered(identity_id)

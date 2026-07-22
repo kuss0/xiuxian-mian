@@ -26,10 +26,14 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self._manual_auth = dict(cave_treasure_runtime._MANUAL_AUTH_UNTIL)
         self._fishing_entry_failure_count = cave_treasure_runtime._PUBLIC_FISHING_ENTRY_FAILURE_COUNT
         self._fishing_entry_blocked_until = cave_treasure_runtime._PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL
+        self._stargazer_entry_failure_count = cave_treasure_runtime._PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT
+        self._stargazer_entry_blocked_until = cave_treasure_runtime._PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL
         cave_treasure_runtime._MANUAL_AUTH_UNTIL.clear()
         cave_treasure_runtime._RUN_LOCKS.clear()
         cave_treasure_runtime._PUBLIC_FISHING_ENTRY_FAILURE_COUNT = 0
         cave_treasure_runtime._PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL = 0
+        cave_treasure_runtime._PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT = 0
+        cave_treasure_runtime._PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL = 0
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
@@ -45,6 +49,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cave_treasure_runtime._RUN_LOCKS.clear()
         cave_treasure_runtime._PUBLIC_FISHING_ENTRY_FAILURE_COUNT = self._fishing_entry_failure_count
         cave_treasure_runtime._PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL = self._fishing_entry_blocked_until
+        cave_treasure_runtime._PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT = self._stargazer_entry_failure_count
+        cave_treasure_runtime._PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL = self._stargazer_entry_blocked_until
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -906,6 +912,41 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"collect": 1}, result["extra"]["action_counts"])
         self.assertEqual({"星辰精华": 2}, result["extra"]["rewards"])
         finish_mock.assert_awaited_once()
+
+    async def test_public_stargazer_opens_global_block_after_two_missing_entries(self):
+        state_module.ensure_identity_registered(1002)
+        for identity_id in (1001, 1002):
+            with state_module.use_identity(identity_id):
+                state_module.state["stargazer_enabled"] = True
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": 1001,
+            "result": {"ok": True, "data": {"raw": {"account": {"externalApps": {"groups": []}}}}},
+        }
+        now = 1_700_000_000.0
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            first = await cave_treasure_runtime.run_cave_public_stargazer(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+            second = await cave_treasure_runtime.run_cave_public_stargazer(
+                1002,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now + 1,
+            )
+
+        self.assertFalse(first["ok"])
+        self.assertFalse(first["extra"]["entry_block"]["blocked"])
+        self.assertFalse(second["ok"])
+        self.assertTrue(second["extra"]["entry_block"]["blocked"])
+        self.assertEqual(
+            now + 1 + cave_treasure_runtime.CAVE_PUBLIC_STARGAZER_ENTRY_BLOCK_SEC,
+            second["extra"]["entry_block"]["blocked_until"],
+        )
 
     async def test_public_tree_uses_spirit_tree_external_app_and_reuses_dwelling_session(self):
         cave_start = {
