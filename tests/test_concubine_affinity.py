@@ -3105,6 +3105,96 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             for event in workflow_events
         ))
 
+    async def test_heart_start_known_unsent_clears_error_and_retries_later(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_availability"] = "available"
+            identity_state["concubine_name"] = "凌玉灵"
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_snapshot_at"] = now
+            identity_state["concubine_heart_due_at"] = now - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(
+                     concubine,
+                     "get_last_game_send_block",
+                     return_value={"code": "dungeon_quiet", "reason": "副本安静期"},
+                 ), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send, \
+                 patch.object(concubine.random, "uniform", return_value=600):
+                sent = await concubine._send_heart_command(now)
+                workflow_events = _read_workflow_events(tmpdir)
+
+        self.assertFalse(sent)
+        mock_send.assert_awaited_once_with(
+            config.CMD_CONCUBINE_HEART,
+            track=False,
+            reply_to=9387319,
+            priority="chain",
+        )
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(now + 600, state_module.state["concubine_heart_due_at"])
+        self.assertEqual(now + 600, state_module.state["next_concubine_time"])
+        self.assertEqual("", state_module.state["concubine_heart_last_error"])
+        self.assertIn("共历心劫未发送，已错峰重试", state_module.state["concubine_last_result"])
+        self.assertTrue(any(
+            event.get("workflow") == "concubine"
+            and event.get("decision") == "heart_send_definitely_unsent"
+            and "block=dungeon_quiet: 副本安静期" in event.get("detail", {}).get("detail", "")
+            for event in workflow_events
+        ))
+
+    async def test_heart_start_send_timeout_uses_long_cooldown_without_retry(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_availability"] = "available"
+            identity_state["concubine_name"] = "凌玉灵"
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_snapshot_at"] = now
+            identity_state["concubine_heart_due_at"] = now - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(
+                     concubine,
+                     "get_last_game_send_block",
+                     return_value={"code": "send_timeout", "reason": ">60s"},
+                 ), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send, \
+                 patch.object(concubine.random, "uniform", return_value=60):
+                sent = await concubine._send_heart_command(now)
+                workflow_events = _read_workflow_events(tmpdir)
+
+        expected_due = now + config.CONCUBINE_HEART_CD_SEC + config.CD_BUFFER_SEC
+        self.assertFalse(sent)
+        mock_send.assert_awaited_once_with(
+            config.CMD_CONCUBINE_HEART,
+            track=False,
+            reply_to=9387319,
+            priority="chain",
+        )
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(expected_due, state_module.state["concubine_heart_due_at"])
+        self.assertEqual(expected_due + 60, state_module.state["next_concubine_time"])
+        self.assertIn("发送状态未知", state_module.state["concubine_heart_last_error"])
+        self.assertIn("禁止盲补", state_module.state["concubine_heart_last_error"])
+        self.assertTrue(any(
+            event.get("workflow") == "concubine"
+            and event.get("decision") == "heart_send_unconfirmed"
+            and "block=send_timeout" in event.get("detail", {}).get("detail", "")
+            and "retry=disabled" in event.get("detail", {}).get("detail", "")
+            for event in workflow_events
+        ))
+
     def test_restore_concubine_runtime_reconciles_idle_heart_guard(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

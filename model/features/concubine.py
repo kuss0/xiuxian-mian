@@ -205,16 +205,19 @@ CONCUBINE_UNSENT_BLOCK_CODES = {
     "send_queue_timeout",
     "send_prepare_timeout",
     "global_disabled",
+    "global_recovery_cooldown",
     "dungeon_quiet",
     "account_offline",
     "account_unbound",
     "account_client_missing",
     "account_client_not_ready",
     "account_session_error",
+    "send_as_peer_invalid",
     "bot_health",
     "identity_weak",
     "pre_send_guard",
     "action_guard",
+    "supervisor_quiesce",
 }
 
 
@@ -3788,18 +3791,62 @@ async def _send_heart_command(now):
             )
             save_state()
             return False
-        state["concubine_heart_last_error"] = "发送 .共历心劫 失败"
+
+        send_block = get_last_game_send_block(
+            get_current_identity_id(),
+            CMD_CONCUBINE_HEART,
+        )
+        block_code = str((send_block or {}).get("code") or "")
+        block_reason = str((send_block or {}).get("reason") or "").strip()
+        if block_code in CONCUBINE_UNSENT_BLOCK_CODES or block_code.startswith("flood_wait"):
+            retry_at = _schedule_after(
+                sent_at,
+                CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC,
+                CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC,
+            )
+            if float(state.get("concubine_heart_due_at", 0) or 0) <= sent_at:
+                state["concubine_heart_due_at"] = retry_at
+            _close_heart_action_guard(sent_at, "heart_send_definitely_unsent")
+            _set_phase("idle")
+            _clear_pending_msg_ids()
+            state["concubine_heart_last_error"] = ""
+            detail = f"{block_code}: {block_reason}" if block_reason else block_code or "runtime_block"
+            state["concubine_last_result"] = f"共历心劫未发送，已错峰重试（{detail}）"
+            _record_concubine_event(
+                "共历心劫未发送",
+                kind="skipped",
+                reason="concubine_heart_send_definitely_unsent",
+                phase="idle",
+                command=CMD_CONCUBINE_HEART,
+                detail=f"panel_msg_id={panel_msg_id}｜block={detail}",
+                decision="heart_send_definitely_unsent",
+                workflow_status="blocked",
+            )
+            save_state()
+            return False
+
+        # A transport timeout may have consumed the command. Do not reopen the
+        # non-idempotent chain on a short retry; wait through the real cooldown
+        # while passive reply recovery can still settle it if evidence appears.
+        cooldown_due = sent_at + CONCUBINE_HEART_CD_SEC + CD_BUFFER_SEC
+        _close_heart_action_guard(sent_at, "heart_send_unconfirmed")
+        state["concubine_heart_due_at"] = max(
+            float(state.get("concubine_heart_due_at", 0) or 0),
+            cooldown_due,
+        )
         _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "heart_pending")
+        _clear_pending_msg_ids()
+        state["concubine_heart_last_error"] = "共历心劫发送状态未知，禁止盲补，按长冷却等待"
+        _schedule_at_due_or_chain(sent_at, state["concubine_heart_due_at"])
         _record_concubine_event(
-            "共历心劫发送失败",
-            kind="skipped",
-            reason="concubine_send_failed",
+            "共历心劫发送未确认",
+            kind="changed",
+            reason="concubine_heart_send_unconfirmed",
             phase="idle",
             command=CMD_CONCUBINE_HEART,
-            detail=f"panel_msg_id={panel_msg_id}｜panel_source={panel_source}",
-            decision="heart_send_failed",
-            workflow_status="failed",
+            detail=f"panel_msg_id={panel_msg_id}｜block={block_code or 'unknown'}｜retry=disabled",
+            decision="heart_send_unconfirmed",
+            workflow_status="pending",
         )
         save_state()
         return False
