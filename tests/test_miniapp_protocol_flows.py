@@ -337,6 +337,14 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         )
         self.assertEqual(".天阶状态", tianti_request["payload"]["command"])
 
+        for command in (".我的阴罗幡", ".我的侍妾", ".我的灵兽"):
+            read_only_request = cave_treasure_miniapp.build_cave_tianjige_command_request(
+                command,
+                token="df_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+            )
+            self.assertEqual(command, read_only_request["payload"]["command"])
+
         with self.assertRaises(ValueError):
             cave_treasure_miniapp.build_cave_tianjige_command_request(
                 ".闭关修炼",

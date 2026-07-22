@@ -1419,6 +1419,26 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, state_module.state["tianti_cycle_count"])
         self.assertEqual(0, state_module.state["tianti_last_climb_msg_id"])
 
+    async def test_public_tianjige_read_only_command_does_not_update_game_state(self):
+        now = 1_700_000_500.0
+        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        result = {"ok": True, "data": {"actionResult": {"rawMessage": "阴罗幡：魂魄 3，精华可收取。"}}}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                ".我的阴罗幡",
+                now=now,
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertIn("阴罗幡", response["message"])
+        self.assertEqual(".我的阴罗幡", flow_mock.await_args.kwargs["command"])
+        self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
+
     async def test_deep_seclusion_action_flow_disables_http_retries(self):
         http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已结算"}})
         with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \

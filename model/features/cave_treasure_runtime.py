@@ -15,6 +15,7 @@ from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yuanying
 from .cave_treasure_miniapp import (
+    CAVE_TIANJIGE_READ_ONLY_COMMANDS,
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
     merge_cave_dwelling_snapshot_data,
@@ -2422,6 +2423,60 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
         return {"ok": True, "message": final_message, "extra": {"sync": sync_result}}
 
 
+async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, command, *, now=None):
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    try:
+        normalized_command = str(command or "").strip()
+        if normalized_command not in CAVE_TIANJIGE_READ_ONLY_COMMANDS:
+            return {"ok": False, "message": "洞府天机阁只读命令不在白名单", "extra": {}}
+    except Exception:
+        return {"ok": False, "message": "洞府天机阁只读命令无效", "extra": {}}
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_tianjige_read_only_start:{identity_id}",
+        )
+        if not session.get("ok"):
+            message = f"洞府天机阁只读身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"📖 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
+            return {"ok": False, "message": message, "extra": {}}
+        result = await run_cave_tianjige_command_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            command=normalized_command,
+            init_data=session.get("init_data") or "",
+            player_id=session.get("player_id"),
+            capture_sink=_capture_store(now),
+            capture_source=f"cave_public_tianjige_read_only:{identity_id}",
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        message = extract_cave_tianjige_command_message(data)
+        if not result.get("ok") or not message:
+            final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
+            await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
+            return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
+        final_message = f"洞府天机阁只读｜{normalized_command}：{message}"
+        await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="low", limit=360)
+        return {"ok": True, "message": final_message, "extra": {"command": normalized_command, "raw_message": message}}
+
+
 async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -2740,6 +2795,7 @@ __all__ = [
     "run_cave_public_fishing",
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",
+    "run_cave_public_tianjige_read_only",
     "run_cave_public_tianti_status",
     "run_cave_public_tower",
     "run_cave_public_treasure",

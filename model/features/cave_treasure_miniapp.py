@@ -82,11 +82,19 @@ CAVE_SMALL_WORLD_ACTIONS = frozenset({
 CAVE_JOURNEY_ACTIONS = frozenset({"wild_experience", "set_encounter_mode"})
 CAVE_WILD_EXPERIENCE_MODES = frozenset({"cautious", "balanced", "deep"})
 CAVE_ENCOUNTER_MODES = frozenset({"cautious", "balanced", "plunder", "off"})
-CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({CMD_TIANTI_STATUS})
+CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({
+    CMD_TIANTI_STATUS,
+    ".我的阴罗幡",
+    ".我的侍妾",
+    ".我的灵兽",
+})
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     CMD_TIANTI_STATUS,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
+    ".我的阴罗幡",
+    ".我的侍妾",
+    ".我的灵兽",
 })
 CAVE_EXTERNAL_ACTIONS = frozenset({
     "trial",
