@@ -283,7 +283,9 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
             )
     created = parse_red_packet_created(text)
     created_status = ""
-    if created and created["amount"] >= _RED_PACKET_ALERT_THRESHOLD:
+    if created and created["amount"] < _RED_PACKET_ALERT_THRESHOLD:
+        created_status = f"created=below_threshold:{created['amount']:g}/{created['count']}"
+    elif created:
         matched = _claim_pending_created_packet(chat_id, message_id, created, now)
         if matched:
             topic_id = _event_topic_id(event) or int(matched.get("topic_id", 0) or 0)

@@ -90,6 +90,22 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, log_mock.call_count)
         self.assertIn("type=edit", log_mock.call_args.args[0])
 
+    async def test_low_value_created_card_is_logged_as_parsed_without_alerting(self):
+        event = SimpleNamespace(
+            raw_text="🧧 【LDC 红包】｜@user 10.00 LDC / 5 份",
+            chat=SimpleNamespace(username="ja_netfilter_group"),
+            chat_id=-100123,
+            id=458349,
+            sender_id=456,
+        )
+        with patch.object(red_packet_monitor, "console_log") as log_mock, patch.object(
+            red_packet_monitor, "send_audit_log", new=AsyncMock()
+        ) as audit_mock:
+            self.assertTrue(await red_packet_monitor.observe_red_packet_candidate(event))
+
+        self.assertIn("created=below_threshold:10/5", log_mock.call_args.args[0])
+        audit_mock.assert_not_awaited()
+
     async def test_only_accepted_high_value_packet_schedules_finite_alerts(self):
         command = SimpleNamespace(
             raw_text=".发红包 50 2",
