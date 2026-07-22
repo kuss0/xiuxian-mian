@@ -2064,6 +2064,14 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             message = "洞府公共入口未开放灵溪垂钓"
             entry_block = _note_cave_public_fishing_entry_missing(now)
             await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
+            if entry_block.get("blocked"):
+                await send_audit_log(
+                    "🎣 洞府公共入口连续两个身份未开放灵溪垂钓，"
+                    f"后台轮询已熔断至 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(entry_block['blocked_until']))}。",
+                    scope="global",
+                    priority="normal",
+                    limit=260,
+                )
             return {"ok": False, "message": message, "extra": {"entry_block": entry_block}}
         _note_cave_public_fishing_entry_available()
         if not external_app.get("available"):
