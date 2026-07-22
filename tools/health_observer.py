@@ -1311,9 +1311,9 @@ def build_module_summary(
                     })
                     if not stale_without_pending:
                         add_module_detail(details, str(label_text), local_ts(epoch))
-                    if overdue_sec > 120 and not stale_without_pending:
+                    if overdue_sec > 120 and not stale_without_pending and not global_paused:
                         error = True
-                    elif overdue_sec > 0 and not stale_without_pending:
+                    elif overdue_sec > 0 and not stale_without_pending and not global_paused:
                         active = True
 
             for field, label_text in spec.get("flag_fields", ()):

@@ -1707,6 +1707,40 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(wild["next"][0]["lag_without_anchor"])
         self.assertFalse(any("调度滞后" in detail for detail in wild["details"]))
 
+    def test_module_summary_suppresses_overdue_due_field_during_recovery(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, duel_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_duel_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    duel_open_msg_id INTEGER NOT NULL DEFAULT 0,
+                    duel_reply_due_at REAL NOT NULL DEFAULT 0,
+                    duel_magic_due_at REAL NOT NULL DEFAULT 0,
+                    duel_last_result TEXT NOT NULL DEFAULT '',
+                    duel_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, duel_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_duel_time) VALUES(42, ?)", (now - 300,))
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, duel_reply_to_msg_id, duel_open_msg_id, duel_reply_due_at) VALUES(42, 100, 101, ?)",
+                (now - 300,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now, global_paused=True)
+
+        duel_item = next(item for item in summary if item["module"] == "duel")
+        self.assertNotEqual("error", duel_item["status"])
+        self.assertEqual(300, duel_item["due"][0]["overdue_sec"])
+
     def test_module_summary_ignores_disabled_identity(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
