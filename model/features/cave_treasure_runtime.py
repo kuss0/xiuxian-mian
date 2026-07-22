@@ -55,18 +55,10 @@ CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
 CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
 CAVE_YUANYING_STATUS_RECHECK_SEC = 30 * 60
 WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC = 60
-CAVE_PUBLIC_FISHING_ENTRY_FAILURE_LIMIT = 2
-CAVE_PUBLIC_FISHING_ENTRY_BLOCK_SEC = 30 * 60
-CAVE_PUBLIC_STARGAZER_ENTRY_FAILURE_LIMIT = 2
-CAVE_PUBLIC_STARGAZER_ENTRY_BLOCK_SEC = 30 * 60
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
 _PUBLIC_ENTRY_LOCKS = {}
-_PUBLIC_FISHING_ENTRY_FAILURE_COUNT = 0
-_PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL = 0.0
-_PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT = 0
-_PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL = 0.0
 _GAIN_KEYS = {
     "expgain": "经验",
     "experiencegain": "经验",
@@ -112,64 +104,6 @@ def _identity_id(value=None):
         return int(value if value is not None else get_current_identity_id() or 0)
     except (TypeError, ValueError, OverflowError):
         return 0
-
-
-def get_cave_public_fishing_entry_block(now=None):
-    now = float(now or time.time())
-    blocked_until = float(_PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL or 0)
-    return {
-        "blocked": blocked_until > now,
-        "blocked_until": blocked_until,
-        "failure_count": int(_PUBLIC_FISHING_ENTRY_FAILURE_COUNT or 0),
-    }
-
-
-def _note_cave_public_fishing_entry_missing(now):
-    global _PUBLIC_FISHING_ENTRY_FAILURE_COUNT, _PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL
-    now = float(now or time.time())
-    _PUBLIC_FISHING_ENTRY_FAILURE_COUNT += 1
-    if _PUBLIC_FISHING_ENTRY_FAILURE_COUNT >= CAVE_PUBLIC_FISHING_ENTRY_FAILURE_LIMIT:
-        _PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL = max(
-            float(_PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL or 0),
-            now + CAVE_PUBLIC_FISHING_ENTRY_BLOCK_SEC,
-        )
-        _PUBLIC_FISHING_ENTRY_FAILURE_COUNT = 0
-    return get_cave_public_fishing_entry_block(now)
-
-
-def _note_cave_public_fishing_entry_available():
-    global _PUBLIC_FISHING_ENTRY_FAILURE_COUNT, _PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL
-    _PUBLIC_FISHING_ENTRY_FAILURE_COUNT = 0
-    _PUBLIC_FISHING_ENTRY_BLOCKED_UNTIL = 0.0
-
-
-def get_cave_public_stargazer_entry_block(now=None):
-    now = float(now or time.time())
-    blocked_until = float(_PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL or 0)
-    return {
-        "blocked": blocked_until > now,
-        "blocked_until": blocked_until,
-        "failure_count": int(_PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT or 0),
-    }
-
-
-def _note_cave_public_stargazer_entry_missing(now):
-    global _PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT, _PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL
-    now = float(now or time.time())
-    _PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT += 1
-    if _PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT >= CAVE_PUBLIC_STARGAZER_ENTRY_FAILURE_LIMIT:
-        _PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL = max(
-            float(_PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL or 0),
-            now + CAVE_PUBLIC_STARGAZER_ENTRY_BLOCK_SEC,
-        )
-        _PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT = 0
-    return get_cave_public_stargazer_entry_block(now)
-
-
-def _note_cave_public_stargazer_entry_available():
-    global _PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT, _PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL
-    _PUBLIC_STARGAZER_ENTRY_FAILURE_COUNT = 0
-    _PUBLIC_STARGAZER_ENTRY_BLOCKED_UNTIL = 0.0
 
 
 def authorize_cave_treasure_miniapp_manual_run(identity_id, *, now=None, ttl_sec=CAVE_TREASURE_MANUAL_AUTH_TTL_SEC):
@@ -2094,19 +2028,17 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
         raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
         external_app = _find_fishing_external_app_in_cave_payload(raw)
         if not external_app:
-            message = "洞府公共入口未开放灵溪垂钓"
-            entry_block = _note_cave_public_fishing_entry_missing(now)
-            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
-            if entry_block.get("blocked"):
-                await send_audit_log(
-                    "🎣 洞府公共入口连续两个身份未开放灵溪垂钓，"
-                    f"后台轮询已熔断至 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(entry_block['blocked_until']))}。",
-                    scope="global",
-                    priority="normal",
-                    limit=260,
+            with use_identity(identity_id):
+                state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(
+                    now,
+                    _fishing_reset_jitter_sec(identity_id),
                 )
-            return {"ok": False, "message": message, "extra": {"entry_block": entry_block}}
-        _note_cave_public_fishing_entry_available()
+                state["fishing_last_result"] = "未开放灵溪垂钓，今日跳过"
+                state["fishing_last_error"] = ""
+                save_state()
+            message = "该身份未开放灵溪垂钓，今日跳过"
+            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
+            return {"ok": True, "message": message, "extra": {"skipped": "entry_missing"}}
         if not external_app.get("available"):
             with use_identity(identity_id):
                 state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(
@@ -2329,18 +2261,17 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
         overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
         external_app = _find_stargazer_external_app_in_cave_payload(cave_data.get("raw") or {})
         if not external_app or not external_app.get("available"):
-            message = "洞府宗门灵圃入口未开放观星台"
-            entry_block = _note_cave_public_stargazer_entry_missing(now)
-            if entry_block.get("blocked"):
-                await send_audit_log(
-                    "🌠 洞府公共入口连续两个身份未开放观星台，"
-                    f"后台轮询已熔断至 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(entry_block['blocked_until']))}。",
-                    scope="global",
-                    priority="normal",
-                    limit=260,
-                )
-            return {"ok": False, "message": message, "extra": {"entry_block": entry_block}}
-        _note_cave_public_stargazer_entry_available()
+            with use_identity(identity_id):
+                state["next_stargazer_panel_time"] = now + 6 * 3600
+                state["stargazer_followup_due_at"] = 0
+                state["stargazer_queued_action"] = ""
+                state["stargazer_last_action"] = "public_entry_unavailable"
+                save_state()
+            return {
+                "ok": True,
+                "message": "该身份未开放观星台，已跳过并于 6 小时后复查",
+                "extra": {"skipped": "entry_missing"},
+            }
         launch = _stargazer_launch_from_external_app(external_app)
         if not launch:
             return {"ok": False, "message": "洞府观星台入口未返回可用 URL", "extra": {}}

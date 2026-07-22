@@ -2808,6 +2808,7 @@ async def _handle_routed_reply_event(
     allow_reprocessed_edit = kind_scope == "edit" and matched_family in {
         "concubine_heart",
         "divination",
+        "duel",
         "explore_rift",
         "mulan_support",
         "wendao",

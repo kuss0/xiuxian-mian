@@ -302,16 +302,6 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(health_observer.is_hard_journal_line(line))
 
-    def test_expected_public_entry_capability_circuit_is_not_hard(self):
-        samples = [
-            "🎣 洞府公共入口连续两个身份未开放灵溪垂钓，后台轮询已熔断至 2026-07-22 09:16:15。",
-            "🌠 洞府公共入口连续两个身份未开放观星台，后台轮询已熔断至 2026-07-22 09:20:00。",
-        ]
-
-        for line in samples:
-            with self.subTest(line=line):
-                self.assertFalse(health_observer.is_hard_journal_line(line))
-
     def test_getting_difference_value_error_is_not_hard(self):
         line = (
             "Jul 04 23:21:56 pve python[1721578]: Getting difference for channel updates 1828482465 "

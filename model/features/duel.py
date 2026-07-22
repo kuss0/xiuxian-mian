@@ -2543,17 +2543,15 @@ async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
         chat_id=get_game_group_id(),
         predicate=_is_duel_reply_log_entry,
     )
-    handled_any = False
     for entry in replies:
-        handled = await handle_duel_reply(
+        await handle_duel_reply(
             entry.get("text") or "",
             float(entry.get("ts_epoch") or now),
             reply_to=reply_to,
             matched_family="duel",
             result_msg_id=int(entry.get("message_id") or 0),
         )
-        handled_any = handled_any or handled
-    return handled_any
+    return int(state.get("duel_reply_to_msg_id", 0) or 0) != reply_to_msg_id
 
 
 async def run_duel_scheduler(now):

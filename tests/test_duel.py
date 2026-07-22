@@ -2236,9 +2236,17 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["duel_started_at"] = now - 180
             state_module.state["duel_reply_due_at"] = now - 1
             with (
-                patch.object(duel, "find_message_log_replies", return_value=[]) as recover_mock,
+                patch.object(
+                    duel,
+                    "find_message_log_replies",
+                    return_value=[{
+                        "text": "正在锁定对手天机，请稍候...",
+                        "ts_epoch": now - 2,
+                        "message_id": 22028,
+                    }],
+                ) as recover_mock,
                 patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(duel, "save_state"),
             ):
                 await duel.run_duel_scheduler(now)
@@ -2249,6 +2257,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
             self.assertEqual("法宝齐出，等待最终战报", state_module.state["duel_last_result"])
             self.assertEqual("", state_module.state["duel_last_error"])
+            audit_mock.assert_not_awaited()
 
     async def test_confirmed_open_duel_replays_terminal_reply_before_extending_wait(self):
         identity_id = self._prepare_identity()

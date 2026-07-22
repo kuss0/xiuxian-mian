@@ -99,8 +99,6 @@ from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import (
     _parse_public_cave_entry_url,
     authorize_cave_treasure_miniapp_manual_run,
-    get_cave_public_fishing_entry_block,
-    get_cave_public_stargazer_entry_block,
     revoke_cave_treasure_miniapp_manual_run,
     run_cave_public_deep_retreat_action,
     run_cave_public_fishing,
@@ -7647,8 +7645,6 @@ def _cave_public_background_action_due(action, identity_id, now):
                     return False
             return True
         if action == "fishing":
-            if get_cave_public_fishing_entry_block(now).get("blocked"):
-                return False
             if int(identity_id) not in set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or []):
                 return False
             if float(state.get("next_fishing_time", 0) or 0) > now:
@@ -7667,8 +7663,6 @@ def _cave_public_background_action_due(action, identity_id, now):
             limit = max(1, int(state.get("fishing_daily_limit", 5) or 5))
             return int(state.get("fishing_daily_count", 0) or 0) < limit
         if action == "stargazer":
-            if get_cave_public_stargazer_entry_block(now).get("blocked"):
-                return False
             if not state.get("stargazer_enabled"):
                 return False
             next_time = float(state.get("next_stargazer_panel_time", 0) or 0)
