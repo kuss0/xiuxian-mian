@@ -31,8 +31,13 @@ _RED_PACKET_ALERT_INTERVAL_SEC = 2.0
 _ALERT_TASKS = set()
 
 
-def parse_red_packet_command(text):
+def _normalize_red_packet_text(text):
     normalized_text = unicodedata.normalize("NFKC", str(text or "")).replace("\u200b", "")
+    return re.sub(r"\s+", " ", normalized_text).strip()
+
+
+def parse_red_packet_command(text):
+    normalized_text = _normalize_red_packet_text(text)
     match = RE_RED_PACKET_COMMAND.match(normalized_text)
     if not match:
         return None
@@ -43,7 +48,7 @@ def parse_red_packet_command(text):
 
 
 def parse_red_packet_created(text):
-    normalized_text = unicodedata.normalize("NFKC", str(text or "")).replace("\u200b", "")
+    normalized_text = _normalize_red_packet_text(text)
     match = RE_RED_PACKET_CREATED.search(normalized_text)
     if not match:
         return None

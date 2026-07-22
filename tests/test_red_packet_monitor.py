@@ -53,6 +53,16 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(red_packet_monitor.parse_red_packet_created("红包已抢完"))
 
+    def test_parse_multiline_created_card(self):
+        self.assertEqual(
+            {"amount": 500.0, "count": 10},
+            red_packet_monitor.parse_red_packet_created(
+                "🧧 【LDC 红包】｜@yyyyy0123210\n"
+                "500.00 LDC / 10 份\n"
+                "请直接点击下方按钮抢红包"
+            ),
+        )
+
     async def test_target_group_candidate_is_observed_once_across_clients(self):
         event = SimpleNamespace(
             raw_text=".发红包 88 20",
@@ -115,7 +125,11 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             sender_id=123,
         )
         created = SimpleNamespace(
-            raw_text="🧧 【LDC 红包】｜@user 50.00 LDC / 2 份 请直接点击下方按钮抢红包",
+            raw_text=(
+                "🧧 【LDC 红包】｜@user\n"
+                "50.00 LDC / 2 份\n"
+                "请直接点击下方按钮抢红包"
+            ),
             chat=SimpleNamespace(username="ja_netfilter_group"),
             chat_id=-100123,
             id=458351,
