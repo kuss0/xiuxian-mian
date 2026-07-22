@@ -80,6 +80,7 @@ WORLD_BOSS_STRONG_MIN_REALM_INDEX = YUANYING_MIN_REALM_INDEX
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT = 4
+WORLD_BOSS_MINIAPP_BATTLE_PRIORITY_GAP_SEC = 0.25
 WORLD_BOSS_LOCAL_USERNAME_ALIASES = {
     8659059191: ("WalterWA2000", "wa2000"),
     301299112: ("jfdffdddd",),
@@ -1501,6 +1502,7 @@ async def _run_world_boss_miniapp_automation(
             message_text=text,
             opened_at=opened_at,
             account_gap_sec=account_gap_sec,
+            battle_priority_gap_sec=WORLD_BOSS_MINIAPP_BATTLE_PRIORITY_GAP_SEC,
             progress_callback=record_progress,
             window_skip_by_identity=window_skip_by_identity,
         )

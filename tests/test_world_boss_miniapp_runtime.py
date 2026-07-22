@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -115,6 +116,69 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual({11: 0, 22: 2}, received)
+
+    async def test_battle_priority_micro_stagger_preserves_candidate_order(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+        battle_order = []
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            return SimpleNamespace(
+                joined=True,
+                identity_id=kwargs["identity_id"],
+                session_token="qyz_SESSION",
+                safe_summary=lambda: {"joined": True, "status": "joined"},
+            )
+
+        def fake_battle(_receipt, **kwargs):
+            identity_id = int(kwargs["capture_source"].rsplit(":", 1)[-1])
+            battle_order.append(identity_id)
+            return {
+                "ok": True,
+                "status": "settled",
+                "data": {"result": {"score": 100, "realtime_hit_count": 1}},
+                "error": "",
+            }
+
+        async def inline_to_thread(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        sleep_delays = []
+
+        async def record_sleep(delay):
+            sleep_delays.append(delay)
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", side_effect=lambda identity_id: identity_id + 100),
+            patch.object(asyncio, "to_thread", new=inline_to_thread),
+            patch.object(asyncio, "sleep", new=record_sleep),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11, 22, 33, 44],
+                event,
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+                battle_priority_gap_sec=0.25,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([11, 22, 33, 44], battle_order)
+        self.assertEqual([0.25, 0.5, 0.75], sleep_delays)
+        summaries = {
+            item["identity_id"]: item["summary"]
+            for item in result["results"]
+            if item["phase"] == "battle"
+        }
+        self.assertEqual(0, summaries[11]["launch_delay_ms"])
+        self.assertEqual(250, summaries[22]["launch_delay_ms"])
+        self.assertEqual(500, summaries[33]["launch_delay_ms"])
+        self.assertEqual(750, summaries[44]["launch_delay_ms"])
 
     async def test_zero_contribution_marks_event_partial(self):
         event = SimpleNamespace(

@@ -117,6 +117,7 @@ async def run_world_boss_miniapp_event(
     message_text="",
     opened_at=None,
     account_gap_sec=0,
+    battle_priority_gap_sec=0,
     transport=None,
     init_data_provider=None,
     progress_callback=None,
@@ -132,6 +133,10 @@ async def run_world_boss_miniapp_event(
     init_data_provider = init_data_provider or request_world_boss_miniapp_init_data
     capture_sink = _capture_store(now)
     raw_window_skips = window_skip_by_identity if isinstance(window_skip_by_identity, dict) else {}
+    try:
+        battle_priority_gap_sec = max(0.0, min(0.75, float(battle_priority_gap_sec or 0)))
+    except (TypeError, ValueError, OverflowError):
+        battle_priority_gap_sec = 0.0
 
     def window_skip_for(identity_id):
         raw_value = raw_window_skips.get(identity_id, raw_window_skips.get(str(identity_id), 0))
@@ -208,8 +213,11 @@ async def run_world_boss_miniapp_event(
         await _emit_progress(progress_callback, join_result)
         return None, join_result
 
-    async def battle_one(context):
+    async def battle_one(context, priority_index):
         identity_id, init_data, receipt, identity_transport, session, window_skip_count = context
+        launch_delay_sec = float(priority_index) * battle_priority_gap_sec
+        if launch_delay_sec > 0:
+            await asyncio.sleep(launch_delay_sec)
         battle_token = getattr(receipt, "session_token", "") or launch["token"]
         try:
             try:
@@ -232,6 +240,10 @@ async def run_world_boss_miniapp_event(
             battle_summary = data.get("result") if isinstance(data, dict) else {}
             if not isinstance(battle_summary, dict):
                 battle_summary = {}
+            else:
+                battle_summary = dict(battle_summary)
+            battle_summary["launch_priority_index"] = int(priority_index)
+            battle_summary["launch_delay_ms"] = int(round(launch_delay_sec * 1000))
             battle_result = {
                 "identity_id": identity_id,
                 "phase": "battle",
@@ -259,7 +271,10 @@ async def run_world_boss_miniapp_event(
         joined = await asyncio.gather(*(join_one(identity_id) for identity_id in (identity_ids or ())))
         contexts = [context for context, _result in joined if context is not None]
         results = [result for _context, result in joined if result is not None]
-        results.extend(await asyncio.gather(*(battle_one(context) for context in contexts)))
+        results.extend(await asyncio.gather(*(
+            battle_one(context, priority_index)
+            for priority_index, context in enumerate(contexts)
+        )))
     finally:
         end_miniapp_priority_window(priority_owner)
 
