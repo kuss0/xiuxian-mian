@@ -13,7 +13,7 @@ from ..runtime import send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yuanying
+from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
 from .small_world import SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER
 from .cave_treasure_miniapp import (
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
@@ -2424,6 +2424,30 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
         return {"ok": True, "message": final_message, "extra": {"sync": sync_result}}
 
 
+def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
+    """Replay supported read-only Tianjige panels through their existing reducer."""
+    if command != ".我的阴罗幡":
+        return {"supported": False, "handled": False, "summary": {}}
+
+    with use_identity(identity_id):
+        handled = bool(
+            yinluo.apply_yinluo_passive(
+                message,
+                now=now,
+                family="yinluo_banner",
+                event_context={"source": "cave_tianjige_read_only"},
+            )
+        )
+        observed = dict((yinluo.get_yinluo_ui_state(now=now).get("observed") or {}))
+    summary = {
+        "sha_current": int(observed.get("sha_current", 0) or 0),
+        "sha_max": int(observed.get("sha_max", 0) or 0),
+        "ready_slots": list(observed.get("ready_slot_numbers") or []),
+        "refining_slots": list(observed.get("refining_slot_numbers") or []),
+    }
+    return {"supported": True, "handled": handled, "summary": summary}
+
+
 async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, command, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -2473,6 +2497,42 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
             await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
             return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
+        sync_result = _sync_cave_tianjige_read_only_message(
+            identity_id,
+            normalized_command,
+            message,
+            now=now,
+        )
+        if sync_result.get("supported"):
+            if not sync_result.get("handled"):
+                final_message = f"洞府天机阁只读回包未匹配现有解析器：{normalized_command}"
+                await send_audit_log(
+                    f"📖 {final_message}",
+                    scope="identity",
+                    send_as_id=identity_id,
+                    priority="normal",
+                    limit=300,
+                )
+                return {
+                    "ok": False,
+                    "message": final_message,
+                    "extra": {"command": normalized_command, "raw_message": message},
+                }
+            summary = dict(sync_result.get("summary") or {})
+            final_message = f"洞府天机阁只读状态已同步：{normalized_command}"
+            await send_audit_log(
+                f"📖 {final_message}｜煞气 {summary.get('sha_current', 0)}/{summary.get('sha_max', 0)}"
+                f"｜精华槽 {len(summary.get('ready_slots') or [])}｜炼化中 {len(summary.get('refining_slots') or [])}",
+                scope="identity",
+                send_as_id=identity_id,
+                priority="low",
+                limit=320,
+            )
+            return {
+                "ok": True,
+                "message": final_message,
+                "extra": {"command": normalized_command, "sync": summary},
+            }
         final_message = f"洞府天机阁只读｜{normalized_command}：{message}"
         await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="low", limit=360)
         return {"ok": True, "message": final_message, "extra": {"command": normalized_command, "raw_message": message}}

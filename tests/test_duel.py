@@ -1621,6 +1621,45 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_duel_time"],
             )
 
+    def test_log_reconcile_preserves_future_runtime_backoff(self):
+        identity_id = self._prepare_identity(301299112)
+        state_module.update_send_as_profile(identity_id, username="jfdffdddd1")
+        now = 1_700_000_000.0
+        report_at = now - 20
+        blocked_until = now + 1800
+        entries = [
+            {
+                "event_type": "sent",
+                "message_id": 260,
+                "sender_id": identity_id,
+                "text": ".斗法 @target",
+                "ts_epoch": report_at - 10,
+            },
+            {
+                "event_type": "message",
+                "message_id": 261,
+                "reply_to_msg_id": 260,
+                "text": (
+                    "【天道战报·文字版】\n"
+                    "攻方：@jfdffdddd1\n"
+                    "守方：@target\n"
+                    "胜者：@target"
+                ),
+                "ts_epoch": report_at,
+            },
+        ]
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@target"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["next_duel_time"] = blocked_until
+            state_module.state["duel_last_error"] = "斗法未发送: send_as_peer_invalid"
+            with patch.object(duel, "_duel_day_log_entries", return_value=entries):
+                duel.reconcile_duel_from_message_log(now, force=True)
+
+            self.assertEqual(blocked_until, state_module.state["next_duel_time"])
+
     def test_log_reconcile_does_not_override_restore_phase_with_equip_reply(self):
         identity_id = self._prepare_identity(8659059191)
         now = 1_700_000_000.0

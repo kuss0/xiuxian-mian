@@ -1057,6 +1057,8 @@ def reconcile_duel_from_message_log(now, *, force=False):
     ):
         return False
     previous_day = str(state.get("duel_log_reconcile_day") or "")
+    prior_runtime_error = str(state.get("duel_last_error") or "").strip()
+    prior_next_duel_time = float(state.get("next_duel_time", 0) or 0)
     evidence = _derive_duel_log_evidence(_duel_day_log_entries(now), get_current_identity_id(), now=now)
     changed = False
     if previous_day != day_key and int(state.get("duel_observed_baseline_count", 0) or 0) != 0:
@@ -1096,12 +1098,20 @@ def reconcile_duel_from_message_log(now, *, force=False):
     total_count = max(0, int(state.get("duel_total_count", 0) or 0))
     completed_count = max(0, int(state.get("duel_completed_count", 0) or 0))
     expected_due_upper = report_at + _duel_report_delay_upper_bound(report_text) if report_at else 0
+    # A historical report can be older than a transport/runtime backoff.  Do
+    # not pull that backoff forward on every reconciliation tick, or a blocked
+    # identity will retry the same command until the next scan.
+    preserve_runtime_backoff = bool(
+        prior_runtime_error
+        and prior_next_duel_time > now
+    )
     if (
         report_text
         and expected_due_upper > 0
         and total_count > completed_count
         and _target_token(now)
         and not int(state.get("duel_reply_to_msg_id", 0) or 0)
+        and not preserve_runtime_backoff
         and float(state.get("next_duel_time", 0) or 0) > expected_due_upper
     ):
         state["next_duel_time"] = max(now, expected_due_upper)

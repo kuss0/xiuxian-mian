@@ -3589,6 +3589,64 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("灵石x100", audit_mock.await_args.args[0])
         self.assertEqual("medium", audit_mock.await_args.kwargs["priority"])
 
+    async def test_voyage_return_definitely_unsent_keeps_lock_and_clears_false_error(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_voyage_status"] = "sailing"
+            identity_state["concubine_voyage_route"] = "冒险"
+            identity_state["concubine_voyage_return_at"] = now - 1
+            identity_state["concubine_voyage_retry_count"] = 0
+
+        send_block = {
+            "code": "send_as_peer_invalid",
+            "reason": "You can't send messages as the specified peer",
+        }
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=600), \
+             patch.object(concubine, "get_last_game_send_block", return_value=send_block), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)):
+            sent = await concubine._send_voyage_return_command(now)
+
+        self.assertFalse(sent)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual("sailing", state_module.state["concubine_voyage_status"])
+        self.assertEqual(now - 1, state_module.state["concubine_voyage_return_at"])
+        self.assertEqual(0, state_module.state["concubine_voyage_retry_count"])
+        self.assertEqual("", state_module.state["concubine_voyage_last_error"])
+        self.assertEqual(now + 600, state_module.state["next_concubine_time"])
+        self.assertIn("远航归来未发送", state_module.state["concubine_last_result"])
+        self.assertIn("send_as_peer_invalid", state_module.state["concubine_last_result"])
+
+    async def test_voyage_retry_definitely_unsent_preserves_retry_budget(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_voyage_status"] = "returned"
+            identity_state["concubine_voyage_return_at"] = now - 1
+            identity_state["concubine_voyage_retry_count"] = 1
+            identity_state["concubine_voyage_msg_id"] = 918
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=900), \
+             patch.object(
+                 concubine,
+                 "get_last_game_send_block",
+                 return_value={"code": "send_queue_timeout", "reason": "queue busy"},
+             ), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)):
+            sent = await concubine._send_voyage_return_command(now, is_retry=True)
+
+        self.assertFalse(sent)
+        self.assertEqual(0, state_module.state["concubine_voyage_retry_count"])
+        self.assertEqual(0, state_module.state["concubine_voyage_msg_id"])
+        self.assertEqual("", state_module.state["concubine_voyage_last_error"])
+        self.assertEqual(now + 900, state_module.state["next_concubine_time"])
+
     async def test_voyage_return_affinity_loss_triggers_star_palace_recovery(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)

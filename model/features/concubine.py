@@ -553,6 +553,35 @@ def _handle_send_queue_timeout(command, now, *, due_key=None, error_key="concubi
     return True
 
 
+def _handle_voyage_definitely_unsent(command, now, *, label, is_retry=False):
+    send_block = get_last_game_send_block(get_current_identity_id(), command)
+    block_code = str((send_block or {}).get("code") or "")
+    if not _handle_send_queue_timeout(
+        command,
+        now,
+        error_key="concubine_voyage_last_error",
+        label=label,
+    ):
+        return False
+    if is_retry:
+        state["concubine_voyage_retry_count"] = max(
+            0,
+            int(state.get("concubine_voyage_retry_count", 0) or 0) - 1,
+        )
+    state["concubine_voyage_msg_id"] = 0
+    _record_concubine_event(
+        f"{label}未发送",
+        kind="skipped",
+        reason="concubine_voyage_definitely_unsent",
+        phase="idle",
+        command=command,
+        detail=f"block={block_code or 'runtime_block'}｜retry_budget_preserved={bool(is_retry)}",
+        decision="voyage_send_definitely_unsent",
+        workflow_status="blocked",
+    )
+    return True
+
+
 def _normalize_resolved_puzzle_send_error():
     if str(state.get("concubine_last_error") or "") != "发送 .拼图 失败":
         return False
@@ -3880,8 +3909,16 @@ async def _send_voyage_return_command(now, *, is_retry=False):
         state["concubine_voyage_retry_count"] = 0
     send_kwargs = _voyage_retry_send_kwargs(CMD_CONCUBINE_VOYAGE_RETURN) if is_retry else {"priority": "chain"}
     msg = await _send_concubine_game_command(CMD_CONCUBINE_VOYAGE_RETURN, track=False, **send_kwargs)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now or time.time())
     if not msg:
+        if _handle_voyage_definitely_unsent(
+            CMD_CONCUBINE_VOYAGE_RETURN,
+            sent_at,
+            label="远航归来",
+            is_retry=is_retry,
+        ):
+            save_state()
+            return False
         state["concubine_voyage_last_error"] = "发送 .远航归来 失败"
         if is_retry:
             state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
@@ -3907,8 +3944,15 @@ async def _send_voyage_status_command(now):
         priority="chain",
         source_module="侍妾远航",
     )
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now or time.time())
     if not msg:
+        if _handle_voyage_definitely_unsent(
+            CMD_CONCUBINE_VOYAGE_STATUS,
+            sent_at,
+            label="远航状态校准",
+        ):
+            save_state()
+            return False
         state["concubine_voyage_last_error"] = "发送 .远航状态 失败"
         state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
         save_state()
@@ -3932,8 +3976,16 @@ async def _send_voyage_command(now, *, is_retry=False):
     command = _voyage_command(is_retry=is_retry)
     send_kwargs = _voyage_retry_send_kwargs(command) if is_retry else {"priority": "chain"}
     msg = await _send_concubine_game_command(command, track=False, **send_kwargs)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now or time.time())
     if not msg:
+        if _handle_voyage_definitely_unsent(
+            command,
+            sent_at,
+            label="侍妾远航",
+            is_retry=is_retry,
+        ):
+            save_state()
+            return False
         state["concubine_voyage_last_error"] = f"发送 {command} 失败"
         if is_retry:
             state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
