@@ -133,6 +133,8 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "data-miniapp-command-catalog" in script
     assert "data-world-boss-window-skip" in script
     assert "window_skip_by_identity" in script
+    assert 'data-cave-public-action="tianti_status"' in script
+    assert script.count('data-cave-public-action="yuanying"') == 1
     assert "flow_replacement_uncatalogued" in script
     assert "external_entry_not_automated" in script
     assert "自动上线" not in script

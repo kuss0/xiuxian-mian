@@ -297,13 +297,13 @@
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="stargazer">观星台</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tree">落云灵树</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yuanying">元婴状态/出窍</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tianti_status">天阶状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yinluo_status">阴罗幡状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="concubine_status">侍妾状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="beast_status">灵兽状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_status">闭关状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_start">开始深闭</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="deep_settle">结算深闭</button>'
-      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yuanying">元婴出窍</button>'
       + '</div>'
       + '</section>';
   }
