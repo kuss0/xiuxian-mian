@@ -700,6 +700,56 @@ def _duel_daily_mind_exhausted(now):
     )
 
 
+def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束"):
+    """Close only today's prepared Duel route without disabling either switch.
+
+    A completed/fully-blocked batch may leave an unconsumed prediction and a
+    released timeline lease behind.  That stale lease makes the fast Tianxing
+    scanner treat the old route as due again.  The recurring configuration must
+    remain enabled so the next local day can prepare a fresh batch.
+    """
+    now = float(now or time.time())
+    changed = False
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if str(observed.get("current_prediction") or "").strip() == "斗法":
+        observed["current_prediction"] = ""
+        observed["current_prediction_until"] = 0
+        observed["current_prediction_set_at"] = 0
+        observed["prediction_cancelled_route"] = "斗法"
+        observed["prediction_cancelled_at"] = now
+        observed["prediction_cancelled_reason"] = str(reason)
+        observed["last_error"] = str(reason)
+        changed = True
+
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    active_step = dict(timeline.get("active_step") or {})
+    active_route = str(active_step.get("route") or active_step.get("arg") or timeline.get("route") or "").strip()
+    released = dict(timeline.get("released_routes") or {})
+    if active_route == "斗法" or "斗法" in released:
+        released.pop("斗法", None)
+        timeline["phase"] = "blocked_replan"
+        timeline["route"] = ""
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["released_routes"] = released
+        timeline["blocked_until"] = now
+        timeline["last_error"] = str(reason)
+        timeline["updated_at"] = now
+        state["tianxing_timeline_state"] = timeline
+        changed = True
+
+    # The fast scanner has its own due clock.  Never leave a stale timestamp
+    # behind, but do not push unrelated Tianxing routes out by a whole day.
+    if changed:
+        observed["auto_next_time"] = max(
+            now + 60,
+            float(observed.get("auto_next_time", 0) or 0),
+        )
+        state["tianxing_observation"] = observed
+    return changed
+
+
 def _complete_duel_batch(now):
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
@@ -721,6 +771,7 @@ def _complete_duel_batch(now):
             _set_loadout_phase("battle_ready" if keep_unequipped else "restored")
         state["duel_completed_count"] = 0
         state["next_duel_time"] = _next_daily_duel_time(now) if state.get("duel_enabled") else 0
+    _close_duel_tianxing_daily_batch(now)
     return {
         "completed_count": completed_count,
         "total_count": total_count,

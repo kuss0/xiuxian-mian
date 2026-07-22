@@ -128,6 +128,50 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual({}, timeline["active_step"])
             self.assertNotIn("斗法", timeline["released_routes"])
 
+    def test_daily_duel_batch_closes_stale_tianxing_route_without_disabling_switches(self):
+        identity_id = self._prepare_identity(99002000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 10
+            state_module.state["next_duel_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+                "auto_next_time": now - 1,
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "duel_route_enabled": True,
+                "timeline_enabled": True,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "route": "斗法",
+                "active_step_index": 0,
+                "active_step": {"action": "release_downstream", "route": "斗法", "status": "released"},
+                "released_routes": {"斗法": {"released_at": now - 90, "basis": "prediction"}},
+            }
+
+            with patch.object(duel, "save_state"):
+                completion = duel._complete_duel_batch(now)
+
+            observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+            config = duel.normalize_tianxing_auto_config(state_module.state["tianxing_auto_config"])
+
+        self.assertTrue(completion["daily"])
+        self.assertTrue(state_module.state["duel_enabled"])
+        self.assertTrue(config["duel_route_enabled"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertGreater(observed["auto_next_time"], now)
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertNotIn("斗法", timeline["released_routes"])
+        self.assertGreater(state_module.state["next_duel_time"], now)
+
     def test_target_normalization_and_command(self):
         self.assertEqual("@cupaopao", duel.normalize_duel_target("cupaopao"))
         self.assertEqual("@cupaopao", duel.normalize_duel_target("@cupaopao extra"))
