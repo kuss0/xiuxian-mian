@@ -478,7 +478,10 @@ class WebAppCoreTests(unittest.TestCase):
     def test_known_miniapp_registry_is_manual_only_by_default(self):
         registry = miniapp_registry.build_known_miniapp_registry()
 
-        self.assertEqual(("cave_treasure", "fishing", "stargazer", "tower", "tree", "trial", "world_boss"), registry.keys())
+        self.assertEqual(
+            ("cave_treasure", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"),
+            registry.keys(),
+        )
         self.assertFalse(registry.require("fishing").default_enabled)
         self.assertFalse(registry.require("trial").default_enabled)
         self.assertFalse(registry.require("cave_treasure").default_enabled)
@@ -1965,7 +1968,10 @@ class WebAppCoreTests(unittest.TestCase):
     def test_known_flow_plans_include_stargazer_without_production_enable(self):
         plans = miniapp_registry.build_known_miniapp_flow_plans()
 
-        self.assertEqual({"cave_treasure", "fishing", "stargazer", "tower", "tree", "trial", "world_boss"}, set(plans))
+        self.assertEqual(
+            {"cave_treasure", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"},
+            set(plans),
+        )
         self.assertTrue(plans["stargazer"].manual_only)
         self.assertFalse(plans["stargazer"].default_enabled)
         self.assertTrue(plans["trial"].manual_only)

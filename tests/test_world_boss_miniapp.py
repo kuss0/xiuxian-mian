@@ -20,6 +20,94 @@ class FakeClock:
 
 
 class WorldBossMiniAppTests(unittest.TestCase):
+    def test_nangongque_protocol_adapter_is_manual_single_attempt_and_redacted(self):
+        adapter = world_boss_miniapp.build_nangongque_miniapp_adapter()
+        self.assertTrue(adapter.manual_only)
+        self.assertFalse(adapter.default_enabled)
+        self.assertEqual(1, adapter.request_policy.max_attempts_per_request)
+        self.assertEqual("nangongque", world_boss_miniapp.world_boss_kind_from_token("nqb_SECRET"))
+
+        start = world_boss_miniapp.build_nangongque_miniapp_request(
+            "start",
+            token="nqb_SECRET_TOKEN",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            player_id=-1008659059191,
+        )
+        state = world_boss_miniapp.build_nangongque_miniapp_request(
+            "state",
+            session_token="SESSION_SECRET",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            room_id="room-1",
+            player_id=-1008659059191,
+        )
+        action = world_boss_miniapp.build_nangongque_miniapp_request(
+            "input",
+            session_token="SESSION_SECRET",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            room_id="room-1",
+            player_id=-1008659059191,
+            input_payload={
+                "seq": 1,
+                "time": 1784690000000,
+                "moveX": 0.25,
+                "moveY": -0.5,
+                "action": "attack",
+                "compact": True,
+            },
+        )
+        claim = world_boss_miniapp.build_nangongque_miniapp_request(
+            "claim",
+            session_token="SESSION_SECRET",
+            init_data="query_id=secret&hash=VERY_SECRET",
+        )
+
+        self.assertEqual({"token", "initData", "playerId"}, set(start["payload"]))
+        self.assertEqual({"sessionToken", "initData", "roomId", "playerId"}, set(state["payload"]))
+        self.assertEqual(
+            {"sessionToken", "initData", "roomId", "playerId", "input"},
+            set(action["payload"]),
+        )
+        self.assertEqual({"sessionToken", "initData"}, set(claim["payload"]))
+        self.assertEqual(1, action["transport_attempts"])
+        self.assertEqual("world_boss", action["global_priority"])
+
+        serialized = json.dumps(action["safe_summary"], ensure_ascii=False)
+        self.assertNotIn("SESSION_SECRET", serialized)
+        self.assertNotIn("VERY_SECRET", serialized)
+
+    def test_nangongque_error_classification_separates_terminal_and_wait_states(self):
+        self.assertTrue(world_boss_miniapp.is_terminal_nangongque_miniapp_error("nangongque_room_missing"))
+        self.assertFalse(world_boss_miniapp.is_terminal_nangongque_miniapp_error("settlement_not_ready"))
+        self.assertEqual(
+            "settlement_not_ready",
+            world_boss_miniapp.classify_nangongque_miniapp_error("settlement_not_ready"),
+        )
+        self.assertEqual("rate_limited", world_boss_miniapp.classify_nangongque_miniapp_error("HTTP 429"))
+
+    def test_nangongque_executor_does_not_retry_an_uncertain_transport(self):
+        calls = []
+        request = world_boss_miniapp.build_nangongque_miniapp_request(
+            "input",
+            session_token="SESSION_SECRET",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            room_id="room-1",
+            player_id=7,
+            input_payload={"seq": 1, "action": "attack"},
+        )
+
+        def transport(_request):
+            calls.append(1)
+            raise RuntimeError("connection reset")
+
+        result = world_boss_miniapp.execute_nangongque_miniapp_request(
+            request,
+            transport,
+            sleeper=lambda _delay: None,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(1, len(calls))
+        self.assertEqual("transient", result.error_type)
+
     def test_adapter_and_request_payloads_are_scoped_and_captures_are_redacted(self):
         adapter = world_boss_miniapp.build_world_boss_miniapp_adapter()
         self.assertTrue(adapter.manual_only)

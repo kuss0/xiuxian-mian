@@ -117,7 +117,10 @@ RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|startapp|start_param)=([^&#\s]+)",
     re.IGNORECASE,
 )
-RE_MINIAPP_START_TOKEN = re.compile(r"\b(?P<kind>fish|farm|boss|qyz|rpt|stk|trial|df|tree)_[A-Za-z0-9_-]{4,}\b", re.IGNORECASE)
+RE_MINIAPP_START_TOKEN = re.compile(
+    r"\b(?P<kind>fish|farm|boss|qyz|nqb|rpt|stk|trial|df|tree)_[A-Za-z0-9_-]{4,}\b",
+    re.IGNORECASE,
+)
 RE_WEBAPP_URL = re.compile(
     r"(?:https?|tg)://[^\s<>'\"）)]+|(?:t\.me|telegram\.me)/[^\s<>'\"）)]+",
     re.IGNORECASE,
@@ -1516,7 +1519,7 @@ def infer_webapp_game_hint(*, button_text="", message_text="", host=""):
         return "cave_treasure"
     if any(keyword in text for keyword in ("天机试炼", "试炼台", "灵脉点穴", "trial")):
         return "trial"
-    if any(keyword in text for keyword in ("世界boss", "世界 boss", "真仙试锋", "boss")):
+    if any(keyword in text for keyword in ("世界boss", "世界 boss", "真仙试锋", "南宫阙", "nqb_", "boss")):
         return "world_boss"
     if any(keyword in text for keyword in ("观星", "星台", "观星台", "stargazer")):
         return "stargazer"

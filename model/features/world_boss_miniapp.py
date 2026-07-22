@@ -15,6 +15,8 @@ from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestBudget,
+    MiniAppRequestPolicy,
     build_miniapp_http_request,
     execute_miniapp_http_request,
     sanitize_webapp_secret_text,
@@ -34,6 +36,16 @@ WORLD_BOSS_MINIAPP_ENDPOINTS = {
     "finish": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}finish",
 }
 WORLD_BOSS_MINIAPP_START_PARAM_PATTERN = r"qyz_[A-Za-z0-9_-]{4,160}"
+NANGONGQUE_MINIAPP_GAME_KEY = "world_boss_nangongque"
+NANGONGQUE_MINIAPP_LABEL = "南宫阙世界 Boss"
+NANGONGQUE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-nangongque-boss/"
+NANGONGQUE_MINIAPP_ENDPOINTS = {
+    "start": f"{NANGONGQUE_MINIAPP_API_PATH_PREFIX}start",
+    "state": f"{NANGONGQUE_MINIAPP_API_PATH_PREFIX}state",
+    "input": f"{NANGONGQUE_MINIAPP_API_PATH_PREFIX}input",
+    "claim": f"{NANGONGQUE_MINIAPP_API_PATH_PREFIX}claim",
+}
+NANGONGQUE_MINIAPP_START_PARAM_PATTERN = r"nqb_[A-Za-z0-9_-]{4,160}"
 WORLD_BOSS_PROOF_MODE = "qyz_focus_burst_v2"
 WORLD_BOSS_STANCE = "强攻"
 WORLD_BOSS_PERFECT_HOLD_MIN_MS = 520
@@ -92,6 +104,17 @@ _TERMINAL_ERROR_TYPES = {
     "boss_not_enough_participants",
     "boss_token_used",
     "boss_token_expired",
+}
+_NANGONGQUE_TERMINAL_ERROR_TYPES = {
+    "nangongque_not_active",
+    "nangongque_join_closed",
+    "nangongque_identity_invalid",
+    "nangongque_public_entry_required",
+    "nangongque_room_missing",
+    "invalid_token",
+    "invalid_init_data",
+    "missing_init_data",
+    "cultivator_missing",
 }
 
 
@@ -156,6 +179,35 @@ def build_world_boss_miniapp_adapter(
     )
 
 
+def build_nangongque_miniapp_adapter(
+    *,
+    api_base_url=WORLD_BOSS_MINIAPP_DEFAULT_API_BASE_URL,
+    bot_username=WORLD_BOSS_MINIAPP_DEFAULT_BOT_USERNAME,
+):
+    """Build the protocol-only adapter for the newer ``nqb_`` boss."""
+
+    return MiniAppAdapter(
+        game_key=NANGONGQUE_MINIAPP_GAME_KEY,
+        label=NANGONGQUE_MINIAPP_LABEL,
+        bot_username=bot_username,
+        allowed_bot_username_patterns=(r"hantianzun\d+_bot",),
+        api_base_url=api_base_url,
+        allowed_web_hosts=("t.me", "telegram.me", "asc.aiopenai.app"),
+        allowed_api_hosts=("asc.aiopenai.app",),
+        allowed_api_paths=(NANGONGQUE_MINIAPP_API_PATH_PREFIX,),
+        endpoints=dict(NANGONGQUE_MINIAPP_ENDPOINTS),
+        start_param_pattern=NANGONGQUE_MINIAPP_START_PARAM_PATTERN,
+        default_enabled=False,
+        manual_only=True,
+        request_policy=MiniAppRequestPolicy(
+            min_interval_sec=1.0,
+            max_requests_per_run=90,
+            max_attempts_per_request=1,
+            max_consecutive_failures=2,
+        ),
+    )
+
+
 def build_world_boss_miniapp_flow_plan():
     return MiniAppFlowPlan(
         adapter_key=WORLD_BOSS_MINIAPP_GAME_KEY,
@@ -214,6 +266,44 @@ def build_world_boss_miniapp_flow_plan():
     )
 
 
+def build_nangongque_miniapp_flow_plan():
+    return MiniAppFlowPlan(
+        adapter_key=NANGONGQUE_MINIAPP_GAME_KEY,
+        label=NANGONGQUE_MINIAPP_LABEL,
+        manual_only=True,
+        default_enabled=False,
+        note="protocol-only adapter; runtime combat loop remains disabled pending captured response validation",
+        replaces_commands=(".世界boss",),
+        state_outputs=("room", "boss", "player", "settlement"),
+        steps=(
+            MiniAppFlowStep(
+                key="start",
+                endpoint="start",
+                required_payload_keys=("token", "initData", "playerId"),
+                note="join one selected identity and obtain sessionToken/roomId/playerId",
+            ),
+            MiniAppFlowStep(
+                key="state",
+                endpoint="state",
+                required_payload_keys=("sessionToken", "roomId", "playerId"),
+                note="read-only room snapshot; safe for reconciliation",
+            ),
+            MiniAppFlowStep(
+                key="input",
+                endpoint="input",
+                required_payload_keys=("sessionToken", "roomId", "playerId", "input"),
+                note="non-idempotent action; exactly one transport attempt",
+            ),
+            MiniAppFlowStep(
+                key="claim",
+                endpoint="claim",
+                required_payload_keys=("sessionToken",),
+                note="settlement claim; exactly one transport attempt until server evidence is reconciled",
+            ),
+        ),
+    )
+
+
 def build_world_boss_miniapp_request(
     endpoint,
     *,
@@ -257,6 +347,106 @@ def build_world_boss_miniapp_request(
     )
     request["global_priority"] = "world_boss"
     return request
+
+
+def world_boss_kind_from_token(token):
+    value = str(token or "").strip().lower()
+    if value.startswith("nqb_"):
+        return "nangongque"
+    if value.startswith("qyz_"):
+        return "qyz"
+    return ""
+
+
+def build_nangongque_miniapp_request(
+    endpoint,
+    *,
+    token="",
+    init_data_session=None,
+    init_data="",
+    player_id=None,
+    session_token="",
+    room_id="",
+    input_payload=None,
+    adapter=None,
+):
+    """Build one South Palace boss request without executing or retrying it."""
+
+    adapter = adapter or build_nangongque_miniapp_adapter()
+    endpoint = str(endpoint or "").strip()
+    if endpoint not in NANGONGQUE_MINIAPP_ENDPOINTS:
+        raise ValueError(f"unsupported nangongque endpoint: {endpoint}")
+
+    if endpoint == "start":
+        payload = {
+            "token": str(token or "").strip(),
+            "playerId": player_id,
+        }
+    else:
+        payload = {"sessionToken": str(session_token or "").strip()}
+        if endpoint in {"state", "input"}:
+            payload.update({
+                "roomId": str(room_id or "").strip(),
+                "playerId": player_id,
+            })
+        if endpoint == "input":
+            payload["input"] = dict(input_payload or {})
+
+    request = build_miniapp_http_request(
+        adapter,
+        endpoint,
+        payload,
+        init_data_session=init_data_session,
+        init_data=init_data,
+    )
+    request["global_priority"] = "world_boss"
+    request["transport_attempts"] = 1
+    return request
+
+
+def execute_nangongque_miniapp_request(
+    request,
+    transport,
+    *,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    step_key="",
+):
+    """Execute one protocol request with an explicit no-retry budget."""
+
+    adapter = adapter or build_nangongque_miniapp_adapter()
+    budget = MiniAppRequestBudget(
+        adapter.request_policy,
+        sleeper=sleeper or time.sleep,
+    )
+    return execute_miniapp_http_request(
+        request,
+        transport,
+        backoff_sec=(),
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key=step_key,
+        request_budget=budget,
+    )
+
+
+def classify_nangongque_miniapp_error(error):
+    raw = str(error or "").strip().lower()
+    for error_type in sorted(_NANGONGQUE_TERMINAL_ERROR_TYPES):
+        if raw == error_type or error_type in raw:
+            return error_type
+    if "rate_limit" in raw or "429" in raw:
+        return "rate_limited"
+    if "settlement_not_ready" in raw:
+        return "settlement_not_ready"
+    return "failed"
+
+
+def is_terminal_nangongque_miniapp_error(error):
+    return classify_nangongque_miniapp_error(error) in _NANGONGQUE_TERMINAL_ERROR_TYPES
 
 
 def classify_world_boss_miniapp_error(error):
