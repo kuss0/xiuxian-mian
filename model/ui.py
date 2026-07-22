@@ -352,6 +352,9 @@ _cave_public_background_state = {
     "circuit_reason": "",
 }
 _cave_public_background_retry_at = {}
+_ui_state_get_cache = {}
+UI_STATE_GET_CACHE_SEC = 5.0
+UI_STATE_GET_CACHE_MAX_ENTRIES = 4
 CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC = 10 * 60
 # A successful MiniApp response is authoritative for the current process even
 # if a concurrent state snapshot save temporarily races with it. Keep this
@@ -4785,7 +4788,13 @@ def get_identity_ui_snapshot(send_as_id):
     return snapshot
 
 
-def get_ui_snapshot(session_token=None):
+def get_ui_snapshot(session_token=None, *, use_cache=False):
+    cache_key = str(session_token or "")
+    cache_now = time.monotonic()
+    if use_cache:
+        cached = _ui_state_get_cache.get(cache_key) or {}
+        if float(cached.get("expires_at", 0) or 0) > cache_now and isinstance(cached.get("snapshot"), dict):
+            return cached["snapshot"]
     duel_plan = plan_duel_presets(collect_identity_rows_for_duel_presets())
     duel_preview_by_id = {
         int(row.get("send_as_id") or 0): row for row in (duel_plan.get("rows") or ())
@@ -4805,7 +4814,7 @@ def get_ui_snapshot(session_token=None):
     startup_alerts = get_startup_module_alerts()
     if session_token:
         startup_alerts = consume_unseen_startup_alerts(session_token, startup_alerts)
-    return {
+    snapshot = {
         "generated_at": datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
         "duel_preset_plan": {
             "yuanying_targets": list(duel_plan.get("yuanying_targets") or ()),
@@ -4856,6 +4865,18 @@ def get_ui_snapshot(session_token=None):
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),
     }
+    _ui_state_get_cache[cache_key] = {
+        "expires_at": cache_now + UI_STATE_GET_CACHE_SEC,
+        "snapshot": snapshot,
+    }
+    if len(_ui_state_get_cache) > UI_STATE_GET_CACHE_MAX_ENTRIES:
+        oldest_keys = sorted(
+            _ui_state_get_cache,
+            key=lambda key: float((_ui_state_get_cache.get(key) or {}).get("expires_at", 0) or 0),
+        )
+        for old_key in oldest_keys[:-UI_STATE_GET_CACHE_MAX_ENTRIES]:
+            _ui_state_get_cache.pop(old_key, None)
+    return snapshot
 
 
 def ui_preview_official_schedule(payload):
@@ -8356,7 +8377,13 @@ async def handle_ui_http(reader, writer):
                 elif method != "GET":
                     _write_method_not_allowed(writer)
                 else:
-                    body = _make_json_payload(True, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")))
+                    body = _make_json_payload(
+                        True,
+                        snapshot=get_ui_snapshot(
+                            session_token=(session or {}).get("session_token"),
+                            use_cache=True,
+                        ),
+                    )
                     _write_response(
                         writer,
                         "HTTP/1.1 200 OK",
