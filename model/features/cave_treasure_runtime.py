@@ -16,10 +16,12 @@ from . import deep_retreat, fishing_behavior, stargazer, tree_runtime, yuanying
 from .cave_treasure_miniapp import (
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
+    merge_cave_dwelling_snapshot_data,
     parse_cave_dwelling_overview,
     request_cave_treasure_miniapp_init_data,
     run_cave_deep_seclusion_action_production_flow,
     run_cave_dwelling_start_production_flow,
+    run_cave_dwelling_snapshot_production_flow,
     run_cave_external_action_production_flow,
     run_cave_journey_action_production_flow,
     run_cave_small_world_production_flow,
@@ -435,7 +437,33 @@ def _resolve_dwelling_player_id(payload, identity_id):
     return 0
 
 
-async def _load_cave_public_identity_session(identity_id, token, webview_url, *, now, capture_source):
+def _has_cave_details_snapshot(payload):
+    root = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    if account.get("deferredPending") is False:
+        return True
+    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
+    if isinstance(external.get("groups"), list) and external.get("groups"):
+        return True
+    if isinstance(account.get("journey"), dict) and account.get("journey"):
+        return True
+    if isinstance(account.get("smallWorld"), dict) and account.get("smallWorld"):
+        return True
+    if isinstance(account.get("starPalace"), dict) and account.get("starPalace"):
+        return True
+    command_center = account.get("commandCenter") if isinstance(account.get("commandCenter"), dict) else {}
+    return isinstance(command_center.get("entries"), list) and bool(command_center.get("entries"))
+
+
+async def _load_cave_public_identity_session(
+    identity_id,
+    token,
+    webview_url,
+    *,
+    now,
+    capture_source,
+    include_details=False,
+):
     try:
         init_data = await request_cave_treasure_miniapp_init_data(
             identity_id,
@@ -462,40 +490,73 @@ async def _load_cave_public_identity_session(identity_id, token, webview_url, *,
     initial_overview = initial_data.get("overview") if isinstance(initial_data.get("overview"), dict) else {}
     initial_player_id = _parse_int(initial_overview.get("player_id"), 0)
     if initial_player_id and _normalize_dwelling_identity_id(initial_player_id) == _normalize_dwelling_identity_id(identity_id):
-        return {
+        session = {
             "ok": True,
             "init_data": init_data,
             "player_id": initial_player_id,
             "result": initial_result,
         }
+    else:
+        selected_player_id = _resolve_dwelling_player_id(initial_data.get("raw") or {}, identity_id)
+        if not selected_player_id:
+            return {"ok": False, "error": "洞府公共入口不包含目标身份"}
+        selected_result = await run_cave_dwelling_start_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            init_data=init_data,
+            player_id=selected_player_id,
+            capture_sink=_capture_store(now),
+            capture_source=f"{capture_source}:selected",
+        )
+        if not selected_result.get("ok"):
+            return {
+                "ok": False,
+                "error": selected_result.get("error") or selected_result.get("status") or "selected_start_failed",
+            }
+        selected_data = dict(selected_result.get("data") or {})
+        player_error = _selected_player_error(selected_data.get("overview") or {}, identity_id)
+        if player_error:
+            return {"ok": False, "error": player_error}
+        session = {
+            "ok": True,
+            "init_data": init_data,
+            "player_id": selected_player_id,
+            "result": selected_result,
+        }
 
-    selected_player_id = _resolve_dwelling_player_id(initial_data.get("raw") or {}, identity_id)
-    if not selected_player_id:
-        return {"ok": False, "error": "洞府公共入口不包含目标身份"}
-    selected_result = await run_cave_dwelling_start_production_flow(
+    session_raw = dict((session.get("result") or {}).get("data") or {}).get("raw") or {}
+    if not include_details or _has_cave_details_snapshot(session_raw):
+        return session
+    details_result = await run_cave_dwelling_snapshot_production_flow(
         identity_id,
         token=token,
         webview_url=webview_url,
+        endpoint="details",
         init_data=init_data,
-        player_id=selected_player_id,
+        player_id=session.get("player_id"),
         capture_sink=_capture_store(now),
-        capture_source=f"{capture_source}:selected",
+        capture_source=f"{capture_source}:details",
     )
-    if not selected_result.get("ok"):
+    if not details_result.get("ok"):
         return {
             "ok": False,
-            "error": selected_result.get("error") or selected_result.get("status") or "selected_start_failed",
+            "error": details_result.get("error") or details_result.get("status") or "details_failed",
         }
-    selected_data = dict(selected_result.get("data") or {})
-    player_error = _selected_player_error(selected_data.get("overview") or {}, identity_id)
-    if player_error:
-        return {"ok": False, "error": player_error}
-    return {
-        "ok": True,
-        "init_data": init_data,
-        "player_id": selected_player_id,
-        "result": selected_result,
+    start_data = dict((session.get("result") or {}).get("data") or {})
+    merged_raw = merge_cave_dwelling_snapshot_data(
+        start_data.get("raw") or {},
+        details_result.get("data") or {},
+    )
+    session["result"] = {
+        **dict(session.get("result") or {}),
+        "data": {
+            **start_data,
+            "overview": parse_cave_dwelling_overview(merged_raw),
+            "raw": merged_raw,
+        },
     }
+    return session
 
 
 def _entry_mentions_current_identity(text):
@@ -1394,6 +1455,7 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
             webview_url,
             now=now,
             capture_source=f"cave_public_wild_training_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             return {
@@ -1562,6 +1624,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             webview_url,
             now=now,
             capture_source=f"cave_public_small_world_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             message = f"洞府小世界身份读取失败：{session.get('error') or 'unknown'}"
@@ -1789,6 +1852,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             webview_url,
             now=now,
             capture_source=f"cave_public_trial_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             message = f"洞府天机试炼入口读取失败：{session.get('error') or 'unknown'}"
@@ -1886,6 +1950,7 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
             webview_url,
             now=now,
             capture_source=f"cave_public_tower_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             message = f"洞府琉璃问心塔身份读取失败：{session.get('error') or 'unknown'}"
@@ -2015,6 +2080,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             webview_url,
             now=now,
             capture_source=f"cave_public_fishing_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             message = f"洞府钓鱼身份读取失败：{session.get('error') or 'unknown'}"
@@ -2251,6 +2317,7 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             webview_url,
             now=now,
             capture_source=f"cave_public_stargazer_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             return {"ok": False, "message": f"洞府观星台身份读取失败：{session.get('error') or 'unknown'}", "extra": {}}
@@ -2332,6 +2399,7 @@ async def run_cave_public_tree(
             webview_url,
             now=now,
             capture_source=f"cave_public_tree_start:{identity_id}",
+            include_details=True,
         )
         if not session.get("ok"):
             return {"ok": False, "message": f"洞府灵树身份读取失败：{session.get('error') or 'unknown'}", "extra": {}}

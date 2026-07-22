@@ -37,6 +37,8 @@ CAVE_TREASURE_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (
 CAVE_TREASURE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-dwelling/"
 CAVE_TREASURE_MINIAPP_ENDPOINTS = {
     "start": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}start",
+    "details": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}details",
+    "section": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}section",
     "external": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}external",
     "command_center": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}command-center",
     "deep_seclusion": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}deep-seclusion",
@@ -1376,6 +1378,143 @@ async def run_cave_dwelling_start_production_flow(
             data={"overview": parse_cave_dwelling_overview(start_result.data), "raw": start_result.data},
             events=[{"step": "dwelling_start", "ok": True}],
         )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
+def merge_cave_dwelling_snapshot_data(current, incoming):
+    """Merge a split dwelling snapshot without erasing deferred domains."""
+
+    base = current if isinstance(current, dict) else {}
+    next_data = incoming if isinstance(incoming, dict) else {}
+    merged = {**base, **next_data}
+    base_account = base.get("account") if isinstance(base.get("account"), dict) else {}
+    next_account = dict(next_data.get("account")) if isinstance(next_data.get("account"), dict) else {}
+    base_dwelling = base.get("dwelling") if isinstance(base.get("dwelling"), dict) else {}
+    next_dwelling = dict(next_data.get("dwelling")) if isinstance(next_data.get("dwelling"), dict) else {}
+    snapshot = next_data.get("snapshot") if isinstance(next_data.get("snapshot"), dict) else {}
+    snapshot_level = str(snapshot.get("level") or "").strip().lower()
+    snapshot_domains = {
+        str(item or "").strip().lower()
+        for item in (snapshot.get("domains") or [])
+        if str(item or "").strip()
+    }
+
+    if snapshot_level == "overview":
+        for key in ("sect", "externalApps", "commandCenter", "journey", "smallWorld", "starPalace", "bagTreasure", "alchemy"):
+            next_account.pop(key, None)
+        for key in ("hunt", "messages", "facilities", "pavilion"):
+            next_dwelling.pop(key, None)
+    elif snapshot_level == "deferred":
+        for key in ("bagTreasure", "alchemy"):
+            next_account.pop(key, None)
+        next_dwelling.pop("pavilion", None)
+    elif snapshot_level == "action" and bool(snapshot.get("partial")):
+        if "inventory" not in snapshot_domains:
+            next_account.pop("bagTreasure", None)
+        if "alchemy" not in snapshot_domains:
+            next_account.pop("alchemy", None)
+        if "pavilion" not in snapshot_domains:
+            next_dwelling.pop("pavilion", None)
+
+    base_profile = base_account.get("profile") if isinstance(base_account.get("profile"), dict) else {}
+    next_profile = next_account.get("profile") if isinstance(next_account.get("profile"), dict) else {}
+    if base_profile or next_profile:
+        next_account["profile"] = {
+            **base_profile,
+            **next_profile,
+            "status": {
+                **(base_profile.get("status") if isinstance(base_profile.get("status"), dict) else {}),
+                **(next_profile.get("status") if isinstance(next_profile.get("status"), dict) else {}),
+            },
+            "cultivation": {
+                **(base_profile.get("cultivation") if isinstance(base_profile.get("cultivation"), dict) else {}),
+                **(next_profile.get("cultivation") if isinstance(next_profile.get("cultivation"), dict) else {}),
+            },
+            "combatPower": {
+                **(base_profile.get("combatPower") if isinstance(base_profile.get("combatPower"), dict) else {}),
+                **(next_profile.get("combatPower") if isinstance(next_profile.get("combatPower"), dict) else {}),
+            },
+        }
+
+    base_meditation = base_dwelling.get("meditation") if isinstance(base_dwelling.get("meditation"), dict) else {}
+    next_meditation = next_dwelling.get("meditation") if isinstance(next_dwelling.get("meditation"), dict) else {}
+    if base_meditation or next_meditation:
+        next_dwelling["meditation"] = {
+            **base_meditation,
+            **next_meditation,
+            "standardCultivation": {
+                **(base_meditation.get("standardCultivation") if isinstance(base_meditation.get("standardCultivation"), dict) else {}),
+                **(next_meditation.get("standardCultivation") if isinstance(next_meditation.get("standardCultivation"), dict) else {}),
+            },
+            "deepSeclusion": {
+                **(base_meditation.get("deepSeclusion") if isinstance(base_meditation.get("deepSeclusion"), dict) else {}),
+                **(next_meditation.get("deepSeclusion") if isinstance(next_meditation.get("deepSeclusion"), dict) else {}),
+            },
+        }
+
+    merged["account"] = {**base_account, **next_account}
+    merged["dwelling"] = {**base_dwelling, **next_dwelling}
+    if not isinstance(next_data.get("identity"), dict) and isinstance(base.get("identity"), dict):
+        merged["identity"] = base["identity"]
+    return merged
+
+
+async def run_cave_dwelling_snapshot_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    endpoint="details",
+    init_data="",
+    player_id=None,
+    section="",
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    """Load one read-only deferred dwelling snapshot."""
+
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    endpoint = str(endpoint or "details").strip().lower()
+    if endpoint not in {"details", "section"}:
+        return _flow_result(False, "failed", error="洞府分段接口不在白名单")
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        payload = {"playerId": int(player_id)} if player_id not in (None, "") else {}
+        if endpoint == "section":
+            normalized_section = str(section or "").strip().lower()
+            if normalized_section not in {"inventory"}:
+                return _flow_result(False, "failed", error="洞府分段 section 不在白名单")
+            payload["section"] = normalized_section
+        request = build_cave_treasure_miniapp_request(
+            endpoint,
+            token=token,
+            init_data=init_data,
+            payload=payload,
+            adapter=adapter,
+        )
+        result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            transport or _requests_transport,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key=f"dwelling_{endpoint}",
+        )
+        if not result.ok:
+            return _flow_result(False, "failed", error=result.error, data=result.data)
+        return _flow_result(True, "ok", data=result.data, events=[{"step": f"dwelling_{endpoint}", "ok": True}])
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 

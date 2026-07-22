@@ -639,6 +639,71 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw_player_id, start_mock.await_args_list[1].kwargs["player_id"])
         self.assertEqual(raw_player_id, trial_mock.await_args.kwargs["player_id"])
 
+    async def test_public_entry_session_hydrates_deferred_details_before_external_lookup(self):
+        start_result = {
+            "ok": True,
+            "status": "ok",
+            "data": {
+                "overview": {"player_id": 1001},
+                "raw": {
+                    "ok": True,
+                    "account": {
+                        "playerId": 1001,
+                        "deferredPending": True,
+                        "profile": {"cultivation": {"current": 123}},
+                        "externalApps": {"groups": []},
+                    },
+                    "dwelling": {"meditation": {"deepSeclusion": {"active": True}}},
+                    "snapshot": {"level": "overview", "deferredPending": True},
+                },
+            },
+        }
+        details_result = {
+            "ok": True,
+            "status": "ok",
+            "data": {
+                "ok": True,
+                "account": {
+                    "playerId": 1001,
+                    "deferredPending": False,
+                    "externalApps": {
+                        "groups": [{"apps": [{"key": "fishing", "available": True, "action": "fishing"}]}],
+                    },
+                },
+                "snapshot": {"level": "deferred", "deferredPending": False},
+            },
+        }
+        with patch.object(
+            cave_treasure_runtime,
+            "request_cave_treasure_miniapp_init_data",
+            new=AsyncMock(return_value="dwelling_init_data"),
+        ), patch.object(
+            cave_treasure_runtime,
+            "run_cave_dwelling_start_production_flow",
+            new=AsyncMock(return_value=start_result),
+        ) as start_mock, patch.object(
+            cave_treasure_runtime,
+            "run_cave_dwelling_snapshot_production_flow",
+            new=AsyncMock(return_value=details_result),
+        ) as details_mock:
+            session = await cave_treasure_runtime._load_cave_public_identity_session(
+                1001,
+                "df_SECRET999",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+                capture_source="test",
+                include_details=True,
+            )
+
+        self.assertTrue(session["ok"])
+        start_mock.assert_awaited_once()
+        details_mock.assert_awaited_once()
+        self.assertEqual(1001, details_mock.await_args.kwargs["player_id"])
+        raw = session["result"]["data"]["raw"]
+        self.assertEqual(123, raw["account"]["profile"]["cultivation"]["current"])
+        self.assertTrue(raw["dwelling"]["meditation"]["deepSeclusion"]["active"])
+        self.assertEqual("fishing", raw["account"]["externalApps"]["groups"][0]["apps"][0]["key"])
+
     async def test_public_entry_fishing_uses_selected_channel_and_dwelling_init_data(self):
         identity_id = 3820064579
         raw_player_id = -1003820064579
@@ -689,7 +754,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "data": {},
         }
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
-                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)) as session_mock, \
                 patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)) as external_mock, \
                 patch.object(cave_treasure_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=fishing_result)) as fishing_mock, \
                 patch.object(cave_treasure_runtime, "_apply_fishing_miniapp_result", return_value="5/5竿") as apply_mock, \
@@ -702,6 +767,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["ok"])
+        self.assertTrue(session_mock.await_args.kwargs["include_details"])
         self.assertEqual(raw_player_id, external_mock.await_args.kwargs["player_id"])
         self.assertEqual("fishing", external_mock.await_args.kwargs["action"])
         self.assertEqual("dwelling_init_data", fishing_mock.await_args.kwargs["init_data"])
