@@ -1532,6 +1532,7 @@ async def run_cave_small_world_production_flow(
     capture_source="",
     init_data="",
     player_id=None,
+    initial_snapshot=None,
 ):
     """Read the dwelling once and execute at most one planned small-world action."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
@@ -1544,33 +1545,36 @@ async def run_cave_small_world_production_flow(
             webview_url=webview_url,
             adapter=adapter,
         )
-        start_request = build_cave_treasure_miniapp_request(
-            "start",
-            token=token,
-            init_data=init_data,
-            payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
-            adapter=adapter,
-        )
-        start_result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            start_request,
-            transport or _requests_transport,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key="small_world:start",
-        )
-        if not start_result.ok:
-            return _flow_result(False, "failed", error=start_result.error, data={"raw": start_result.data})
+        snapshot_data = initial_snapshot if isinstance(initial_snapshot, dict) and initial_snapshot else None
+        if snapshot_data is None:
+            start_request = build_cave_treasure_miniapp_request(
+                "start",
+                token=token,
+                init_data=init_data,
+                payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
+                adapter=adapter,
+            )
+            start_result = await asyncio.to_thread(
+                execute_miniapp_http_request,
+                start_request,
+                transport or _requests_transport,
+                sleeper=sleeper or time.sleep,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key="small_world:start",
+            )
+            if not start_result.ok:
+                return _flow_result(False, "failed", error=start_result.error, data={"raw": start_result.data})
+            snapshot_data = start_result.data
 
-        before_overview = parse_cave_dwelling_overview(start_result.data)
+        before_overview = parse_cave_dwelling_overview(snapshot_data)
         plan = dict(action_planner(before_overview) or {})
         action = str(plan.get("action") or "").strip()
         if not action:
             return _flow_result(
                 True,
                 "noop",
-                data={"overview": before_overview, "before_overview": before_overview, "plan": plan, "raw": start_result.data},
+                data={"overview": before_overview, "before_overview": before_overview, "plan": plan, "raw": snapshot_data},
                 events=[{"step": "small_world:start", "ok": True}, {"step": "small_world:noop", "ok": True}],
             )
 
@@ -1591,14 +1595,15 @@ async def run_cave_small_world_production_flow(
             capture_source=capture_source,
             step_key=f"small_world:{normalize_cave_small_world_action(action)}",
         )
-        after_overview = parse_cave_dwelling_overview(action_result.data) or before_overview
+        merged_action_data = merge_cave_dwelling_snapshot_data(snapshot_data, action_result.data)
+        after_overview = parse_cave_dwelling_overview(merged_action_data) or before_overview
         data = {
             "overview": after_overview,
             "before_overview": before_overview,
             "plan": plan,
             "action": normalize_cave_small_world_action(action),
             "action_result": dict(action_result.data.get("actionResult") or {}) if isinstance(action_result.data, dict) else {},
-            "raw": action_result.data,
+            "raw": merged_action_data,
         }
         return _flow_result(
             bool(action_result.ok),

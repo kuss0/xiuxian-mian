@@ -1652,7 +1652,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         "ok": True,
                         "init_data": "dwelling_init_data",
                         "player_id": 1001,
-                        "result": {"ok": True},
+                        "result": {"ok": True, "data": {"raw": {"account": {"smallWorld": {"hasWorld": True}}}}},
                     })), \
                     patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
                     patch.object(cave_treasure_runtime, "save_state"), \
@@ -1670,7 +1670,71 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         flow_mock.assert_awaited_once()
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
+        self.assertTrue(flow_mock.await_args.kwargs["initial_snapshot"]["account"]["smallWorld"]["hasWorld"])
         self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
+
+    async def test_small_world_flow_reuses_split_details_snapshot_without_second_start(self):
+        snapshot = {
+            "account": {
+                "smallWorld": {
+                    "hasWorld": True,
+                    "summary": {"faith": 94, "population": 250000, "stability": 100},
+                    "actions": {"canCollect": False, "canManifest": False},
+                },
+            },
+        }
+        planner = Mock(return_value={})
+        with patch.object(cave_treasure_miniapp, "execute_miniapp_http_request") as execute_mock:
+            result = await cave_treasure_miniapp.run_cave_small_world_production_flow(
+                1001,
+                token="df_SECRET999",
+                webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                init_data="query_id=abc&hash=SECRET",
+                player_id=1001,
+                initial_snapshot=snapshot,
+                action_planner=planner,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("noop", result["status"])
+        self.assertEqual(94, result["data"]["overview"]["small_world"]["faith"])
+        execute_mock.assert_not_called()
+        planner.assert_called_once()
+
+    async def test_small_world_flow_merges_partial_action_reply_with_details_snapshot(self):
+        snapshot = {
+            "account": {
+                "smallWorld": {
+                    "hasWorld": True,
+                    "summary": {"faith": 94, "population": 250000, "stability": 100},
+                    "actions": {"canCollect": False, "canManifest": True},
+                },
+            },
+        }
+        action_reply = SimpleNamespace(
+            ok=True,
+            error="",
+            data={
+                "snapshot": {"level": "action", "partial": True, "domains": ["smallWorld"]},
+                "actionResult": {"ok": True, "rawMessage": "显灵成功"},
+            },
+        )
+        with patch.object(cave_treasure_miniapp, "execute_miniapp_http_request", return_value=action_reply) as execute_mock:
+            result = await cave_treasure_miniapp.run_cave_small_world_production_flow(
+                1001,
+                token="df_SECRET999",
+                webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                init_data="query_id=abc&hash=SECRET",
+                player_id=1001,
+                initial_snapshot=snapshot,
+                action_planner=lambda _overview: {"action": "manifest"},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("acted", result["status"])
+        self.assertEqual(94, result["data"]["overview"]["small_world"]["faith"])
+        self.assertEqual("显灵成功", result["data"]["action_result"]["rawMessage"])
+        execute_mock.assert_called_once()
 
     async def test_cave_public_small_world_collect_sets_independent_eight_hour_clock(self):
         now = 1_700_000_001.0

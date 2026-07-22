@@ -1643,6 +1643,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             await send_audit_log(f"🌏 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
             return {"ok": False, "message": message, "extra": {}}
         with use_identity(identity_id):
+            session_data = dict((session.get("result") or {}).get("data") or {})
             result = await run_cave_small_world_production_flow(
                 identity_id,
                 token=token,
@@ -1656,6 +1657,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 ),
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_small_world:{identity_id}",
+                initial_snapshot=session_data.get("raw") or {},
             )
             data = dict(result.get("data") or {})
             overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
