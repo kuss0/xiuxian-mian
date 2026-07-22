@@ -2558,7 +2558,8 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
 
         mock_send.assert_not_awaited()
         self.assertEqual(now + 330, state_module.state["next_concubine_time"])
-        self.assertIn("全局串行等待", state_module.state["concubine_heart_last_error"])
+        self.assertEqual("", state_module.state["concubine_heart_last_error"])
+        self.assertIn("全局串行等待", state_module.state["concubine_last_result"])
 
     def test_no_partner_hint_does_not_count_as_realm_block(self):
         text = "你尚无红颜知己。唯有筑基之后，方可于.红尘寻缘中觅得佳人。"

@@ -1666,7 +1666,8 @@ def _guard_heart_start_with_message_log(now):
         return False
     delay = remaining + random.uniform(CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC, CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC)
     state["next_concubine_time"] = max(float(state.get("next_concubine_time", 0) or 0), float(now or 0) + delay)
-    state["concubine_heart_last_error"] = "共历心劫全局串行等待，避免多号三轮抉择叠发"
+    state["concubine_heart_last_error"] = ""
+    state["concubine_last_result"] = "共历心劫全局串行等待，避免多号三轮抉择叠发"
     _record_concubine_event(
         "共历心劫全局串行等待",
         kind="skipped",
