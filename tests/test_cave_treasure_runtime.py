@@ -1507,6 +1507,34 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("随行中", state_module.state["concubine_location"])
         self.assertIn("侍妾 南宫婉", audit_mock.await_args.args[0])
 
+    async def test_public_tianjige_concubine_status_accepts_markdown_panel(self):
+        now = 1_700_000_500.0
+        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        raw_message = (
+            "**你的道心侍妾：** **【瑶光】**（状态：**随行中**）\n"
+            "**情缘值：** 300\n"
+            "- **入梦寻图冷却：** 2小时\n"
+            "- **天机代卜冷却：** 3小时\n"
+            "- **共历心劫冷却：** 4小时"
+        )
+        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
+                patch.object(concubine, "save_state", return_value=True), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                ".我的侍妾",
+                now=now,
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual("瑶光", state_module.state["concubine_name"])
+        self.assertEqual(300, state_module.state["concubine_affinity"])
+        self.assertEqual("随行中", state_module.state["concubine_location"])
+
     async def test_public_tianjige_concubine_status_does_not_override_active_phase(self):
         now = 1_700_000_500.0
         with state_module.use_identity(1001) as identity_state:

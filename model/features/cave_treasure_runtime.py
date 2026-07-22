@@ -9,7 +9,7 @@ from ..config import CMD_TIANTI_STATUS
 from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
-from ..runtime import send_audit_log
+from ..runtime import console_log, send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
@@ -2532,6 +2532,11 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
         if sync_result.get("supported"):
             if not sync_result.get("handled"):
                 final_message = f"洞府天机阁只读回包未匹配现有解析器：{normalized_command}"
+                first_line = re.sub(r"\s+", " ", message.splitlines()[0] if message else "").strip()[:120]
+                console_log(
+                    f"📖 {final_message}｜reason={sync_result.get('reason') or 'unknown'}"
+                    f"｜first_line={first_line or '-'}"
+                )
                 await send_audit_log(
                     f"📖 {final_message}",
                     scope="identity",

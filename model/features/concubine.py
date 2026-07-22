@@ -2823,7 +2823,10 @@ def _is_dream_cooldown_text(text):
 
 
 def _parse_status_panel(text, now):
-    raw_text = text or ""
+    # Tianjige command-center replies may wrap the same Telegram panel fields
+    # in Markdown emphasis. Normalize decoration before applying the existing
+    # business parser so the HTTP and Telegram paths share one reducer.
+    raw_text = re.sub(r"[*_`]+", "", str(text or ""))
     matched = RE_CONCUBINE_HEAD.search(raw_text)
     if not matched:
         if _is_no_partner_text(raw_text):
