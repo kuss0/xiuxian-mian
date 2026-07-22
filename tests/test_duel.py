@@ -96,7 +96,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertEqual("斗法配装:prepare", state_module.state["duel_last_result"])
 
-    def test_manual_disable_cancels_tianxing_duel_timeline(self):
+    def test_manual_disable_preserves_unconsumed_tianxing_prediction(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -115,18 +115,21 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 "released_routes": {"斗法": {"released_at": now - 5}},
             }
 
-            with patch.object(control, "_clear_pending_tasks_by_commands"):
+            with patch.object(duel.time, "time", return_value=now), \
+                    patch.object(control, "_clear_pending_tasks_by_commands"):
                 control._manual_disable_duel_module_state()
 
             self.assertFalse(state_module.state["duel_enabled"])
             observed = state_module.state["tianxing_observation"]
-            self.assertEqual("", observed["current_prediction"])
-            self.assertEqual("斗法", observed["prediction_cancelled_route"])
+            self.assertEqual("斗法", observed["current_prediction"])
+            self.assertEqual(now + 3600, observed["current_prediction_until"])
+            self.assertEqual(now + 3600, observed["auto_next_time"])
             self.assertFalse(state_module.state["tianxing_auto_config"]["duel_route_enabled"])
             timeline = state_module.state["tianxing_timeline_state"]
             self.assertEqual("blocked_replan", timeline["phase"])
             self.assertEqual({}, timeline["active_step"])
             self.assertNotIn("斗法", timeline["released_routes"])
+            self.assertEqual(now + 3600, timeline["blocked_until"])
 
     def test_daily_duel_batch_closes_stale_tianxing_route_without_disabling_switches(self):
         identity_id = self._prepare_identity(99002000)
@@ -171,9 +174,9 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recalibrated)
         self.assertTrue(state_module.state["duel_enabled"])
         self.assertTrue(config["duel_route_enabled"])
-        self.assertEqual("", observed["current_prediction"])
-        self.assertGreater(observed["auto_next_time"], now)
-        self.assertEqual(state_module.state["next_duel_time"], recalibrated_observed["auto_next_time"])
+        self.assertEqual("斗法", observed["current_prediction"])
+        self.assertEqual(now + 3600, observed["auto_next_time"])
+        self.assertEqual(now + 3600, recalibrated_observed["auto_next_time"])
         self.assertEqual("blocked_replan", timeline["phase"])
         self.assertNotIn("斗法", timeline["released_routes"])
         self.assertGreater(state_module.state["next_duel_time"], now)

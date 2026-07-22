@@ -701,25 +701,23 @@ def _duel_daily_mind_exhausted(now):
 
 
 def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束"):
-    """Close only today's prepared Duel route without disabling either switch.
-
-    A completed/fully-blocked batch may leave an unconsumed prediction and a
-    released timeline lease behind.  That stale lease makes the fast Tianxing
-    scanner treat the old route as due again.  The recurring configuration must
-    remain enabled so the next local day can prepare a fresh batch.
-    """
+    """Close today's local Duel route without inventing server-side consumption."""
     now = float(now or time.time())
     changed = False
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    prediction_until = 0.0
     if str(observed.get("current_prediction") or "").strip() == "斗法":
-        observed["current_prediction"] = ""
-        observed["current_prediction_until"] = 0
-        observed["current_prediction_set_at"] = 0
-        observed["prediction_cancelled_route"] = "斗法"
-        observed["prediction_cancelled_at"] = now
-        observed["prediction_cancelled_reason"] = str(reason)
-        observed["last_error"] = str(reason)
+        prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+        if 0 < prediction_until <= now:
+            observed["current_prediction"] = ""
+            observed["current_prediction_until"] = 0
+            observed["current_prediction_set_at"] = 0
+            observed["prediction_expired_route"] = "斗法"
+            observed["prediction_expired_at"] = now
+            prediction_until = 0.0
+        else:
+            observed["last_error"] = f"{reason}；未消费的斗法推命仍按游戏有效期保留。"
         changed = True
 
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
@@ -733,8 +731,11 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
         timeline["active_step_index"] = -1
         timeline["active_step"] = {}
         timeline["released_routes"] = released
-        timeline["blocked_until"] = now
-        timeline["last_error"] = str(reason)
+        timeline["blocked_until"] = prediction_until if prediction_until > now else now
+        timeline["last_error"] = (
+            f"{reason}；未消费的斗法推命仍按游戏有效期保留。"
+            if prediction_until > now else str(reason)
+        )
         timeline["updated_at"] = now
         state["tianxing_timeline_state"] = timeline
         changed = True
@@ -743,7 +744,12 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
     # behind.  Move it to the next real downstream deadline, rather than a
     # short fixed backoff that keeps rescanning an otherwise idle identity.
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
-    if changed or auto_next_time <= now:
+    if prediction_until > now:
+        next_auto_time = prediction_until
+        if next_auto_time != auto_next_time:
+            observed["auto_next_time"] = next_auto_time
+            changed = True
+    elif changed or auto_next_time <= now:
         next_times = []
         for enabled_key, next_key in (
             ("wild_training_enabled", "next_wild_training_time"),
@@ -763,6 +769,7 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
         if next_auto_time != auto_next_time:
             observed["auto_next_time"] = next_auto_time
             changed = True
+    if changed:
         state["tianxing_observation"] = observed
     return changed
 
@@ -2182,13 +2189,18 @@ def cancel_duel_tianxing_route(*, now=None, persist=False):
     changed = False
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    prediction_until = 0.0
     if str(observed.get("current_prediction") or "").strip() == "斗法":
-        observed["current_prediction"] = ""
-        observed["current_prediction_until"] = 0
-        observed["current_prediction_set_at"] = 0
-        observed["prediction_cancelled_route"] = "斗法"
-        observed["prediction_cancelled_at"] = now
-        observed["last_error"] = "斗法已关闭，未消费的斗法推命已撤销。"
+        prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+        if 0 < prediction_until <= now:
+            observed["current_prediction"] = ""
+            observed["current_prediction_until"] = 0
+            observed["current_prediction_set_at"] = 0
+            prediction_until = 0.0
+        else:
+            observed["last_error"] = "斗法已关闭；未消费的斗法推命仍按游戏有效期保留。"
+            if prediction_until > now:
+                observed["auto_next_time"] = prediction_until
         state["tianxing_observation"] = observed
         changed = True
 
@@ -2209,8 +2221,11 @@ def cancel_duel_tianxing_route(*, now=None, persist=False):
         timeline["active_step_index"] = -1
         timeline["active_step"] = {}
         timeline["released_routes"] = released
-        timeline["blocked_until"] = now
-        timeline["last_error"] = "斗法模块已关闭，斗法时间线已撤销。"
+        timeline["blocked_until"] = prediction_until if prediction_until > now else now
+        timeline["last_error"] = (
+            "斗法模块已关闭；未消费的斗法推命仍按游戏有效期保留。"
+            if prediction_until > now else "斗法模块已关闭，斗法时间线已撤销。"
+        )
         timeline["updated_at"] = now
         state["tianxing_timeline_state"] = timeline
         changed = True

@@ -858,6 +858,40 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("df_SECRET999", text)
         self.assertNotIn("VERY_SECRET", text)
 
+    def test_cave_treasure_enter_daily_limit_is_successful_terminal_state(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "dwelling": {
+                        "hunt": {"used": 0, "limit": 3, "remaining": 3, "actionPoints": 8},
+                    },
+                }
+            if endpoint == "hunt":
+                return 409, {
+                    "ok": False,
+                    "error": "hunt_daily_limit",
+                    "hunt": {"used": 3, "limit": 3, "remaining": 0, "actionPoints": 0},
+                }
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = cave_treasure_miniapp.run_cave_treasure_miniapp_lab_flow(
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(3),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("daily_limit", result["status"])
+        self.assertEqual(["start", "hunt"], calls)
+        self.assertEqual(3, result["data"]["state"]["games_used"])
+        self.assertEqual(3, result["data"]["state"]["games_limit"])
+
     def test_cave_treasure_start_carries_explicit_selected_player_id(self):
         start_payloads = []
 

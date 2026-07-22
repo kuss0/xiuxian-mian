@@ -749,6 +749,8 @@ def _format_cave_treasure_summary(result):
             games = f"｜游戏 {games_used}/{games_limit}"
     if result.get("ok"):
         material_text = _format_material_summary(data)
+        if status == "daily_limit" and not material_text:
+            return f"MiniApp {status}{games}｜今日次数已尽"
         return f"MiniApp {status}{games}｜{material_text or '未解析到新增物资'}"
     error = str(result.get("error") or "").strip()
     return f"MiniApp {status}{games}｜{error or '未完成'}"

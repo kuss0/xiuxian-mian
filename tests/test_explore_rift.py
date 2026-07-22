@@ -1053,6 +1053,30 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
+    async def test_conflicting_prediction_defers_rift_until_real_prediction_expiry(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        due_at = now + 240
+        blocked_until = now + 2 * 3600
+        with state_module.use_identity(identity_id):
+            state_module.state["next_explore_rift_time"] = due_at
+            with (
+                patch.object(explore_rift, "build_tianxing_route_preflight_plan", return_value={
+                    "route_allowed": False,
+                    "stage": "prediction_conflict",
+                    "blocked_until": blocked_until,
+                    "reason": "当前仍有斗法推命尚未应验",
+                }),
+                patch.object(explore_rift, "run_tianxing_consume_craft_prediction", new=AsyncMock(return_value={"active": False})),
+                patch.object(explore_rift, "save_state"),
+            ):
+                ready = await explore_rift._prepare_explore_rift_tianxing_route(now, due_at=due_at)
+
+            self.assertFalse(ready)
+            self.assertEqual(blocked_until + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
+            self.assertEqual(0, state_module.state["explore_rift_tianxing_prepare_retry_at"])
+            self.assertIn("斗法推命", state_module.state["explore_rift_last_error"])
+
     async def test_scheduler_does_not_insert_tianxing_predict_before_explore_rift_without_timeline(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -1245,7 +1269,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
 
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
-            self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
+            self.assertEqual(now + 1800 + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
             self.assertIn("避免逆命", state_module.state["explore_rift_last_error"])
 
     async def test_scheduler_consumes_craft_prediction_before_explore_rift(self):

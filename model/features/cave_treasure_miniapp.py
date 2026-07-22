@@ -1219,6 +1219,30 @@ def _is_uncertain_cave_mutation_result(result):
     return status_code <= 0 or status_code == 429 or status_code >= 500
 
 
+def _is_cave_treasure_daily_limit_result(result):
+    data = result.data if isinstance(getattr(result, "data", None), dict) else {}
+    error = str(getattr(result, "error", "") or data.get("error") or "").strip().lower()
+    return error in {"hunt_daily_limit", "daily_limit", "daily_games_exhausted"}
+
+
+def _cave_treasure_daily_limit_state(result, previous_state=None):
+    data = result.data if isinstance(getattr(result, "data", None), dict) else {}
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
+    hunt = root.get("hunt") if isinstance(root.get("hunt"), dict) else {}
+    if not hunt and isinstance(dwelling.get("hunt"), dict):
+        hunt = dwelling["hunt"]
+    state = _carry_cave_treasure_context(parse_cave_treasure_state(data), previous_state or {})
+    games_limit = _coerce_int(hunt.get("limit"), _coerce_int(state.get("games_limit"), 0))
+    if games_limit > 0:
+        state["games_limit"] = games_limit
+        state["games_used"] = games_limit
+    state["action_remaining"] = 0
+    state["in_round"] = False
+    state["status"] = "daily_limit"
+    return state
+
+
 def run_cave_treasure_miniapp_lab_flow(
     *,
     token,
@@ -1258,6 +1282,17 @@ def run_cave_treasure_miniapp_lab_flow(
     )
     _append_http_event(events, "start", start_result)
     if not start_result.ok:
+        if _is_cave_treasure_daily_limit_result(start_result):
+            return _flow_result(
+                True,
+                "daily_limit",
+                data={
+                    "state": _cave_treasure_daily_limit_state(start_result),
+                    "results": [],
+                    "settled_count": 0,
+                },
+                events=events,
+            )
         return _flow_result(False, "failed", error=start_result.error, events=events)
 
     current_data = start_result.data
@@ -1308,6 +1343,17 @@ def run_cave_treasure_miniapp_lab_flow(
         )
         _append_http_event(events, f"action:{decision.get('action')}", action_result)
         if not action_result.ok:
+            if _is_cave_treasure_daily_limit_result(action_result):
+                return _flow_result(
+                    True,
+                    "daily_limit",
+                    data={
+                        "state": _cave_treasure_daily_limit_state(action_result, last_state),
+                        "results": results,
+                        "settled_count": len(results),
+                    },
+                    events=events,
+                )
             uncertain = _is_uncertain_cave_mutation_result(action_result)
             return _flow_result(
                 False,

@@ -1468,10 +1468,10 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
             return False
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
-        if due_at <= now:
-            state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
-        else:
-            state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
+        retry_at = float(blocked_until + CD_BUFFER_SEC)
+        current_due = float(state.get("next_explore_rift_time", 0) or due_at or now)
+        state["next_explore_rift_time"] = max(current_due, retry_at)
+        state["explore_rift_tianxing_prepare_retry_at"] = 0
         state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
         save_state()
         return False
