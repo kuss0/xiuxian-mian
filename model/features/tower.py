@@ -25,6 +25,7 @@ from ..state import (
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 from .cave_treasure_runtime import run_cave_public_tower
+from .tower_miniapp import format_tower_delta
 
 
 TOWER_MINIAPP_RUN_LEASE_SEC = 30 * 60
@@ -158,7 +159,8 @@ def get_tower_status_text():
         f"- 执行窗口：{format_window_text('闯塔')}",
         f"- 上次 MiniApp 启动：{fmt_abs_ts(state.get('last_tower_command_sent_at', 0))}",
         f"- 最近阶段：{latest.get('phase') or '未运行'}｜通过 {latest.get('cleared_count', 0)} 层",
-        f"- 最近收益：修为 +{(latest.get('gains') or {}).get('修为', 0)}｜塔印 +{(latest.get('gains') or {}).get('塔印', 0)}",
+        f"- 最近收益：修为 {format_tower_delta((latest.get('gains') or {}).get('修为', 0))}"
+        f"｜塔印 {format_tower_delta((latest.get('gains') or {}).get('塔印', 0))}",
         "- 自动链：公共洞府入口 → pagoda start → challenge（不自动重铸）",
     ]
     return "\n".join(lines)

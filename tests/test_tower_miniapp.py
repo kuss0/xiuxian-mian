@@ -78,3 +78,10 @@ class TowerMiniAppTests(unittest.TestCase):
         self.assertEqual({"修为": 12000, "塔印": 8}, gains)
         self.assertEqual({"玄骨化焰诀": 1}, rewards)
 
+    def test_parser_preserves_cultivation_loss_and_obtained_wording(self):
+        gains, rewards = tower_miniapp.extract_tower_materials({
+            "replay": {"report": "修为 损失了 7,506 点，获得塔印 49 点，获得了【灵石】x894。"},
+        })
+        self.assertEqual({"修为": -7506, "塔印": 49}, gains)
+        self.assertEqual({"灵石": 894}, rewards)
+        self.assertEqual("-7506", tower_miniapp.format_tower_delta(gains["修为"]))

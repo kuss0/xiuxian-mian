@@ -33,7 +33,7 @@ from .trial_runtime import _format_trial_summary, _trial_batch_materials, _trial
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
-from .tower_miniapp import build_tower_launch_args, run_tower_miniapp_production_flow
+from .tower_miniapp import build_tower_launch_args, format_tower_delta, run_tower_miniapp_production_flow
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
@@ -2033,7 +2033,8 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
             message = (
                 f"洞府琉璃问心塔：通过 {replay.get('cleared_count', 0)} 层"
                 f"｜止步 {replay.get('failed_floor') or '未止步'} 层"
-                f"｜修为 +{gains.get('修为', 0)}｜塔印 +{gains.get('塔印', 0)}"
+                f"｜修为 {format_tower_delta(gains.get('修为', 0))}"
+                f"｜塔印 {format_tower_delta(gains.get('塔印', 0))}"
             )
         else:
             message = f"洞府琉璃问心塔失败：{result.get('error') or result.get('status') or 'unknown'}"

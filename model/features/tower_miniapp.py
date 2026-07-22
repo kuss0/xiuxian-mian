@@ -29,9 +29,12 @@ TOWER_MINIAPP_ENDPOINTS = {
 TOWER_MINIAPP_START_PARAM_PATTERN = r"pagoda[_-][A-Za-z0-9_-]{4,160}"
 TOWER_MINIAPP_HTTP_TIMEOUT = (5, 30)
 
-_CULTIVATION_GAIN_RE = re.compile(r"修为(?:增加|获得|[+＋])\s*([\d,]+)")
+_CULTIVATION_DELTA_RE = re.compile(
+    r"修为\s*(?:(?P<verb>增加|获得|损失)(?:了)?\s*)?"
+    r"(?P<sign>[+＋\-－])?\s*(?P<amount>[\d,]+)\s*点?"
+)
 _TOWER_MARK_GAIN_RE = re.compile(r"(?:获得)?塔印\s*(?:[+＋]|增加)?\s*([\d,]+)")
-_ITEM_GAIN_RE = re.compile(r"(?:获得|奖励|掉落)\s*(?:【([^】]+)】|([^\s，。；;:：]{2,24}))\s*[xX×]\s*([\d,]+)")
+_ITEM_GAIN_RE = re.compile(r"(?:获得(?:了)?|奖励|掉落)\s*(?:【([^】]+)】|([^\s，。；;:：]{2,24}))\s*[xX×]\s*([\d,]+)")
 
 
 def build_tower_miniapp_adapter(*, api_base_url=TOWER_MINIAPP_DEFAULT_API_BASE_URL):
@@ -155,10 +158,13 @@ def extract_tower_materials(data):
     report = str(replay.get("report") or "")
     gains = {}
     rewards = {}
-    cultivation = _CULTIVATION_GAIN_RE.search(report)
+    cultivation = _CULTIVATION_DELTA_RE.search(report)
     marks = _TOWER_MARK_GAIN_RE.search(report)
     if cultivation:
-        gains["修为"] = int(cultivation.group(1).replace(",", ""))
+        amount = int(cultivation.group("amount").replace(",", ""))
+        if cultivation.group("verb") == "损失" or cultivation.group("sign") in {"-", "－"}:
+            amount = -amount
+        gains["修为"] = amount
     if marks:
         gains["塔印"] = int(marks.group(1).replace(",", ""))
     for match in _ITEM_GAIN_RE.finditer(report):
@@ -166,6 +172,13 @@ def extract_tower_materials(data):
         if name:
             rewards[name] = rewards.get(name, 0) + int(match.group(3).replace(",", ""))
     return gains, rewards
+
+
+def format_tower_delta(value):
+    try:
+        return f"{int(value or 0):+d}"
+    except (TypeError, ValueError, OverflowError):
+        return "+0"
 
 
 def _requests_transport(request):
@@ -315,6 +328,7 @@ __all__ = [
     "build_tower_miniapp_flow_plan",
     "build_tower_miniapp_request",
     "extract_tower_materials",
+    "format_tower_delta",
     "parse_tower_replay",
     "parse_tower_state",
     "run_tower_miniapp_lab_flow",
