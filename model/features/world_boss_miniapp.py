@@ -1105,6 +1105,8 @@ def _world_boss_finish_business_summary(data, *, hit_summary=None):
         "actions_remaining": hit_summary.get("actions_remaining"),
         "actions_used": hit_summary.get("actions_used"),
         "planned_window_count": max(0, _int_value(hit_summary.get("planned_window_count"), 0)),
+        "target_window_count": max(0, _int_value(hit_summary.get("target_window_count"), 0)),
+        "window_skip_count": max(0, _int_value(hit_summary.get("window_skip_count"), 0)),
         "rejected_window_count": max(0, _int_value(hit_summary.get("rejected_window_count"), 0)),
     })
     authoritative_counts = [
@@ -1355,6 +1357,7 @@ def run_world_boss_joined_battle_lab_flow(
     battle_wait_timeout_sec=65.0,
     state_poll_interval_sec=None,
     entry_token="",
+    window_skip_count=0,
 ):
     """Wait for room lock, refresh the joined session, then execute one battle."""
 
@@ -1554,10 +1557,19 @@ def run_world_boss_joined_battle_lab_flow(
     except ValueError as exc:
         return _flow_result(False, "not_ready", error=exc, events=events)
     plan = filter_world_boss_action_plan(full_plan, initial_elapsed_ms)
+    requested_window_skip = max(0, _int_value(window_skip_count, 0))
+    effective_window_skip = min(requested_window_skip, max(0, len(plan) - 1))
+    effective_plan = (
+        plan[:-effective_window_skip]
+        if effective_window_skip
+        else list(plan)
+    )
     events.append({
         "step": "plan",
         "ok": True,
-        "window_count": len(plan),
+        "window_count": len(effective_plan),
+        "full_window_count": len(plan),
+        "window_skip_count": effective_window_skip,
         "expired_window_count": len(full_plan) - len(plan),
         "current_elapsed_ms": initial_elapsed_ms,
         "server_elapsed_ms_ignored": server_elapsed_ms,
@@ -1577,6 +1589,8 @@ def run_world_boss_joined_battle_lab_flow(
         "accepted_perfect_count": 0,
         "accepted_damage_yi": 0.0,
         "planned_window_count": len(full_plan),
+        "target_window_count": len(effective_plan),
+        "window_skip_count": effective_window_skip,
         "rejected_window_count": 0,
         "action_limit": None,
         "actions_remaining": None,
@@ -1620,7 +1634,7 @@ def run_world_boss_joined_battle_lab_flow(
 
     process_missed_windows(initial_elapsed_ms)
     recent_hit_rtt_ms = [round_trip_ms] if single_battle_protocol and round_trip_ms > 0 else []
-    for action_index, action in enumerate(plan):
+    for action_index, action in enumerate(effective_plan):
         if dead:
             break
         action = dict(action)
@@ -1867,6 +1881,7 @@ def run_world_boss_miniapp_lab_flow(
     clock=None,
     capture_sink=None,
     capture_source="",
+    window_skip_count=0,
 ):
     """Backward-compatible single identity join followed by refreshed battle."""
 
@@ -1898,6 +1913,7 @@ def run_world_boss_miniapp_lab_flow(
         capture_sink=capture_sink,
         capture_source=capture_source,
         events=events,
+        window_skip_count=window_skip_count,
     )
 
 

@@ -218,6 +218,72 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
         self.assertTrue(any(event["step"] == "begin_sync" for event in result["events"]))
 
+    def test_window_skip_count_omits_tail_windows_without_changing_server_limit(self):
+        calls = []
+        hit_windows = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "player": {"maxHp": 1000},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-window-skip",
+                        "durationMs": 7600,
+                        "windows": [
+                            {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w3", "centerMs": 4400, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w4", "centerMs": 6000, "hitMs": 620, "perfectMs": 210},
+                        ],
+                    },
+                }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 0}
+            if endpoint == "hit":
+                hit_windows.append(request["payload"]["windowId"])
+                return 200, {
+                    "ok": True,
+                    "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                    "boss": {"actionLimit": 1, "actionsUsed": 0, "actionsRemaining": 1},
+                }
+            if endpoint == "finish":
+                return 200, {
+                    "ok": True,
+                    "result": {
+                        "score": 80,
+                        "hits": len(hit_windows),
+                        "perfects": len(hit_windows),
+                        "realtime_hit_count": len(hit_windows),
+                        "realtime_damage_yi": len(hit_windows) * 100,
+                    },
+                }
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_WINDOW_SKIP",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            rng=random.Random(9),
+            window_skip_count=2,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
+        self.assertEqual(["w1", "w2"], hit_windows)
+        self.assertEqual(4, result["data"]["result"]["planned_window_count"])
+        self.assertEqual(2, result["data"]["result"]["target_window_count"])
+        self.assertEqual(2, result["data"]["result"]["window_skip_count"])
+        self.assertFalse(result["data"]["result"]["full_window_run"])
+
     def test_begin_uses_server_started_at_under_high_rtt(self):
         calls = []
         clock = FakeClock()

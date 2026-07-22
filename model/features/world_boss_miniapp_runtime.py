@@ -120,6 +120,7 @@ async def run_world_boss_miniapp_event(
     transport=None,
     init_data_provider=None,
     progress_callback=None,
+    window_skip_by_identity=None,
 ):
     """Join accounts in parallel, then run one serial timeline per account."""
 
@@ -130,6 +131,15 @@ async def run_world_boss_miniapp_event(
     shared_transport = transport
     init_data_provider = init_data_provider or request_world_boss_miniapp_init_data
     capture_sink = _capture_store(now)
+    raw_window_skips = window_skip_by_identity if isinstance(window_skip_by_identity, dict) else {}
+
+    def window_skip_for(identity_id):
+        raw_value = raw_window_skips.get(identity_id, raw_window_skips.get(str(identity_id), 0))
+        try:
+            return max(0, min(32, int(raw_value or 0)))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
     async def join_one(raw_identity_id):
         identity_id = int(raw_identity_id or 0)
         if identity_id <= 0:
@@ -185,14 +195,21 @@ async def run_world_boss_miniapp_event(
         }
         if receipt.joined:
             await _emit_progress(progress_callback, join_result)
-            return (identity_id, init_data, receipt, identity_transport, session), join_result
+            return (
+                identity_id,
+                init_data,
+                receipt,
+                identity_transport,
+                session,
+                window_skip_for(identity_id),
+            ), join_result
         if session is not None:
             session.close()
         await _emit_progress(progress_callback, join_result)
         return None, join_result
 
     async def battle_one(context):
-        identity_id, init_data, receipt, identity_transport, session = context
+        identity_id, init_data, receipt, identity_transport, session, window_skip_count = context
         battle_token = getattr(receipt, "session_token", "") or launch["token"]
         try:
             try:
@@ -205,6 +222,7 @@ async def run_world_boss_miniapp_event(
                     transport=identity_transport,
                     capture_sink=capture_sink,
                     capture_source=f"world_boss:battle:{identity_id}",
+                    window_skip_count=window_skip_count,
                 )
             finally:
                 if session is not None:

@@ -1432,6 +1432,15 @@ def _world_boss_miniapp_auto_config():
     excluded_ids = raw.get("world_boss_auto_excluded_identity_ids") or []
     if not isinstance(excluded_ids, (list, tuple, set)):
         excluded_ids = []
+    raw_window_skips = raw.get("world_boss_auto_window_skip_by_identity") or {}
+    if not isinstance(raw_window_skips, dict):
+        raw_window_skips = {}
+    window_skip_by_identity = {}
+    for raw_identity_id, raw_skip_count in raw_window_skips.items():
+        identity_id = _coerce_int(raw_identity_id, 0)
+        skip_count = max(0, min(32, _coerce_int(raw_skip_count, 0)))
+        if identity_id > 0 and skip_count > 0:
+            window_skip_by_identity[identity_id] = skip_count
     return {
         "enabled": bool(raw.get("world_boss_auto_enabled")),
         "account_limit": account_limit,
@@ -1441,6 +1450,7 @@ def _world_boss_miniapp_auto_config():
             for identity_id in excluded_ids
             if _coerce_int(identity_id, 0) > 0
         },
+        "window_skip_by_identity": window_skip_by_identity,
     }
 
 
@@ -1448,7 +1458,15 @@ def _world_boss_miniapp_task_running():
     return _WORLD_BOSS_MINIAPP_TASK is not None and not _WORLD_BOSS_MINIAPP_TASK.done()
 
 
-async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec):
+async def _run_world_boss_miniapp_automation(
+    event_key,
+    identity_ids,
+    event,
+    text,
+    opened_at,
+    account_gap_sec,
+    window_skip_by_identity=None,
+):
     async def record_progress(item):
         run_state = _get_run_state()
         if run_state.get("event_key") != event_key:
@@ -1484,6 +1502,7 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
             opened_at=opened_at,
             account_gap_sec=account_gap_sec,
             progress_callback=record_progress,
+            window_skip_by_identity=window_skip_by_identity,
         )
     except Exception as exc:
         result = {"ok": False, "status": "runtime_error", "joined_count": 0, "results": [], "error": _short_text(exc)}
@@ -1547,6 +1566,9 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
             rejected = _coerce_int(summary.get("rejected_window_count"), 0)
             if rejected:
                 detail += f" 窗口拒绝{rejected}"
+            skipped = _coerce_int(summary.get("window_skip_count"), 0)
+            if skipped:
+                detail += f" 主动少出手{skipped}"
         detail_parts.append(detail)
     details = "、".join(detail_parts) or "无明细"
     await send_audit_log(
@@ -1557,12 +1579,28 @@ async def _run_world_boss_miniapp_automation(event_key, identity_ids, event, tex
     )
 
 
-def _start_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec):
+def _start_world_boss_miniapp_automation(
+    event_key,
+    identity_ids,
+    event,
+    text,
+    opened_at,
+    account_gap_sec,
+    window_skip_by_identity=None,
+):
     global _WORLD_BOSS_MINIAPP_TASK
     if _world_boss_miniapp_task_running():
         return False
     _WORLD_BOSS_MINIAPP_TASK = asyncio.create_task(
-        _run_world_boss_miniapp_automation(event_key, identity_ids, event, text, opened_at, account_gap_sec)
+        _run_world_boss_miniapp_automation(
+            event_key,
+            identity_ids,
+            event,
+            text,
+            opened_at,
+            account_gap_sec,
+            window_skip_by_identity,
+        )
     )
     return True
 
@@ -1610,6 +1648,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
                 text,
                 now,
                 auto_config["account_gap_sec"],
+                auto_config["window_skip_by_identity"],
             )
             message = (
                 f"🗡 真仙试锋小程序（MiniApp）自动参与已启动：{'、'.join(_identity_label(identity_id) for identity_id in auto_identity_ids)}"

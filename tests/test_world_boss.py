@@ -1435,6 +1435,20 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([8659059191], start_mock.call_args.args[1])
 
+    def test_miniapp_auto_config_scopes_window_skip_to_stable_identity_id(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_auto_enabled": True,
+            "world_boss_auto_window_skip_by_identity": {
+                "301299112": 2,
+                "8659059191": 0,
+                "invalid": 9,
+            },
+        }
+
+        config = world_boss._world_boss_miniapp_auto_config()
+
+        self.assertEqual({301299112: 2}, config["window_skip_by_identity"])
+
     async def test_interrupted_miniapp_task_is_not_automatically_resumed(self):
         now = 1_781_319_500.0
         self._register(8659059191, label="WalterWA2000", world_boss_enabled=False)

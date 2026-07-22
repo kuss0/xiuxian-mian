@@ -2838,6 +2838,38 @@ body {
   gap: 8px 14px;
 }
 
+.miniapp-world-boss-candidate {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 78px;
+  align-items: end;
+  gap: 8px;
+  min-width: min(100%, 230px);
+}
+
+.miniapp-world-boss-toggle {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px !important;
+  min-height: 32px;
+}
+
+.miniapp-world-boss-toggle input[type="checkbox"] {
+  width: 14px;
+  min-height: 14px;
+  margin: 0;
+}
+
+.miniapp-world-boss-toggle span {
+  overflow: hidden;
+  color: #cbd5e1 !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.miniapp-world-boss-skip input {
+  min-width: 0;
+}
+
 .miniapp-cave-public .miniapp-cave-switch {
   display: inline-flex;
   width: auto;

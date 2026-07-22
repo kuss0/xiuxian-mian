@@ -417,6 +417,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "world_boss_auto_account_limit": 1,
     "world_boss_auto_account_gap_sec": 3,
     "world_boss_auto_excluded_identity_ids": [],
+    "world_boss_auto_window_skip_by_identity": {},
     "tree_daily_enabled_identity_ids": [],
 }
 TRIAL_DAILY_BATCH_WAVES = (
@@ -523,6 +524,19 @@ def normalize_miniapp_auto_config(config=None):
         for identity_id in excluded_ids
         if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
     })
+    raw_window_skips = result.get("world_boss_auto_window_skip_by_identity") or {}
+    if not isinstance(raw_window_skips, dict):
+        raw_window_skips = {}
+    normalized_window_skips = {}
+    for raw_identity_id, raw_skip_count in raw_window_skips.items():
+        try:
+            identity_id = int(raw_identity_id)
+            skip_count = max(0, min(32, int(raw_skip_count or 0)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if identity_id > 0 and skip_count > 0:
+            normalized_window_skips[str(identity_id)] = skip_count
+    result["world_boss_auto_window_skip_by_identity"] = normalized_window_skips
     tree_identity_ids = result.get("tree_daily_enabled_identity_ids") or []
     if not isinstance(tree_identity_ids, (list, tuple, set)):
         tree_identity_ids = []
@@ -672,12 +686,14 @@ def get_miniapp_auto_config_snapshot(now=None):
     except Exception:
         world_boss_candidate_ids = []
     excluded_world_boss_ids = set(config.get("world_boss_auto_excluded_identity_ids") or [])
+    world_boss_window_skips = dict(config.get("world_boss_auto_window_skip_by_identity") or {})
     world_boss_candidates = [
         {
             "identity_id": int(identity_id),
             "label": get_identity_ui_display_name(identity_id),
             "account_id": int(get_identity_account(identity_id) or 0),
             "auto_enabled": int(identity_id) not in excluded_world_boss_ids,
+            "window_skip_count": int(world_boss_window_skips.get(str(identity_id), 0) or 0),
         }
         for identity_id in world_boss_candidate_ids
     ]
@@ -7351,6 +7367,20 @@ async def ui_set_world_boss_miniapp_config(payload=None):
             for identity_id in raw_ids
             if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
         })
+    if "window_skip_by_identity" in payload:
+        raw_window_skips = payload.get("window_skip_by_identity") or {}
+        if not isinstance(raw_window_skips, dict):
+            return False, "世界 Boss 少出手配置格式无效"
+        normalized_window_skips = {}
+        for raw_identity_id, raw_skip_count in raw_window_skips.items():
+            try:
+                identity_id = int(raw_identity_id)
+                skip_count = max(0, min(32, int(raw_skip_count or 0)))
+            except (TypeError, ValueError, OverflowError):
+                return False, "世界 Boss 少出手次数必须为 0-32"
+            if identity_id > 0 and skip_count > 0:
+                normalized_window_skips[str(identity_id)] = skip_count
+        config["world_boss_auto_window_skip_by_identity"] = normalized_window_skips
     set_miniapp_auto_config(config)
     save_state()
     status = "开启" if config["world_boss_auto_enabled"] else "关闭"
@@ -7358,6 +7388,7 @@ async def ui_set_world_boss_miniapp_config(payload=None):
         f"世界 Boss MiniApp 自动化已{status}｜最多 {config['world_boss_auto_account_limit']} 个登录账户"
         "｜账户并行、账户内部串行"
         f"｜排除身份 {len(config['world_boss_auto_excluded_identity_ids'])} 个"
+        f"｜少出手身份 {len(config['world_boss_auto_window_skip_by_identity'])} 个"
     )
 
 

@@ -312,10 +312,15 @@
     automation = automation || {};
     var candidates = Array.isArray(automation.world_boss_candidates) ? automation.world_boss_candidates : [];
     var candidateHtml = candidates.length ? candidates.map(function (item) {
-      return '<label class="miniapp-cave-switch">'
+      return '<div class="miniapp-world-boss-candidate">'
+        + '<label class="miniapp-world-boss-toggle">'
         + '<input type="checkbox" data-world-boss-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '>'
         + '<span>' + esc(item.label || item.identity_id) + '</span>'
-        + '</label>';
+        + '</label>'
+        + '<label class="miniapp-world-boss-skip"><span>少出手</span>'
+        + '<input type="number" min="0" max="32" step="1" data-world-boss-window-skip="' + esc(item.identity_id) + '" value="' + esc(item.window_skip_count || 0) + '">'
+        + '</label>'
+        + '</div>';
     }).join('') : '<span class="miniapp-empty">暂无可用登录账户</span>';
     return ''
       + '<section class="miniapp-score-config" data-world-boss-auto="1">'
@@ -614,13 +619,20 @@
     if (button) button.disabled = true;
     try {
       var excludedIds = [];
+      var windowSkipByIdentity = {};
       panel.querySelectorAll('[data-world-boss-candidate]').forEach(function (input) {
         if (!input.checked) excludedIds.push(input.getAttribute('data-world-boss-candidate'));
+      });
+      panel.querySelectorAll('[data-world-boss-window-skip]').forEach(function (input) {
+        var identityId = input.getAttribute('data-world-boss-window-skip');
+        var skipCount = Math.max(0, Math.min(32, parseInt(input.value || '0', 10) || 0));
+        if (identityId && skipCount > 0) windowSkipByIdentity[identityId] = skipCount;
       });
       var data = await post('/api/world-boss-miniapp-config', {
         enabled: !!(panel.querySelector('[data-world-boss-enabled="1"]') || {}).checked,
         account_limit: (panel.querySelector('[data-world-boss-account-limit="1"]') || {}).value || 1,
-        excluded_identity_ids: excludedIds
+        excluded_identity_ids: excludedIds,
+        window_skip_by_identity: windowSkipByIdentity
       });
       flash(data.message || '世界 Boss MiniApp 设置已保存', false);
       if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });
