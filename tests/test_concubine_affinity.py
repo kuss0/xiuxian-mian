@@ -2731,6 +2731,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
                  patch.object(concubine.time, "time", return_value=now), \
                  patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "get_last_game_send_block", return_value={"code": "send_timeout"}), \
                  patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send:
                 sent = await concubine._send_heart_choice(now)
                 workflow_events = _read_workflow_events(tmpdir)
@@ -2741,12 +2742,49 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_choice_prompt_msg_id"])
         self.assertEqual(2, state_module.state["concubine_heart_choice_round"])
         self.assertEqual(now, state_module.state["concubine_heart_choice_sent_at"])
-        self.assertEqual(now + 30, state_module.state["next_concubine_time"])
-        self.assertEqual(now + 30, state_module.state["concubine_heart_due_at"])
-        self.assertIn("发送未确认", state_module.state["concubine_heart_last_error"])
+        self.assertEqual(1, state_module.state["concubine_heart_choice_retry_count"])
+        self.assertEqual(now + 120, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 120, state_module.state["concubine_heart_due_at"])
+        self.assertIn("禁止盲补", state_module.state["concubine_heart_last_error"])
         self.assertTrue(any(
             event.get("workflow") == "concubine"
             and event.get("decision") == "heart_choice_send_unconfirmed"
+            and "retry_budget=exhausted" in event.get("detail", {}).get("detail", "")
+            for event in workflow_events
+        ))
+
+    async def test_heart_choice_known_unsent_remains_retryable(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387665
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 2
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                 patch.object(concubine.time, "time", return_value=now), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send:
+                handled = await concubine._send_heart_choice(now)
+                workflow_events = _read_workflow_events(tmpdir)
+
+        self.assertTrue(handled)
+        mock_send.assert_awaited_once()
+        self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_heart_choice_sent_at"])
+        self.assertEqual(0, state_module.state["concubine_heart_choice_retry_count"])
+        self.assertEqual(now + 30, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 30, state_module.state["concubine_heart_due_at"])
+        self.assertIn("未发送", state_module.state["concubine_heart_last_error"])
+        self.assertTrue(any(
+            event.get("workflow") == "concubine"
+            and event.get("decision") == "heart_choice_definitely_unsent"
+            and "block=send_queue_timeout" in event.get("detail", {}).get("detail", "")
             for event in workflow_events
         ))
 

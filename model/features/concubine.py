@@ -4017,18 +4017,51 @@ async def _send_heart_choice(now):
     )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        send_block = get_last_game_send_block(
+            get_current_identity_id(),
+            CMD_CONCUBINE_HEART_STEADY,
+        )
+        block_code = str((send_block or {}).get("code") or "")
+        if block_code in CONCUBINE_UNSENT_BLOCK_CODES or block_code.startswith("flood_wait"):
+            _set_phase("heart_choice_pending")
+            state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
+            _set_heart_pending_deadline(state["next_concubine_time"])
+            state["concubine_heart_last_error"] = (
+                f"心劫第 {round_no} 轮 .稳 未发送，等待重试"
+            )
+            _record_concubine_event(
+                "心劫抉择未发送",
+                kind="skipped",
+                reason="concubine_heart_choice_definitely_unsent",
+                phase="heart_choice_pending",
+                command=CMD_CONCUBINE_HEART_STEADY,
+                detail=(
+                    f"prompt_msg_id={prompt_msg_id}｜round={round_no}"
+                    f"｜block={block_code or 'runtime_block'}"
+                ),
+                decision="heart_choice_definitely_unsent",
+                workflow_status="blocked",
+            )
+            save_state()
+            return True
         _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
+        # A transport timeout may still deliver the choice later. Exhaust the
+        # resend budget so the same round cannot receive a blind duplicate.
+        state["concubine_heart_choice_retry_count"] = CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT
         _set_phase("heart_choice_reply_pending")
-        state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
+        state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
         _set_heart_pending_deadline(state["next_concubine_time"])
-        state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 发送未确认，等待回合推进"
+        state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 发送状态未知，禁止盲补"
         _record_concubine_event(
             "心劫抉择发送未确认",
             kind="changed",
             reason="concubine_send_unconfirmed",
             phase="heart_choice_reply_pending",
             command=CMD_CONCUBINE_HEART_STEADY,
-            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
+            detail=(
+                f"prompt_msg_id={prompt_msg_id}｜round={round_no}"
+                f"｜block={block_code or 'unknown'}｜retry_budget=exhausted"
+            ),
             decision="heart_choice_send_unconfirmed",
             workflow_status="pending",
         )
