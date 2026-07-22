@@ -8,6 +8,23 @@ from model.features import cave_treasure_miniapp, fishing_miniapp, stargazer_min
 
 
 class MiniAppProtocolFlowTests(unittest.TestCase):
+    def test_cave_external_action_whitelist_accepts_dynamic_stargazer_and_tree(self):
+        for action in ("sect_farm", "stargazer", "spirit_tree", "tree"):
+            request = cave_treasure_miniapp.build_cave_external_action_request(
+                action,
+                token="df_SECRET999",
+                player_id=-1008659059191,
+                init_data="query_id=abc&hash=VERY_SECRET",
+            )
+            self.assertEqual(action, request["payload"]["action"])
+        with self.assertRaises(ValueError):
+            cave_treasure_miniapp.build_cave_external_action_request(
+                "untrusted_external_action",
+                token="df_SECRET999",
+                player_id=-1008659059191,
+                init_data="query_id=abc",
+            )
+
     def test_cave_journey_wild_experience_uses_strict_mode_and_server_state(self):
         parsed = cave_treasure_miniapp.parse_cave_dwelling_overview({
             "ok": True,

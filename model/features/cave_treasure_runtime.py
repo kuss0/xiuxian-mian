@@ -266,8 +266,10 @@ def _find_stargazer_external_app_in_cave_payload(value):
     observatory_url = str(
         observatory.get("url") or observatory.get("webviewUrl") or observatory.get("webview_url") or ""
     ).strip()
-    if observatory_url:
+    observatory_action = str(observatory.get("action") or "").strip().lower()
+    if observatory_url or observatory_action:
         return {
+            "action": observatory_action,
             "url": observatory_url,
             "title": str(observatory.get("title") or "观星台").strip(),
             "available": bool(observatory.get("available", True)),
@@ -282,9 +284,11 @@ def _find_stargazer_external_app_in_cave_payload(value):
                 continue
             key = str(item.get("key") or "").strip().lower()
             title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
+            action = str(item.get("action") or "").strip().lower()
             url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
             is_stargazer = (
                 key in {"sect_farm", "stargazer", "star_palace", "star_farm"}
+                or action in {"sect_farm", "stargazer", "star_palace", "star_farm"}
                 or "观星台" in title
                 or "星宫" in title
                 or "xianxia-sect-farm" in url
@@ -293,6 +297,7 @@ def _find_stargazer_external_app_in_cave_payload(value):
             if not is_stargazer:
                 continue
             return {
+                "action": action,
                 "url": url,
                 "title": title or key,
                 "available": bool(item.get("available", True)),
@@ -313,9 +318,11 @@ def _find_tree_external_app_in_cave_payload(value):
                 continue
             key = str(item.get("key") or "").strip().lower()
             title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
+            action = str(item.get("action") or "").strip().lower()
             url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
             is_tree = (
                 key in {"spirit_tree", "tree", "luoyun_tree"}
+                or action in {"spirit_tree", "tree", "luoyun_tree"}
                 or "灵树" in title
                 or "xianxia-spirit-tree" in url
                 or "startapp=tree_" in url
@@ -323,6 +330,7 @@ def _find_tree_external_app_in_cave_payload(value):
             if not is_tree:
                 continue
             return {
+                "action": action,
                 "url": url,
                 "title": title or key,
                 "available": bool(item.get("available", True)),
@@ -384,6 +392,14 @@ def _tree_launch_from_external_app(external_app):
     }
 
 
+def _find_tree_launch_in_cave_payload(value):
+    for item in _iter_dicts(value):
+        launch = _tree_launch_from_external_app(item)
+        if launch:
+            return launch
+    return {}
+
+
 def _stargazer_launch_from_external_app(external_app):
     url = str((external_app or {}).get("url") or "").strip()
     if not url:
@@ -399,6 +415,14 @@ def _stargazer_launch_from_external_app(external_app):
         "title": str((external_app or {}).get("title") or "").strip(),
         "safe_summary": launch.safe_summary(),
     }
+
+
+def _find_stargazer_launch_in_cave_payload(value):
+    for item in _iter_dicts(value):
+        launch = _stargazer_launch_from_external_app(item)
+        if launch:
+            return launch
+    return {}
 
 
 def _find_tower_launch_in_cave_payload(value):
@@ -2424,7 +2448,27 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
                 "message": "该身份未开放观星台，已跳过并于 6 小时后复查",
                 "extra": {"skipped": "entry_missing"},
             }
-        launch = _stargazer_launch_from_external_app(external_app)
+        launch = {}
+        if external_app.get("action") and str(external_app.get("url") or "").strip() in {"", "#"}:
+            external_result = await run_cave_external_action_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                action=external_app["action"],
+                player_id=selected_player_id,
+                init_data=init_data,
+                capture_sink=_capture_store(now),
+                capture_source=f"cave_public_stargazer_external:{identity_id}",
+            )
+            if not external_result.get("ok"):
+                return {
+                    "ok": False,
+                    "message": f"洞府观星台动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}",
+                    "extra": {},
+                }
+            launch = _find_stargazer_launch_in_cave_payload(external_result.get("data") or {})
+        elif external_app.get("url"):
+            launch = _stargazer_launch_from_external_app(external_app)
         if not launch:
             return {"ok": False, "message": "洞府观星台入口未返回可用 URL", "extra": {}}
         with use_identity(identity_id):
@@ -2493,7 +2537,27 @@ async def run_cave_public_tree(
         external_app = _find_tree_external_app_in_cave_payload(cave_data.get("raw") or {})
         if not external_app or not external_app.get("available"):
             return {"ok": False, "message": "洞府外府未开放落云灵树入口", "extra": {}}
-        launch = _tree_launch_from_external_app(external_app)
+        launch = {}
+        if external_app.get("action") and str(external_app.get("url") or "").strip() in {"", "#"}:
+            external_result = await run_cave_external_action_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                action=external_app["action"],
+                player_id=session.get("player_id"),
+                init_data=session.get("init_data") or "",
+                capture_sink=_capture_store(now),
+                capture_source=f"cave_public_tree_external:{identity_id}",
+            )
+            if not external_result.get("ok"):
+                return {
+                    "ok": False,
+                    "message": f"洞府落云灵树动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}",
+                    "extra": {},
+                }
+            launch = _find_tree_launch_in_cave_payload(external_result.get("data") or {})
+        elif external_app.get("url"):
+            launch = _tree_launch_from_external_app(external_app)
         if not launch:
             return {"ok": False, "message": "洞府落云灵树入口未返回可用 URL", "extra": {}}
         result = await tree_runtime.run_tree_miniapp_daily_direct(

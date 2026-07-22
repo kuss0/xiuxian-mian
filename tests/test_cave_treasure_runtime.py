@@ -955,6 +955,57 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"星辰精华": 2}, result["extra"]["rewards"])
         finish_mock.assert_awaited_once()
 
+    async def test_public_stargazer_resolves_dynamic_external_action(self):
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": -1002001,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {
+                        "account": {
+                            "externalApps": {
+                                "groups": [{
+                                    "apps": [{
+                                        "key": "sect_farm",
+                                        "title": "宗门观星台",
+                                        "available": True,
+                                        "action": "sect_farm",
+                                    }],
+                                }],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        external_result = {
+            "ok": True,
+            "data": {"url": "/miniapp/xianxia-sect-farm?startapp=farm_SECRET999"},
+        }
+        flow_result = {"ok": True, "status": "wait", "data": {}}
+        state_module.ensure_identity_registered(2001)
+        with state_module.use_identity(2001):
+            state_module.state["stargazer_enabled"] = True
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)) as external_mock, \
+                patch.object(cave_treasure_runtime, "run_stargazer_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                patch.object(cave_treasure_runtime.stargazer, "_finish_stargazer_miniapp_result", new=AsyncMock(return_value=True)):
+            result = await cave_treasure_runtime.run_cave_public_stargazer(
+                2001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("sect_farm", external_mock.await_args.kwargs["action"])
+        self.assertEqual(-1002001, external_mock.await_args.kwargs["player_id"])
+        self.assertEqual("dwelling_init_data", external_mock.await_args.kwargs["init_data"])
+        self.assertEqual("farm_SECRET999", flow_mock.await_args.kwargs["token"])
+        self.assertEqual(-1002001, flow_mock.await_args.kwargs["player_id"])
+
     async def test_public_stargazer_skips_identity_when_entry_is_missing(self):
         with state_module.use_identity(1001):
             state_module.state["stargazer_enabled"] = True
@@ -1027,6 +1078,53 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
         self.assertEqual("2026-07-14", flow_mock.await_args.kwargs["day_key"])
         self.assertEqual("tree_daily:2026-07-14:1001", flow_mock.await_args.kwargs["op_id"])
+
+    async def test_public_tree_resolves_dynamic_external_action(self):
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": -1001001,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {
+                        "account": {
+                            "externalApps": {
+                                "groups": [{
+                                    "apps": [{
+                                        "key": "spirit_tree",
+                                        "title": "落云宗灵眼之树",
+                                        "available": True,
+                                        "action": "spirit_tree",
+                                    }],
+                                }],
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        external_result = {
+            "ok": True,
+            "data": {"url": "/miniapp/xianxia-spirit-tree?startapp=tree_SECRET999"},
+        }
+        flow_result = {"ok": True, "status": "completed", "data": {}}
+        state_module.update_send_as_profile(1001, username="imcanonical_ai", label="反向的钟", sect_name="落云宗")
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)) as external_mock, \
+                patch.object(cave_treasure_runtime.tree_runtime, "run_tree_miniapp_daily_direct", new=AsyncMock(return_value=flow_result)) as flow_mock:
+            result = await cave_treasure_runtime.run_cave_public_tree(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1_700_000_000.0,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("spirit_tree", external_mock.await_args.kwargs["action"])
+        self.assertEqual(-1001001, external_mock.await_args.kwargs["player_id"])
+        self.assertEqual("dwelling_init_data", external_mock.await_args.kwargs["init_data"])
+        self.assertEqual("tree_SECRET999", flow_mock.await_args.kwargs["token"])
 
     async def test_public_yuanying_runs_tianjige_command_and_replays_success(self):
         now = 1_700_000_000.0
