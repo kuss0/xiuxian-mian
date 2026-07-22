@@ -14,6 +14,7 @@ from ..state import get_current_identity_id, get_global_enabled, get_global_paus
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yuanying
+from .small_world import SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER
 from .cave_treasure_miniapp import (
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
     build_cave_treasure_launch_args,
@@ -1279,7 +1280,7 @@ def _plan_cave_public_small_world_action(overview, *, now=None):
     if state.get("small_world_preach_enabled") and int(small_world.get("edict_remaining_seconds", 0) or 0) <= 0:
         faith = int(small_world.get("faith", 0) or 0)
         faith_cap = int(small_world.get("faith_cap", 100) or 100)
-        if faith_cap > 0 and faith < faith_cap:
+        if faith > 0 and faith_cap > 0 and faith / faith_cap <= SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER:
             return {
                 "action": "miracle_sermon",
                 "harvest_due": harvest_due,

@@ -26,7 +26,7 @@ _TS_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S")
 _PANEL_FAITH = re.compile(r"信仰:\s*(\d+)\s*/\s*(\d+)")
 _PANEL_STABILITY = re.compile(r"稳定:\s*(\d+)\s*/\s*(\d+)")
 _MANIFEST_DELTA = re.compile(r"\(信仰\s*([+-]?\d+),\s*稳定\s*([+-]?\d+),\s*人口\s*([+-]?\d+)")
-_ABSOLUTE_FAITH = re.compile(r"信仰(?:提升至|降至|崩塌\s*)(\d+)")
+_ABSOLUTE_FAITH = re.compile(r"信仰(?:提升至|降至|崩塌)\s*(\d+)")
 _FAITH_LOSS = re.compile(r"(?:信仰(?:崩塌|动摇)|信仰)\s*([+-]\d+)\s*点")
 _STOCK_LOSS = re.compile(r"库存香火损失\s*([+-]?\d+)\s*点")
 _HARVEST = re.compile(r"(?:供奉的|待收)\s*([\d,.]+)\s*点?香火")
@@ -102,8 +102,10 @@ def _event_explanations(
     current_faith: int,
 ) -> dict[str, Any]:
     explanations: list[str] = []
+    events: list[dict[str, Any]] = []
+    event_keys: set[tuple[Any, ...]] = set()
     expected_faith = previous_faith
-    has_evidence = False
+    has_faith_evidence = False
     identity_aliases = {
         str(row.get("sender_username") or "").lstrip("@").lower()
         for row in rows
@@ -111,6 +113,20 @@ def _event_explanations(
         and int(row.get("sender_id") or 0) == identity_id
         and row.get("sender_username")
     }
+
+    def add_event(row: dict[str, Any], kind: str, **values: Any) -> None:
+        event = {
+            "ts": _format_ts(_parse_ts(row.get("ts"))),
+            "message_id": _number(row.get("message_id")),
+            "kind": kind,
+            **values,
+        }
+        key = (event["message_id"], kind, tuple(sorted(values.items())))
+        if key in event_keys:
+            return
+        event_keys.add(key)
+        events.append(event)
+
     for row in rows:
         ts = _parse_ts(row.get("ts"))
         if not start < ts <= end:
@@ -130,14 +146,22 @@ def _event_explanations(
             if manifest:
                 delta = _number(manifest.group(1))
                 expected_faith = max(0, min(100, expected_faith + delta))
-                has_evidence = True
+                has_faith_evidence = True
                 explanations.append("同身份显灵回复")
+                add_event(
+                    row,
+                    "manifest_delta",
+                    faith_delta=delta,
+                    stability_delta=_number(manifest.group(2)),
+                    population_delta=_number(manifest.group(3)),
+                )
             absolute = _ABSOLUTE_FAITH.search(text)
             if absolute:
                 target = _number(absolute.group(1))
                 expected_faith = max(0, min(100, target))
-                has_evidence = True
+                has_faith_evidence = True
                 explanations.append("同身份神迹回复")
+                add_event(row, "god_absolute_faith", faith=target)
 
         # Broadcast losses are not replies to our query, but are still direct
         # business evidence when the bot names the same identity.
@@ -146,13 +170,22 @@ def _event_explanations(
             if identity_aliases and any(f"@{alias}" in lowered for alias in identity_aliases):
                 loss = _FAITH_LOSS.search(text)
                 if loss:
-                    expected_faith = max(0, min(100, expected_faith + _number(loss.group(1))))
-                    has_evidence = True
+                    delta = _number(loss.group(1))
+                    expected_faith = max(0, min(100, expected_faith + delta))
+                    has_faith_evidence = True
                     explanations.append("同身份天灾/信仰变更文案")
+                    add_event(row, "faith_loss", faith_delta=delta)
+                stock_loss = _STOCK_LOSS.search(text)
+                if stock_loss:
+                    amount = abs(_number(stock_loss.group(1)))
+                    explanations.append("同身份库存香火失窃文案")
+                    add_event(row, "stock_loss", incense_delta=-amount)
     return {
         "explanations": list(dict.fromkeys(explanations)),
-        "expected_faith": expected_faith if has_evidence else None,
-        "matched": bool(has_evidence and expected_faith == current_faith),
+        "events": events,
+        "expected_faith": expected_faith if has_faith_evidence else None,
+        "has_faith_evidence": has_faith_evidence,
+        "matched": bool(has_faith_evidence and expected_faith == current_faith),
     }
 
 
@@ -227,6 +260,9 @@ def build_small_world_evidence(
                 previous["faith"],
                 current["faith"],
             )
+            status = "explained" if evidence["matched"] else (
+                "partially_explained" if evidence["has_faith_evidence"] else "unexplained"
+            )
             deltas.append({
                 "identity_id": identity_id,
                 "from": _format_ts(previous["ts"]),
@@ -237,10 +273,21 @@ def build_small_world_evidence(
                 "stability_delta": stability_delta,
                 "expected_faith": evidence["expected_faith"],
                 "explanations": evidence["explanations"],
-                "status": "explained" if evidence["matched"] else "unexplained",
+                "events": evidence["events"],
+                "status": status,
             })
 
     status_counts = Counter(item["status"] for item in deltas)
+    events: list[dict[str, Any]] = []
+    event_keys: set[tuple[Any, ...]] = set()
+    for item in deltas:
+        for event in item.get("events") or []:
+            key = (item["identity_id"], event.get("message_id"), event.get("kind"))
+            if key in event_keys:
+                continue
+            event_keys.add(key)
+            events.append({"identity_id": item["identity_id"], **event})
+    events.sort(key=lambda item: (item.get("ts") or "", item.get("message_id") or 0))
     return {
         "day": day,
         "days": max(1, days),
@@ -248,8 +295,10 @@ def build_small_world_evidence(
         "script_panels": len(panels),
         "identities": sorted(grouped),
         "deltas": deltas,
+        "events": events,
         "summary": {
             "explained": status_counts.get("explained", 0),
+            "partially_explained": status_counts.get("partially_explained", 0),
             "unexplained": status_counts.get("unexplained", 0),
         },
     }

@@ -1797,7 +1797,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "available": True,
                     "has_world": True,
                     "has_prayer": False,
-                    "faith": 90,
+                    "faith": 80,
                     "faith_cap": 100,
                     "incense_stock": 150000,
                     "edict_remaining_seconds": 0,
@@ -1806,6 +1806,23 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("miracle_sermon", plan["action"])
         self.assertNotIn("silent", plan)
+
+    def test_cave_public_small_world_skips_sermon_for_minor_faith_drift(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_preach_enabled"] = True
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "faith": 93,
+                    "faith_cap": 100,
+                    "edict_remaining_seconds": 0,
+                },
+            })
+
+        self.assertNotIn("action", plan)
+        self.assertIn("当前无已启用", plan["reason"])
 
     async def test_cave_public_small_world_executes_action_and_updates_legacy_snapshot(self):
         flow_result = {

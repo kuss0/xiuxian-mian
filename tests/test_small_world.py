@@ -200,7 +200,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             "⛩️ 神庙: Lv.1【草创神龛】\n"
             "👥 人口: 99830 人\n"
             "🏙️ 承载上限: 100000 人\n"
-            "🙏 信仰: 92 / 100\n"
+            "🙏 信仰: 82 / 100\n"
             "⚖️ 稳定: 49 / 100\n"
             "☁️ 待收香火: 598.75\n"
             "🏺 香火库存: 230\n"
@@ -223,7 +223,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             relief_mock.assert_not_awaited()
-            preach_mock.assert_awaited_once_with(now, "信仰 92/100，布道维护")
+            preach_mock.assert_awaited_once_with(now, "信仰 82/100，布道维护")
 
     async def test_wait_panel_with_large_population_deficit_does_not_auto_relief(self):
         send_as_id = 8659059190
@@ -281,7 +281,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             preach_mock.assert_awaited_once_with(now, "信仰 5/100，布道维护")
             relief_mock.assert_not_awaited()
 
-    async def test_wait_panel_with_single_faith_loss_skips_preach(self):
+    async def test_wait_panel_with_minor_faith_deficit_skips_preach(self):
         send_as_id = 8659059200
         now = 9320.0
         state_module.ensure_identity_registered(send_as_id)
@@ -289,7 +289,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             "【铁笔客的小世界】\n\n"
             "👥 人口: 100000 人\n"
             "🏙️ 承载上限: 100000 人\n"
-            "🙏 信仰: 99 / 100\n"
+            "🙏 信仰: 93 / 100\n"
             "⚖️ 稳定: 100 / 100\n\n"
             "暂无祈愿，凡间风调雨顺。\n"
             "(下一次祈愿感应需等待: 5小时25分钟57秒)"
@@ -309,7 +309,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             preach_mock.assert_not_awaited()
             relief_mock.assert_not_awaited()
 
-    async def test_wait_panel_with_five_percent_faith_deficit_sends_preach(self):
+    async def test_wait_panel_with_fifteen_percent_faith_deficit_sends_preach(self):
         send_as_id = 8659059202
         now = 9330.0
         state_module.ensure_identity_registered(send_as_id)
@@ -317,7 +317,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             "【铁笔客的小世界】\n\n"
             "👥 人口: 100000 人\n"
             "🏙️ 承载上限: 100000 人\n"
-            "🙏 信仰: 95 / 100\n"
+            "🙏 信仰: 85 / 100\n"
             "⚖️ 稳定: 100 / 100\n\n"
             "暂无祈愿，凡间风调雨顺。\n"
             "(下一次祈愿感应需等待: 5小时25分钟57秒)"
@@ -334,7 +334,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            preach_mock.assert_awaited_once_with(now, "信仰 95/100，布道维护")
+            preach_mock.assert_awaited_once_with(now, "信仰 85/100，布道维护")
             relief_mock.assert_not_awaited()
 
     async def test_wait_panel_with_minor_stability_deficit_waits_without_relief(self):
@@ -921,7 +921,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         state_module.ensure_identity_registered(send_as_id)
         panel = small_world._parse_small_world_panel(
             "【清源子的小世界】\n\n"
-            "🙏 信仰: 86 / 100\n"
+            "🙏 信仰: 85 / 100\n"
             "⚖️ 稳定: 100 / 100\n"
             "☁️ 待收香火: 23199.71\n"
             "🏺 香火库存: 1360\n\n"
@@ -941,7 +941,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            preach_mock.assert_awaited_once_with(now, "信仰 86/100，布道维护")
+            preach_mock.assert_awaited_once_with(now, "信仰 85/100，布道维护")
 
     async def test_send_harvest_waits_for_reply_before_changing_inventory(self):
         send_as_id = 8659059293
