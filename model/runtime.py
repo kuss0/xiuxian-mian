@@ -407,6 +407,7 @@ LOG_BOT_TOTAL_TIMEOUT_SEC = 12
 LOG_BOT_POLL_SERVER_TIMEOUT_SEC = 10
 LOG_BOT_POLL_READ_TIMEOUT_SEC = 15
 LOG_BOT_POLL_INTERVAL_SEC = 1.0
+LOG_BOT_POLL_MAX_RETRY_DELAY_SEC = 60.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 60
 SEND_AS_PEER_INVALID_BACKOFF_SEC = 30 * 60
@@ -2296,13 +2297,20 @@ def _mark_log_bot_backoff(error_text):
     return retry_after
 
 
-def _log_bot_poll_retry_delay(error_text):
+def _log_bot_poll_retry_delay(error_text, failure_count=1):
     retry_after = _mark_log_bot_backoff(error_text)
     if retry_after > 0:
         return max(float(LOG_BOT_POLL_INTERVAL_SEC), float(retry_after + 1))
     text = str(error_text or "")
     if "HTTP 502" in text or text.startswith("timeout:"):
-        return max(float(LOG_BOT_POLL_INTERVAL_SEC), 5.0)
+        try:
+            exponent = max(0, min(4, int(failure_count or 1) - 1))
+        except (TypeError, ValueError, OverflowError):
+            exponent = 0
+        return min(
+            float(LOG_BOT_POLL_MAX_RETRY_DELAY_SEC),
+            max(float(LOG_BOT_POLL_INTERVAL_SEC), 5.0 * (2 ** exponent)),
+        )
     return float(LOG_BOT_POLL_INTERVAL_SEC)
 
 
@@ -2354,6 +2362,7 @@ async def run_log_bot_callback_poller(callback_handler, stop_event=None):
     global _LOG_BOT_UPDATE_OFFSET
     if not LOG_BOT_TOKEN:
         return
+    consecutive_failures = 0
     while stop_event is None or not stop_event.is_set():
         payload = {
             "timeout": LOG_BOT_POLL_SERVER_TIMEOUT_SEC,
@@ -2368,9 +2377,17 @@ async def run_log_bot_callback_poller(callback_handler, stop_event=None):
             read_timeout=LOG_BOT_POLL_READ_TIMEOUT_SEC,
         )
         if not ok:
-            print(f"log bot callback poll failed: {error_text}")
-            await asyncio.sleep(_log_bot_poll_retry_delay(error_text))
+            consecutive_failures += 1
+            retry_delay = _log_bot_poll_retry_delay(error_text, consecutive_failures)
+            print(
+                f"log bot callback poll failed: {error_text} "
+                f"| failures={consecutive_failures} retry={retry_delay:.0f}s"
+            )
+            await asyncio.sleep(retry_delay)
             continue
+        if consecutive_failures:
+            print(f"log bot callback poll recovered after {consecutive_failures} failures")
+            consecutive_failures = 0
         updates = result if isinstance(result, list) else []
         for update in updates:
             try:

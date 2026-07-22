@@ -170,6 +170,16 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([6.0], sleep_delays)
         self.assertGreater(runtime._LOG_BOT_BACKOFF_UNTIL, 0)
 
+    def test_log_bot_callback_timeout_backoff_is_bounded(self):
+        error_text = "timeout: read timed out"
+
+        self.assertEqual(5.0, runtime._log_bot_poll_retry_delay(error_text, 1))
+        self.assertEqual(10.0, runtime._log_bot_poll_retry_delay(error_text, 2))
+        self.assertEqual(20.0, runtime._log_bot_poll_retry_delay(error_text, 3))
+        self.assertEqual(40.0, runtime._log_bot_poll_retry_delay(error_text, 4))
+        self.assertEqual(60.0, runtime._log_bot_poll_retry_delay(error_text, 5))
+        self.assertEqual(60.0, runtime._log_bot_poll_retry_delay(error_text, 99))
+
     async def test_log_bot_callback_poller_stays_within_worker_stop_budget(self):
         stop_event = asyncio.Event()
         observed = {}
