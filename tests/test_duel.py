@@ -163,11 +163,17 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
             config = duel.normalize_tianxing_auto_config(state_module.state["tianxing_auto_config"])
 
+            state_module.state["tianxing_observation"]["auto_next_time"] = now - 1
+            recalibrated = duel._close_duel_tianxing_daily_batch(now)
+            recalibrated_observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
         self.assertTrue(completion["daily"])
+        self.assertTrue(recalibrated)
         self.assertTrue(state_module.state["duel_enabled"])
         self.assertTrue(config["duel_route_enabled"])
         self.assertEqual("", observed["current_prediction"])
         self.assertGreater(observed["auto_next_time"], now)
+        self.assertEqual(state_module.state["next_duel_time"], recalibrated_observed["auto_next_time"])
         self.assertEqual("blocked_replan", timeline["phase"])
         self.assertNotIn("斗法", timeline["released_routes"])
         self.assertGreater(state_module.state["next_duel_time"], now)

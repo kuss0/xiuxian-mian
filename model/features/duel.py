@@ -742,7 +742,8 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
     # The fast scanner has its own due clock.  Never leave a stale timestamp
     # behind.  Move it to the next real downstream deadline, rather than a
     # short fixed backoff that keeps rescanning an otherwise idle identity.
-    if changed:
+    auto_next_time = float(observed.get("auto_next_time", 0) or 0)
+    if changed or auto_next_time <= now:
         next_times = []
         for enabled_key, next_key in (
             ("wild_training_enabled", "next_wild_training_time"),
@@ -758,7 +759,10 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
                 due_at = 0.0
             if due_at > now:
                 next_times.append(due_at)
-        observed["auto_next_time"] = min(next_times) if next_times else now + 60
+        next_auto_time = min(next_times) if next_times else now + 60
+        if next_auto_time != auto_next_time:
+            observed["auto_next_time"] = next_auto_time
+            changed = True
         state["tianxing_observation"] = observed
     return changed
 
