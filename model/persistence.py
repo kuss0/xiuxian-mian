@@ -142,6 +142,10 @@ SQLITE_JOURNAL_MODE = os.environ.get("XIUXIAN_SQLITE_JOURNAL_MODE", "WAL").strip
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
 LIVE_GUARD_MANIFEST_FILE = os.path.join(LIVE_GUARD_DIR, "manifest.json")
+LIVE_GUARD_REFRESH_SEC = max(
+    300.0,
+    float(os.environ.get("XIUXIAN_LIVE_GUARD_REFRESH_SEC", 6 * 3600) or 6 * 3600),
+)
 
 
 def _safety_watchdog_fused_file():
@@ -3063,15 +3067,48 @@ def _write_live_guard_backup(conn):
         return
     try:
         os.makedirs(LIVE_GUARD_DIR, exist_ok=True)
-        backup_conn = _open_sqlite_conn(LIVE_GUARD_DB_FILE)
+        now = time.time()
+        identity_ids = [send_as_id for send_as_id, _username in roster]
         try:
+            with open(LIVE_GUARD_MANIFEST_FILE, "r", encoding="utf-8") as handle:
+                existing_manifest = json.load(handle)
+        except Exception:
+            existing_manifest = {}
+        existing_ids = existing_manifest.get("identity_ids") if isinstance(existing_manifest, dict) else []
+        existing_ids = [int(value) for value in existing_ids or []]
+        saved_at = float(existing_manifest.get("saved_at", 0) or 0) if isinstance(existing_manifest, dict) else 0.0
+        if (
+            os.path.exists(LIVE_GUARD_DB_FILE)
+            and existing_ids == identity_ids
+            and now - saved_at < LIVE_GUARD_REFRESH_SEC
+        ):
+            return
+
+        tmp_db_file = LIVE_GUARD_DB_FILE + ".tmp"
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            try:
+                os.remove(tmp_db_file + suffix)
+            except FileNotFoundError:
+                pass
+        backup_conn = sqlite3.connect(tmp_db_file, timeout=SQLITE_TIMEOUT_SEC)
+        try:
+            backup_conn.execute("PRAGMA journal_mode=DELETE")
+            backup_conn.execute("PRAGMA synchronous=FULL")
             conn.backup(backup_conn)
+            backup_conn.execute("PRAGMA journal_mode=DELETE")
+            backup_conn.commit()
         finally:
             backup_conn.close()
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.remove(LIVE_GUARD_DB_FILE + suffix)
+            except FileNotFoundError:
+                pass
+        os.replace(tmp_db_file, LIVE_GUARD_DB_FILE)
         manifest = {
-            "saved_at": time.time(),
+            "saved_at": now,
             "identity_count": len(roster),
-            "identity_ids": [send_as_id for send_as_id, _username in roster],
+            "identity_ids": identity_ids,
         }
         tmp_manifest = LIVE_GUARD_MANIFEST_FILE + ".tmp"
         with open(tmp_manifest, "w", encoding="utf-8") as f:

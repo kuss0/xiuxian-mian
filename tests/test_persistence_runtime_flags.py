@@ -998,6 +998,43 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertNotIn(991201, state_module.get_identity_ids())
                 self.assertTrue(list(Path(tmpdir).glob("state.db.suspicious-*")))
 
+    def test_live_guard_backup_skips_fresh_unchanged_roster_and_avoids_wal(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            guard_dir = Path(tmpdir) / "guard"
+            guard_db = str(guard_dir / "chaogu_state.last-good.db")
+            guard_manifest = str(guard_dir / "manifest.json")
+            with patch.object(persistence, "DB_FILE", db_path), \
+                 patch.object(persistence, "LIVE_GUARD_DIR", str(guard_dir)), \
+                 patch.object(persistence, "LIVE_GUARD_DB_FILE", guard_db), \
+                 patch.object(persistence, "LIVE_GUARD_MANIFEST_FILE", guard_manifest), \
+                 patch.object(persistence, "LIVE_GUARD_REFRESH_SEC", 6 * 3600), \
+                 patch.dict(
+                    "os.environ",
+                    {
+                        "XIUXIAN_ENFORCE_IDENTITY_GUARD": "1",
+                        "XIUXIAN_ALLOW_IDENTITY_COLLAPSE": "0",
+                    },
+                 ):
+                for identity_id in range(990001, 990013):
+                    state_module.ensure_identity_registered(identity_id)
+                    state_module.update_send_as_profile(identity_id, username=f"live{identity_id}")
+
+                self.assertTrue(persistence.save_state())
+                first_manifest = json.loads(Path(guard_manifest).read_text(encoding="utf-8"))
+                first_mtime_ns = Path(guard_db).stat().st_mtime_ns
+
+                state_module.set_global_pause_source("live_guard_test")
+                self.assertTrue(persistence.save_state())
+
+                second_manifest = json.loads(Path(guard_manifest).read_text(encoding="utf-8"))
+                self.assertEqual(first_manifest["saved_at"], second_manifest["saved_at"])
+                self.assertEqual(first_mtime_ns, Path(guard_db).stat().st_mtime_ns)
+                self.assertFalse(Path(guard_db + "-wal").exists())
+                self.assertFalse(Path(guard_db + "-shm").exists())
+                with sqlite3.connect(guard_db) as guard_conn:
+                    self.assertEqual("delete", guard_conn.execute("PRAGMA journal_mode").fetchone()[0])
+
 
 class StartupStateLoadSafetyTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
