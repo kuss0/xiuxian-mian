@@ -64,7 +64,7 @@ DelayedSendFunc = Callable[..., Awaitable[object]]
 
 _DELAYED_ACTIONS: dict[int, DelayedAction] = {}
 _NEXT_DELAYED_ACTION_ID = 0
-_RESTORABLE_STATUSES = {"pending", "failed"}
+_RESTORABLE_STATUSES = {"pending"}
 
 
 def _mark_dirty():
@@ -158,11 +158,10 @@ def _coerce_snapshot_action(item):
     send_as_id = int(item.get("send_as_id") or 0)
     status = str(item.get("status") or "pending")
     if status not in _RESTORABLE_STATUSES:
-        status = "failed"
+        return None
     last_error = str(item.get("last_error") or "")
-    if status == "pending" and send_as_id <= 0:
-        status = "failed"
-        last_error = last_error or "missing send_as_id"
+    if send_as_id <= 0:
+        return None
 
     extra = item.get("extra")
     if not isinstance(extra, dict):
@@ -391,7 +390,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
     results = []
     changed = False
     due_actions = []
-    for action in _DELAYED_ACTIONS.values():
+    for action in list(_DELAYED_ACTIONS.values()):
         if action.status != "pending":
             continue
         try:
@@ -403,6 +402,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.last_error = str(exc)[:200]
             changed = True
             results.append(_result_payload(action, "failed", reason=action.last_error))
+            _DELAYED_ACTIONS.pop(action.id, None)
             continue
         if due_at <= now:
             due_actions.append((due_at, action))
@@ -415,6 +415,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.last_error = "missing send_as_id"
             changed = True
             results.append(_result_payload(action, "failed", reason=action.last_error))
+            _DELAYED_ACTIONS.pop(action.id, None)
             continue
         try:
             send_kwargs = _send_kwargs(action)
@@ -425,6 +426,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.last_error = str(exc)[:200]
             changed = True
             results.append(_result_payload(action, "failed", reason=action.last_error))
+            _DELAYED_ACTIONS.pop(action.id, None)
             continue
         action.attempts += 1
         action.status = "sending"
@@ -446,6 +448,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.status = "failed"
             changed = True
             results.append(_result_payload(action, "failed"))
+            _DELAYED_ACTIONS.pop(action.id, None)
             continue
 
         try:
@@ -457,6 +460,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.last_error = str(exc)[:200]
             changed = True
             results.append(_result_payload(action, "failed", reason=action.last_error))
+            _DELAYED_ACTIONS.pop(action.id, None)
             continue
 
         action.status = "pending"

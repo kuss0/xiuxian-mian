@@ -88,6 +88,29 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(30, items[0]["due_at"])
         self.assertEqual(2, items[0]["send_as_id"])
 
+    def test_schedule_with_dedupe_key_preserves_retry_attempts(self):
+        first = delayed_actions.schedule_delayed_action(
+            ".旧",
+            10,
+            dedupe_key="same",
+            send_as_id=1,
+            now=1,
+            max_send_attempts=3,
+        )
+        delayed_actions._DELAYED_ACTIONS[first["id"]].attempts = 1
+
+        second = delayed_actions.schedule_delayed_action(
+            ".新",
+            30,
+            dedupe_key="same",
+            send_as_id=2,
+            now=2,
+            max_send_attempts=3,
+        )
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(1, second["attempts"])
+
     async def test_failed_send_reschedules_until_attempt_limit(self):
         async def fake_send(command, **kwargs):
             return None
@@ -119,9 +142,7 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, second[0]["attempts"])
         self.assertEqual(".会失败", second[0]["command"])
         self.assertEqual([], delayed_actions.list_delayed_actions())
-        failed = delayed_actions.list_delayed_actions(include_non_pending=True)
-        self.assertEqual(1, len(failed))
-        self.assertEqual("failed", failed[0]["status"])
+        self.assertEqual([], delayed_actions.list_delayed_actions(include_non_pending=True))
 
     async def test_missing_send_identity_fails_closed_without_sending(self):
         calls = []
@@ -215,9 +236,7 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("due_at must be finite", result[0]["reason"])
                 self.assertEqual(".坏时间", result[0]["command"])
                 self.assertEqual([], delayed_actions.list_delayed_actions())
-                failed = delayed_actions.list_delayed_actions(include_non_pending=True)
-                self.assertEqual("failed", failed[0]["status"])
-                self.assertEqual(20, failed[0]["due_at"])
+                self.assertEqual([], delayed_actions.list_delayed_actions(include_non_pending=True))
 
     def test_cancel_by_id_or_dedupe_key(self):
         first = delayed_actions.schedule_delayed_action(".a", 10, dedupe_key="a", now=1)
@@ -298,11 +317,36 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         next_item = delayed_actions.schedule_delayed_action(".下一条", 30, send_as_id=55, now=1)
 
         self.assertEqual([4], [item["id"] for item in pending])
-        self.assertEqual([3, 4], [item["id"] for item in all_items])
-        self.assertEqual("failed", all_items[0]["status"])
-        self.assertEqual("missing send_as_id", all_items[0]["last_error"])
+        self.assertEqual([4], [item["id"] for item in all_items])
         self.assertEqual(9, restored["next_id"])
         self.assertEqual(10, next_item["id"])
+
+    def test_restore_delayed_actions_drops_legacy_terminal_rows(self):
+        restored = delayed_actions.restore_delayed_actions(
+            {
+                "next_id": 7,
+                "actions": [
+                    {
+                        "id": 6,
+                        "command": ".旧失败",
+                        "due_at": 10,
+                        "send_as_id": 66,
+                        "status": "failed",
+                        "last_error": "send returned none",
+                    },
+                    {
+                        "id": 7,
+                        "command": ".仍待发送",
+                        "due_at": 20,
+                        "send_as_id": 77,
+                        "status": "pending",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual([7], [item["id"] for item in restored["actions"]])
+        self.assertEqual([".仍待发送"], [item["command"] for item in delayed_actions.list_delayed_actions()])
 
     async def test_due_drain_after_restore(self):
         delayed_actions.restore_delayed_actions(
