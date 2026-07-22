@@ -21,6 +21,7 @@ from .app_runtime import (
 )
 from .app_replica import (
     handle_replica_button_callback,
+    observe_replica_game_command_message,
     _handle_replica_dispatch_group_command,
     _handle_replica_group_command,
     _handle_replica_join_reply,
@@ -3147,6 +3148,7 @@ async def on_message(event):
                 reply_to=int(getattr(event, "reply_to_msg_id", 0) or 0),
             )
             _track_manual_game_command(identity_sender_id, text, event.id)
+            observe_replica_game_command_message(event, identity_sender_id, now=now)
         try:
             await handle_dungeon_join_mention(event, text, now)
             await _handle_replica_progress_event(event, now, event_type="message")

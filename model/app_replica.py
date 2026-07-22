@@ -573,6 +573,47 @@ def _mark_replica_button_action_executed(token, actor_id):
     return True
 
 
+def observe_replica_game_command_message(event, identity_id, now=None):
+    """Fold an observed local game command back into active replica buttons."""
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    command = str(getattr(event, "raw_text", "") or "").strip()
+    if identity_id <= 0 or not command.startswith("."):
+        return False
+    now = float(now or time.time())
+    candidates = []
+    for token, action in _cleanup_replica_button_actions(now).items():
+        if not isinstance(action, dict) or str(action.get("type") or "").strip() != "game_command":
+            continue
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        if int(payload.get("identity_id") or 0) != identity_id:
+            continue
+        if str(payload.get("command") or "").strip() != command:
+            continue
+        stage_scope = str(payload.get("stage_guard_scope") or "").strip()
+        stage_key = str(payload.get("stage_guard_key") or "").strip()
+        if stage_scope and stage_key and not _is_cangkun_stage_guard_current(stage_scope, stage_key, now=now):
+            continue
+        exclusive_key = str(payload.get("exclusive_key") or "").strip()
+        if not exclusive_key:
+            continue
+        candidates.append((float(action.get("created_at") or 0), token, action, payload, exclusive_key))
+    if not candidates:
+        return False
+    _created_at, token, _action, payload, exclusive_key = max(candidates, key=lambda item: item[0])
+    if not _is_replica_button_exclusive_group_executed(exclusive_key):
+        _mark_replica_button_exclusive_group_executed(
+            exclusive_key,
+            actor_id=identity_id,
+            command=command,
+        )
+        _maybe_track_replica_game_command_progress(payload, event, actor_id=identity_id)
+    _mark_replica_button_action_executed(token, identity_id)
+    return True
+
+
 def _should_mark_replica_button_action_executed(action):
     action = action if isinstance(action, dict) else {}
     if str(action.get("type") or "").strip() == "lightweight_dissolve_confirm_prompt":
@@ -14615,6 +14656,7 @@ __all__ = [
     "format_log_group_replica_panel",
     "handle_huanglong_conscription_text",
     "is_replica_group_command_text",
+    "observe_replica_game_command_message",
     "run_huanglong_conscription_scheduler",
     "run_luoyun_cd_reminder_scheduler",
 ]

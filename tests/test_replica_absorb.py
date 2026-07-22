@@ -2383,6 +2383,60 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(".苍坤抉择 2", send_calls[0].args[0])
         self.assertTrue(app_replica._is_replica_button_exclusive_group_executed("cangkun:room-47:first-stage"))
 
+    def test_observed_manual_replica_command_closes_matching_stage_buttons(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        button = app_replica._game_command_action_button(
+            "选1",
+            ".苍坤抉择 1",
+            leader_id,
+            source_msg_id=88001,
+            token_key="cangkun:room-47:first-stage:leader:1",
+            exclusive_key="cangkun:room-47:first-stage",
+            stage_guard_scope="cangkun:room:47",
+            stage_guard_key="room-47:first-stage",
+        )
+        app_replica._set_cangkun_stage_guard_current("cangkun:room:47", "room-47:first-stage")
+        token, action = app_replica._get_replica_button_action(button["callback_data"])
+        event = SimpleNamespace(id=342104, raw_text=".苍坤抉择 1")
+
+        observed = app_replica.observe_replica_game_command_message(event, leader_id)
+
+        self.assertTrue(observed)
+        self.assertTrue(app_replica._is_replica_button_exclusive_group_executed("cangkun:room-47:first-stage"))
+        self.assertGreater(app_replica._get_replica_button_action(token)[1]["executed_at"], 0)
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                ok, message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                return ok, message, send_mock.await_count
+
+        ok, message, send_count = asyncio.run(run_test())
+        self.assertTrue(ok)
+        self.assertIn("本阶段已处理过", message)
+        self.assertEqual(0, send_count)
+
+    def test_observed_manual_replica_command_ignores_stale_stage(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        app_replica._game_command_action_button(
+            "选1",
+            ".苍坤抉择 1",
+            leader_id,
+            source_msg_id=88001,
+            token_key="cangkun:room-47:old-stage:leader:1",
+            exclusive_key="cangkun:room-47:old-stage",
+            stage_guard_scope="cangkun:room:47",
+            stage_guard_key="room-47:old-stage",
+        )
+        app_replica._set_cangkun_stage_guard_current("cangkun:room:47", "room-47:new-stage")
+
+        observed = app_replica.observe_replica_game_command_message(
+            SimpleNamespace(id=342117, raw_text=".苍坤抉择 1"),
+            leader_id,
+        )
+
+        self.assertFalse(observed)
+        self.assertFalse(app_replica._is_replica_button_exclusive_group_executed("cangkun:room-47:old-stage"))
+
     def test_log_group_open_button_can_open_explicit_non_kunwu_kind(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         event = self._prepare_replica_group([leader_id])
