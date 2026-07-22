@@ -2455,6 +2455,8 @@ def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now)
                 event_context={"source": "cave_tianjige_read_only"},
             )
         )
+        if handled:
+            yinluo.save_state()
         observed = dict((yinluo.get_yinluo_ui_state(now=now).get("observed") or {}))
     summary = {
         "sha_current": int(observed.get("sha_current", 0) or 0),

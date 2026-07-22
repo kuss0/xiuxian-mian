@@ -1423,19 +1423,19 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         now = 1_700_000_500.0
         session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
         raw_message = (
-            "【竹灵 2的阴罗幡】\n"
-            "本命魔兵：乌龙幡\n"
-            "幡体等阶：玄阶\n"
-            "煞气池：120 / 500 (24%)\n"
-            "1号槽：[精华已成] - 结丹修士\n"
-            "2号槽：[炼化中] - 元婴修士 (剩余：30分钟)\n"
-            "3号槽：[空闲]"
+            "**【竹灵 2的阴罗幡】**\n"
+            "**本命魔兵：** `乌龙幡`\n"
+            "**幡体等阶：** 玄阶\n"
+            "**煞气池：** 120 / 500 (24%)\n"
+            "- **1号槽：** `[精华已成]` - 结丹修士\n"
+            "- **2号槽：** `[炼化中]` - 元婴修士 (剩余：30分钟)\n"
+            "- **3号槽：** `[空闲]`"
         )
         result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
-                patch.object(yinluo, "save_state", return_value=True), \
+                patch.object(yinluo, "save_state", return_value=True) as save_mock, \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
             response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
                 1001,
@@ -1454,6 +1454,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([1], observed["ready_slot_numbers"])
         self.assertEqual([2], observed["refining_slot_numbers"])
         self.assertEqual([3], observed["empty_slot_numbers"])
+        save_mock.assert_called_once_with()
 
     async def test_public_tianjige_yinluo_status_rejects_unparsed_panel(self):
         now = 1_700_000_500.0

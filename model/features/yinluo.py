@@ -62,8 +62,8 @@ RE_SHA_GAIN = re.compile(r"煞气池增加了\s*(?P<gain>\d+)\s*点")
 RE_EXTRA_SHA_GAIN = re.compile(r"额外获得了\s*(?P<gain>\d+)\s*点精纯煞气")
 RE_COLLECT_SLOT = re.compile(r"你从\s*(?P<count>\d+)\s*个炼化槽中获得了[:：]\s*(?P<items>.+)")
 RE_COLLECT_SOUL_GAIN = re.compile(r"幡魂谱系精进[:：]\s*(?P<name>[^+。]+)\+(?P<count>\d+)")
-RE_SLOT_LINE = re.compile(r"^\s*(?P<slot>\d+)号槽[:：]\s*\[(?P<status>[^\]]+)\]")
-RE_READY_SLOT_DETAIL = re.compile(r"^\s*(?P<slot>\d+)号槽[:：]\s*\[精华已成\]\s*-\s*(?P<target>.+?)\s*$")
+RE_SLOT_LINE = re.compile(r"^\s*(?:[-+]\s*)?(?P<slot>\d+)号槽[:：]\s*\[(?P<status>[^\]]+)\]")
+RE_READY_SLOT_DETAIL = re.compile(r"^\s*(?:[-+]\s*)?(?P<slot>\d+)号槽[:：]\s*\[精华已成\]\s*-\s*(?P<target>.+?)\s*$")
 RE_SOUL_LINEAGE = re.compile(r"^\s*-\s*(?P<name>[^·]+)\s*·\s*(?P<path>[^:：]+)[:：]\s*(?P<count>\d+)\s*缕")
 RE_BANNER_TRAIT = re.compile(r"^\s*-\s*(?P<name>[^:：]+)[:：]\s*(?P<value>[+\-]?\d+%)")
 RE_BLOOD_SOUL_GAIN = re.compile(r"成功捕获了\s*(?P<count>\d+)\s*缕【(?P<name>[^】]+)】")
@@ -79,7 +79,7 @@ RE_REFINE_MISSING_SOUL = re.compile(r"魂魄袋中没有【(?P<name>[^】]+)】"
 RE_REFINE_SLOT_BUSY = re.compile(r"炼化槽正在运转中.*无法囚禁新的魂魄")
 RE_SOOTHE_SUCCESS = re.compile(r"消耗了\s*(?P<cost>\d+)\s*点修为.*成功安抚了\s*(?P<count>\d+)\s*个炼化槽")
 RE_REFINING_SLOT_DETAIL = re.compile(
-    r"^\s*(?P<slot>\d+)号槽[:：]\s*\[炼化中\]\s*-\s*(?P<target>[^()]+?)(?:\s*\(剩余[:：]\s*(?P<remaining>[^)]+)\))?\s*$"
+    r"^\s*(?:[-+]\s*)?(?P<slot>\d+)号槽[:：]\s*\[炼化中\]\s*-\s*(?P<target>[^()]+?)(?:\s*\(剩余[:：]\s*(?P<remaining>[^)]+)\))?\s*$"
 )
 
 YINLUO_AUTO_REFINE_TARGETS = ()
@@ -613,7 +613,8 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
     if "夺舍重生" in raw_text and "阴罗宗" not in raw_text:
         return None
 
-    title_match = RE_BANNER_TITLE.search(raw_text)
+    panel_text = "\n".join(line.translate(str.maketrans("", "", "*_`")) for line in raw_text.splitlines())
+    title_match = RE_BANNER_TITLE.search(panel_text)
     if title_match:
         parsed = {
             "action": "阴罗幡",
@@ -634,7 +635,7 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
         in_soul_stock_section = False
         in_lineage_section = False
         in_trait_section = False
-        for line in raw_text.splitlines():
+        for line in panel_text.splitlines():
             stripped = line.strip()
             if stripped.startswith("魂魄储备"):
                 in_soul_stock_section = True
@@ -710,9 +711,9 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
                         elif remaining_text:
                             detail["recheck_time"] = float(now + YINLUO_REFINING_DUE_RECHECK_SEC)
                         parsed["refining_slots_detail"].append(detail)
-        sha_match = RE_SHA_POOL.search(raw_text)
-        soul_total_match = RE_SOUL_TOTAL.search(raw_text)
-        battle_bonus_match = RE_BATTLE_BONUS.search(raw_text)
+        sha_match = RE_SHA_POOL.search(panel_text)
+        soul_total_match = RE_SOUL_TOTAL.search(panel_text)
+        battle_bonus_match = RE_BATTLE_BONUS.search(panel_text)
         if sha_match:
             parsed["sha_current"] = int(sha_match.group("current") or 0)
             parsed["sha_max"] = int(sha_match.group("max") or 0)
@@ -721,9 +722,9 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             parsed["soul_total"] = int(soul_total_match.group("value") or 0)
         if battle_bonus_match:
             parsed["battle_bonus_percent"] = int(battle_bonus_match.group("value") or 0)
-        parsed["ready_slots"] = len(parsed["ready_slot_numbers"]) or raw_text.count("[精华已成]")
-        parsed["refining_slots"] = len(parsed["refining_slot_numbers"]) or raw_text.count("[炼化中]")
-        parsed["empty_slots"] = len(parsed["empty_slot_numbers"]) or raw_text.count("[空闲]")
+        parsed["ready_slots"] = len(parsed["ready_slot_numbers"]) or panel_text.count("[精华已成]")
+        parsed["refining_slots"] = len(parsed["refining_slot_numbers"]) or panel_text.count("[炼化中]")
+        parsed["empty_slots"] = len(parsed["empty_slot_numbers"]) or panel_text.count("[空闲]")
         return parsed
 
     if "召唤成功，镇压成功" in raw_text:

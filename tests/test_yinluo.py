@@ -110,6 +110,26 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(9, parsed["soul_lineage"]["凶兽戾魄"])
         self.assertEqual("+10%", parsed["banner_traits"]["召魔镇压"])
 
+    def test_banner_panel_parses_markdown_decorated_slot_lines(self):
+        parsed = yinluo.parse_yinluo_text(
+            "**【缘初子的阴罗幡】**\n"
+            "**本命魔兵：** `灭法幡`\n"
+            "**煞气池：** 1060 / 350000 (0%)\n"
+            "**炼化槽：**\n"
+            "- **1号槽：** `[炼化中]` - 凶兽戾魄 (剩余：2小时)\n"
+            "- **2号槽：** `[精华已成]` - 妖兽精魄\n"
+            "- **3号槽：** `[空闲]`\n",
+            now=1_784_734_703.0,
+            family="yinluo_banner",
+        )
+
+        self.assertEqual(1060, parsed["sha_current"])
+        self.assertEqual(350000, parsed["sha_max"])
+        self.assertEqual([1], parsed["refining_slot_numbers"])
+        self.assertEqual([2], parsed["ready_slot_numbers"])
+        self.assertEqual([3], parsed["empty_slot_numbers"])
+        self.assertEqual(2 * 3600, parsed["refining_slots_detail"][0]["remaining_sec"])
+
     def test_banner_zero_second_refining_slot_schedules_recheck_not_collect(self):
         now = 1_781_443_187.0
         parsed = yinluo.parse_yinluo_text(
