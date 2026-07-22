@@ -13,7 +13,7 @@ from ..runtime import send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
+from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
 from .small_world import SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER
 from .cave_treasure_miniapp import (
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
@@ -2426,10 +2426,27 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
 
 def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
     """Replay supported read-only Tianjige panels through their existing reducer."""
-    if command != ".我的阴罗幡":
+    if command not in {".我的阴罗幡", ".我的侍妾"}:
         return {"supported": False, "handled": False, "summary": {}}
 
     with use_identity(identity_id):
+        if command == ".我的侍妾":
+            sync_result = concubine.sync_concubine_miniapp_status(message, now)
+            summary = dict(sync_result.get("summary") or {})
+            detail = ""
+            if sync_result.get("handled"):
+                detail = (
+                    f"侍妾 {summary.get('name') or '未知'}"
+                    f"｜情缘 {summary.get('affinity', 0)}"
+                    f"｜位置 {summary.get('location') or '未知'}"
+                )
+            return {
+                "supported": True,
+                "handled": bool(sync_result.get("handled")),
+                "reason": str(sync_result.get("reason") or ""),
+                "summary": summary,
+                "detail": detail,
+            }
         handled = bool(
             yinluo.apply_yinluo_passive(
                 message,
@@ -2445,7 +2462,16 @@ def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now)
         "ready_slots": list(observed.get("ready_slot_numbers") or []),
         "refining_slots": list(observed.get("refining_slot_numbers") or []),
     }
-    return {"supported": True, "handled": handled, "summary": summary}
+    return {
+        "supported": True,
+        "handled": handled,
+        "summary": summary,
+        "detail": (
+            f"煞气 {summary.get('sha_current', 0)}/{summary.get('sha_max', 0)}"
+            f"｜精华槽 {len(summary.get('ready_slots') or [])}"
+            f"｜炼化中 {len(summary.get('refining_slots') or [])}"
+        ),
+    }
 
 
 async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, command, *, now=None):
@@ -2520,9 +2546,9 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
                 }
             summary = dict(sync_result.get("summary") or {})
             final_message = f"洞府天机阁只读状态已同步：{normalized_command}"
+            detail = str(sync_result.get("detail") or "").strip()
             await send_audit_log(
-                f"📖 {final_message}｜煞气 {summary.get('sha_current', 0)}/{summary.get('sha_max', 0)}"
-                f"｜精华槽 {len(summary.get('ready_slots') or [])}｜炼化中 {len(summary.get('refining_slots') or [])}",
+                f"📖 {final_message}{f'｜{detail}' if detail else ''}",
                 scope="identity",
                 send_as_id=identity_id,
                 priority="low",

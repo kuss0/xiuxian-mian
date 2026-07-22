@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import cave_treasure_miniapp, cave_treasure_runtime, deep_retreat, tianti, yinluo, yuanying
+from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, deep_retreat, tianti, yinluo, yuanying
 
 
 def _cave_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=df_SECRET999"):
@@ -1474,6 +1474,70 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["ok"])
         self.assertIn("未匹配现有解析器", response["message"])
         self.assertEqual({}, state_module.state.get("yinluo_observation"))
+
+    async def test_public_tianjige_concubine_status_replays_idle_panel(self):
+        now = 1_700_000_500.0
+        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        raw_message = (
+            "你的道心侍妾：【南宫婉】（状态：随行中）\n"
+            "情缘值：184\n"
+            "当前誓约：月影同参\n"
+            "入梦寻图冷却：2小时\n"
+            "天机代卜冷却：3小时\n"
+            "共历心劫冷却：4小时"
+        )
+        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        audit_mock = AsyncMock()
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
+                patch.object(concubine, "save_state", return_value=True), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=audit_mock):
+            response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                ".我的侍妾",
+                now=now,
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(".我的侍妾", flow_mock.await_args.kwargs["command"])
+        self.assertEqual("南宫婉", state_module.state["concubine_name"])
+        self.assertEqual(184, state_module.state["concubine_affinity"])
+        self.assertEqual("随行中", state_module.state["concubine_location"])
+        self.assertIn("侍妾 南宫婉", audit_mock.await_args.args[0])
+
+    async def test_public_tianjige_concubine_status_does_not_override_active_phase(self):
+        now = 1_700_000_500.0
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_name"] = "南宫婉"
+            identity_state["concubine_affinity"] = 160
+        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        result = {
+            "ok": True,
+            "data": {
+                "actionResult": {
+                    "rawMessage": "你的道心侍妾：【南宫婉】（状态：随行中）\n情缘值：184"
+                }
+            },
+        }
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
+                patch.object(concubine, "save_state", return_value=True), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                ".我的侍妾",
+                now=now,
+            )
+
+        self.assertFalse(response["ok"])
+        self.assertIn("未匹配现有解析器", response["message"])
+        self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
+        self.assertEqual(160, state_module.state["concubine_affinity"])
 
     async def test_deep_seclusion_action_flow_disables_http_retries(self):
         http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已结算"}})

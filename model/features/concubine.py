@@ -3164,6 +3164,53 @@ def _apply_status_snapshot(parsed, now):
     return True
 
 
+def sync_concubine_miniapp_status(text, now):
+    """Apply an idle Tianjige status panel without driving the active chain."""
+    phase = _phase()
+    if phase not in {"idle", "no_partner"}:
+        return {
+            "handled": False,
+            "reason": "active_phase",
+            "phase": phase,
+            "summary": {},
+        }
+    parsed = _parse_status_panel(text, now)
+    if not parsed:
+        return {
+            "handled": False,
+            "reason": "unparsed_panel",
+            "phase": phase,
+            "summary": {},
+        }
+    if not parsed.get("has_partner"):
+        return {
+            "handled": False,
+            "reason": "no_partner_requires_module_flow",
+            "phase": phase,
+            "summary": {},
+        }
+    if not _apply_status_snapshot(parsed, now):
+        return {
+            "handled": False,
+            "reason": "snapshot_rejected",
+            "phase": phase,
+            "summary": {},
+        }
+    save_state()
+    return {
+        "handled": True,
+        "reason": "",
+        "phase": _phase(),
+        "summary": {
+            "name": str(state.get("concubine_name") or ""),
+            "kind": str(state.get("concubine_kind") or ""),
+            "location": str(state.get("concubine_location") or ""),
+            "affinity": int(state.get("concubine_affinity", 0) or 0),
+            "voyage_status": str(state.get("concubine_voyage_status") or ""),
+        },
+    }
+
+
 def _get_reacquire_command():
     override = str(state.get("concubine_reacquire_command_override") or "").strip()
     if override in CONCUBINE_REACQUIRE_COMMANDS:
@@ -5612,4 +5659,5 @@ __all__ = [
     "restore_concubine_runtime",
     "run_concubine_phaseful_cleanup_scheduler",
     "run_concubine_scheduler",
+    "sync_concubine_miniapp_status",
 ]
