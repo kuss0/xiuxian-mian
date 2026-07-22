@@ -434,6 +434,39 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"古禁印痕": 1}, result["extra"]["rewards"])
         self.assertTrue(result["extra"]["daily_exhausted"])
 
+    async def test_public_treasure_unknown_result_freezes_same_day_retry(self):
+        now = 1_700_000_000.0
+        unknown_result = {
+            "ok": False,
+            "status": "result_unknown",
+            "error": "timeout",
+            "data": {
+                "state": {
+                    "games_used": 1,
+                    "games_limit": 3,
+                    "outcome_unknown": True,
+                    "outcome_unknown_action": "search",
+                },
+            },
+        }
+        cave_treasure_runtime._record_cave_treasure_miniapp_state(1001, unknown_result, now=now)
+
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock()) as session_mock, \
+                patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock()) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_treasure(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now + 60,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["extra"]["daily_exhausted"])
+        self.assertEqual("outcome_unknown_hold", result["extra"]["skipped"])
+        session_mock.assert_not_awaited()
+        flow_mock.assert_not_awaited()
+
     async def test_public_treasure_and_small_world_fail_closed_when_identity_selection_fails(self):
         public_url = "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"
         for runner_name, flow_name in (

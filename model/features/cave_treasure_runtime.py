@@ -10,7 +10,7 @@ from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
 from ..runtime import send_audit_log
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_send_as_profile, is_cave_public_identity_available, state, use_identity
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from . import deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yuanying
@@ -1119,9 +1119,12 @@ def _cave_treasure_state_source_id(result, *, result_msg_id=0):
 
 def _record_cave_treasure_miniapp_state(identity_id, result, *, now, result_msg_id=0):
     data = (result or {}).get("data") if isinstance((result or {}).get("data"), dict) else {}
-    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    state = dict(data.get("state") or {}) if isinstance(data.get("state"), dict) else {}
     if not state:
         return {"changed": False, "record": {}, "record_key": ""}
+    if str((result or {}).get("status") or "").strip() == "result_unknown":
+        state["outcome_unknown"] = True
+        state["outcome_unknown_day"] = get_day_key(now)
     return record_miniapp_state(
         identity_id,
         "cave_treasure",
@@ -1131,6 +1134,15 @@ def _record_cave_treasure_miniapp_state(identity_id, result, *, now, result_msg_
         now=now,
         outputs=_CAVE_TREASURE_STATE_OUTPUTS,
         replaces_commands=(".洞府",),
+    )
+
+
+def _cave_treasure_unknown_hold(identity_id, now):
+    record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
+    record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
+    return bool(
+        record_state.get("outcome_unknown")
+        and str(record_state.get("outcome_unknown_day") or "") == get_day_key(now)
     )
 
 
@@ -1801,6 +1813,14 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
     identity_error = _public_entry_account_identity_error(identity_id)
     if identity_error:
         return {"ok": False, "message": identity_error, "extra": {}}
+    if _cave_treasure_unknown_hold(identity_id, now):
+        message = "洞府寻宝今日存在结果未知动作，已冻结自动重试至次日"
+        await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
+        return {
+            "ok": True,
+            "message": message,
+            "extra": {"daily_exhausted": True, "skipped": "outcome_unknown_hold"},
+        }
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
@@ -1860,6 +1880,7 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
                 "rewards": rewards,
                 "daily_exhausted": (
                     str(result.get("status") or "").strip() == "daily_limit"
+                    or str(result.get("status") or "").strip() == "result_unknown"
                     or (
                         _parse_int(state.get("games_limit"), 0) > 0
                         and _parse_int(state.get("games_used"), 0) >= _parse_int(state.get("games_limit"), 0)

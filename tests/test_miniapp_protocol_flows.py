@@ -1067,6 +1067,34 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("SUPERSECRET", text)
         self.assertIn("<redacted>", text)
 
+    def test_cave_treasure_unknown_mutation_is_not_retried(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "dwelling": {"hunt": {"used": 0, "limit": 3, "remaining": 3, "actionPoints": 8}},
+                }
+            if endpoint == "hunt":
+                raise TimeoutError("unknown after send")
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = cave_treasure_miniapp.run_cave_treasure_miniapp_lab_flow(
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            rng=random.Random(9),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("result_unknown", result["status"])
+        self.assertEqual("enter", result["data"]["uncertain_action"])
+        self.assertTrue(result["data"]["state"]["outcome_unknown"])
+        self.assertEqual(["start", "hunt"], calls)
+
     def test_tree_start_lab_flow_reads_state_without_gameplay_calls(self):
         calls = []
 

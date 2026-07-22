@@ -1203,6 +1203,14 @@ def _append_http_event(events, step, result):
     })
 
 
+def _is_uncertain_cave_mutation_result(result):
+    status_code = int(getattr(result, "status_code", 0) or 0)
+    error_type = str(getattr(result, "error_type", "") or "").strip().lower()
+    if error_type == "request_budget":
+        return False
+    return status_code <= 0 or status_code == 429 or status_code >= 500
+
+
 def run_cave_treasure_miniapp_lab_flow(
     *,
     token,
@@ -1292,11 +1300,23 @@ def run_cave_treasure_miniapp_lab_flow(
         )
         _append_http_event(events, f"action:{decision.get('action')}", action_result)
         if not action_result.ok:
+            uncertain = _is_uncertain_cave_mutation_result(action_result)
             return _flow_result(
                 False,
-                "failed",
+                "result_unknown" if uncertain else "failed",
                 error=action_result.error,
-                data={"state": last_state, "results": results, "settled_count": len(results)},
+                data={
+                    "state": {
+                        **last_state,
+                        **({
+                            "outcome_unknown": True,
+                            "outcome_unknown_action": str(decision.get("action") or ""),
+                        } if uncertain else {}),
+                    },
+                    "results": results,
+                    "settled_count": len(results),
+                    **({"uncertain_action": str(decision.get("action") or "")} if uncertain else {}),
+                },
                 events=events,
             )
         current_data = action_result.data
