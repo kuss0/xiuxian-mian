@@ -260,6 +260,18 @@ def _find_fishing_external_app_in_cave_payload(value):
 def _find_stargazer_external_app_in_cave_payload(value):
     root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
     account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    star_palace = account.get("starPalace") if isinstance(account.get("starPalace"), dict) else {}
+    observatory = star_palace.get("observatory") if isinstance(star_palace.get("observatory"), dict) else {}
+    observatory_url = str(
+        observatory.get("url") or observatory.get("webviewUrl") or observatory.get("webview_url") or ""
+    ).strip()
+    if observatory_url:
+        return {
+            "url": observatory_url,
+            "title": str(observatory.get("title") or "观星台").strip(),
+            "available": bool(observatory.get("available", True)),
+            "key": "stargazer",
+        }
     external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
     for group in external.get("groups") or ():
         if not isinstance(group, dict):

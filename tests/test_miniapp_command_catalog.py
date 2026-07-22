@@ -21,24 +21,25 @@ class MiniAppCommandCatalogTests(unittest.TestCase):
         self.assertIn(".琉璃塔榜", snapshot["summary"]["multi_group_commands"])
         self.assertEqual({"external_miniapp", "chat_preserved"}, set(snapshot["allowed_multi_surface"][".鬼赌坊"]))
 
-    def test_validation_reports_world_boss_gap_without_reclassifying_it(self):
+    def test_validation_catalogues_world_boss_without_reclassifying_chat_games(self):
         validation = miniapp_command_catalog.validate_command_catalog(
             flow_plans=miniapp_registry.build_known_miniapp_flow_plans(),
             entry_probe_commands=ui.MINIAPP_ENTRY_PROBE_COMMANDS,
         )
 
-        self.assertEqual("warn", validation["status"])
+        self.assertEqual("ok", validation["status"])
         self.assertEqual(0, validation["summary"]["errors"])
         issues = {(item["code"], item.get("command")) for item in validation["issues"]}
-        self.assertIn(("flow_replacement_uncatalogued", ".世界boss"), issues)
+        self.assertNotIn(("flow_replacement_uncatalogued", ".世界boss"), issues)
         self.assertIn(("external_entry_not_automated", ".小药园"), issues)
+        self.assertEqual(0, validation["summary"]["warnings"])
         self.assertNotIn(("unapproved_multi_surface", ".鬼赌坊"), issues)
 
     def test_report_is_read_only_and_contains_checklist(self):
         report = miniapp_command_catalog_report.build_report()
 
         self.assertIn("no send", report["policy"])
-        self.assertEqual("2026-07-15", report["catalog"]["version"])
+        self.assertEqual("2026-07-22", report["catalog"]["version"])
         self.assertTrue(report["validation"]["checklist"])
 
 

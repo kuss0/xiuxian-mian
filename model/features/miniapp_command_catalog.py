@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-CATALOG_VERSION = "2026-07-15"
+CATALOG_VERSION = "2026-07-22"
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,7 @@ COMMAND_GROUPS = (
     CommandGroup("sect_locked", "heart_seal", "阴罗/合欢心印", (".我的炉鼎", ".魔音灌脑", ".强索元阴", ".挣脱心印")),
     CommandGroup("external_miniapp", "sect_garden", "宗门灵圃", (".小药园", ".观星台", ".灵树")),
     CommandGroup("external_miniapp", "outer_games", "外府游戏", (".钓鱼", ".天机试炼", ".诸天杯", ".2048", ".修仙路", ".鬼赌坊")),
+    CommandGroup("external_miniapp", "world_boss", "世界 Boss", (".世界boss",)),
     CommandGroup("pending_migration", "breakthrough", "进阶突破", (".筑基", ".结丹", ".凝结元婴", ".化神准备", ".突破化神")),
     CommandGroup("pending_migration", "sect_mission", "宗门任务/外交", (".宗门任务", ".提交任务", ".宗门外交")),
     CommandGroup("pending_migration", "market", "万宝楼/拍卖", (".万宝楼", ".上架", ".购买", ".拍卖", ".竞拍")),

@@ -912,17 +912,13 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "overview": {"player_id": 2001},
                 "raw": {
                     "account": {
-                        "externalApps": {
-                            "groups": [{
-                                "key": "sect_farm",
-                                "apps": [{
-                                    "key": "sect_farm",
-                                    "title": "星宫观星台",
-                                    "available": True,
-                                    "url": "https://t.me/fanrenxiuxian_bot?startapp=farm_SECRET999",
-                                }],
-                            }],
+                        "starPalace": {
+                            "observatory": {
+                                "title": "星宫观星台",
+                                "url": "https://t.me/fanrenxiuxian_bot?startapp=farm_SECRET999",
+                            },
                         },
+                        "externalApps": {"groups": []},
                     },
                 },
             },
