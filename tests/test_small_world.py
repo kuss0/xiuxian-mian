@@ -2170,6 +2170,41 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertIn("地脉翻身", state_module.state["small_world_pending_god_reason"])
             self.assertEqual(now + 600 + 60, state_module.state["next_small_world_time"])
 
+    async def test_disaster_broadcast_matches_historical_username_alias(self):
+        send_as_id = 301299112
+        now = 4500.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(
+            send_as_id,
+            username="jfdffdddd1",
+            username_aliases=["jfdffdddd"],
+            label="吧唧",
+            daohao="空尘子",
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_incense_stock"] = 1000
+            state_module.state["next_small_world_time"] = now + 600
+            with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_disaster_broadcast(
+                    "⚡ 【小世界·天降浩劫】 ⚡\n"
+                    "道友 @jfdffdddd 的小世界遭遇 【地脉翻身】！\n"
+                    "小世界地壳变动，大地震导致神庙倒塌，信仰崩塌。\n"
+                    "❌ 惨重代价: 信仰崩塌 -17 点\n"
+                    "请速速查看 .小世界 并安抚信徒！",
+                    now,
+                    event=None,
+                )
+
+            self.assertTrue(handled)
+            preach_mock.assert_awaited_once_with(now, "灾害: 地脉翻身，布道安抚")
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+
     async def test_restore_converts_legacy_inferred_disaster_relief_to_default_preach(self):
         send_as_id = 8659059311
         now = 4400.0

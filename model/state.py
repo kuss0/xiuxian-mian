@@ -2682,6 +2682,7 @@ def get_send_as_tags(send_as_id=None):
 
     raw_candidates = [
         profile.get("username", ""),
+        *(profile.get("username_aliases") or []),
         profile.get("label", ""),
         profile.get("daohao", ""),
         str(send_as_id),
