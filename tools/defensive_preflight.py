@@ -239,6 +239,16 @@ def _tianxing_action_status(
     change_active = str(obs.get("current_change") or "").strip() == route and _epoch(obs.get("current_change_until")) > now
     phase = str(timeline.get("phase") or "")
     active_step = _active_step_summary(timeline)
+    current_prediction = str(obs.get("current_prediction") or "").strip()
+    current_prediction_until = _epoch(obs.get("current_prediction_until"))
+    timeline_blocked_until = _epoch(timeline.get("blocked_until"))
+    conflict_expires_before_due = bool(
+        phase == "prediction_conflict"
+        and current_prediction
+        and current_prediction != route
+        and now < current_prediction_until <= due_at
+        and (timeline_blocked_until <= 0 or timeline_blocked_until <= due_at)
+    )
     timeline_preparing = phase in {
         "sending",
         "sent_waiting_ack",
@@ -268,6 +278,12 @@ def _tianxing_action_status(
             reason = f"{'、'.join(stale_bits)}；尚未进入天星准备窗口，提前 {due_in - lead}s 后复查。"
         else:
             reason = f"尚未进入天星准备窗口，提前 {due_in - lead}s 后复查。"
+    elif conflict_expires_before_due:
+        level = "watch"
+        reason = (
+            f"当前{current_prediction}推命将在 {_fmt(current_prediction_until)} 失效，"
+            f"下游已顺延至其后，将在到期时重建探索推命/改命。"
+        )
     elif timeline_preparing:
         level = "watch"
         reason = f"已进入准备窗口，时间线处理中：{phase or active_step}。"

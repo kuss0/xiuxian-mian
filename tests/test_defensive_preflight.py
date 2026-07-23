@@ -258,6 +258,57 @@ def test_tianxing_rift_tianji_short_with_prediction_stays_at_risk():
     assert "未见有效推命/改命" in item["reason"]
 
 
+def test_tianxing_rift_prediction_conflict_expiring_before_due_is_watch():
+    now = 1_700_000_000.0
+    item = preflight._tianxing_action_status(
+        label="twinkle twinkle little star",
+        username="xuruode6",
+        action="探寻裂缝",
+        due_at=now + 120,
+        retry_at=0,
+        obs={
+            "current_prediction": "斗法",
+            "current_prediction_until": now + 115,
+            "current_prediction_set_at": now - 8 * 3600,
+            "current_change": "",
+            "current_change_until": 0,
+            "tianji_value": 75,
+        },
+        timeline={"phase": "prediction_conflict", "blocked_until": now + 95},
+        config={"route_prepare_lead_sec": 300},
+        now=now,
+    )
+
+    assert item["level"] == "watch"
+    assert "斗法推命" in item["reason"]
+    assert "重建探索推命/改命" in item["reason"]
+
+
+def test_tianxing_rift_prediction_conflict_past_due_stays_at_risk():
+    now = 1_700_000_000.0
+    item = preflight._tianxing_action_status(
+        label="twinkle twinkle little star",
+        username="xuruode6",
+        action="探寻裂缝",
+        due_at=now + 120,
+        retry_at=0,
+        obs={
+            "current_prediction": "斗法",
+            "current_prediction_until": now + 180,
+            "current_prediction_set_at": now - 8 * 3600,
+            "current_change": "",
+            "current_change_until": 0,
+            "tianji_value": 75,
+        },
+        timeline={"phase": "prediction_conflict", "blocked_until": now + 160},
+        config={"route_prepare_lead_sec": 300},
+        now=now,
+    )
+
+    assert item["level"] == "at_risk"
+    assert "未见有效推命/改命" in item["reason"]
+
+
 def test_tianxing_later_action_with_prior_consume_is_watch():
     now = 1_700_000_000.0
     item = preflight._tianxing_action_status(
