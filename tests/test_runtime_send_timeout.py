@@ -865,16 +865,16 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         client = _FakeClient(["ok"])
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["action_guard_sessions"] = {
-                "wild_training": {
-                    "action_key": "wild_training",
+                "explore_rift": {
+                    "action_key": "explore_rift",
                     "kind": "high_risk",
-                    "label": "野外历练",
+                    "label": "探寻裂缝",
                     "attempt": 0,
                     "first_sent_at": 0,
                     "last_sent_at": 0,
                     "next_allowed_at": 0,
                     "last_msg_id": 0,
-                    "last_command": ".野外历练 谨慎",
+                    "last_command": ".探寻裂缝",
                 }
             }
 
@@ -898,7 +898,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
             result = await asyncio.wait_for(
                 runtime.send_game_command(
-                    ".野外历练 谨慎",
+                    ".探寻裂缝",
                     send_as_id=send_as_id,
                     priority="normal",
                     track=False,
@@ -909,10 +909,10 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
         self.assertFalse(runtime._GAME_SEND_LOCK.locked())
-        self.assertNotIn("wild_training", state_module.get_identity_state(send_as_id)["action_guard_sessions"])
+        self.assertNotIn("explore_rift", state_module.get_identity_state(send_as_id)["action_guard_sessions"])
         self.assertEqual(
             "send_queue_timeout",
-            runtime.get_last_game_send_block(send_as_id, ".野外历练 谨慎")["code"],
+            runtime.get_last_game_send_block(send_as_id, ".探寻裂缝")["code"],
         )
 
     async def test_effective_queue_timeout_covers_rpc_and_identity_gap(self):

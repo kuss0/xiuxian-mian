@@ -20,7 +20,6 @@ from ..config import (
     CMD_TIANXING_PREDICT,
     CMD_TIANXING_SET_STAR,
     CMD_USE_HEQI_DAN,
-    CMD_WILD_TRAINING,
     CMD_EXCHANGE_HEQI_DAN_PREFIX,
     CMD_SECT_DONATE_LINGSHI_PREFIX,
     TZ_LOCAL,
@@ -4977,7 +4976,7 @@ def _command_has_prefix(command, prefix):
 def _command_matches_tianxing_route(route, command):
     route = _normalize_route_choice(route, "")
     if route == "探索":
-        return _command_has_prefix(command, CMD_WILD_TRAINING) or _command_has_prefix(command, CMD_EXPLORE_RIFT)
+        return _command_has_prefix(command, CMD_EXPLORE_RIFT)
     if route == "炼制":
         return _command_has_prefix(command, CMD_CRAFT)
     if route == "闭关":
@@ -5004,7 +5003,6 @@ def _tianxing_route_has_pending_downstream(route):
         return any(
             int(state.get(key, 0) or 0) > 0
             for key in (
-                "wild_training_reply_to_msg_id",
                 "explore_rift_reply_to_msg_id",
                 "explore_rift_pending_result_msg_id",
             )
@@ -6462,7 +6460,7 @@ def _state_int(key):
 
 def _craft_farm_explore_module_specs():
     return (
-        ("野外历练", "wild_training_enabled", "next_wild_training_time", ("wild_training_reply_to_msg_id",), "wild_training_reply_due_at"),
+        ("野外历练", "wild_training_enabled", "next_wild_training_time", (), ""),
         (
             "探寻裂缝",
             "explore_rift_enabled",

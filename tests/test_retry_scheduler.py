@@ -149,6 +149,40 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertEqual({}, identity_state["pending_tasks"])
 
+    def test_retry_scheduler_retires_miniapp_migrated_commands_without_resend(self):
+        send_as_id = 971014
+        now = 5_500.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                111: {
+                    "cmd": ".野外历练 深入",
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                },
+                112: {
+                    "cmd": ".闯塔",
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                },
+            }
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
+
     def test_default_pending_resends_once_with_retry_priority(self):
         send_as_id = 971002
         now = 6000.0

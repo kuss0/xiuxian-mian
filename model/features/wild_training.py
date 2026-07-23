@@ -49,9 +49,7 @@ WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC = 2 * 60
 WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC = 10 * 60
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
-WILD_TRAINING_SEND_TIMEOUT_SEC = 30 * 60
-WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC = 10 * 60
-WILD_TRAINING_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
+WILD_TRAINING_SCHEDULER_TIMEOUT_SEC = 30 * 60
 WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC = 45
 WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC = 10 * 60
 WILD_TRAINING_MINIAPP_RUN_LEASE_SEC = 20 * 60
@@ -87,10 +85,7 @@ def normalize_wild_training_strategy(strategy):
 def clear_wild_training_state(*, persist=False, keep_last_error=False):
     last_error = state.get("wild_training_last_error") if keep_last_error else ""
     state["next_wild_training_time"] = 0
-    state["wild_training_reply_to_msg_id"] = 0
-    state["wild_training_reply_due_at"] = 0
     state["wild_training_retry_count"] = 0
-    state["wild_training_last_msg_id"] = 0
     state["wild_training_last_result"] = ""
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_completed_at"] = 0
@@ -304,8 +299,6 @@ async def _send_tianxing_panel_calibration(now, reason):
     state["wild_training_last_result"] = "野外历练状态不明，等待天机盘校准"
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = str(reason or "天机盘校准未确认")
-    if msg:
-        state["wild_training_last_msg_id"] = int(getattr(msg, "id", 0) or 0)
     save_state()
     return bool(msg)
 
@@ -582,9 +575,6 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
         return
     now = float(now or time.time())
     reconcile_wild_training_daily_reset_spread(now)
-    # Any old command state is inert and must not block the MiniApp route.
-    state["wild_training_reply_to_msg_id"] = 0
-    state["wild_training_reply_due_at"] = 0
     try:
         next_time = float(state.get("next_wild_training_time", 0) or 0)
     except (TypeError, ValueError, OverflowError):
@@ -623,17 +613,6 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
         _schedule_miniapp_busy_retry(now)
 
 
-async def run_wild_training_phaseful_cleanup_scheduler(now):
-    """Clear stale command-era fields without recovering or resending commands."""
-    if state.get("wild_training_reply_to_msg_id") or state.get("wild_training_reply_due_at"):
-        state["wild_training_reply_to_msg_id"] = 0
-        state["wild_training_reply_due_at"] = 0
-        state["wild_training_last_error"] = "旧命令待回复状态已清理；自动链仅走 MiniApp"
-        save_state()
-        return True
-    return False
-
-
 async def run_wild_training_scheduler(now):
     async with _wild_training_lock():
         return await _run_wild_training_miniapp_scheduler_unlocked(now)
@@ -644,14 +623,11 @@ __all__ = [
     "WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC",
     "WILD_TRAINING_RETRY_MIN_SEC",
     "WILD_TRAINING_RETRY_MAX_SEC",
-    "WILD_TRAINING_SEND_TIMEOUT_SEC",
-    "WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC",
-    "WILD_TRAINING_SEND_QUEUE_RETRY_MAX_SEC",
+    "WILD_TRAINING_SCHEDULER_TIMEOUT_SEC",
     "apply_wild_training_strategy",
     "clear_wild_training_state",
     "get_wild_training_status_text",
     "normalize_wild_training_strategy",
-    "run_wild_training_phaseful_cleanup_scheduler",
     "run_wild_training_scheduler",
     "schedule_wild_training_initial_check",
     "reconcile_wild_training_daily_reset_spread",

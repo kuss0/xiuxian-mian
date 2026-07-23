@@ -1721,7 +1721,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
             self.assertTrue(state_module.state["deep_retreat_probe_pending"])
 
-    async def test_deep_retreat_post_summary_yields_to_due_wild_training(self):
+    async def test_deep_retreat_post_summary_is_not_blocked_by_due_wild_training(self):
         send_as_id = 8659059203
         now = 1_700_000_450.0
         self._prepare_identity(send_as_id, "YieldWildRetreat")
@@ -1737,14 +1737,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
             with (
                 patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(deep_retreat, "save_state") as save_mock,
+                patch.object(deep_retreat, "save_state"),
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
-            send_mock.assert_not_awaited()
-            save_mock.assert_called()
-            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
-            self.assertEqual(now + deep_retreat.DEEP_RETREAT_WILD_INSERT_HOLD_SEC, state_module.state["next_deep_retreat_time"])
+            send_mock.assert_awaited_once()
 
     async def test_deep_retreat_summary_due_wait_log_is_once_per_wait(self):
         send_as_id = 8659059231
@@ -3139,7 +3136,6 @@ class DeepRetreatPublicMiniAppGateTests(_StateIsolationMixin, unittest.IsolatedA
             with patch.object(deep_retreat, "is_cave_public_auto_enabled", return_value=True), \
                     patch.object(deep_retreat, "_cave_public_deep_legacy_fallback_ready", return_value=True), \
                     patch.object(deep_retreat, "_calibrate_orphan_deep_retreat_summary_due", new=AsyncMock(return_value=False)), \
-                    patch.object(deep_retreat, "_defer_post_summary_relaunch_for_due_wild_training", return_value=False), \
                     patch.object(deep_retreat, "_run_deep_retreat_tianxing_gate", new=AsyncMock(return_value=True)), \
                     patch.object(deep_retreat, "run_phaseful_scheduler", new=AsyncMock()) as scheduler_mock:
                 await deep_retreat.run_deep_retreat_scheduler(now)

@@ -131,7 +131,6 @@ from .features.stargazer import (
     handle_stargazer_panel,
     handle_stargazer_soothe_reply,
     handle_stargazer_sync_reply,
-    run_stargazer_scheduler,
 )
 from .features.storage_bag import handle_storage_bag_reply, handle_storage_bag_transfer_reply, is_storage_transfer_waiting_reply, run_storage_bag_transfer_scheduler
 from .features.tower import run_tower_scheduler
@@ -183,10 +182,9 @@ from .features.fishing_runtime import (
 from .features.wild_training import (
     WILD_TRAINING_RETRY_MAX_SEC,
     WILD_TRAINING_RETRY_MIN_SEC,
-    WILD_TRAINING_SEND_TIMEOUT_SEC,
+    WILD_TRAINING_SCHEDULER_TIMEOUT_SEC,
     _tianxing_prepare_retry_blocks,
     reconcile_wild_training_daily_reset_spread,
-    run_wild_training_phaseful_cleanup_scheduler,
     run_wild_training_scheduler,
 )
 from .features.red_packet_monitor import observe_red_packet_candidate
@@ -315,7 +313,7 @@ DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC = (
     + GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC
     + DUE_SCAN_TIMEOUT_MARGIN_SEC
 )
-DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC = WILD_TRAINING_SEND_TIMEOUT_SEC + DUE_SCAN_TIMEOUT_MARGIN_SEC
+DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC = WILD_TRAINING_SCHEDULER_TIMEOUT_SEC + DUE_SCAN_TIMEOUT_MARGIN_SEC
 DUE_WILD_TRAINING_DIAG_INTERVAL_SEC = 120
 _due_wild_training_last_diag_at = 0.0
 DUE_EXPLORE_RIFT_MAX_PER_TICK = 3
@@ -326,10 +324,6 @@ DUE_CONCUBINE_MAX_PER_TICK = 1
 DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC = CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC + DUE_SCAN_TIMEOUT_MARGIN_SEC
 DUE_CONCUBINE_DIAG_INTERVAL_SEC = 180
 _due_concubine_last_diag_at = 0.0
-DUE_STARGAZER_FOLLOWUP_MAX_PER_TICK = 2
-DUE_STARGAZER_FOLLOWUP_SCHEDULER_TIMEOUT_SEC = 45
-DUE_STARGAZER_FOLLOWUP_DIAG_INTERVAL_SEC = 180
-_due_stargazer_followup_last_diag_at = 0.0
 DUE_TIANXING_MAX_PER_TICK = 2
 DUE_TIANXING_SCHEDULER_TIMEOUT_SEC = max(90, DUE_RECOVERY_SEND_QUEUE_TIMEOUT_SEC)
 DUE_TIANXING_DIAG_INTERVAL_SEC = 180
@@ -493,7 +487,6 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_ranch_scheduler,
     run_tianxing_scheduler,
     run_wild_training_scheduler,
-    run_stargazer_scheduler,
     run_formation_scheduler,
     run_tianti_scheduler,
     run_quiz_scheduler,
@@ -518,7 +511,6 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
 )
 _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS = (
     run_concubine_phaseful_cleanup_scheduler,
-    run_wild_training_phaseful_cleanup_scheduler,
     run_wanxin_phaseful_cleanup_scheduler,
 )
 _GLOBAL_SCHEDULERS = (
@@ -567,7 +559,6 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_second_soul_scheduler": {"manifest_names": ("第二元神",), "helper": False},
     "run_small_world_scheduler": {"manifest_names": ("小世界",), "helper": False},
     "run_explore_rift_scheduler": {"manifest_names": ("探寻裂缝",), "helper": False},
-    "run_stargazer_scheduler": {"manifest_names": ("观星台",), "helper": False},
     "run_taiyi_bootstrap_check": {"manifest_names": ("太一",), "helper": True},
     "run_taiyi_scheduler": {"manifest_names": ("太一",), "helper": False},
     "run_tianti_scheduler": {"manifest_names": ("登天阶",), "helper": False},
@@ -1949,16 +1940,6 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             if not state.get("wild_training_enabled"):
                 continue
             reconcile_wild_training_daily_reset_spread(scheduler_now)
-            pending_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
-            try:
-                reply_due_at = float(state.get("wild_training_reply_due_at", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                reply_due_at = 0.0
-            if pending_msg_id > 0 and 0 < reply_due_at <= scheduler_now:
-                candidates.append((0, reply_due_at, scan_index, identity_id, scheduler_now, "cleanup"))
-                continue
-            if pending_msg_id > 0:
-                continue
             try:
                 next_time = float(state.get("next_wild_training_time", 0) or 0)
             except (TypeError, ValueError, OverflowError):
@@ -1995,48 +1976,46 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                             and state.get("tianxing_enabled")
                             and not _tianxing_prepare_retry_blocks(scheduler_now)
                         ):
-                            candidates.append((0, next_time, scan_index, identity_id, scheduler_now, "run"))
+                            candidates.append((0, next_time, scan_index, identity_id, scheduler_now))
                             continue
                 continue
             priority = 1 if state.get("tianxing_enabled") else 2
-            candidates.append((priority, next_time, scan_index, identity_id, scheduler_now, "run"))
+            candidates.append((priority, next_time, scan_index, identity_id, scheduler_now))
 
     if candidates and float(now or 0) - _due_wild_training_last_diag_at >= DUE_WILD_TRAINING_DIAG_INTERVAL_SEC:
         _due_wild_training_last_diag_at = float(now or time.time())
         preview = []
-        for _priority, due_at, _scan_index, identity_id, _scheduler_now, action in sorted(candidates)[:5]:
+        for _priority, due_at, _scan_index, identity_id, _scheduler_now in sorted(candidates)[:5]:
             profile = get_send_as_profile(identity_id)
             username = str((profile or {}).get("username") or identity_id)
             overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
-            preview.append(f"@{username}:{action}/{overdue}s")
+            preview.append(f"@{username}:run/{overdue}s")
         console_log(
             f"🏞️ 到期野外扫描候选 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
             scope="global",
         )
 
     processed = 0
-    for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
+    for _priority, _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
         if processed >= int(limit or 1):
             break
         try:
             await asyncio.wait_for(
-                _run_due_wild_training_candidate(identity_id, scheduler_now, action),
+                _run_due_wild_training_candidate(identity_id, scheduler_now),
                 timeout=max(1, float(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC or 0)),
             )
         except asyncio.TimeoutError:
             with use_identity(identity_id):
                 _record_due_wild_training_candidate_failure(
-                    action,
                     now=time.time(),
                     reason=f"到期野外扫描执行超时（>{int(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
                 )
             profile = get_send_as_profile(identity_id)
             username = str((profile or {}).get("username") or identity_id)
-            console_log(f"🏞️ 到期野外扫描超时：@{username} {action}", scope="global")
+            console_log(f"🏞️ 到期野外扫描超时：@{username}", scope="global")
         except Exception as exc:
             with use_identity(identity_id):
                 _record_due_wild_training_candidate_failure(
-                    action,
                     now=time.time(),
                     reason=f"到期野外扫描异常：{str(exc)[:160]}",
                 )
@@ -2052,23 +2031,16 @@ def _wild_training_completed_cooldown_due_at():
         return 0.0
 
 
-async def _run_due_wild_training_candidate(identity_id, scheduler_now, action):
+async def _run_due_wild_training_candidate(identity_id, scheduler_now):
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
-        if action == "cleanup":
-            await run_wild_training_phaseful_cleanup_scheduler(candidate_now)
-        else:
-            await run_wild_training_scheduler(candidate_now)
+        await run_wild_training_scheduler(candidate_now)
 
 
-def _record_due_wild_training_candidate_failure(action, *, now, reason):
+def _record_due_wild_training_candidate_failure(*, now, reason):
     state["wild_training_last_error"] = str(reason or "到期野外扫描失败")
     state["wild_training_last_result_at"] = 0
-    if action == "cleanup":
-        if int(state.get("wild_training_reply_to_msg_id", 0) or 0) > 0:
-            state["wild_training_reply_due_at"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
-    else:
-        state["next_wild_training_time"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
+    state["next_wild_training_time"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
     mark_dirty()
 
 
@@ -2272,88 +2244,6 @@ async def _run_due_concubine_candidate(identity_id, scheduler_now):
             await run_concubine_scheduler(candidate_now)
 
 
-async def _run_due_stargazer_followup_schedulers(now, *, limit=DUE_STARGAZER_FOLLOWUP_MAX_PER_TICK):
-    global _due_stargazer_followup_last_diag_at
-    candidates = []
-    for scan_index, identity_id in enumerate(get_identity_ids()):
-        if not get_identity_enabled(identity_id):
-            continue
-        if _is_identity_account_offline(identity_id):
-            continue
-        with use_identity(identity_id):
-            scheduler_now = max(float(now or 0), time.time())
-            if is_identity_weak(identity_id, scheduler_now):
-                continue
-            if has_phaseful_summary_block(scheduler_now):
-                continue
-            if not state.get("stargazer_enabled"):
-                continue
-            try:
-                followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                followup_due_at = 0.0
-            if followup_due_at <= 0 or followup_due_at > scheduler_now:
-                continue
-            queued_action = str(state.get("stargazer_queued_action") or "").strip()
-            last_action = str(state.get("stargazer_last_action") or "").strip()
-            if not queued_action and last_action.startswith("queue_"):
-                queued_action = last_action[len("queue_"):].strip()
-            if not queued_action:
-                continue
-            priority = 0 if queued_action == "collect" else 1
-            candidates.append((priority, followup_due_at, scan_index, identity_id, scheduler_now, queued_action))
-
-    if candidates and float(now or 0) - _due_stargazer_followup_last_diag_at >= DUE_STARGAZER_FOLLOWUP_DIAG_INTERVAL_SEC:
-        _due_stargazer_followup_last_diag_at = float(now or time.time())
-        preview = []
-        for _priority, due_at, _scan_index, identity_id, _scheduler_now, action in sorted(candidates)[:5]:
-            profile = get_send_as_profile(identity_id)
-            username = str((profile or {}).get("username") or identity_id)
-            overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
-            preview.append(f"@{username}:{action}/{overdue}s")
-        console_log(
-            f"🌠 到期观星台跟进 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
-            scope="global",
-        )
-
-    processed = 0
-    for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
-        if processed >= int(limit or 1):
-            break
-        try:
-            await asyncio.wait_for(
-                _run_due_stargazer_followup_candidate(identity_id, scheduler_now),
-                timeout=max(1, float(DUE_STARGAZER_FOLLOWUP_SCHEDULER_TIMEOUT_SEC or 0)),
-            )
-        except asyncio.TimeoutError:
-            with use_identity(identity_id):
-                # wait_for cancels the inner scheduler.  The stargazer scheduler may
-                # already have cleared the queued action before entering the send
-                # queue, so restore it here; otherwise the next due scan sees a
-                # deadline with no action and drops the chain for an hour.
-                state["stargazer_last_action"] = f"queue_{action}"
-                state["stargazer_queued_action"] = str(action or "").strip()
-                state["stargazer_followup_due_at"] = float(time.time()) + 30
-                mark_dirty()
-            profile = get_send_as_profile(identity_id)
-            username = str((profile or {}).get("username") or identity_id)
-            console_log(f"🌠 到期观星台跟进超时：@{username} {action}", scope="global")
-        except Exception as exc:
-            with use_identity(identity_id):
-                state["stargazer_last_action"] = f"due_followup_error_{action}"
-                state["stargazer_followup_due_at"] = float(time.time()) + 60
-                mark_dirty()
-            print("due stargazer followup scheduler failed:")
-            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
-        processed += 1
-
-
-async def _run_due_stargazer_followup_candidate(identity_id, scheduler_now):
-    with use_identity(identity_id):
-        candidate_now = max(float(scheduler_now or 0), time.time())
-        await run_stargazer_scheduler(candidate_now)
-
-
 def _record_due_concubine_candidate_failure(*, now, reason, transient=False):
     if transient:
         state["concubine_last_result"] = str(reason or "到期侍妾扫描让出本轮")
@@ -2522,8 +2412,8 @@ def _tianxing_downstream_prepare_windows(now):
             "wild_training_enabled",
             "next_wild_training_time",
             "wild_training_tianxing_prepare_retry_at",
-            ("wild_training_reply_to_msg_id",),
-            "wild_training_reply_due_at",
+            (),
+            "",
             "野外历练",
         ),
         (
@@ -3589,7 +3479,6 @@ async def main_loop(stop_event=None, quiesce_event=None):
         await _run_tianxing_daily_bootstrap_identity_schedulers(time.time())
         await _run_tianxing_timeline_followup_identity_schedulers(time.time())
         await _run_due_tianxing_schedulers(now)
-        await _run_due_stargazer_followup_schedulers(now)
         await _run_due_explore_rift_schedulers(now)
         await _run_due_wild_training_retry_schedulers(now)
         await _run_due_concubine_schedulers(now)

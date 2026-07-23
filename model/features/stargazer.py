@@ -13,9 +13,9 @@ from ..config import (
     STARGAZER_STAR_DURATIONS,
 )
 from ..persistence import save_state
-from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, track_reply_chain_message
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, is_cave_public_auto_enabled, set_stargazer_total_slots, state
-from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
+from ..runtime import console_log, send_audit_log
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from ..webapp_core import MiniAppCaptureStore
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_deltas, apply_storage_bag_item_text_delta
@@ -31,13 +31,6 @@ STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS = ("灵力不足", "安抚", "座�
 STARGAZER_SOOTHE_NO_NEED_KEYWORDS = ("观星台", "没有需要安抚", "星辰")
 STARGAZER_GUIDE_INSUFFICIENT_POWER_KEYWORDS = ("修为不足", "同时牵引", "座引星盘")
 STARGAZER_AFTER_DEEP_RETREAT_DELAY_SEC = 3 * 60
-STARGAZER_LOST_FOLLOWUP_BACKOFF_SEC = 60 * 60
-STARGAZER_PENDING_COMMANDS = (
-    CMD_STARGAZER_PANEL,
-    CMD_STARGAZER_SOOTHE,
-    CMD_STARGAZER_COLLECT,
-    CMD_STARGAZER_GUIDE,
-)
 
 
 def _miniapp_http_allowed_during_pause():
@@ -106,17 +99,6 @@ def _stargazer_miniapp_run_lock(identity_id):
     return lock
 
 
-def _has_pending_stargazer_command():
-    for pending in state.get("pending_tasks", {}).values():
-        pending_command = get_pending_command(pending)
-        if any(
-            pending_command == command or pending_command.startswith(f"{command} ")
-            for command in STARGAZER_PENDING_COMMANDS
-        ):
-            return True
-    return False
-
-
 def _is_stargazer_miniapp_paused():
     return str(state.get("stargazer_last_action") or "").strip() == STARGAZER_MINIAPP_PAUSED_ACTION
 
@@ -178,13 +160,6 @@ def _safe_float(value, default=0.0):
         return float(value or default)
     except (TypeError, ValueError):
         return float(default)
-
-
-def _current_dim_slot_count():
-    try:
-        return max(0, int(state.get("stargazer_dim_slot_count", 0) or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _parse_stargazer_panel(text):
@@ -263,25 +238,6 @@ def _schedule_next_stargazer_action(next_time):
     state["next_stargazer_panel_time"] = float(next_time or 0)
 
 
-def _schedule_stargazer_timeout_panel_fallback(msg, sent_at, fallback_delay=RETRY_MAX_SEC):
-    msg_id = int(getattr(msg, "id", 0) or 0)
-    delay = float(fallback_delay or RETRY_MAX_SEC)
-    pending = state.get("pending_tasks", {}).get(msg_id) if msg_id > 0 else None
-    if isinstance(pending, dict):
-        delay = float(pending.get("timeout", 0) or 0) or delay
-    _schedule_next_stargazer_action(float(sent_at or time.time()) + delay + random.uniform(5, 10))
-
-
-def _get_queued_stargazer_action():
-    queued_action = str(state.get("stargazer_queued_action") or "").strip()
-    if queued_action:
-        return queued_action
-    last_action = str(state.get("stargazer_last_action") or "")
-    if not last_action.startswith("queue_"):
-        return ""
-    return last_action[len("queue_"):].strip()
-
-
 def _queue_stargazer_followup_action(now, action, delay):
     state["stargazer_followup_due_at"] = float(now + max(1, delay))
     state["stargazer_queued_action"] = str(action or "").strip()
@@ -294,22 +250,6 @@ def _clear_stargazer_collect_flags():
     state["stargazer_soothe_before_collect"] = False
 
 
-async def _audit_stargazer_unsent(label, command):
-    send_block = get_last_game_send_block(command=command)
-    if str((send_block or {}).get("code") or "") == "send_timeout":
-        await send_audit_log(f"⚠️ {label}发送返回慢，等待被动回复；稍后回查。", priority="low")
-        return
-    await send_audit_log(f"❌ {label}发送失败，稍后重试。")
-
-
-def _stargazer_next_panel_time_blocks(now):
-    return cd_blocks(state.get("next_stargazer_panel_time", 0), now, 0)
-
-
-def _stargazer_followup_due_blocks(now):
-    return cd_blocks(state.get("stargazer_followup_due_at", 0), now, 0)
-
-
 async def _queue_stargazer_action(now, action, delay=None, audit_text=None):
     if delay is None:
         delay = random.uniform(5, 10)
@@ -317,86 +257,6 @@ async def _queue_stargazer_action(now, action, delay=None, audit_text=None):
     save_state()
     if audit_text:
         await send_audit_log(f"{audit_text}→{fmt_time_after(delay)}")
-
-
-async def _send_stargazer_panel(now, audit_text=None):
-    state["stargazer_last_action"] = "panel"
-    state["stargazer_followup_due_at"] = 0
-    _schedule_next_stargazer_action(now + RETRY_MAX_SEC)
-    msg = await send_game_command(CMD_STARGAZER_PANEL, max_retry=1)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
-        _queue_stargazer_followup_action(sent_at, "panel", retry_delay)
-        save_state()
-        await _audit_stargazer_unsent("观星台", CMD_STARGAZER_PANEL)
-        return False
-    _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
-    save_state()
-    if audit_text:
-        await send_audit_log(audit_text)
-    return True
-
-
-async def _send_stargazer_soothe(now, audit_text=None):
-    state["stargazer_last_action"] = "soothe"
-    state["stargazer_followup_due_at"] = 0
-    _schedule_next_stargazer_action(now + RETRY_MAX_SEC)
-    msg = await send_game_command(CMD_STARGAZER_SOOTHE, max_retry=1)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
-        _queue_stargazer_followup_action(sent_at, "soothe", retry_delay)
-        save_state()
-        await _audit_stargazer_unsent("安抚星辰", CMD_STARGAZER_SOOTHE)
-        return False
-    _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
-    save_state()
-    if audit_text:
-        await send_audit_log(audit_text)
-    return True
-
-
-async def _send_stargazer_collect(now, audit_text=None):
-    if _current_dim_slot_count() > 0:
-        return await _send_stargazer_panel(now, audit_text="🔭 仍有黯淡盘，收集前回查")
-
-    state["stargazer_last_action"] = "collect"
-    state["stargazer_followup_due_at"] = 0
-    _schedule_next_stargazer_action(now + RETRY_MAX_SEC)
-    msg = await send_game_command(CMD_STARGAZER_COLLECT, max_retry=1)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
-        _queue_stargazer_followup_action(sent_at, "collect", retry_delay)
-        save_state()
-        await _audit_stargazer_unsent("收集精华", CMD_STARGAZER_COLLECT)
-        return False
-    _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
-    save_state()
-    if audit_text:
-        await send_audit_log(audit_text)
-    return True
-
-
-async def _send_stargazer_guide(now, audit_text=None):
-    state["stargazer_last_action"] = "guide"
-    state["stargazer_followup_due_at"] = 0
-    _schedule_next_stargazer_action(now + RETRY_MAX_SEC)
-    guide_command = _build_stargazer_guide_command()
-    msg = await send_game_command(guide_command, max_retry=0)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
-        _queue_stargazer_followup_action(sent_at, "guide", retry_delay)
-        save_state()
-        await _audit_stargazer_unsent("牵引星辰", guide_command)
-        return False
-    _schedule_stargazer_timeout_panel_fallback(msg, sent_at)
-    save_state()
-    if audit_text:
-        await send_audit_log(audit_text)
-    return True
 
 
 def get_stargazer_status_text():
@@ -857,73 +717,6 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
     return True
 
 
-async def run_stargazer_scheduler(now):
-    if not state.get("stargazer_enabled"):
-        return
-    if is_cave_public_auto_enabled("stargazer"):
-        return
-
-    if _is_stargazer_miniapp_paused():
-        return
-
-    if _has_pending_stargazer_command():
-        return
-
-    if _stargazer_followup_due_blocks(now):
-        return
-
-    followup_due_at = _safe_float(state.get("stargazer_followup_due_at", 0), 0)
-    if followup_due_at > 0:
-        if now < followup_due_at:
-            return
-        queued_action = _get_queued_stargazer_action()
-        state["stargazer_followup_due_at"] = 0
-        state["stargazer_queued_action"] = ""
-        save_state()
-        if queued_action == "collect":
-            await _send_stargazer_collect(now)
-            return
-        if queued_action == "panel":
-            await _send_stargazer_panel(now)
-            return
-        if queued_action == "guide":
-            await _send_stargazer_guide(now)
-            return
-        if queued_action == "soothe":
-            await _send_stargazer_soothe(now)
-            return
-        next_panel_time = now + STARGAZER_LOST_FOLLOWUP_BACKOFF_SEC + random.uniform(30, 90)
-        _schedule_next_stargazer_action(next_panel_time)
-        state["stargazer_last_action"] = "lost_followup_action"
-        save_state()
-        await send_audit_log(
-            f"🧯 观星台队列动作丢失，停止立即回查，延后→{fmt_time_after(max(1, next_panel_time - now))}"
-        )
-        return
-
-    if _stargazer_next_panel_time_blocks(now):
-        return
-
-    next_panel_time = _safe_float(state.get("next_stargazer_panel_time", 0), 0)
-    if next_panel_time <= 0:
-        _schedule_next_stargazer_action(now)
-        save_state()
-        next_panel_time = now
-
-    if now >= next_panel_time:
-        state["stargazer_soothe_before_collect"] = False
-        await _queue_stargazer_action(now, "panel", audit_text="🌠 观星台到时，查面板")
-
-
-async def sync_stargazer_total_slots(send_as_id):
-    send_as_id = int(send_as_id)
-    msg = await send_game_command(CMD_STARGAZER_PANEL, track=False, send_as_id=send_as_id)
-    if not msg:
-        return False, "观星台同步发送失败"
-    track_reply_chain_message(msg.id, send_as_id, "stargazer_sync", root_msg_id=msg.id)
-    return True, f"已发送同步指令[{send_as_id}]，等待观星台回复"
-
-
 def handle_stargazer_sync_reply(text, now=None):
     parsed = _parse_stargazer_panel(text)
     if not parsed:
@@ -949,6 +742,4 @@ __all__ = [
     "handle_stargazer_soothe_reply",
     "handle_stargazer_sync_reply",
     "revoke_stargazer_miniapp_manual_run",
-    "run_stargazer_scheduler",
-    "sync_stargazer_total_slots",
 ]

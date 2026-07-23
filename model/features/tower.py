@@ -109,15 +109,9 @@ def _schedule_next_day(now):
     return schedule_next_tower_after_completion(now, persist=False)
 
 
-def _clear_legacy_waiting():
-    state["last_tower_msg_id"] = 0
-    state["tower_reply_due_at"] = 0
-
-
 def _mark_done_today(now):
     state["last_tower_day"] = get_day_key(now)
     state["tower_retry_count"] = 0
-    _clear_legacy_waiting()
     next_ts = _schedule_next_day(now)
     save_state()
     return next_ts
@@ -126,7 +120,6 @@ def _mark_done_today(now):
 def _set_failure_retry(now, *, entry_missing=False):
     retry_count = int(state.get("tower_retry_count", 0) or 0) + 1
     state["tower_retry_count"] = retry_count
-    _clear_legacy_waiting()
     if entry_missing:
         delay = TOWER_MINIAPP_ENTRY_RETRY_SEC
     else:
@@ -168,8 +161,7 @@ def get_tower_status_text():
 
 def _normalize_tower_schedule(now):
     next_ts, next_dirty = _read_timestamp("next_tower_time")
-    lease_ts, lease_dirty = _read_timestamp("tower_reply_due_at")
-    if next_dirty or lease_dirty:
+    if next_dirty:
         return next_ts, True
     if state.get("last_tower_day") == get_day_key(now):
         if next_ts <= now or get_day_key(next_ts) == get_day_key(now):
@@ -179,8 +171,6 @@ def _normalize_tower_schedule(now):
         schedule_next_tower(now, persist=False)
         mark_dirty()
         return float(state.get("next_tower_time", 0) or 0), True
-    if lease_ts > now:
-        return lease_ts, True
     if not _is_tower_window_time(next_ts):
         schedule_next_tower(now, persist=False)
         mark_dirty()
@@ -271,12 +261,10 @@ async def run_tower_scheduler(now):
         return
     if time.time() < _TOWER_UPSTREAM_CIRCUIT_UNTIL:
         state["next_tower_time"] = _TOWER_UPSTREAM_CIRCUIT_UNTIL
-        state["tower_reply_due_at"] = _TOWER_UPSTREAM_CIRCUIT_UNTIL
         mark_dirty()
         return
     lease_at = time.time() + TOWER_MINIAPP_RUN_LEASE_SEC
     state["last_tower_command_sent_at"] = time.time()
-    state["tower_reply_due_at"] = lease_at
     state["next_tower_time"] = lease_at
     save_state()
     if not _launch_tower_worker(identity_id, urls, scheduled_at=float(now or time.time())):

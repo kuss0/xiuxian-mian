@@ -112,7 +112,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_trial,
     run_cave_public_yuanying,
 )
-from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run, sync_stargazer_total_slots
+from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_runtime import (
     authorize_tree_miniapp_manual_run,
@@ -5694,14 +5694,6 @@ async def ui_set_second_soul_choice_config(send_as_id, *, auto_choice_enabled=No
     return True, f"已更新第二元神心魔抉择[{get_identity_display_name(send_as_id)}]：{'，'.join(changed)}"
 
 
-async def ui_sync_stargazer_total_slots(send_as_id):
-    send_as_id = int(send_as_id)
-    if send_as_id not in get_identity_ids():
-        return False, f"未知身份: {send_as_id}"
-    ok, message = await sync_stargazer_total_slots(send_as_id)
-    return ok, message
-
-
 async def ui_sync_tianti_status(send_as_id):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
@@ -9496,18 +9488,6 @@ async def handle_ui_http(reader, writer):
                             purge_threshold=payload.get("purge_threshold") if "purge_threshold" in payload else None,
                         )
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/stargazer-sync":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_sync_stargazer_total_slots(send_as_id)
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/tianti-sync":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -9749,7 +9729,6 @@ __all__ = [
     "ui_set_explore_rift_rebirth_config",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",
-    "ui_sync_stargazer_total_slots",
     "ui_sync_tianti_status",
     "ui_set_tianti_feature_enabled",
     "get_miniapp_status_snapshot",

@@ -131,6 +131,14 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "手动优先" in script
     assert "renderCommandCatalog" in script
     assert "data-miniapp-command-catalog" in script
+    assert "data-miniapp-tab" in script
+    assert "data-miniapp-view" in script
+    assert "renderMiniAppStateRecords" in script
+    assert "miniapp.state_records" in script
+    assert "运行概览" in script
+    assert "公共入口" in script
+    assert "玩法状态" in script
+    assert "诊断" in script
     assert "data-world-boss-window-skip" in script
     assert "window_skip_by_identity" in script
     assert 'data-cave-public-action="tianti_status"' in script

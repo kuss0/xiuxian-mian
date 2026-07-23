@@ -64,10 +64,8 @@ from .config import (
     CMD_USE_HEQI_DAN,
     CMD_EXCHANGE_HEQI_DAN_PREFIX,
     CMD_SECT_DONATE_LINGSHI_PREFIX,
-    CMD_TOWER,
     CMD_TREE_PULSE,
     CMD_TREE_PULSE_STATUS,
-    CMD_WILD_TRAINING,
     CMD_YINLUO_BANNER,
     CMD_YINLUO_BLOOD_FOREST,
     CMD_YINLUO_COLLECT,
@@ -161,14 +159,6 @@ ACTION_SPECS = {
         "retry_delay_ranges": ((2 * 60, 3 * 60),),
         "ttl_sec": 30 * 60,
     },
-    "wild_training": {
-        "commands": (CMD_WILD_TRAINING,),
-        "kind": ACTION_KIND_HIGH_RISK,
-        "label": "野外历练",
-        "max_attempts": 2,
-        "retry_delay_ranges": ((2 * 60, 3 * 60),),
-        "ttl_sec": 30 * 60,
-    },
     "second_soul_train": {
         "commands": (CMD_SECOND_SOUL_TRAIN,),
         "kind": ACTION_KIND_HIGH_RISK,
@@ -221,11 +211,6 @@ ACTION_SPECS = {
         "commands": (CMD_YUANYING, CMD_YUANYING_SECT_RETREAT),
         "kind": ACTION_KIND_HIGH_RISK,
         "label": "元婴",
-    },
-    "tower": {
-        "commands": (CMD_TOWER,),
-        "kind": ACTION_KIND_HIGH_RISK,
-        "label": "闯塔",
     },
     "tree_pulse_status": {
         "commands": (CMD_TREE_PULSE_STATUS,),
@@ -586,10 +571,8 @@ FAMILY_TO_ACTION_KEYS = {
     "pet_warm": ("pet_warm",),
     "pet_formation": ("pet_formation",),
     "ranch": ("ranch",),
-    "wild_training": ("wild_training",),
     "second_soul_train": ("second_soul_train",),
     "deep_retreat": ("deep_retreat", "deep_retreat_force_exit"),
-    "tower": ("tower",),
     "tree_panel": ("tree_pulse_status",),
     "tree_pulse": ("tree_pulse",),
     "yuanying": ("yuanying_launch",),
@@ -873,12 +856,8 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
     """Return True only when local runtime still has concrete reply/phase evidence."""
     now = float(now or 0)
     action_key = str(action_key or "").strip()
-    if action_key == "wild_training":
-        return _int_state(identity_state, "wild_training_reply_to_msg_id") > 0 and _float_state(identity_state, "wild_training_reply_due_at") > now
     if action_key == "ranch":
         return _int_state(identity_state, "ranch_reply_to_msg_id") > 0 and _float_state(identity_state, "ranch_reply_due_at") > now
-    if action_key == "tower":
-        return _int_state(identity_state, "last_tower_msg_id") > 0 and _float_state(identity_state, "tower_reply_due_at") > now
     if action_key == "concubine_dream":
         return _phase_is(identity_state, "concubine_phase", {"dream_pending"}) and _int_state(identity_state, "concubine_dream_msg_id") > 0
     if action_key == "concubine_tianji":

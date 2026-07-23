@@ -795,11 +795,6 @@
             '设置观星台需要牵引时优先选择的星种；留空表示不强行指定，由当前状态或默认策略决定。',
             '<label class="module-setting-field"><span>星种</span><select class="text-input stargazer-select" data-stargazer-star-choice="1">'+
             '<option value="">请选择</option>'+optionHtml(identity.stargazer_star_choices || [], identity.stargazer_star_choice)+'</select></label>'
-          )+
-          settingSection(
-            '星盘同步',
-            '主动读取一次观星台状态，用于修正星槽、星种等缓存信息；这是低频校准动作，不应连续点击。',
-            '<button type="button" class="btn btn-secondary" data-stargazer-sync="1">同步星盘</button>'
           );
       }else if(module.name === '登天阶'){
         var hasGangfeng = Number(identity.tianti_cycle_count || 0) >= 1;

@@ -340,7 +340,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 600, state_module.state["next_concubine_time"])
 
-    def test_initialize_wild_training_unknown_timer_uses_short_recovery_probe(self):
+    def test_initialize_wild_training_retires_command_anchor_and_schedules_initial_check(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
         with state_module.use_identity(send_as_id):
@@ -524,6 +524,17 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             state_module.state["wild_training_reply_to_msg_id"] = 123
             state_module.state["wild_training_reply_due_at"] = now + 300
             state_module.state["next_wild_training_time"] = 0
+            state_module.state["pending_tasks"] = {
+                123: {
+                    "cmd": ".野外历练 深入",
+                    "sent_at": now - 30,
+                    "retry": 0,
+                    "timeout": 10,
+                }
+            }
+            state_module.state["action_guard_sessions"] = {
+                "wild_training": {"action_key": "wild_training", "last_command": ".野外历练 深入"}
+            }
 
         with patch.object(control.random, "uniform", return_value=300):
             control.initialize_identity_runtime(send_as_id, now)
@@ -532,6 +543,8 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
             self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
+            self.assertEqual({}, state_module.state["pending_tasks"])
+            self.assertNotIn("wild_training", state_module.state["action_guard_sessions"])
 
     def test_action_guard_reconciles_hehuan_pending_deadline_for_retry(self):
         now = 1_700_000_000.0

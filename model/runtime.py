@@ -1383,13 +1383,11 @@ SEND_INTENT_FIELDS = ("source_module", "op_id", "chain_id", "delete_policy")
 REPLY_FAMILY_COMMANDS = {
     "checkin": {CMD_CHECKIN},
     "sect_teach": {CMD_SECT_TEACH},
-    "tower": {CMD_TOWER},
     "pet": {CMD_PET},
     "pet_warm": {CMD_PET_WARM},
     "pet_trial": {CMD_PET_TRIAL},
     "pet_formation": {CMD_PET_FORMATION},
     "ranch": {CMD_RANCH},
-    "wild_training": {CMD_WILD_TRAINING},
     "tree_panel": {CMD_TREE_WATER, CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS},
     "tree_miniapp": {".灵树"},
     "tree_pulse": {CMD_TREE_PULSE},
@@ -1509,8 +1507,17 @@ COMMAND_TO_REPLY_FAMILY = {
     for command in commands
 }
 
+
+def is_retired_miniapp_group_command(command):
+    """Return whether a persisted group command now belongs to MiniApp only."""
+    normalized = str(command or "").strip()
+    return (
+        normalized == CMD_TOWER
+        or normalized == CMD_WILD_TRAINING
+        or normalized.startswith(f"{CMD_WILD_TRAINING} ")
+    )
+
 RECOVERY_REPLY_FAMILY_HINTS = {
-    "wild_training": ("野外历练", "荒野深处", "山中灵机未复", "负伤而归", "灵机暗藏"),
     "explore_rift": ("探寻裂缝", "空间裂缝", "探寻成功", "激战得胜", "遭遇风暴", "不敌败退", "夺舍"),
     "yuanying": ("元婴", "出窍", "归窍", "法则碎片", "探寻"),
     "deep_retreat": ("深度闭关", "闭关", "闭关总结", "功成圆满", "神魂"),
@@ -1868,10 +1875,7 @@ def _get_special_tracked_message_family(identity_state, msg_id):
     tracked_id_families = (
         ("last_checkin_msg_id", "checkin"),
         ("last_sect_teach_msg_id", "sect_teach"),
-        ("last_tower_msg_id", "tower"),
         ("ranch_last_msg_id", "ranch"),
-        ("wild_training_reply_to_msg_id", "wild_training"),
-        ("wild_training_last_msg_id", "wild_training"),
         ("last_identity_info_msg_id", "identity_info"),
         ("stargazer_last_panel_msg_id", "stargazer_panel"),
         ("guanxing_last_query_msg_id", "guanxing_query"),
@@ -1930,7 +1934,7 @@ def _get_special_tracked_message_family(identity_state, msg_id):
     )
     for state_key, family in tracked_id_families:
         tracked_msg_id = int(identity_state.get(state_key, 0) or 0)
-        if family in {"yuanying", "deep_retreat", "tower"}:
+        if family in {"yuanying", "deep_retreat"}:
             tracked_msg_id = abs(tracked_msg_id)
         if msg_id == tracked_msg_id:
             return family
@@ -4417,7 +4421,6 @@ def _get_tracked_identity_message_ids(identity_state):
     tracked_ids = {
         int(identity_state.get("last_checkin_msg_id", 0) or 0),
         int(identity_state.get("last_sect_teach_msg_id", 0) or 0),
-        abs(int(identity_state.get("last_tower_msg_id", 0) or 0)),
         int(identity_state.get("last_identity_info_msg_id", 0) or 0),
         *(int(msg_id or 0) for msg_id in identity_state.get("identity_info_reply_msg_ids", [])),
     }
@@ -4625,9 +4628,9 @@ async def run_retry_scheduler(now, send_as_id=None):
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                 continue
-            if cmd == CMD_TOWER:
-                # The tower is a dwelling MiniApp workflow now.  Old persisted
-                # pending rows must be retired, never replayed into the group.
+            if is_retired_miniapp_group_command(cmd):
+                # These workflows moved to MiniApp. Retire old persisted rows
+                # without replaying a group command after restart/recovery.
                 with use_identity(identity_id) as identity_state:
                     if msg_id in identity_state["pending_tasks"]:
                         identity_state["pending_tasks"].pop(msg_id, None)

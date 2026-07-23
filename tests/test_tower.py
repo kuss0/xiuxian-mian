@@ -53,7 +53,7 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
             launch_mock.assert_called_once()
             self.assertEqual(identity_id, launch_mock.call_args.args[0])
             self.assertEqual(0, state_module.state["last_tower_msg_id"])
-            self.assertGreater(state_module.state["tower_reply_due_at"], now)
+            self.assertGreater(state_module.state["next_tower_time"], now)
 
     async def test_worker_marks_success_done_and_never_sends_text_command(self):
         identity_id = 8659059302

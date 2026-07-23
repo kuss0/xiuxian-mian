@@ -41,7 +41,7 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
             identity_state["wild_training_last_error"] = ""
             identity_state["tianxing_enabled"] = tianxing
 
-    def test_clear_state_removes_command_era_and_tianxing_pending(self):
+    def test_clear_state_does_not_make_legacy_reply_fields_runtime_inputs(self):
         self._enable()
         with state_module.use_identity(991201) as identity_state:
             identity_state["wild_training_reply_to_msg_id"] = 123
@@ -51,8 +51,8 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(991201), patch.object(wild_training, "mark_dirty"):
             wild_training.clear_wild_training_state(persist=False)
 
-        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
-        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(123, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(1_700_000_900.0, state_module.state["wild_training_reply_due_at"])
         self.assertEqual(0, state_module.state["wild_training_tianxing_prepare_retry_at"])
         self.assertEqual(0, state_module.state["next_wild_training_time"])
 
@@ -343,18 +343,18 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         unknown_mock.assert_not_called()
         self.assertEqual(now + 43_200, state_module.state["next_wild_training_time"])
 
-    async def test_phaseful_cleanup_only_clears_legacy_pending(self):
-        self._enable()
+    async def test_legacy_reply_fields_do_not_block_due_miniapp_run(self):
+        now = 1_700_000_000.0
+        self._enable(now=now)
         with state_module.use_identity(991201) as identity_state:
             identity_state["wild_training_reply_to_msg_id"] = 987
-            identity_state["wild_training_reply_due_at"] = 1_700_000_500.0
+            identity_state["wild_training_reply_due_at"] = now + 900
         with state_module.use_identity(991201), \
-                patch.object(wild_training, "save_state"), \
-                patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
-            changed = await wild_training.run_wild_training_phaseful_cleanup_scheduler(1_700_000_600.0)
-        self.assertTrue(changed)
-        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
-        send_mock.assert_not_awaited()
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=["https://t.me/example"]), \
+                patch.object(wild_training, "_launch_wild_training_miniapp_worker", return_value=True) as launch_mock, \
+                patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+        launch_mock.assert_called_once()
 
     async def test_malformed_timer_is_reinitialized_without_action(self):
         self._enable()

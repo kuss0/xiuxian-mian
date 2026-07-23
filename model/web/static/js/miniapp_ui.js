@@ -1,5 +1,7 @@
 (function () {
   var currentMiniAppSnapshot = null;
+  var activeMiniAppTab = 'overview';
+  var miniAppTabs = ['overview', 'entry', 'status', 'diagnostics'];
   // The public URL contains a short-lived token. Keep it only in this page's
   // memory so status refreshes do not discard it, but never persist it.
   var cavePublicUrlDraft = '';
@@ -60,6 +62,87 @@
     return esc(list.length ? list.join(', ') : (emptyText || '-'));
   }
 
+  function formatAge(seconds) {
+    var value = Math.max(0, Number(seconds || 0));
+    if (value < 60) return Math.round(value) + '秒前';
+    if (value < 3600) return Math.round(value / 60) + '分钟前';
+    if (value < 86400) return Math.round(value / 3600) + '小时前';
+    return Math.round(value / 86400) + '天前';
+  }
+
+  function flattenState(value, prefix, output, depth) {
+    if (output.length >= 8 || depth > 2 || value == null || value === '') return;
+    if (Array.isArray(value)) {
+      if (value.length) output.push((prefix || '列表') + '：' + value.slice(0, 5).join(', '));
+      return;
+    }
+    if (typeof value === 'object') {
+      Object.keys(value).forEach(function (key) {
+        if (output.length >= 8 || /digest|session/i.test(key)) return;
+        flattenState(value[key], prefix ? prefix + '.' + key : key, output, depth + 1);
+      });
+      return;
+    }
+    output.push((prefix || '值') + '：' + String(value));
+  }
+
+  function miniAppStateTone(row) {
+    var state = (row && row.state) || {};
+    var text = JSON.stringify(state).toLowerCase();
+    if (state.ok === false || state.error || /fail|error|异常|失败/.test(text)) return 'warn';
+    if (state.ok === true || state.completed === true || /complete|success|完成|已结算/.test(text)) return 'ok';
+    return 'neutral';
+  }
+
+  function renderMiniAppStateRecords(snapshot) {
+    snapshot = snapshot || {};
+    var rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
+    if (!rows.length) return '<div class="miniapp-empty">当前身份暂无玩法状态</div>';
+    return '<div class="miniapp-state-list">' + rows.map(function (row) {
+      var summary = [];
+      flattenState(row.state || {}, '', summary, 0);
+      var outputs = Array.isArray(row.outputs) ? row.outputs : [];
+      var replacements = Array.isArray(row.replaces_commands) ? row.replaces_commands : [];
+      return ''
+        + '<article class="miniapp-state-row">'
+        + '<div class="miniapp-state-head"><div><strong>' + esc(row.label || row.identity_id) + '</strong><span>' + esc(row.game_key || '-') + '</span></div>'
+        + '<div class="miniapp-item-meta">'
+        + badge(row.source || 'miniapp', miniAppStateTone(row))
+        + badge(formatAge(row.age_sec), 'neutral')
+        + '</div></div>'
+        + '<div class="miniapp-state-summary">' + esc(summary.join(' ｜ ') || '状态已记录') + '</div>'
+        + (outputs.length ? '<div class="miniapp-flow">成果：' + compactList(outputs) + '</div>' : '')
+        + (replacements.length ? '<div class="miniapp-flow">替代：' + compactList(replacements) + '</div>' : '')
+        + '<div class="miniapp-state-time">' + esc(row.updated_at_text || '-') + '</div>'
+        + '</article>';
+    }).join('') + '</div>';
+  }
+
+  function renderMiniAppTabs() {
+    var labels = {
+      overview: '运行概览',
+      entry: '公共入口',
+      status: '玩法状态',
+      diagnostics: '诊断'
+    };
+    return '<div class="miniapp-tabs" role="tablist">' + miniAppTabs.map(function (key) {
+      var active = key === activeMiniAppTab;
+      return '<button type="button" class="miniapp-tab' + (active ? ' is-active' : '') + '" data-miniapp-tab="' + key + '" role="tab" aria-selected="' + (active ? 'true' : 'false') + '">' + labels[key] + '</button>';
+    }).join('') + '</div>';
+  }
+
+  function activateMiniAppTab(tabKey) {
+    activeMiniAppTab = miniAppTabs.indexOf(tabKey) >= 0 ? tabKey : 'overview';
+    document.querySelectorAll('[data-miniapp-tab]').forEach(function (button) {
+      var active = button.getAttribute('data-miniapp-tab') === activeMiniAppTab;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-miniapp-view]').forEach(function (panel) {
+      panel.hidden = panel.getAttribute('data-miniapp-view') !== activeMiniAppTab;
+    });
+  }
+
   function renderAdapter(adapter, probeByKey, runByKey, planByKey) {
     var key = adapter.game_key || '';
     var probe = probeByKey[key] || null;
@@ -83,7 +166,7 @@
       + '<article class="miniapp-item">'
       + '<div class="miniapp-item-main">'
       + '<div class="miniapp-item-head"><strong>' + esc(adapter.label || key) + '</strong><span>' + esc(key) + '</span></div>'
-      + '<div class="miniapp-item-meta">'
+      + '<div class="miniapp-item-meta miniapp-form-wide">'
       + badge(adapter.default_enabled ? '默认开' : '默认关', adapter.default_enabled ? 'warn' : 'ok')
       + badge(adapter.manual_only ? '手动' : '调度', adapter.manual_only ? 'ok' : 'warn')
       + badge(adapter.ui_group_label || 'MiniApp合集', adapter.ui_group === 'sect' ? 'neutral' : 'ok')
@@ -142,9 +225,11 @@
       + badge(dailyStatus, daily.phase === 'completed' ? 'ok' : 'neutral')
       + (runningText ? badge(runningText, 'warn') : '')
       + '</div>'
+      + '<div class="miniapp-score-fields miniapp-form-wide">'
       + '<label><span>跳一跳</span><input type="number" min="' + esc(jumpMin) + '" max="' + esc(jumpMax) + '" step="1" data-tree-score-input="jump" value="' + esc(targetScoreValue(tree, 'jump')) + '"></label>'
       + '<label><span>飞一飞</span><input type="number" min="' + esc(flyMin) + '" max="' + esc(flyMax) + '" step="1" data-tree-score-input="fly" value="' + esc(targetScoreValue(tree, 'fly')) + '"></label>'
-      + '<div class="miniapp-item-actions">'
+      + '</div>'
+      + '<div class="miniapp-item-actions miniapp-form-actions">'
       + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-score-save="1">保存分数</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-tree-auto-save="1">保存自动开关</button>'
       + '</div>'
@@ -279,7 +364,7 @@
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="stargazer"' + (automation.cave_public_stargazer_enabled ? ' checked' : '') + '><span>观星台</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="yuanying"' + (automation.cave_public_yuanying_enabled ? ' checked' : '') + '><span>元婴</span></label>'
       + '</div>'
-      + '<div class="miniapp-score-title"><strong>频道钓鱼白名单</strong><span>仅走公共入口，不发送群命令</span></div>'
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>频道钓鱼白名单</strong><span>仅走公共入口，不发送群命令</span></div>'
       + fishingCandidateHtml
       + '<div class="miniapp-cave-batch-status">'
       + badge(status, running ? 'warn' : 'neutral')
@@ -327,9 +412,9 @@
       + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行</span></div>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-enabled="1"' + (automation.world_boss_auto_enabled ? ' checked' : '') + '><span>自动参与</span></label>'
       + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
-      + '<div class="miniapp-score-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'
       + '<div class="miniapp-cave-switches">' + candidateHtml + '</div>'
-      + '<div class="miniapp-item-actions"><button type="button" class="btn btn-secondary btn-compact" data-world-boss-config-save="1">保存设置</button></div>'
+      + '<div class="miniapp-item-actions miniapp-form-actions"><button type="button" class="btn btn-secondary btn-compact" data-world-boss-config-save="1">保存设置</button></div>'
       + '</section>';
   }
 
@@ -354,17 +439,30 @@
     var globalRate = policy.global_rate_limit || {};
     var scoreControls = miniapp.score_controls || {};
     var automation = miniapp.automation || {};
+    var stateRecords = miniapp.state_records || {};
+    var caveBatch = miniapp.cave_public_batch || {};
     var batchButtons = renderBatchButtons(miniapp.batch_run_commands);
     var trialDailyEffective = !!automation.trial_daily_effective_enabled;
     var autoText = trialDailyEffective
       ? '试炼自动 ' + (automation.trial_daily_window_text || '--')
       : '试炼自动关闭';
     var autoDoneText = automation.trial_daily_done_today ? '今日已跑' : (automation.trial_daily_in_window ? '窗口内待跑' : '等待窗口');
+    var batchText = caveBatch.running
+      ? '运行中 ' + Number(caveBatch.completed || 0) + '/' + Number(caveBatch.total || 0)
+      : (caveBatch.batch_id ? '最近 ' + Number(caveBatch.completed || 0) + '/' + Number(caveBatch.total || 0) : '未运行');
     body.innerHTML = ''
       + '<div class="miniapp-toolbar">'
       + '<div id="miniapp-status-line" class="form-label form-label-inline">身份：' + esc(selectedIdentityId() || '未选择') + '</div>'
-      + batchButtons
-      + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-refresh="1">刷新</button>'
+      + '<div class="miniapp-toolbar-actions">' + batchButtons
+      + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-refresh="1">刷新</button></div>'
+      + '</div>'
+      + renderMiniAppTabs()
+      + '<section class="miniapp-view" data-miniapp-view="overview">'
+      + '<div class="miniapp-overview-grid">'
+      + '<div class="miniapp-overview-stat"><span>已记录玩法</span><strong>' + esc(stateRecords.record_count || 0) + '</strong></div>'
+      + '<div class="miniapp-overview-stat"><span>公共入口</span><strong>' + esc(automation.cave_public_entry_url_count || 0) + '</strong></div>'
+      + '<div class="miniapp-overview-stat"><span>入口批次</span><strong>' + esc(batchText) + '</strong></div>'
+      + '<div class="miniapp-overview-stat"><span>请求窗口</span><strong>' + esc(globalRate.request_count || 0) + '/' + esc(globalRate.limit || 90) + '</strong></div>'
       + '</div>'
       + '<div class="miniapp-policy">'
       + badge(policy.default_enabled ? '默认启用' : '默认关闭', policy.default_enabled ? 'warn' : 'ok')
@@ -375,16 +473,26 @@
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + badge('全局请求 ' + esc(globalRate.request_count || 0) + '/' + esc(globalRate.limit || 90) + '·60s', globalRate.priority_active ? 'warn' : 'neutral')
       + '</div>'
-      + renderCommandCatalog(miniapp.command_catalog, miniapp.command_catalog_validation)
-      + renderCavePublicControls(automation, miniapp.cave_public_batch || {})
       + renderWorldBossControls(automation)
       + renderTreeScoreControls(scoreControls)
+      + '</section>'
+      + '<section class="miniapp-view" data-miniapp-view="entry" hidden>'
+      + renderCavePublicControls(automation, caveBatch)
+      + '</section>'
+      + '<section class="miniapp-view" data-miniapp-view="status" hidden>'
+      + '<div class="miniapp-section-head"><strong>当前身份玩法状态</strong><span>' + esc(stateRecords.record_count || 0) + ' 条</span></div>'
+      + renderMiniAppStateRecords(stateRecords)
+      + '</section>'
+      + '<section class="miniapp-view" data-miniapp-view="diagnostics" hidden>'
+      + renderCommandCatalog(miniapp.command_catalog, miniapp.command_catalog_validation)
       + '<div class="miniapp-list">'
       + (adapters.length ? groups.map(function (group) {
         return renderAdapterGroup(group, adapters, probeByKey, runByKey, plans);
       }).join('') : '<div class="miniapp-empty">暂无 MiniApp registry</div>')
       + '</div>'
-      + '<div id="miniapp-capture-panel" class="miniapp-capture-panel"><div class="miniapp-empty">选择玩法查看协议摘要</div></div>';
+      + '<div id="miniapp-capture-panel" class="miniapp-capture-panel"><div class="miniapp-empty">选择玩法查看协议摘要</div></div>'
+      + '</section>';
+    activateMiniAppTab(activeMiniAppTab);
   }
 
   async function refreshMiniAppStatus() {
@@ -709,6 +817,11 @@
     }
     if (event.target.closest('[data-miniapp-refresh]')) {
       refreshMiniAppStatus();
+      return;
+    }
+    var tabBtn = event.target.closest('[data-miniapp-tab]');
+    if (tabBtn) {
+      activateMiniAppTab(tabBtn.getAttribute('data-miniapp-tab'));
       return;
     }
     var batchBtn = event.target.closest('[data-miniapp-batch-run]');

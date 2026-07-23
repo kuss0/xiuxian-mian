@@ -462,38 +462,6 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual({}, state_module.state["pending_tasks"])
 
-    def test_global_recovery_clears_orphan_wild_training_module_pending(self):
-        now = 1_700_000_000.0
-        send_as_id = 990327
-        state_module.ensure_identity_registered(send_as_id)
-        state_module.update_send_as_profile(send_as_id, enabled=True)
-        with state_module.use_identity(send_as_id):
-            state_module.state["wild_training_reply_to_msg_id"] = 777
-            state_module.state["wild_training_reply_due_at"] = now - 60
-            state_module.state["wild_training_retry_count"] = 0
-            state_module.state["wild_training_last_msg_id"] = 777
-            state_module.state["wild_training_last_result"] = "已发送：谨慎"
-            state_module.state["wild_training_last_error"] = ""
-            state_module.state["next_wild_training_time"] = now - 30
-            state_module.state["pending_tasks"] = {}
-
-        with (
-            patch.object(control.random, "uniform", return_value=600),
-            patch.object(control, "mark_dirty") as dirty_mock,
-            patch.object(control, "console_log"),
-        ):
-            changed = control.clear_transient_send_failures_for_global_recovery(now)
-
-        self.assertEqual(1, changed)
-        dirty_mock.assert_called()
-        with state_module.use_identity(send_as_id):
-            self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
-            self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
-            self.assertEqual(0, state_module.state["wild_training_retry_count"])
-            self.assertGreater(state_module.state["next_wild_training_time"], now)
-            self.assertIn("原消息ID=777", state_module.state["wild_training_last_result"])
-            self.assertIn("不补发旧命令", state_module.state["wild_training_last_error"])
-
     def test_global_recovery_keeps_fresh_pending(self):
         now = 1_700_000_000.0
         send_as_id = 990322

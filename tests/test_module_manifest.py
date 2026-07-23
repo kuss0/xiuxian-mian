@@ -153,26 +153,30 @@ class ModuleManifestTests(unittest.TestCase):
 
         self.assertEqual([], missing)
 
-    def test_active_manifest_reply_families_are_runtime_command_routable_or_passive_only(self):
+    def test_active_manifest_reply_families_are_runtime_routable_or_non_command_only(self):
         from model import runtime
 
-        passive_only_families = {
+        non_command_families = {
             # These are real local-text observations that come from another
             # command or a passive game broadcast, not from sending the family.
             "tianxing_modifier",
             "tianxing_retreat",
             "yinluo_retreat",
             "dungeon_join",
+            # Historical fixture aliases retained after the workflows moved
+            # to MiniApp. Runtime no longer sends or routes the group commands.
+            "tower",
+            "wild_training",
         }
         missing = sorted(
             family
             for manifest in module_manifest.iter_module_manifests(include_archived=False)
             for family in tuple(manifest.reply_families or ())
-            if family not in runtime.REPLY_FAMILY_COMMANDS and family not in passive_only_families
+            if family not in runtime.REPLY_FAMILY_COMMANDS and family not in non_command_families
         )
 
         self.assertEqual([], missing)
-        for family in passive_only_families:
+        for family in non_command_families:
             self.assertTrue(module_manifest.get_module_name_for_reply_family(family), family)
             self.assertNotIn(family, runtime.REPLY_FAMILY_COMMANDS)
 

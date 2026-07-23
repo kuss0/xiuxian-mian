@@ -268,6 +268,7 @@ from .runtime import (
     flush_low_priority_audit_summary,
     get_audit_push_status_text,
     get_game_send_queue_snapshot,
+    is_retired_miniapp_group_command,
     get_low_priority_audit_pending_counts,
     console_log,
     issue_ui_login_token,
@@ -564,8 +565,6 @@ def _has_fresh_tianti_recovery_status(now):
 def _has_released_tianxing_explore_downstream(now):
     if not state.get("tianxing_enabled"):
         return False
-    if _state_positive_int("wild_training_reply_to_msg_id"):
-        return False
     observation = state.get("tianxing_observation") if isinstance(state.get("tianxing_observation"), dict) else {}
     timeline = state.get("tianxing_timeline_state") if isinstance(state.get("tianxing_timeline_state"), dict) else {}
     if str(timeline.get("phase") or "").strip() != "downstream_released":
@@ -590,8 +589,6 @@ def _has_released_tianxing_explore_downstream(now):
 
 def _has_tianxing_wild_training_route_pressure(now):
     if not state.get("tianxing_enabled"):
-        return False
-    if _state_positive_int("wild_training_reply_to_msg_id"):
         return False
     observation = state.get("tianxing_observation") if isinstance(state.get("tianxing_observation"), dict) else {}
     timeline = state.get("tianxing_timeline_state") if isinstance(state.get("tianxing_timeline_state"), dict) else {}
@@ -619,8 +616,6 @@ def _has_tianxing_wild_training_route_pressure(now):
 
 def _has_expired_tianxing_craft_prediction_wait(now):
     if not state.get("tianxing_enabled"):
-        return False
-    if _state_positive_int("wild_training_reply_to_msg_id"):
         return False
     observation = state.get("tianxing_observation") if isinstance(state.get("tianxing_observation"), dict) else {}
     if str(observation.get("current_prediction") or "").strip() != "炼制":
@@ -708,7 +703,7 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
             retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         except (TypeError, ValueError, OverflowError):
             retry_count = 0
-        if retry_count > 0 and not _state_positive_int("wild_training_reply_to_msg_id"):
+        if retry_count > 0:
             return now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
         return now + random.uniform(WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC, WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC)
 
@@ -1065,58 +1060,6 @@ def _clear_stale_pending_tasks_for_global_recovery(now):
     return removed_count
 
 
-def _clear_stale_module_pendings_for_global_recovery(now):
-    """Clear module-owned pending anchors left without pending_tasks after a pause."""
-    removed_count = 0
-    affected_identity_ids = set()
-    action_close_requests = []
-
-    for identity_id in get_identity_ids():
-        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
-            continue
-        current_removed = 0
-        with use_identity(identity_id):
-            wild_msg_id = _pending_msg_id_value(state.get("wild_training_reply_to_msg_id"))
-            try:
-                wild_due_at = float(state.get("wild_training_reply_due_at", 0) or 0)
-            except (TypeError, ValueError, OverflowError):
-                wild_due_at = 0.0
-            if wild_msg_id > 0 and wild_due_at > 0 and float(now) >= wild_due_at + RECOVERY_STALE_PENDING_GRACE_SEC:
-                state["wild_training_reply_to_msg_id"] = 0
-                state["wild_training_reply_due_at"] = 0
-                state["wild_training_retry_count"] = 0
-                state["wild_training_last_result"] = f"全局恢复清理：野外历练结果未确认，原消息ID={wild_msg_id}"
-                state["wild_training_last_result_at"] = float(now)
-                state["wild_training_last_error"] = "全局恢复清理旧野外历练等待，未确认结算，不补发旧命令。"
-                if float(state.get("next_wild_training_time", 0) or 0) <= now:
-                    state["next_wild_training_time"] = _spread_recovery_timer_value(
-                        "next_wild_training_time",
-                        now,
-                        now + RECOVERY_SPREAD_MAX_SEC,
-                    )
-                current_removed += 1
-        if current_removed <= 0:
-            continue
-        removed_count += current_removed
-        affected_identity_ids.add(int(identity_id))
-        action_close_requests.append((int(identity_id), "wild_training"))
-
-    action_keys_by_identity = {}
-    for identity_id, action_key in action_close_requests:
-        action_keys_by_identity.setdefault(identity_id, set()).add(action_key)
-    for identity_id, action_keys in action_keys_by_identity.items():
-        close_action_guard_actions(action_keys, send_as_id=identity_id, reason="stale_module_pending_global_recovery")
-
-    if removed_count > 0:
-        mark_dirty()
-        console_log(
-            f"🧹 全局恢复清障：{len(affected_identity_ids)} 个身份 / {removed_count} 个模块残留 pending 已清理，避免恢复后补旧命令",
-            scope="global",
-            limit=240,
-        )
-    return removed_count
-
-
 def clear_transient_send_failures_for_global_recovery(now=None):
     """全局熔断恢复前清掉暂停期造成的发送失败假状态，并错峰重试。"""
     if now is None:
@@ -1156,7 +1099,6 @@ def clear_transient_send_failures_for_global_recovery(now=None):
                 changed_count += 1
                 affected_identity_ids.add(int(identity_id))
     pending_removed = _clear_stale_pending_tasks_for_global_recovery(now)
-    module_pending_removed = _clear_stale_module_pendings_for_global_recovery(now)
     if changed_count > 0:
         mark_dirty()
         console_log(
@@ -1164,7 +1106,7 @@ def clear_transient_send_failures_for_global_recovery(now=None):
             scope="global",
             limit=240,
         )
-    return changed_count + pending_removed + module_pending_removed
+    return changed_count + pending_removed
 
 
 def get_module_unavailable_reason(module_name, send_as_id=None):
@@ -1749,8 +1691,6 @@ def _manual_enable_sect_teach_module_state(now):
 def _manual_disable_tower_module_state():
     state["tower_enabled"] = False
     state["next_tower_time"] = 0
-    state["last_tower_msg_id"] = 0
-    state["tower_reply_due_at"] = 0
     state["tower_retry_count"] = 0
     _clear_pending_tasks_by_commands({CMD_TOWER})
 
@@ -2131,8 +2071,6 @@ def _set_tower_module_enabled(enabled, now):
         day_key = get_day_key(now)
         if state["last_tower_day"] != day_key:
             state["last_tower_day"] = ""
-            state["last_tower_msg_id"] = 0
-            state["tower_reply_due_at"] = 0
             state["tower_retry_count"] = 0
         if state["last_tower_day"] == day_key:
             schedule_next_tower_after_completion(now, persist=False)
@@ -2142,8 +2080,6 @@ def _set_tower_module_enabled(enabled, now):
             _schedule_module_next_window_after_enable("闯塔", now)
         return
     state["next_tower_time"] = 0
-    state["last_tower_msg_id"] = 0
-    state["tower_reply_due_at"] = 0
     state["tower_retry_count"] = 0
     _clear_pending_tasks_by_commands({CMD_TOWER})
 
@@ -3110,7 +3046,6 @@ RUNTIME_HEALTH_ERROR_KEYS = [
 ]
 
 RUNTIME_HEALTH_PHASE_KEYS = [
-    ("wild_training_reply_to_msg_id", "野外历练待回复", "wild_training_enabled"),
     ("small_world_phase", "小世界", "small_world_enabled"),
     ("taiyi_phase", "太一", "taiyi_enabled"),
     ("concubine_phase", "侍妾", "concubine_enabled"),
@@ -4079,8 +4014,6 @@ def _restore_tower_runtime(now):
         return
 
     state["last_tower_day"] = ""
-    state["last_tower_msg_id"] = 0
-    state["tower_reply_due_at"] = 0
     state["tower_retry_count"] = 0
     _set_tower_module_enabled(True, now)
 
@@ -4407,6 +4340,37 @@ def _clear_disabled_passive_observations():
         mark_dirty()
 
 
+def _retire_legacy_miniapp_command_state():
+    """Drop one-way command-era anchors without touching MiniApp timers/results."""
+    changed = False
+    for field in (
+        "wild_training_reply_to_msg_id",
+        "wild_training_reply_due_at",
+        "wild_training_last_msg_id",
+        "last_tower_msg_id",
+        "tower_reply_due_at",
+    ):
+        if state.get(field):
+            state[field] = 0
+            changed = True
+
+    pending_tasks = state.get("pending_tasks") if isinstance(state.get("pending_tasks"), dict) else {}
+    for msg_id, pending in list(pending_tasks.items()):
+        if is_retired_miniapp_group_command(get_pending_command(pending)):
+            pending_tasks.pop(msg_id, None)
+            changed = True
+
+    sessions = state.get("action_guard_sessions") if isinstance(state.get("action_guard_sessions"), dict) else {}
+    for action_key in ("wild_training", "tower"):
+        if action_key in sessions:
+            sessions.pop(action_key, None)
+            changed = True
+
+    if changed:
+        mark_dirty()
+    return changed
+
+
 
 def initialize_identity_runtime(send_as_id, now=None):
     send_as_id = int(send_as_id)
@@ -4415,6 +4379,7 @@ def initialize_identity_runtime(send_as_id, now=None):
     if not get_identity_enabled(send_as_id):
         return
     with use_identity(send_as_id):
+        _retire_legacy_miniapp_command_state()
         _clear_disabled_passive_observations()
         if state["tree_enabled"] and is_module_archived("灵树"):
             _disable_tree_module_state()
@@ -4429,8 +4394,6 @@ def initialize_identity_runtime(send_as_id, now=None):
         if state.get("ranch_enabled") and state.get("next_ranch_time", 0) <= 0:
             schedule_ranch_initial_check(now, persist=False, keep_last_error=True)
         if state.get("wild_training_enabled") and state.get("next_wild_training_time", 0) <= 0:
-            state["wild_training_reply_to_msg_id"] = 0
-            state["wild_training_reply_due_at"] = 0
             state["wild_training_retry_count"] = 0
             state["next_wild_training_time"] = now + random.uniform(
                 WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,

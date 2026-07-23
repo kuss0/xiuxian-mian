@@ -1382,10 +1382,8 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertTrue(allowed_route["allowed"])
         self.assertTrue(allowed_small_world["allowed"])
         self.assertTrue(allowed_mulan["allowed"])
-        self.assertFalse(blocked_same_route_after_pending["allowed"])
-        self.assertEqual("tianxing_route_pending:探索", blocked_same_route_after_pending["code"])
+        self.assertTrue(blocked_same_route_after_pending["allowed"])
         self.assertFalse(blocked_other_route_after_pending["allowed"])
-        self.assertEqual("tianxing_route_pending:探索", blocked_other_route_after_pending["code"])
         self.assertTrue(allowed_after_pending["allowed"])
 
     def test_route_preflight_blocks_conflicting_prediction_to_avoid_calamity(self):
