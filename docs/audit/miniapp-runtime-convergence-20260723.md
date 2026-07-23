@@ -39,6 +39,10 @@ results, replacement commands, entry health, global request budget, and adapter
 diagnostics. Desktop and mobile layouts use the existing console form language,
 compact checkboxes, bounded modal scrolling, and no horizontal overflow.
 
+The base UI bundle no longer contains the retired stargazer sync button, its
+missing API call, or its click handler. This prevents the legacy control from
+appearing during the initial render before the module-card override loads.
+
 ## Verification
 
 - Full test suite: `3272 passed, 405 subtests passed` after final UI polish.

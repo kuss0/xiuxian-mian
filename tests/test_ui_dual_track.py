@@ -324,6 +324,17 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "打开名称设置" not in script
 
 
+def test_legacy_stargazer_sync_ui_is_absent():
+    app_script = (PROJECT_ROOT / "model/web/static/js/app.js").read_text(encoding="utf-8")
+    module_script = (PROJECT_ROOT / "model/web/static/js/module_cards_ui.js").read_text(encoding="utf-8")
+
+    for script in (app_script, module_script):
+        assert "data-stargazer-sync" not in script
+        assert "/api/stargazer-sync" not in script
+        assert "syncStargazerSlots" not in script
+        assert "同步星盘" not in script
+
+
 def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     css = (PROJECT_ROOT / "model/web/static/css/ui_fixes.css").read_text(encoding="utf-8")
     new_css = (PROJECT_ROOT / "model/web_new/static/css/app.css").read_text(encoding="utf-8")
