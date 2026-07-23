@@ -19,10 +19,16 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        duel._DUEL_LOG_RECONCILE_RUNTIME.clear()
+        duel._DUEL_PREDICTION_RECONCILE_CACHE.clear()
+        duel._invalidate_duel_day_log_cache()
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        duel._DUEL_LOG_RECONCILE_RUNTIME.clear()
+        duel._DUEL_PREDICTION_RECONCILE_CACHE.clear()
+        duel._invalidate_duel_day_log_cache()
         super().tearDown()
 
     def _prepare_identity(self, identity_id=8659059191, *, realm="元婴后期", xiuwei_current=700000):
@@ -1163,7 +1169,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 "text": "【天道战报·文字版】\n攻方：@walterwa2000\n🏁 终局结算",
             }
             with (
-                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "_duel_day_log_entries", return_value=[report]),
                 patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(duel, "save_state"),
                 patch.object(duel, "console_log"),
@@ -1208,7 +1214,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 "text": "【天道战报·文字版】\n攻方：@walterwa2000\n【推命命中】司命演算吻合\n🏁 终局结算",
             }
             with (
-                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "_duel_day_log_entries", return_value=[report]),
                 patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(duel, "save_state"),
                 patch.object(duel, "console_log"),
@@ -1968,7 +1974,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             }
 
             with (
-                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "_duel_day_log_entries", return_value=[report]),
                 patch.object(duel, "console_log") as console_mock,
                 patch.object(duel, "save_state") as save_mock,
             ):
@@ -2010,7 +2016,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 ),
             }
             with (
-                patch.object(duel, "find_message_log_message", return_value=report),
+                patch.object(duel, "_duel_day_log_entries", return_value=[report]),
                 patch.object(duel, "console_log"),
                 patch.object(duel, "save_state"),
             ):
@@ -2022,6 +2028,127 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", observed["current_prediction"])
         self.assertEqual("斗法", observed["prediction_consumed_route"])
         self.assertEqual(report_at, observed["prediction_consumed_at"])
+
+    def test_reconcile_consumed_prediction_dedupes_same_signature(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["duel_last_msg_id"] = 7790
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+            }
+            with (
+                patch.object(duel, "_duel_day_log_entries", return_value=[]) as day_log_mock,
+                patch.object(duel, "find_message_log_message") as full_scan_mock,
+            ):
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now))
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now + 1))
+
+        day_log_mock.assert_called_once()
+        full_scan_mock.assert_not_called()
+
+    def test_reconcile_consumed_prediction_signature_change_invalidates_cache(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["duel_last_msg_id"] = 7791
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+            }
+            with patch.object(duel, "_duel_day_log_entries", return_value=[]) as day_log_mock:
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now))
+                state_module.state["duel_last_msg_id"] = 7792
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now + 1))
+                observed = dict(state_module.state["tianxing_observation"])
+                observed["current_prediction_set_at"] = now - 60
+                state_module.state["tianxing_observation"] = observed
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now + 2))
+
+        self.assertEqual(3, day_log_mock.call_count)
+
+    def test_reconcile_consumed_prediction_accepts_late_report_after_cached_miss(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        report_at = now + duel.DUEL_PREDICTION_RECONCILE_CACHE_TTL_SEC
+        report = {
+            "message_id": 7793,
+            "chat_id": state_module.get_game_group_id(),
+            "ts_epoch": report_at,
+            "text": "【天道战报·文字版】\n攻方：@walterwa2000\n【推命命中】司命演算吻合\n🏁 终局结算",
+        }
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["duel_last_msg_id"] = 7793
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+            }
+            with (
+                patch.object(duel, "_duel_day_log_entries", side_effect=[[], [report]]) as day_log_mock,
+                patch.object(duel, "save_state"),
+                patch.object(duel, "console_log"),
+            ):
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now))
+                self.assertFalse(duel._reconcile_consumed_duel_prediction_from_last_report(now + 1))
+                self.assertTrue(
+                    duel._reconcile_consumed_duel_prediction_from_last_report(
+                        now + duel.DUEL_PREDICTION_RECONCILE_CACHE_TTL_SEC
+                    )
+                )
+
+            observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        self.assertEqual(2, day_log_mock.call_count)
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("斗法", observed["prediction_consumed_route"])
+        self.assertEqual(report_at, observed["prediction_consumed_at"])
+
+    def test_log_reconcile_unchanged_evidence_does_not_dirty_persistence(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        day_key = duel._duel_day_key(now)
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_log_reconcile_day"] = day_key
+            state_module.state["duel_log_reconcile_at"] = now - 3600
+            state_module.state["duel_observed_completed_count"] = 0
+            state_module.state["duel_observed_manual_count"] = 0
+            state_module.state["duel_observed_mind_remaining"] = -1
+            state_module.state["duel_observed_last_command_msg_id"] = 0
+            with (
+                patch.object(duel, "_duel_day_log_entries", return_value=[]),
+                patch.object(duel, "mark_dirty") as dirty_mock,
+            ):
+                changed = duel.reconcile_duel_from_message_log(now, force=True)
+
+            reconcile_at = state_module.state["duel_log_reconcile_at"]
+
+        self.assertFalse(changed)
+        self.assertEqual(now - 3600, reconcile_at)
+        dirty_mock.assert_not_called()
+
+    def test_log_reconcile_runtime_throttle_skips_repeated_scan(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        day_key = duel._duel_day_key(now)
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_log_reconcile_day"] = day_key
+            state_module.state["duel_log_reconcile_at"] = now - 3600
+            state_module.state["duel_observed_completed_count"] = 0
+            state_module.state["duel_observed_manual_count"] = 0
+            state_module.state["duel_observed_mind_remaining"] = -1
+            state_module.state["duel_observed_last_command_msg_id"] = 0
+            with patch.object(duel, "_duel_day_log_entries", return_value=[]) as day_log_mock:
+                self.assertFalse(duel.reconcile_duel_from_message_log(now))
+                self.assertFalse(duel.reconcile_duel_from_message_log(now + 1))
+
+        day_log_mock.assert_called_once()
 
     async def test_scheduler_requests_tianxing_timeline_before_due_duel(self):
         identity_id = self._prepare_identity()

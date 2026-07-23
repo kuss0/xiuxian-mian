@@ -139,6 +139,9 @@ RE_DUEL_TARGET_WINS_REMAINING = re.compile(r"对此人剩余胜场[:：]\s*(?P<r
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
+DUEL_LOG_RECONCILE_INTERVAL_SEC = 30
+DUEL_PREDICTION_RECONCILE_CACHE_TTL_SEC = 15
+DUEL_PREDICTION_RECONCILE_CACHE_MAX = 128
 DUEL_LOADOUT_RECOVERY_LOOKBACK_SEC = 24 * 3600
 DUEL_LOADOUT_REPLY_TIMEOUT_SEC = 120
 DUEL_LOADOUT_STEP_DELAY_SEC = 8
@@ -175,6 +178,8 @@ DUEL_CONTROLLED_LOADOUTS = {
 }
 RE_CURRENT_EQUIPPED = re.compile(r"^当前祭出[：:]\s*(?P<items>.+)$", re.M)
 _DUEL_DAY_LOG_CACHE = {"day": "", "refreshed_at": 0.0, "entries": []}
+_DUEL_LOG_RECONCILE_RUNTIME = {}
+_DUEL_PREDICTION_RECONCILE_CACHE = {}
 
 
 def _parse_int(value):
@@ -955,6 +960,86 @@ def _invalidate_duel_day_log_cache():
     _DUEL_DAY_LOG_CACHE.update(day="", refreshed_at=0.0, entries=[])
 
 
+def _claim_duel_log_reconcile(now, day_key, *, force=False):
+    identity_id = int(get_current_identity_id() or 0)
+    if force:
+        _DUEL_LOG_RECONCILE_RUNTIME[identity_id] = {"day": day_key, "at": float(now)}
+        return True
+
+    runtime = _DUEL_LOG_RECONCILE_RUNTIME.get(identity_id) or {}
+    if (
+        str(runtime.get("day") or "") == day_key
+        and float(now) - float(runtime.get("at") or 0) < DUEL_LOG_RECONCILE_INTERVAL_SEC
+    ):
+        return False
+
+    persisted_at = float(state.get("duel_log_reconcile_at", 0) or 0)
+    if (
+        str(state.get("duel_log_reconcile_day") or "") == day_key
+        and float(now) - persisted_at < DUEL_LOG_RECONCILE_INTERVAL_SEC
+    ):
+        _DUEL_LOG_RECONCILE_RUNTIME[identity_id] = {"day": day_key, "at": persisted_at}
+        return False
+
+    _DUEL_LOG_RECONCILE_RUNTIME[identity_id] = {"day": day_key, "at": float(now)}
+    return True
+
+
+def _cache_duel_prediction_reconcile(identity_id, signature, now):
+    identity_id = int(identity_id or 0)
+    if (
+        identity_id not in _DUEL_PREDICTION_RECONCILE_CACHE
+        and len(_DUEL_PREDICTION_RECONCILE_CACHE) >= DUEL_PREDICTION_RECONCILE_CACHE_MAX
+    ):
+        oldest_identity = min(
+            _DUEL_PREDICTION_RECONCILE_CACHE,
+            key=lambda key: float((_DUEL_PREDICTION_RECONCILE_CACHE.get(key) or {}).get("checked_at") or 0),
+        )
+        _DUEL_PREDICTION_RECONCILE_CACHE.pop(oldest_identity, None)
+    _DUEL_PREDICTION_RECONCILE_CACHE[identity_id] = {
+        "signature": signature,
+        "checked_at": float(now),
+    }
+
+
+def _find_consuming_duel_report(last_msg_id, set_at, now):
+    identity_id = int(get_current_identity_id() or 0)
+    signature = (int(last_msg_id or 0), float(set_at or 0))
+    cached = _DUEL_PREDICTION_RECONCILE_CACHE.get(identity_id) or {}
+    if (
+        cached.get("signature") == signature
+        and float(now) - float(cached.get("checked_at") or 0) < DUEL_PREDICTION_RECONCILE_CACHE_TTL_SEC
+    ):
+        return None
+
+    report = None
+    for entry in reversed(_duel_day_log_entries(now)):
+        if int((entry or {}).get("message_id") or 0) != int(last_msg_id or 0):
+            continue
+        entry_chat_id = int((entry or {}).get("chat_id") or 0)
+        if entry_chat_id and entry_chat_id != int(get_game_group_id() or 0):
+            continue
+        if not _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")):
+            continue
+        report = entry
+        break
+
+    local_now = datetime.fromtimestamp(float(now), TZ_LOCAL)
+    day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    if report is None and float(set_at or 0) < day_start and cached.get("signature") != signature:
+        report = find_message_log_message(
+            last_msg_id,
+            now,
+            lookback_sec=DUEL_TIANXING_RECONCILE_LOOKBACK_SEC,
+            lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+            chat_id=get_game_group_id(),
+            predicate=lambda entry: _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")),
+        )
+
+    _cache_duel_prediction_reconcile(identity_id, signature, now)
+    return report
+
+
 def _derive_duel_log_evidence(entries, identity_id, *, now=None):
     identity_id = int(identity_id or 0)
     now = float(now if now is not None else time.time())
@@ -1057,11 +1142,7 @@ def _derive_duel_log_evidence(entries, identity_id, *, now=None):
 def reconcile_duel_from_message_log(now, *, force=False):
     now = float(now or time.time())
     day_key = _duel_day_key(now)
-    if (
-        not force
-        and str(state.get("duel_log_reconcile_day") or "") == day_key
-        and now - float(state.get("duel_log_reconcile_at", 0) or 0) < 30
-    ):
+    if not _claim_duel_log_reconcile(now, day_key, force=force):
         return False
     previous_day = str(state.get("duel_log_reconcile_day") or "")
     prior_runtime_error = str(state.get("duel_last_error") or "").strip()
@@ -1073,7 +1154,6 @@ def reconcile_duel_from_message_log(now, *, force=False):
         changed = True
     observed_values = {
         "duel_log_reconcile_day": day_key,
-        "duel_log_reconcile_at": now,
         "duel_observed_completed_count": int(evidence.get("completed") or 0),
         "duel_observed_manual_count": int(evidence.get("manual_completed") or 0),
         "duel_observed_mind_remaining": int(evidence.get("mind_remaining", -1)),
@@ -1178,6 +1258,7 @@ def reconcile_duel_from_message_log(now, *, force=False):
             _set_loadout_phase(desired_phase)
             changed = True
     if changed:
+        state["duel_log_reconcile_at"] = now
         mark_dirty()
     return changed
 
@@ -2148,14 +2229,7 @@ def _reconcile_consumed_duel_prediction_from_last_report(now):
     last_msg_id = int(state.get("duel_last_msg_id", 0) or 0)
     if set_at <= 0 or last_msg_id <= 0:
         return False
-    report = find_message_log_message(
-        last_msg_id,
-        now,
-        lookback_sec=DUEL_TIANXING_RECONCILE_LOOKBACK_SEC,
-        lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
-        predicate=lambda entry: _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")),
-    )
+    report = _find_consuming_duel_report(last_msg_id, set_at, now)
     report_at = float((report or {}).get("ts_epoch", 0) or 0)
     if report_at + 0.001 < set_at:
         return False
