@@ -1340,6 +1340,74 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 780, state_module.state["next_duel_time"])
             self.assertIn("仍在斗法冷却", state_module.state["duel_last_error"])
 
+    async def test_prepared_tianxing_owner_retries_at_shared_cooldown_without_stagger(self):
+        first_id = self._prepare_identity(8659059191)
+        priority_id = self._prepare_identity(3823558636)
+        now = 1_700_000_000.0
+
+        with state_module.use_identity(first_id):
+            duel._set_target_cooldown("@cupaopao", now + 600, confirmed=True, command_msg_id=22027)
+
+        with state_module.use_identity(priority_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now - 1
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 10,
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 30,
+            }
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "_duel_batch_stagger_sec") as stagger_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            stagger_mock.assert_not_called()
+            self.assertEqual(now + 600 + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
+            self.assertIn("仍在斗法冷却", state_module.state["duel_last_error"])
+
+    async def test_routine_contender_yields_target_to_prepared_tianxing_owner(self):
+        priority_id = self._prepare_identity(8659059191)
+        contender_id = self._prepare_identity(3823558636)
+        state_module.update_send_as_profile(priority_id, username="priority_dueler")
+        state_module.update_send_as_profile(contender_id, username="routine_dueler")
+        now = 1_700_000_000.0
+
+        with state_module.use_identity(priority_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now + 60
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 10,
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 30,
+            }
+
+        with state_module.use_identity(contender_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["next_duel_time"] = now - 1
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(
+                now + duel.DUEL_PREPARED_TIANXING_PRIORITY_HOLD_SEC,
+                state_module.state["next_duel_time"],
+            )
+            self.assertIn("@priority_dueler", state_module.state["duel_last_error"])
+
     async def test_successful_send_reserves_target_before_reply(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

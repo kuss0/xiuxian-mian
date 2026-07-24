@@ -18,6 +18,7 @@ from ..state import (
     get_current_identity_id,
     get_duel_target_cooldowns,
     get_game_group_id,
+    get_identity_enabled,
     get_identity_ids,
     get_send_as_profile,
     set_duel_target_cooldowns,
@@ -27,6 +28,7 @@ from ..state import (
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .tianxing import (
+    _has_active_unconsumed_prediction,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     normalize_tianxing_auto_config,
@@ -82,6 +84,8 @@ DUEL_SAME_TARGET_COOLDOWN_SEC = 10 * 60
 DUEL_TARGET_CONTENTION_BUFFER_SEC = 5 * 60
 DUEL_PAIR_BATCH_HOLD_SEC = 6 * 3600
 DUEL_TIANXING_PREPARE_LEAD_SEC = 60
+DUEL_PREPARED_TIANXING_PRIORITY_HORIZON_SEC = 45 * 60
+DUEL_PREPARED_TIANXING_PRIORITY_HOLD_SEC = 4 * 60
 DUEL_TARGET_RESERVATION_SEC = max(
     DUEL_SAME_TARGET_COOLDOWN_SEC,
     DUEL_REPLY_TIMEOUT_SEC + DUEL_RESULT_GRACE_SEC,
@@ -474,6 +478,50 @@ def _release_all_managed_pair_batches(now, *, queue_restore=True):
             queue_restore=queue_restore,
         ) or changed
     return changed
+
+
+def _prepared_tianxing_duel_priority_owner(target, now):
+    """Pick the next contender that already owns a fresh Duel prediction.
+
+    A prepared prediction is a consumable resource. Without a short target
+    turn priority, routine contenders can repeatedly refresh the shared target
+    cooldown and starve the prepared batch until its prediction expires.
+    """
+    target_key = _target_cooldown_key(target)
+    if not target_key:
+        return 0
+    now = float(now or time.time())
+    candidates = []
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id):
+            if not state.get("duel_enabled") or target_key not in {
+                _target_cooldown_key(item) for item in _target_tokens()
+            }:
+                continue
+            total = max(0, int(state.get("duel_total_count", 0) or 0))
+            completed = max(0, int(state.get("duel_completed_count", 0) or 0))
+            if total <= 0 or completed >= total:
+                continue
+            if _parse_int(state.get("duel_reply_to_msg_id", 0)) > 0 or _parse_int(state.get("duel_open_msg_id", 0)) > 0:
+                continue
+            due_at = float(state.get("next_duel_time", 0) or 0)
+            if due_at > now + DUEL_PREPARED_TIANXING_PRIORITY_HORIZON_SEC:
+                continue
+            if not state.get("duel_unequip_prepared") and _loadout_phase() != f"{DUEL_LOADOUT_PHASE_PREFIX}battle_ready":
+                continue
+            observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+            if str(observed.get("current_prediction") or "").strip() != "斗法":
+                continue
+            if not _has_active_unconsumed_prediction("斗法", observed, now):
+                continue
+            prediction_set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+            candidates.append((max(now, due_at), prediction_set_at or now, identity_id))
+    if not candidates:
+        return 0
+    return int(min(candidates)[2])
 
 
 def _active_duel_participant_block(target, now):
@@ -2855,6 +2903,18 @@ async def run_duel_scheduler(now):
         save_state()
         return
 
+    prepared_priority_owner = _prepared_tianxing_duel_priority_owner(target, now)
+    current_identity_id = int(get_current_identity_id() or 0)
+    if prepared_priority_owner > 0 and prepared_priority_owner != current_identity_id:
+        target_ready_at = _target_cooldown_until(target)
+        priority_release_at = max(now, target_ready_at) + DUEL_PREPARED_TIANXING_PRIORITY_HOLD_SEC
+        _schedule_next_duel(now, max(DUEL_RECOVERY_MIN_SEC, priority_release_at - now))
+        priority_profile = get_send_as_profile(prepared_priority_owner) or {}
+        priority_name = str(priority_profile.get("username") or prepared_priority_owner).strip().lstrip("@")
+        state["duel_last_error"] = f"目标 {target} 下一槽位优先留给已备斗法推命的 @{priority_name}"
+        save_state()
+        return
+
     loadout_prepare_due = float(state.get("next_duel_time", 0) or 0) <= float(now) + DUEL_TIANXING_PREPARE_LEAD_SEC
     if loadout_config and loadout_prepare_due and not await _run_controlled_loadout_prepare(now, loadout_config):
         return
@@ -2886,7 +2946,11 @@ async def run_duel_scheduler(now):
 
     target_cooldown_until = _target_cooldown_until(target)
     if target_cooldown_until > now:
-        _schedule_next_duel(now, (target_cooldown_until - now) + _duel_batch_stagger_sec())
+        if prepared_priority_owner == current_identity_id:
+            retry_delay = (target_cooldown_until - now) + CD_BUFFER_SEC
+        else:
+            retry_delay = (target_cooldown_until - now) + _duel_batch_stagger_sec()
+        _schedule_next_duel(now, retry_delay)
         state["duel_last_error"] = f"目标 {target} 仍在斗法冷却"
         save_state()
         return
