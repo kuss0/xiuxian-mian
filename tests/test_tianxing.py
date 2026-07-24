@@ -4350,6 +4350,56 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("calibration_not_confirmed", timeline["steps"][0]["status"])
         self.assertIn("天机盘未证明", timeline["last_error"])
 
+    def test_timeline_replays_unique_unthreaded_prediction_reply_from_log(self):
+        now = 1_780_000_000.0
+        sent_at = now - 120
+        reply_text = (
+            "你拨动司命盘，为 【斗法】 推下一段命数。\n"
+            "此推命将在 8 小时 内生效；若你先去做别路之事，便会平添一层逆命劫。"
+        )
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-unthreaded-replay",
+                "phase": "ack_timeout",
+                "route": "斗法",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "predict",
+                    "arg": "斗法",
+                    "route": "斗法",
+                    "command": ".推命 斗法",
+                    "status": "ack_timeout",
+                    "send_msg_id": 426444,
+                    "sent_at": sent_at,
+                    "ack_due_at": now - 30,
+                    "calibration_due_at": now + 300,
+                },
+                "steps": [],
+            }
+            with patch.object(
+                tianxing,
+                "find_recent_message_log_commands",
+                return_value=[
+                    {
+                        "event_type": "message",
+                        "message_id": 426446,
+                        "reply_to_msg_id": 0,
+                        "sender_is_bot": True,
+                        "text": reply_text,
+                        "ts_epoch": now - 119,
+                    }
+                ],
+            ), patch.object(tianxing, "save_state"):
+                changed = tianxing._recover_tianxing_timeline_unthreaded_reply_from_message_log(now)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(changed)
+        self.assertEqual("斗法", observed["current_prediction"])
+        self.assertEqual("state_confirmed", timeline["phase"])
+        self.assertEqual("confirmed", timeline["active_step"]["status"])
+
     async def test_timeline_panel_calibration_timeout_replans_without_repeat_panel(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
@@ -4509,6 +4559,89 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("predict", timeline["active_step"]["action"])
         self.assertEqual("闭关", timeline["active_step"]["arg"])
         self.assertEqual(".推命 闭关", send_mock.await_args.args[0])
+
+    async def test_timeline_replans_future_duel_batch_block_after_prediction_consumed(self):
+        now = 1_780_000_000.0
+        first_msg = SimpleNamespace(id=9203, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "prediction_consumed_route": "斗法",
+                "prediction_consumed_at": now - 30,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "current_change_set_at": now - 120,
+            })
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "closed-duel-batch",
+                "phase": "blocked_replan",
+                "route": "",
+                "active_step_index": -1,
+                "active_step": {},
+                "steps": [],
+                "released_routes": {},
+                "blocked_until": now + 3600,
+                "last_error": "斗法今日批次已结束；未消费的斗法推命仍按游戏有效期保留。",
+            }
+            windows = tianxing.build_tianxing_consume_window(
+                "探索",
+                now=now,
+                due_at=now,
+                reason="野外历练",
+                require_change_fate=True,
+            )
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command", return_value=first_msg) as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=windows)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("sent_waiting_ack", result["phase"])
+        self.assertEqual(".推命 探索", send_mock.await_args.args[0])
+        self.assertEqual("探索", timeline["route"])
+        self.assertEqual("predict", timeline["active_step"]["action"])
+
+    async def test_timeline_keeps_future_duel_batch_block_with_live_prediction(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+                "prediction_consumed_route": "",
+                "prediction_consumed_at": 0,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "current_change_set_at": now - 120,
+            })
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "closed-duel-batch",
+                "phase": "blocked_replan",
+                "route": "",
+                "active_step_index": -1,
+                "active_step": {},
+                "steps": [],
+                "released_routes": {},
+                "blocked_until": now + 3600,
+                "last_error": "斗法今日批次已结束；未消费的斗法推命仍按游戏有效期保留。",
+            }
+            windows = tianxing.build_tianxing_consume_window(
+                "探索",
+                now=now,
+                due_at=now,
+                reason="野外历练",
+                require_change_fate=True,
+            )
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command") as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=windows)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("blocked_replan", result["phase"])
+        send_mock.assert_not_called()
+        self.assertEqual(now + 3600, timeline["blocked_until"])
 
     async def test_timeline_replans_consumed_blocked_replan_with_stale_steps(self):
         now = 1_780_000_000.0

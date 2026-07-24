@@ -2477,6 +2477,95 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
     return False
 
 
+def _recover_tianxing_timeline_unthreaded_reply_from_message_log(now):
+    """Replay one uniquely matched standalone result for the active timeline step.
+
+    A few bot shards omit ``reply_to_msg_id`` entirely.  The command message
+    id, timestamp, exact Tianxing action/route, and a single official-looking
+    bot result together form a conservative recovery anchor.  Multiple
+    matching message ids are intentionally left unresolved.
+    """
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    step = dict(timeline.get("active_step") or {})
+    status = str(step.get("status") or "").strip()
+    if status not in {"sending", "sent_waiting_ack", "ack_timeout"}:
+        return False
+    try:
+        command_msg_id = int(step.get("send_msg_id", 0) or 0)
+        sent_at = float(step.get("sent_at", 0) or step.get("send_started_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if command_msg_id <= 0 or sent_at <= 0:
+        return False
+
+    expected_action = {
+        "panel": "天机盘",
+        "observe": "观命",
+        "set_star": "定命",
+        "predict": "推命",
+        "change_fate": "改命",
+        "clear_calamity": "消劫",
+    }.get(str(step.get("action") or "").strip(), "")
+    expected_family = _TIANXING_AUTO_PENDING_FAMILIES.get(str(step.get("action") or "").strip(), "")
+    expected_route = _normalize_route_choice(step.get("route") or step.get("arg"), "")
+    if not expected_action or not expected_family:
+        return False
+
+    def predicate(entry):
+        if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
+            return False
+        if int((entry or {}).get("reply_to_msg_id") or 0) != 0:
+            return False
+        if not bool((entry or {}).get("sender_is_bot")):
+            return False
+        if int((entry or {}).get("message_id") or 0) <= command_msg_id:
+            return False
+        parsed = parse_tianxing_text((entry or {}).get("text") or "", now=now, family=expected_family)
+        if not parsed or str(parsed.get("action") or "").strip() != expected_action:
+            return False
+        if expected_route:
+            actual_route = _normalize_route_choice(
+                parsed.get("current_prediction")
+                or parsed.get("current_change")
+                or parsed.get("last_route"),
+                "",
+            )
+            if actual_route != expected_route:
+                return False
+        return True
+
+    start_ts = max(0.0, sent_at - 3)
+    lookback_sec = max(10, int(max(0.0, float(now) - start_ts) + 5))
+    entries = find_recent_message_log_commands(
+        now,
+        start_ts=start_ts,
+        lookback_sec=lookback_sec,
+        lookahead_sec=5,
+        chat_id=get_game_group_id(),
+        command_predicate=predicate,
+    )
+    # A message followed by edits is one result; deduplicate by message id and
+    # retain its latest durable representation.
+    by_message_id = {}
+    for entry in entries:
+        by_message_id[int(entry.get("message_id") or 0)] = entry
+    matches = list(by_message_id.values())
+    if len(matches) != 1:
+        return False
+    entry = matches[0]
+    entry_ts = float(entry.get("ts_epoch") or now)
+    if entry_ts < sent_at - 3 or entry_ts > float(now) + 5:
+        return False
+    if not _apply_tianxing_log_reply(entry, family=expected_family):
+        return False
+    console_log(
+        f"🌌 天星无引用回包已按唯一命令恢复：命令ID={command_msg_id}，结果ID={int(entry.get('message_id') or 0)}",
+        scope="identity",
+        limit=220,
+    )
+    return True
+
+
 def _recover_tianxing_daily_observe_from_message_log(observed, now):
     observed = normalize_tianxing_observation(observed)
     if _has_available_stars_today(observed, now):
@@ -4146,6 +4235,30 @@ def _timeline_should_replan_for_window_route(timeline, windows, now, horizon_hou
     return True, f"旧天星时间线 {active_route} 发送队列超时且无消息ID，新窗口为 {_format_list(sorted(target_routes))}，已重算。"
 
 
+def _stale_completed_duel_future_block_reason(timeline, observed, now):
+    """Return a replan reason when a closed Duel batch no longer owns its hold."""
+    if str((timeline or {}).get("phase") or "").strip() != "blocked_replan":
+        return ""
+    if float((timeline or {}).get("blocked_until", 0) or 0) <= float(now):
+        return ""
+    last_error = str((timeline or {}).get("last_error") or "").strip()
+    if not any(
+        marker in last_error
+        for marker in (
+            "斗法今日批次已结束",
+            "斗法批次已结束",
+            "上一场斗法已消费推命",
+            "斗法放行已被下游动作消费",
+        )
+    ):
+        return ""
+    observed = normalize_tianxing_observation(observed)
+    current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
+    if current_prediction and _has_active_unconsumed_prediction(current_prediction, observed, now):
+        return ""
+    return "旧斗法批次保留的推命已消费或失效，新窗口立即重算。"
+
+
 def _timeline_should_replan_empty_block(timeline, windows, observed, config, now, horizon_hours):
     if not windows:
         return False, ""
@@ -4153,9 +4266,12 @@ def _timeline_should_replan_empty_block(timeline, windows, observed, config, now
         return False, ""
     phase = str((timeline or {}).get("phase") or "").strip()
     blocked_until = float((timeline or {}).get("blocked_until", 0) or 0)
+    stale_future_reason = ""
     if phase == "blocked_replan":
         if blocked_until > float(now):
-            return False, ""
+            stale_future_reason = _stale_completed_duel_future_block_reason(timeline, observed, now)
+            if not stale_future_reason:
+                return False, ""
     elif phase in {
         "idle",
         "ready_prediction",
@@ -4181,6 +4297,8 @@ def _timeline_should_replan_empty_block(timeline, windows, observed, config, now
     if not plan.get("steps"):
         return False, ""
     actions = _format_list([str(step.get("action") or "") for step in plan.get("steps") or [] if isinstance(step, dict)])
+    if stale_future_reason:
+        return True, f"{stale_future_reason} 可执行 {actions or '后续步骤'}。"
     return True, f"旧天星时间线为空阻塞计划，最新状态已可执行 {actions or '后续步骤'}，立即重算。"
 
 
@@ -5135,6 +5253,10 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     state["tianxing_observation"] = observed
+    if _recover_tianxing_timeline_unthreaded_reply_from_message_log(now):
+        observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+        state["tianxing_observation"] = observed
+        save_state()
     if _close_tianxing_guards_from_observation(observed, now):
         state["tianxing_observation"] = observed
         save_state()

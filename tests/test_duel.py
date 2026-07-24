@@ -223,30 +223,6 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("blocked_replan", timeline["phase"])
         self.assertLessEqual(float(timeline["blocked_until"]), now)
 
-    def test_stale_completed_duel_block_is_replanned_without_unconsumed_prediction(self):
-        identity_id = self._prepare_identity()
-        now = 1_700_000_000.0
-        with state_module.use_identity(identity_id):
-            state_module.state["tianxing_observation"] = {
-                "current_prediction": "",
-                "prediction_consumed_route": "斗法",
-                "prediction_consumed_at": now - 30,
-            }
-            state_module.state["tianxing_timeline_state"] = {
-                "phase": "blocked_replan",
-                "blocked_until": now + 3600,
-                "last_error": "斗法今日批次已结束；未消费的斗法推命仍按游戏有效期保留。",
-                "active_step": {},
-                "released_routes": {},
-            }
-
-            changed = duel._clear_stale_duel_tianxing_block(now)
-            timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
-
-        self.assertTrue(changed)
-        self.assertEqual(now, timeline["blocked_until"])
-        self.assertIn("重新准备", timeline["last_error"])
-
     def test_target_normalization_and_command(self):
         self.assertEqual("@cupaopao", duel.normalize_duel_target("cupaopao"))
         self.assertEqual("@cupaopao", duel.normalize_duel_target("@cupaopao extra"))

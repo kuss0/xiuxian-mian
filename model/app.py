@@ -105,6 +105,7 @@ from .features.tianxing import (
     is_tianxing_route_released,
     normalize_tianxing_observation,
     normalize_tianxing_timeline_state,
+    parse_tianxing_text,
     run_tianxing_daily_bootstrap_scheduler,
     run_tianxing_scheduler,
     run_tianxing_timeline_scheduler,
@@ -302,6 +303,19 @@ _game_bot_candidate_registry = GameBotCandidateRegistry(
 _suspected_game_bot_hits = _game_bot_candidate_registry.candidates
 OBSERVED_GAME_COMMAND_TTL_SEC = 15 * 60
 OBSERVED_GAME_COMMAND_CAP = 2000
+# Some Han Tianzun shards send a legitimate command result as a standalone
+# message (reply_to_msg_id=0). Keep this inference narrow: only a unique,
+# recent Tianxing command may claim such a reply; ambiguous bursts stay
+# passive evidence and are never guessed onto an identity.
+UNTHREADED_TIANXING_REPLY_WINDOW_SEC = 180
+_TIANXING_REPLY_FAMILY_BY_ACTION = {
+    "天机盘": "tianxing_panel",
+    "观命": "tianxing_observe",
+    "定命": "tianxing_set_star",
+    "推命": "tianxing_predict",
+    "改命": "tianxing_change_fate",
+    "消劫": "tianxing_clear_calamity",
+}
 HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
 TIANXING_TIMELINE_FOLLOWUP_MAX_PER_TICK = 4
@@ -816,6 +830,99 @@ def _get_observed_game_command(reply_to_msg_id, *, now=None):
         _observed_game_commands.pop(reply_to_msg_id, None)
         return None
     return item
+
+
+def _tianxing_unthreaded_command_matches(text, parsed, command_item):
+    """Check a standalone Tianxing result against one observed command."""
+    if not isinstance(parsed, dict) or not isinstance(command_item, dict):
+        return False
+    action = str(parsed.get("action") or "").strip()
+    expected_family = _TIANXING_REPLY_FAMILY_BY_ACTION.get(action)
+    if not expected_family or str(command_item.get("family") or "").strip() != expected_family:
+        return False
+    command = str(command_item.get("command") or "").strip()
+    if not command.startswith("."):
+        return False
+    # Route-bearing replies must agree with the route in the command. This
+    # prevents a nearby .推命 探索 from consuming a .推命 斗法 result.
+    if action in {"推命", "改命"}:
+        route = str(
+            parsed.get("current_prediction")
+            or parsed.get("current_change")
+            or parsed.get("last_route")
+            or ""
+        ).strip()
+        if route and route not in command:
+            return False
+    return True
+
+
+def _candidate_unthreaded_tianxing_commands(text, now, *, event_id=0):
+    """Return recent command records eligible for a no-reply bind."""
+    parsed = parse_tianxing_text(text, now=now)
+    if not parsed:
+        return []
+    expected_family = _TIANXING_REPLY_FAMILY_BY_ACTION.get(str(parsed.get("action") or "").strip())
+    if not expected_family:
+        return []
+    now = float(now if now is not None else time.time())
+    _prune_observed_game_commands(now)
+    candidates = []
+    identity_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    for msg_id, item in _observed_game_commands.items():
+        try:
+            command_msg_id = int(msg_id or 0)
+            sender_id = int((item or {}).get("sender_id") or 0)
+            command_at = float((item or {}).get("at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if command_msg_id <= 0 or sender_id not in identity_ids or command_at <= 0:
+            continue
+        if event_id and command_msg_id >= int(event_id):
+            continue
+        age = now - command_at
+        if age < -2 or age > UNTHREADED_TIANXING_REPLY_WINDOW_SEC:
+            continue
+        if not get_identity_enabled(sender_id):
+            continue
+        if not _tianxing_unthreaded_command_matches(text, parsed, item):
+            continue
+        candidates.append((command_msg_id, sender_id, item))
+    candidates.sort(
+        key=lambda item: (float((item[2] or {}).get("at", 0) or 0), item[0]),
+        reverse=True,
+    )
+    return candidates
+
+
+def _infer_unthreaded_tianxing_reply(event, text, now):
+    """Build strict routing context for a standalone Tianxing bot result."""
+    if _get_event_reply_header_msg_id(event) > 0:
+        return None
+    candidates = _candidate_unthreaded_tianxing_commands(
+        text,
+        now,
+        event_id=getattr(event, "id", 0),
+    )
+    if len(candidates) != 1:
+        return None
+    command_msg_id, sender_id, item = candidates[0]
+    reply_to = SimpleNamespace(
+        id=command_msg_id,
+        raw_text=str(item.get("command") or ""),
+        sender_id=sender_id,
+    )
+    reply_context = get_reply_context(
+        reply_to,
+        reply_to_msg_id=command_msg_id,
+        send_as_id=sender_id,
+    )
+    if int((reply_context or {}).get("send_as_id") or 0) != sender_id:
+        return None
+    reply_context = dict(reply_context or {})
+    reply_context["inferred_unthreaded"] = True
+    reply_context["inference_basis"] = "unique_recent_tianxing_command"
+    return reply_to, reply_context
 
 
 def _observed_command_reply_matches(text, command_record):
@@ -3093,6 +3200,30 @@ async def on_message(event):
                 )
                 return
 
+        if int((reply_context or {}).get("send_as_id") or 0) <= 0:
+            inferred = _infer_unthreaded_tianxing_reply(event, text, now)
+            if inferred:
+                inferred_reply_to, inferred_context = inferred
+                await _note_game_bot_activity(
+                    text,
+                    inferred_reply_to,
+                    inferred_context,
+                    now=now,
+                )
+                handled_reply = await _handle_routed_reply_event(
+                    event,
+                    text,
+                    now,
+                    inferred_reply_to,
+                    inferred_context,
+                )
+                if handled_reply:
+                    await handle_passive_module_card(
+                        from_telegram_event(event, text, _handled_reply_context(inferred_context), event_kind="message"),
+                        now,
+                    )
+                    return
+
         if await _dispatch_miniapp_broadcast_fallbacks(event, text, now):
             await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "miniapp"}, event_kind="message"), now)
             return
@@ -3209,6 +3340,31 @@ async def on_message_edited(event):
                     now,
                 )
                 return
+
+        if int((reply_context or {}).get("send_as_id") or 0) <= 0:
+            inferred = _infer_unthreaded_tianxing_reply(event, text, now)
+            if inferred:
+                inferred_reply_to, inferred_context = inferred
+                await _note_game_bot_activity(
+                    text,
+                    inferred_reply_to,
+                    inferred_context,
+                    now=now,
+                )
+                handled_reply = await _handle_routed_reply_event(
+                    event,
+                    text,
+                    now,
+                    inferred_reply_to,
+                    inferred_context,
+                    event_kind="edit",
+                )
+                if handled_reply:
+                    await handle_passive_module_card(
+                        from_telegram_event(event, text, _handled_reply_context(inferred_context), event_kind="edit"),
+                        now,
+                    )
+                    return
 
         if await _dispatch_fishing_swallowed_reply_fallback(event, text, now, event_kind="edit"):
             await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "fishing"}, event_kind="edit"), now)

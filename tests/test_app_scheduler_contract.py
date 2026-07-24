@@ -120,6 +120,73 @@ class AppSchedulerContractTests(unittest.TestCase):
         finally:
             app._observed_game_commands.clear()
 
+    def test_unthreaded_tianxing_reply_binds_unique_recent_route_command(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._observed_game_commands.clear()
+        identity_id = 990099113
+        reply_text = (
+            "你拨动司命盘，为 【斗法】 推下一段命数。\n"
+            "此推命将在 8 小时 内生效；若你先去做别路之事，便会平添一层逆命劫。"
+        )
+        try:
+            state_module.ensure_identity_registered(identity_id)
+            app._observe_game_command_for_bot_evidence(
+                identity_id,
+                ".推命 斗法",
+                74444,
+                now=1000.0,
+            )
+            event = SimpleNamespace(
+                id=74446,
+                chat_id=-1001680975844,
+                reply_to=None,
+            )
+            with patch.object(
+                app,
+                "get_reply_context",
+                return_value={
+                    "send_as_id": identity_id,
+                    "family": "tianxing_predict",
+                    "reply_to_msg_id": 74444,
+                    "root_msg_id": 74444,
+                },
+            ):
+                inferred = app._infer_unthreaded_tianxing_reply(event, reply_text, 1001.0)
+
+            self.assertIsNotNone(inferred)
+            reply_to, context = inferred
+            self.assertEqual(74444, reply_to.id)
+            self.assertEqual(identity_id, context["send_as_id"])
+            self.assertTrue(context["inferred_unthreaded"])
+        finally:
+            app._observed_game_commands.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_unthreaded_tianxing_reply_refuses_ambiguous_same_route_commands(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._observed_game_commands.clear()
+        try:
+            for identity_id, msg_id in ((990099114, 74450), (990099115, 74451)):
+                state_module.ensure_identity_registered(identity_id)
+                app._observe_game_command_for_bot_evidence(
+                    identity_id,
+                    ".推命 斗法",
+                    msg_id,
+                    now=1000.0,
+                )
+            reply_text = (
+                "你拨动司命盘，为 【斗法】 推下一段命数。\n"
+                "此推命将在 8 小时 内生效。"
+            )
+            event = SimpleNamespace(id=74452, chat_id=-1001680975844, reply_to=None)
+            self.assertEqual(2, len(app._candidate_unthreaded_tianxing_commands(reply_text, 1001.0, event_id=74452)))
+            self.assertIsNone(app._infer_unthreaded_tianxing_reply(event, reply_text, 1001.0))
+        finally:
+            app._observed_game_commands.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
     def test_phaseful_identity_schedulers_are_before_ordinary_schedulers(self):
         contract = app.get_identity_scheduler_order_contract()
 
