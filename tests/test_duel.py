@@ -187,6 +187,66 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("斗法", timeline["released_routes"])
         self.assertGreater(state_module.state["next_duel_time"], now)
 
+    def test_completed_prediction_does_not_keep_future_duel_batch_block(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 1
+            state_module.state["duel_completed_count"] = 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "斗法",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+                "prediction_consumed_route": "斗法",
+                "prediction_consumed_at": now - 30,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "route": "斗法",
+                "active_step_index": 0,
+                "active_step": {"action": "release_downstream", "route": "斗法", "status": "released"},
+                "released_routes": {"斗法": {"released_at": now - 60, "basis": "prediction"}},
+            }
+
+            with patch.object(duel, "save_state"):
+                completion = duel._complete_duel_batch(now)
+
+            observed = duel.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(completion["daily"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("斗法", observed["prediction_consumed_route"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertLessEqual(float(timeline["blocked_until"]), now)
+
+    def test_stale_completed_duel_block_is_replanned_without_unconsumed_prediction(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "",
+                "prediction_consumed_route": "斗法",
+                "prediction_consumed_at": now - 30,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "blocked_replan",
+                "blocked_until": now + 3600,
+                "last_error": "斗法今日批次已结束；未消费的斗法推命仍按游戏有效期保留。",
+                "active_step": {},
+                "released_routes": {},
+            }
+
+            changed = duel._clear_stale_duel_tianxing_block(now)
+            timeline = duel.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(changed)
+        self.assertEqual(now, timeline["blocked_until"])
+        self.assertIn("重新准备", timeline["last_error"])
+
     def test_target_normalization_and_command(self):
         self.assertEqual("@cupaopao", duel.normalize_duel_target("cupaopao"))
         self.assertEqual("@cupaopao", duel.normalize_duel_target("@cupaopao extra"))

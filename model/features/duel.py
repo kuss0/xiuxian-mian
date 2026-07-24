@@ -27,6 +27,7 @@ from ..state import (
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .tianxing import (
+    _has_active_unconsumed_prediction,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     normalize_tianxing_auto_config,
@@ -705,6 +706,51 @@ def _duel_daily_mind_exhausted(now):
     )
 
 
+def _clear_stale_duel_tianxing_block(now):
+    """Release a future block left by a completed duel batch.
+
+    A completed batch may be closed while its prediction is still present in
+    the local observation.  That future expiry is valid only while the
+    prediction remains unconsumed.  Once the battle report (or a fresh panel)
+    proves consumption, an old ``blocked_replan`` must not strand the next
+    configured batch for several hours.
+    """
+    now = float(now or time.time())
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    if str(timeline.get("phase") or "").strip() != "blocked_replan":
+        return False
+    if float(timeline.get("blocked_until", 0) or 0) <= now:
+        return False
+    if timeline.get("active_step") or timeline.get("released_routes"):
+        return False
+    last_error = str(timeline.get("last_error") or "").strip()
+    if not any(
+        marker in last_error
+        for marker in (
+            "斗法今日批次已结束",
+            "斗法批次已结束",
+            "上一场斗法已消费推命",
+            "斗法放行已被下游动作消费",
+        )
+    ):
+        return False
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    current_prediction = str(observed.get("current_prediction") or "").strip()
+    if current_prediction and _has_active_unconsumed_prediction(current_prediction, observed, now):
+        # A real, unconsumed prediction still owns the future block.
+        return False
+
+    timeline["blocked_until"] = now
+    timeline["last_error"] = "旧斗法批次阻断已过期，重新准备天星时间线。"
+    timeline["updated_at"] = now
+    _timeline_audit = list(timeline.get("audit") or [])
+    _timeline_audit.append({"ts": now, "event": "stale_duel_batch_block_cleared"})
+    timeline["audit"] = _timeline_audit[-20:]
+    state["tianxing_timeline_state"] = timeline
+    return True
+
+
 def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束"):
     """Close today's local Duel route without inventing server-side consumption."""
     now = float(now or time.time())
@@ -713,7 +759,21 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     prediction_until = 0.0
     if str(observed.get("current_prediction") or "").strip() == "斗法":
-        prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+        prediction_set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+        consumed_route = str(observed.get("prediction_consumed_route") or "").strip()
+        consumed_at = float(observed.get("prediction_consumed_at", 0) or 0)
+        if consumed_route == "斗法" and consumed_at > 0 and (
+            prediction_set_at <= 0 or consumed_at + 0.001 >= prediction_set_at
+        ):
+            # The battle already consumed this prediction; do not retain its
+            # old expiry as a block for the next configured batch.
+            observed["current_prediction"] = ""
+            observed["current_prediction_until"] = 0
+            observed["current_prediction_set_at"] = 0
+            prediction_until = 0.0
+            changed = True
+        else:
+            prediction_until = float(observed.get("current_prediction_until", 0) or 0)
         if 0 < prediction_until <= now:
             observed["current_prediction"] = ""
             observed["current_prediction_until"] = 0
@@ -721,7 +781,7 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
             observed["prediction_expired_route"] = "斗法"
             observed["prediction_expired_at"] = now
             prediction_until = 0.0
-        else:
+        elif prediction_until > now:
             observed["last_error"] = f"{reason}；未消费的斗法推命仍按游戏有效期保留。"
         changed = True
 
@@ -780,6 +840,10 @@ def _close_duel_tianxing_daily_batch(now, *, reason="斗法今日批次已结束
 
 
 def _complete_duel_batch(now):
+    # The terminal report is the strongest local evidence that the preceding
+    # prediction was consumed.  Reconcile it before closing the route lease so
+    # a temporary batch configuration cannot strand the next batch.
+    _reconcile_consumed_duel_prediction_from_last_report(now)
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     total_count = int(state.get("duel_total_count", 0) or 0)
     loadout_config = _controlled_loadout_config(now)
@@ -2314,6 +2378,8 @@ def cancel_duel_tianxing_route(*, now=None, persist=False):
 
 async def _prepare_duel_tianxing_route(now, *, due_at=0):
     _reconcile_consumed_duel_prediction_from_last_report(now)
+    if _clear_stale_duel_tianxing_block(now):
+        save_state()
     due_at = float(due_at or now)
     preflight = build_tianxing_route_preflight_plan("斗法", reason="斗法", now=now)
     if preflight.get("route_allowed"):
