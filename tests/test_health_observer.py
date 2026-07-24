@@ -63,6 +63,18 @@ class HealthObserverTests(unittest.TestCase):
                 path.read_text(encoding="utf-8"),
             )
 
+    def test_append_event_compacts_by_streaming_a_bounded_tail(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "events.jsonl"
+            path.write_bytes(b"".join(f'{{"n":{index}}}\n'.encode() for index in range(20)))
+            with patch.object(health_observer, "EVENT_HISTORY_MAX_BYTES", 80):
+                health_observer.append_event(path, {"n": 20}, max_lines=100)
+
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual('{"n":20}', lines[-1])
+            self.assertLessEqual(path.stat().st_size, 80 + 16)
+            self.assertGreaterEqual(len(lines), 2)
+
     def test_parse_systemctl_show_groups_multiple_services(self):
         output = (
             "Id=xiuxian.service\n"
@@ -301,6 +313,16 @@ class HealthObserverTests(unittest.TestCase):
         )
 
         self.assertFalse(health_observer.is_hard_journal_line(line))
+
+    def test_interdc_call_error_is_transient_warning_not_hard(self):
+        line = (
+            "Jul 25 01:45:13 pve python[2654567]: Telegram is having internal issues "
+            "InterdcCallErrorError: An error occurred while communicating with DC 4 "
+            "(caused by SendMessageRequest)"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertTrue(health_observer.is_warn_journal_line(line))
 
     def test_getting_difference_value_error_is_not_hard(self):
         line = (

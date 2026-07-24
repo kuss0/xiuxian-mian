@@ -12,6 +12,7 @@ from collections import deque
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -41,6 +42,10 @@ WARN_PATTERN = re.compile(
 PASSIVE_OBSERVATION_CONTEXT_PATTERN = re.compile(r"红包候选观察(?:｜|\|)", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
     r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:)|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
+    re.I,
+)
+TRANSIENT_TELEGRAM_CONTEXT_PATTERN = re.compile(
+    r"Telegram is having internal issues InterdcCallErrorError\b",
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
@@ -88,6 +93,8 @@ GUARDED_BUSINESS_PREFIXES = (
     ".换取",
 )
 PENDING_PHASE_SUFFIX = "_pending"
+EVENT_HISTORY_MAX_BYTES = 64 * 1024 * 1024
+EVENT_COPY_CHUNK_BYTES = 1024 * 1024
 PHASEFUL_ATTENTION_PHASES = {
     "summary_due",
     "observing_summary",
@@ -511,6 +518,8 @@ def is_hard_journal_line(line: str) -> bool:
         return False
     if BENIGN_HARD_CONTEXT_PATTERN.search(text):
         return False
+    if TRANSIENT_TELEGRAM_CONTEXT_PATTERN.search(text):
+        return False
     if TELETHON_WRONG_SESSION_PATTERN.search(text):
         return False
     return bool(HARD_PATTERN.search(text))
@@ -520,6 +529,8 @@ def is_warn_journal_line(line: str) -> bool:
     text = str(line or "")
     if PASSIVE_OBSERVATION_CONTEXT_PATTERN.search(text):
         return False
+    if TRANSIENT_TELEGRAM_CONTEXT_PATTERN.search(text):
+        return True
     if is_hard_journal_line(text):
         return False
     if BENIGN_WARN_CONTEXT_PATTERN.search(text):
@@ -2097,22 +2108,77 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(tmp_path, path)
 
 
+def _tail_line_start(path: Path, max_lines: int) -> int:
+    """Return a byte offset at the start of the last ``max_lines`` lines."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= 0 or max_lines <= 0:
+        return size
+
+    with path.open("rb") as fp:
+        fp.seek(size - 1)
+        trailing_newline = fp.read(1) == b"\n"
+        remaining = int(max_lines) + (1 if trailing_newline else 0)
+        end = size
+        while end > 0:
+            start = max(0, end - EVENT_COPY_CHUNK_BYTES)
+            fp.seek(start)
+            chunk = fp.read(end - start)
+            search_end = len(chunk)
+            while remaining > 0:
+                index = chunk.rfind(b"\n", 0, search_end)
+                if index < 0:
+                    break
+                remaining -= 1
+                search_end = index
+                if remaining == 0:
+                    return start + index + 1
+            end = start
+    return 0
+
+
+def _bounded_tail_start(path: Path, *, max_lines: int, max_bytes: int) -> int:
+    """Find a line-aligned tail bounded by both line count and byte size."""
+    size = path.stat().st_size
+    if size <= 0:
+        return 0
+    line_start = _tail_line_start(path, max_lines)
+    byte_start = max(0, size - max(1, int(max_bytes)))
+    start = max(line_start, byte_start)
+    if start <= 0 or start == line_start:
+        return start
+
+    # The byte bound can land in the middle of a JSON line; discard that
+    # partial record without loading the remainder of the file.
+    with path.open("rb") as fp:
+        fp.seek(start)
+        fp.readline()
+        return fp.tell()
+
+
 def append_event(path: Path, payload: dict[str, object], max_lines: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     with path.open("a", encoding="utf-8") as fp:
         fp.write(line)
     max_lines = max(100, int(max_lines or 0))
-    # Avoid loading the full audit history on every 60s observation. Compact
-    # only after the file is plausibly over the configured line budget.
+    # Keep the audit tail bounded by bytes as well as lines. A health snapshot
+    # can be tens of KiB, so retaining 5000 lines can otherwise consume GBs.
     try:
-        if path.stat().st_size <= max_lines * 64 * 1024:
+        compact_limit = min(max_lines * 64 * 1024, EVENT_HISTORY_MAX_BYTES)
+        if path.stat().st_size <= compact_limit:
             return
-        with path.open("r", encoding="utf-8") as fp:
-            lines = deque(fp, maxlen=max_lines)
+        start = _bounded_tail_start(
+            path,
+            max_lines=max_lines,
+            max_bytes=EVENT_HISTORY_MAX_BYTES,
+        )
         tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-        with tmp_path.open("w", encoding="utf-8") as fp:
-            fp.writelines(lines)
+        with path.open("rb") as source, tmp_path.open("wb") as target:
+            source.seek(start)
+            shutil.copyfileobj(source, target, length=EVENT_COPY_CHUNK_BYTES)
         os.replace(tmp_path, path)
     except OSError:
         pass
