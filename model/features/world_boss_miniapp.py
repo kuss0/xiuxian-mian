@@ -50,12 +50,13 @@ WORLD_BOSS_PROOF_MODE = "qyz_focus_burst_v2"
 WORLD_BOSS_STANCE = "强攻"
 WORLD_BOSS_PERFECT_HOLD_MIN_MS = 520
 WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
-# The server accepts a broad perfect-charge band.  The lower edge is safe for
-# timing, but it leaves substantial damage on the table.  Stay in the upper
-# middle of that band without touching the 1.25s timeout boundary.
-WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1020
-WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1160
-WORLD_BOSS_RELEASE_LEAD_MS = 120
+# The live page's charge curve tops out around 1.215s while perfect remains
+# valid through 1.25s. Stay near that cap with a small hard-limit margin.
+WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1200
+WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1235
+WORLD_BOSS_RELEASE_LEAD_MS = 105
+WORLD_BOSS_RELEASE_LEAD_MIN_MS = 90
+WORLD_BOSS_RELEASE_LEAD_MAX_MS = 135
 WORLD_BOSS_RTT_SAMPLE_COUNT = 6
 WORLD_BOSS_FINAL_WINDOW_MARGIN_MS = 80
 WORLD_BOSS_DEFAULT_HIT_MS = 560
@@ -770,18 +771,35 @@ def _adaptive_world_boss_release_lead_ms(action, recent_rtt_ms, *, final_window=
     ]
     if not samples:
         return base_lead_ms
-    latency_lead_ms = int(round(max(samples) / 2.0))
-    if final_window:
-        max_lead_ms = max(
-            base_lead_ms,
-            _int_value(action.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS) - WORLD_BOSS_FINAL_WINDOW_MARGIN_MS,
-        )
+
+    # Response RTT includes server processing and can spike independently of
+    # request arrival. Using the maximum made one slow response push several
+    # later releases to the edge of the perfect window. Estimate one-way delay
+    # from the lower half of recent samples, then keep adaptation narrow.
+    lower_half = sorted(samples)[:max(1, (len(samples) + 1) // 2)]
+    middle = len(lower_half) // 2
+    if len(lower_half) % 2:
+        robust_rtt_ms = lower_half[middle]
     else:
-        max_lead_ms = max(
-            base_lead_ms,
-            _int_value(action.get("perfectMs"), 150) - 30,
+        robust_rtt_ms = (lower_half[middle - 1] + lower_half[middle]) / 2.0
+    latency_lead_ms = int(round(robust_rtt_ms / 2.0))
+
+    perfect_ceiling_ms = max(0, _int_value(action.get("perfectMs"), 150) - 30)
+    if final_window:
+        perfect_ceiling_ms = min(
+            perfect_ceiling_ms,
+            max(
+                0,
+                _int_value(action.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)
+                - WORLD_BOSS_FINAL_WINDOW_MARGIN_MS,
+            ),
         )
-    return max(base_lead_ms, min(max_lead_ms, latency_lead_ms))
+    min_lead_ms = min(base_lead_ms, WORLD_BOSS_RELEASE_LEAD_MIN_MS)
+    max_lead_ms = max(
+        base_lead_ms,
+        min(WORLD_BOSS_RELEASE_LEAD_MAX_MS, perfect_ceiling_ms),
+    )
+    return max(min_lead_ms, min(max_lead_ms, latency_lead_ms))
 
 
 def _nested_mappings(data):

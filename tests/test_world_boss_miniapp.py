@@ -480,8 +480,8 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(7),
         )
         self.assertEqual(["early", "middle", "late"], [item["windowId"] for item in plan])
-        self.assertTrue(all(item["centerMs"] - item["elapsedMs"] == 120 for item in plan))
-        self.assertTrue(all(1020 <= item["holdMs"] <= 1160 for item in plan))
+        self.assertTrue(all(item["centerMs"] - item["elapsedMs"] == 105 for item in plan))
+        self.assertTrue(all(1200 <= item["holdMs"] <= 1235 for item in plan))
         self.assertTrue(all(item["hitMs"] == 560 for item in plan))
         self.assertTrue(all(item["chargeStartMs"] == item["elapsedMs"] - item["holdMs"] for item in plan))
         self.assertTrue(all(item["stance"] == "强攻" for item in plan))
@@ -498,8 +498,8 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(13),
         )
 
-        self.assertTrue(1020 <= plan[0]["holdMs"] <= 1160)
-        self.assertTrue(1020 <= plan[1]["holdMs"] <= 1160)
+        self.assertTrue(1200 <= plan[0]["holdMs"] <= 1235)
+        self.assertTrue(1200 <= plan[1]["holdMs"] <= 1235)
         self.assertTrue(all(520 <= item["holdMs"] <= 1250 for item in plan))
 
     def test_start_refresh_waits_real_windows_then_hits_and_finishes_once(self):
@@ -564,13 +564,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(all(delay > 0 for delay in clock.sleeps))
         self.assertEqual("challenge-live", payloads[2]["challengeId"])
         self.assertEqual("w1", payloads[3]["windowId"])
-        self.assertEqual(1380, payloads[3]["elapsedMs"])
+        self.assertAlmostEqual(1395, payloads[3]["elapsedMs"], delta=1)
         self.assertGreaterEqual(payloads[3]["holdMs"], 520)
         self.assertEqual("w2", payloads[4]["windowId"])
         proof = payloads[-1]["bossProof"]
         self.assertEqual("qyz_focus_burst_v2", proof["mode"])
         self.assertEqual("强攻", proof["stance"])
-        self.assertEqual([1380, 2880], [item["t"] for item in proof["actions"]])
+        self.assertAlmostEqual(1395, proof["actions"][0]["t"], delta=1)
+        self.assertAlmostEqual(2895, proof["actions"][1]["t"], delta=2)
         self.assertEqual(1000, proof["playerHp"])
         self.assertFalse(proof["dead"])
         self.assertIs(proof["realtimeDamageApplied"], True)
@@ -580,7 +581,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(2, proof["clientStats"]["bestCombo"])
         self.assertGreaterEqual(proof["durationMs"], 3000 + 560 + 2200)
 
-    def test_slow_hit_responses_do_not_shift_later_release_centers(self):
+    def test_slow_hit_responses_only_make_a_bounded_release_adjustment(self):
         calls = []
         hit_elapsed_ms = []
         clock = FakeClock()
@@ -622,7 +623,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        for actual, expected in zip(hit_elapsed_ms, (1380, 7020, 12360)):
+        for actual, expected in zip(hit_elapsed_ms, (1395, 7065, 12765)):
             self.assertAlmostEqual(expected, actual, delta=1)
         self.assertEqual(3, result["data"]["result"]["completed_window_count"])
         self.assertTrue(result["data"]["result"]["full_window_run"])
