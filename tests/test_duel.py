@@ -3082,6 +3082,81 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(state_module.state["next_duel_time"], now + duel.DUEL_RECOVERY_MAX_SEC)
             self.assertIn("切换至 @second", audit_mock.await_args.args[0])
 
+    async def test_report_remaining_jiaofeng_zero_counts_before_switching_target(self):
+        identity_id = self._prepare_identity(99002000)
+        now = 1_700_000_000.0
+        text = (
+            "【天道战报·文字版】\n"
+            "攻方：@walterwa2000 · 惊慕\n"
+            "守方：@first · 空尘子\n"
+            "胜者：@walterwa2000\n"
+            "🧠 今日神念：7/10 | 对此人剩余交锋: 0"
+        )
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@first @second"
+            state_module.state["duel_total_count"] = 10
+            state_module.state["duel_completed_count"] = 2
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @first"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(3, state_module.state["duel_completed_count"])
+            self.assertEqual(["@first"], state_module.state["duel_daily_limited_targets"])
+            self.assertEqual("@second", duel._target_token(now))
+            self.assertGreaterEqual(state_module.state["next_duel_time"], now + duel.DUEL_RECOVERY_MIN_SEC)
+            self.assertLessEqual(state_module.state["next_duel_time"], now + duel.DUEL_RECOVERY_MAX_SEC)
+            self.assertIn("剩余交锋已归零", audit_mock.await_args.args[0])
+            self.assertIn("切换至 @second", audit_mock.await_args.args[0])
+
+    async def test_report_remaining_jiaofeng_zero_restores_after_final_target_attempt(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        text = (
+            "【天道战报·文字版】\n"
+            "攻方：@walterwa2000 · 惊慕\n"
+            "守方：@ccahen · 空尘子\n"
+            "胜者：@walterwa2000\n"
+            "🧠 今日神念：6/10 | 对此人剩余交锋: 0"
+        )
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@ccahen"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 2
+            state_module.state["duel_unequip_prepared"] = True
+            state_module.state["duel_last_result"] = "斗法配装:battle_ready"
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    text,
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @ccahen"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(3, state_module.state["duel_completed_count"])
+            self.assertEqual(["@ccahen"], state_module.state["duel_daily_limited_targets"])
+            self.assertEqual("斗法配装:restore_needed", state_module.state["duel_last_result"])
+            self.assertEqual(now + duel.DUEL_LOADOUT_STEP_DELAY_SEC, state_module.state["next_duel_time"])
+            self.assertIn("完成 3 场", audit_mock.await_args.args[0])
+            self.assertIn("开始恢复原法宝配装", audit_mock.await_args.args[0])
+
     async def test_rolling_24h_target_limit_stops_current_role_until_next_day(self):
         identity_id = self._prepare_identity(99002001)
         now = 1_700_000_000.0

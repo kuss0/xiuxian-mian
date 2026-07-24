@@ -139,7 +139,12 @@ RE_DUEL_ROLLING_LIMIT_TARGET = re.compile(
 RE_DUEL_ATTACKER = re.compile(r"攻方[:：]\s*(?P<username>@[^\s·|]+)")
 RE_DUEL_DEFENDER = re.compile(r"守方[:：]\s*(?P<username>@[^\s·|]+)")
 RE_DUEL_MIND_REMAINING = re.compile(r"今日(?:剩余)?神念[:：]\s*(?P<remaining>\d+)\s*/\s*(?P<total>\d+)")
-RE_DUEL_TARGET_WINS_REMAINING = re.compile(r"对此人剩余胜场[:：]\s*(?P<remaining>\d+)")
+RE_DUEL_TARGET_REMAINING = re.compile(
+    r"对此人剩余(?:胜场|交锋)\s*[:：]\s*(?P<remaining>\d+)"
+)
+# Keep the old symbol for callers that imported it before the game changed
+# the wording from “胜场” to “交锋”.
+RE_DUEL_TARGET_WINS_REMAINING = RE_DUEL_TARGET_REMAINING
 DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 DUEL_TIANXING_RECONCILE_LOOKBACK_SEC = 24 * 3600
@@ -2109,12 +2114,32 @@ def _is_per_target_duel_limit_text(text):
     return "出手次数过多" in raw or bool(re.search(r"24\s*小时内已交锋过多", raw))
 
 
+def _duel_target_remaining(text):
+    match = RE_DUEL_TARGET_REMAINING.search(str(text or ""))
+    return int(match.group("remaining")) if match else None
+
+
+def _duel_target_remaining_exhausted(text):
+    remaining = _duel_target_remaining(text)
+    return remaining is not None and remaining <= 0
+
+
 def _per_target_duel_limit_target(text, fallback=""):
     raw = str(text or "")
     for pattern in (RE_DUEL_DAILY_LIMIT_TARGET, RE_DUEL_ROLLING_LIMIT_TARGET):
         match = pattern.search(raw)
         if match:
             return normalize_duel_target(match.group("target"))
+    return normalize_duel_target(fallback)
+
+
+def _duel_report_target(text, fallback=""):
+    match = RE_DUEL_DEFENDER.search(str(text or ""))
+    if match:
+        target_aliases = _configured_target_aliases()
+        canonical = target_aliases.get(_username_key(match.group("username")))
+        if canonical:
+            return canonical
     return normalize_duel_target(fallback)
 
 
@@ -2750,6 +2775,40 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
                 f"✅ 斗法已关闭：{_duel_progress_label(completion['completed_count'], total_count)}",
                 scope="identity",
                 limit=180,
+            )
+            return True
+        # Some report versions close the target quota in the terminal report
+        # itself: “对此人剩余交锋: 0”. It is still a real duel and must count
+        # before the target is marked exhausted; otherwise the batch appears
+        # one short and the loadout stays in battle_ready until reconciliation.
+        if _duel_target_remaining_exhausted(raw_text):
+            limited_target = _duel_report_target(raw_text, target)
+            _mark_target_daily_limited(limited_target, now)
+            next_target = _target_token(now)
+            state["duel_last_error"] = ""
+            if next_target:
+                _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+                save_state()
+                await send_audit_log(
+                    f"🗡️ 目标 {limited_target} 剩余交锋已归零，切换至 {next_target}。",
+                    scope="identity",
+                    limit=220,
+                )
+                return True
+            completion = _complete_duel_batch(now)
+            save_state()
+            if completion["restoring"]:
+                await send_audit_log(
+                    f"✅ 目标 {limited_target} 剩余交锋已归零（完成 {completion['completed_count']} 场），开始恢复原法宝配装。",
+                    scope="identity",
+                    limit=240,
+                )
+                return True
+            await send_audit_log(
+                f"✅ 目标 {limited_target} 剩余交锋已归零（完成 {completion['completed_count']} 场），"
+                f"次日批次→{fmt_abs_ts(completion['next_duel_time'])}。",
+                scope="identity",
+                limit=240,
             )
             return True
     _schedule_next_duel(now, _duel_next_delay_from_result(raw_text, weak_or_unknown))
