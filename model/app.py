@@ -387,16 +387,28 @@ async def run_channel_send_as_health_scheduler(now):
                         if peer_id > 0:
                             available_identity_ids.add(peer_id)
                             break
-                restored_identity_ids = [
+                candidate_identity_ids = [
                     identity_id
                     for identity_id in restore_identity_ids
                     if identity_id in available_identity_ids
                 ]
-            except PeerIdInvalidError:
+            except (PeerIdInvalidError, SendAsPeerInvalidError):
                 # Some supergroups reject GetSendAs while still accepting a
-                # valid SaveDefaultSendAs. Probe each frozen identity so one
-                # stale channel cannot keep the whole cohort disabled.
-                for identity_id in restore_identity_ids:
+                # valid SaveDefaultSendAs. Fall back to probing each frozen
+                # identity directly.
+                candidate_identity_ids = list(restore_identity_ids)
+
+            # GetSendAs can keep returning stale channel candidates after the
+            # group has disabled channel posting. Only a real send-as switch
+            # proves that an identity is usable again.
+            personal_send_as = await asyncio.wait_for(
+                client_obj.get_input_entity(account_id),
+                timeout=20,
+            )
+            try:
+                if not candidate_identity_ids:
+                    raise SendAsPeerInvalidError(request=None)
+                for identity_id in candidate_identity_ids:
                     try:
                         probe_send_as = await asyncio.wait_for(
                             client_obj.get_input_entity(identity_id),
@@ -409,12 +421,11 @@ async def run_channel_send_as_health_scheduler(now):
                     except (PeerIdInvalidError, SendAsPeerInvalidError):
                         continue
                     restored_identity_ids.append(identity_id)
-                if restored_identity_ids:
-                    personal_send_as = await asyncio.wait_for(client_obj.get_input_entity(account_id), timeout=20)
-                    await asyncio.wait_for(
-                        client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
-                        timeout=20,
-                    )
+            finally:
+                await asyncio.wait_for(
+                    client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
+                    timeout=20,
+                )
             if not restored_identity_ids:
                 raise SendAsPeerInvalidError(request=None)
     except (PeerIdInvalidError, SendAsPeerInvalidError) as exc:
