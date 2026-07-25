@@ -1468,10 +1468,19 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
             return False
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
-        retry_at = float(blocked_until + CD_BUFFER_SEC)
         current_due = float(state.get("next_explore_rift_time", 0) or due_at or now)
-        state["next_explore_rift_time"] = max(current_due, retry_at)
-        state["explore_rift_tianxing_prepare_retry_at"] = 0
+        # A stale route prediction can expire just before the rift cooldown.
+        # Keep the game's rift deadline in that narrow window and wake the
+        # preparation path at the real prediction expiry; otherwise the old
+        # code moved the whole rift timer past its already-ready cooldown and
+        # lost the chance to rebuild the route promptly.
+        if due_at > now and blocked_until <= due_at:
+            state["next_explore_rift_time"] = max(current_due, due_at)
+            state["explore_rift_tianxing_prepare_retry_at"] = max(now, blocked_until)
+        else:
+            retry_at = float(blocked_until + CD_BUFFER_SEC)
+            state["next_explore_rift_time"] = max(current_due, retry_at)
+            state["explore_rift_tianxing_prepare_retry_at"] = 0
         state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
         save_state()
         return False
