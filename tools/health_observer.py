@@ -1459,6 +1459,31 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             recovery_throttle_until = parse_optional_epoch(meta_state.get("global_recovery_throttle_until"))
             recovery_active = now < max(recovery_hold_until, recovery_throttle_until)
             scheduling_suppressed = global_paused or recovery_active
+            channel_send_as_health = parse_json_dict(meta_state.get("channel_send_as_health"))
+            channel_status = str(channel_send_as_health.get("status") or "").strip().lower()
+            channel_frozen_ids = [
+                int(identity_id)
+                for identity_id in channel_send_as_health.get("frozen_identity_ids") or []
+                if positive_int(identity_id) > 0
+            ]
+            channel_restore_ids = [
+                int(identity_id)
+                for identity_id in channel_send_as_health.get("restore_identity_ids") or []
+                if positive_int(identity_id) > 0
+            ]
+            if channel_status == "closed" and (channel_frozen_ids or channel_restore_ids):
+                alerts.append(
+                    business_alert(
+                        f"channel send-as cohort frozen: {len(channel_frozen_ids)}",
+                        count=len(channel_frozen_ids),
+                        sample={
+                            "restore_count": len(channel_restore_ids),
+                            "last_error": channel_send_as_health.get("last_error"),
+                            "last_probe_at": channel_send_as_health.get("last_probe_at"),
+                            "next_probe_at": channel_send_as_health.get("next_probe_at"),
+                        },
+                    )
+                )
             pending_rows = conn.execute(
                 """
                 SELECT send_as_id, cmd, sent_at, timeout, retry, max_retry, source_module
@@ -1622,6 +1647,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "global_pause_source": global_pause_source,
         "recovery_hold_until": recovery_hold_until,
         "recovery_throttle_until": recovery_throttle_until,
+        "channel_send_as_health": channel_send_as_health,
         "alerts": alerts,
     }
 
@@ -1881,6 +1907,17 @@ def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
             "overdue_pending": (db_state.get("overdue_pending") or [])[:5],
             "stuck_phases": (db_state.get("stuck_phases") or [])[:5],
         })
+        channel_health = db_state.get("channel_send_as_health")
+        if isinstance(channel_health, dict) and str(channel_health.get("status") or "").lower() == "closed":
+            refs.append({
+                "kind": "channel_send_as_health",
+                "status": channel_health.get("status"),
+                "frozen_count": len(channel_health.get("frozen_identity_ids") or []),
+                "restore_count": len(channel_health.get("restore_identity_ids") or []),
+                "last_error": channel_health.get("last_error"),
+                "last_probe_at": channel_health.get("last_probe_at"),
+                "next_probe_at": channel_health.get("next_probe_at"),
+            })
     listener = snapshot.get("listener") if isinstance(snapshot.get("listener"), dict) else {}
     if listener:
         refs.append({
