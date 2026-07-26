@@ -3353,5 +3353,58 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(duel.is_duel_reply_text(sample))
 
 
+class DuelBroadcastClockTests(unittest.IsolatedAsyncioTestCase):
+    """广播处理必须以广播自身的时刻为时间基准。"""
+
+    def setUp(self):
+        super().setUp()
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        super().tearDown()
+
+    def _prepare_identity(self, identity_id=8659059191):
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="walterwa2000", realm="元婴后期")
+        return identity_id
+
+    def test_target_token_uses_the_passed_clock_not_the_wall_clock(self):
+        """`_daily_limited_targets` 会在 day_key 不匹配时清空日限记录。
+
+        传入的 now 与真实墙钟落在不同日期时，用错基准就会把「昨天的日限」
+        当成今天的、或反过来把今天的记录误清。
+        """
+        noon = 1785038400.0  # 2026-07-26 12:00 +08:00
+        next_day = noon + 24 * 3600
+
+        identity_id = self._prepare_identity()
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_daily_limit_day"] = duel._duel_day_key(noon)
+            state_module.state["duel_daily_limited_targets"] = ["@rival"]
+
+            # 以同一天的 now 查询：日限记录必须保留
+            limited_same_day = duel._daily_limited_targets(noon)
+            self.assertTrue(limited_same_day, "同日查询不应清空日限记录")
+
+            # 以次日的 now 查询：记录应被重置
+            limited_next_day = duel._daily_limited_targets(next_day)
+            self.assertFalse(limited_next_day, "跨日查询应重置日限记录")
+
+    async def test_broadcast_passes_its_own_timestamp_downstream(self):
+        identity_id = self._prepare_identity()
+        noon = 1785038400.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            with (
+                patch.object(duel, "_has_active_duel_window", return_value=True),
+                patch.object(duel, "_target_token", return_value="") as token_mock,
+            ):
+                await duel.handle_duel_broadcast(duel.DUEL_REPORT_PREFIX + " x", noon)
+
+        token_mock.assert_called_once_with(noon)
+
+
 if __name__ == "__main__":
     unittest.main()

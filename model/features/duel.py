@@ -2605,7 +2605,8 @@ async def handle_duel_broadcast(text, now, event=None, result_msg_id=0):
     if not (raw.startswith(DUEL_REPORT_PREFIX) or raw.startswith(DUEL_FINAL_PREFIX)):
         return False
     identity_id = get_current_identity_id()
-    target = _target_token()
+    # 用广播自身的时刻判定日限目标，而不是处理时的墙钟
+    target = _target_token(now)
     if _profile_username_keys(identity_id) and not _identity_tag_in_text(raw, identity_id):
         return False
     if target and not _target_tag_in_text(raw, target):

@@ -1392,7 +1392,8 @@ async def _send_owner_action(observed, action, now, *, command_override=""):
     command = str(command_override or WANXIN_ACTION_COMMANDS.get(action, "")).strip()
     if not command:
         return False
-    phaseful_reason = get_phaseful_summary_risk_reason()
+    # 结算避让要按本次动作的时刻判断，与下面的 _schedule_next 用同一个基准
+    phaseful_reason = get_phaseful_summary_risk_reason(now)
     if phaseful_reason:
         _schedule_next(observed, now, WANXIN_PHASEFUL_DEFER_SEC, result=f"避让结算：{phaseful_reason}")
         return False
