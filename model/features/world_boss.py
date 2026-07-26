@@ -278,8 +278,11 @@ def _get_run_state(now=None):
     return _normalize_run_state(get_world_boss_run_state(), now)
 
 
-def _set_run_state(record, *, persist=True):
-    set_world_boss_run_state(_normalize_run_state(record))
+def _set_run_state(record, *, persist=True, now=None):
+    # 归一化时必须沿用调用方的 now。省略它会让写入按真实墙钟重新判定过期，于是
+    # 一份刚以 now 建立的状态可能立刻被判成「跨日过期」而失活——调用方推进时间、
+    # 回放历史事件或恰好跨过午夜时都会踩到。
+    set_world_boss_run_state(_normalize_run_state(record, now))
     if persist:
         if save_state() is False:
             mark_dirty()
@@ -691,7 +694,7 @@ def _clear_inactive_world_boss_status_residue(run_state, now):
         identity_state["world_boss_last_error"] = ""
         changed = True
     if changed:
-        _set_run_state(run_state, persist=False)
+        _set_run_state(run_state, persist=False, now=now)
     return changed
 
 
@@ -703,7 +706,7 @@ def _clear_stale_inactive_event_pending(run_state, now):
     cleared = _clear_all_world_boss_pending(reason)
     if expired:
         _archive_inactive_event_state(run_state, now, reason)
-        _set_run_state(run_state, persist=False)
+        _set_run_state(run_state, persist=False, now=now)
         console_log(
             "🗡 真仙试锋已归档过期事件状态。",
             scope="global",
@@ -713,7 +716,7 @@ def _clear_stale_inactive_event_pending(run_state, now):
     if cleared:
         run_state["next_action_at"] = 0
         run_state["next_status_query_at"] = 0
-        _set_run_state(run_state, persist=False)
+        _set_run_state(run_state, persist=False, now=now)
         console_log(
             "🗡 真仙试锋已清理过期事件残留待回复。",
             scope="global",
@@ -726,7 +729,7 @@ def _reset_world_boss_round(run_state, now, *, persist=True):
     run_state["round_started_at"] = float(now)
     run_state["round_completed_at"] = 0
     run_state["next_action_at"] = float(now)
-    _set_run_state(run_state, persist=persist)
+    _set_run_state(run_state, persist=persist, now=now)
     return run_state
 
 
@@ -876,7 +879,7 @@ def _schedule_next_world_boss_action(run_state, now, *, persist=True):
         candidates.append(next_pending_status_due_at)
     if candidates:
         run_state["next_action_at"] = max(float(now), min(candidates))
-    _set_run_state(run_state, persist=persist)
+    _set_run_state(run_state, persist=persist, now=now)
     return run_state
 
 
@@ -1416,7 +1419,7 @@ async def _open_event(parsed, now, current_msg_id=0):
     run_state["opened_at"] = float(now)
     run_state["last_open_log_key"] = event_key
     run_state["next_status_query_at"] = float(now) + 15
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     return True
 
 
@@ -1672,7 +1675,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
         priority="high",
         limit=260,
     )
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     return True
 
 
@@ -1821,7 +1824,7 @@ async def _close_event(parsed, now, *, log=True):
             priority="medium",
             limit=700,
         )
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     return True
 
 
@@ -1841,7 +1844,7 @@ async def _mark_inactive(now):
             continue
         _clear_world_boss_pending_action(identity_state)
     _clear_world_boss_pending_tasks()
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     return True
 
 
@@ -1892,7 +1895,7 @@ async def _handle_status(parsed, now, *, identity_id=0, current_msg_id=0):
             pass
     await _maybe_log_phase_change(run_state, now)
     _maybe_interrupt_round_for_priority_window(run_state, now)
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     _start_world_boss_round_if_ready(now)
     return True
 
@@ -1919,7 +1922,7 @@ async def _handle_action(parsed, now, *, identity_id=0, current_msg_id=0):
     await _maybe_log_phase_change(run_state, now)
     await _maybe_log_progress(run_state, now)
     _maybe_interrupt_round_for_priority_window(run_state, now)
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     _start_world_boss_round_if_ready(now)
     return True
 
@@ -2018,7 +2021,7 @@ async def _send_status_query(identity_id, now, run_state, reason, *, allow_inact
         _clear_all_world_boss_pending("战况查询已过期")
         run_state["next_status_query_at"] = 0
         run_state["next_action_at"] = 0
-        _set_run_state(run_state, persist=False)
+        _set_run_state(run_state, persist=False, now=now)
         return False
     chain_id = _event_chain_id(run_state, now)
     try:
@@ -2042,7 +2045,7 @@ async def _send_status_query(identity_id, now, run_state, reason, *, allow_inact
                 _coerce_float(run_state.get("next_action_at"), 0),
                 run_state["next_status_query_at"],
             )
-        _set_run_state(run_state)
+        _set_run_state(run_state, now=now)
         console_log(
             f"🗡 真仙试锋[{_identity_label(identity_id)}] 战况查询无回复，补查已达上限，暂停本轮战况补查。",
             scope="identity",
@@ -2072,7 +2075,7 @@ async def _send_status_query(identity_id, now, run_state, reason, *, allow_inact
         run_state["next_status_query_at"] = sent_at + WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC
         if recovery_probe:
             run_state["next_action_at"] = 0
-        _set_run_state(run_state)
+        _set_run_state(run_state, now=now)
         return False
     if identity_state is not None:
         if not _has_pending_world_boss_action(identity_state):
@@ -2087,7 +2090,7 @@ async def _send_status_query(identity_id, now, run_state, reason, *, allow_inact
         run_state["next_action_at"] = 0
     else:
         run_state["next_action_at"] = max(_coerce_float(run_state.get("next_action_at"), 0), sent_at + WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC)
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     if is_retry:
         console_log(
             f"🗡 真仙试锋[{_identity_label(identity_id)}] 战况查询无回复，已补查{retry_count}。",
@@ -2128,7 +2131,7 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
     if not msg:
         identity_state["world_boss_last_error"] = f"{action}发送失败"
         run_state["next_action_at"] = sent_at + WORLD_BOSS_STATUS_QUERY_GAP_SEC
-        _set_run_state(run_state)
+        _set_run_state(run_state, now=now)
         return False
     latest_run_state = _get_run_state(sent_at)
     identity_state["world_boss_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
@@ -2140,7 +2143,7 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
         _clear_world_boss_pending_action(identity_state)
         identity_state["world_boss_last_error"] = "发送后事件已结束，等待无进行中回包"
         clear_pending_tasks_by_commands({command}, send_as_id=identity_id)
-        _set_run_state(latest_run_state)
+        _set_run_state(latest_run_state, now=now)
         return sent_at
     run_state = latest_run_state
     identity_state["world_boss_last_action"] = action
@@ -2152,7 +2155,7 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
         identity_state["world_boss_attack_count"] = _coerce_int(identity_state.get("world_boss_attack_count"), 0) + 1
     run_state["last_action_at"] = sent_at
     run_state["next_action_at"] = sent_at + (WORLD_BOSS_PENDING_TIMEOUT_SEC if is_retry else WORLD_BOSS_ACTION_GAP_SEC)
-    _set_run_state(run_state)
+    _set_run_state(run_state, now=now)
     retry_suffix = f"补发{retry_count}" if is_retry else ""
     console_log(
         f"🗡 真仙试锋[{_identity_label(identity_id)}] 已发送{action}{retry_suffix}，快速轮询下一身份。",
@@ -2292,7 +2295,7 @@ async def run_world_boss_scheduler(now):
             run_state["miniapp_auto_status"] = "interrupted"
             run_state["miniapp_auto_finished_at"] = now
             run_state["last_result"] = "MiniApp 任务中断，禁止自动续跑"
-            _set_run_state(run_state)
+            _set_run_state(run_state, now=now)
             await send_audit_log(
                 "🗡 真仙试锋 MiniApp 任务检测到服务中断，已保守停止本场自动续跑；请按脱敏抓包与进度账本复核，避免重复入场或重复结算。",
                 scope="global",
@@ -2303,7 +2306,7 @@ async def run_world_boss_scheduler(now):
         enabled_ids = _enabled_identity_ids()
         if not enabled_ids:
             if run_state != get_world_boss_run_state():
-                _set_run_state(run_state, persist=False)
+                _set_run_state(run_state, persist=False, now=now)
             return
 
         if not run_state.get("active"):
@@ -2312,12 +2315,12 @@ async def run_world_boss_scheduler(now):
             if _has_any_pending_status():
                 if _recovery_probe_pending(run_state, now):
                     if not _has_due_pending_status(now):
-                        _set_run_state(run_state, persist=False)
+                        _set_run_state(run_state, persist=False, now=now)
                         return
                     status_identity_id, _identity_state = _pending_status_identity(now)
                     if status_identity_id:
                         if _identity_state is not None and await _recover_world_boss_pending_from_message_log(status_identity_id, _identity_state, now):
-                            _set_run_state(_get_run_state(now), persist=False)
+                            _set_run_state(_get_run_state(now), persist=False, now=now)
                             return
                         await _send_status_query(
                             status_identity_id,
@@ -2327,26 +2330,26 @@ async def run_world_boss_scheduler(now):
                             allow_inactive_probe=True,
                         )
                     else:
-                        _set_run_state(run_state, persist=False)
+                        _set_run_state(run_state, persist=False, now=now)
                     return
                 _clear_all_world_boss_pending("未观测到进行中事件，停止战况补查")
                 run_state["next_status_query_at"] = 0
                 run_state["next_action_at"] = 0
-                _set_run_state(run_state, persist=False)
+                _set_run_state(run_state, persist=False, now=now)
                 return
             if _clear_inactive_world_boss_status_residue(run_state, now):
                 return
             if _recovery_probe_due(run_state, now):
                 await _send_status_query(enabled_ids[0], now, run_state, "服务恢复探测", allow_inactive_probe=True)
                 return
-            _set_run_state(run_state, persist=False)
+            _set_run_state(run_state, persist=False, now=now)
             return
 
         if run_state.get("remaining_sec", 0) <= 0 and run_state.get("last_status_at", 0) > 0 and now - float(run_state.get("last_status_at") or 0) > 120:
             run_state["active"] = False
             run_state["closed_at"] = now
             run_state["last_result"] = run_state.get("last_result") or "等待结算"
-            _set_run_state(run_state)
+            _set_run_state(run_state, now=now)
             return
 
         if not _status_is_fresh(run_state, now):
@@ -2360,7 +2363,7 @@ async def run_world_boss_scheduler(now):
             if _has_any_pending_status():
                 if not _status_retry_allowed(run_state, now):
                     _clear_all_world_boss_pending("战况查询已过期")
-                    _set_run_state(run_state, persist=False)
+                    _set_run_state(run_state, persist=False, now=now)
                     return
                 if not _has_due_pending_status(now):
                     _schedule_next_world_boss_action(run_state, now)
@@ -2372,12 +2375,12 @@ async def run_world_boss_scheduler(now):
                         return
                     await _send_status_query(status_identity_id, now, run_state, "战况查询无回复")
                 else:
-                    _set_run_state(run_state, persist=False)
+                    _set_run_state(run_state, persist=False, now=now)
                 return
             if now >= _coerce_float(run_state.get("next_status_query_at"), 0):
                 await _send_status_query(enabled_ids[0], now, run_state, "战况过期")
             else:
-                _set_run_state(run_state, persist=False)
+                _set_run_state(run_state, persist=False, now=now)
             return
         if not _world_boss_round_task_running():
             _start_world_boss_round_task(now)

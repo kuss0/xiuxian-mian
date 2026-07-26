@@ -150,6 +150,13 @@ MINIAPP_ZERO_PARTICIPANT_CONCLUSION_TEXT = (
 )
 
 
+# 固定为 2026-07-26 12:00:00 +08:00。这些用例会把时间推进到 now + 若干间隔，
+# 用真实墙钟时若正好临近午夜，推进后的时刻会跨日，get_day_key 随之改变，
+# 世界 boss 的 event_key 判定失配、放弃发送——测试便在深夜莫名其妙地红。
+# 选正午可让前后各留 12 小时余量。
+_FIXED_NOW = 1785038400.0
+
+
 class WorldBossTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
@@ -781,7 +788,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_starts_next_round_after_round_gap(self):
         first_state = self._register(301299112, label="jfdffdddd")
         second_state = self._register(3504367852, label="竹节虫1")
-        now = world_boss.time.time()
+        now = _FIXED_NOW
         state_module.set_world_boss_run_state(
             {
                 "active": True,
@@ -1029,7 +1036,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_probe_status_reply_starts_active_event(self):
         identity_id = 301299112
         identity_state = self._register(identity_id, label="jfdffdddd")
-        now = world_boss.time.time()
+        now = _FIXED_NOW
         identity_state["world_boss_pending_msg_id"] = 9101
         identity_state["world_boss_pending_action"] = "status"
         identity_state["world_boss_pending_since"] = now - 10
@@ -1104,7 +1111,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_clears_inactive_status_residue_without_resending(self):
         identity_id = 301299112
         identity_state = self._register(identity_id, label="jfdffdddd")
-        now = world_boss.time.time()
+        now = _FIXED_NOW
         identity_state["world_boss_last_error"] = "战况查询无回复战况查询发送失败"
         state_module.set_world_boss_run_state(
             {
@@ -1131,7 +1138,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
     async def test_active_status_query_no_reply_retries_after_reply_timeout_with_retry_marker(self):
         identity_id = 301299112
         identity_state = self._register(identity_id, label="jfdffdddd")
-        now = world_boss.time.time()
+        now = _FIXED_NOW
         retry_now = now + world_boss.WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC + 2
         state_module.set_world_boss_run_state(
             {
@@ -1752,6 +1759,38 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
         self.assertEqual("", identity_state["world_boss_pending_action"])
         self.assertEqual(1, state_module.get_world_boss_run_state()["summary"]["镇魂"])
+
+    def test_set_run_state_keeps_caller_clock_across_day_boundary(self):
+        """写入运行态时必须沿用调用方的 now，不能回落到真实墙钟。
+
+        `_normalize_run_state` 会把「event_key 的日期 != get_day_key(now)」判成
+        跨日过期并清掉 active。若 `_set_run_state` 不传 now，一份刚以调用方时钟
+        建立的状态会立刻被真实时钟判死——恰好跨过午夜、回放历史事件或调用方推进
+        时间时都会踩到。
+        """
+        # 用一个确定属于「昨天」的时刻建立活动态
+        yesterday = _FIXED_NOW - 24 * 3600
+        run_state = {
+            "active": True,
+            "event_key": f"{world_boss.get_day_key(yesterday)}:test",
+            "opened_at": yesterday,
+            "phase": "第一阶段·万火归源",
+        }
+
+        with patch.object(world_boss, "save_state", return_value=True):
+            world_boss._set_run_state(run_state, persist=False, now=yesterday)
+
+        stored = state_module.get_world_boss_run_state()
+        self.assertTrue(stored["active"], "按调用方时钟写入的状态不应被判为跨日过期")
+
+        # 反过来：真按当前时钟归一化时，昨天的事件确实应该失活
+        with patch.object(world_boss, "save_state", return_value=True):
+            world_boss._set_run_state(run_state, persist=False, now=_FIXED_NOW)
+
+        self.assertFalse(
+            state_module.get_world_boss_run_state()["active"],
+            "跨日判定本身要保留，只是必须以调用方的 now 为准",
+        )
 
     def test_manifest_maps_world_boss_to_module(self):
         self.assertEqual("真仙试锋", module_manifest.get_module_name_for_reply_family("world_boss"))
