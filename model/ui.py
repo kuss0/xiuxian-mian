@@ -403,7 +403,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_small_world_harvest_enabled": True,
     "cave_public_deep_status_enabled": True,
     "cave_public_treasure_enabled": True,
-    "cave_public_treasure_channel_identities_enabled": False,
+    "cave_public_treasure_channel_identity_ids": [],
     "cave_public_trial_enabled": True,
     "cave_public_fishing_enabled": False,
     "cave_public_fishing_identity_ids": [],
@@ -490,7 +490,6 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_small_world_harvest_enabled",
         "cave_public_deep_status_enabled",
         "cave_public_treasure_enabled",
-        "cave_public_treasure_channel_identities_enabled",
         "cave_public_trial_enabled",
         "cave_public_fishing_enabled",
         "cave_public_stargazer_enabled",
@@ -551,6 +550,14 @@ def normalize_miniapp_auto_config(config=None):
     result["cave_public_fishing_identity_ids"] = sorted({
         int(identity_id)
         for identity_id in fishing_identity_ids
+        if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+    })
+    treasure_channel_ids = result.get("cave_public_treasure_channel_identity_ids") or []
+    if not isinstance(treasure_channel_ids, (list, tuple, set)):
+        treasure_channel_ids = []
+    result["cave_public_treasure_channel_identity_ids"] = sorted({
+        int(identity_id)
+        for identity_id in treasure_channel_ids
         if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
     })
     for key, default in (

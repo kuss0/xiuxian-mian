@@ -2564,26 +2564,36 @@ class CaveTreasureChannelIdentityGateTests(unittest.TestCase):
         error = cave_treasure_runtime._public_entry_account_identity_error(3504367852)
         self.assertIn("按登录账号共享", error)
 
-    def test_channel_identity_passes_when_lab_flag_is_on(self):
+    def test_channel_identity_passes_when_allowlisted(self):
         with patch.object(
-            cave_treasure_runtime, "_channel_identity_treasure_enabled", return_value=True
+            cave_treasure_runtime, "_channel_identity_treasure_allowed", return_value=True
         ):
             self.assertEqual(
                 "", cave_treasure_runtime._public_entry_account_identity_error(3504367852)
             )
 
-    def test_flag_reads_from_miniapp_auto_config(self):
+    def test_allowlist_reads_from_miniapp_auto_config(self):
         from model import ui
 
         base = ui.normalize_miniapp_auto_config()
-        self.assertFalse(
-            base.get("cave_public_treasure_channel_identities_enabled"),
-            "旗标必须默认关闭",
+        self.assertEqual(
+            [], base.get("cave_public_treasure_channel_identity_ids"),
+            "白名单必须默认为空",
         )
         enabled = ui.normalize_miniapp_auto_config(
-            {**base, "cave_public_treasure_channel_identities_enabled": True}
+            {**base, "cave_public_treasure_channel_identity_ids": ["3504367852", 0, "bad"]}
         )
-        self.assertTrue(enabled.get("cave_public_treasure_channel_identities_enabled"))
+        self.assertEqual([3504367852], enabled.get("cave_public_treasure_channel_identity_ids"))
+
+    def test_allowlist_gates_per_identity(self):
+        from model import ui
+
+        config = ui.normalize_miniapp_auto_config(
+            {**ui.normalize_miniapp_auto_config(), "cave_public_treasure_channel_identity_ids": [3504367852]}
+        )
+        with patch.object(ui, "normalize_miniapp_auto_config", return_value=config):
+            self.assertTrue(cave_treasure_runtime._channel_identity_treasure_allowed(3504367852))
+            self.assertFalse(cave_treasure_runtime._channel_identity_treasure_allowed(3581351795))
 
 
 if __name__ == "__main__":

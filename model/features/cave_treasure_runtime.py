@@ -168,20 +168,23 @@ def _parse_public_cave_entry_url(public_entry_url):
     return launch.start_param, launch.webview_url, ""
 
 
-def _channel_identity_treasure_enabled():
-    """Lab flag: allow channel identities to run treasure on the selected panel.
+def _channel_identity_treasure_allowed(identity_id):
+    """Lab allowlist: channel identities permitted to run treasure themselves.
 
     The account-only gate below was added on the assumption that treasure
     attempts are shared per Telegram login account. Protocol captures say the
     hunt quota (dwelling.hunt used/limit/remaining) is returned per selected
-    playerId, which contradicts that. Default stays off; flip
-    `cave_public_treasure_channel_identities_enabled` in miniapp auto config to
-    validate with one real run before opening it wider.
+    playerId, which contradicts that. Roll-out is by explicit identity id in
+    `cave_public_treasure_channel_identity_ids` (default empty), so the
+    contradiction can be validated one identity at a time.
     """
     try:
         from ..ui import normalize_miniapp_auto_config
 
-        return bool(normalize_miniapp_auto_config().get("cave_public_treasure_channel_identities_enabled"))
+        allowed = normalize_miniapp_auto_config().get("cave_public_treasure_channel_identity_ids") or ()
+        return int(identity_id or 0) in {
+            int(value) for value in allowed if str(value or "").strip().lstrip("-").isdigit()
+        }
     except Exception:
         return False
 
@@ -194,7 +197,7 @@ def _public_entry_account_identity_error(identity_id):
     except (TypeError, ValueError, OverflowError):
         account_id = 0
     if account_id > 0 and account_id != identity_id:
-        if _channel_identity_treasure_enabled():
+        if _channel_identity_treasure_allowed(identity_id):
             return ""
         return "洞府寻宝次数按登录账号共享，请使用该账号本体身份执行"
     return ""
