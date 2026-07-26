@@ -87,6 +87,49 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return log_path
 
+    async def test_unknown_rift_panel_keeps_passive_observation_written_during_send(self):
+        """裂缝查盘 await 期间到达的被动盘面观测不得被整块覆盖。
+
+        send_game_command 会让出事件循环，此时 Telethon 消息回调可能通过
+        apply_tianxing_passive 改写 tianxing_observation。若查盘流程回写
+        await 之前的副本，那次观测就会静默丢失。
+        """
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            observed = tianxing.normalize_tianxing_observation(
+                state_module.state.get("tianxing_observation")
+            )
+            observed["explore_rift_unknown_snapshot"] = {"panel_sent_at": 0, "panel_msg_id": 0}
+            state_module.state["tianxing_observation"] = observed
+
+            async def _fake_send(*args, **kwargs):
+                # 模拟发送期间被动侧写入了一次新的盘面观测
+                concurrent = tianxing.normalize_tianxing_observation(
+                    state_module.state.get("tianxing_observation")
+                )
+                concurrent["last_action"] = "天机盘"
+                concurrent["last_observed_at"] = now + 1
+                concurrent["current_prediction"] = "妖route"
+                state_module.state["tianxing_observation"] = concurrent
+                return SimpleNamespace(id=54321, sent_at=now + 2)
+
+            with patch.object(explore_rift, "send_game_command", new=_fake_send):
+                handled = await explore_rift._request_unknown_rift_panel(now)
+
+            self.assertTrue(handled)
+            final = tianxing.normalize_tianxing_observation(
+                state_module.state.get("tianxing_observation")
+            )
+            # 并发写入的三个字段必须存活
+            self.assertEqual("天机盘", final.get("last_action"))
+            self.assertEqual(now + 1, float(final.get("last_observed_at") or 0))
+            self.assertEqual("妖route", final.get("current_prediction"))
+            # 本次查盘自己的改动同样要落盘
+            snapshot = final.get("explore_rift_unknown_snapshot") or {}
+            self.assertEqual(54321, int(snapshot.get("panel_msg_id") or 0))
+            self.assertEqual(now + 2, float(snapshot.get("panel_sent_at") or 0))
+
     def test_status_text_shows_quiet_lock_during_rebirth_recovery(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

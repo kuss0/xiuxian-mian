@@ -572,6 +572,50 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
+    async def test_scheduler_rereads_observation_after_reminder_await(self):
+        """提醒发送 await 期间的并发写入不得被调度器整块覆盖。
+
+        run_hehuan_scheduler 跑在后台身份调度 task 里，而 run_retry_scheduler
+        跑在主循环里并会调用 reconcile_hehuan_timeout_from_pending 改写同一份
+        hehuan_observation；两者可以交错。
+        """
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "auto_next_time": now + 7200,
+            }
+
+            async def _fake_reminders(observed, when):
+                # 模拟 await 期间 retry 调度器写入的对账结果：既落一个后续流程不会
+                # 覆盖的观测字段，也把 auto_next_time 提前到已到期。
+                concurrent = hehuan.normalize_hehuan_observation(
+                    state_module.state.get("hehuan_observation")
+                )
+                concurrent["last_partner"] = "@reconciled_partner"
+                concurrent["auto_next_time"] = now - 1
+                state_module.state["hehuan_observation"] = concurrent
+                # 关键：changed=True 会让调度器把返回值回写进 state。返回 await
+                # 之前的陈旧副本，模拟真实实现里"入参对象已与 state 最新值脱节"
+                # 的情形——不重读的话并发写入就在这一步被抹掉。
+                return True, copy.deepcopy(observed), False
+
+            with (
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "_run_hehuan_valuable_drop_reminders", new=_fake_reminders),
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            final = hehuan.normalize_hehuan_observation(
+                state_module.state.get("hehuan_observation")
+            )
+            # 并发写入必须存活；若调度器沿用 await 之前的副本，这条会被抹掉，
+            # 且调度器会因旧的 auto_next_time=now+7200 直接早退。
+            self.assertEqual("@reconciled_partner", final.get("last_partner"))
+
     async def test_scheduler_sends_warm_when_contract_hint_and_due(self):
         now = 1_780_000_000.0
         msg = SimpleNamespace(id=9001, sent_at=now)

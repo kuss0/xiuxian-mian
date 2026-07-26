@@ -844,6 +844,10 @@ async def _request_unknown_rift_panel(now):
         priority="chain",
         source_module="探寻裂缝",
     )
+    # 发送期间让出了事件循环，被动盘面（app.py 的 apply_tianxing_passive）可能已经
+    # 改写过 tianxing_observation。重读最新快照后只并回本次真正修改的字段，避免用
+    # await 之前的副本整块覆盖掉期间到达的观测。
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), CMD_TIANXING_PANEL)
         if str(send_block.get("status") or "") == "unknown":

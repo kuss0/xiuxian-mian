@@ -1154,8 +1154,14 @@ async def _ensure_hehuan_reply_anchor(observed, now):
             op_id=f"hehuan-anchor-{int(now)}",
             delete_policy="manual_keep",
         )
+        # 锚点发送期间让出了事件循环；把本次改动并回最新快照，而不是用 await 之前
+        # 的副本整块覆盖（observed 是调用方持有的入参，需同步保持一致）。
         observed["auto_anchor_requested_at"] = float(now)
-        state["hehuan_observation"] = observed
+        latest = normalize_hehuan_observation(state.get("hehuan_observation"))
+        latest["auto_anchor_requested_at"] = float(now)
+        latest["last_partner_identity_id"] = partner_id
+        observed.update(latest)
+        state["hehuan_observation"] = latest
         save_state()
         anchor_msg_id = int(getattr(anchor_msg, "id", 0) or 0) if anchor_msg else 0
         if anchor_msg_id > 0:
@@ -1305,9 +1311,16 @@ async def run_hehuan_scheduler(now):
 
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     reminders_changed, observed, reminder_sent = await _run_hehuan_valuable_drop_reminders(observed, now)
+    # 提醒发送期间让出过事件循环，run_retry_scheduler 可能已通过
+    # reconcile_hehuan_timeout_from_pending 改写 hehuan_observation（两者分别跑在
+    # 后台身份调度 task 和主循环里）。回写只并回提醒流程自己的字段，后续判定也必须
+    # 基于最新快照，否则期间到达的对账结果会被 await 之前的副本整块覆盖。
+    latest = normalize_hehuan_observation(state.get("hehuan_observation"))
     if reminders_changed:
-        state["hehuan_observation"] = observed
+        latest["valuable_drop_reminders"] = observed.get("valuable_drop_reminders")
+        state["hehuan_observation"] = latest
         save_state()
+    observed = latest
     if reminder_sent:
         return
 
