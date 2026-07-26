@@ -316,495 +316,572 @@ def _get_schema_version(conn):
         return 0
 
 
-def _ensure_schema_columns(conn):
-    module_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_module_state)").fetchall()}
-    if "quiz_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
-    if "jiyin_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
-    if "pet_trial_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_trial_enabled INTEGER NOT NULL DEFAULT 0")
-    if "pet_warm_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_warm_enabled INTEGER NOT NULL DEFAULT 0")
-    if "pet_formation_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_formation_enabled INTEGER NOT NULL DEFAULT 0")
-    if "ranch_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN ranch_enabled INTEGER NOT NULL DEFAULT 0")
-    if "wild_training_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN wild_training_enabled INTEGER NOT NULL DEFAULT 0")
-    if "concubine_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_enabled INTEGER NOT NULL DEFAULT 0")
-    if "concubine_tianji_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0")
-    if "concubine_heart_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_heart_enabled INTEGER NOT NULL DEFAULT 0")
-    if "concubine_voyage_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_voyage_enabled INTEGER NOT NULL DEFAULT 0")
-    if "concubine_auto_reacquire" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1")
-    if "hehuan_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN hehuan_enabled INTEGER NOT NULL DEFAULT 0")
-    if "tianxing_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianxing_enabled INTEGER NOT NULL DEFAULT 0")
-    if "yinluo_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN yinluo_enabled INTEGER NOT NULL DEFAULT 0")
-    if "mulan_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN mulan_enabled INTEGER NOT NULL DEFAULT 0")
-    if "wanxin_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN wanxin_enabled INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN world_boss_enabled INTEGER NOT NULL DEFAULT 0")
-    if "nanlong_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN nanlong_enabled INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_monitor_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
-    if "formation_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN formation_enabled INTEGER NOT NULL DEFAULT 0")
-    if "last_guanxing_done_day" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN last_guanxing_done_day TEXT NOT NULL DEFAULT ''")
-    if "tianti_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_enabled INTEGER NOT NULL DEFAULT 0")
-    if "tianti_wenxin_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_wenxin_enabled INTEGER NOT NULL DEFAULT 1")
-    if "tianti_gangfeng_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_gangfeng_enabled INTEGER NOT NULL DEFAULT 1")
-    if "small_world_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_preach_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_preach_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_manifest_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_manifest_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_harvest_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_refine_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refine_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_refresh_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_high_stock_silence_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_high_stock_silence_enabled INTEGER NOT NULL DEFAULT 0")
-    if "small_world_barrier_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_enabled INTEGER NOT NULL DEFAULT 1")
-    if "small_world_barrier_min_stock" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_min_stock INTEGER NOT NULL DEFAULT 130000")
-    if "small_world_barrier_guard_before_min" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_guard_before_min INTEGER NOT NULL DEFAULT 30")
-    if "small_world_barrier_min_interval_hours" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_min_interval_hours REAL NOT NULL DEFAULT 18")
-    if "divination_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN divination_enabled INTEGER NOT NULL DEFAULT 0")
-    if "divination_daily_limit" not in module_columns:
-        conn.execute(f"ALTER TABLE identity_module_state ADD COLUMN divination_daily_limit INTEGER NOT NULL DEFAULT {int(DIVINATION_DEFAULT_DAILY_LIMIT)}")
-    if "dungeon_join_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN dungeon_join_enabled INTEGER NOT NULL DEFAULT 0")
-    if "wendao_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN wendao_enabled INTEGER NOT NULL DEFAULT 0")
-    if "duel_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN duel_enabled INTEGER NOT NULL DEFAULT 0")
-    if "fishing_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN fishing_enabled INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN explore_rift_enabled INTEGER NOT NULL DEFAULT 0")
-    if "sect_teach_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN sect_teach_enabled INTEGER NOT NULL DEFAULT 0")
+# 历次版本累积的列定义。每张表一个 (列名, 类型与约束) 序列，迁移时逐列补齐。
+#
+# 这里原本是 510 段手写的 `if "x" not in cols: conn.execute("ALTER TABLE ...")`，
+# 同一个四行模板重复了五百遍。新增列只需在对应表末尾加一行，不必再复制模板，
+# 也不会因为漏写 not-in 判断而在升级老库时炸掉。
+#
+# 顺序仅影响 ALTER 的执行次序，彼此独立；依赖列存在的数据回填放在 _run_schema_backfills。
+_SCHEMA_COLUMNS = {
+    "identity_module_state": (
+        ("quiz_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("jiyin_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("pet_trial_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("pet_warm_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("pet_formation_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("wild_training_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_tianji_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_heart_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_voyage_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_auto_reacquire", "INTEGER NOT NULL DEFAULT 1"),
+        ("hehuan_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianxing_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("yinluo_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("mulan_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("wanxin_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("nanlong_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_monitor_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("formation_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_guanxing_done_day", "TEXT NOT NULL DEFAULT ''"),
+        ("tianti_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_wenxin_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("tianti_gangfeng_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("small_world_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_preach_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_manifest_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_harvest_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_refine_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_refresh_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_high_stock_silence_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_barrier_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("small_world_barrier_min_stock", "INTEGER NOT NULL DEFAULT 130000"),
+        ("small_world_barrier_guard_before_min", "INTEGER NOT NULL DEFAULT 30"),
+        ("small_world_barrier_min_interval_hours", "REAL NOT NULL DEFAULT 18"),
+        ("divination_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("dungeon_join_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("wendao_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("sect_teach_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_auto_choice_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("second_soul_purge_threshold", "INTEGER NOT NULL DEFAULT 60"),
+        ("taiyi_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("taiyi_node_search_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ),
+    "identities": (
+        ("username_aliases", "TEXT NOT NULL DEFAULT '[]'"),
+        ("pet_name", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_trial_name", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_warm_name", "TEXT NOT NULL DEFAULT ''"),
+        ("daohao", "TEXT NOT NULL DEFAULT ''"),
+        ("realm", "TEXT NOT NULL DEFAULT ''"),
+        ("spiritual_root_type", "TEXT NOT NULL DEFAULT ''"),
+        ("spiritual_root_attrs", "TEXT NOT NULL DEFAULT ''"),
+        ("replica_professions", "TEXT NOT NULL DEFAULT ''"),
+        ("replica_gold_dps_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("sect_name", "TEXT NOT NULL DEFAULT ''"),
+        ("sect_updated_at", "REAL NOT NULL DEFAULT 0"),
+        ("jiyin_choice", "TEXT NOT NULL DEFAULT ''"),
+        ("nanlong_choice", "TEXT NOT NULL DEFAULT 'reject'"),
+        ("stargazer_star_choice", "TEXT NOT NULL DEFAULT '赤血星'"),
+        ("stargazer_total_slots", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_rank_choice", "TEXT NOT NULL DEFAULT '普通'"),
+        ("checkin_window_start_hour_utc", "INTEGER NOT NULL DEFAULT 2"),
+        ("checkin_window_end_hour_utc", "INTEGER NOT NULL DEFAULT 3"),
+        ("tower_window_start_hour_utc", "INTEGER NOT NULL DEFAULT 1"),
+        ("tower_window_end_hour_utc", "INTEGER NOT NULL DEFAULT 2"),
+        ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("xiuwei_current", "INTEGER NOT NULL DEFAULT 0"),
+        ("xiuwei_max", "INTEGER NOT NULL DEFAULT 0"),
+        ("battle_power_text", "TEXT NOT NULL DEFAULT ''"),
+        ("battle_power_value", "INTEGER NOT NULL DEFAULT 0"),
+    ),
+    "identity_timers": (
+        ("next_quiz_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_jiyin_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_pet_trial_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_pet_warm_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_pet_formation_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_ranch_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_wild_training_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_concubine_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_nanlong_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_stargazer_panel_time", "REAL NOT NULL DEFAULT 0"),
+        ("stargazer_collect_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("next_guanxing_monitor_notify_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_tianti_status_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_tianti_wenxin_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_tianti_climb_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_tianti_gangfeng_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_small_world_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_explore_rift_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_wendao_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_mulan_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_duel_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_fishing_time", "REAL NOT NULL DEFAULT 0"),
+        ("next_formation_time", "REAL NOT NULL DEFAULT 0"),
+        ("formation_cooldown_until", "REAL NOT NULL DEFAULT 0"),
+        ("weak_until", "REAL NOT NULL DEFAULT 0"),
+        ("next_second_soul_time", "REAL NOT NULL DEFAULT 0"),
+        ("second_soul_heart_demon_deadline", "REAL NOT NULL DEFAULT 0"),
+        ("next_taiyi_cycle_time", "REAL NOT NULL DEFAULT 0"),
+        ("taiyi_phase_entered_at", "REAL NOT NULL DEFAULT 0"),
+        ("taiyi_freeze_until", "REAL NOT NULL DEFAULT 0"),
+    ),
+    "identity_runtime_state": (
+        ("weak_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("weak_source", "TEXT NOT NULL DEFAULT ''"),
+        ("weak_last_block_log_at", "REAL NOT NULL DEFAULT 0"),
+        ("wild_training_tianxing_prepare_retry_at", "REAL NOT NULL DEFAULT 0"),
+        ("explore_rift_tianxing_prepare_retry_at", "REAL NOT NULL DEFAULT 0"),
+        ("yuanying_waiting_logged", "INTEGER NOT NULL DEFAULT 0"),
+        ("yuanying_protect_logged", "INTEGER NOT NULL DEFAULT 0"),
+        ("deep_retreat_waiting_logged", "INTEGER NOT NULL DEFAULT 0"),
+        ("deep_retreat_protect_logged", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_maturing_logged", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_harvest_followup_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("tree_harvest_inflight_until", "REAL NOT NULL DEFAULT 0"),
+        ("tree_last_harvest_result_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_last_harvest_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_bootstrap_check_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("last_tree_status_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("tree_pulse_mode_seen", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_last_panel_at", "REAL NOT NULL DEFAULT 0"),
+        ("tree_pulse_progress", "REAL NOT NULL DEFAULT 0"),
+        ("tree_pulse_main", "TEXT NOT NULL DEFAULT ''"),
+        ("tree_pulse_aux", "TEXT NOT NULL DEFAULT ''"),
+        ("tree_pulse_reverse", "TEXT NOT NULL DEFAULT ''"),
+        ("tree_pulse_neutral", "TEXT NOT NULL DEFAULT ''"),
+        ("tree_pulse_stability", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_stability_max", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_turbidity", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_turbidity_max", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_daily_used", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_daily_limit", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_rush_used", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_rush_limit", "INTEGER NOT NULL DEFAULT 0"),
+        ("tree_pulse_last_action", "TEXT NOT NULL DEFAULT ''"),
+        ("tree_pulse_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("tree_pulse_blocked_until", "REAL NOT NULL DEFAULT 0"),
+        ("last_tower_command_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("tower_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("tower_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("concubine_availability", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("concubine_nanlong_strategy", "TEXT NOT NULL DEFAULT 'reacquire_after_loss'"),
+        ("concubine_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_greet_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_last_greet_day", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_greet_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_greet_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_gift_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_gift_bag_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_gift_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_gift_amount", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_last_gift_day", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_gift_attempt_day", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_gift_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_dream_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_fragment_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_puzzle_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_reacquire_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_tianji_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_heart_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_heart_prompt_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_voyage_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_voyage_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_last_panel_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_name", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_location", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_affinity", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_oath", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_dream_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_tianji_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_heart_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_tianji_chain", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_tianji_chain_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_heart_round", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_heart_choice_prompt_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_heart_choice_round", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_heart_choice_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_heart_choice_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_last_recovered_reply_key", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_last_recovered_reply_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_fragment_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_fragment_total", "INTEGER NOT NULL DEFAULT 4"),
+        ("concubine_fragment_xutian_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_fragment_xutian_total", "INTEGER NOT NULL DEFAULT 4"),
+        ("concubine_fragment_cangkun_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_fragment_cangkun_total", "INTEGER NOT NULL DEFAULT 4"),
+        ("concubine_fragment_confirm_key", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_fragment_confirmed_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_voyage_status", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_voyage_route", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_voyage_return_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_voyage_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_voyage_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_last_snapshot_at", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_reacquire_blocked_until", "REAL NOT NULL DEFAULT 0"),
+        ("concubine_reacquire_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_reacquire_command_override", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_tianji_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("concubine_heart_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("hehuan_observation", "TEXT NOT NULL DEFAULT '{}' "),
+        ("tianxing_observation", "TEXT NOT NULL DEFAULT '{}' "),
+        ("tianxing_auto_config", "TEXT NOT NULL DEFAULT '{}' "),
+        ("tianxing_timeline_state", "TEXT NOT NULL DEFAULT '{}' "),
+        ("yinluo_observation", "TEXT NOT NULL DEFAULT '{}' "),
+        ("wanxin_observation", "TEXT NOT NULL DEFAULT '{}' "),
+        ("world_boss_action_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_action_limit", "INTEGER NOT NULL DEFAULT 5"),
+        ("world_boss_attack_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_pending_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_pending_action", "TEXT NOT NULL DEFAULT ''"),
+        ("world_boss_pending_since", "REAL NOT NULL DEFAULT 0"),
+        ("world_boss_pending_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_pending_action_seq", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_last_action", "TEXT NOT NULL DEFAULT ''"),
+        ("world_boss_last_action_at", "REAL NOT NULL DEFAULT 0"),
+        ("world_boss_last_reply_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_exhausted", "INTEGER NOT NULL DEFAULT 0"),
+        ("world_boss_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_trial_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_warm_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_formation_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("pet_formation_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("ranch_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("ranch_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("ranch_return_pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_return_seen_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("ranch_return_wait_since", "REAL NOT NULL DEFAULT 0"),
+        ("ranch_return_last_notified_at", "REAL NOT NULL DEFAULT 0"),
+        ("wild_training_strategy", "TEXT NOT NULL DEFAULT '深入'"),
+        ("wild_training_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("wild_training_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("wild_training_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("wild_training_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("wild_training_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("wild_training_last_result_at", "REAL NOT NULL DEFAULT 0"),
+        ("wild_training_last_completed_at", "REAL NOT NULL DEFAULT 0"),
+        ("wild_training_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("stargazer_last_panel_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_last_action", "TEXT NOT NULL DEFAULT ''"),
+        ("stargazer_queued_action", "TEXT NOT NULL DEFAULT ''"),
+        ("stargazer_idle_slot_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_dim_slot_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_ready_slot_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_busy_until", "REAL NOT NULL DEFAULT 0"),
+        ("stargazer_followup_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("stargazer_wait_full_collect", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_collect_ready", "INTEGER NOT NULL DEFAULT 0"),
+        ("stargazer_soothe_before_collect", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_monitor_slot_key", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_monitor_slot_start_at", "REAL NOT NULL DEFAULT 0"),
+        ("guanxing_monitor_slot_end_at", "REAL NOT NULL DEFAULT 0"),
+        ("guanxing_monitor_seen_panel", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_monitor_matched_keyword", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_monitor_matched_value", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_monitor_last_evolution_value", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_monitor_last_seen_at", "REAL NOT NULL DEFAULT 0"),
+        ("guanxing_monitor_last_notified_slot_key", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_last_query_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_last_panel_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_panel_slot_key", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_last_panel_seen_at", "REAL NOT NULL DEFAULT 0"),
+        ("guanxing_last_shift_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("guanxing_last_shift_slot_key", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_last_shift_target", "TEXT NOT NULL DEFAULT ''"),
+        ("guanxing_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("last_formation_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("formation_pending_invite_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("formation_pending_assist_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("formation_last_action", "TEXT NOT NULL DEFAULT ''"),
+        ("formation_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("formation_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("formation_last_success_at", "REAL NOT NULL DEFAULT 0"),
+        ("tianti_status_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_status_seen_at", "REAL NOT NULL DEFAULT 0"),
+        ("tianti_last_wenxin_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_climb_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_gangfeng_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_progress_current", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_progress_total", "INTEGER NOT NULL DEFAULT 12"),
+        ("tianti_cycle_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_gangfeng_level", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_gangfeng_total", "INTEGER NOT NULL DEFAULT 12"),
+        ("tianti_cooldown_text", "TEXT NOT NULL DEFAULT '未记录'"),
+        ("tianti_wenxin_status", "TEXT NOT NULL DEFAULT '未记录'"),
+        ("tianti_gangfeng_status", "TEXT NOT NULL DEFAULT '未记录'"),
+        ("tianti_remaining_climb_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_wenxin_day", "TEXT NOT NULL DEFAULT ''"),
+        ("tianti_wenxin_last_trigger_key", "TEXT NOT NULL DEFAULT ''"),
+        ("tianti_gangfeng_last_trigger_key", "TEXT NOT NULL DEFAULT ''"),
+        ("tianti_last_skip_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("tianti_theoretical_max_stage", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_wenxin_trigger_stage", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_cost_xiuwei", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_gain_xiuwei", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_gain_contrib", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("quiz_chat_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("quiz_question", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_options", "TEXT NOT NULL DEFAULT '{}' "),
+        ("quiz_answer", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_phase", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("quiz_match_mode", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_answer_method", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("quiz_last_matched_at", "REAL NOT NULL DEFAULT 0"),
+        ("quiz_deadline_at", "REAL NOT NULL DEFAULT 0"),
+        ("jiyin_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("jiyin_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("nanlong_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("nanlong_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("nanlong_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("nanlong_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("nanlong_last_command", "TEXT NOT NULL DEFAULT ''"),
+        ("nanlong_protect_phase", "TEXT NOT NULL DEFAULT ''"),
+        ("nanlong_place_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("nanlong_recall_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("nanlong_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("small_world_preach_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_preach_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_god_cooldown_until", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_pending_god_action", "TEXT NOT NULL DEFAULT ''"),
+        ("small_world_pending_god_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("small_world_pending_god_priority", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_pending_god_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_last_god_action", "TEXT NOT NULL DEFAULT ''"),
+        ("small_world_last_god_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_last_disaster_wave_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_barrier_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_barrier_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_last_barrier_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("small_world_query_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_manifest_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_manifest_cost_text", "TEXT NOT NULL DEFAULT ''"),
+        ("small_world_harvest_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_refine_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_refresh_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_pending_incense", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_incense_stock", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_faith_value", "INTEGER NOT NULL DEFAULT 0"),
+        ("small_world_panel_snapshot", "TEXT NOT NULL DEFAULT '{}' "),
+        ("small_world_last_panel_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_last_public_request_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_last_public_harvest_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_next_public_harvest_at", "REAL NOT NULL DEFAULT 0"),
+        ("small_world_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("resource_shortage_backoffs", "TEXT NOT NULL DEFAULT '{}' "),
+        ("action_guard_sessions", "TEXT NOT NULL DEFAULT '{}' "),
+        ("wendao_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("wendao_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("wendao_pending_result_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("wendao_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("wendao_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("wendao_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("wendao_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("mulan_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("mulan_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("mulan_pending_ids", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_report_texts", "TEXT NOT NULL DEFAULT '{}'"),
+        ("mulan_report_day", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_current_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("mulan_public_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("mulan_public_text", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_support_action", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("mulan_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("mulan_last_command", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("mulan_cycle_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_target", "TEXT NOT NULL DEFAULT ''"),
+        ("duel_total_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_completed_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_reserve_xiuwei", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_window_start_minute", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_window_end_minute", "INTEGER NOT NULL DEFAULT 1439"),
+        ("duel_daily_limit_day", "TEXT NOT NULL DEFAULT ''"),
+        ("duel_daily_limited_targets", "TEXT NOT NULL DEFAULT '[]'"),
+        ("duel_log_reconcile_day", "TEXT NOT NULL DEFAULT ''"),
+        ("duel_log_reconcile_at", "REAL NOT NULL DEFAULT 0"),
+        ("duel_observed_completed_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_observed_baseline_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_observed_manual_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_observed_mind_remaining", "INTEGER NOT NULL DEFAULT -1"),
+        ("duel_observed_last_command_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("duel_open_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_magic_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("duel_magic_sent_at", "REAL NOT NULL DEFAULT 0"),
+        ("duel_started_at", "REAL NOT NULL DEFAULT 0"),
+        ("duel_phaseful_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("duel_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("duel_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("duel_unequip_prepared", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_pond", "TEXT NOT NULL DEFAULT '青溪浅滩'"),
+        ("fishing_bait", "TEXT NOT NULL DEFAULT '凡饵'"),
+        ("fishing_daily_limit", "INTEGER NOT NULL DEFAULT 20"),
+        ("fishing_daily_day", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_daily_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_daily_catch_summary_json", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_daily_summary_day", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_basket_calibrated_day", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_auto_chum_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("fishing_chum_name", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_chum_names", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_chum_day", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_chum_counts", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_auto_buy_bait_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("fishing_auto_buy_bait_count", "INTEGER NOT NULL DEFAULT 20"),
+        ("fishing_auto_probe_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_auto_open_fish_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("fishing_cancel_after_sec", "INTEGER NOT NULL DEFAULT 120"),
+        ("fishing_transfer_target_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_transfer_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("fishing_caught_fish_json", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_valuable_drop_reminders", "TEXT NOT NULL DEFAULT '[]'"),
+        ("fishing_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("fishing_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("fishing_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_pending_action", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_pending_open_fish", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_forced_buy_bait", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_forced_buy_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_started_at", "REAL NOT NULL DEFAULT 0"),
+        ("fishing_active_chum_name", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_chum_rods_remaining", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("fishing_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("fishing_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_reply_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("explore_rift_pending_result_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_last_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_last_result_key", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_manual_required", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_nascent_escape_weak_until", "REAL NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_required", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("explore_rift_rebirth_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_request_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_options_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_select_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_options_text", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_rebirth_selected_index", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_rebirth_last_result", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_rebirth_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_rebirth_choice_mode", "TEXT NOT NULL DEFAULT 'safe_first'"),
+        ("explore_rift_rebirth_preferred_root_type", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_rebirth_preferred_attrs", "TEXT NOT NULL DEFAULT ''"),
+        ("explore_rift_rebirth_blind_index", "INTEGER NOT NULL DEFAULT 1"),
+        ("explore_rift_fatal_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("explore_rift_fatal_confirm_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("identity_info_reply_msg_ids", "TEXT NOT NULL DEFAULT '[]'"),
+        ("last_identity_info_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("identity_info_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("identity_info_last_requested_at", "REAL NOT NULL DEFAULT 0"),
+        ("identity_info_followup_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("identity_info_primary_payload", "TEXT NOT NULL DEFAULT '{}' "),
+        ("second_soul_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("second_soul_choice_strategy", "TEXT NOT NULL DEFAULT 'stable'"),
+        ("second_soul_heart_demon_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_heart_demon_notified", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_train_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_last_train_started_at", "REAL NOT NULL DEFAULT 0"),
+        ("second_soul_last_broadcast_key", "TEXT NOT NULL DEFAULT ''"),
+        ("second_soul_last_broadcast_at", "REAL NOT NULL DEFAULT 0"),
+        ("second_soul_moran_value", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_purge_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_purge_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_purge_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("second_soul_purge_due_at", "REAL NOT NULL DEFAULT 0"),
+        ("second_soul_purge_last_at", "REAL NOT NULL DEFAULT 0"),
+        ("second_soul_last_error", "TEXT NOT NULL DEFAULT ''"),
+        ("taiyi_yindao_element", "TEXT NOT NULL DEFAULT '水'"),
+        ("taiyi_phase", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("taiyi_pending_node_name", "TEXT NOT NULL DEFAULT ''"),
+        ("taiyi_yindao_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("taiyi_node_search_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("taiyi_node_define_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("taiyi_freeze_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("taiyi_failure_history", "TEXT NOT NULL DEFAULT '[]'"),
+        ("taiyi_yindao_resend_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("taiyi_search_resend_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("taiyi_last_error", "TEXT NOT NULL DEFAULT ''"),
+    ),
+    "pending_tasks": (
+        ("priority", "TEXT NOT NULL DEFAULT ''"),
+        ("source_module", "TEXT NOT NULL DEFAULT ''"),
+        ("op_id", "TEXT NOT NULL DEFAULT ''"),
+        ("chain_id", "TEXT NOT NULL DEFAULT ''"),
+        ("delete_policy", "TEXT NOT NULL DEFAULT ''"),
+    ),
+}
 
-    identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
-    if "username_aliases" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN username_aliases TEXT NOT NULL DEFAULT '[]'")
-    if "pet_name" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN pet_name TEXT NOT NULL DEFAULT ''")
-    if "pet_trial_name" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN pet_trial_name TEXT NOT NULL DEFAULT ''")
-    if "pet_warm_name" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN pet_warm_name TEXT NOT NULL DEFAULT ''")
-    if "daohao" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN daohao TEXT NOT NULL DEFAULT ''")
-    if "realm" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN realm TEXT NOT NULL DEFAULT ''")
-    if "spiritual_root_type" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN spiritual_root_type TEXT NOT NULL DEFAULT ''")
-    if "spiritual_root_attrs" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN spiritual_root_attrs TEXT NOT NULL DEFAULT ''")
-    if "replica_professions" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN replica_professions TEXT NOT NULL DEFAULT ''")
-    if "replica_gold_dps_enabled" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN replica_gold_dps_enabled INTEGER NOT NULL DEFAULT 0")
-    if "sect_name" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN sect_name TEXT NOT NULL DEFAULT ''")
-    if "sect_updated_at" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN sect_updated_at REAL NOT NULL DEFAULT 0")
-    if "jiyin_choice" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN jiyin_choice TEXT NOT NULL DEFAULT ''")
-    if "nanlong_choice" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN nanlong_choice TEXT NOT NULL DEFAULT 'reject'")
-    if "stargazer_star_choice" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星'")
-    if "stargazer_total_slots" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN stargazer_total_slots INTEGER NOT NULL DEFAULT 0")
-    if "tianti_rank_choice" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN tianti_rank_choice TEXT NOT NULL DEFAULT '普通'")
-    if "checkin_window_start_hour_utc" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2")
-    if "checkin_window_end_hour_utc" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN checkin_window_end_hour_utc INTEGER NOT NULL DEFAULT 3")
-    if "tower_window_start_hour_utc" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN tower_window_start_hour_utc INTEGER NOT NULL DEFAULT 1")
-    if "tower_window_end_hour_utc" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN tower_window_end_hour_utc INTEGER NOT NULL DEFAULT 2")
-    if "enabled" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
-    if "xiuwei_current" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_current INTEGER NOT NULL DEFAULT 0")
-    if "xiuwei_max" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_max INTEGER NOT NULL DEFAULT 0")
-    if "battle_power_text" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN battle_power_text TEXT NOT NULL DEFAULT ''")
-    if "battle_power_value" not in identity_columns:
-        conn.execute("ALTER TABLE identities ADD COLUMN battle_power_value INTEGER NOT NULL DEFAULT 0")
 
-    timer_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_timers)").fetchall()}
-    if "next_quiz_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_quiz_time REAL NOT NULL DEFAULT 0")
-    if "next_jiyin_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_jiyin_time REAL NOT NULL DEFAULT 0")
-    if "next_pet_trial_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_trial_time REAL NOT NULL DEFAULT 0")
-    if "next_pet_warm_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_warm_time REAL NOT NULL DEFAULT 0")
-    if "next_pet_formation_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_formation_time REAL NOT NULL DEFAULT 0")
-    if "next_ranch_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_ranch_time REAL NOT NULL DEFAULT 0")
-    if "next_wild_training_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wild_training_time REAL NOT NULL DEFAULT 0")
-    if "next_concubine_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_concubine_time REAL NOT NULL DEFAULT 0")
-    if "next_nanlong_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_nanlong_time REAL NOT NULL DEFAULT 0")
-    if "next_stargazer_panel_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_stargazer_panel_time REAL NOT NULL DEFAULT 0")
-    if "stargazer_collect_due_at" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN stargazer_collect_due_at REAL NOT NULL DEFAULT 0")
-    if "next_guanxing_monitor_notify_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0")
-    if "next_tianti_status_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_status_time REAL NOT NULL DEFAULT 0")
-    if "next_tianti_wenxin_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_wenxin_time REAL NOT NULL DEFAULT 0")
-    if "next_tianti_climb_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_climb_time REAL NOT NULL DEFAULT 0")
-    if "next_tianti_gangfeng_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_gangfeng_time REAL NOT NULL DEFAULT 0")
-    if "next_small_world_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_small_world_time REAL NOT NULL DEFAULT 0")
-    if "next_explore_rift_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_explore_rift_time REAL NOT NULL DEFAULT 0")
-    if "next_wendao_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wendao_time REAL NOT NULL DEFAULT 0")
-    if "next_mulan_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_mulan_time REAL NOT NULL DEFAULT 0")
-    if "next_duel_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_duel_time REAL NOT NULL DEFAULT 0")
-    if "next_fishing_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_fishing_time REAL NOT NULL DEFAULT 0")
-    if "next_formation_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_formation_time REAL NOT NULL DEFAULT 0")
-    if "formation_cooldown_until" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN formation_cooldown_until REAL NOT NULL DEFAULT 0")
-    if "weak_until" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN weak_until REAL NOT NULL DEFAULT 0")
+# 依赖列已存在的数据回填。必须在补列之后执行。
+def _run_schema_backfills(conn, *, added_columns):
+    """Backfill columns whose value derives from older ones.
 
-    runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
-    if "weak_reason" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_reason TEXT NOT NULL DEFAULT ''")
-    if "weak_source" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_source TEXT NOT NULL DEFAULT ''")
-    if "weak_last_block_log_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_last_block_log_at REAL NOT NULL DEFAULT 0")
-    if "wild_training_tianxing_prepare_retry_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0")
-    if "explore_rift_tianxing_prepare_retry_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0")
-    if "yuanying_waiting_logged" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yuanying_waiting_logged INTEGER NOT NULL DEFAULT 0")
-    if "yuanying_protect_logged" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yuanying_protect_logged INTEGER NOT NULL DEFAULT 0")
-    if "deep_retreat_waiting_logged" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN deep_retreat_waiting_logged INTEGER NOT NULL DEFAULT 0")
-    if "deep_retreat_protect_logged" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN deep_retreat_protect_logged INTEGER NOT NULL DEFAULT 0")
-    if "tree_maturing_logged" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_maturing_logged INTEGER NOT NULL DEFAULT 0")
-    if "tree_harvest_followup_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_harvest_followup_due_at REAL NOT NULL DEFAULT 0")
-    if "tree_harvest_inflight_until" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_harvest_inflight_until REAL NOT NULL DEFAULT 0")
-    if "tree_last_harvest_result_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_last_harvest_result_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tree_last_harvest_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_last_harvest_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tree_bootstrap_check_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0")
-    if "last_tree_status_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tree_status_sent_at REAL NOT NULL DEFAULT 0")
-    if "tree_pulse_mode_seen" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_mode_seen INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_last_panel_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_last_panel_at REAL NOT NULL DEFAULT 0")
-    if "tree_pulse_progress" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_progress REAL NOT NULL DEFAULT 0")
-    if "tree_pulse_main" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_main TEXT NOT NULL DEFAULT ''")
-    if "tree_pulse_aux" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_aux TEXT NOT NULL DEFAULT ''")
-    if "tree_pulse_reverse" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_reverse TEXT NOT NULL DEFAULT ''")
-    if "tree_pulse_neutral" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_neutral TEXT NOT NULL DEFAULT ''")
-    if "tree_pulse_stability" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_stability INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_stability_max" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_stability_max INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_turbidity" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_turbidity INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_turbidity_max" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_turbidity_max INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_daily_used" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_daily_used INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_daily_limit" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_daily_limit INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_rush_used" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_rush_used INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_rush_limit" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_rush_limit INTEGER NOT NULL DEFAULT 0")
-    if "tree_pulse_last_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_last_action TEXT NOT NULL DEFAULT ''")
-    if "tree_pulse_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_last_error TEXT NOT NULL DEFAULT ''")
-    if "tree_pulse_blocked_until" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_blocked_until REAL NOT NULL DEFAULT 0")
-    if "last_tower_command_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tower_command_sent_at REAL NOT NULL DEFAULT 0")
-    if "tower_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tower_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "tower_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tower_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "concubine_availability" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_availability TEXT NOT NULL DEFAULT 'unknown'")
-    if "concubine_nanlong_strategy" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_nanlong_strategy TEXT NOT NULL DEFAULT 'reacquire_after_loss'")
-    if "concubine_status_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_status_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_greet_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_greet_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_last_greet_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_greet_day TEXT NOT NULL DEFAULT ''")
-    if "concubine_greet_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_greet_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_greet_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_greet_last_error TEXT NOT NULL DEFAULT ''")
-    if "concubine_gift_status_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_status_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_gift_bag_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_bag_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_gift_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_gift_amount" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_amount INTEGER NOT NULL DEFAULT 0")
-    if "concubine_last_gift_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_gift_day TEXT NOT NULL DEFAULT ''")
-    if "concubine_gift_attempt_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_attempt_day TEXT NOT NULL DEFAULT ''")
-    if "concubine_gift_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_last_error TEXT NOT NULL DEFAULT ''")
-    if "concubine_dream_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_dream_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_fragment_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_puzzle_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_puzzle_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_reacquire_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_tianji_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_heart_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_heart_prompt_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_voyage_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_voyage_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_last_panel_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_name" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_name TEXT NOT NULL DEFAULT ''")
-    if "concubine_kind" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_kind TEXT NOT NULL DEFAULT ''")
-    if "concubine_location" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_location TEXT NOT NULL DEFAULT ''")
-    if "concubine_affinity" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_affinity INTEGER NOT NULL DEFAULT 0")
-    if "concubine_oath" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_oath TEXT NOT NULL DEFAULT ''")
-    if "concubine_dream_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_dream_due_at REAL NOT NULL DEFAULT 0")
-    if "concubine_tianji_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_due_at REAL NOT NULL DEFAULT 0")
-    if "concubine_heart_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_due_at REAL NOT NULL DEFAULT 0")
-    if "concubine_tianji_chain" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain TEXT NOT NULL DEFAULT ''")
-    if "concubine_tianji_chain_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0")
-    if "concubine_heart_round" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_round INTEGER NOT NULL DEFAULT 0")
-    if "concubine_heart_choice_prompt_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_prompt_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "concubine_heart_choice_round" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_round INTEGER NOT NULL DEFAULT 0")
-    if "concubine_heart_choice_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_sent_at REAL NOT NULL DEFAULT 0")
-    if "concubine_heart_choice_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_last_recovered_reply_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_recovered_reply_key TEXT NOT NULL DEFAULT ''")
-    if "concubine_last_recovered_reply_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_recovered_reply_at REAL NOT NULL DEFAULT 0")
-    if "concubine_fragment_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_fragment_total" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_total INTEGER NOT NULL DEFAULT 4")
-    if "concubine_fragment_xutian_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_xutian_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_fragment_xutian_total" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_xutian_total INTEGER NOT NULL DEFAULT 4")
-    if "concubine_fragment_cangkun_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_cangkun_count INTEGER NOT NULL DEFAULT 0")
-    if "concubine_fragment_cangkun_total" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4")
-    if "concubine_fragment_confirm_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_confirm_key TEXT NOT NULL DEFAULT ''")
-    if "concubine_fragment_confirmed_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_confirmed_at REAL NOT NULL DEFAULT 0")
-    if "concubine_voyage_status" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_status TEXT NOT NULL DEFAULT ''")
-    if "concubine_voyage_route" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_route TEXT NOT NULL DEFAULT ''")
-    if "concubine_voyage_return_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_return_at REAL NOT NULL DEFAULT 0")
-    if "concubine_voyage_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_last_result TEXT NOT NULL DEFAULT ''")
-    if "concubine_voyage_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_last_error TEXT NOT NULL DEFAULT ''")
-    conn.execute("""
-        UPDATE identity_runtime_state
-           SET concubine_fragment_xutian_count = concubine_fragment_count,
-               concubine_fragment_xutian_total = concubine_fragment_total
+    Only runs for rows that actually need it, and only issues statements when
+    there is something to migrate: `_ensure_schema_columns` is called on every
+    startup, and the delta-save telemetry asserts that an unchanged database
+    produces no mutating SQL at all.
+
+    `added_columns` holds the columns this run just created, so a backfill tied
+    to a brand-new column fires exactly once.
+    """
+    def _has_rows(sql):
+        return conn.execute(f"SELECT EXISTS(SELECT 1 FROM ({sql}))").fetchone()[0]
+
+    # 虚天侍妾碎片计数从旧的通用碎片列迁移过来
+    pending_fragment = """
+        SELECT 1 FROM identity_runtime_state
          WHERE COALESCE(concubine_fragment_xutian_count, 0) = 0
            AND COALESCE(concubine_fragment_count, 0) != 0
-    """)
-    if "concubine_last_snapshot_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_snapshot_at REAL NOT NULL DEFAULT 0")
-    if "concubine_reacquire_blocked_until" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_blocked_until REAL NOT NULL DEFAULT 0")
-    if "concubine_reacquire_attempts" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_attempts INTEGER NOT NULL DEFAULT 0")
-    if "concubine_reacquire_command_override" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_command_override TEXT NOT NULL DEFAULT ''")
-    if "concubine_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_error TEXT NOT NULL DEFAULT ''")
-    if "concubine_tianji_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_last_error TEXT NOT NULL DEFAULT ''")
-    if "concubine_heart_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_last_error TEXT NOT NULL DEFAULT ''")
-    if "hehuan_observation" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN hehuan_observation TEXT NOT NULL DEFAULT '{}' ")
-    if "tianxing_observation" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_observation TEXT NOT NULL DEFAULT '{}' ")
-    if "tianxing_auto_config" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_auto_config TEXT NOT NULL DEFAULT '{}' ")
-    if "tianxing_timeline_state" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_timeline_state TEXT NOT NULL DEFAULT '{}' ")
-    if "yinluo_observation" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yinluo_observation TEXT NOT NULL DEFAULT '{}' ")
-    if "wanxin_observation" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wanxin_observation TEXT NOT NULL DEFAULT '{}' ")
-    if "world_boss_action_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_action_count INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_action_limit" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_action_limit INTEGER NOT NULL DEFAULT 5")
-    if "world_boss_attack_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_attack_count INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_pending_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_pending_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_action TEXT NOT NULL DEFAULT ''")
-    if "world_boss_pending_since" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_since REAL NOT NULL DEFAULT 0")
-    if "world_boss_pending_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_pending_action_seq" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_action_seq INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_last_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_action TEXT NOT NULL DEFAULT ''")
-    if "world_boss_last_action_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_action_at REAL NOT NULL DEFAULT 0")
-    if "world_boss_last_reply_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_reply_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_exhausted" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_exhausted INTEGER NOT NULL DEFAULT 0")
-    if "world_boss_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_error TEXT NOT NULL DEFAULT ''")
-    if "pet_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
-    if "pet_trial_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_trial_last_error TEXT NOT NULL DEFAULT ''")
-    if "pet_warm_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_warm_last_error TEXT NOT NULL DEFAULT ''")
-    if "pet_formation_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_formation_last_error TEXT NOT NULL DEFAULT ''")
-    if "pet_formation_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_formation_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "ranch_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "ranch_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "ranch_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "ranch_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "ranch_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_result TEXT NOT NULL DEFAULT ''")
-    if "ranch_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_error TEXT NOT NULL DEFAULT ''")
-    if "ranch_return_pending" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_pending INTEGER NOT NULL DEFAULT 0")
-    if "ranch_return_seen_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_seen_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "ranch_return_wait_since" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_wait_since REAL NOT NULL DEFAULT 0")
-    if "ranch_return_last_notified_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_last_notified_at REAL NOT NULL DEFAULT 0")
-    if "wild_training_strategy" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_strategy TEXT NOT NULL DEFAULT '深入'")
-    if "wild_training_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "wild_training_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "wild_training_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "wild_training_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "wild_training_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result TEXT NOT NULL DEFAULT ''")
-    if "wild_training_last_result_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result_at REAL NOT NULL DEFAULT 0")
-    if "wild_training_last_completed_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_completed_at REAL NOT NULL DEFAULT 0")
+         LIMIT 1
+    """
+    if _has_rows(pending_fragment):
+        conn.execute(
+            """
+            UPDATE identity_runtime_state
+               SET concubine_fragment_xutian_count = concubine_fragment_count,
+                   concubine_fragment_xutian_total = concubine_fragment_total
+             WHERE COALESCE(concubine_fragment_xutian_count, 0) = 0
+               AND COALESCE(concubine_fragment_count, 0) != 0
+            """
+        )
+
+    # 野外历练完成时间此前只记录在 result_at 上；仅在该列首次建立时整体回填
+    if ("identity_runtime_state", "wild_training_last_completed_at") in added_columns:
         conn.execute(
             """
             UPDATE identity_runtime_state
@@ -813,571 +890,54 @@ def _ensure_schema_columns(conn):
               AND COALESCE(wild_training_last_completed_at, 0) <= 0
             """
         )
-    conn.execute(
-        """
-        UPDATE identity_runtime_state
-        SET wild_training_last_completed_at = wild_training_last_result_at
-        WHERE wild_training_last_result_at > COALESCE(wild_training_last_completed_at, 0)
-          AND wild_training_last_result LIKE '结果编辑未留存%'
-        """
-    )
-    if "wild_training_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_error TEXT NOT NULL DEFAULT ''")
-    if "stargazer_last_panel_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "stargazer_last_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_action TEXT NOT NULL DEFAULT ''")
-    if "stargazer_queued_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_queued_action TEXT NOT NULL DEFAULT ''")
-    if "stargazer_idle_slot_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_idle_slot_count INTEGER NOT NULL DEFAULT 0")
-    if "stargazer_dim_slot_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_dim_slot_count INTEGER NOT NULL DEFAULT 0")
-    if "stargazer_ready_slot_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_ready_slot_count INTEGER NOT NULL DEFAULT 0")
-    if "stargazer_busy_until" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_busy_until REAL NOT NULL DEFAULT 0")
-    if "stargazer_followup_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_followup_due_at REAL NOT NULL DEFAULT 0")
-    if "stargazer_wait_full_collect" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_wait_full_collect INTEGER NOT NULL DEFAULT 0")
-    if "stargazer_collect_ready" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_collect_ready INTEGER NOT NULL DEFAULT 0")
-    if "stargazer_soothe_before_collect" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_monitor_slot_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_slot_key TEXT NOT NULL DEFAULT ''")
-    if "guanxing_monitor_slot_start_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_slot_start_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_monitor_slot_end_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_slot_end_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_monitor_seen_panel" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_seen_panel INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_monitor_matched_keyword" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_matched_keyword TEXT NOT NULL DEFAULT ''")
-    if "guanxing_monitor_matched_value" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_matched_value TEXT NOT NULL DEFAULT ''")
-    if "guanxing_monitor_last_evolution_value" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_evolution_value TEXT NOT NULL DEFAULT ''")
-    if "guanxing_monitor_last_seen_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_seen_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_monitor_last_notified_slot_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_notified_slot_key TEXT NOT NULL DEFAULT ''")
-    if "guanxing_last_query_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_query_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_last_panel_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_panel_slot_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_panel_slot_key TEXT NOT NULL DEFAULT ''")
-    if "guanxing_last_panel_seen_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_panel_seen_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_last_shift_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_last_shift_slot_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_slot_key TEXT NOT NULL DEFAULT ''")
-    if "guanxing_last_shift_target" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_target TEXT NOT NULL DEFAULT ''")
-    if "guanxing_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_error TEXT NOT NULL DEFAULT ''")
-    if "last_formation_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_formation_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "formation_pending_invite_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_pending_invite_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "formation_pending_assist_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_pending_assist_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "formation_last_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_action TEXT NOT NULL DEFAULT ''")
-    if "formation_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_result TEXT NOT NULL DEFAULT ''")
-    if "formation_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_error TEXT NOT NULL DEFAULT ''")
-    if "formation_last_success_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_success_at REAL NOT NULL DEFAULT 0")
-    if "tianti_status_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_status_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_status_seen_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_status_seen_at REAL NOT NULL DEFAULT 0")
-    if "tianti_last_wenxin_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_wenxin_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_climb_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_climb_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_gangfeng_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_gangfeng_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "tianti_progress_current" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_progress_current INTEGER NOT NULL DEFAULT 0")
-    if "tianti_progress_total" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_progress_total INTEGER NOT NULL DEFAULT 12")
-    if "tianti_cycle_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_cycle_count INTEGER NOT NULL DEFAULT 0")
-    if "tianti_gangfeng_level" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_gangfeng_level INTEGER NOT NULL DEFAULT 0")
-    if "tianti_gangfeng_total" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_gangfeng_total INTEGER NOT NULL DEFAULT 12")
-    if "tianti_cooldown_text" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_cooldown_text TEXT NOT NULL DEFAULT '未记录'")
-    if "tianti_wenxin_status" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_status TEXT NOT NULL DEFAULT '未记录'")
-    if "tianti_gangfeng_status" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_gangfeng_status TEXT NOT NULL DEFAULT '未记录'")
-    if "tianti_remaining_climb_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_remaining_climb_count INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_wenxin_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_wenxin_day TEXT NOT NULL DEFAULT ''")
-    if "tianti_wenxin_last_trigger_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_last_trigger_key TEXT NOT NULL DEFAULT ''")
-    if "tianti_gangfeng_last_trigger_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_gangfeng_last_trigger_key TEXT NOT NULL DEFAULT ''")
-    if "tianti_last_skip_reason" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_skip_reason TEXT NOT NULL DEFAULT ''")
-    if "tianti_theoretical_max_stage" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_theoretical_max_stage INTEGER NOT NULL DEFAULT 0")
-    if "tianti_wenxin_trigger_stage" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_trigger_stage INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_cost_xiuwei" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_cost_xiuwei INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_gain_xiuwei" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_gain_xiuwei INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_gain_contrib" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_gain_contrib INTEGER NOT NULL DEFAULT 0")
-    if "tianti_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_error TEXT NOT NULL DEFAULT ''")
-    if "stargazer_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN stargazer_enabled INTEGER NOT NULL DEFAULT 0")
-    if "quiz_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "quiz_chat_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_chat_id INTEGER NOT NULL DEFAULT 0")
-    if "quiz_question" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_question TEXT NOT NULL DEFAULT ''")
-    if "quiz_options" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_options TEXT NOT NULL DEFAULT '{}' ")
-    if "quiz_answer" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_answer TEXT NOT NULL DEFAULT ''")
-    if "quiz_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_phase TEXT NOT NULL DEFAULT ''")
-    if "quiz_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "quiz_match_mode" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_match_mode TEXT NOT NULL DEFAULT ''")
-    if "quiz_answer_method" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_answer_method TEXT NOT NULL DEFAULT ''")
-    if "quiz_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_error TEXT NOT NULL DEFAULT ''")
-    if "quiz_last_matched_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_matched_at REAL NOT NULL DEFAULT 0")
-    if "quiz_deadline_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_deadline_at REAL NOT NULL DEFAULT 0")
-    if "jiyin_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "jiyin_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_last_error TEXT NOT NULL DEFAULT ''")
-    if "nanlong_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "nanlong_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "nanlong_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "nanlong_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "nanlong_last_command" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_command TEXT NOT NULL DEFAULT ''")
-    if "nanlong_protect_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_protect_phase TEXT NOT NULL DEFAULT ''")
-    if "nanlong_place_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_place_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "nanlong_recall_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_recall_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "nanlong_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_error TEXT NOT NULL DEFAULT ''")
-    if "small_world_preach_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "small_world_preach_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_due_at REAL NOT NULL DEFAULT 0")
-    if "small_world_god_cooldown_until" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_god_cooldown_until REAL NOT NULL DEFAULT 0")
-    if "small_world_pending_god_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_action TEXT NOT NULL DEFAULT ''")
-    if "small_world_pending_god_reason" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_reason TEXT NOT NULL DEFAULT ''")
-    if "small_world_pending_god_priority" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_priority INTEGER NOT NULL DEFAULT 0")
-    if "small_world_pending_god_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_at REAL NOT NULL DEFAULT 0")
-    if "small_world_last_god_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_god_action TEXT NOT NULL DEFAULT ''")
-    if "small_world_last_god_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_god_sent_at REAL NOT NULL DEFAULT 0")
-    if "small_world_last_disaster_wave_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0")
-    if "small_world_barrier_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_barrier_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "small_world_barrier_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_barrier_due_at REAL NOT NULL DEFAULT 0")
-    if "small_world_last_barrier_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_barrier_sent_at REAL NOT NULL DEFAULT 0")
-    if "small_world_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "small_world_query_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_query_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "small_world_manifest_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "small_world_manifest_cost_text" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_manifest_cost_text TEXT NOT NULL DEFAULT ''")
-    if "small_world_harvest_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_harvest_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "small_world_refine_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_refine_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "small_world_refresh_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_refresh_count INTEGER NOT NULL DEFAULT 0")
-    if "small_world_pending_incense" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_incense REAL NOT NULL DEFAULT 0")
-    if "small_world_incense_stock" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_incense_stock INTEGER NOT NULL DEFAULT 0")
-    if "small_world_faith_value" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_faith_value INTEGER NOT NULL DEFAULT 0")
-    if "small_world_panel_snapshot" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_panel_snapshot TEXT NOT NULL DEFAULT '{}' ")
-    if "small_world_last_panel_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_panel_at REAL NOT NULL DEFAULT 0")
-    if "small_world_last_public_request_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_public_request_at REAL NOT NULL DEFAULT 0")
-    if "small_world_last_public_harvest_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_public_harvest_at REAL NOT NULL DEFAULT 0")
-    if "small_world_next_public_harvest_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_next_public_harvest_at REAL NOT NULL DEFAULT 0")
-    if "small_world_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_error TEXT NOT NULL DEFAULT ''")
-    if "resource_shortage_backoffs" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}' ")
-    if "action_guard_sessions" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN action_guard_sessions TEXT NOT NULL DEFAULT '{}' ")
-    if "wendao_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "wendao_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "wendao_pending_result_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_pending_result_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "wendao_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_sent_at REAL NOT NULL DEFAULT 0")
-    if "wendao_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "wendao_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_result TEXT NOT NULL DEFAULT ''")
-    if "wendao_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_error TEXT NOT NULL DEFAULT ''")
-    if "mulan_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "mulan_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "mulan_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "mulan_pending_ids" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_pending_ids TEXT NOT NULL DEFAULT ''")
-    if "mulan_report_texts" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_report_texts TEXT NOT NULL DEFAULT '{}'")
-    if "mulan_report_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_report_day TEXT NOT NULL DEFAULT ''")
-    if "mulan_current_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_current_id INTEGER NOT NULL DEFAULT 0")
-    if "mulan_public_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_public_id INTEGER NOT NULL DEFAULT 0")
-    if "mulan_public_text" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_public_text TEXT NOT NULL DEFAULT ''")
-    if "mulan_support_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_support_action TEXT NOT NULL DEFAULT ''")
-    if "mulan_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_sent_at REAL NOT NULL DEFAULT 0")
-    if "mulan_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "mulan_last_command" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_command TEXT NOT NULL DEFAULT ''")
-    if "mulan_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_result TEXT NOT NULL DEFAULT ''")
-    if "mulan_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_error TEXT NOT NULL DEFAULT ''")
-    if "mulan_cycle_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_cycle_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_target" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_target TEXT NOT NULL DEFAULT ''")
-    if "duel_total_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_total_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_completed_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_completed_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_reserve_xiuwei" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reserve_xiuwei INTEGER NOT NULL DEFAULT 0")
-    if "duel_window_start_minute" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_window_start_minute INTEGER NOT NULL DEFAULT 0")
-    if "duel_window_end_minute" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_window_end_minute INTEGER NOT NULL DEFAULT 1439")
-    if "duel_daily_limit_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_daily_limit_day TEXT NOT NULL DEFAULT ''")
-    if "duel_daily_limited_targets" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_daily_limited_targets TEXT NOT NULL DEFAULT '[]'")
-    if "duel_log_reconcile_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_log_reconcile_day TEXT NOT NULL DEFAULT ''")
-    if "duel_log_reconcile_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_log_reconcile_at REAL NOT NULL DEFAULT 0")
-    if "duel_observed_completed_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_completed_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_observed_baseline_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_baseline_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_observed_manual_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_manual_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_observed_mind_remaining" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_mind_remaining INTEGER NOT NULL DEFAULT -1")
-    if "duel_observed_last_command_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_observed_last_command_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "duel_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "duel_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "duel_open_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_open_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "duel_magic_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_magic_due_at REAL NOT NULL DEFAULT 0")
-    if "duel_magic_sent_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_magic_sent_at REAL NOT NULL DEFAULT 0")
-    if "duel_started_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_started_at REAL NOT NULL DEFAULT 0")
-    if "duel_phaseful_retry_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_phaseful_retry_count INTEGER NOT NULL DEFAULT 0")
-    if "duel_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "duel_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_result TEXT NOT NULL DEFAULT ''")
-    if "duel_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_error TEXT NOT NULL DEFAULT ''")
-    if "duel_unequip_prepared" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_unequip_prepared INTEGER NOT NULL DEFAULT 0")
-    if "fishing_pond" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pond TEXT NOT NULL DEFAULT '青溪浅滩'")
-    if "fishing_bait" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_bait TEXT NOT NULL DEFAULT '凡饵'")
-    if "fishing_daily_limit" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_limit INTEGER NOT NULL DEFAULT 20")
-    if "fishing_daily_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_day TEXT NOT NULL DEFAULT ''")
-    if "fishing_daily_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_count INTEGER NOT NULL DEFAULT 0")
-    if "fishing_daily_catch_summary_json" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_catch_summary_json TEXT NOT NULL DEFAULT ''")
-    if "fishing_daily_summary_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_summary_day TEXT NOT NULL DEFAULT ''")
-    if "fishing_basket_calibrated_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_basket_calibrated_day TEXT NOT NULL DEFAULT ''")
-    if "fishing_auto_chum_enabled" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_chum_enabled INTEGER NOT NULL DEFAULT 1")
-    if "fishing_chum_name" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_name TEXT NOT NULL DEFAULT ''")
-    if "fishing_chum_names" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_names TEXT NOT NULL DEFAULT ''")
-    if "fishing_chum_day" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_day TEXT NOT NULL DEFAULT ''")
-    if "fishing_chum_counts" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_counts TEXT NOT NULL DEFAULT ''")
-    if "fishing_auto_buy_bait_enabled" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_buy_bait_enabled INTEGER NOT NULL DEFAULT 1")
-    if "fishing_auto_buy_bait_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 20")
-    if "fishing_auto_probe_enabled" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0")
-    if "fishing_auto_open_fish_enabled" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_open_fish_enabled INTEGER NOT NULL DEFAULT 1")
-    if "fishing_cancel_after_sec" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_cancel_after_sec INTEGER NOT NULL DEFAULT 120")
-    if "fishing_transfer_target_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_transfer_target_id INTEGER NOT NULL DEFAULT 0")
-    if "fishing_transfer_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_transfer_due_at REAL NOT NULL DEFAULT 0")
-    if "fishing_caught_fish_json" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_caught_fish_json TEXT NOT NULL DEFAULT ''")
-    if "fishing_valuable_drop_reminders" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_valuable_drop_reminders TEXT NOT NULL DEFAULT '[]'")
-    if "fishing_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "fishing_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "fishing_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "fishing_status_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_status_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "fishing_pending_action" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pending_action TEXT NOT NULL DEFAULT ''")
-    if "fishing_pending_open_fish" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pending_open_fish TEXT NOT NULL DEFAULT ''")
-    if "fishing_forced_buy_bait" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_forced_buy_bait TEXT NOT NULL DEFAULT ''")
-    if "fishing_forced_buy_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_forced_buy_count INTEGER NOT NULL DEFAULT 0")
-    if "fishing_started_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_started_at REAL NOT NULL DEFAULT 0")
-    if "fishing_active_chum_name" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_active_chum_name TEXT NOT NULL DEFAULT ''")
-    if "fishing_chum_rods_remaining" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_rods_remaining INTEGER NOT NULL DEFAULT 0")
-    if "fishing_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "fishing_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_last_result TEXT NOT NULL DEFAULT ''")
-    if "fishing_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_last_error TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_reply_to_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_reply_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_reply_due_at REAL NOT NULL DEFAULT 0")
-    if "explore_rift_pending_result_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_pending_result_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_last_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_result TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_error TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_last_result_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_result_key TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_manual_required" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_manual_required INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_nascent_escape_weak_until" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_nascent_escape_weak_until REAL NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_required" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_required INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "explore_rift_rebirth_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_due_at REAL NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_request_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_request_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_options_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_options_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_select_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_select_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_options_text" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_options_text TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_rebirth_selected_index" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_selected_index INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_rebirth_last_result" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_last_result TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_rebirth_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_last_error TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_rebirth_choice_mode" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_choice_mode TEXT NOT NULL DEFAULT 'safe_first'")
-    if "explore_rift_rebirth_preferred_root_type" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_preferred_root_type TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_rebirth_preferred_attrs" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_preferred_attrs TEXT NOT NULL DEFAULT ''")
-    if "explore_rift_rebirth_blind_index" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_blind_index INTEGER NOT NULL DEFAULT 1")
-    if "explore_rift_fatal_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_fatal_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "explore_rift_fatal_confirm_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_fatal_confirm_due_at REAL NOT NULL DEFAULT 0")
 
+    # 结果编辑未留存的那批记录，完成时间要跟上最新一次结果时间
+    pending_unsaved = """
+        SELECT 1 FROM identity_runtime_state
+         WHERE wild_training_last_result_at > COALESCE(wild_training_last_completed_at, 0)
+           AND wild_training_last_result LIKE '结果编辑未留存%'
+         LIMIT 1
+    """
+    if _has_rows(pending_unsaved):
+        conn.execute(
+            """
+            UPDATE identity_runtime_state
+            SET wild_training_last_completed_at = wild_training_last_result_at
+            WHERE wild_training_last_result_at > COALESCE(wild_training_last_completed_at, 0)
+              AND wild_training_last_result LIKE '结果编辑未留存%'
+            """
+        )
+
+
+def _ensure_schema_columns(conn):
+    """Bring an existing database up to the current column set.
+
+    Adding a column is idempotent by construction: we read the table's current
+    columns once and only issue ALTER for what is missing. A few defaults are
+    computed from runtime config rather than literals, so they are applied
+    separately below.
+    """
+    added_columns = set()
+    for table, columns in _SCHEMA_COLUMNS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, spec in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
+                added_columns.add((table, name))
+
+    # 默认值取自运行期配置，不能写死成字面量
+    module_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_module_state)").fetchall()}
+    if "divination_daily_limit" not in module_columns:
+        conn.execute(
+            "ALTER TABLE identity_module_state ADD COLUMN divination_daily_limit "
+            f"INTEGER NOT NULL DEFAULT {int(DIVINATION_DEFAULT_DAILY_LIMIT)}"
+        )
     pending_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
     if "max_retry" not in pending_columns:
         conn.execute(f"ALTER TABLE pending_tasks ADD COLUMN max_retry INTEGER NOT NULL DEFAULT {int(RETRY_LIMIT)}")
-    if "priority" not in pending_columns:
-        conn.execute("ALTER TABLE pending_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT ''")
-    if "source_module" not in pending_columns:
-        conn.execute("ALTER TABLE pending_tasks ADD COLUMN source_module TEXT NOT NULL DEFAULT ''")
-    if "op_id" not in pending_columns:
-        conn.execute("ALTER TABLE pending_tasks ADD COLUMN op_id TEXT NOT NULL DEFAULT ''")
-    if "chain_id" not in pending_columns:
-        conn.execute("ALTER TABLE pending_tasks ADD COLUMN chain_id TEXT NOT NULL DEFAULT ''")
-    if "delete_policy" not in pending_columns:
-        conn.execute("ALTER TABLE pending_tasks ADD COLUMN delete_policy TEXT NOT NULL DEFAULT ''")
-    if "identity_info_reply_msg_ids" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
-    if "last_identity_info_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_identity_info_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "identity_info_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_last_error TEXT NOT NULL DEFAULT ''")
-    if "identity_info_last_requested_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_last_requested_at REAL NOT NULL DEFAULT 0")
-    if "identity_info_followup_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_followup_due_at REAL NOT NULL DEFAULT 0")
-    if "identity_info_primary_payload" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_primary_payload TEXT NOT NULL DEFAULT '{}' ")
 
-    # 第二元神模块
-    if "second_soul_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_enabled INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_auto_choice_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1")
-    if "second_soul_purge_threshold" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_purge_threshold INTEGER NOT NULL DEFAULT 60")
-    if "second_soul_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "second_soul_choice_strategy" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_choice_strategy TEXT NOT NULL DEFAULT 'stable'")
-    if "second_soul_heart_demon_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_heart_demon_notified" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_notified INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_status_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_status_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_train_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_train_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_last_train_started_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_train_started_at REAL NOT NULL DEFAULT 0")
-    if "second_soul_last_broadcast_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_broadcast_key TEXT NOT NULL DEFAULT ''")
-    if "second_soul_last_broadcast_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_broadcast_at REAL NOT NULL DEFAULT 0")
-    if "second_soul_moran_value" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_moran_value INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_purge_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_purge_status_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_status_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_purge_attempts" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_attempts INTEGER NOT NULL DEFAULT 0")
-    if "second_soul_purge_due_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_due_at REAL NOT NULL DEFAULT 0")
-    if "second_soul_purge_last_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_last_at REAL NOT NULL DEFAULT 0")
-    if "second_soul_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_error TEXT NOT NULL DEFAULT ''")
-    if "next_second_soul_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_second_soul_time REAL NOT NULL DEFAULT 0")
-    if "second_soul_heart_demon_deadline" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN second_soul_heart_demon_deadline REAL NOT NULL DEFAULT 0")
+    _run_schema_backfills(conn, added_columns=added_columns)
 
-    # 太一门模块
-    if "taiyi_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN taiyi_enabled INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_node_search_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN taiyi_node_search_enabled INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_yindao_element" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_yindao_element TEXT NOT NULL DEFAULT '水'")
-    if "taiyi_phase" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_phase TEXT NOT NULL DEFAULT 'idle'")
-    if "taiyi_pending_node_name" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_pending_node_name TEXT NOT NULL DEFAULT ''")
-    if "taiyi_yindao_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_yindao_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_node_search_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_node_search_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_node_define_msg_id" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_node_define_msg_id INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_freeze_reason" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_freeze_reason TEXT NOT NULL DEFAULT ''")
-    if "taiyi_failure_history" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_failure_history TEXT NOT NULL DEFAULT '[]'")
-    if "taiyi_yindao_resend_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_yindao_resend_count INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_search_resend_count" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_search_resend_count INTEGER NOT NULL DEFAULT 0")
-    if "taiyi_last_error" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_last_error TEXT NOT NULL DEFAULT ''")
-    if "next_taiyi_cycle_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_taiyi_cycle_time REAL NOT NULL DEFAULT 0")
-    if "taiyi_phase_entered_at" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN taiyi_phase_entered_at REAL NOT NULL DEFAULT 0")
-    if "taiyi_freeze_until" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN taiyi_freeze_until REAL NOT NULL DEFAULT 0")
-    _mark_schema_columns_ensured(conn)
 
 
 
