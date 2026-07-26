@@ -115,8 +115,6 @@ def build_tree_miniapp_request(endpoint, *, token, init_data_session=None, init_
     )
 
 
-def _iter_event_buttons(event, *, message_text=""):
-    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def summarize_tree_entry(url, *, button_text="", message_text=""):
@@ -130,7 +128,7 @@ def summarize_tree_entry(url, *, button_text="", message_text=""):
 
 def extract_tree_miniapp_launch(event, *, message_text=""):
     adapter = build_tree_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event, message_text=message_text):
+    for button_text, url in iter_webapp_entry_links(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_tree_entry(url, button_text=button_text, message_text=message_text)

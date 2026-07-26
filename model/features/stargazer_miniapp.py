@@ -111,13 +111,11 @@ async def request_stargazer_miniapp_init_data(identity_id, *, token, webview_url
 _requests_transport = build_miniapp_transport(timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT)
 
 
-def _iter_event_buttons(event, *, message_text=""):
-    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def extract_stargazer_miniapp_launch(event, *, message_text=""):
     adapter = build_stargazer_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event, message_text=message_text):
+    for button_text, url in iter_webapp_entry_links(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_stargazer_entry(url, button_text=button_text, message_text=message_text)

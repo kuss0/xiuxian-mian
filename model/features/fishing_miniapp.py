@@ -119,13 +119,11 @@ def build_fishing_miniapp_request(endpoint, *, token, init_data_session=None, in
     )
 
 
-def _iter_event_buttons(event, *, message_text=""):
-    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def extract_fishing_miniapp_launch(event, *, message_text=""):
     adapter = build_fishing_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event, message_text=message_text):
+    for button_text, url in iter_webapp_entry_links(event, message_text=message_text):
         if not url:
             continue
         launch = build_miniapp_launch_request(adapter, url)

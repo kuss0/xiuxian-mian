@@ -364,8 +364,6 @@ def build_cave_small_world_action_request(
     )
 
 
-def _iter_event_buttons(event, *, message_text=""):
-    yield from iter_webapp_entry_links(event, message_text=message_text)
 
 
 def summarize_cave_treasure_entry(url, *, button_text="", message_text=""):
@@ -379,7 +377,7 @@ def summarize_cave_treasure_entry(url, *, button_text="", message_text=""):
 
 def extract_cave_treasure_miniapp_launch(event, *, message_text=""):
     adapter = build_cave_treasure_miniapp_adapter()
-    for button_text, url in _iter_event_buttons(event, message_text=message_text):
+    for button_text, url in iter_webapp_entry_links(event, message_text=message_text):
         if not url:
             continue
         summary = summarize_cave_treasure_entry(url, button_text=button_text, message_text=message_text)

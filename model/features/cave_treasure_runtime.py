@@ -37,6 +37,7 @@ from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniap
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
 from .tower_miniapp import build_tower_launch_args, format_tower_delta, run_tower_miniapp_production_flow
+from .miniapp_common import resolve_identity_id as _identity_id
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
@@ -93,8 +94,6 @@ _TECHNICAL_KEYS = {
 }
 
 
-def _miniapp_http_allowed_during_pause():
-    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 _ITEM_TEXT_RE = re.compile(
     r"(?:获得|奖励|收获|掉落|战利品|材料)?\s*(?:【(?P<bracket>[^】]+)】|(?P<plain>[\u4e00-\u9fffA-Za-z0-9_·-]{2,24}))\s*[xX×]\s*(?P<count>[\d,]+)"
 )
@@ -104,11 +103,16 @@ _INVENTORY_GAIN_NAMES = {"灵石"}
 _CAVE_TREASURE_STATE_OUTPUTS = ("module_snapshot", "daily_counter", "inventory_delta")
 
 
-def _identity_id(value=None):
-    try:
-        return int(value if value is not None else get_current_identity_id() or 0)
-    except (TypeError, ValueError, OverflowError):
-        return 0
+
+
+def _miniapp_http_allowed_during_pause():
+    """天尊维护暂停期间仍允许 MiniApp HTTP。
+
+    刻意保留在各模块本地而不是收进 miniapp_common：测试普遍用
+    patch.object(<该模块>, "get_global_enabled") 打桩，判断一旦搬走，
+    62 处 patch 点就都失效了。这点重复换来的是打桩位置符合直觉。
+    """
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 
 def authorize_cave_treasure_miniapp_manual_run(identity_id, *, now=None, ttl_sec=CAVE_TREASURE_MANUAL_AUTH_TTL_SEC):

@@ -14,7 +14,16 @@ transport had to be applied in seven places and was in practice applied in one.
 import requests
 
 from ..config import TG_REQUESTS_PROXIES
+from ..state import get_current_identity_id
 from ..webapp_core import sanitize_webapp_secret_text
+
+
+def resolve_identity_id(value=None):
+    """Coerce an identity id, falling back to the current one."""
+    try:
+        return int(value if value is not None else get_current_identity_id() or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 DEFAULT_MINIAPP_HTTP_TIMEOUT = (5, 20)

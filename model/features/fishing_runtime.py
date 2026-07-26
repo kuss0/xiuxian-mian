@@ -84,7 +84,15 @@ _RECENT_COMMANDS = {}
 FISHING_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 
 
+
+
 def _miniapp_http_allowed_during_pause():
+    """天尊维护暂停期间仍允许 MiniApp HTTP。
+
+    刻意保留在各模块本地而不是收进 miniapp_common：测试普遍用
+    patch.object(<该模块>, "get_global_enabled") 打桩，判断一旦搬走，
+    62 处 patch 点就都失效了。这点重复换来的是打桩位置符合直觉。
+    """
     return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 

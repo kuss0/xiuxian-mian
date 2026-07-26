@@ -33,8 +33,6 @@ STARGAZER_GUIDE_INSUFFICIENT_POWER_KEYWORDS = ("修为不足", "同时牵引", "
 STARGAZER_AFTER_DEEP_RETREAT_DELAY_SEC = 3 * 60
 
 
-def _miniapp_http_allowed_during_pause():
-    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 STARGAZER_GUIDE_RESOURCE_KEY = "stargazer_guide"
 STARGAZER_SOOTHE_RESOURCE_KEY = "stargazer_soothe"
 STARGAZER_MINIAPP_PAUSED_ACTION = "miniapp_entry_seen"
@@ -55,6 +53,16 @@ STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
 STARGAZER_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 _MINIAPP_MANUAL_AUTH_UNTIL = {}
 _MINIAPP_RUN_LOCKS = {}
+
+
+def _miniapp_http_allowed_during_pause():
+    """天尊维护暂停期间仍允许 MiniApp HTTP。
+
+    刻意保留在各模块本地而不是收进 miniapp_common：测试普遍用
+    patch.object(<该模块>, "get_global_enabled") 打桩，判断一旦搬走，
+    62 处 patch 点就都失效了。这点重复换来的是打桩位置符合直觉。
+    """
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 
 def _identity_id(value=None):

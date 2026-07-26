@@ -9,6 +9,7 @@ from ..state import get_current_identity_id, get_global_enabled, get_global_paus
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from .trial_miniapp import extract_trial_miniapp_launch, run_trial_miniapp_production_flow
+from .miniapp_common import resolve_identity_id as _identity_id
 
 
 TRIAL_MANUAL_AUTH_TTL_SEC = 10 * 60
@@ -34,17 +35,20 @@ _TRIAL_GAIN_KEYS = {
 }
 
 
-def _miniapp_http_allowed_during_pause():
-    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 _TRIAL_REWARD_CONTAINER_KEYS = {"rewards", "reward", "bonusloot", "loot", "drops", "items", "materials"}
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_]{3,64})")
 
 
-def _identity_id(value=None):
-    try:
-        return int(value if value is not None else get_current_identity_id() or 0)
-    except (TypeError, ValueError, OverflowError):
-        return 0
+
+
+def _miniapp_http_allowed_during_pause():
+    """天尊维护暂停期间仍允许 MiniApp HTTP。
+
+    刻意保留在各模块本地而不是收进 miniapp_common：测试普遍用
+    patch.object(<该模块>, "get_global_enabled") 打桩，判断一旦搬走，
+    62 处 patch 点就都失效了。这点重复换来的是打桩位置符合直觉。
+    """
+    return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 
 def authorize_trial_miniapp_manual_run(identity_id, *, now=None, ttl_sec=TRIAL_MANUAL_AUTH_TTL_SEC, batch_id=""):
