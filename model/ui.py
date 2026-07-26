@@ -164,16 +164,13 @@ from .features.fishing import (
     FISHING_BAITS,
     FISHING_CHUMS,
     FISHING_DEFAULT_BUY_BAIT_COUNT,
-    FISHING_DEFAULT_CANCEL_AFTER_SEC,
     FISHING_PONDS,
     clamp_fishing_buy_bait_count,
-    clamp_fishing_cancel_after_sec,
     clamp_fishing_daily_limit,
     format_fishing_chum_names,
     normalize_fishing_config,
-    plan_fishing_commands,
 )
-from .features.fishing_behavior import next_planned_command as next_fishing_planned_command, parse_chum_usage_counts, parse_pending_open_fish
+from .features.fishing_behavior import parse_chum_usage_counts, parse_pending_open_fish
 from .features.yuanying import get_yuanying_phase_text
 from .features.wanxin import get_wanxin_ui_state, set_wanxin_config
 from .official_schedule import (
@@ -3614,39 +3611,44 @@ def _get_fishing_bait_inventory(send_as_id):
     return {str(name): int(count or 0) for name, count in items.items() if str(name or "").strip()}
 
 
-def _format_fishing_command_plan(plan):
-    if not plan:
-        return "未生成"
-    commands = list(plan.commands or ())
-    if commands:
-        return " -> ".join(commands)
-    missing_resources = [
-        f"{item.item_name}x{int(item.missing_count or 0)}"
-        for item in plan.resource_requirements or ()
-        if int(item.missing_count or 0) > 0
-    ]
-    if missing_resources:
-        return "资源不足：" + "、".join(missing_resources)
-    if plan.purchase_commands:
-        return "需先补鱼饵：" + " -> ".join(plan.purchase_commands)
-    return plan.blocked_reason or "未生成"
-
-
-def _fishing_runtime_command_plan(plan, identity_state, bait_inventory):
-    command, runtime_plan = next_fishing_planned_command(dict(identity_state or {}), bait_inventory=bait_inventory)
-    if command:
-        commands = list((plan.commands if plan else ()) or ())
-        if commands and commands[0] == command:
-            return commands, plan
-        return [command] + [item for item in commands if item != command], runtime_plan or plan
-    return [], runtime_plan or plan
-
-
-def _format_fishing_runtime_command_plan(plan, identity_state, bait_inventory):
-    commands, runtime_plan = _fishing_runtime_command_plan(plan, identity_state, bait_inventory)
-    if commands:
-        return " -> ".join(commands)
-    return _format_fishing_command_plan(runtime_plan)
+def _get_fishing_miniapp_runtime_snapshot(send_as_id, identity_state):
+    config = normalize_miniapp_auto_config()
+    entry_configured = bool(config.get("cave_public_entry_urls"))
+    selected = int(send_as_id) in {
+        int(value)
+        for value in (config.get("cave_public_fishing_identity_ids") or ())
+        if str(value or "").strip().lstrip("-").isdigit()
+    }
+    auto_enabled = bool(config.get("cave_public_fishing_enabled"))
+    identity_available = bool(is_cave_public_identity_available(send_as_id))
+    available = bool(entry_configured and selected and auto_enabled and identity_available)
+    if not entry_configured:
+        status = "未配置公共入口"
+    elif not selected:
+        status = "未选择此身份"
+    elif not auto_enabled:
+        status = "MiniApp 自动运行关闭"
+    elif not identity_available:
+        status = "身份不可用"
+    else:
+        status = "MiniApp 自动运行"
+    parts = [status, "主动链仅走公共 MiniApp"]
+    next_time = float(identity_state.get("next_fishing_time", 0) or 0)
+    if next_time > 0:
+        parts.append(f"下次 {fmt_abs_ts(next_time)}")
+    last_result = str(identity_state.get("fishing_last_result") or "").strip()
+    if last_result:
+        parts.append(last_result)
+    return {
+        "available": available,
+        "entry_configured": entry_configured,
+        "selected": selected,
+        "auto_enabled": auto_enabled,
+        "identity_available": identity_available,
+        "legacy_fallback": False,
+        "status": status,
+        "summary": "｜".join(parts),
+    }
 
 
 def _parse_fishing_daily_catch_summary(value):
@@ -3692,7 +3694,7 @@ def _get_fishing_ui_config(identity_state):
         chum_names=identity_state.get("fishing_chum_names") or None,
         auto_buy_bait_enabled=bool(identity_state.get("fishing_auto_buy_bait_enabled")),
         auto_buy_bait_count=identity_state.get("fishing_auto_buy_bait_count", FISHING_DEFAULT_BUY_BAIT_COUNT),
-        auto_probe_enabled=bool(identity_state.get("fishing_auto_probe_enabled")),
+        auto_probe_enabled=False,
     )
     return config
 
@@ -3705,10 +3707,6 @@ def _coerce_fishing_buy_bait_count(value):
     return clamp_fishing_buy_bait_count(value)
 
 
-def _coerce_fishing_cancel_after_sec(value):
-    return clamp_fishing_cancel_after_sec(value)
-
-
 def get_fishing_ui_snapshot(send_as_id, identity_state=None):
     send_as_id = int(send_as_id)
     identity_state = identity_state or get_identity_state(send_as_id)
@@ -3717,30 +3715,6 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
     except ValueError:
         config = normalize_fishing_config()
     bait_inventory = _get_fishing_bait_inventory(send_as_id)
-    plan = plan_fishing_commands(
-        config,
-        bait_inventory=bait_inventory,
-        chum_usage_counts=parse_chum_usage_counts(identity_state.get("fishing_chum_counts")),
-        active_chum_name=identity_state.get("fishing_active_chum_name") or "",
-        active_chum_rods_remaining=int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
-    )
-    requirements = []
-    for requirement in plan.bait_requirements or ():
-        requirements.append({
-            "bait": requirement.bait,
-            "item_key": requirement.item_key,
-            "required_count": int(requirement.required_count or 0),
-            "available_count": requirement.available_count,
-            "missing_count": int(requirement.missing_count or 0),
-        })
-    resource_requirements = []
-    for requirement in plan.resource_requirements or ():
-        resource_requirements.append({
-            "item_name": requirement.item_name,
-            "required_count": int(requirement.required_count or 0),
-            "available_count": requirement.available_count,
-            "missing_count": int(requirement.missing_count or 0),
-        })
     transfer_options = []
     for identity_id in get_identity_ids():
         identity_id = int(identity_id or 0)
@@ -3767,7 +3741,6 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
             transfer_target_label = f"未知身份 {transfer_target_id}"
     caught_fish = parse_pending_open_fish(identity_state.get("fishing_caught_fish_json"))
     daily_catch_summary = _parse_fishing_daily_catch_summary(identity_state.get("fishing_daily_catch_summary_json"))
-    runtime_commands, runtime_plan = _fishing_runtime_command_plan(plan, identity_state, bait_inventory)
     return {
         "pond": config.pond,
         "bait": config.bait,
@@ -3781,9 +3754,6 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "chum_names": list(config.chum_names or ()),
         "auto_buy_bait_enabled": bool(config.auto_buy_bait_enabled),
         "auto_buy_bait_count": int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT),
-        "auto_probe_enabled": bool(config.auto_probe_enabled),
-        "auto_open_fish_enabled": bool(identity_state.get("fishing_auto_open_fish_enabled", True)),
-        "cancel_after_sec": _coerce_fishing_cancel_after_sec(identity_state.get("fishing_cancel_after_sec", FISHING_DEFAULT_CANCEL_AFTER_SEC)),
         "transfer_target_id": transfer_target_id,
         "transfer_target_label": transfer_target_label,
         "transfer_identity_options": transfer_options,
@@ -3798,15 +3768,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "chum_choices": list(FISHING_CHUMS),
         "bait_inventory": bait_inventory if bait_inventory is not None else {},
         "bait_inventory_known": bait_inventory is not None,
-        "plan": {
-            "allow_start": bool((runtime_plan or plan).allow_start),
-            "commands": runtime_commands,
-            "purchase_commands": list(plan.purchase_commands or ()),
-            "blocked_reason": (runtime_plan or plan).blocked_reason or "",
-            "summary": _format_fishing_runtime_command_plan(plan, identity_state, bait_inventory),
-            "requirements": requirements,
-            "resource_requirements": resource_requirements,
-        },
+        "runtime": _get_fishing_miniapp_runtime_snapshot(send_as_id, identity_state),
     }
 
 
@@ -5524,12 +5486,8 @@ async def ui_set_fishing_config(send_as_id, payload=None):
     current_identity_state = get_identity_state(send_as_id)
     daily_limit = _coerce_fishing_daily_limit(payload.get("daily_limit"))
     auto_buy_bait_count = _coerce_fishing_buy_bait_count(payload.get("auto_buy_bait_count"))
-    cancel_after_sec = _coerce_fishing_cancel_after_sec(
-        payload.get("cancel_after_sec", current_identity_state.get("fishing_cancel_after_sec", FISHING_DEFAULT_CANCEL_AFTER_SEC))
-    )
     auto_chum_enabled = _coerce_ui_bool(payload.get("auto_chum_enabled"))
     auto_buy_bait_enabled = _coerce_ui_bool(payload.get("auto_buy_bait_enabled"))
-    auto_probe_enabled = _coerce_ui_bool(payload.get("auto_probe_enabled"))
     raw_transfer_target_id = (
         payload.get("transfer_target_id")
         if "transfer_target_id" in payload
@@ -5553,15 +5511,11 @@ async def ui_set_fishing_config(send_as_id, payload=None):
             chum_names=chum_names,
             auto_buy_bait_enabled=auto_buy_bait_enabled,
             auto_buy_bait_count=auto_buy_bait_count,
-            auto_probe_enabled=auto_probe_enabled,
+            auto_probe_enabled=False,
         )
     except ValueError as exc:
         return False, f"无效的钓鱼配置：{exc}"
     with use_identity(send_as_id):
-        auto_open_fish_enabled = _coerce_ui_bool(
-            payload.get("auto_open_fish_enabled"),
-            default=state.get("fishing_auto_open_fish_enabled", True),
-        )
         state["fishing_pond"] = config.pond
         state["fishing_bait"] = config.bait
         state["fishing_daily_limit"] = daily_limit
@@ -5570,9 +5524,6 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_chum_names"] = format_fishing_chum_names(config.chum_names)
         state["fishing_auto_buy_bait_enabled"] = bool(config.auto_buy_bait_enabled)
         state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT)
-        state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
-        state["fishing_auto_open_fish_enabled"] = bool(auto_open_fish_enabled)
-        state["fishing_cancel_after_sec"] = int(cancel_after_sec)
         state["fishing_transfer_target_id"] = int(transfer_target_id)
         forced_bait = str(state.get("fishing_forced_buy_bait") or "").strip()
         if forced_bait and forced_bait != config.bait:
@@ -5580,30 +5531,20 @@ async def ui_set_fishing_config(send_as_id, payload=None):
             state["fishing_forced_buy_count"] = 0
         save_state()
         saved_identity_state = dict(state.items())
-    plan = plan_fishing_commands(
-        config,
-        bait_inventory=_get_fishing_bait_inventory(send_as_id),
-        chum_usage_counts=parse_chum_usage_counts(saved_identity_state.get("fishing_chum_counts")),
-        active_chum_name=saved_identity_state.get("fishing_active_chum_name") or "",
-        active_chum_rods_remaining=int(saved_identity_state.get("fishing_chum_rods_remaining", 0) or 0),
-    )
-    plan_summary = _format_fishing_runtime_command_plan(plan, saved_identity_state, _get_fishing_bait_inventory(send_as_id))
+    runtime = _get_fishing_miniapp_runtime_snapshot(send_as_id, saved_identity_state)
     await send_audit_log(
         "🎣 已更新灵溪垂钓配置："
         f"{config.pond}/{config.bait}｜"
         f"次数={daily_limit}/日｜"
         f"打窝={','.join(config.chum_names or ()) or '无'}｜"
         f"买饵={'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}｜"
-        f"试饵={'开' if config.auto_probe_enabled else '关'}｜"
-        f"开鱼={'开' if auto_open_fish_enabled else '关'}｜"
-        f"收竿={cancel_after_sec}秒｜"
         f"鱼获赠送={get_identity_display_name(transfer_target_id) if transfer_target_id else '关'}｜"
-        f"计划={plan_summary}",
+        f"接入={runtime['status']}",
         scope="identity",
         send_as_id=send_as_id,
         limit=260,
     )
-    return True, f"已更新灵溪垂钓[{get_identity_display_name(send_as_id)}]：{daily_limit}/日｜买饵{config.auto_buy_bait_count}｜{plan_summary}"
+    return True, f"已更新灵溪垂钓[{get_identity_display_name(send_as_id)}]：{daily_limit}/日｜买饵{config.auto_buy_bait_count}｜{runtime['status']}"
 
 
 async def ui_set_stargazer_star_choice(send_as_id, choice):

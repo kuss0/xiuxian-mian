@@ -41,15 +41,18 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fishing["auto_chum_enabled"])
         self.assertEqual(["米糠小窝"], fishing["chum_names"])
         self.assertTrue(fishing["auto_buy_bait_enabled"])
-        self.assertTrue(fishing["auto_open_fish_enabled"])
-        self.assertEqual(120, fishing["cancel_after_sec"])
         self.assertEqual(0, fishing["transfer_target_id"])
         self.assertEqual("关闭", fishing["transfer_target_label"])
         self.assertEqual([], fishing["transfer_identity_options"])
         self.assertEqual({}, fishing["caught_fish"])
         self.assertFalse(fishing["bait_inventory_known"])
-        self.assertTrue(fishing["plan"]["allow_start"])
-        self.assertEqual([".买鱼饵 凡饵 20", ".打窝 米糠小窝", ".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
+        self.assertNotIn("auto_probe_enabled", fishing)
+        self.assertNotIn("auto_open_fish_enabled", fishing)
+        self.assertNotIn("cancel_after_sec", fishing)
+        self.assertNotIn("plan", fishing)
+        self.assertFalse(fishing["runtime"]["legacy_fallback"])
+        self.assertFalse(fishing["runtime"]["available"])
+        self.assertEqual("未配置公共入口", fishing["runtime"]["status"])
 
     def test_identity_snapshot_includes_daily_catch_summary_for_miniapp_ui(self):
         identity_state = state_module.get_identity_state(self.identity_id)
@@ -64,7 +67,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"银须灵鲢": 1}, fishing["daily_catch_summary"]["fish"])
         self.assertEqual({"幸运符": 1}, fishing["daily_catch_summary"]["rewards"])
 
-    async def test_set_fishing_config_persists_choices_and_plans_missing_bait_purchase(self):
+    async def test_set_fishing_config_persists_miniapp_choices_without_legacy_fields(self):
         state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 385, "凝血草": 5}, "sections": {}}})
 
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock:
@@ -78,14 +81,12 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
                     "chum_names": ["灵草窝"],
                     "auto_buy_bait_enabled": True,
                     "auto_buy_bait_count": 11,
-                    "auto_probe_enabled": True,
-                    "auto_open_fish_enabled": True,
-                    "cancel_after_sec": 180,
                 },
             )
 
         self.assertTrue(ok)
-        self.assertIn(".买鱼饵 灵米饵 11", message)
+        self.assertNotIn(".买鱼饵", message)
+        self.assertIn("未配置公共入口", message)
         identity_state = state_module.get_identity_state(self.identity_id)
         self.assertEqual("青溪浅滩", identity_state["fishing_pond"])
         self.assertEqual("灵米饵", identity_state["fishing_bait"])
@@ -95,19 +96,13 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('["灵草窝"]', identity_state["fishing_chum_names"])
         self.assertTrue(identity_state["fishing_auto_buy_bait_enabled"])
         self.assertEqual(11, identity_state["fishing_auto_buy_bait_count"])
-        self.assertTrue(identity_state["fishing_auto_probe_enabled"])
-        self.assertTrue(identity_state["fishing_auto_open_fish_enabled"])
-        self.assertEqual(180, identity_state["fishing_cancel_after_sec"])
         audit_mock.assert_awaited_once()
 
         snapshot = ui.get_identity_ui_snapshot(self.identity_id)
-        self.assertEqual([".买鱼饵 灵米饵 11"], snapshot["fishing"]["plan"]["purchase_commands"])
         self.assertEqual(7, snapshot["fishing"]["daily_limit"])
         self.assertEqual(11, snapshot["fishing"]["auto_buy_bait_count"])
-        self.assertTrue(snapshot["fishing"]["auto_open_fish_enabled"])
-        self.assertEqual(180, snapshot["fishing"]["cancel_after_sec"])
-        self.assertTrue(snapshot["fishing"]["plan"]["allow_start"])
-        self.assertEqual([], [item for item in snapshot["fishing"]["plan"]["resource_requirements"] if item["missing_count"]])
+        self.assertNotIn("plan", snapshot["fishing"])
+        self.assertFalse(snapshot["fishing"]["runtime"]["legacy_fallback"])
 
     async def test_set_fishing_config_clears_stale_forced_bait_when_bait_changes(self):
         identity_state = state_module.get_identity_state(self.identity_id)
@@ -131,7 +126,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         identity_state = state_module.get_identity_state(self.identity_id)
         self.assertEqual("", identity_state["fishing_forced_buy_bait"])
         self.assertEqual(0, identity_state["fishing_forced_buy_count"])
-        self.assertEqual([".买鱼饵 灵米饵 20"], ui.get_identity_ui_snapshot(self.identity_id)["fishing"]["plan"]["purchase_commands"])
+        self.assertNotIn("plan", ui.get_identity_ui_snapshot(self.identity_id)["fishing"])
 
     async def test_set_fishing_config_persists_transfer_target_and_rejects_invalid(self):
         target_id = 10002
@@ -173,7 +168,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不存在", message_unknown)
         self.assertEqual(target_id, state_module.get_identity_state(self.identity_id)["fishing_transfer_target_id"])
 
-    async def test_set_fishing_config_shows_resource_shortage_in_plan(self):
+    async def test_set_fishing_config_does_not_use_legacy_storage_plan_as_gate(self):
         state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 35, "凝血草": 0}, "sections": {}}})
 
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
@@ -190,13 +185,10 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(ok)
-        self.assertIn("资源不足：", message)
+        self.assertNotIn("资源不足：", message)
         snapshot = ui.get_identity_ui_snapshot(self.identity_id)
-        self.assertFalse(snapshot["fishing"]["plan"]["allow_start"])
-        self.assertIn("凝血草x5", snapshot["fishing"]["plan"]["blocked_reason"])
-        self.assertEqual([".买鱼饵 灵米饵 11"], snapshot["fishing"]["plan"]["purchase_commands"])
-        missing_resources = {item["item_name"]: item["missing_count"] for item in snapshot["fishing"]["plan"]["resource_requirements"]}
-        self.assertEqual(5, missing_resources["凝血草"])
+        self.assertNotIn("plan", snapshot["fishing"])
+        self.assertEqual(1, snapshot["fishing"]["bait_inventory"]["灵米饵"])
 
     async def test_set_fishing_config_uses_target_identity_for_plan(self):
         other_id = 10002
@@ -225,7 +217,8 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertNotIn(".打窝 灵草窝", message)
         snapshot = ui.get_identity_ui_snapshot(other_id)
-        self.assertEqual([".钓鱼 青溪浅滩 灵米饵"], snapshot["fishing"]["plan"]["commands"])
+        self.assertNotIn("plan", snapshot["fishing"])
+        self.assertEqual("灵米饵", snapshot["fishing"]["bait"])
 
     async def test_set_fishing_config_clamps_daily_limit(self):
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
@@ -263,20 +256,22 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data-open-fishing-config>设置</button>", script)
         self.assertNotIn("data-open-fishing-config>垂钓设置</button>", script)
         self.assertIn("renderFishingConfigModal(false)", script)
-        self.assertIn("MiniApp：.钓鱼 入口｜页面内连钓", script)
-        self.assertIn("旧链兜底", script)
-        self.assertIn("fishing-legacy-controls", script)
+        self.assertIn("公共洞府 MiniApp｜页面内连钓｜无文本回退", script)
+        self.assertNotIn("旧链兜底", script)
+        self.assertNotIn("fishing-legacy-controls", script)
         self.assertIn("dailyCatchSummaryText", script)
         self.assertIn("compactCountMapText", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
-        self.assertIn('name="cancel_after_sec"', script)
         self.assertIn('name="chum_names"', script)
-        self.assertIn('name="auto_open_fish_enabled"', script)
         self.assertIn('name="transfer_target_id"', script)
+        self.assertNotIn('name="cancel_after_sec"', script)
+        self.assertNotIn('name="auto_probe_enabled"', script)
+        self.assertNotIn('name="auto_open_fish_enabled"', script)
         self.assertNotIn('select[name="chum_name"]', script)
-        self.assertIn("resourceRequirementHtml", script)
-        self.assertIn("clampCancelAfterSec", script)
+        self.assertNotIn("resourceRequirementHtml", script)
+        self.assertNotIn("clampCancelAfterSec", script)
+        self.assertIn("baitInventoryText", script)
         self.assertIn("findFishingCard", script)
         self.assertIn("card.querySelector('.module-top')", script)
         self.assertIn("moduleTop.appendChild(panel)", script)

@@ -53,14 +53,6 @@
     return Math.max(1, Math.min(99, parsed));
   }
 
-  function clampCancelAfterSec(value){
-    var parsed = parseInt(value, 10);
-    if(!Number.isFinite(parsed)){
-      return 120;
-    }
-    return Math.max(0, Math.min(600, parsed));
-  }
-
   function selectedChumSet(fishing){
     var values = Array.isArray(fishing.chum_names) ? fishing.chum_names : [];
     if(!values.length && fishing.chum_name){
@@ -98,30 +90,13 @@
     return null;
   }
 
-  function requirementHtml(plan){
-    var requirements = plan && Array.isArray(plan.requirements) ? plan.requirements : [];
-    if(!requirements.length){
-      return '<span class="fishing-muted">未读取鱼饵需求</span>';
+  function baitInventoryText(fishing){
+    if(!fishing.bait_inventory_known){
+      return '储物袋未刷新';
     }
-    return requirements.map(function(item){
-      var available = item.available_count == null ? '未知' : item.available_count;
-      var missing = Number(item.missing_count || 0);
-      var cls = missing > 0 ? ' fishing-need-missing' : '';
-      return '<span class="fishing-need'+cls+'">'+esc(item.bait)+' '+esc(available)+'/'+esc(item.required_count)+'</span>';
-    }).join('');
-  }
-
-  function resourceRequirementHtml(plan){
-    var requirements = plan && Array.isArray(plan.resource_requirements) ? plan.resource_requirements : [];
-    if(!requirements.length){
-      return '<span class="fishing-muted">无额外消耗</span>';
-    }
-    return requirements.map(function(item){
-      var available = item.available_count == null ? '未知' : item.available_count;
-      var missing = Number(item.missing_count || 0);
-      var cls = missing > 0 ? ' fishing-need-missing' : '';
-      return '<span class="fishing-need'+cls+'">'+esc(item.item_name)+' '+esc(available)+'/'+esc(item.required_count)+'</span>';
-    }).join('');
+    var inventory = fishing.bait_inventory || {};
+    var bait = fishing.bait || '凡饵';
+    return bait+' x'+Number(inventory[bait] || 0);
   }
 
   function countMapText(counts){
@@ -166,7 +141,7 @@
     return '收获 '+fishText+' / '+rewardText;
   }
 
-  function fishingStatusText(fishing, plan){
+  function fishingStatusText(fishing, runtime){
     var bits = [];
     bits.push(esc(fishing.flow_mode || 'MiniApp'));
     bits.push(esc(fishing.pond || '青溪浅滩')+'/'+esc(fishing.bait || '凡饵'));
@@ -184,16 +159,16 @@
     if(fishing.auto_chum_enabled){
       bits.push('窝 '+esc((Array.isArray(fishing.chum_names) && fishing.chum_names.length ? fishing.chum_names : [fishing.chum_name || '无']).join(',')));
     }
-    if(plan && plan.blocked_reason){
-      bits.push(esc(plan.blocked_reason));
+    if(runtime && runtime.status){
+      bits.push(esc(runtime.status));
     }
     return bits.join(' ｜ ');
   }
 
-  function fishingConfigFormHtml(fishing, plan){
+  function fishingConfigFormHtml(fishing, runtime){
     return ''+
       '<form id="fishing-config-form" class="fishing-config-grid fishing-config-modal-grid">'+
-      '<div class="fishing-plan fishing-plan-wide"><span>主路径</span><div>MiniApp：.钓鱼 入口｜页面内连钓</div></div>'+
+      '<div class="fishing-plan fishing-plan-wide"><span>主路径</span><div>公共洞府 MiniApp｜页面内连钓｜无文本回退</div></div>'+
       '<label class="field-label"><span>鱼塘</span><select class="text-input" name="pond">'+optionHtml(fishing.pond_choices || [], fishing.pond)+'</select></label>'+
       '<label class="field-label"><span>鱼饵</span><select class="text-input" name="bait">'+optionHtml(fishing.bait_choices || [], fishing.bait)+'</select></label>'+
       '<label class="field-label"><span>每日竿数</span><input class="text-input" type="number" name="daily_limit" min="1" max="99" step="1" value="'+esc(clampDailyLimit(fishing.daily_limit))+'" /></label>'+
@@ -202,17 +177,11 @@
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_chum_enabled" '+(fishing.auto_chum_enabled ? 'checked' : '')+' /><span>打窝</span></label>'+
       '<div class="fishing-plan fishing-chum-plan"><span>窝料</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
       '<label class="field-label"><span>鱼获赠送</span><select class="text-input" name="transfer_target_id">'+identityOptionHtml(fishing.transfer_identity_options || [], fishing.transfer_target_id)+'</select></label>'+
-      '<div class="fishing-plan fishing-plan-wide"><span>旧链兜底</span><div class="fishing-legacy-controls">'+
-        '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
-        '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_open_fish_enabled" '+(fishing.auto_open_fish_enabled ? 'checked' : '')+' /><span>开鱼</span></label>'+
-        '<label class="field-label fishing-inline-field"><span>收竿</span><input class="text-input" type="number" name="cancel_after_sec" min="0" max="600" step="10" value="'+esc(clampCancelAfterSec(fishing.cancel_after_sec))+'" /></label>'+
-      '</div></div>'+
       '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
       '<div class="fishing-plan"><span>收获</span><div>'+esc(dailyCatchSummaryText(fishing) || '无')+'</div></div>'+
       '<div class="fishing-plan"><span>待赠</span><div>'+esc(countMapText(fishing.caught_fish || {}))+'</div></div>'+
-      '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
-      '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+
-      '<div class="fishing-plan fishing-plan-wide"><span>计划</span><div>'+esc(plan.summary || '未生成')+'</div></div>'+
+      '<div class="fishing-plan"><span>鱼饵库存</span><div>'+esc(baitInventoryText(fishing))+'</div></div>'+
+      '<div class="fishing-plan fishing-plan-wide"><span>接入状态</span><div>'+esc(runtime.summary || '未接入公共 MiniApp')+'</div></div>'+
       '<div class="fishing-actions"><button type="submit" class="btn btn-secondary">保存</button></div>'+
       '</form>';
   }
@@ -259,11 +228,11 @@
       return;
     }
     var fishing = identity.fishing || {};
-    var plan = fishing.plan || {};
+    var runtime = fishing.runtime || {};
     modal.dataset.sendAsId = selectedId;
     var body = document.getElementById('fishing-config-modal-body');
     if(body){
-      body.innerHTML = fishingConfigFormHtml(fishing, plan);
+      body.innerHTML = fishingConfigFormHtml(fishing, runtime);
     }
   }
 
@@ -292,12 +261,12 @@
       moduleTop.appendChild(panel);
     }
     var fishing = identity.fishing || {};
-    var plan = fishing.plan || {};
+    var runtime = fishing.runtime || {};
     panel.innerHTML =
       '<div class="fishing-config-entry">'+
       '<div class="fishing-config-summary">'+
-      '<strong>'+(plan.allow_start ? '可执行' : esc(plan.blocked_reason || '待配置'))+'</strong>'+
-      '<span>'+fishingStatusText(fishing, plan)+'</span>'+
+      '<strong>'+(runtime.available ? '可执行' : esc(runtime.status || '待配置'))+'</strong>'+
+      '<span>'+fishingStatusText(fishing, runtime)+'</span>'+
       '</div>'+
       '<button type="button" class="btn btn-secondary" data-open-fishing-config>设置</button>'+
       '</div>';
@@ -318,13 +287,10 @@
       bait: form.querySelector('select[name="bait"]').value,
       daily_limit: clampDailyLimit(form.querySelector('input[name="daily_limit"]').value),
       auto_buy_bait_count: clampBuyBaitCount(form.querySelector('input[name="auto_buy_bait_count"]').value),
-      cancel_after_sec: clampCancelAfterSec(form.querySelector('input[name="cancel_after_sec"]').value),
       auto_chum_enabled: chumEnabled,
       chum_names: chumEnabled ? chumNames : [],
       chum_name: chumEnabled && chumNames.length ? chumNames[0] : '无',
       auto_buy_bait_enabled: !!form.querySelector('input[name="auto_buy_bait_enabled"]').checked,
-      auto_probe_enabled: !!form.querySelector('input[name="auto_probe_enabled"]').checked,
-      auto_open_fish_enabled: !!form.querySelector('input[name="auto_open_fish_enabled"]').checked,
       transfer_target_id: form.querySelector('select[name="transfer_target_id"]').value
     };
     try{

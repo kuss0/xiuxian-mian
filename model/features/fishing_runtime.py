@@ -4,7 +4,6 @@ import random
 import re
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 from ..config import (
     CMD_FISHING,
@@ -18,19 +17,11 @@ from ..config import (
     CMD_FISHING_STATUS,
     TZ_LOCAL,
 )
-from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import (
-    SEND_PRIORITY_EVENT_BURST,
-    console_log,
-    send_audit_log,
-    send_game_command,
-    was_last_game_send_blocked_by_global,
-)
+from ..runtime import send_audit_log, send_game_command
 from ..webapp_core import MiniAppCaptureStore
 from ..state import (
     get_current_identity_id,
-    get_game_group_id,
     get_global_enabled,
     get_global_pause_source,
     get_identity_enabled,
@@ -41,13 +32,12 @@ from ..state import (
     is_cave_public_auto_enabled,
     is_cave_public_identity_available,
     get_send_as_profile,
-    get_storage_bag_records,
     state,
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
-from .fishing import parse_open_fish_result, plan_fishing_commands
+from .fishing import parse_open_fish_result
 from .fishing_miniapp import (
     extract_fishing_miniapp_catches,
     extract_fishing_miniapp_launch,
@@ -57,8 +47,6 @@ from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_d
 
 
 FISHING_REPLY_TIMEOUT_SEC = 90
-FISHING_FAST_REPLY_TIMEOUT_SEC = 14
-FISHING_SETUP_REPLY_TIMEOUT_SEC = 20
 FISHING_ACTION_DELAY_MIN_SEC = 5
 FISHING_ACTION_DELAY_MAX_SEC = 12
 FISHING_RECOVERY_MIN_SEC = 15
@@ -67,10 +55,6 @@ FISHING_POST_ROD_DELAY_MIN_SEC = 3
 FISHING_POST_ROD_DELAY_MAX_SEC = 5
 FISHING_RESET_JITTER_MIN_SEC = 0
 FISHING_RESET_JITTER_MAX_SEC = 12
-FISHING_MAX_ACTIVE_IDENTITIES = 2
-FISHING_QUEUE_DELAY_MIN_SEC = 3
-FISHING_QUEUE_DELAY_MAX_SEC = 5
-FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 65
 FISHING_TRANSFER_RETRY_DELAY_SEC = 5 * 60
 FISHING_VALUABLE_REMINDER_OFFSETS_SEC = (0, 3 * 3600, 6 * 3600)
 FISHING_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
@@ -94,9 +78,9 @@ FISHING_VALUABLE_KEYWORDS = (
 )
 FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS = fishing_behavior.FISHING_MAX_DAILY_LIMIT
 _SEND_LOCKS = {}
+# Kept as an empty compatibility surface for older tests and diagnostics. The
+# active fishing runtime no longer records or sends text fishing commands.
 _RECENT_COMMANDS = {}
-FISHING_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
-FISHING_LOG_REPLAY_LOOKAHEAD_SEC = 30
 FISHING_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
 
 
@@ -136,17 +120,35 @@ def _cave_public_fishing_is_authoritative(send_as_id=None):
     return bool(has_entry and identity_id in selected_ids)
 
 
-def _hold_legacy_fishing_for_miniapp(now):
-    updates = fishing_behavior.clear_pending_updates()
+def _retire_legacy_fishing_state(now):
+    phase = str(state.get("fishing_phase") or "idle").strip()
+    if phase == "miniapp":
+        return False
+    pending_action = str(state.get("fishing_pending_action") or "").strip()
+    has_legacy_state = bool(
+        phase not in {"", "idle"}
+        or pending_action
+        or _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
+        or _parse_int(state.get("fishing_status_msg_id", 0)) > 0
+        or float(state.get("fishing_reply_due_at", 0) or 0) > 0
+        or float(state.get("fishing_started_at", 0) or 0) > 0
+    )
+    if not has_legacy_state:
+        return False
+    last_result = str(state.get("fishing_last_result") or "").strip()
+    updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
     updates.update({
-        "fishing_phase": "idle",
         "fishing_started_at": 0,
-        "fishing_last_result": "公共 MiniApp 为主动钓鱼唯一出口",
-        "fishing_last_error": "公共 MiniApp 未运行或上游熔断，旧文本钓鱼已禁止回退",
-        "next_fishing_time": float(now + FISHING_MINIAPP_FAILURE_BACKOFF_SEC),
+        "fishing_last_result": last_result or "旧文本钓鱼等待已清理，主动链仅走公共 MiniApp",
+        "fishing_last_error": "",
+        "next_fishing_time": max(
+            float(state.get("next_fishing_time", 0) or 0),
+            _miniapp_failure_backoff(now),
+        ),
     })
     _apply_updates(updates)
     mark_dirty()
+    return True
 
 
 def _format_count_map(counts):
@@ -346,52 +348,6 @@ async def _run_fishing_valuable_drop_reminders(now):
         state["fishing_valuable_drop_reminders"] = reminders[-12:]
         save_state()
     return sent_any
-
-
-def _get_bait_inventory_from_storage(send_as_id=None):
-    send_as_id = int(send_as_id or get_current_identity_id() or 0)
-    records = get_storage_bag_records()
-    record = records.get(str(send_as_id)) if isinstance(records, dict) else None
-    if not isinstance(record, dict):
-        return None
-    items = record.get("items")
-    if not isinstance(items, dict):
-        return None
-    return {str(name): _parse_int(count) for name, count in items.items() if str(name or "").strip()}
-
-
-def _active_fishing_identity_ids(exclude_identity_id=None):
-    excluded = int(exclude_identity_id or 0)
-    active_ids = []
-    for identity_id in get_identity_ids():
-        identity_id = int(identity_id or 0)
-        if identity_id <= 0 or identity_id == excluded:
-            continue
-        if not get_identity_enabled(identity_id):
-            continue
-        try:
-            identity_state = get_identity_state(identity_id)
-        except KeyError:
-            continue
-        if fishing_behavior.is_new_fishing_flow_in_progress(identity_state):
-            active_ids.append(identity_id)
-    return active_ids
-
-
-def _new_fishing_command_is_capacity_limited(command):
-    return fishing_behavior.command_phase(command) in {"buying", "chumming", "fishing"}
-
-
-def _defer_new_fishing_for_capacity(now, command):
-    if not _new_fishing_command_is_capacity_limited(command):
-        return False
-    active_ids = _active_fishing_identity_ids(exclude_identity_id=get_current_identity_id())
-    if len(active_ids) < FISHING_MAX_ACTIVE_IDENTITIES:
-        return False
-    state["next_fishing_time"] = float(now + random.uniform(FISHING_QUEUE_DELAY_MIN_SEC, FISHING_QUEUE_DELAY_MAX_SEC))
-    state["fishing_last_error"] = f"钓鱼排队中：已有 {len(active_ids)} 个身份正在垂钓或准备"
-    mark_dirty()
-    return True
 
 
 def _fishing_reset_jitter_sec(send_as_id=None):
@@ -1169,35 +1125,6 @@ def _fishing_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
-def _is_deprecated_automated_rod_command(command):
-    raw = str(command or "").strip()
-    return raw.startswith((
-        CMD_FISHING_STATUS,
-        CMD_FISHING_PROBE,
-        CMD_FISHING_LIFT,
-        CMD_FISHING_CANCEL,
-    ))
-
-
-def _discard_deprecated_rod_automation(now, command=""):
-    pending = str(command or state.get("fishing_pending_action") or "").strip()
-    if not _is_deprecated_automated_rod_command(pending):
-        return False
-    last_result = str(state.get("fishing_last_result") or "").strip()
-    status_msg_id = _parse_int(state.get("fishing_status_msg_id", 0))
-    updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
-    updates.update({
-        "fishing_started_at": 0,
-        "fishing_status_msg_id": status_msg_id,
-        "fishing_last_result": last_result or "旧文本竿内自动链已清理，等待公共 MiniApp",
-        "fishing_last_error": "",
-        "next_fishing_time": _miniapp_failure_backoff(now),
-    })
-    _apply_updates(updates)
-    mark_dirty()
-    return True
-
-
 async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_id=0):
     if not state.get("fishing_enabled"):
         return False
@@ -1296,22 +1223,6 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
         return True
 
 
-def _priority_for_fishing_command(command):
-    raw = str(command or "").strip()
-    if raw.startswith((CMD_FISHING_OPEN, CMD_FISHING_BASKET)):
-        return SEND_PRIORITY_EVENT_BURST
-    return None
-
-
-def _reply_timeout_for_fishing_command(command):
-    raw = str(command or "").strip()
-    if raw.startswith(CMD_FISHING):
-        return FISHING_FAST_REPLY_TIMEOUT_SEC
-    if raw.startswith((CMD_FISHING_BUY_BAIT, CMD_FISHING_CHUM)):
-        return FISHING_SETUP_REPLY_TIMEOUT_SEC
-    return FISHING_REPLY_TIMEOUT_SEC
-
-
 def _fishing_identity_key(send_as_id):
     return int(send_as_id or 0)
 
@@ -1325,85 +1236,8 @@ def _fishing_send_lock(send_as_id):
     return lock
 
 
-def _recent_fishing_command_blocks(command, now):
-    recent = _RECENT_COMMANDS.get(_fishing_identity_key(get_current_identity_id())) or {}
-    if str(recent.get("command") or "").strip() != str(command or "").strip():
-        return False
-    sent_at = float(recent.get("sent_at") or 0)
-    return sent_at > 0 and float(now or 0) - sent_at < FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC
-
-
-def _remember_fishing_command(command, sent_at, msg_id):
-    _RECENT_COMMANDS[_fishing_identity_key(get_current_identity_id())] = {
-        "command": str(command or "").strip(),
-        "sent_at": float(sent_at or time.time()),
-        "msg_id": int(msg_id or 0),
-    }
-
-
-def _is_fishing_reply_log_entry(entry):
-    raw_text = str((entry or {}).get("text") or "").strip()
-    if not raw_text:
-        return False
-    return fishing_behavior.is_fishing_reply_text(raw_text) or bool(parse_open_fish_result(raw_text))
-
-
-def _fishing_command_for_msg(command_msg_id, now):
-    recent = _RECENT_COMMANDS.get(_fishing_identity_key(get_current_identity_id())) or {}
-    if int(recent.get("msg_id") or 0) == int(command_msg_id or 0):
-        command = str(recent.get("command") or "").strip()
-        if command:
-            return command
-    entry = find_message_log_message(
-        command_msg_id,
-        now,
-        lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
-        lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
-    )
-    return str((entry or {}).get("text") or "").strip()
-
-
-async def _recover_fishing_pending_from_message_log(now):
-    command_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
-    if command_msg_id <= 0:
-        return ""
-    replies = find_message_log_replies(
-        command_msg_id,
-        now,
-        lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
-        lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
-        predicate=_is_fishing_reply_log_entry,
-    )
-    if not replies:
-        return ""
-    command_text = _fishing_command_for_msg(command_msg_id, now)
-    reply_to = SimpleNamespace(id=command_msg_id, raw_text=command_text)
-    for entry in replies:
-        handled = await handle_fishing_reply(
-            entry.get("text") or "",
-            float(entry.get("ts_epoch") or now),
-            reply_to=reply_to,
-            matched_family="fishing",
-            result_msg_id=int(entry.get("message_id") or 0),
-        )
-        if handled:
-            state["fishing_last_error"] = ""
-            return "reply"
-    return ""
-
-
 def is_fishing_reply_text(text):
     return fishing_behavior.is_fishing_reply_text(text)
-
-
-def _current_fishing_config():
-    return fishing_behavior.current_fishing_config(_state_snapshot())
-
-
-def _active_chum_plan_kwargs():
-    return fishing_behavior.active_chum_plan_kwargs(_state_snapshot())
 
 
 def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=True):
@@ -1457,39 +1291,35 @@ def get_fishing_status_text():
         _apply_updates(daily_updates)
         mark_dirty()
         snapshot = _state_snapshot()
-    plan = plan_fishing_commands(
-        config,
-        bait_inventory=_get_bait_inventory_from_storage(),
-        chum_usage_counts=fishing_behavior.parse_chum_usage_counts(snapshot.get("fishing_chum_counts")),
-        **fishing_behavior.active_chum_plan_kwargs(snapshot),
-    )
-    plan_summary = " -> ".join(plan.commands or ()) if plan.commands else (plan.blocked_reason or "未生成")
     active_chum = state.get("fishing_active_chum_name") or "无"
     configured_chums = ",".join(config.chum_names or ()) or "无"
     chum_rods = _parse_int(state.get("fishing_chum_rods_remaining", 0))
     transfer_target_id = _parse_int(state.get("fishing_transfer_target_id", 0))
     transfer_target = get_identity_display_name(transfer_target_id) if transfer_target_id in get_identity_ids() else "关"
     transfer_items = fishing_behavior.pending_fishing_transfer_items(snapshot)
+    identity_id = int(get_current_identity_id() or 0)
+    public_selected = _cave_public_fishing_is_authoritative(identity_id)
+    public_auto_enabled = is_cave_public_auto_enabled("fishing", identity_id)
+    if public_auto_enabled:
+        runtime_status = "公共 MiniApp 自动运行"
+    elif public_selected:
+        runtime_status = "已选择此身份，MiniApp 自动运行关闭"
+    else:
+        runtime_status = "未接入公共 MiniApp"
     lines = [
         "🎣 灵溪垂钓",
         f"- 已启用：{'是' if state.get('fishing_enabled') else '否'}",
+        f"- 主动出口：{runtime_status}",
+        "- 文本回退：禁用",
         f"- 鱼塘/鱼饵：{config.pond}/{config.bait}",
         f"- 今日竿数：{daily_count}/{daily_limit}",
-        f"- 自动打窝：{configured_chums}",
+        f"- MiniApp 打窝配置：{configured_chums}",
         f"- 当前窝料：{active_chum}（剩余 {chum_rods} 竿）",
-        f"- 缺饵购买：{'开' if config.auto_buy_bait_enabled else '关'}",
-        f"- 试饵：{'开' if config.auto_probe_enabled else '关'}",
-        f"- 自动开鱼：{'开' if state.get('fishing_auto_open_fish_enabled') else '关'}",
-        f"- 卡竿收竿：{int(state.get('fishing_cancel_after_sec', 120) or 0)}秒",
+        f"- MiniApp 缺饵购买：{'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}",
         f"- 鱼获赠送：{transfer_target}",
         f"- 待赠鱼获：{_format_count_map(transfer_items)}",
         f"- 阶段：{state.get('fishing_phase') or 'idle'}",
         f"- 下次动作：{fmt_abs_ts(state.get('next_fishing_time', 0))}（{fmt_remaining(state.get('next_fishing_time', 0))}）",
-        f"- 待回复命令ID：{int(state.get('fishing_reply_to_msg_id', 0) or 0) or '无'}",
-        f"- 回复超时：{fmt_abs_ts(state.get('fishing_reply_due_at', 0))}（{fmt_remaining(state.get('fishing_reply_due_at', 0))}）",
-        f"- 待动作：{state.get('fishing_pending_action') or '无'}",
-        f"- 待开鱼：{state.get('fishing_pending_open_fish') or '无'}",
-        f"- 计划：{plan_summary}",
         f"- 最近结果：{state.get('fishing_last_result') or '无'}",
     ]
     if state.get("fishing_last_error"):
@@ -1621,6 +1451,7 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
             result_msg_id=int(result_msg_id or _parse_int(getattr(reply_to, "id", 0)) or 0),
         ):
             save_state()
+        _retire_legacy_fishing_state(now)
         await _emit_effect_audits(effect)
         return True
 
@@ -1662,95 +1493,8 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
     _apply_effect(effect)
     if _queue_fishing_valuable_drop_reminders(raw_text, now, result_msg_id=result_msg_id):
         save_state()
-    _discard_deprecated_rod_automation(now)
+    _retire_legacy_fishing_state(now)
     await _emit_effect_audits(effect)
-    return True
-
-
-async def _send_fishing_command(command, now):
-    lock = _fishing_send_lock(get_current_identity_id())
-    if lock.locked():
-        state["fishing_last_error"] = f"发送中重复指令已抑制：{command}"
-        mark_dirty()
-        return False
-    async with lock:
-        return await _send_fishing_command_locked(command, now)
-
-
-async def _send_fishing_command_locked(command, now):
-    if _cave_public_fishing_is_authoritative():
-        _hold_legacy_fishing_for_miniapp(now)
-        return False
-    phase = fishing_behavior.command_phase(command)
-    if _is_deprecated_automated_rod_command(command):
-        _discard_deprecated_rod_automation(now, command)
-        save_state()
-        console_log(
-            f"🎣 灵溪垂钓已丢弃过期文本自动动作：{command}；主动钓鱼只走公共 MiniApp。",
-            scope="identity",
-            limit=220,
-        )
-        return False
-    if _recent_fishing_command_blocks(command, now):
-        state["fishing_last_error"] = f"短窗重复指令已抑制：{command}"
-        mark_dirty()
-        return False
-    if (
-        phase != "idle"
-        and str(state.get("fishing_phase") or "").strip() == phase
-        and _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
-        and float(state.get("fishing_reply_due_at", 0) or 0) > float(now)
-    ):
-        return False
-    priority = _priority_for_fishing_command(command)
-    send_kwargs = {
-        "track": False,
-        "max_retry": 0,
-        "source_module": "灵溪垂钓",
-    }
-    if priority:
-        send_kwargs["priority"] = priority
-    if phase != "idle":
-        _apply_updates({
-            "fishing_phase": phase,
-            "fishing_pending_action": "",
-            "next_fishing_time": float(now + _reply_timeout_for_fishing_command(command)),
-        })
-        mark_dirty()
-    msg = await send_game_command(command, **send_kwargs)
-    if not msg:
-        if was_last_game_send_blocked_by_global(get_current_identity_id(), command):
-            _apply_updates({
-                "fishing_phase": "idle",
-                "fishing_reply_to_msg_id": 0,
-                "fishing_reply_due_at": 0,
-                "fishing_pending_action": "",
-                "fishing_last_error": "",
-                "fishing_last_result": "全局暂停，等待恢复错峰",
-                "next_fishing_time": float(now + random.uniform(10 * 60, 30 * 60)),
-            })
-            return False
-        effect = fishing_behavior.build_send_failure_effect(command, now)
-        _apply_effect(effect)
-        await _emit_effect_audits(effect)
-        return False
-
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-    msg_id = int(getattr(msg, "id", 0) or 0)
-    _remember_fishing_command(command, sent_at, msg_id)
-    effect = fishing_behavior.build_send_success_effect(
-        _state_snapshot(),
-        command,
-        sent_at=sent_at,
-        msg_id=msg_id,
-        reply_timeout_sec=_reply_timeout_for_fishing_command(command),
-    )
-    _apply_effect(effect)
-    console_log(
-        f"🎣 灵溪垂钓已发送：{command}，等待回复→{fmt_abs_ts(state['fishing_reply_due_at'])}",
-        scope="identity",
-        limit=180,
-    )
     return True
 
 
@@ -1764,68 +1508,29 @@ async def run_fishing_scheduler(now):
     if await _run_pending_fishing_transfer(now):
         return
 
-    if _cave_public_fishing_is_authoritative(get_current_identity_id()):
-        if not is_cave_public_auto_enabled("fishing", get_current_identity_id()):
-            _hold_legacy_fishing_for_miniapp(now)
-        return
-
-    reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
-    reply_due_at = float(state.get("fishing_reply_due_at", 0) or 0)
-    if reply_to_msg_id > 0 and reply_due_at > 0 and reply_due_at <= float(now):
-        recovered = await _recover_fishing_pending_from_message_log(now)
-        if recovered:
-            console_log(f"🎣 灵溪垂钓日志补偿：{recovered}，原消息ID={reply_to_msg_id}", scope="identity", limit=180)
-            save_state()
-            return
-
-    effect = fishing_behavior.decide_scheduler(
-        _state_snapshot(),
-        now,
-        bait_inventory=_get_bait_inventory_from_storage(),
-        next_day_jitter_sec=_fishing_reset_jitter_sec(),
-    )
-    if not effect.handled:
-        return
-
-    if effect.command:
-        if _defer_new_fishing_for_capacity(now, effect.command):
-            return
-        _apply_effect(effect, persist=False)
-        await _send_fishing_command(effect.command, now)
-        return
-
-    _apply_effect(effect)
-    if _discard_deprecated_rod_automation(now):
+    if _retire_legacy_fishing_state(now):
         save_state()
-    await _emit_effect_audits(effect, limit=220)
 
 
 def schedule_fishing_initial_check(now, *, persist=False, keep_last_error=True):
     last_error = state.get("fishing_last_error") if keep_last_error else ""
-    reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
-    if reply_to_msg_id > 0:
-        reply_due_at = float(state.get("fishing_reply_due_at", 0) or 0)
-        if reply_due_at <= float(now or 0):
-            updates = fishing_behavior.clear_pending_updates()
-            updates["fishing_last_error"] = last_error or ""
-            updates["fishing_last_result"] = "启动恢复清理过期钓鱼等待"
-            updates["next_fishing_time"] = float(now + random.uniform(FISHING_RECOVERY_MIN_SEC, FISHING_RECOVERY_MAX_SEC))
-            _apply_updates(updates)
-            if persist:
-                save_state()
-            else:
-                mark_dirty()
-            return state["next_fishing_time"]
-        state["fishing_last_error"] = last_error or ""
-        state["next_fishing_time"] = float(reply_due_at if reply_due_at > now else now)
-        if persist:
-            save_state()
-        else:
-            mark_dirty()
-        return state["next_fishing_time"]
-    updates = fishing_behavior.clear_pending_updates()
+    had_legacy_state = bool(
+        str(state.get("fishing_phase") or "idle").strip() not in {"", "idle"}
+        or str(state.get("fishing_pending_action") or "").strip()
+        or _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
+        or _parse_int(state.get("fishing_status_msg_id", 0)) > 0
+    )
+    updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
+    updates["fishing_started_at"] = 0
     updates["fishing_last_error"] = last_error or ""
-    updates["next_fishing_time"] = float(now + random.uniform(FISHING_RECOVERY_MIN_SEC, FISHING_RECOVERY_MAX_SEC))
+    if had_legacy_state:
+        updates["fishing_last_result"] = "启动恢复已清理旧文本钓鱼等待"
+    current_due_at = float(state.get("next_fishing_time", 0) or 0)
+    updates["next_fishing_time"] = (
+        current_due_at
+        if current_due_at > float(now or 0)
+        else float(now + random.uniform(FISHING_RECOVERY_MIN_SEC, FISHING_RECOVERY_MAX_SEC))
+    )
     _apply_updates(updates)
     if persist:
         save_state()

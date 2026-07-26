@@ -1,7 +1,6 @@
 import copy
 import json
 import sys
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -89,25 +88,21 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def _local_ts(self, year, month, day, hour, minute=0, second=0):
         return datetime(year, month, day, hour, minute, second, tzinfo=fishing_runtime.TZ_LOCAL).timestamp()
 
-    async def test_scheduler_sends_first_planned_fishing_command(self):
+    async def test_scheduler_never_sends_text_fishing_for_unselected_identity(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
             state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "凡饵"
-            state_module.state["fishing_auto_chum_enabled"] = False
-            state_module.state["fishing_auto_buy_bait_enabled"] = False
             state_module.state["next_fishing_time"] = now - 1
-            fake_msg = SimpleNamespace(id=22027, sent_at=now)
             with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(fishing_runtime, "save_state"),
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".钓鱼 青溪浅滩 凡饵", track=False, max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual(22027, state_module.state["fishing_reply_to_msg_id"])
-            self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertFalse(hasattr(fishing_runtime, "_send_fishing_command"))
 
     def test_private_rod_followup_and_recovery_tasks_are_removed(self):
         for name in (
@@ -117,6 +112,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "_schedule_fishing_recovery",
             "_run_fishing_followup",
             "_run_fishing_recovery",
+            "_send_fishing_command",
+            "_recover_fishing_pending_from_message_log",
         ):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(fishing_runtime, name))
@@ -137,9 +134,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(fishing_runtime, "save_state"),
                     patch.object(fishing_runtime.random, "uniform", return_value=0),
                 ):
-                    sent = await fishing_runtime._send_fishing_command(command, now)
+                    await fishing_runtime.run_fishing_scheduler(now)
 
-                self.assertFalse(sent)
                 send_mock.assert_not_awaited()
                 self.assertEqual("idle", state_module.state["fishing_phase"])
                 self.assertEqual("", state_module.state["fishing_pending_action"])
@@ -161,7 +157,10 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_reply_due_at"] = now - 1
             state_module.state["fishing_pending_action"] = ".钓鱼状态"
             state_module.state["next_fishing_time"] = now - 1
-            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock:
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime.random, "uniform", return_value=0),
+            ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
             send_mock.assert_not_awaited()
@@ -169,84 +168,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
             self.assertEqual("", state_module.state["fishing_pending_action"])
             self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
-            self.assertIn("禁止回退", state_module.state["fishing_last_error"])
-
-
-    async def test_scheduler_defers_new_fishing_when_miniapp_capacity_full(self):
-        identity_id = self._prepare_identity()
-        other_id = self._prepare_identity(10001)
-        another_id = self._prepare_identity(10002)
-        now = 1_700_000_000.0
-
-        for active_id in (other_id, another_id):
-            with state_module.use_identity(active_id):
-                state_module.state["fishing_enabled"] = True
-                state_module.state["fishing_phase"] = "miniapp"
-
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "凡饵"
-            state_module.state["fishing_auto_chum_enabled"] = False
-            state_module.state["fishing_auto_buy_bait_enabled"] = False
-            state_module.state["next_fishing_time"] = now - 1
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-                patch.object(fishing_runtime.random, "uniform", return_value=4),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
-
-            send_mock.assert_not_awaited()
-            self.assertEqual(now + 4, state_module.state["next_fishing_time"])
-            self.assertIn("钓鱼排队中", state_module.state["fishing_last_error"])
-
-
-    async def test_timeout_recovers_logged_reply_before_status_fallback(self):
-        identity_id = self._prepare_identity()
-        now = self._local_ts(2026, 7, 4, 6, 40, 0)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log_path = Path(tmpdir) / "2026-07-04.log"
-            entries = [
-                {
-                    "ts": "2026-07-04 06:39:40 UTC+8",
-                    "event_type": "message",
-                    "message_id": 22027,
-                    "chat_id": state_module.get_game_group_id(),
-                    "sender_id": identity_id,
-                    "reply_to_msg_id": 0,
-                    "text": ".提竿",
-                },
-                {
-                    "ts": "2026-07-04 06:39:42 UTC+8",
-                    "event_type": "message",
-                    "message_id": 22028,
-                    "chat_id": state_module.get_game_group_id(),
-                    "sender_id": 8609885831,
-                    "reply_to_msg_id": 22027,
-                    "text": FISHING_CATCH_TEXT,
-                },
-            ]
-            log_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n", encoding="utf-8")
-
-            with state_module.use_identity(identity_id):
-                state_module.state["fishing_enabled"] = True
-                state_module.state["fishing_phase"] = "lifting"
-                state_module.state["fishing_pending_action"] = ".提竿"
-                state_module.state["fishing_reply_to_msg_id"] = 22027
-                state_module.state["fishing_reply_due_at"] = now - 1
-                state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
-                with (
-                    patch("model.message_log_recovery.MESSAGES_DIR", tmpdir),
-                    patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
-                    patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
-                    patch.object(fishing_runtime, "save_state"),
-                ):
-                    await fishing_runtime.run_fishing_scheduler(now)
-
-                send_mock.assert_not_awaited()
-                self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
-                self.assertEqual(22028, state_module.state["fishing_last_msg_id"])
-                self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
 
     def _miniapp_event(self, url="https://t.me/fanrenxiuxian_bot/app?startapp=fish_TEST1234"):
         return SimpleNamespace(
@@ -1433,7 +1355,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 30, due_at)
             self.assertEqual(now + 30, state_module.state["next_fishing_time"])
 
-    async def test_initial_check_preserves_pending_open_reply_after_restart(self):
+    async def test_initial_check_retires_legacy_reply_anchor_but_preserves_open_queue(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -1443,38 +1365,19 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_reply_due_at"] = now + 60
             state_module.state["fishing_pending_open_fish"] = '{"青鳞小鲫": 2}'
 
-            due_at = fishing_runtime.schedule_fishing_initial_check(now, persist=False)
+            with patch.object(fishing_runtime.random, "uniform", return_value=30):
+                due_at = fishing_runtime.schedule_fishing_initial_check(now, persist=False)
 
-            self.assertEqual(now + 60, due_at)
-            self.assertEqual("opening", state_module.state["fishing_phase"])
-            self.assertEqual(22042, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + 30, due_at)
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["fishing_reply_due_at"])
             self.assertEqual('{"青鳞小鲫": 2}', state_module.state["fishing_pending_open_fish"])
+            self.assertIn("已清理旧文本钓鱼等待", state_module.state["fishing_last_result"])
             with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock:
                 await fishing_runtime.run_fishing_scheduler(now + 10)
 
             send_mock.assert_not_awaited()
-
-    async def test_daily_limit_queries_basket_before_opening_when_auto_open_enabled(self):
-        identity_id = self._prepare_identity()
-        now = 1_700_000_000.0
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_auto_open_fish_enabled"] = True
-            state_module.state["fishing_daily_limit"] = 1
-            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
-            state_module.state["fishing_daily_count"] = 1
-            state_module.state["next_fishing_time"] = now - 1
-            basket_msg = SimpleNamespace(id=22044, sent_at=now)
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=basket_msg)) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
-
-            send_mock.assert_awaited_once_with(".鱼篓", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual("basket", state_module.state["fishing_phase"])
-            self.assertEqual(22044, state_module.state["fishing_reply_to_msg_id"])
-            self.assertGreater(state_module.state["next_fishing_time"], now)
 
     async def test_pending_transfer_due_enqueues_storage_bag_gift_batch(self):
         identity_id = self._prepare_identity()
@@ -1539,140 +1442,74 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 
-    async def test_prep_window_buys_bait_instead_of_starting_old_day_rod(self):
-        identity_id = self._prepare_identity()
-        now = self._local_ts(2026, 6, 26, 23, 40)
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "灵米饵"
-            state_module.state["fishing_auto_chum_enabled"] = False
-            state_module.state["fishing_auto_buy_bait_enabled"] = True
-            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
-            state_module.state["fishing_daily_count"] = 0
-            state_module.state["next_fishing_time"] = now - 1
-            fake_msg = SimpleNamespace(id=22060, sent_at=now)
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
+    async def test_scheduler_never_sends_text_commands_across_legacy_scenarios(self):
+        """旧文本路径曾在这些场景各自发命令：日切重竿、23:40 准备窗口买饵、
+        窝料预打。主动出口收敛到公共 MiniApp 后，这些场景一律不得再产生
+        任何文本发送，也不得再排队 pending_action。"""
+        scenarios = (
+            ("midnight_reset", self._local_ts(2026, 6, 27, 0, 0, 2), {
+                "fishing_bait": "凡饵",
+                "fishing_auto_chum_enabled": False,
+                "fishing_auto_buy_bait_enabled": False,
+                "fishing_daily_day": "2026-06-26",
+                "fishing_daily_count": 20,
+                "fishing_daily_limit": 20,
+            }, {"凡饵": 5}),
+            ("midnight_rush_chum", self._local_ts(2026, 6, 27, 0, 0, 2), {
+                "fishing_bait": "灵米饵",
+                "fishing_auto_chum_enabled": True,
+                "fishing_chum_names": '["米糠小窝"]',
+                "fishing_auto_buy_bait_enabled": False,
+                "fishing_daily_day": "2026-06-26",
+                "fishing_daily_count": 20,
+                "fishing_daily_limit": 20,
+            }, {"灵米饵": 5, "米糠小窝": 3}),
+            ("prep_window_buy_bait", self._local_ts(2026, 6, 26, 23, 40), {
+                "fishing_bait": "灵米饵",
+                "fishing_auto_chum_enabled": False,
+                "fishing_auto_buy_bait_enabled": True,
+                "fishing_daily_count": 0,
+            }, None),
+            ("prep_window_bait_ready", self._local_ts(2026, 6, 26, 23, 45), {
+                "fishing_bait": "灵米饵",
+                "fishing_auto_chum_enabled": False,
+                "fishing_auto_buy_bait_enabled": True,
+                "fishing_daily_count": 0,
+            }, {"灵米饵": 3}),
+            ("prep_window_no_pre_chum", self._local_ts(2026, 6, 26, 23, 45), {
+                "fishing_bait": "灵米饵",
+                "fishing_auto_chum_enabled": True,
+                "fishing_chum_names": '["米糠小窝"]',
+                "fishing_auto_buy_bait_enabled": False,
+                "fishing_daily_count": 0,
+            }, {"灵米饵": 3, "米糠小窝": 2}),
+        )
+        for label, now, overrides, bag in scenarios:
+            with self.subTest(scenario=label):
+                identity_id = self._prepare_identity()
+                with state_module.use_identity(identity_id):
+                    state_module.state["fishing_enabled"] = True
+                    state_module.state["next_fishing_time"] = now - 1
+                    if "fishing_daily_day" not in overrides:
+                        state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+                    for key, value in overrides.items():
+                        state_module.state[key] = value
+                    if bag is not None:
+                        state_module.set_storage_bag_records({
+                            str(identity_id): {"items": dict(bag), "sections": {"材料": dict(bag)}},
+                        })
+                    with (
+                        patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                        patch.object(fishing_runtime, "save_state"),
+                    ):
+                        await fishing_runtime.run_fishing_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".买鱼饵 灵米饵 20", track=False, max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual("buying", state_module.state["fishing_phase"])
-            self.assertNotEqual(".钓鱼 青溪浅滩 灵米饵", send_mock.await_args.args[0])
+                    send_mock.assert_not_awaited()
+                    self.assertEqual("", state_module.state["fishing_pending_action"])
 
-    async def test_prep_window_holds_until_midnight_when_bait_is_ready(self):
-        identity_id = self._prepare_identity()
-        now = self._local_ts(2026, 6, 26, 23, 45)
-        midnight = self._local_ts(2026, 6, 27, 0, 0)
-        expected_start = midnight + fishing_runtime._fishing_reset_jitter_sec(identity_id)
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "灵米饵"
-            state_module.state["fishing_auto_chum_enabled"] = False
-            state_module.state["fishing_auto_buy_bait_enabled"] = True
-            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
-            state_module.state["fishing_daily_count"] = 0
-            state_module.state["next_fishing_time"] = now - 1
-            state_module.set_storage_bag_records({
-                str(identity_id): {"items": {"灵米饵": 3}, "sections": {"材料": {"灵米饵": 3}}},
-            })
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
-
-            send_mock.assert_not_awaited()
-            self.assertEqual(expected_start, state_module.state["next_fishing_time"])
-            self.assertEqual(".钓鱼 青溪浅滩 灵米饵", state_module.state["fishing_pending_action"])
-            self.assertIn("日切待命", state_module.state["fishing_last_result"])
-
-    async def test_prep_window_does_not_pre_chum_when_bait_is_ready(self):
-        identity_id = self._prepare_identity()
-        now = self._local_ts(2026, 6, 26, 23, 45)
-        expected_start = self._local_ts(2026, 6, 27, 0, 0)
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "灵米饵"
-            state_module.state["fishing_auto_chum_enabled"] = True
-            state_module.state["fishing_chum_names"] = '["米糠小窝"]'
-            state_module.state["fishing_auto_buy_bait_enabled"] = True
-            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
-            state_module.state["fishing_daily_count"] = 20
-            state_module.state["fishing_daily_limit"] = 20
-            state_module.state["next_fishing_time"] = now - 1
-            state_module.set_storage_bag_records({
-                str(identity_id): {"items": {"灵米饵": 3, "凡饵": 2, "灵石": 1000}, "sections": {"材料": {"灵米饵": 3, "凡饵": 2}}},
-            })
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
-
-            send_mock.assert_not_awaited()
-            self.assertGreaterEqual(state_module.state["next_fishing_time"], expected_start)
-            self.assertLessEqual(state_module.state["next_fishing_time"], expected_start + 12)
-            self.assertEqual(".钓鱼 青溪浅滩 灵米饵", state_module.state["fishing_pending_action"])
-            self.assertIn("日切待命", state_module.state["fishing_last_result"])
-
-    async def test_midnight_resets_daily_counter_and_starts_next_day_rod(self):
-        identity_id = self._prepare_identity()
-        now = self._local_ts(2026, 6, 27, 0, 0, 2)
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "凡饵"
-            state_module.state["fishing_auto_chum_enabled"] = False
-            state_module.state["fishing_auto_buy_bait_enabled"] = False
-            state_module.state["fishing_daily_day"] = "2026-06-26"
-            state_module.state["fishing_daily_count"] = 20
-            state_module.state["fishing_daily_limit"] = 20
-            state_module.state["next_fishing_time"] = now - 1
-            state_module.set_storage_bag_records({
-                str(identity_id): {"items": {"凡饵": 5}, "sections": {"材料": {"凡饵": 5}}},
-            })
-            fake_msg = SimpleNamespace(id=22061, sent_at=now)
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
-
-            send_mock.assert_awaited_once_with(".钓鱼 青溪浅滩 凡饵", track=False, max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual(fishing_runtime.get_day_key(now), state_module.state["fishing_daily_day"])
-            self.assertEqual(0, state_module.state["fishing_daily_count"])
-            self.assertEqual("fishing", state_module.state["fishing_phase"])
-
-    async def test_midnight_rush_skips_chum_for_first_rod(self):
-        identity_id = self._prepare_identity()
-        now = self._local_ts(2026, 6, 27, 0, 0, 2)
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "灵米饵"
-            state_module.state["fishing_auto_chum_enabled"] = True
-            state_module.state["fishing_chum_names"] = '["米糠小窝"]'
-            state_module.state["fishing_auto_buy_bait_enabled"] = True
-            state_module.state["fishing_daily_day"] = "2026-06-26"
-            state_module.state["fishing_daily_count"] = 20
-            state_module.state["fishing_daily_limit"] = 20
-            state_module.state["next_fishing_time"] = now - 1
-            state_module.set_storage_bag_records({
-                str(identity_id): {"items": {"灵米饵": 3, "凡饵": 2, "灵石": 1000}, "sections": {"材料": {"灵米饵": 3, "凡饵": 2}}},
-            })
-            fake_msg = SimpleNamespace(id=22063, sent_at=now)
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                await fishing_runtime.run_fishing_scheduler(now)
-
-            send_mock.assert_awaited_once_with(".钓鱼 青溪浅滩 灵米饵", track=False, max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual("fishing", state_module.state["fishing_phase"])
-            self.assertNotEqual(".打窝 米糠小窝", send_mock.await_args.args[0])
-
-
-    async def test_new_fishing_command_waits_when_two_other_rods_active(self):
+    async def test_scheduler_sends_nothing_when_two_other_rods_active(self):
+        """旧文本路径靠 FISHING_MAX_ACTIVE_IDENTITIES 排队限流；现在主动出口只走
+        公共 MiniApp，多身份并发时调度器同样不得发出任何文本命令。"""
         identity_id = self._prepare_identity()
         active_a = self._prepare_identity(10001)
         active_b = self._prepare_identity(10002)
@@ -1693,16 +1530,17 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_auto_buy_bait_enabled"] = False
             state_module.state["next_fishing_time"] = now - 1
             with (
-                patch.object(fishing_runtime.random, "uniform", return_value=4),
                 patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual(now + 4, state_module.state["next_fishing_time"])
-            self.assertIn("钓鱼排队中", state_module.state["fishing_last_error"])
+        self.assertFalse(hasattr(fishing_runtime, "_defer_new_fishing_for_capacity"))
+        self.assertFalse(hasattr(fishing_runtime, "FISHING_MAX_ACTIVE_IDENTITIES"))
 
-    async def test_chum_start_waits_when_two_other_flows_are_active(self):
+    async def test_scheduler_sends_nothing_when_two_other_flows_are_active(self):
+        """打窝/买饵准备阶段同样不再有文本出口。"""
         identity_id = self._prepare_identity()
         active_a = self._prepare_identity(10001)
         active_b = self._prepare_identity(10002)
@@ -1724,17 +1562,12 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 str(identity_id): {"items": {"凡饵": 5, "灵石": 100}, "sections": {"材料": {"凡饵": 5, "灵石": 100}}},
             })
             with (
-                patch.object(fishing_runtime.random, "uniform", return_value=4),
                 patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual(now + 4, state_module.state["next_fishing_time"])
-            self.assertIn("正在垂钓或准备", state_module.state["fishing_last_error"])
-
-
-
 
 
 
@@ -1758,8 +1591,17 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
             self.assertEqual("idle", state_module.state["fishing_phase"])
+            # 开鱼队列必须保留，不因超时丢失；退避改用 _miniapp_failure_backoff
+            # （FISHING_MINIAPP_FAILURE_BACKOFF_SEC + 0~FISHING_RECOVERY_MAX_SEC 抖动）。
             self.assertEqual("银须灵鲢", state_module.state["fishing_pending_open_fish"])
-            self.assertEqual(now + 3600, state_module.state["next_fishing_time"])
+            self.assertGreaterEqual(
+                state_module.state["next_fishing_time"],
+                now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC,
+            )
+            self.assertLessEqual(
+                state_module.state["next_fishing_time"],
+                now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC + fishing_runtime.FISHING_RECOVERY_MAX_SEC,
+            )
 
 
 
@@ -1816,36 +1658,6 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             save_mock.assert_not_called()
             self.assertEqual("waiting", state_module.state["fishing_phase"])
             self.assertEqual(22027, state_module.state["fishing_reply_to_msg_id"])
-
-
-
-    async def test_duplicate_fishing_start_is_suppressed_inside_watchdog_window(self):
-        identity_id = self._prepare_identity()
-        now = 1_700_000_000.0
-        command = ".钓鱼 青溪浅滩 灵米饵"
-        with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = True
-            state_module.state["fishing_bait"] = "灵米饵"
-            state_module.state["next_fishing_time"] = now - 1
-            first_msg = SimpleNamespace(id=22050, sent_at=now)
-            with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=first_msg)) as first_send_mock,
-                patch.object(fishing_runtime, "save_state"),
-            ):
-                first_sent = await fishing_runtime._send_fishing_command(command, now)
-
-            self.assertTrue(first_sent)
-            first_send_mock.assert_awaited_once()
-            state_module.state["fishing_phase"] = "idle"
-            state_module.state["fishing_reply_to_msg_id"] = 0
-            state_module.state["fishing_reply_due_at"] = 0
-            state_module.state["next_fishing_time"] = now + 49
-            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as duplicate_send_mock:
-                duplicate_sent = await fishing_runtime._send_fishing_command(command, now + 50)
-
-            self.assertFalse(duplicate_sent)
-            duplicate_send_mock.assert_not_awaited()
-            self.assertIn("短窗重复指令已抑制", state_module.state["fishing_last_error"])
 
 
 
@@ -1923,8 +1735,10 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
+            # 开鱼待办数量仍按被动回复校准（7 -> 6）；但旧文本 pending_action 已随
+            # _retire_legacy_fishing_state 清理，不再排队文本命令。
             self.assertEqual('{"赤尾火鲤": 6}', state_module.state["fishing_pending_open_fish"])
-            self.assertEqual(".开鱼 赤尾火鲤 6", state_module.state["fishing_pending_action"])
+            self.assertEqual("", state_module.state["fishing_pending_action"])
             self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
 
     async def test_scheduler_sends_fishing_valuable_reminders_three_times(self):
@@ -2119,9 +1933,10 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             send_mock.assert_not_awaited()
             self.assertEqual(20, state_module.state["fishing_daily_count"])
-            self.assertEqual(".鱼篓", state_module.state["fishing_pending_action"])
+            # 日限回复仍被正确计数；.鱼篓 不再作为文本命令排队（CMD_FISHING_BASKET
+            # 现仅用于识别被动回复），自动开鱼改由 MiniApp 侧驱动。
+            self.assertEqual("", state_module.state["fishing_pending_action"])
             self.assertGreater(state_module.state["next_fishing_time"], now)
-            self.assertLess(state_module.state["next_fishing_time"], now + 30)
 
     async def test_routed_terminal_reply_accepts_stale_anchor(self):
         identity_id = self._prepare_identity()
@@ -2166,7 +1981,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual("idle", state_module.state["fishing_phase"])
             self.assertEqual("", state_module.state["fishing_pending_action"])
-            self.assertEqual(22030, state_module.state["fishing_status_msg_id"])
+            # 被吞回复仍被接受并收敛到 idle；status_msg_id 属旧文本竿内锚点，
+            # 已随 _retire_legacy_fishing_state 一并清理。
+            self.assertEqual(0, state_module.state["fishing_status_msg_id"])
 
     async def test_swallowed_fishing_reply_without_pending_is_ignored(self):
         identity_id = self._prepare_identity()

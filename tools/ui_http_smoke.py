@@ -230,7 +230,6 @@ async def _run_smoke(port: int) -> list[CheckResult]:
                 "auto_chum_enabled": True,
                 "chum_name": "灵草窝",
                 "auto_buy_bait_enabled": True,
-                "auto_probe_enabled": True,
             },
             cookie=cookie,
         )
@@ -248,7 +247,8 @@ async def _run_smoke(port: int) -> list[CheckResult]:
             and fishing.get("auto_chum_enabled") is True
             and fishing.get("chum_name") == "灵草窝"
             and fishing.get("auto_buy_bait_enabled") is True
-            and fishing.get("auto_probe_enabled") is True,
+            # 试饵随旧文本钓鱼一并退役，快照不再暴露该字段。
+            and "auto_probe_enabled" not in fishing,
             f"status={status}",
         )
 

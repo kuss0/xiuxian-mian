@@ -323,7 +323,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["fishing_status_msg_id"])
             self.assertEqual(0, state_module.state["fishing_reply_due_at"])
             self.assertEqual(now + fishing_runtime.FISHING_RECOVERY_MIN_SEC, state_module.state["next_fishing_time"])
-            self.assertIn("启动恢复清理过期钓鱼等待", state_module.state["fishing_last_result"])
+            self.assertIn("启动恢复已清理旧文本钓鱼等待", state_module.state["fishing_last_result"])
 
     def test_startup_spread_covers_near_future_recovery_timers(self):
         now = 1_700_000_000.0
