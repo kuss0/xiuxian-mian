@@ -776,6 +776,18 @@ class WebAppCoreTests(unittest.TestCase):
             self.assertTrue(other_adapter.exists(), "不得跨 adapter 误删")
             self.assertTrue(unrelated.exists(), "非 jsonl 捕获文件不受影响")
 
+    def test_capture_store_records_prune_failure_without_raising(self):
+        """清理失败不能打断实盘写入，但也不能完全无痕。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cave_treasure-2026-07-26.jsonl"
+            store = webapp_core.MiniAppCaptureStore(target, keep_memory=False, retention_days=7)
+
+            with patch.object(Path, "glob", side_effect=OSError("glob exploded")):
+                store.append({"ok": True})
+
+            self.assertTrue(target.exists(), "清理失败仍须完成本次写入")
+            self.assertIn("OSError", store.prune_error)
+
     def test_capture_store_retention_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

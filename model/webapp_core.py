@@ -1216,13 +1216,17 @@ class MiniAppCaptureStore:
         self.keep_memory = bool(keep_memory)
         self.retention_days = max(0, int(retention_days or 0))
         self.records = []
+        self.prune_error = ""
         self._pruned = False
 
     def _prune_expired(self, now=None):
         """Drop day-sharded siblings older than the retention window.
 
         Runs at most once per store instance, and never raises: capture is
-        diagnostic plumbing and must not break a live MiniApp run.
+        diagnostic plumbing and must not break a live MiniApp run. A failure
+        is still recorded on the instance (`prune_error`) so it does not vanish
+        entirely — silently swallowing it would recreate the very problem this
+        module's retention was added to solve.
         """
         if self._pruned or self.path is None or self.retention_days <= 0:
             return
@@ -1238,8 +1242,8 @@ class MiniAppCaptureStore:
                         sibling.unlink()
                 except OSError:
                     continue
-        except Exception:
-            pass
+        except Exception as exc:
+            self.prune_error = f"{type(exc).__name__}: {str(exc)[:120]}"
 
     def append(self, record):
         safe = record.safe_record() if hasattr(record, "safe_record") else safe_miniapp_event_detail(dict(record or {}))
