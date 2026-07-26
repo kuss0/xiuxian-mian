@@ -8326,6 +8326,64 @@ def _handle_ui_login_exchange(writer, method, payload, now):
     )
 
 
+def _serve_ui_document_route(writer, *, method, path, query, session, session_cookie_header, auth_headers):
+    """Serve the non-API routes: favicon, static assets and the app page.
+
+    Returns True when the path belonged to this group and a response was
+    written, False to let the API routing continue. The static routes stay
+    reachable without a session on purpose — they carry no account data — while
+    the app page falls back to the login screen.
+    """
+    if path == "/favicon.png":
+        if method != "GET":
+            _write_method_not_allowed(writer)
+        else:
+            with open(UI_FAVICON_PNG_PATH, "rb") as favicon_fp:
+                _write_response(writer, "HTTP/1.1 200 OK", favicon_fp.read(), content_type="image/png")
+        return True
+
+    for prefix, loader in (("/static/", _load_ui_static_asset), ("/static-new/", _load_new_static_asset)):
+        if not path.startswith(prefix):
+            continue
+        if method != "GET":
+            _write_method_not_allowed(writer)
+        else:
+            asset_body, asset_content_type = loader(path[len(prefix):])
+            if asset_body is None:
+                _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
+            else:
+                _write_response(writer, "HTTP/1.1 200 OK", asset_body, content_type=asset_content_type)
+        return True
+
+    if path in ("/", "/new"):
+        if method != "GET":
+            _write_method_not_allowed(writer)
+        elif session is None:
+            message = "登录已失效，请重新在日志群发送 .登录" if session_cookie_header else ""
+            _write_response(
+                writer,
+                "HTTP/1.1 200 OK",
+                _render_login_page(message),
+                content_type="text/html; charset=utf-8",
+                extra_headers=auth_headers,
+            )
+        else:
+            _write_response(
+                writer,
+                "HTTP/1.1 200 OK",
+                render_ui_page(
+                    selected_send_as_id=query.get("send_as_id", [""])[0],
+                    session_token=(session or {}).get("session_token"),
+                    variant="new",
+                ),
+                content_type="text/html; charset=utf-8",
+                extra_headers=auth_headers,
+            )
+        return True
+
+    return False
+
+
 async def handle_ui_http(reader, writer):
     peer = writer.get_extra_info("peername")
     method = ""
@@ -8353,56 +8411,16 @@ async def handle_ui_http(reader, writer):
             if _setup_mode and session is None and _is_loopback_peer(peer):
                 session = {"session_token": "__setup__", "sender_id": 0, "created_at": now, "last_active_at": now}
 
-            if path == "/favicon.png":
-                if method != "GET":
-                    _write_method_not_allowed(writer)
-                else:
-                    with open(UI_FAVICON_PNG_PATH, "rb") as favicon_fp:
-                        _write_response(writer, "HTTP/1.1 200 OK", favicon_fp.read(), content_type="image/png")
-            elif path.startswith("/static/"):
-                if method != "GET":
-                    _write_method_not_allowed(writer)
-                else:
-                    asset_body, asset_content_type = _load_ui_static_asset(path[len("/static/"):])
-                    if asset_body is None:
-                        _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
-                    else:
-                        _write_response(writer, "HTTP/1.1 200 OK", asset_body, content_type=asset_content_type)
-            elif path.startswith("/static-new/"):
-                if method != "GET":
-                    _write_method_not_allowed(writer)
-                else:
-                    asset_body, asset_content_type = _load_new_static_asset(path[len("/static-new/"):])
-                    if asset_body is None:
-                        _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
-                    else:
-                        _write_response(writer, "HTTP/1.1 200 OK", asset_body, content_type=asset_content_type)
-            elif path == "/" or path == "/new":
-                if method != "GET":
-                    _write_method_not_allowed(writer)
-                elif session is None:
-                    message = "登录已失效，请重新在日志群发送 .登录" if session_cookie_header else ""
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 200 OK",
-                        _render_login_page(message),
-                        content_type="text/html; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
-                else:
-                    selected_send_as_id = query.get("send_as_id", [""])[0]
-                    variant = "new"
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 200 OK",
-                        render_ui_page(
-                            selected_send_as_id=selected_send_as_id,
-                            session_token=(session or {}).get("session_token"),
-                            variant=variant,
-                        ),
-                        content_type="text/html; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+            if _serve_ui_document_route(
+                writer,
+                method=method,
+                path=path,
+                query=query,
+                session=session,
+                session_cookie_header=session_cookie_header,
+                auth_headers=auth_headers,
+            ):
+                pass
             elif path == "/api/state":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)

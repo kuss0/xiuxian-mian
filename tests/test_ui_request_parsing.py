@@ -153,6 +153,75 @@ class UiRequestParsingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("/api/state", request["path"])
 
 
+class UiDocumentRouteTests(unittest.TestCase):
+    """favicon / static assets / app page — the routes that are not JSON APIs."""
+
+    def _serve(self, **kwargs):
+        params = {
+            "method": "GET",
+            "path": "/",
+            "query": {},
+            "session": {"session_token": "s"},
+            "session_cookie_header": "",
+            "auth_headers": [],
+        }
+        params.update(kwargs)
+        return ui._serve_ui_document_route(_FakeWriter(), **params)
+
+    def test_returns_false_for_api_paths(self):
+        """不认识的路径必须交还给 API 路由，否则会静默吞掉请求。"""
+        for path in ("/api/state", "/api/toggle", "/unknown"):
+            with self.subTest(path=path):
+                self.assertFalse(self._serve(path=path))
+
+    def test_static_assets_do_not_require_a_session(self):
+        """静态资源不含账号数据，匿名可读；这条边界不能在重构中收紧或放宽。"""
+        for path, loader in (("/static/app.js", "_load_ui_static_asset"), ("/static-new/x.js", "_load_new_static_asset")):
+            with self.subTest(path=path):
+                with patch.object(ui, loader, return_value=(b"body", "application/javascript")) as load_mock, \
+                        patch.object(ui, "_write_response") as write_mock:
+                    handled = self._serve(path=path, session=None)
+                self.assertTrue(handled)
+                load_mock.assert_called_once()
+                self.assertIn("200", write_mock.call_args.args[1])
+
+    def test_static_asset_strips_only_its_own_prefix(self):
+        with patch.object(ui, "_load_ui_static_asset", return_value=(b"x", "text/css")) as load_mock, \
+                patch.object(ui, "_write_response"):
+            self._serve(path="/static/css/app.css")
+        self.assertEqual("css/app.css", load_mock.call_args.args[0])
+
+    def test_missing_static_asset_is_404(self):
+        with patch.object(ui, "_load_ui_static_asset", return_value=(None, "")), \
+                patch.object(ui, "_write_response") as write_mock:
+            self._serve(path="/static/missing.js")
+        self.assertIn("404", write_mock.call_args.args[1])
+
+    def test_non_get_on_document_routes_is_rejected(self):
+        for path in ("/favicon.png", "/static/app.js", "/static-new/app.js", "/", "/new"):
+            with self.subTest(path=path):
+                with patch.object(ui, "_write_method_not_allowed") as not_allowed:
+                    handled = self._serve(path=path, method="POST")
+                self.assertTrue(handled)
+                not_allowed.assert_called_once()
+
+    def test_app_page_falls_back_to_login_when_anonymous(self):
+        with patch.object(ui, "_render_login_page", return_value="LOGIN") as login_mock, \
+                patch.object(ui, "_write_response") as write_mock:
+            handled = self._serve(path="/", session=None, session_cookie_header="sid=x")
+        self.assertTrue(handled)
+        # 携带过期 cookie 时要给出提示文案，纯匿名则不提示
+        self.assertIn("登录已失效", login_mock.call_args.args[0])
+        self.assertIn("200", write_mock.call_args.args[1])
+
+    def test_app_page_renders_for_authenticated_session(self):
+        with patch.object(ui, "render_ui_page", return_value="PAGE") as render_mock, \
+                patch.object(ui, "_write_response"):
+            self._serve(path="/new", query={"send_as_id": ["990001"]}, session={"session_token": "tok"})
+        self.assertEqual("990001", render_mock.call_args.kwargs["selected_send_as_id"])
+        self.assertEqual("tok", render_mock.call_args.kwargs["session_token"])
+
+
 class UiLoginExchangeTests(unittest.TestCase):
     """The one route reachable without a session; its failure modes matter."""
 
