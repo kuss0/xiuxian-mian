@@ -2537,5 +2537,54 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+class CaveTreasureChannelIdentityGateTests(unittest.TestCase):
+    """The account-only treasure gate, and the lab flag that relaxes it.
+
+    The gate assumes hunt attempts are shared per login account; captures show
+    the quota is returned per selected playerId. The flag defaults off so the
+    contradiction can be validated with one real run before any wider change.
+    """
+
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module.ensure_identity_registered(301299112)
+        state_module.update_send_as_profile(301299112, username="acct", label="acct")
+        state_module.ensure_identity_registered(3504367852)
+        state_module.update_send_as_profile(3504367852, username="chan", label="chan")
+        state_module.set_identity_account(3504367852, 301299112)
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+
+    def test_account_identity_always_passes(self):
+        self.assertEqual("", cave_treasure_runtime._public_entry_account_identity_error(301299112))
+
+    def test_channel_identity_is_rejected_by_default(self):
+        error = cave_treasure_runtime._public_entry_account_identity_error(3504367852)
+        self.assertIn("按登录账号共享", error)
+
+    def test_channel_identity_passes_when_lab_flag_is_on(self):
+        with patch.object(
+            cave_treasure_runtime, "_channel_identity_treasure_enabled", return_value=True
+        ):
+            self.assertEqual(
+                "", cave_treasure_runtime._public_entry_account_identity_error(3504367852)
+            )
+
+    def test_flag_reads_from_miniapp_auto_config(self):
+        from model import ui
+
+        base = ui.normalize_miniapp_auto_config()
+        self.assertFalse(
+            base.get("cave_public_treasure_channel_identities_enabled"),
+            "旗标必须默认关闭",
+        )
+        enabled = ui.normalize_miniapp_auto_config(
+            {**base, "cave_public_treasure_channel_identities_enabled": True}
+        )
+        self.assertTrue(enabled.get("cave_public_treasure_channel_identities_enabled"))
+
+
 if __name__ == "__main__":
     unittest.main()
