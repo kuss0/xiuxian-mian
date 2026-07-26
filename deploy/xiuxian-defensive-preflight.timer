@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Xiuxian defensive preflight probe every minute
+
+[Timer]
+# The hand-started loop ran every 60s; keep that cadence but let systemd own it,
+# so it survives reboots and stops silently dying unnoticed.
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=xiuxian-defensive-preflight.service
+
+[Install]
+WantedBy=timers.target

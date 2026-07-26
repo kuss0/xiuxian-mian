@@ -9,6 +9,8 @@ ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/xiuxian.py --list
 Restart=always
 RestartSec=5
 User=root
+# listener 同样读写 Telegram session，保持与 xiuxian.service 一致。
+UMask=0077
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

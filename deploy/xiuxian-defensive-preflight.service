@@ -1,0 +1,19 @@
+[Unit]
+Description=Xiuxian read-only defensive preflight probe
+After=network.target
+
+[Service]
+# Read-only probe: reads live state and reports pending-queue / listener health.
+# It replaces a hand-started "while true; sleep 60" loop that had been running
+# unsupervised for 22 days (PPID=1, no unit, output appended to a single
+# never-rotated 24 MiB log). Output goes to journald so it rotates.
+Type=oneshot
+WorkingDirectory=/opt/xiuxian-main
+ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/tools/defensive_preflight.py --horizon-sec 21600
+User=root
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=120
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

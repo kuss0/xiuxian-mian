@@ -9,6 +9,9 @@ ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/xiuxian.py
 Restart=always
 RestartSec=5
 User=root
+# Telegram session 是完整登录凭据；不设 UMask 时 Telethon 新建的 .session
+# 会落成 0644（曾有两个账号如此）。0077 让新文件默认 0600。
+UMask=0077
 Environment=PYTHONUNBUFFERED=1
 Environment=XIUXIAN_HOT_RELOAD=0
 # Let the supervisor drain in-flight reply windows before it stops the worker.
