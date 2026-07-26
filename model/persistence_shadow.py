@@ -33,6 +33,7 @@ def _new_interval(now: float = 0.0) -> dict[str, Any]:
         "identity_changed_max": 0,
         "identity_deleted_total": 0,
         "telemetry_error_count": 0,
+        "telemetry_error_reasons": [],
         "meta_key_counts": Counter(),
         "backup_reason_counts": Counter(),
     }
@@ -294,11 +295,25 @@ def commit(sample: dict[str, Any] | None, *, now: float | None = None) -> None:
     _maybe_flush(current)
 
 
-def note_error(*, now: float | None = None) -> None:
+def note_error(*, now: float | None = None, reason: str = "") -> None:
     if not _enabled():
         return
-    _STATE["interval"]["telemetry_error_count"] += 1
+    interval = _STATE["interval"]
+    interval["telemetry_error_count"] += 1
+    # 只留一个计数器的话，影子持久化出问题时只能看到"错了 N 次"，排障时无从下手。
+    # 保留少量去重后的原因，仍不改变 fail-safe 语义。
+    reason = str(reason or "").strip()
+    if reason:
+        reasons = interval.setdefault("telemetry_error_reasons", [])
+        if reason not in reasons and len(reasons) < 5:
+            reasons.append(reason)
     _maybe_flush(float(now if now is not None else time.time()))
+
+
+def _error_reason(exc: BaseException) -> str:
+    text = str(exc).strip()
+    label = type(exc).__name__
+    return f"{label}: {text[:120]}" if text else label
 
 
 def _maybe_flush(now: float, *, force: bool = False) -> None:
@@ -324,6 +339,7 @@ def _maybe_flush(now: float, *, force: bool = False) -> None:
             "identity_changed_max": interval["identity_changed_max"],
             "identity_deleted_total": interval["identity_deleted_total"],
             "telemetry_error_count": interval["telemetry_error_count"],
+            "telemetry_error_reasons": list(interval.get("telemetry_error_reasons") or ()),
             "meta_key_counts": dict(interval["meta_key_counts"]),
             "backup_reason_counts": dict(interval["backup_reason_counts"]),
             "candidate_last_backup_at": _STATE["candidate_last_backup_at"],
@@ -343,9 +359,9 @@ def force_flush(*, now: float | None = None) -> None:
 def safe_initialize(**kwargs) -> None:
     try:
         initialize(**kwargs)
-    except Exception:
+    except Exception as exc:
         try:
-            note_error(now=kwargs.get("now"))
+            note_error(now=kwargs.get("now"), reason=_error_reason(exc))
         except Exception:
             pass
 
@@ -353,9 +369,9 @@ def safe_initialize(**kwargs) -> None:
 def safe_capture(**kwargs) -> dict[str, Any] | None:
     try:
         return capture(**kwargs)
-    except Exception:
+    except Exception as exc:
         try:
-            note_error()
+            note_error(reason=_error_reason(exc))
         except Exception:
             pass
         return None
@@ -364,9 +380,9 @@ def safe_capture(**kwargs) -> dict[str, Any] | None:
 def safe_commit(sample, **kwargs) -> None:
     try:
         commit(sample, **kwargs)
-    except Exception:
+    except Exception as exc:
         try:
-            note_error(now=kwargs.get("now"))
+            note_error(now=kwargs.get("now"), reason=_error_reason(exc))
         except Exception:
             pass
 
