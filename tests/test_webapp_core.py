@@ -2,14 +2,17 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import tempfile
+import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote, urlencode
 
 from model import webapp_core
-from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_registry, stargazer_miniapp, tree_miniapp, trial_miniapp
+from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_common, miniapp_registry, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class WebAppCoreTests(unittest.TestCase):
@@ -684,6 +687,146 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertFalse(result.retryable)
         self.assertEqual("app", result.error_type)
         self.assertEqual(1, len(requests))
+
+    def test_shared_transport_reuses_session_when_supplied(self):
+        calls = []
+
+        class _FakeSession:
+            def request(self, method, url, **kwargs):
+                calls.append(("session", method, url, kwargs))
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+        session = _FakeSession()
+        transport = miniapp_common.build_miniapp_transport(timeout=(3, 9), session=session, proxies={})
+        transport({"method": "POST", "url": "https://example.invalid/api", "payload": {"a": 1}})
+        transport({"method": "GET", "url": "https://example.invalid/api2", "payload": {}})
+
+        self.assertEqual(2, len(calls), "同一 session 应承接多次请求")
+        self.assertEqual(("session", "POST", "https://example.invalid/api"), calls[0][:3])
+        self.assertEqual((3, 9), calls[0][3]["timeout"])
+        self.assertEqual("application/json", calls[0][3]["headers"]["Content-Type"])
+        self.assertEqual("GET", calls[1][1])
+
+    def test_shared_transport_lets_caller_headers_win(self):
+        seen = {}
+
+        class _FakeSession:
+            def request(self, method, url, **kwargs):
+                seen.update(kwargs)
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+        transport = miniapp_common.build_miniapp_transport(session=_FakeSession(), proxies={})
+        transport({
+            "method": "POST",
+            "url": "https://example.invalid/api",
+            "headers": {"Content-Type": "text/plain", "X-Trace": "1"},
+        })
+
+        self.assertEqual("text/plain", seen["headers"]["Content-Type"])
+        self.assertEqual("1", seen["headers"]["X-Trace"])
+        self.assertEqual(miniapp_common.MINIAPP_DEFAULT_USER_AGENT, seen["headers"]["User-Agent"])
+
+    def test_shared_append_http_event_sanitizes_and_keeps_schema(self):
+        events = []
+        miniapp_common.append_http_event(
+            events,
+            "start",
+            webapp_core.MiniAppHttpResult(
+                ok=False,
+                status_code=403,
+                data={"b": 1, "a": 2},
+                error="denied token=fish_SECRET999",
+                error_type="auth",
+                attempts=2,
+            ),
+        )
+
+        self.assertEqual(1, len(events))
+        event = events[0]
+        self.assertEqual(
+            ["attempts", "data_keys", "error", "error_type", "ok", "status_code", "step"],
+            sorted(event),
+        )
+        self.assertEqual(["a", "b"], event["data_keys"])
+        self.assertEqual(403, event["status_code"])
+        self.assertNotIn("fish_SECRET999", event["error"])
+
+    def test_capture_store_prunes_expired_day_shards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            today = root / "cave_treasure-2026-07-26.jsonl"
+            stale = root / "cave_treasure-2026-07-01.jsonl"
+            fresh = root / "cave_treasure-2026-07-25.jsonl"
+            other_adapter = root / "fishing-2026-07-01.jsonl"
+            unrelated = root / "cave_tianjige_probe-2026-07-01.json"
+            for path in (stale, fresh, other_adapter, unrelated):
+                path.write_text("{}\n", encoding="utf-8")
+            now = time.time()
+            os.utime(stale, (now - 30 * 86400, now - 30 * 86400))
+            os.utime(other_adapter, (now - 30 * 86400, now - 30 * 86400))
+            os.utime(unrelated, (now - 30 * 86400, now - 30 * 86400))
+            os.utime(fresh, (now - 3600, now - 3600))
+
+            store = webapp_core.MiniAppCaptureStore(today, keep_memory=False, retention_days=7)
+            store.append({"ok": True})
+
+            self.assertTrue(today.exists())
+            self.assertTrue(fresh.exists(), "保留窗口内的分片不能删")
+            self.assertFalse(stale.exists(), "过期分片应被清理")
+            self.assertTrue(other_adapter.exists(), "不得跨 adapter 误删")
+            self.assertTrue(unrelated.exists(), "非 jsonl 捕获文件不受影响")
+
+    def test_capture_store_retention_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stale = root / "cave_treasure-2026-07-01.jsonl"
+            stale.write_text("{}\n", encoding="utf-8")
+            now = time.time()
+            os.utime(stale, (now - 90 * 86400, now - 90 * 86400))
+
+            store = webapp_core.MiniAppCaptureStore(
+                root / "cave_treasure-2026-07-26.jsonl", keep_memory=False, retention_days=0
+            )
+            store.append({"ok": True})
+
+            self.assertTrue(stale.exists())
+
+    def test_summarize_shape_bounds_object_width(self):
+        wide = {f"k{index:02d}": index for index in range(30)}
+        shape = webapp_core.summarize_miniapp_json_shape(wide)
+
+        limit = webapp_core.MINIAPP_CAPTURE_SHAPE_MAX_KEYS
+        self.assertEqual("object", shape["type"])
+        self.assertEqual(limit, len(shape["keys"]))
+        self.assertEqual(30 - limit, shape["keys_truncated"])
+        # children 不得超出被保留的 keys，否则宽度上限形同虚设
+        self.assertEqual(set(shape["keys"]), set(shape["children"]))
+
+    def test_summarize_shape_omits_truncation_marker_when_narrow(self):
+        shape = webapp_core.summarize_miniapp_json_shape({"a": 1, "b": "x"})
+
+        self.assertEqual(["a", "b"], shape["keys"])
+        self.assertNotIn("keys_truncated", shape)
+
+    def test_summarize_shape_stays_small_for_wide_nested_payload(self):
+        """洞府 start 会带回整棵账号树；形状摘要必须保持在可存储量级。"""
+        payload = {
+            "ok": True,
+            "account": {
+                f"section{index:02d}": {f"field{inner:02d}": inner for inner in range(20)}
+                for index in range(15)
+            },
+            "dwelling": {
+                f"area{index:02d}": {f"slot{inner:02d}": {"deep": {"deeper": inner}} for inner in range(20)}
+                for index in range(19)
+            },
+        }
+
+        serialized = json.dumps(webapp_core.summarize_miniapp_json_shape(payload), ensure_ascii=False)
+
+        # 真实洞府 start 样本约 2.9KiB；这里用更宽的合成负载兜住回归上界。
+        # 去掉深度/宽度上限时同一负载会膨胀到数十 KiB。
+        self.assertLess(len(serialized), 8192)
 
     def test_miniapp_capture_record_redacts_secrets_and_keeps_shape(self):
         request = fishing_miniapp.build_fishing_miniapp_request(

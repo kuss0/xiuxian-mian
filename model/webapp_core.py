@@ -35,8 +35,12 @@ DEFAULT_MINIAPP_REQUEST_MAX_CONSECUTIVE_FAILURES = 2
 DEFAULT_MINIAPP_GLOBAL_REQUEST_LIMIT = 90
 DEFAULT_MINIAPP_GLOBAL_WINDOW_SEC = 60.0
 MINIAPP_CAPTURE_MAX_TEXT = 400
-MINIAPP_CAPTURE_SHAPE_MAX_DEPTH = 4
-MINIAPP_CAPTURE_LIST_SAMPLE_LIMIT = 2
+# 形状摘要只用于定位协议结构变化，深层细节由 body_digest 兜底。深度/宽度都要有
+# 上限：洞府 start 这类响应会带回整棵账号树，不设限时单条 capture 可达 22KiB。
+MINIAPP_CAPTURE_SHAPE_MAX_DEPTH = 2
+MINIAPP_CAPTURE_LIST_SAMPLE_LIMIT = 1
+MINIAPP_CAPTURE_SHAPE_MAX_KEYS = 12
+MINIAPP_CAPTURE_RETENTION_DAYS = 7
 MINIAPP_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 MINIAPP_LOCAL_METHODS = {"LOCAL", "TELEGRAM"}
 
@@ -1019,17 +1023,35 @@ class MiniAppFlowRunResult:
         return summary
 
 
-def summarize_miniapp_json_shape(value, *, max_depth=MINIAPP_CAPTURE_SHAPE_MAX_DEPTH, list_sample_limit=MINIAPP_CAPTURE_LIST_SAMPLE_LIMIT):
-    """Return a compact JSON shape for protocol fixtures without raw values."""
+def summarize_miniapp_json_shape(
+    value,
+    *,
+    max_depth=MINIAPP_CAPTURE_SHAPE_MAX_DEPTH,
+    list_sample_limit=MINIAPP_CAPTURE_LIST_SAMPLE_LIMIT,
+    max_keys=MINIAPP_CAPTURE_SHAPE_MAX_KEYS,
+):
+    """Return a compact JSON shape for protocol fixtures without raw values.
+
+    Depth is bounded by ``max_depth`` and object width by ``max_keys``. Without
+    the width bound a single wide response (e.g. the cave-treasure ``start``
+    payload, which carries the whole account tree) expands into tens of KiB per
+    captured request; keys beyond the bound are reported as a count only.
+    """
 
     def visit(item, depth):
         if isinstance(item, dict):
             keys = sorted(str(key) for key in item)
-            summary = {"type": "object", "keys": keys}
+            limit = max(1, int(max_keys or 1))
+            shown_keys = keys[:limit]
+            summary = {"type": "object", "keys": shown_keys}
+            if len(keys) > limit:
+                summary["keys_truncated"] = len(keys) - limit
             if depth < int(max_depth or 0):
+                shown = set(shown_keys)
                 summary["children"] = {
                     str(key): visit(child, depth + 1)
                     for key, child in sorted(item.items(), key=lambda pair: str(pair[0]))
+                    if str(key) in shown
                 }
             return summary
         if isinstance(item, list):
@@ -1182,12 +1204,42 @@ class MiniAppCaptureStore:
     This is lab/capture plumbing only. It never receives raw HTTP credentials
     from the core helpers, and it writes JSONL only when an explicit path is
     supplied by the caller.
+
+    Capture files are day-sharded by their callers. Retention is enforced here
+    rather than by each caller so every adapter gets it for free: without a
+    bound this directory only ever grows (it reached 248 MiB / 87 files before
+    ``retention_days`` existed).
     """
 
-    def __init__(self, path=None, *, keep_memory=True):
+    def __init__(self, path=None, *, keep_memory=True, retention_days=MINIAPP_CAPTURE_RETENTION_DAYS):
         self.path = Path(path).expanduser() if path else None
         self.keep_memory = bool(keep_memory)
+        self.retention_days = max(0, int(retention_days or 0))
         self.records = []
+        self._pruned = False
+
+    def _prune_expired(self, now=None):
+        """Drop day-sharded siblings older than the retention window.
+
+        Runs at most once per store instance, and never raises: capture is
+        diagnostic plumbing and must not break a live MiniApp run.
+        """
+        if self._pruned or self.path is None or self.retention_days <= 0:
+            return
+        self._pruned = True
+        try:
+            cutoff = float(now if now is not None else time.time()) - self.retention_days * 86400
+            stem = self.path.name.rsplit("-", 3)[0] if "-" in self.path.name else ""
+            for sibling in self.path.parent.glob(f"{stem}-*.jsonl" if stem else "*.jsonl"):
+                if sibling == self.path:
+                    continue
+                try:
+                    if sibling.stat().st_mtime < cutoff:
+                        sibling.unlink()
+                except OSError:
+                    continue
+        except Exception:
+            pass
 
     def append(self, record):
         safe = record.safe_record() if hasattr(record, "safe_record") else safe_miniapp_event_detail(dict(record or {}))
@@ -1195,6 +1247,7 @@ class MiniAppCaptureStore:
             self.records.append(safe)
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._prune_expired()
             with self.path.open("a", encoding="utf-8") as fp:
                 fp.write(json.dumps(safe, ensure_ascii=False, sort_keys=True) + "\n")
         return safe
