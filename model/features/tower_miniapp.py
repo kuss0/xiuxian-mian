@@ -2,9 +2,7 @@ import asyncio
 import re
 import time
 
-import requests
 
-from ..config import TG_REQUESTS_PROXIES
 from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
@@ -14,6 +12,7 @@ from ..webapp_core import (
     execute_miniapp_http_request,
     sanitize_webapp_secret_text,
 )
+from .miniapp_common import build_miniapp_transport
 
 
 TOWER_MINIAPP_GAME_KEY = "tower"
@@ -181,19 +180,7 @@ def format_tower_delta(value):
         return "+0"
 
 
-def _requests_transport(request):
-    return requests.request(
-        str(request.get("method") or "POST"),
-        request["url"],
-        json=request.get("payload") or {},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            **dict(request.get("headers") or {}),
-        },
-        proxies=TG_REQUESTS_PROXIES,
-        timeout=TOWER_MINIAPP_HTTP_TIMEOUT,
-    )
+_requests_transport = build_miniapp_transport(timeout=TOWER_MINIAPP_HTTP_TIMEOUT)
 
 
 def _http_event(step, result):

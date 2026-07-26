@@ -3,10 +3,8 @@ import math
 import random
 import time
 
-import requests
 from telethon import functions
 
-from ..config import TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..tree_score_policy import (
     TREE_MINIAPP_DEFAULT_TARGET_SCORE,
@@ -29,6 +27,7 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
+from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
 
 
 TREE_MINIAPP_GAME_KEY = "tree"
@@ -178,19 +177,7 @@ async def request_tree_miniapp_init_data(identity_id, *, token, webview_url="", 
     return init_data
 
 
-def _requests_transport(request):
-    return requests.request(
-        str(request.get("method") or "POST"),
-        request["url"],
-        json=request.get("payload") or {},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            **dict(request.get("headers") or {}),
-        },
-        proxies=TG_REQUESTS_PROXIES,
-        timeout=TREE_MINIAPP_HTTP_TIMEOUT,
-    )
+_requests_transport = build_miniapp_transport(timeout=TREE_MINIAPP_HTTP_TIMEOUT)
 
 
 def build_tree_miniapp_flow_plan():
@@ -892,16 +879,6 @@ def _flow_result(ok, status, *, data=None, events=None, error=""):
     }
 
 
-def _append_http_event(events, step, result):
-    events.append({
-        "step": step,
-        "ok": bool(result.ok),
-        "status_code": int(result.status_code or 0),
-        "error_type": result.error_type,
-        "attempts": int(result.attempts or 0),
-        "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
-        "error": sanitize_webapp_secret_text(result.error),
-    })
 
 
 def _non_idempotent_failure_status(result):

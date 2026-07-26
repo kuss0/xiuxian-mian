@@ -31,6 +31,7 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
+from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
 
 
 CAVE_TREASURE_MINIAPP_GAME_KEY = "cave_treasure"
@@ -449,18 +450,22 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
     return init_data
 
 
-def _requests_transport(request):
-    return requests.request(
-        str(request.get("method") or "POST"),
-        request["url"],
-        json=request.get("payload") or {},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            **dict(request.get("headers") or {}),
-        },
-        proxies=TG_REQUESTS_PROXIES,
+_requests_transport = build_miniapp_transport(timeout=CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT)
+
+
+def _flow_transport(transport):
+    """Pick the transport for one production flow.
+
+    Caller-supplied transports (tests, lab harnesses) win. Otherwise build a
+    session-backed one so the dozen-odd round trips of a single cave run share
+    one TCP/TLS connection instead of re-handshaking per step — this is the
+    heaviest MiniApp adapter by request volume.
+    """
+    if transport is not None:
+        return transport
+    return build_miniapp_transport(
         timeout=CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT,
+        session=requests.Session(),
     )
 
 
@@ -1199,16 +1204,6 @@ def _flow_result(ok, status, *, error="", data=None, events=None):
     }
 
 
-def _append_http_event(events, step, result):
-    events.append({
-        "step": step,
-        "ok": bool(result.ok),
-        "status_code": result.status_code,
-        "error_type": result.error_type,
-        "attempts": result.attempts,
-        "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
-        "error": sanitize_webapp_secret_text(result.error),
-    })
 
 
 def _is_uncertain_cave_mutation_result(result):
@@ -1415,7 +1410,7 @@ async def run_cave_treasure_miniapp_production_flow(
             run_cave_treasure_miniapp_lab_flow,
             token=token,
             init_data=init_data,
-            transport=transport or _requests_transport,
+            transport=_flow_transport(transport),
             adapter=adapter,
             rng=rng,
             sleeper=sleeper or time.sleep,
@@ -1461,7 +1456,7 @@ async def run_cave_dwelling_start_production_flow(
         start_result = await asyncio.to_thread(
             execute_miniapp_http_request,
             start_request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
             capture_source=capture_source,
@@ -1603,7 +1598,7 @@ async def run_cave_dwelling_snapshot_production_flow(
         result = await asyncio.to_thread(
             execute_miniapp_http_request,
             request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
             capture_source=capture_source,
@@ -1654,7 +1649,7 @@ async def run_cave_small_world_production_flow(
             start_result = await asyncio.to_thread(
                 execute_miniapp_http_request,
                 start_request,
-                transport or _requests_transport,
+                _flow_transport(transport),
                 sleeper=sleeper or time.sleep,
                 capture_sink=capture_sink,
                 capture_source=capture_source,
@@ -1685,7 +1680,7 @@ async def run_cave_small_world_production_flow(
         action_result = await asyncio.to_thread(
             execute_miniapp_http_request,
             action_request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             backoff_sec=(),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
@@ -1750,7 +1745,7 @@ async def run_cave_journey_action_production_flow(
         result = await asyncio.to_thread(
             execute_miniapp_http_request,
             request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             backoff_sec=(),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
@@ -1803,7 +1798,7 @@ async def run_cave_tianjige_command_production_flow(
         result = await asyncio.to_thread(
             execute_miniapp_http_request,
             request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             backoff_sec=(),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
@@ -1851,7 +1846,7 @@ async def run_cave_external_action_production_flow(
         result = await asyncio.to_thread(
             execute_miniapp_http_request,
             request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             backoff_sec=(),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
@@ -1894,7 +1889,7 @@ async def run_cave_deep_seclusion_action_production_flow(
         action_result = await asyncio.to_thread(
             execute_miniapp_http_request,
             request,
-            transport or _requests_transport,
+            _flow_transport(transport),
             backoff_sec=(),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,

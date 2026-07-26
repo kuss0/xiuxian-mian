@@ -2,10 +2,9 @@ import asyncio
 import re
 import time
 
-import requests
 from telethon import functions
 
-from ..config import STARGAZER_STAR_DURATIONS, TG_REQUESTS_PROXIES
+from ..config import STARGAZER_STAR_DURATIONS
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
@@ -20,6 +19,7 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
+from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
 from ..timing import has_wait_time, parse_wait_time
 
 
@@ -108,19 +108,7 @@ async def request_stargazer_miniapp_init_data(identity_id, *, token, webview_url
     return init_data
 
 
-def _requests_transport(request):
-    return requests.request(
-        str(request.get("method") or "POST"),
-        request["url"],
-        json=request.get("payload") or {},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            **dict(request.get("headers") or {}),
-        },
-        proxies=TG_REQUESTS_PROXIES,
-        timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT,
-    )
+_requests_transport = build_miniapp_transport(timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT)
 
 
 def _iter_event_buttons(event, *, message_text=""):
@@ -391,16 +379,6 @@ def _flow_result(ok, status, *, error="", data=None, events=None):
     }
 
 
-def _append_http_event(events, step, result):
-    events.append({
-        "step": step,
-        "ok": bool(result.ok),
-        "status_code": int(result.status_code or 0),
-        "error_type": result.error_type,
-        "attempts": int(result.attempts or 0),
-        "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
-        "error": sanitize_webapp_secret_text(result.error),
-    })
 
 
 def _merge_item_deltas(target, source):

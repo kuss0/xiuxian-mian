@@ -3,10 +3,8 @@ import random
 import re
 import time
 
-import requests
 from telethon import functions
 
-from ..config import TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
@@ -20,6 +18,7 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
+from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
 
 
 FISHING_MINIAPP_GAME_KEY = "fishing"
@@ -239,20 +238,7 @@ async def request_fishing_miniapp_init_data(identity_id, *, token, webview_url="
     return init_data
 
 
-def _requests_transport(request):
-    response = requests.request(
-        str(request.get("method") or "POST"),
-        request["url"],
-        json=request.get("payload") or {},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            **dict(request.get("headers") or {}),
-        },
-        proxies=TG_REQUESTS_PROXIES,
-        timeout=FISHING_MINIAPP_HTTP_TIMEOUT,
-    )
-    return response
+_requests_transport = build_miniapp_transport(timeout=FISHING_MINIAPP_HTTP_TIMEOUT)
 
 
 async def run_fishing_miniapp_production_flow(
@@ -589,16 +575,6 @@ def _flow_result(ok, status, *, error="", data=None, events=None, proof=None, ac
     return result
 
 
-def _append_http_event(events, step, result):
-    events.append({
-        "step": step,
-        "ok": bool(result.ok),
-        "status_code": result.status_code,
-        "error_type": result.error_type,
-        "attempts": result.attempts,
-        "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
-        "error": sanitize_webapp_secret_text(result.error),
-    })
 
 
 def _extract_next_token(data):

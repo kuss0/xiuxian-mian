@@ -21,6 +21,7 @@ from ..webapp_core import (
     execute_miniapp_http_request,
     sanitize_webapp_secret_text,
 )
+from .miniapp_common import append_http_event as _append_http_event
 
 
 WORLD_BOSS_MINIAPP_GAME_KEY = "world_boss"
@@ -893,16 +894,6 @@ def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
     }
 
 
-def _append_http_event(events, step, result):
-    events.append({
-        "step": step,
-        "ok": bool(result.ok),
-        "status_code": int(result.status_code or 0),
-        "error_type": result.error_type,
-        "attempts": int(result.attempts or 0),
-        "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
-        "error": sanitize_webapp_secret_text(result.error),
-    })
 
 
 def _append_business_capture(capture_sink, *, source, step, summary):
