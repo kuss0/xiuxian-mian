@@ -171,12 +171,13 @@ def _parse_public_cave_entry_url(public_entry_url):
 def _channel_identity_treasure_allowed(identity_id):
     """Lab allowlist: channel identities permitted to run treasure themselves.
 
-    The account-only gate below was added on the assumption that treasure
-    attempts are shared per Telegram login account. Protocol captures say the
-    hunt quota (dwelling.hunt used/limit/remaining) is returned per selected
-    playerId, which contradicts that. Roll-out is by explicit identity id in
-    `cave_public_treasure_channel_identity_ids` (default empty), so the
-    contradiction can be validated one identity at a time.
+    2026-07-27 live probe settled this: the selected panel does return a
+    dwelling.hunt block per playerId, but its *values* are the login account's
+    shared quota. xuruode8 (channel identity of 301299112, which had already
+    used 3/3 that day) got HTTP 409 daily_limit on its very first hunt without
+    ever running treasure itself. The account-shared gate below is therefore
+    correct; this allowlist (default empty) exists only for re-testing if the
+    game ever changes that behavior.
     """
     try:
         from ..ui import normalize_miniapp_auto_config
