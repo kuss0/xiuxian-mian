@@ -164,5 +164,50 @@ class PersistenceSchemaContractTests(unittest.TestCase):
         self.assertEqual((7, 9), row)
 
 
+class MetaDefaultsContractTests(unittest.TestCase):
+    """Seed values for the meta table, declared as data rather than 38 inserts."""
+
+    def test_every_default_is_a_storable_scalar(self):
+        defaults = persistence._meta_defaults()
+
+        self.assertGreater(len(defaults), 30)
+        for key, value in defaults.items():
+            with self.subTest(key=key):
+                self.assertIsInstance(key, str)
+                self.assertIsInstance(value, str, "meta 值必须是已编码的字符串")
+
+    def test_defaults_are_rebuilt_per_call(self):
+        """惰性构造：不能让调用方拿到同一个可变字典改坏后续初始化。"""
+        first = persistence._meta_defaults()
+        first["game_group_id"] = "tampered"
+
+        self.assertNotEqual("tampered", persistence._meta_defaults()["game_group_id"])
+
+    def test_seeding_is_insert_or_ignore(self):
+        """已有值不能被默认值覆盖 —— 否则每次重启都会重置用户配置。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "meta.db"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                conn.execute("INSERT INTO meta(key, value) VALUES ('global_enabled', '0')")
+                for meta_key, meta_value in persistence._meta_defaults().items():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (meta_key, meta_value)
+                    )
+                stored = dict(conn.execute("SELECT key, value FROM meta"))
+
+        self.assertEqual("0", stored["global_enabled"], "已存在的值不应被种子覆盖")
+        self.assertIn("game_group_id", stored)
+
+    def test_json_valued_defaults_parse(self):
+        """几个键存的是 JSON 文本；写坏了要在这里而不是运行期发现。"""
+        import json
+
+        defaults = persistence._meta_defaults()
+        for key in ("game_bot_ids", "forum_topics", "accounts", "identity_account_map"):
+            with self.subTest(key=key):
+                json.loads(defaults[key])
+
+
 if __name__ == "__main__":
     unittest.main()

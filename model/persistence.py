@@ -977,6 +977,55 @@ def _migrate_schema_to_current(conn):
 
 
 
+def _meta_defaults():
+    """Seed values written once, on first run, for every meta key.
+
+    These were 38 hand-written `conn.execute("INSERT OR IGNORE INTO meta...")`
+    calls, four lines each. Declared as data instead, adding a key is one line.
+    Built lazily because one entry calls a helper defined later in this module.
+    """
+    return {
+        "game_group_id": "-1001680975844",
+        "game_bot_ids": "[-1003983937918, 7900199668, 8349385938, 8388633812, 8400307678, 8547797815, 8567800706, 8609885831, 8757550896]",
+        "game_topic_id": "7310786",
+        "forum_topics": "[]",
+        "forum_topics_updated_at": "0",
+        "auto_delete_sent_messages": "1",
+        "global_enabled": "1",
+        "tiandao_judgement_enabled": "0",
+        "tiandao_judgement_pending": "{}",
+        "tianji_quiz_pending": "{}",
+        "divination_run_state": "{}",
+        "world_boss_run_state": "{}",
+        "guanxing_monitor_enabled": "0",
+        "guanxing_monitor_targets": _encode_meta_json(["地磁暴动", "星辰异象"]),
+        "guanxing_shift_target": "",
+        "guanxing_shift_delay_sec": "10",
+        "next_guanxing_monitor_notify_time": "0",
+        "guanxing_monitor_slot_key": "",
+        "guanxing_monitor_slot_start_at": "0",
+        "guanxing_monitor_slot_end_at": "0",
+        "guanxing_monitor_seen_panel": "0",
+        "guanxing_monitor_matched_keyword": "",
+        "guanxing_monitor_matched_value": "",
+        "guanxing_monitor_last_evolution_value": "",
+        "guanxing_monitor_last_seen_at": "0",
+        "guanxing_monitor_last_notified_slot_key": "",
+        "guanxing_round_state": "{}",
+        "formation_run_state": "{}",
+        "inventory_delta_records": "{}",
+        "miniapp_state_records": "{}",
+        "duel_target_cooldowns": "{}",
+        "tree_miniapp_score_configs": "{}",
+        "miniapp_auto_config": "{}",
+        "quiz_learning_watchers": "{}",
+        "quiz_ai_config": "{}",
+        "accounts": "{}",
+        "identity_account_map": "{}",
+        "identity_membership_initialized": "0",
+    }
+
+
 def init_db():
     global _db_initialized
     if _db_initialized:
@@ -1683,158 +1732,8 @@ def init_db():
     else:
         _ensure_schema_columns(conn)
         _normalize_small_world_preach_defaults(conn)
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_group_id", "-1001680975844"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_bot_ids", "[-1003983937918, 7900199668, 8349385938, 8388633812, 8400307678, 8547797815, 8567800706, 8609885831, 8757550896]"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_topic_id", "7310786"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("forum_topics", "[]"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("forum_topics_updated_at", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("auto_delete_sent_messages", "1"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("global_enabled", "1"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("tiandao_judgement_enabled", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("tiandao_judgement_pending", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("tianji_quiz_pending", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("divination_run_state", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("world_boss_run_state", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_enabled", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_targets", _encode_meta_json(["地磁暴动", "星辰异象"])),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_shift_target", ""),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_shift_delay_sec", "10"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("next_guanxing_monitor_notify_time", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_slot_key", ""),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_slot_start_at", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_slot_end_at", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_seen_panel", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_matched_keyword", ""),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_matched_value", ""),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_last_evolution_value", ""),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_last_seen_at", "0"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_monitor_last_notified_slot_key", ""),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_round_state", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("formation_run_state", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("inventory_delta_records", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("miniapp_state_records", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("duel_target_cooldowns", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("tree_miniapp_score_configs", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("miniapp_auto_config", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("quiz_learning_watchers", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("quiz_ai_config", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("accounts", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("identity_account_map", "{}"),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("identity_membership_initialized", "0"),
-    )
+    for meta_key, meta_value in _meta_defaults().items():
+        conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (meta_key, meta_value))
     conn.commit()
     _db_initialized = True
 
