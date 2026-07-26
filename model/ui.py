@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import html
+import inspect
 import ipaddress
 import importlib.util
 import json
@@ -8326,6 +8327,149 @@ def _handle_ui_login_exchange(writer, method, payload, now):
     )
 
 
+def _ui_actor_id(session):
+    return (session or {}).get("sender_id")
+
+
+# 声明式 JSON 动作路由。
+#
+# 这些路由此前各自手写同一段模板：鉴权 -> 方法校验 -> 可选的 send_as_id 校验 ->
+# 调一个 ui_* 函数 -> _write_json_result。模板重复了十几遍，每一遍都可能在某个
+# 环节写歪（历史上的 setup 免鉴权缺陷就长在这个函数里）。表驱动之后，鉴权和方法
+# 校验只有一处实现，新增路由也无法"忘记"它们。
+#
+# handler 收 (payload, session) 返回 (ok, message) 或 (ok, message, extra)；
+# 声明 needs_send_as_id 的路由由分发器统一做缺参校验。差异较大的路由不进这张表，
+# 仍留在下面的 elif 链里 —— 硬塞进来只会把差异藏进参数。
+_UI_JSON_ACTION_ROUTES = {
+    "/api/quiz-ai-config": {
+        "handler": lambda payload, session: ui_set_quiz_ai_config(payload),
+    },
+    "/api/storage-bag-api-config": {
+        "handler": lambda payload, session: ui_set_storage_bag_api_config(payload),
+    },
+    "/api/storage-bag-item-rule": {
+        "handler": lambda payload, session: ui_set_storage_bag_item_rule(
+            payload.get("item_name"), payload.get("method"), payload.get("tags"), payload.get("reason")
+        ),
+    },
+    "/api/storage-bag-transfer-start": {
+        "handler": lambda payload, session: ui_start_storage_bag_transfer(payload),
+        "extra_key": "transfer",
+    },
+    "/api/storage-bag-gift-start": {
+        "handler": lambda payload, session: ui_start_storage_bag_gift(payload),
+        "extra_key": "transfer",
+    },
+    "/api/storage-bag-transfer-cancel": {
+        "handler": lambda payload, session: ui_cancel_storage_bag_transfer(),
+        "extra_key": "transfer",
+    },
+    "/api/replica-config": {
+        "handler": lambda payload, session: ui_set_replica_config(payload),
+    },
+    "/api/replica-gold-dps-toggle": {
+        "handler": lambda payload, session: ui_set_replica_gold_dps_enabled(
+            payload.get("send_as_id"), _coerce_ui_bool(payload.get("enabled"))
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/replica-query-aggregator-toggle": {
+        "handler": lambda payload, session: ui_set_replica_query_aggregator_enabled(
+            _coerce_ui_bool(payload.get("enabled"))
+        ),
+    },
+    "/api/identity-refresh": {
+        "handler": lambda payload, session: ui_refresh_identity_info(
+            payload.get("send_as_id"), actor_id=_ui_actor_id(session)
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/identity-delete": {
+        "handler": lambda payload, session: ui_delete_identity(
+            payload.get("send_as_id"), actor_id=_ui_actor_id(session)
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/account-logout": {
+        "handler": lambda payload, session: ui_logout_account(
+            payload.get("account_id"), actor_id=_ui_actor_id(session)
+        ),
+    },
+    "/api/tianxing-config": {
+        "handler": lambda payload, session: ui_set_tianxing_config(
+            payload.get("send_as_id"), payload.get("config") or {}
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/wanxin-config": {
+        "handler": lambda payload, session: ui_set_wanxin_config(
+            payload.get("send_as_id"), payload.get("config") or {}
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/explore-rift-rebirth-config": {
+        "handler": lambda payload, session: ui_set_explore_rift_rebirth_config(
+            payload.get("send_as_id"), payload.get("config") or {}
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/divination-config": {
+        "handler": lambda payload, session: ui_set_divination_config(
+            payload.get("send_as_id"), payload.get("config") or {}
+        ),
+        "needs_send_as_id": True,
+    },
+    "/api/tianti-sync": {
+        "handler": lambda payload, session: ui_sync_tianti_status(payload.get("send_as_id")),
+        "needs_send_as_id": True,
+    },
+}
+
+
+async def _serve_ui_json_action_route(writer, *, method, path, payload, session, auth_headers):
+    """Dispatch one table-driven JSON action route.
+
+    Returns True when the path was handled. Authentication and method checks
+    happen here so no individual route can skip them.
+    """
+    route = _UI_JSON_ACTION_ROUTES.get(path)
+    if route is None:
+        return False
+    if session is None:
+        _write_json_unauthorized(writer, auth_headers)
+        return True
+    if method != route.get("method", "POST"):
+        _write_method_not_allowed(writer)
+        return True
+    if route.get("needs_send_as_id") and payload.get("send_as_id") in {None, ""}:
+        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+        return True
+
+    result = route["handler"](payload, session)
+    if inspect.isawaitable(result):
+        result = await result
+    if len(result) == 3:
+        ok, message, extra_value = result
+    else:
+        ok, message = result
+        extra_value = None
+
+    extra = None
+    extra_key = route.get("extra_key")
+    if extra_key and extra_value:
+        extra = {extra_key: extra_value}
+    _write_json_result(
+        writer,
+        ok,
+        message,
+        session_token=(session or {}).get("session_token"),
+        extra_headers=auth_headers,
+        extra=extra,
+    )
+    return True
+
+
 def _serve_ui_document_route(writer, *, method, path, query, session, session_cookie_header, auth_headers):
     """Serve the non-API routes: favicon, static assets and the app page.
 
@@ -8418,6 +8562,15 @@ async def handle_ui_http(reader, writer):
                 query=query,
                 session=session,
                 session_cookie_header=session_cookie_header,
+                auth_headers=auth_headers,
+            ):
+                pass
+            elif await _serve_ui_json_action_route(
+                writer,
+                method=method,
+                path=path,
+                payload=payload,
+                session=session,
                 auth_headers=auth_headers,
             ):
                 pass
@@ -8649,14 +8802,6 @@ async def handle_ui_http(reader, writer):
                         snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
-            elif path == "/api/quiz-ai-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message = ui_set_quiz_ai_config(payload)
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/quiz-ai-models":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8673,14 +8818,6 @@ async def handle_ui_http(reader, writer):
                         extra={"models": model_payload} if model_payload else None,
                         include_snapshot=False,
                     )
-            elif path == "/api/storage-bag-api-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message = ui_set_storage_bag_api_config(payload)
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/storage-bag-api-verify":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8729,14 +8866,6 @@ async def handle_ui_http(reader, writer):
                         extra={"storage_bag_api": api_snapshot},
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
-            elif path == "/api/storage-bag-item-rule":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message = ui_set_storage_bag_item_rule(payload.get("item_name"), payload.get("method"), payload.get("tags"), payload.get("reason"))
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/storage-bag-transfer-preview":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8753,14 +8882,6 @@ async def handle_ui_http(reader, writer):
                         extra={"preview": preview} if preview else None,
                         include_snapshot=False,
                     )
-            elif path == "/api/storage-bag-transfer-start":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message, transfer = await ui_start_storage_bag_transfer(payload)
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
             elif path == "/api/storage-bag-gift-preview":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8777,50 +8898,6 @@ async def handle_ui_http(reader, writer):
                         extra={"preview": preview} if preview else None,
                         include_snapshot=False,
                     )
-            elif path == "/api/storage-bag-gift-start":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message, transfer = await ui_start_storage_bag_gift(payload)
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
-            elif path == "/api/storage-bag-transfer-cancel":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message, transfer = await ui_cancel_storage_bag_transfer()
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
-            elif path == "/api/replica-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message = ui_set_replica_config(payload)
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/replica-gold-dps-toggle":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = ui_set_replica_gold_dps_enabled(send_as_id, _coerce_ui_bool(payload.get("enabled")))
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/replica-query-aggregator-toggle":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    ok, message = ui_set_replica_query_aggregator_enabled(payload.get("enabled"))
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/basic-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8911,18 +8988,6 @@ async def handle_ui_http(reader, writer):
                             extra={"send_as_id": canonical_id} if canonical_id is not None else None,
                         )
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
-            elif path == "/api/identity-refresh":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_refresh_identity_info(send_as_id, actor_id=(session or {}).get("sender_id"))
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/identity-refresh-api":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -8945,30 +9010,6 @@ async def handle_ui_http(reader, writer):
                             extra={"storage_bag_api": api_snapshot},
                         )
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
-            elif path == "/api/account-logout":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    account_id = payload.get("account_id")
-                    if account_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 account_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_logout_account(account_id, actor_id=(session or {}).get("sender_id"))
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/identity-delete":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_delete_identity(send_as_id, actor_id=(session or {}).get("sender_id"))
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/global-enabled":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -9128,54 +9169,6 @@ async def handle_ui_http(reader, writer):
                             send_as_id,
                             retry_max_interval_min=payload.get("retry_max_interval_min"),
                         )
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/tianxing-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_set_tianxing_config(send_as_id, payload.get("config") or {})
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/wanxin-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_set_wanxin_config(send_as_id, payload.get("config") or {})
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/explore-rift-rebirth-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_set_explore_rift_rebirth_config(send_as_id, payload)
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/divination-config":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_set_divination_config(send_as_id, daily_limit=payload.get("daily_limit"))
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/fishing-config":
                 if session is None:
@@ -9482,18 +9475,6 @@ async def handle_ui_http(reader, writer):
                             strategy=payload.get("strategy"),
                             purge_threshold=payload.get("purge_threshold") if "purge_threshold" in payload else None,
                         )
-                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
-            elif path == "/api/tianti-sync":
-                if session is None:
-                    _write_json_unauthorized(writer, auth_headers)
-                elif method != "POST":
-                    _write_method_not_allowed(writer)
-                else:
-                    send_as_id = payload.get("send_as_id")
-                    if send_as_id in {None, ""}:
-                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
-                    else:
-                        ok, message = await ui_sync_tianti_status(send_as_id)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/tianti-feature-toggle":
                 if session is None:

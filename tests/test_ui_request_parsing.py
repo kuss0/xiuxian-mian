@@ -8,7 +8,7 @@ out after the request line was understood.
 
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from model import ui
 
@@ -220,6 +220,101 @@ class UiDocumentRouteTests(unittest.TestCase):
             self._serve(path="/new", query={"send_as_id": ["990001"]}, session={"session_token": "tok"})
         self.assertEqual("990001", render_mock.call_args.kwargs["selected_send_as_id"])
         self.assertEqual("tok", render_mock.call_args.kwargs["session_token"])
+
+
+class UiJsonActionRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Table-driven JSON action routes.
+
+    The value of the table is that authentication and method checks exist once
+    instead of being retyped per route, so these tests pin that invariant
+    rather than each individual handler.
+    """
+
+    async def _dispatch(self, **kwargs):
+        params = {
+            "method": "POST",
+            "path": "/api/replica-config",
+            "payload": {},
+            "session": {"session_token": "s", "sender_id": 42},
+            "auth_headers": [],
+        }
+        params.update(kwargs)
+        return await ui._serve_ui_json_action_route(_FakeWriter(), **params)
+
+    async def test_returns_false_for_unlisted_paths(self):
+        self.assertFalse(await self._dispatch(path="/api/state"))
+
+    async def test_every_table_route_rejects_anonymous_access(self):
+        """表里任何一条都不能绕过鉴权——这正是表驱动要保证的不变式。"""
+        for path in ui._UI_JSON_ACTION_ROUTES:
+            with self.subTest(path=path):
+                with patch.object(ui, "_write_json_unauthorized") as unauth:
+                    handled = await self._dispatch(path=path, session=None)
+                self.assertTrue(handled)
+                unauth.assert_called_once()
+
+    async def test_every_table_route_rejects_wrong_method(self):
+        for path in ui._UI_JSON_ACTION_ROUTES:
+            with self.subTest(path=path):
+                with patch.object(ui, "_write_method_not_allowed") as not_allowed:
+                    handled = await self._dispatch(path=path, method="GET")
+                self.assertTrue(handled)
+                not_allowed.assert_called_once()
+
+    async def test_routes_needing_send_as_id_reject_missing_value(self):
+        guarded = [p for p, r in ui._UI_JSON_ACTION_ROUTES.items() if r.get("needs_send_as_id")]
+        self.assertTrue(guarded, "至少应有一条路由声明 needs_send_as_id")
+        for path in guarded:
+            for missing in ({}, {"send_as_id": ""}, {"send_as_id": None}):
+                with self.subTest(path=path, payload=missing):
+                    with patch.object(ui, "_write_json_bad_request") as bad_request:
+                        handled = await self._dispatch(path=path, payload=dict(missing))
+                    self.assertTrue(handled)
+                    bad_request.assert_called_once()
+
+    async def test_sync_handler_result_is_written(self):
+        with patch.object(ui, "ui_set_replica_config", return_value=(True, "saved")) as handler, \
+                patch.object(ui, "_write_json_result") as write_mock:
+            handled = await self._dispatch(path="/api/replica-config", payload={"a": 1})
+
+        self.assertTrue(handled)
+        handler.assert_called_once_with({"a": 1})
+        self.assertEqual((True, "saved"), write_mock.call_args.args[1:3])
+        self.assertIsNone(write_mock.call_args.kwargs["extra"])
+
+    async def test_async_handler_is_awaited(self):
+        with patch.object(ui, "ui_sync_tianti_status", new=AsyncMock(return_value=(True, "ok"))) as handler, \
+                patch.object(ui, "_write_json_result") as write_mock:
+            await self._dispatch(path="/api/tianti-sync", payload={"send_as_id": 7})
+
+        handler.assert_awaited_once_with(7)
+        self.assertEqual((True, "ok"), write_mock.call_args.args[1:3])
+
+    async def test_triple_result_is_wrapped_under_extra_key(self):
+        with patch.object(ui, "ui_start_storage_bag_transfer", new=AsyncMock(return_value=(True, "ok", {"n": 1}))), \
+                patch.object(ui, "_write_json_result") as write_mock:
+            await self._dispatch(path="/api/storage-bag-transfer-start", payload={})
+
+        self.assertEqual({"transfer": {"n": 1}}, write_mock.call_args.kwargs["extra"])
+
+    async def test_falsy_extra_is_omitted(self):
+        """原实现用 `if transfer else None`，空结果不应产出 extra 键。"""
+        with patch.object(ui, "ui_cancel_storage_bag_transfer", new=AsyncMock(return_value=(False, "nope", None))), \
+                patch.object(ui, "_write_json_result") as write_mock:
+            await self._dispatch(path="/api/storage-bag-transfer-cancel", payload={})
+
+        self.assertIsNone(write_mock.call_args.kwargs["extra"])
+
+    async def test_actor_id_comes_from_session(self):
+        with patch.object(ui, "ui_delete_identity", new=AsyncMock(return_value=(True, "gone"))) as handler, \
+                patch.object(ui, "_write_json_result"):
+            await self._dispatch(
+                path="/api/identity-delete",
+                payload={"send_as_id": 990001},
+                session={"session_token": "s", "sender_id": 4242},
+            )
+
+        handler.assert_awaited_once_with(990001, actor_id=4242)
 
 
 class UiLoginExchangeTests(unittest.TestCase):
