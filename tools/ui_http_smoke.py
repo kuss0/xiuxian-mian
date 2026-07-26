@@ -78,6 +78,93 @@ def _http_request(port: int, method: str, path: str, *, body: dict[str, Any] | N
     return response.status, response_headers, text
 
 
+# 每个需要会话的 /api/ 路由，用于全量鉴权矩阵探测。清单从 ui.handle_ui_http 的
+# 路由分支提取；新增受保护路由时同步加进来，让匿名访问回归立刻可见。
+GUARDED_API_ROUTES = (
+    ("POST", "/api/account-logout"),
+    ("POST", "/api/account/login-cancel"),
+    ("POST", "/api/account/login-qr-start"),
+    ("GET", "/api/account/login-qr-status"),
+    ("POST", "/api/account/login-start"),
+    ("POST", "/api/account/login-verify"),
+    ("POST", "/api/account/send-as-peers"),
+    ("POST", "/api/basic-config"),
+    ("POST", "/api/cave-public-config"),
+    ("POST", "/api/cave-public-entry-batch-run"),
+    ("POST", "/api/cave-public-entry-run"),
+    ("POST", "/api/divination-config"),
+    ("POST", "/api/duel-config"),
+    ("POST", "/api/duel-preset-apply"),
+    ("POST", "/api/explore-rift-rebirth-config"),
+    ("POST", "/api/fishing-config"),
+    ("POST", "/api/forum-topics"),
+    ("POST", "/api/global-enabled"),
+    ("POST", "/api/hehuan-config"),
+    ("POST", "/api/identity"),
+    ("POST", "/api/identity-delete"),
+    ("POST", "/api/identity-enabled"),
+    ("POST", "/api/identity-refresh"),
+    ("POST", "/api/identity-refresh-api"),
+    ("POST", "/api/jiyin-choice"),
+    ("GET", "/api/logs/days"),
+    ("GET", "/api/logs/entries"),
+    ("GET", "/api/miniapp-capture-summary"),
+    ("POST", "/api/miniapp-entry-probe"),
+    ("POST", "/api/miniapp-manual-run"),
+    ("GET", "/api/miniapp-status"),
+    ("POST", "/api/miniapp-tree-auto-config"),
+    ("POST", "/api/miniapp-tree-score-config"),
+    ("POST", "/api/miniapp-trial-batch-run"),
+    ("POST", "/api/module-window"),
+    ("POST", "/api/nanlong-choice"),
+    ("POST", "/api/official-schedule-create"),
+    ("POST", "/api/official-schedule-delete"),
+    ("POST", "/api/official-schedule-prepare"),
+    ("POST", "/api/official-schedule-preview"),
+    ("GET", "/api/official-schedules"),
+    ("POST", "/api/pet-name"),
+    ("POST", "/api/phaseful-passive-trigger"),
+    ("POST", "/api/quiz-ai-config"),
+    ("POST", "/api/quiz-ai-models"),
+    ("POST", "/api/replica-config"),
+    ("POST", "/api/replica-gold-dps-toggle"),
+    ("POST", "/api/replica-query-aggregator-toggle"),
+    ("POST", "/api/second-soul-choice-config"),
+    ("POST", "/api/small-world-barrier-config"),
+    ("POST", "/api/small-world-feature-toggle"),
+    ("POST", "/api/stargazer-star-choice"),
+    ("GET", "/api/state"),
+    ("POST", "/api/storage-bag-api-config"),
+    ("POST", "/api/storage-bag-api-refresh"),
+    ("POST", "/api/storage-bag-api-verify"),
+    ("POST", "/api/storage-bag-gift-preview"),
+    ("POST", "/api/storage-bag-gift-start"),
+    ("POST", "/api/storage-bag-item-rule"),
+    ("POST", "/api/storage-bag-sync"),
+    ("POST", "/api/storage-bag-transfer-cancel"),
+    ("POST", "/api/storage-bag-transfer-preview"),
+    ("POST", "/api/storage-bag-transfer-start"),
+    ("POST", "/api/taiyi-node-search-toggle"),
+    ("POST", "/api/taiyi-yindao-element"),
+    ("POST", "/api/tianjige-dao-path-refresh"),
+    ("POST", "/api/tianti-feature-toggle"),
+    ("POST", "/api/tianti-rank-choice"),
+    ("POST", "/api/tianti-sync"),
+    ("POST", "/api/tianxing-config"),
+    ("POST", "/api/toggle"),
+    ("POST", "/api/wanxin-config"),
+    ("POST", "/api/wild-training-strategy"),
+    ("POST", "/api/world-boss-miniapp-config"),
+    ("POST", "/api/yinluo-action"),
+    ("POST", "/api/yinluo-config"),
+)
+
+
+def _iter_guarded_api_routes():
+    """Yield (method, path) pairs that must reject anonymous callers."""
+    return GUARDED_API_ROUTES
+
+
 async def _request(port: int, method: str, path: str, *, body: dict[str, Any] | None = None, cookie: str = ""):
     return await asyncio.to_thread(_http_request, port, method, path, body=body, cookie=cookie)
 
@@ -126,6 +213,22 @@ async def _run_smoke(port: int) -> list[CheckResult]:
 
         status, _headers, text = await _request(port, "POST", "/api/login/exchange", body={})
         _add(results, "empty login token is rejected", status == 400, f"status={status}")
+
+        # 全路由鉴权矩阵：除登录换取和静态资源外，每个 /api/ 路由在无会话时都必须
+        # 拒绝。逐条枚举而不是抽查，这样任何一个路由在重构中掉出鉴权分支都会立刻暴露。
+        unauthenticated_leaks = []
+        for probe_method, probe_path in _iter_guarded_api_routes():
+            probe_status, _probe_headers, _probe_text = await _request(
+                port, probe_method, probe_path, body={} if probe_method == "POST" else None
+            )
+            if probe_status != 401:
+                unauthenticated_leaks.append(f"{probe_method} {probe_path}->{probe_status}")
+        _add(
+            results,
+            "every guarded api route rejects anonymous access",
+            not unauthenticated_leaks,
+            f"checked={len(GUARDED_API_ROUTES)} leaks={unauthenticated_leaks[:5]}",
+        )
 
         token = runtime.issue_ui_login_token(1)
         status, headers, text = await _request(port, "POST", "/api/login/exchange", body={"token": token})

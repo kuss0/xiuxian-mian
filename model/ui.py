@@ -8207,107 +8207,143 @@ def _is_loopback_peer(peer):
         return str(host).lower() == "localhost"
 
 
+async def _read_ui_request(reader, writer, trace=None):
+    """Parse one HTTP request off the wire.
+
+    Returns a dict of the parsed request, or None when the request was already
+    answered (timeout, oversized, malformed) and the caller should stop. Every
+    early exit here writes its own response before returning None, matching the
+    behavior of the inline code this replaces.
+
+    `trace` receives method/path as soon as the request line is understood, so
+    the caller's access log can still name a request that failed while its body
+    was being read.
+    """
+    trace = trace if trace is not None else {}
+    try:
+        request_head = await asyncio.wait_for(
+            reader.readuntil(b"\r\n\r\n"),
+            timeout=UI_HTTP_HEADER_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        _write_request_timeout(writer)
+        return None
+    except asyncio.IncompleteReadError as e:
+        request_head = e.partial
+    except Exception:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
+        return None
+
+    if len(request_head) > UI_HTTP_MAX_HEADER_BYTES:
+        _write_payload_too_large(writer)
+        return None
+
+    header_text = request_head.decode("utf-8", errors="ignore")
+    request_lines = header_text.split("\r\n")
+    request_line = request_lines[0] if request_lines else ""
+    parts = request_line.split()
+    if len(parts) < 2:
+        writer.close()
+        await writer.wait_closed()
+        return None
+
+    method, raw_target = parts[0].upper(), parts[1]
+    parsed = urlsplit(raw_target)
+    path = parsed.path or "/"
+    trace["method"] = method
+    trace["path"] = path
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    headers = {}
+    for line in request_lines[1:]:
+        if not line or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+
+    try:
+        content_length = max(0, int(headers.get("content-length", "0") or 0))
+    except (TypeError, ValueError):
+        _write_json_bad_request(writer, "Content-Length 非法")
+        return None
+    if content_length > UI_HTTP_MAX_BODY_BYTES:
+        _write_payload_too_large(writer)
+        return None
+    body_bytes = b""
+    if content_length > 0:
+        try:
+            body_bytes = await asyncio.wait_for(
+                reader.readexactly(content_length),
+                timeout=UI_HTTP_BODY_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            _write_request_timeout(writer)
+            return None
+        except asyncio.IncompleteReadError:
+            _write_json_bad_request(writer, "请求体不完整")
+            return None
+
+    return {
+        "method": method,
+        "path": path,
+        "query": query,
+        "headers": headers,
+        "payload": _parse_request_body(headers, body_bytes),
+    }
+
+
+def _handle_ui_login_exchange(writer, method, payload, now):
+    """Serve /api/login/exchange, the one route reachable without a session."""
+    if method != "POST":
+        _write_method_not_allowed(writer)
+        return
+    login_token = (payload.get("token") or "").strip()
+    if not login_token:
+        body = _make_json_payload(False, error="缺少 token")
+        _write_response(writer, "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8")
+        return
+    session_token = redeem_ui_login_token(login_token, now)
+    if not session_token:
+        body = _make_json_payload(False, error="登录 token 无效或已失效，请重新在日志群发送 .登录")
+        _write_response(
+            writer,
+            "HTTP/1.1 401 Unauthorized",
+            body,
+            content_type="application/json; charset=utf-8",
+            extra_headers=[f"Set-Cookie: {_build_session_cookie_header('', clear=True)}"],
+        )
+        return
+    body = _make_json_payload(True, message="登录成功")
+    _write_response(
+        writer,
+        "HTTP/1.1 200 OK",
+        body,
+        content_type="application/json; charset=utf-8",
+        extra_headers=[f"Set-Cookie: {_build_session_cookie_header(session_token)}"],
+    )
+
+
 async def handle_ui_http(reader, writer):
     peer = writer.get_extra_info("peername")
     method = ""
     path = ""
     try:
-        try:
-            request_head = await asyncio.wait_for(
-                reader.readuntil(b"\r\n\r\n"),
-                timeout=UI_HTTP_HEADER_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            _write_request_timeout(writer)
+        trace = {}
+        request = await _read_ui_request(reader, writer, trace)
+        method = trace.get("method", "")
+        path = trace.get("path", "")
+        if request is None:
             return
-        except asyncio.IncompleteReadError as e:
-            request_head = e.partial
-        except Exception:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                pass
-            return
-
-        if len(request_head) > UI_HTTP_MAX_HEADER_BYTES:
-            _write_payload_too_large(writer)
-            return
-
-        header_text = request_head.decode("utf-8", errors="ignore")
-        request_lines = header_text.split("\r\n")
-        request_line = request_lines[0] if request_lines else ""
-        parts = request_line.split()
-        if len(parts) < 2:
-            writer.close()
-            await writer.wait_closed()
-            return
-
-        method, raw_target = parts[0].upper(), parts[1]
-        parsed = urlsplit(raw_target)
-        path = parsed.path or "/"
-        query = parse_qs(parsed.query, keep_blank_values=False)
-        headers = {}
-        for line in request_lines[1:]:
-            if not line or ":" not in line:
-                continue
-            name, value = line.split(":", 1)
-            headers[name.strip().lower()] = value.strip()
-
-        content_length = 0
-        try:
-            content_length = max(0, int(headers.get("content-length", "0") or 0))
-        except (TypeError, ValueError):
-            _write_json_bad_request(writer, "Content-Length 非法")
-            return
-        if content_length > UI_HTTP_MAX_BODY_BYTES:
-            _write_payload_too_large(writer)
-            return
-        body_bytes = b""
-        if content_length > 0:
-            try:
-                body_bytes = await asyncio.wait_for(
-                    reader.readexactly(content_length),
-                    timeout=UI_HTTP_BODY_TIMEOUT_SEC,
-                )
-            except asyncio.TimeoutError:
-                _write_request_timeout(writer)
-                return
-            except asyncio.IncompleteReadError:
-                _write_json_bad_request(writer, "请求体不完整")
-                return
-
-        payload = _parse_request_body(headers, body_bytes)
+        query = request["query"]
+        headers = request["headers"]
+        payload = request["payload"]
         now = time.time()
 
         if path == "/api/login/exchange":
-            if method != "POST":
-                _write_method_not_allowed(writer)
-            else:
-                login_token = (payload.get("token") or "").strip()
-                if not login_token:
-                    body = _make_json_payload(False, error="缺少 token")
-                    _write_response(writer, "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8")
-                else:
-                    session_token = redeem_ui_login_token(login_token, now)
-                    if not session_token:
-                        body = _make_json_payload(False, error="登录 token 无效或已失效，请重新在日志群发送 .登录")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 401 Unauthorized",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=[f"Set-Cookie: {_build_session_cookie_header('', clear=True)}"],
-                        )
-                    else:
-                        body = _make_json_payload(True, message="登录成功")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 200 OK",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=[f"Set-Cookie: {_build_session_cookie_header(session_token)}"],
-                        )
+            _handle_ui_login_exchange(writer, method, payload, now)
         else:
             session, session_cookie_header = _get_authenticated_session(headers, now)
             auth_headers = [f"Set-Cookie: {session_cookie_header}"] if session_cookie_header else []
