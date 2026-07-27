@@ -476,6 +476,116 @@ def _has_cave_details_snapshot(payload):
     return isinstance(command_center.get("entries"), list) and bool(command_center.get("entries"))
 
 
+def _cave_entry_safe_directory(result):
+    """Build a stable, secret-free catalog from an existing dwelling response."""
+    data = (result or {}).get("data") if isinstance((result or {}).get("data"), dict) else {}
+    overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
+    if not overview:
+        overview = parse_cave_dwelling_overview(data.get("raw") or {})
+
+    external_apps = []
+    seen_apps = set()
+    for app in overview.get("external_apps") or ():
+        if not isinstance(app, dict):
+            continue
+        item = {
+            "key": str(app.get("key") or "").strip(),
+            "title": str(app.get("title") or "").strip(),
+            "action": str(app.get("action") or "").strip(),
+            "start_kind": str(app.get("start_kind") or "").strip(),
+            "group": str(app.get("group_key") or app.get("group_title") or "").strip(),
+        }
+        signature = tuple(item.values())
+        if not any(signature) or signature in seen_apps:
+            continue
+        seen_apps.add(signature)
+        external_apps.append(item)
+    external_apps.sort(key=lambda item: (
+        item.get("group") or "",
+        item.get("key") or "",
+        item.get("title") or "",
+        item.get("action") or "",
+        item.get("start_kind") or "",
+    ))
+
+    command_center = overview.get("command_center") if isinstance(overview.get("command_center"), dict) else {}
+    center_entries = []
+    seen_entries = set()
+    for entry in command_center.get("entries") or ():
+        if not isinstance(entry, dict):
+            continue
+        commands = tuple(
+            str(command or "").strip()
+            for command in entry.get("commands") or ()
+            if str(command or "").strip()
+        )
+        item = {
+            "key": str(entry.get("key") or "").strip(),
+            "title": str(entry.get("title") or "").strip(),
+            "status": str(entry.get("status") or "").strip(),
+            "target_tab": str(entry.get("target_tab") or "").strip(),
+            "button_text": str(entry.get("button_text") or "").strip(),
+            "note": str(entry.get("note") or "").strip(),
+            "commands": list(commands),
+        }
+        signature = (
+            item["key"],
+            item["title"],
+            item["status"],
+            item["target_tab"],
+            item["button_text"],
+            item["note"],
+            commands,
+        )
+        if not any(signature[:-1]) and not commands:
+            continue
+        if signature in seen_entries:
+            continue
+        seen_entries.add(signature)
+        center_entries.append(item)
+    center_entries.sort(key=lambda item: (
+        item.get("target_tab") or "",
+        item.get("key") or "",
+        item.get("title") or "",
+    ))
+
+    directory = {}
+    if external_apps:
+        directory["external_apps"] = external_apps
+    if center_entries:
+        security = command_center.get("security") if isinstance(command_center.get("security"), dict) else {}
+        directory["command_center"] = {
+            "entry_count": len(center_entries),
+            "security": {
+                "mode": str(security.get("mode") or "").strip(),
+                "direct_raw_command": bool(security.get("direct_raw_command")),
+                "max_input_length": _parse_int(security.get("max_input_length"), 0),
+                "text": str(security.get("text") or "").strip(),
+            },
+            "entries": center_entries,
+        }
+    return directory
+
+
+def _record_cave_entry_safe_directory(identity_id, result, *, now):
+    directory = _cave_entry_safe_directory(result)
+    if not directory:
+        return {"changed": False, "record": {}, "record_key": ""}
+    record_key = f"{int(identity_id)}:cave_entry_directory"
+    previous = dict(get_miniapp_state_records().get(record_key) or {})
+    if previous.get("state") == directory:
+        return {"changed": False, "record": previous, "record_key": record_key}
+    return record_miniapp_state(
+        identity_id,
+        "cave_entry_directory",
+        directory,
+        source="cave_dwelling_miniapp",
+        source_id="cave_entry_directory:v1",
+        now=now,
+        outputs=("module_catalog",),
+    )
+
+
 async def _load_cave_public_identity_session(
     identity_id,
     token,
@@ -548,6 +658,7 @@ async def _load_cave_public_identity_session(
 
     session_raw = dict((session.get("result") or {}).get("data") or {}).get("raw") or {}
     if not include_details or _has_cave_details_snapshot(session_raw):
+        _record_cave_entry_safe_directory(identity_id, session.get("result") or {}, now=now)
         return session
     details_result = await run_cave_dwelling_snapshot_production_flow(
         identity_id,
@@ -577,6 +688,7 @@ async def _load_cave_public_identity_session(
             "raw": merged_raw,
         },
     }
+    _record_cave_entry_safe_directory(identity_id, session.get("result") or {}, now=now)
     return session
 
 

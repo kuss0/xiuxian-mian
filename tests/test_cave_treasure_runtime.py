@@ -700,7 +700,32 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "playerId": 1001,
                     "deferredPending": False,
                     "externalApps": {
-                        "groups": [{"apps": [{"key": "fishing", "available": True, "action": "fishing"}]}],
+                        "groups": [{
+                            "key": "external_games",
+                            "title": "外府游戏",
+                            "apps": [{
+                                "key": "fishing",
+                                "title": "灵溪垂钓",
+                                "available": True,
+                                "action": "fishing",
+                                "url": "https://t.me/fanrenxiuxian_bot?startapp=fish_SECRET999",
+                            }],
+                        }],
+                    },
+                    "commandCenter": {
+                        "security": {
+                            "mode": "whitelist_only",
+                            "directRawCommand": False,
+                            "maxInputLength": 80,
+                            "text": "仅允许白名单命令",
+                        },
+                        "entries": [{
+                            "key": "yuanying_self",
+                            "title": "本命元婴",
+                            "targetTab": "command",
+                            "buttonText": "到天机阁",
+                            "commands": [".元婴状态", ".元婴出窍"],
+                        }],
                     },
                 },
                 "snapshot": {"level": "deferred", "deferredPending": False},
@@ -736,6 +761,52 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(123, raw["account"]["profile"]["cultivation"]["current"])
         self.assertTrue(raw["dwelling"]["meditation"]["deepSeclusion"]["active"])
         self.assertEqual("fishing", raw["account"]["externalApps"]["groups"][0]["apps"][0]["key"])
+        directory_record = state_module.get_miniapp_state_records()["1001:cave_entry_directory"]
+        self.assertEqual("cave_entry_directory:v1", directory_record["source_id"])
+        self.assertEqual({
+            "key": "fishing",
+            "title": "灵溪垂钓",
+            "action": "fishing",
+            "start_kind": "fish",
+            "group": "external_games",
+        }, directory_record["state"]["external_apps"][0])
+        self.assertEqual([".元婴状态", ".元婴出窍"], directory_record["state"]["command_center"]["entries"][0]["commands"])
+        serialized = json.dumps(directory_record, ensure_ascii=False)
+        self.assertNotIn("SECRET999", serialized)
+        self.assertNotIn("https://", serialized)
+        self.assertNotIn("initData", serialized)
+
+    def test_cave_entry_directory_skips_empty_and_unchanged_payloads(self):
+        now = 1_700_000_000.0
+        result = {
+            "data": {
+                "overview": {
+                    "external_apps": [{
+                        "key": "trial",
+                        "title": "天机试炼",
+                        "action": "trial",
+                        "start_kind": "trial",
+                        "group_key": "external_games",
+                    }],
+                    "command_center": {"entries": []},
+                },
+            },
+        }
+        actual_record = cave_treasure_runtime.record_miniapp_state
+        with patch.object(cave_treasure_runtime, "record_miniapp_state", wraps=actual_record) as record_mock:
+            empty = cave_treasure_runtime._record_cave_entry_safe_directory(
+                1001,
+                {"data": {"overview": {}}},
+                now=now,
+            )
+            first = cave_treasure_runtime._record_cave_entry_safe_directory(1001, result, now=now)
+            duplicate = cave_treasure_runtime._record_cave_entry_safe_directory(1001, result, now=now + 60)
+
+        self.assertFalse(empty["changed"])
+        self.assertTrue(first["changed"])
+        self.assertFalse(duplicate["changed"])
+        self.assertEqual(1, record_mock.call_count)
+        self.assertEqual(first["record_key"], duplicate["record_key"])
 
     async def test_public_entry_fishing_uses_selected_channel_and_dwelling_init_data(self):
         identity_id = 3820064579
