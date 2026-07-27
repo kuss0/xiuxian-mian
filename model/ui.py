@@ -391,14 +391,17 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_last_batch_id": "",
     "trial_daily_last_run_at": 0,
     "trial_daily_last_result": "",
+    "trial_daily_last_status": "",
     "trial_daily_wave1_last_run_day": "",
     "trial_daily_wave1_last_batch_id": "",
     "trial_daily_wave1_last_run_at": 0,
     "trial_daily_wave1_last_result": "",
+    "trial_daily_wave1_last_status": "",
     "trial_daily_wave2_last_run_day": "",
     "trial_daily_wave2_last_batch_id": "",
     "trial_daily_wave2_last_run_at": 0,
     "trial_daily_wave2_last_result": "",
+    "trial_daily_wave2_last_status": "",
     "cave_public_small_world_enabled": True,
     "cave_public_small_world_harvest_enabled": True,
     "cave_public_deep_status_enabled": True,
@@ -589,12 +592,15 @@ def normalize_miniapp_auto_config(config=None):
         "trial_daily_last_run_day",
         "trial_daily_last_batch_id",
         "trial_daily_last_result",
+        "trial_daily_last_status",
         "trial_daily_wave1_last_run_day",
         "trial_daily_wave1_last_batch_id",
         "trial_daily_wave1_last_result",
+        "trial_daily_wave1_last_status",
         "trial_daily_wave2_last_run_day",
         "trial_daily_wave2_last_batch_id",
         "trial_daily_wave2_last_result",
+        "trial_daily_wave2_last_status",
     ):
         result[key] = str(result.get(key) or "")
     for key in ("trial_daily_last_run_at", "trial_daily_wave1_last_run_at", "trial_daily_wave2_last_run_at"):
@@ -610,10 +616,12 @@ def normalize_miniapp_auto_config(config=None):
         result["trial_daily_wave1_last_batch_id"] = result["trial_daily_last_batch_id"]
         result["trial_daily_wave1_last_run_at"] = result["trial_daily_last_run_at"]
         result["trial_daily_wave1_last_result"] = result["trial_daily_last_result"]
+        result["trial_daily_wave1_last_status"] = result["trial_daily_last_status"] or "completed"
         result["trial_daily_wave2_last_run_day"] = result["trial_daily_last_run_day"]
         result["trial_daily_wave2_last_batch_id"] = result["trial_daily_last_batch_id"]
         result["trial_daily_wave2_last_run_at"] = result["trial_daily_last_run_at"]
         result["trial_daily_wave2_last_result"] = result["trial_daily_last_result"]
+        result["trial_daily_wave2_last_status"] = result["trial_daily_last_status"] or "completed"
     return result
 
 
@@ -666,6 +674,7 @@ def _trial_daily_wave_for_now(config, local_now):
         return {
             **wave,
             "done_today": config.get(f"trial_daily_{wave_key}_last_run_day") == today,
+            "last_status": config.get(f"trial_daily_{wave_key}_last_status") or "",
         }
     return None
 
@@ -695,6 +704,7 @@ def get_miniapp_auto_config_snapshot(now=None):
             "done_today": config.get(f"trial_daily_{wave_key}_last_run_day") == today,
             "last_batch_id": config.get(f"trial_daily_{wave_key}_last_batch_id") or "",
             "last_result": config.get(f"trial_daily_{wave_key}_last_result") or "",
+            "last_status": config.get(f"trial_daily_{wave_key}_last_status") or "",
         })
     all_done = all(item["done_today"] for item in wave_states)
     safe_config = dict(config)
@@ -7378,7 +7388,55 @@ async def ui_set_world_boss_miniapp_config(payload=None):
     )
 
 
-async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids, actions, delay_sec):
+def _normalize_trial_daily_batch_context(context):
+    raw = dict(context or {})
+    wave_key = str(raw.get("wave_key") or "").strip()
+    day_key = str(raw.get("day_key") or "").strip()
+    if wave_key not in {"wave1", "wave2"} or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_key):
+        return {}
+    return {
+        "wave_key": wave_key,
+        "wave_label": str(raw.get("wave_label") or "").strip() or ("第一批" if wave_key == "wave1" else "第二批"),
+        "day_key": day_key,
+    }
+
+
+def _persist_trial_daily_batch_state(context, *, batch_id, status, result, now=None, completed=False):
+    context = _normalize_trial_daily_batch_context(context)
+    if not context:
+        return False
+    status = str(status or "").strip()
+    if status not in {"running", "completed", "retry_pending"}:
+        return False
+    changed_at = float(now or time.time())
+    wave_key = context["wave_key"]
+    config = normalize_miniapp_auto_config()
+    config[f"trial_daily_{wave_key}_last_batch_id"] = str(batch_id or "")
+    config[f"trial_daily_{wave_key}_last_run_at"] = changed_at
+    config[f"trial_daily_{wave_key}_last_result"] = str(result or "")[:500]
+    config[f"trial_daily_{wave_key}_last_status"] = status
+    config["trial_daily_last_batch_id"] = str(batch_id or "")
+    config["trial_daily_last_run_at"] = changed_at
+    config["trial_daily_last_result"] = str(result or "")[:500]
+    config["trial_daily_last_status"] = status
+    if completed:
+        config[f"trial_daily_{wave_key}_last_run_day"] = context["day_key"]
+        config["trial_daily_last_run_day"] = context["day_key"]
+    set_miniapp_auto_config(config)
+    save_state()
+    return True
+
+
+async def _run_cave_public_entry_batch(
+    batch_id,
+    public_entry_url,
+    identity_ids,
+    actions,
+    delay_sec,
+    *,
+    trial_daily_context=None,
+):
+    trial_daily_context = _normalize_trial_daily_batch_context(trial_daily_context)
     steps = _build_cave_public_batch_steps(identity_ids, actions)
     total = len(steps)
     _set_cave_public_batch_state(
@@ -7402,6 +7460,13 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
     )
     if total <= 0:
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result="无可执行步骤")
+        _persist_trial_daily_batch_state(
+            trial_daily_context,
+            batch_id=batch_id,
+            status="completed",
+            result="本批无可执行步骤",
+            completed=True,
+        )
         await send_audit_log("🧩 洞府公共入口串行批次结束：无可执行步骤。", scope="global", priority="low", limit=220)
         return
 
@@ -7436,14 +7501,22 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
                     limit=420,
                 )
             if not ok and _is_cave_public_upstream_failure(message):
+                retry_result = f"上游异常，完成 {index}/{total}，等待重试：{result_text}"
                 _set_cave_public_batch_state(
                     running=False,
                     finished_at=time.time(),
                     current="",
                     last_result=f"上游熔断：{result_text}",
                 )
+                _persist_trial_daily_batch_state(
+                    trial_daily_context,
+                    batch_id=batch_id,
+                    status="retry_pending",
+                    result=retry_result,
+                )
                 await send_audit_log(
-                    f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止，10 分钟后仅放行单次恢复探测。",
+                    f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止；"
+                    "冷却后由首个身份探测，恢复则继续重跑本批。",
                     scope="global",
                     priority="normal",
                     limit=320,
@@ -7463,11 +7536,18 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
                 repeated_fail_count = 0
             if repeated_fail_count >= 2:
                 retry_at = _open_cave_public_upstream_circuit(message)
+                retry_result = f"入口不可用，完成 {index}/{total}，等待重试：{result_text}"
                 _set_cave_public_batch_state(
                     running=False,
                     finished_at=time.time(),
                     current="",
                     last_result=f"入口熔断：{result_text}",
+                )
+                _persist_trial_daily_batch_state(
+                    trial_daily_context,
+                    batch_id=batch_id,
+                    status="retry_pending",
+                    result=retry_result,
                 )
                 await send_audit_log(
                     f"🧯 洞府天机试炼连续 {repeated_fail_count} 个身份返回外府入口不可用，"
@@ -7482,6 +7562,12 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
     except Exception as exc:
         message = f"批次异常：{type(exc).__name__}: {exc}"
         _set_cave_public_batch_state(running=False, finished_at=time.time(), last_result=message)
+        _persist_trial_daily_batch_state(
+            trial_daily_context,
+            batch_id=batch_id,
+            status="retry_pending",
+            result=message,
+        )
         await send_audit_log(
             f"🧩 洞府公共入口串行批次中止：batch={batch_id}｜{message}",
             scope="global",
@@ -7491,6 +7577,14 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
         return
 
     _set_cave_public_batch_state(running=False, finished_at=time.time(), current="")
+    completion_result = f"完整执行 {total}/{total}，成功 {succeeded}，失败 {failed}"
+    _persist_trial_daily_batch_state(
+        trial_daily_context,
+        batch_id=batch_id,
+        status="completed",
+        result=completion_result,
+        completed=True,
+    )
     await send_audit_log(
         f"🧩 洞府公共入口串行批次完成：batch={batch_id}｜完成 {total}/{total}｜成功 {succeeded}｜失败 {failed}。",
         scope="global",
@@ -7507,7 +7601,7 @@ async def _run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids,
         )
 
 
-async def ui_start_cave_public_entry_batch(payload=None):
+async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=None):
     payload = dict(payload or {})
     if _cave_public_batch_state.get("running"):
         return False, "已有洞府公共入口串行批次正在运行", dict(_cave_public_batch_state)
@@ -7548,7 +7642,14 @@ async def ui_start_cave_public_entry_batch(payload=None):
         delay_sec=delay_sec,
     )
     try:
-        _fire_and_forget(_run_cave_public_entry_batch(batch_id, public_entry_url, identity_ids, actions, delay_sec))
+        _fire_and_forget(_run_cave_public_entry_batch(
+            batch_id,
+            public_entry_url,
+            identity_ids,
+            actions,
+            delay_sec,
+            trial_daily_context=trial_daily_context,
+        ))
     except Exception as exc:
         message = f"创建洞府公共入口批次失败：{type(exc).__name__}: {exc}"
         _set_cave_public_batch_state(running=False, finished_at=time.time(), current="", last_result=message)
@@ -8161,33 +8262,36 @@ async def run_miniapp_daily_scheduler(now):
     )
     if trial_ready and not _cave_public_batch_state.get("running"):
         identity_ids = _split_trial_daily_identity_ids(_normalize_cave_public_batch_identity_ids({}) or [], wave_key)
+        trial_daily_context = {
+            "wave_key": wave_key,
+            "wave_label": wave_label,
+            "day_key": str(config.get("today") or ""),
+        }
         if not identity_ids:
-            next_config = normalize_miniapp_auto_config()
-            next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
-            next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
-            next_config[f"trial_daily_{wave_key}_last_result"] = "本批无启用身份"
-            set_miniapp_auto_config(next_config)
-            save_state()
+            _persist_trial_daily_batch_state(
+                trial_daily_context,
+                batch_id="",
+                status="completed",
+                result="本批无启用身份",
+                now=now,
+                completed=True,
+            )
             return {"started": False, "reason": "no_enabled_identity", "wave": wave_key}
         ok, message, extra = await ui_start_cave_public_entry_batch({
             "send_as_ids": identity_ids,
             "actions": ["trial"],
             "delay_sec": raw_config.get("cave_public_delay_sec"),
-        })
+        }, trial_daily_context=trial_daily_context)
         if not ok:
             return {"started": False, "reason": "public_batch_create_failed", "message": message}
         batch_id = str(extra.get("batch_id") or "")
-        next_config = normalize_miniapp_auto_config()
-        next_config[f"trial_daily_{wave_key}_last_run_day"] = str(config.get("today") or "")
-        next_config[f"trial_daily_{wave_key}_last_batch_id"] = batch_id
-        next_config[f"trial_daily_{wave_key}_last_run_at"] = float(now or time.time())
-        next_config[f"trial_daily_{wave_key}_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
-        next_config["trial_daily_last_run_day"] = str(config.get("today") or "")
-        next_config["trial_daily_last_batch_id"] = batch_id
-        next_config["trial_daily_last_run_at"] = float(now or time.time())
-        next_config["trial_daily_last_result"] = f"{wave_label}已启动 {len(identity_ids)} 个身份"
-        set_miniapp_auto_config(next_config)
-        save_state()
+        _persist_trial_daily_batch_state(
+            trial_daily_context,
+            batch_id=batch_id,
+            status="running",
+            result=f"{wave_label}已启动 {len(identity_ids)} 个身份",
+            now=now,
+        )
         return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
 
     background = await _run_cave_public_background_scheduler(now, raw_config)

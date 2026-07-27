@@ -452,10 +452,18 @@
     var caveBatch = miniapp.cave_public_batch || {};
     var batchButtons = renderBatchButtons(miniapp.batch_run_commands);
     var trialDailyEffective = !!automation.trial_daily_effective_enabled;
+    var activeTrialWave = automation.trial_daily_active_wave || {};
+    var activeTrialStatus = String(activeTrialWave.last_status || '');
     var autoText = trialDailyEffective
       ? '试炼自动 ' + (automation.trial_daily_window_text || '--')
       : '试炼自动关闭';
-    var autoDoneText = automation.trial_daily_done_today ? '今日已跑' : (automation.trial_daily_in_window ? '窗口内待跑' : '等待窗口');
+    var autoDoneText = automation.trial_daily_done_today
+      ? '今日已跑'
+      : (activeTrialStatus === 'running'
+        ? String(activeTrialWave.label || '当前批次') + '运行中'
+        : (activeTrialStatus === 'retry_pending'
+          ? String(activeTrialWave.label || '当前批次') + '待重试'
+          : (automation.trial_daily_in_window ? '窗口内待跑' : '等待窗口')));
     var batchText = caveBatch.running
       ? '运行中 ' + Number(caveBatch.completed || 0) + '/' + Number(caveBatch.total || 0)
       : (caveBatch.batch_id ? '最近 ' + Number(caveBatch.completed || 0) + '/' + Number(caveBatch.total || 0) : '未运行');
