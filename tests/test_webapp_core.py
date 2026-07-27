@@ -2203,6 +2203,72 @@ class WebAppCoreTests(unittest.TestCase):
             proof["score"],
         )
 
+    def test_fishing_v2_proof_replays_current_control_challenge(self):
+        proof = fishing_miniapp.build_fishing_proof({
+            "mode": "xianxiaFishingV1",
+            "challengeId": "v2-c1",
+            "minDurationMs": 4200,
+            "maxDurationMs": 90000,
+            "targetLow": 41,
+            "targetHigh": 68,
+            "fishPower": 1.7,
+            "fishSeed": "seed-001",
+        })
+
+        self.assertEqual("xianxiaFishingV2", proof["mode"])
+        self.assertEqual("v2-c1", proof["challengeId"])
+        self.assertGreaterEqual(proof["durationMs"], 4280)
+        self.assertLessEqual(proof["durationMs"], 89800)
+        self.assertTrue(proof["events"])
+        self.assertTrue(all(event["t"] % 20 == 0 for event in proof["events"]))
+        self.assertTrue(all(isinstance(event["holding"], bool) for event in proof["events"]))
+        self.assertNotIn("score", proof)
+        self.assertNotIn("progress", proof)
+
+    def test_fishing_v2_flow_submits_events_after_replay_duration(self):
+        calls = []
+        sleeps = []
+        submitted_proof = {}
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "session": {"phase": "bite", "serverNow": 0},
+                    "challenge": {
+                        "mode": "xianxiaFishingV1",
+                        "challengeId": "v2-c2",
+                        "minDurationMs": 4200,
+                        "maxDurationMs": 90000,
+                        "targetLow": 41,
+                        "targetHigh": 68,
+                        "fishPower": 1.7,
+                        "fishSeed": "seed-002",
+                    },
+                }
+            if endpoint == "finish":
+                submitted_proof.update(request["payload"]["fishingProof"])
+                return 200, {"ok": True, "result": {"score": 94}}
+            if endpoint == "result":
+                return 200, {"ok": True, "ready": True, "result": {"score": 94}}
+            return 404, {"ok": False, "error": "unexpected"}
+
+        result = fishing_miniapp.run_fishing_miniapp_lab_flow(
+            token="fish_V2",
+            init_data="init",
+            transport=transport,
+            sleeper=sleeps.append,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("settled", result["status"])
+        self.assertEqual("xianxiaFishingV2", submitted_proof["mode"])
+        self.assertTrue(submitted_proof["events"])
+        self.assertGreaterEqual(sleeps[0], submitted_proof["durationMs"] / 1000.0)
+        self.assertEqual(["start", "finish", "result"], calls)
+
     def test_fishing_lab_flow_waits_finishes_and_polls_ready(self):
         calls = []
         sleeps = []

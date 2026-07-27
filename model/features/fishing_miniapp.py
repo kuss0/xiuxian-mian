@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 import re
 import time
@@ -471,6 +472,91 @@ def _score_from_proof(progress, stability, danger_ms, slack_ms):
     return int(_clamp(score, 55, 100))
 
 
+def _build_fishing_v2_proof(challenge):
+    """Build the event replay expected by the current fishing validator.
+
+    The challenge keeps the historical V1 mode label, but the server now
+    validates a 20 ms holding/release trajectory against the fish parameters.
+    Keep this isolated so older challenge payloads can still use the legacy
+    proof builder below.
+    """
+    challenge = dict(challenge or {})
+    min_duration_ms = max(1000, _coerce_int(challenge.get("minDurationMs"), 5200))
+    max_duration_ms = max(
+        min_duration_ms + 500,
+        _coerce_int(challenge.get("maxDurationMs"), 90000),
+    )
+    try:
+        target_low = float(challenge.get("targetLow") or 41)
+    except (TypeError, ValueError, OverflowError):
+        target_low = 41.0
+    try:
+        target_high = float(challenge.get("targetHigh") or 68)
+    except (TypeError, ValueError, OverflowError):
+        target_high = 68.0
+    if target_high < target_low:
+        target_low, target_high = target_high, target_low
+    try:
+        fish_power = float(challenge.get("fishPower") or 1.7)
+    except (TypeError, ValueError, OverflowError):
+        fish_power = 1.7
+    fish_power = max(0.1, fish_power)
+    seed_offset = sum(ord(char) for char in str(challenge.get("fishSeed") or "seed")) / 19.0
+
+    elapsed_ms = 0
+    progress = 0.0
+    tension = (target_low + target_high) / 2.0 - 8.0
+    holding = False
+    events = []
+    threshold_margin = min(7.0, max(2.0, (target_high - target_low) * 0.3))
+    hold_below = target_low + threshold_margin
+    release_above = target_high - threshold_margin
+    replay_deadline_ms = max_duration_ms - 200
+
+    while progress < 100.0 and elapsed_ms + 20 <= replay_deadline_ms:
+        desired_holding = holding
+        if tension <= hold_below:
+            desired_holding = True
+        elif tension >= release_above:
+            desired_holding = False
+        if desired_holding != holding:
+            holding = desired_holding
+            events.append({"t": elapsed_ms + 20, "holding": holding})
+
+        elapsed_ms += 20
+        game_time = float(elapsed_ms)
+        pulse = math.sin(game_time * 0.0027 * fish_power + seed_offset)
+        surge = max(0.0, math.sin(game_time * 0.0041 + seed_offset * 1.7))
+        fish_pull = fish_power * (0.72 + pulse * 0.24 + surge * 0.42)
+        if holding:
+            tension += (24.0 + fish_pull * 3.1) * 0.02
+        else:
+            tension += (fish_pull * 4.8 - 24.0) * 0.02
+        tension += math.sin(game_time * 0.012 + seed_offset) * 0.24
+        tension = max(0.0, min(100.0, tension))
+
+        if target_low <= tension <= target_high:
+            progress += (8.2 + fish_power * 0.7 + (2.2 if holding else 0.5)) * 0.02
+        elif tension > target_high:
+            progress -= (1.5 + fish_power * 0.25) * 0.02
+        else:
+            progress -= 0.9 * 0.02
+        if holding and tension < target_low:
+            progress += 1.1 * 0.02
+        progress = max(0.0, min(100.0, progress))
+
+    if progress < 100.0:
+        raise ValueError("MiniApp 无法生成有效控线轨迹")
+    duration_ms = max(elapsed_ms, min_duration_ms + 80)
+    duration_ms = min(duration_ms, replay_deadline_ms)
+    return {
+        "mode": "xianxiaFishingV2",
+        "challengeId": str(challenge.get("challengeId") or ""),
+        "durationMs": int(duration_ms),
+        "events": events,
+    }
+
+
 def build_fishing_proof(
     challenge,
     *,
@@ -484,6 +570,8 @@ def build_fishing_proof(
     challenge_id = str(challenge.get("challengeId") or "").strip()
     if not challenge_id:
         raise ValueError("challengeId missing")
+    if {"targetLow", "targetHigh", "fishPower", "fishSeed"}.issubset(challenge):
+        return _build_fishing_v2_proof(challenge)
     try:
         min_duration_ms = int(challenge.get("minDurationMs", 4200) or 4200)
     except (TypeError, ValueError, OverflowError):
@@ -1013,7 +1101,18 @@ def run_fishing_miniapp_lab_flow(
     if not challenge:
         return _flow_result(False, "not_ready", data={"phase": view["phase"]}, events=events)
     proof = build_fishing_proof(challenge, rng=rng, score_low=score_low, score_high=score_high)
-    events.append({"step": "build_proof", "ok": True, "score": proof["score"], "durationMs": proof["durationMs"]})
+    events.append({
+        "step": "build_proof",
+        "ok": True,
+        "mode": proof.get("mode"),
+        "score": proof.get("score"),
+        "event_count": len(proof.get("events") or ()),
+        "durationMs": proof["durationMs"],
+    })
+    if proof.get("mode") == "xianxiaFishingV2" and sleeper is not None:
+        # Keep wall-clock behavior consistent with the client replay and the
+        # server's minimum-duration check before submitting the proof.
+        sleeper(float(proof["durationMs"]) / 1000.0)
 
     finish_request = build_fishing_miniapp_request("finish", token=token, init_data=init_data, payload={"fishingProof": proof}, adapter=adapter)
     finish_result = execute_miniapp_http_request(
