@@ -439,6 +439,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             "cave_public_trial_enabled": False,
             "cave_public_fishing_enabled": False,
             "cave_public_fishing_identity_ids": [],
+            "cave_public_tianti_status_enabled": False,
+            "cave_public_tianti_status_identity_ids": [],
         }
 
         with patch.object(ui, "save_state", return_value=True) as save_mock:
@@ -449,6 +451,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 "trial_enabled": False,
                 "fishing_enabled": True,
                 "fishing_identity_ids": [3820064579, "3765328695", "bad"],
+                "tianti_status_enabled": True,
+                "tianti_status_identity_ids": [1002, "1001", "bad"],
                 "delay_sec": 7,
             })
 
@@ -462,6 +466,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(automation["cave_public_trial_enabled"])
         self.assertTrue(automation["cave_public_fishing_enabled"])
         self.assertEqual([3765328695, 3820064579], automation["cave_public_fishing_identity_ids"])
+        self.assertTrue(automation["cave_public_tianti_status_enabled"])
+        self.assertEqual([1001, 1002], automation["cave_public_tianti_status_identity_ids"])
         self.assertEqual(10, automation["cave_public_delay_sec"])
         self.assertNotIn("small_world_enabled", state_module.get_miniapp_auto_config())
         self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
@@ -659,6 +665,70 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.update(background_snapshot)
             ui._cave_public_background_retry_at.clear()
             ui._cave_public_background_retry_at.update(retry_snapshot)
+
+    async def test_cave_public_background_scheduler_can_queue_selected_tianti_status(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_last_status_seen_at"] = 0
+            state_module.state["next_tianti_status_time"] = 0
+        config = {
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+            "cave_public_tianti_status_enabled": True,
+            "cave_public_tianti_status_identity_ids": [identity_id],
+            "cave_public_delay_sec": 20,
+        }
+        state_module._meta_state["miniapp_auto_config"] = dict(config)
+        background_snapshot = dict(ui._cave_public_background_state)
+        retry_snapshot = dict(ui._cave_public_background_retry_at)
+        scheduled = []
+
+        def capture(coro):
+            scheduled.append(coro)
+            coro.close()
+
+        try:
+            ui._cave_public_background_state.update({"running": False, "next_run_at": 0, "circuit_open_until": 0})
+            ui._cave_public_background_retry_at.clear()
+            with patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                    patch.object(ui, "_fire_and_forget", side_effect=capture):
+                result = await ui._run_cave_public_background_scheduler(1_700_000_000.0, config)
+
+            self.assertTrue(result["started"])
+            self.assertEqual("tianti_status", result["action"])
+            self.assertEqual(1, len(scheduled))
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retry_snapshot)
+
+    async def test_cave_public_tianti_due_is_scoped_to_candidate_identity(self):
+        first_id = 1001
+        second_id = 1002
+        state_module.ensure_identity_registered(first_id)
+        state_module.ensure_identity_registered(second_id)
+        now = 1_700_000_000.0
+        with state_module.use_identity(first_id):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["next_tianti_status_time"] = now - 1
+            state_module.state["tianti_progress_current"] = 1
+            state_module.state["tianti_last_status_seen_at"] = now
+        with state_module.use_identity(second_id):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["next_tianti_status_time"] = now + 3600
+            state_module.state["tianti_progress_current"] = 1
+            state_module.state["tianti_last_status_seen_at"] = now
+
+        config = {
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+            "cave_public_tianti_status_enabled": True,
+            "cave_public_tianti_status_identity_ids": [first_id, second_id],
+        }
+        state_module._meta_state["miniapp_auto_config"] = dict(config)
+        self.assertTrue(ui._cave_public_background_action_due("tianti_status", first_id, now))
+        self.assertFalse(ui._cave_public_background_action_due("tianti_status", second_id, now))
 
     async def test_cave_public_background_worker_releases_slot_after_http(self):
         background_snapshot = dict(ui._cave_public_background_state)

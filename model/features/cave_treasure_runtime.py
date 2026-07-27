@@ -19,6 +19,7 @@ from .cave_treasure_miniapp import (
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
+    find_cave_external_app,
     merge_cave_dwelling_snapshot_data,
     parse_cave_dwelling_overview,
     request_cave_treasure_miniapp_init_data,
@@ -235,57 +236,47 @@ def _find_trial_launch_in_cave_payload(value):
 
 
 def _find_trial_external_app_in_cave_payload(value):
-    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
-    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
-    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
-    for group in external.get("groups") or ():
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("apps") or ():
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip().lower()
-            title = str(item.get("title") or item.get("buttonText") or "").strip()
-            action = str(item.get("action") or "").strip().lower()
-            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
-            is_trial = key in {"trial", "tianji_trial"} or "天机试炼" in title or "xianxia-trial" in url
-            if not is_trial:
-                continue
-            normalized_action = action if action in {"trial", "tianji_trial"} else ""
-            if not normalized_action and key == "tianji_trial" and url in {"", "#"}:
-                normalized_action = "tianji_trial"
-            return {
-                "action": normalized_action,
-                "url": url,
-                "title": title or key,
-                "available": bool(item.get("available", True)),
-            }
-    return {}
+    item = find_cave_external_app(
+        value,
+        keys=("trial", "tianji_trial"),
+        actions=("trial", "tianji_trial"),
+        title_terms=("天机试炼",),
+        url_terms=("xianxia-trial",),
+    )
+    if not item:
+        return {}
+    key = str(item.get("key") or "").strip().lower()
+    action = str(item.get("action") or "").strip().lower()
+    url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+    normalized_action = action if action in {"trial", "tianji_trial"} else ""
+    if not normalized_action and key == "tianji_trial" and url in {"", "#"}:
+        normalized_action = "tianji_trial"
+    return {
+        "action": normalized_action,
+        "url": url,
+        "title": str(item.get("title") or item.get("buttonText") or key).strip(),
+        "available": bool(item.get("available", True)),
+    }
 
 
 def _find_fishing_external_app_in_cave_payload(value):
-    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
-    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
-    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
-    for group in external.get("groups") or ():
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("apps") or ():
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip().lower()
-            title = str(item.get("title") or item.get("buttonText") or "").strip()
-            action = str(item.get("action") or "").strip().lower()
-            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
-            if key not in {"fishing", "fish"} and action != "fishing" and "钓" not in title:
-                continue
-            return {
-                "action": "fishing" if action == "fishing" or url in {"", "#"} else "",
-                "url": url,
-                "title": title or key,
-                "available": bool(item.get("available", True)),
-            }
-    return {}
+    item = find_cave_external_app(
+        value,
+        keys=("fishing", "fish"),
+        actions=("fishing",),
+        title_terms=("钓",),
+    )
+    if not item:
+        return {}
+    key = str(item.get("key") or "").strip().lower()
+    action = str(item.get("action") or "").strip().lower()
+    url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+    return {
+        "action": "fishing" if action == "fishing" or url in {"", "#"} else "",
+        "url": url,
+        "title": str(item.get("title") or item.get("buttonText") or key).strip(),
+        "available": bool(item.get("available", True)),
+    }
 
 
 def _find_stargazer_external_app_in_cave_payload(value):
@@ -305,102 +296,65 @@ def _find_stargazer_external_app_in_cave_payload(value):
             "available": bool(observatory.get("available", True)),
             "key": "stargazer",
         }
-    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
-    for group in external.get("groups") or ():
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("apps") or ():
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip().lower()
-            title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
-            action = str(item.get("action") or "").strip().lower()
-            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
-            is_stargazer = (
-                key in {"sect_farm", "stargazer", "star_palace", "star_farm"}
-                or action in {"sect_farm", "stargazer", "star_palace", "star_farm"}
-                or "观星台" in title
-                or "星宫" in title
-                or "xianxia-sect-farm" in url
-                or "startapp=farm_" in url
-            )
-            if not is_stargazer:
-                continue
-            return {
-                "action": action,
-                "url": url,
-                "title": title or key,
-                "available": bool(item.get("available", True)),
-                "key": key,
-            }
-    return {}
+    item = find_cave_external_app(
+        value,
+        keys=("sect_farm", "stargazer", "star_palace", "star_farm"),
+        actions=("sect_farm", "stargazer", "star_palace", "star_farm"),
+        title_terms=("观星台", "星宫"),
+        url_terms=("xianxia-sect-farm", "startapp=farm_"),
+    )
+    if not item:
+        return {}
+    key = str(item.get("key") or "").strip().lower()
+    return {
+        "action": str(item.get("action") or "").strip().lower(),
+        "url": str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip(),
+        "title": str(item.get("title") or item.get("subtitle") or item.get("buttonText") or key).strip(),
+        "available": bool(item.get("available", True)),
+        "key": key,
+    }
 
 
 def _find_tree_external_app_in_cave_payload(value):
-    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
-    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
-    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
-    for group in external.get("groups") or ():
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("apps") or ():
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip().lower()
-            title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
-            action = str(item.get("action") or "").strip().lower()
-            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
-            is_tree = (
-                key in {"spirit_tree", "tree", "luoyun_tree"}
-                or action in {"spirit_tree", "tree", "luoyun_tree"}
-                or "灵树" in title
-                or "xianxia-spirit-tree" in url
-                or "startapp=tree_" in url
-            )
-            if not is_tree:
-                continue
-            return {
-                "action": action,
-                "url": url,
-                "title": title or key,
-                "available": bool(item.get("available", True)),
-                "key": key,
-            }
-    return {}
+    item = find_cave_external_app(
+        value,
+        keys=("spirit_tree", "tree", "luoyun_tree"),
+        actions=("spirit_tree", "tree", "luoyun_tree"),
+        title_terms=("灵树",),
+        url_terms=("xianxia-spirit-tree", "startapp=tree_"),
+    )
+    if not item:
+        return {}
+    key = str(item.get("key") or "").strip().lower()
+    return {
+        "action": str(item.get("action") or "").strip().lower(),
+        "url": str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip(),
+        "title": str(item.get("title") or item.get("subtitle") or item.get("buttonText") or key).strip(),
+        "available": bool(item.get("available", True)),
+        "key": key,
+    }
 
 
 def _find_tower_external_app_in_cave_payload(value):
-    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
-    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
-    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
-    for group in external.get("groups") or ():
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("apps") or ():
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip().lower()
-            title = str(item.get("title") or item.get("subtitle") or item.get("buttonText") or "").strip()
-            action = str(item.get("action") or "").strip().lower()
-            url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
-            is_tower = (
-                key in {"pagoda", "tower", "liuli_pagoda"}
-                or action == "pagoda"
-                or "问心塔" in title
-                or "琉璃塔" in title
-                or "xianxia-pagoda" in url
-                or "startapp=pagoda_" in url
-            )
-            if not is_tower:
-                continue
-            return {
-                "action": "pagoda" if action == "pagoda" or url in {"", "#"} else "",
-                "url": url,
-                "title": title or key,
-                "available": bool(item.get("available", True)),
-                "key": key,
-            }
-    return {}
+    item = find_cave_external_app(
+        value,
+        keys=("pagoda", "tower", "liuli_pagoda"),
+        actions=("pagoda",),
+        title_terms=("问心塔", "琉璃塔"),
+        url_terms=("xianxia-pagoda", "startapp=pagoda_"),
+    )
+    if not item:
+        return {}
+    key = str(item.get("key") or "").strip().lower()
+    action = str(item.get("action") or "").strip().lower()
+    url = str(item.get("url") or item.get("webviewUrl") or item.get("webview_url") or "").strip()
+    return {
+        "action": "pagoda" if action == "pagoda" or url in {"", "#"} else "",
+        "url": url,
+        "title": str(item.get("title") or item.get("subtitle") or item.get("buttonText") or key).strip(),
+        "available": bool(item.get("available", True)),
+        "key": key,
+    }
 
 
 def _tree_launch_from_external_app(external_app):

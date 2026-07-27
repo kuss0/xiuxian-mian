@@ -675,7 +675,7 @@ def _safe_external_app_summary(app):
         "key": str(app.get("key") or "").strip(),
         "title": sanitize_webapp_secret_text(app.get("title") or "", limit=80),
         "status": str(app.get("status") or "").strip(),
-        "available": bool(app.get("available")),
+        "available": _external_app_available(app),
         "button_text": sanitize_webapp_secret_text(app.get("buttonText") or "", limit=40),
         "action": sanitize_webapp_secret_text(app.get("action") or "", limit=80),
         "game_hint": url_summary.get("game_hint", ""),
@@ -684,22 +684,127 @@ def _safe_external_app_summary(app):
     }
 
 
+def _external_app_available(app):
+    """Normalize optional availability flags from evolving dashboard payloads."""
+    if not isinstance(app, dict):
+        return False
+    raw = app.get("available", True)
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"", "true", "yes", "ready", "available", "enabled", "1"}:
+            return True
+        if normalized in {"false", "no", "disabled", "locked", "unavailable", "0"}:
+            return False
+    return bool(raw)
+
+
+def get_cave_external_apps(value):
+    """Flatten the current dwelling ``externalApps`` response shape.
+
+    The game has kept the application list behind ``account.externalApps``
+    while changing whether callers receive the full response or its ``data``
+    member.  Keep that shape handling in one place so individual MiniApp
+    adapters do not each grow a slightly different extractor.
+    """
+    root = value.get("data") if isinstance(value, dict) and isinstance(value.get("data"), dict) else value
+    if not isinstance(root, dict):
+        return []
+    account = root.get("account") if isinstance(root.get("account"), dict) else root
+    raw_external = account.get("externalApps")
+    if raw_external is None and account is not root:
+        raw_external = root.get("externalApps")
+    if isinstance(raw_external, dict):
+        external = raw_external
+    elif isinstance(raw_external, list):
+        external = raw_external
+    else:
+        external = {}
+    apps = []
+    if isinstance(external, list):
+        return [app for app in external if isinstance(app, dict)]
+
+    groups = external.get("groups")
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_apps = group.get("apps")
+            if isinstance(group_apps, list):
+                apps.extend(app for app in group_apps if isinstance(app, dict))
+    direct_apps = external.get("apps")
+    if isinstance(direct_apps, list):
+        apps.extend(app for app in direct_apps if isinstance(app, dict))
+    return apps
+
+
+def find_cave_external_apps(value, *, keys=(), actions=(), title_terms=(), url_terms=()):
+    """Return external apps matching stable keys, actions, titles, or URLs."""
+    key_set = {str(item or "").strip().lower() for item in (keys if isinstance(keys, (list, tuple, set, frozenset)) else (keys,))}
+    action_set = {str(item or "").strip().lower() for item in (actions if isinstance(actions, (list, tuple, set, frozenset)) else (actions,))}
+    terms = tuple(str(item or "").strip().lower() for item in (title_terms if isinstance(title_terms, (list, tuple, set, frozenset)) else (title_terms,)) if str(item or "").strip())
+    url_terms = tuple(str(item or "").strip().lower() for item in (url_terms if isinstance(url_terms, (list, tuple, set, frozenset)) else (url_terms,)) if str(item or "").strip())
+    key_set.discard("")
+    action_set.discard("")
+    matches = []
+    for app in get_cave_external_apps(value):
+        key = str(app.get("key") or "").strip().lower()
+        action = str(app.get("action") or "").strip().lower()
+        title = " ".join(
+            str(app.get(field) or "").strip().lower()
+            for field in ("title", "subtitle", "buttonText", "description")
+        )
+        url = str(app.get("url") or app.get("webviewUrl") or app.get("webview_url") or "").strip().lower()
+        if key in key_set or action in action_set or any(term in title for term in terms) or any(term in url for term in url_terms):
+            matches.append(app)
+    return matches
+
+
+def find_cave_external_app(value, *, keys=(), actions=(), title_terms=(), url_terms=()):
+    """Select an available matching app, retaining a disabled fallback."""
+    matches = find_cave_external_apps(
+        value,
+        keys=keys,
+        actions=actions,
+        title_terms=title_terms,
+        url_terms=url_terms,
+    )
+    for app in matches:
+        if _external_app_available(app) and str(app.get("url") or app.get("action") or "").strip():
+            return app
+    for app in matches:
+        if _external_app_available(app):
+            return app
+    return matches[0] if matches else {}
+
+
 def _parse_external_apps(account):
     account = account if isinstance(account, dict) else {}
-    external = account.get("externalApps") if isinstance(account.get("externalApps"), dict) else {}
     apps = []
-    for group in external.get("groups") or ():
-        if not isinstance(group, dict):
-            continue
-        group_key = str(group.get("key") or "").strip()
-        group_title = sanitize_webapp_secret_text(group.get("title") or "", limit=80)
-        for app in group.get("apps") or ():
-            app_summary = _safe_external_app_summary(app)
-            if not app_summary:
+
+    def append_app(app, *, group_key="", group_title=""):
+        app_summary = _safe_external_app_summary(app)
+        if not app_summary:
+            return
+        app_summary["group_key"] = group_key
+        app_summary["group_title"] = group_title
+        apps.append(app_summary)
+
+    raw_external = account.get("externalApps")
+    if isinstance(raw_external, dict):
+        for group in raw_external.get("groups") or ():
+            if not isinstance(group, dict):
                 continue
-            app_summary["group_key"] = group_key
-            app_summary["group_title"] = group_title
-            apps.append(app_summary)
+            group_key = str(group.get("key") or "").strip()
+            group_title = sanitize_webapp_secret_text(group.get("title") or "", limit=80)
+            for app in group.get("apps") or ():
+                append_app(app, group_key=group_key, group_title=group_title)
+        for app in raw_external.get("apps") or ():
+            append_app(app)
+    elif isinstance(raw_external, list):
+        for app in raw_external:
+            append_app(app)
     return apps
 
 
@@ -1910,6 +2015,9 @@ __all__ = [
     "build_cave_deep_seclusion_action_request",
     "build_cave_external_action_request",
     "build_cave_tianjige_command_request",
+    "find_cave_external_app",
+    "find_cave_external_apps",
+    "get_cave_external_apps",
     "build_cave_treasure_action_request",
     "build_cave_treasure_launch_args",
     "build_cave_treasure_miniapp_adapter",

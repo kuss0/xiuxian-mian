@@ -336,6 +336,64 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
 
             self.assertTrue(tianti._tianti_status_sync_due(now))
 
+    def test_selected_public_tianti_status_gate_is_explicit(self):
+        send_as_id = 95027
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_enabled"] = True
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_tianti_status_enabled": True,
+            "cave_public_tianti_status_identity_ids": [send_as_id],
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+        }
+
+        with state_module.use_identity(send_as_id):
+            self.assertTrue(tianti.is_tianti_public_status_selected())
+
+        state_module._meta_state["miniapp_auto_config"]["cave_public_tianti_status_identity_ids"] = []
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(tianti.is_tianti_public_status_selected())
+
+    def test_selected_public_tianti_status_does_not_fall_back_to_group_send(self):
+        send_as_id = 95028
+        now = 28_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_enabled"] = True
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_tianti_status_enabled": True,
+            "cave_public_tianti_status_identity_ids": [send_as_id],
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+        }
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti, "send_game_command", new=AsyncMock()) as send_mock, \
+                patch.object(tianti, "save_state"), \
+                patch.object(tianti, "console_log"):
+            asyncio.run(tianti.run_tianti_scheduler(now))
+
+        send_mock.assert_not_awaited()
+
+    def test_unselected_public_tianti_status_keeps_legacy_status_send(self):
+        send_as_id = 95029
+        now = 29_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_enabled"] = True
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_tianti_status_enabled": True,
+            "cave_public_tianti_status_identity_ids": [],
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+        }
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=1234, sent_at=now))) as send_mock, \
+                patch.object(tianti, "save_state"), \
+                patch.object(tianti, "console_log"):
+            asyncio.run(tianti.run_tianti_scheduler(now))
+
+        send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_STATUS, max_retry=1)
+
     def test_available_gangfeng_panel_schedules_pre_climb_timer(self):
         send_as_id = 95026
         now = 26_000.0

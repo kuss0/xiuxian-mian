@@ -345,6 +345,12 @@
           return '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-fishing-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '><span>' + esc(item.label || item.identity_id) + '</span></label>';
         }).join('') + '</div>'
       : '<span class="miniapp-empty">暂无频道身份候选</span>';
+    var tiantiCandidates = Array.isArray(automation.cave_public_tianti_status_candidates) ? automation.cave_public_tianti_status_candidates : [];
+    var tiantiCandidateHtml = tiantiCandidates.length
+      ? '<div class="miniapp-candidate-list">' + tiantiCandidates.map(function (item) {
+          return '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-tianti-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '><span>' + esc(item.label || item.identity_id) + '</span></label>';
+        }).join('') + '</div>'
+      : '<span class="miniapp-empty">暂无已开启登天阶的身份</span>';
     return ''
       + '<section class="miniapp-score-config miniapp-cave-public" data-cave-public-entry="1">'
       + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜候选入口串行兜底</span></div>'
@@ -363,9 +369,12 @@
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="fishing"' + (automation.cave_public_fishing_enabled ? ' checked' : '') + '><span>频道钓鱼</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="stargazer"' + (automation.cave_public_stargazer_enabled ? ' checked' : '') + '><span>观星台</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="yuanying"' + (automation.cave_public_yuanying_enabled ? ' checked' : '') + '><span>元婴</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="tianti_status"' + (automation.cave_public_tianti_status_enabled ? ' checked' : '') + '><span>天阶状态</span></label>'
       + '</div>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>频道钓鱼白名单</strong><span>仅走公共入口，不发送群命令</span></div>'
       + fishingCandidateHtml
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>天阶状态白名单</strong><span>只读校准，不自动触发登阶</span></div>'
+      + tiantiCandidateHtml
       + '<div class="miniapp-cave-batch-status">'
       + badge(status, running ? 'warn' : 'neutral')
       + badge('入口 ' + (automation.cave_public_entry_url_count || 0), automation.cave_public_entry_url_configured ? 'ok' : 'neutral')
@@ -671,9 +680,13 @@
     }
     var delayInput = panel && panel.querySelector('[data-cave-public-delay="1"]');
     var fishingIdentityIds = [];
+    var tiantiStatusIdentityIds = [];
     if (panel) {
       panel.querySelectorAll('[data-cave-public-fishing-candidate]').forEach(function (input) {
         if (input.checked) fishingIdentityIds.push(input.getAttribute('data-cave-public-fishing-candidate'));
+      });
+      panel.querySelectorAll('[data-cave-public-tianti-candidate]').forEach(function (input) {
+        if (input.checked) tiantiStatusIdentityIds.push(input.getAttribute('data-cave-public-tianti-candidate'));
       });
     }
     return {
@@ -686,6 +699,8 @@
       fishing_identity_ids: fishingIdentityIds,
       stargazer_enabled: enabled('stargazer'),
       yuanying_enabled: enabled('yuanying'),
+      tianti_status_enabled: enabled('tianti_status'),
+      tianti_status_identity_ids: tiantiStatusIdentityIds,
       public_entry_url: (panel && panel.querySelector('[data-cave-public-url="1"]') || {}).value || '',
       delay_sec: delayInput ? delayInput.value : ''
     };
@@ -702,6 +717,7 @@
     if (config.fishing_enabled) actions.push('fishing');
     if (config.stargazer_enabled) actions.push('stargazer');
     if (config.yuanying_enabled) actions.push('yuanying');
+    if (config.tianti_status_enabled) actions.push('tianti_status');
     return actions;
   }
 

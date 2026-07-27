@@ -20,7 +20,7 @@ from ..config import (
 from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_pending_command, get_tianti_rank_choice, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_miniapp_auto_config, get_pending_command, get_tianti_rank_choice, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 
@@ -655,6 +655,37 @@ def _tianti_status_sync_due(now):
     return False
 
 
+def is_tianti_status_sync_due(now, send_as_id=None):
+    """Check status freshness against an explicit identity when provided."""
+    timestamp = float(now or time.time())
+    if send_as_id is not None:
+        try:
+            identity_id = int(send_as_id)
+        except (TypeError, ValueError, OverflowError):
+            identity_id = 0
+        if identity_id > 0:
+            with use_identity(identity_id):
+                return bool(state.get("tianti_enabled")) and _tianti_status_sync_due(timestamp)
+    return bool(state.get("tianti_enabled")) and _tianti_status_sync_due(timestamp)
+
+
+def is_tianti_public_status_selected(send_as_id=None):
+    identity_id = int(send_as_id or get_current_identity_id() or 0)
+    if identity_id <= 0:
+        return False
+    config = dict(get_miniapp_auto_config() or {})
+    if not bool(config.get("cave_public_tianti_status_enabled")):
+        return False
+    selected_ids = {
+        int(item)
+        for item in (config.get("cave_public_tianti_status_identity_ids") or ())
+        if str(item or "").strip().lstrip("-").isdigit() and int(item) > 0
+    }
+    if identity_id not in selected_ids:
+        return False
+    return bool(config.get("cave_public_entry_urls") or str(config.get("cave_public_entry_url") or "").strip())
+
+
 async def sync_tianti_status(send_as_id):
     send_as_id = int(send_as_id)
     msg = await send_game_command(CMD_TIANTI_STATUS, track=False, send_as_id=send_as_id)
@@ -1144,6 +1175,8 @@ async def run_tianti_scheduler(now):
         return
 
     if _tianti_status_sync_due(now):
+        if is_tianti_public_status_selected():
+            return
         if _has_pending_tianti_command(CMD_TIANTI_STATUS):
             return
         msg = await send_game_command(CMD_TIANTI_STATUS, max_retry=1)
@@ -1184,6 +1217,8 @@ __all__ = [
     "get_tianti_estimated_wenxin_window_text",
     "get_tianti_status_text",
     "handle_tianti_reply",
+    "is_tianti_public_status_selected",
+    "is_tianti_status_sync_due",
     "run_tianti_scheduler",
     "sync_tianti_miniapp_status",
     "sync_tianti_status",

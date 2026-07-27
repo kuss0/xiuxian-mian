@@ -8,6 +8,95 @@ from model.features import cave_treasure_miniapp, fishing_miniapp, stargazer_min
 
 
 class MiniAppProtocolFlowTests(unittest.TestCase):
+    def test_cave_external_app_helpers_flatten_data_and_prefer_available_match(self):
+        payload = {
+            "data": {
+                "account": {
+                    "externalApps": {
+                        "groups": [{
+                            "apps": [
+                                {"key": "tree", "title": "灵树", "available": False, "action": "tree"},
+                                {"key": "tree", "title": "灵树挑战", "available": True, "action": "tree", "url": "#"},
+                            ],
+                        }],
+                    },
+                },
+            },
+        }
+
+        apps = cave_treasure_miniapp.get_cave_external_apps(payload)
+        selected = cave_treasure_miniapp.find_cave_external_app(
+            payload,
+            keys=("tree",),
+            title_terms=("灵树",),
+        )
+
+        self.assertEqual(2, len(apps))
+        self.assertIs(selected, apps[1])
+
+    def test_cave_external_app_helpers_accept_direct_apps_and_url_terms(self):
+        payload = {
+            "account": {
+                "externalApps": {
+                    "apps": [{
+                        "key": "new_trial_key",
+                        "title": "外府玩法",
+                        "url": "/miniapp/xianxia-trial?startapp=trial_SECRET999",
+                    }],
+                },
+            },
+        }
+
+        matches = cave_treasure_miniapp.find_cave_external_apps(
+            payload,
+            url_terms=("xianxia-trial",),
+        )
+
+        self.assertEqual(1, len(matches))
+        self.assertEqual("new_trial_key", matches[0]["key"])
+
+    def test_cave_external_app_helpers_accept_list_shape_and_missing_available(self):
+        payload = {
+            "account": {
+                "externalApps": [
+                    {"key": "tree", "title": "灵树", "available": "false", "url": "#"},
+                    {"key": "tree", "title": "灵树", "url": "#"},
+                ],
+            },
+        }
+
+        apps = cave_treasure_miniapp.get_cave_external_apps(payload)
+        selected = cave_treasure_miniapp.find_cave_external_app(payload, keys=("tree",))
+        overview = cave_treasure_miniapp.parse_cave_dwelling_overview(payload)
+
+        self.assertEqual(2, len(apps))
+        self.assertIs(selected, apps[1])
+        self.assertEqual(2, len(overview["external_apps"]))
+        self.assertTrue(overview["external_apps"][1]["available"])
+
+    def test_cave_external_app_helper_prefers_available_key_only_entry(self):
+        payload = {
+            "account": {
+                "externalApps": {
+                    "groups": [{
+                        "apps": [
+                            {"key": "tianji_trial", "title": "天机试炼", "available": False, "url": "#"},
+                            {"key": "tianji_trial", "title": "天机试炼", "available": True},
+                        ],
+                    }],
+                },
+            },
+        }
+
+        selected = cave_treasure_miniapp.find_cave_external_app(
+            payload,
+            keys=("tianji_trial",),
+            title_terms=("天机试炼",),
+        )
+
+        self.assertTrue(selected.get("available"))
+        self.assertEqual("tianji_trial", selected.get("key"))
+
     def test_cave_external_action_whitelist_accepts_dynamic_stargazer_and_tree(self):
         for action in ("sect_farm", "stargazer", "spirit_tree", "tree"):
             request = cave_treasure_miniapp.build_cave_external_action_request(

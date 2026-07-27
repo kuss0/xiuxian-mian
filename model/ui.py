@@ -133,7 +133,7 @@ from .features.trial_runtime import (
     start_trial_miniapp_batch_run,
 )
 from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing_automation_pause_text, normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
-from .features.tianti import sync_tianti_status
+from .features.tianti import is_tianti_public_status_selected, is_tianti_status_sync_due, sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
 from .features.duel import (
@@ -409,6 +409,8 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_fishing_identity_ids": [],
     "cave_public_stargazer_enabled": False,
     "cave_public_yuanying_enabled": False,
+    "cave_public_tianti_status_enabled": False,
+    "cave_public_tianti_status_identity_ids": [],
     "cave_public_entry_url": "",
     "cave_public_entry_urls": [],
     "cave_public_delay_sec": 20,
@@ -494,6 +496,7 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_fishing_enabled",
         "cave_public_stargazer_enabled",
         "cave_public_yuanying_enabled",
+        "cave_public_tianti_status_enabled",
         "world_boss_auto_enabled",
     ):
         result[key] = bool(result.get(key))
@@ -550,6 +553,14 @@ def normalize_miniapp_auto_config(config=None):
     result["cave_public_fishing_identity_ids"] = sorted({
         int(identity_id)
         for identity_id in fishing_identity_ids
+        if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+    })
+    tianti_status_identity_ids = result.get("cave_public_tianti_status_identity_ids") or []
+    if not isinstance(tianti_status_identity_ids, (list, tuple, set)):
+        tianti_status_identity_ids = []
+    result["cave_public_tianti_status_identity_ids"] = sorted({
+        int(identity_id)
+        for identity_id in tianti_status_identity_ids
         if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
     })
     treasure_channel_ids = result.get("cave_public_treasure_channel_identity_ids") or []
@@ -625,6 +636,8 @@ def _cave_public_actions_from_config(config=None):
         actions.append("stargazer")
     if config.get("cave_public_yuanying_enabled"):
         actions.append("yuanying")
+    if config.get("cave_public_tianti_status_enabled"):
+        actions.append("tianti_status")
     return actions
 
 
@@ -716,10 +729,26 @@ def get_miniapp_auto_config_snapshot(now=None):
             "account_id": account_id,
             "auto_enabled": int(identity_id) in fishing_public_ids,
         })
+    tianti_public_ids = set(config.get("cave_public_tianti_status_identity_ids") or [])
+    cave_public_tianti_status_candidates = []
+    for identity_id in get_identity_ids():
+        if not is_cave_public_identity_available(identity_id):
+            continue
+        with use_identity(identity_id):
+            tianti_enabled = bool(state.get("tianti_enabled"))
+        if not tianti_enabled:
+            continue
+        cave_public_tianti_status_candidates.append({
+            "identity_id": int(identity_id),
+            "label": get_identity_ui_display_name(identity_id),
+            "account_id": int(get_identity_account(identity_id) or 0),
+            "auto_enabled": int(identity_id) in tianti_public_ids,
+        })
     return {
         **safe_config,
         "world_boss_candidates": world_boss_candidates,
         "cave_public_fishing_candidates": cave_public_fishing_candidates,
+        "cave_public_tianti_status_candidates": cave_public_tianti_status_candidates,
         "cave_public_entry_url_configured": bool(config.get("cave_public_entry_urls")),
         "cave_public_entry_url_count": len(config.get("cave_public_entry_urls") or []),
         "today": today,
@@ -7106,8 +7135,9 @@ def _normalize_cave_public_batch_actions(payload):
         "star_farm": "stargazer",
         "yuan_ying": "yuanying",
         "yuanying_launch": "yuanying",
+        "tianjie_status": "tianti_status",
     }
-    allowed = {"small_world", "small_world_harvest", "deep_status", "treasure", "trial", "fishing", "stargazer", "yuanying"}
+    allowed = {"small_world", "small_world_harvest", "deep_status", "treasure", "trial", "fishing", "stargazer", "yuanying", "tianti_status"}
     actions = []
     seen = set()
     for raw in raw_actions or ():
@@ -7135,6 +7165,9 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
     normalized_action = str(action or "").strip().lower()
     if normalized_action == "fishing":
         selected_ids = set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or [])
+        return [identity_id for identity_id in available_ids if identity_id in selected_ids]
+    if normalized_action == "tianti_status":
+        selected_ids = set(normalize_miniapp_auto_config().get("cave_public_tianti_status_identity_ids") or [])
         return [identity_id for identity_id in available_ids if identity_id in selected_ids]
     if normalized_action in {"small_world_harvest", "trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
         return available_ids
@@ -7249,6 +7282,7 @@ async def ui_set_cave_public_config(payload=None):
         "fishing_enabled": "cave_public_fishing_enabled",
         "stargazer_enabled": "cave_public_stargazer_enabled",
         "yuanying_enabled": "cave_public_yuanying_enabled",
+        "tianti_status_enabled": "cave_public_tianti_status_enabled",
     }
     for payload_key, config_key in mapping.items():
         if payload_key in payload:
@@ -7258,6 +7292,15 @@ async def ui_set_cave_public_config(payload=None):
         if not isinstance(raw_ids, (list, tuple, set)):
             raw_ids = []
         config["cave_public_fishing_identity_ids"] = sorted({
+            int(identity_id)
+            for identity_id in raw_ids
+            if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+        })
+    if "tianti_status_identity_ids" in payload:
+        raw_ids = payload.get("tianti_status_identity_ids") or []
+        if not isinstance(raw_ids, (list, tuple, set)):
+            raw_ids = []
+        config["cave_public_tianti_status_identity_ids"] = sorted({
             int(identity_id)
             for identity_id in raw_ids
             if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
@@ -7681,6 +7724,8 @@ def _cave_public_background_action_due(action, identity_id, now):
             followup_time = float(state.get("stargazer_followup_due_at", 0) or 0)
             due_times = [item for item in (next_time, followup_time) if item > 0]
             return not due_times or min(due_times) <= now
+        if action == "tianti_status":
+            return is_tianti_public_status_selected(identity_id) and is_tianti_status_sync_due(now, identity_id)
         if action == "yuanying":
             if not state.get("yuanying_enabled"):
                 return False
@@ -7719,6 +7764,7 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
         "small_world_harvest": 0,
         "fishing": 3,
         "stargazer": 4,
+        "tianti_status": 4,
         "treasure": 5,
     }.get(action, 9)
     due_at = 0.0
@@ -7746,6 +7792,8 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
                 if float(item or 0) > 0
             ]
             due_at = min(due_times) if due_times else float(now)
+        elif action == "tianti_status":
+            due_at = float(state.get("next_tianti_status_time", 0) or 0)
     if due_at <= 0:
         due_at = float(now)
     return priority, due_at, int(identity_id)
@@ -7815,6 +7863,7 @@ async def _run_cave_public_background_scheduler(now, config):
         ("fishing", "cave_public_fishing_enabled"),
         ("stargazer", "cave_public_stargazer_enabled"),
         ("treasure", "cave_public_treasure_enabled"),
+        ("tianti_status", "cave_public_tianti_status_enabled"),
     )
     enabled_action_flags = [
         (action, flag)
