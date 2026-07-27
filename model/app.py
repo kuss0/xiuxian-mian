@@ -2065,6 +2065,8 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             except (TypeError, ValueError, OverflowError):
                 next_time = 0.0
             explore_released = bool(is_tianxing_route_released("探索", now=scheduler_now, require_change_fate=True))
+            if not identity_enabled and state.get("tianxing_enabled") and not explore_released:
+                continue
             if explore_released and next_time > scheduler_now:
                 last_result = str(state.get("wild_training_last_result") or "")
                 last_error = str(state.get("wild_training_last_error") or "")

@@ -626,6 +626,64 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(identity_id, now)], seen)
 
+    async def test_due_wild_training_fast_scan_skips_frozen_tianxing_without_released_route(self):
+        identity_id = 991785
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        state_module.set_identity_enabled(identity_id, False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "restore_identity_ids": [identity_id],
+            "frozen_identity_ids": [identity_id],
+        })
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["next_wild_training_time"] = now - 10
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "is_tianxing_route_released", return_value=False),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app, "console_log") as log_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_not_awaited()
+        log_mock.assert_not_called()
+
+    async def test_due_wild_training_fast_scan_includes_frozen_tianxing_with_released_route(self):
+        identity_id = 991786
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        state_module.set_identity_enabled(identity_id, False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "restore_identity_ids": [identity_id],
+            "frozen_identity_ids": [identity_id],
+        })
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["next_wild_training_time"] = now - 10
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "is_tianxing_route_released", return_value=True),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+
     async def test_due_explore_rift_fast_scan_runs_tianxing_prepare_window(self):
         identity_id = 991780
         now = 1_700_000_000.0
