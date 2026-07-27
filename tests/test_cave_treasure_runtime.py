@@ -911,17 +911,21 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         fishing_result = {
-            "ok": False,
+            "ok": True,
             "status": "bait_missing",
             "error": "no available fishing bait",
-            "data": {},
+            "settled_count": 1,
+            "data": {
+                "settled_count": 1,
+                "catches": [{"fish": "青鳞小鲫", "rewards": []}],
+            },
         }
         now = 1_700_000_000.0
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)), \
                 patch.object(cave_treasure_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=fishing_result)) as fishing_mock, \
-                patch.object(cave_treasure_runtime, "_apply_fishing_miniapp_result", return_value="unexpected") as apply_mock, \
+                patch.object(cave_treasure_runtime, "_apply_fishing_miniapp_result", return_value="MiniApp bait_missing｜青鳞小鲫x1") as apply_mock, \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
                 patch.object(cave_treasure_runtime, "save_state"):
             result = await cave_treasure_runtime.run_cave_public_fishing(
@@ -934,7 +938,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("bait_missing", result["extra"]["skipped"])
         self.assertTrue(result["extra"]["terminal_skip"])
         fishing_mock.assert_awaited_once()
-        apply_mock.assert_not_called()
+        apply_mock.assert_called_once()
         with state_module.use_identity(identity_id):
             self.assertEqual(
                 cave_treasure_runtime.fishing_behavior.next_fishing_reset_timestamp(
@@ -943,7 +947,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 state_module.state["next_fishing_time"],
             )
-            self.assertEqual("无可用鱼饵，今日跳过", state_module.state["fishing_last_result"])
+            self.assertIn("青鳞小鲫", state_module.state["fishing_last_result"])
+            self.assertIn("无可用鱼饵，今日跳过", state_module.state["fishing_last_result"])
             self.assertEqual("", state_module.state["fishing_last_error"])
 
     async def test_public_entry_fishing_skips_identity_when_entry_is_missing(self):

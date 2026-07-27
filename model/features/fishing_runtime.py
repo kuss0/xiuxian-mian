@@ -905,7 +905,10 @@ def _enabled_fishing_daily_entries(now):
             or bool(str(identity_state.get("fishing_pending_action") or "").strip())
             or phase not in {"", "idle"}
         )
-        terminal_skip = "未持有鱼竿" in last_result and "今日跳过" in last_result
+        terminal_skip = (
+            "今日跳过" in last_result
+            and ("未持有鱼竿" in last_result or "无可用鱼饵" in last_result)
+        )
         daily_exhausted = "daily_limit" in last_result.lower()
         reportable = (
             str(summary.get("day") or "").strip() == str(day_key or "").strip()

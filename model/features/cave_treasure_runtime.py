@@ -2252,21 +2252,24 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             capture_sink=_fishing_miniapp_capture_store(now),
             capture_source=f"cave_public_fishing:{identity_id}",
         )
+        terminal_message = ""
         with use_identity(identity_id):
             public_only_bait_missing = bool(
                 str(result.get("status") or "").strip() == "bait_missing"
                 and not state.get("fishing_enabled")
             )
             if public_only_bait_missing:
+                summary = _apply_fishing_miniapp_result(result, time.time())
                 state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(
                     now,
                     _fishing_reset_jitter_sec(identity_id),
                 )
-                state["fishing_last_result"] = "无可用鱼饵，今日跳过"
+                state["fishing_last_result"] = f"{summary}｜无可用鱼饵，今日跳过"
                 state["fishing_last_error"] = ""
+                terminal_message = state["fishing_last_result"]
                 save_state()
         if public_only_bait_missing:
-            message = "无可用鱼饵，今日跳过灵溪垂钓"
+            message = f"洞府灵溪垂钓公共入口：{terminal_message or '无可用鱼饵，今日跳过'}"
             await send_audit_log(
                 f"🎣 {message}",
                 scope="identity",
@@ -2274,6 +2277,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
                 priority="low",
                 limit=220,
             )
+            with use_identity(identity_id):
+                await _send_fishing_daily_completion_summary(time.time())
             return {
                 "ok": True,
                 "message": message,
