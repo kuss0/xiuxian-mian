@@ -188,6 +188,15 @@ REALM_SORT_ORDER = [
     "化神中期",
     "化神后期",
     "化神后期大圆满",
+    # 炼虚段。真实出处：2026-07-26 09:03 WA 突破播报「成功突破至【半步炼虚】」，
+    # 试炼古塔战报出现「炼虚初期」。中期及之后按化神段的命名规律补全——境界表
+    # 缺项的代价是该身份被当成「境界未知」，小世界/元婴/裂缝全被误关（WA 突破
+    # 当天就发生了）。
+    "半步炼虚",
+    "炼虚初期",
+    "炼虚中期",
+    "炼虚后期",
+    "炼虚后期大圆满",
 ]
 REALM_SORT_INDEX = {realm: index for index, realm in enumerate(REALM_SORT_ORDER)}
 NO_SECT_NAMES = {"", "散修", "无", "无宗门", "未加入宗门", "未记录", "未知"}
@@ -2581,7 +2590,10 @@ def is_small_world_realm_available(send_as_id=None):
         return False
     realm_index = REALM_SORT_INDEX.get(realm)
     if realm_index is None:
-        return False
+        # 境界表里没有的名字几乎都是「突破出了新段位」而不是低境界：能触发这条
+        # 的身份此前必然已通过门槛。按元婴的口径放行，否则每出一个新境界，突破
+        # 当天该身份的小世界就会被误关（2026-07-26 WA 突破半步炼虚即如此）。
+        return True
     return realm_index >= SMALL_WORLD_MIN_REALM_INDEX
 
 
