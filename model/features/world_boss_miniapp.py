@@ -55,9 +55,13 @@ WORLD_BOSS_PERFECT_HOLD_MAX_MS = 1250
 # valid through 1.25s. Stay near that cap with a small hard-limit margin.
 WORLD_BOSS_OPTIMAL_HOLD_MIN_MS = 1200
 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS = 1235
-WORLD_BOSS_RELEASE_LEAD_MS = 105
-WORLD_BOSS_RELEASE_LEAD_MIN_MS = 90
-WORLD_BOSS_RELEASE_LEAD_MAX_MS = 135
+# Aim near the early edge of the server's perfect band. Normal requests still
+# land inside perfect, while a one-off server/network stall gets roughly
+# another 100ms before crossing the wider accepted-hit window.
+WORLD_BOSS_RELEASE_LEAD_MS = 200
+WORLD_BOSS_RELEASE_LEAD_MIN_MS = 190
+WORLD_BOSS_RELEASE_LEAD_MAX_MS = 205
+WORLD_BOSS_PERFECT_LEAD_MARGIN_MS = 10
 WORLD_BOSS_RTT_SAMPLE_COUNT = 6
 WORLD_BOSS_FINAL_WINDOW_MARGIN_MS = 80
 WORLD_BOSS_DEFAULT_HIT_MS = 560
@@ -729,9 +733,12 @@ def build_world_boss_action_plan(challenge, *, rng=None, hold_range_ms=None):
                 WORLD_BOSS_OPTIMAL_HOLD_MAX_MS,
             ))
         perfect_ms = max(0, _int_value(window.get("perfectMs"), 150))
-        # The HTTP request is emitted on release, so use a small initial lead
-        # and let the battle loop refine it from observed round-trip latency.
-        release_lead_ms = min(WORLD_BOSS_RELEASE_LEAD_MS, max(0, perfect_ms - 30))
+        # The HTTP request is emitted on release. Stay near the early edge of
+        # perfect and let the battle loop refine the lead from observed RTT.
+        release_lead_ms = min(
+            WORLD_BOSS_RELEASE_LEAD_MS,
+            max(0, perfect_ms - WORLD_BOSS_PERFECT_LEAD_MARGIN_MS),
+        )
         elapsed_ms = max(0, center_ms - release_lead_ms)
         plan.append({
             "challengeId": challenge_id,
@@ -785,7 +792,10 @@ def _adaptive_world_boss_release_lead_ms(action, recent_rtt_ms, *, final_window=
         robust_rtt_ms = (lower_half[middle - 1] + lower_half[middle]) / 2.0
     latency_lead_ms = int(round(robust_rtt_ms / 2.0))
 
-    perfect_ceiling_ms = max(0, _int_value(action.get("perfectMs"), 150) - 30)
+    perfect_ceiling_ms = max(
+        0,
+        _int_value(action.get("perfectMs"), 150) - WORLD_BOSS_PERFECT_LEAD_MARGIN_MS,
+    )
     if final_window:
         perfect_ceiling_ms = min(
             perfect_ceiling_ms,

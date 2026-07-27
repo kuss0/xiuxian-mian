@@ -480,7 +480,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             rng=random.Random(7),
         )
         self.assertEqual(["early", "middle", "late"], [item["windowId"] for item in plan])
-        self.assertTrue(all(item["centerMs"] - item["elapsedMs"] == 105 for item in plan))
+        self.assertTrue(all(item["centerMs"] - item["elapsedMs"] == 140 for item in plan))
         self.assertTrue(all(1200 <= item["holdMs"] <= 1235 for item in plan))
         self.assertTrue(all(item["hitMs"] == 560 for item in plan))
         self.assertTrue(all(item["chargeStartMs"] == item["elapsedMs"] - item["holdMs"] for item in plan))
@@ -564,14 +564,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(all(delay > 0 for delay in clock.sleeps))
         self.assertEqual("challenge-live", payloads[2]["challengeId"])
         self.assertEqual("w1", payloads[3]["windowId"])
-        self.assertAlmostEqual(1395, payloads[3]["elapsedMs"], delta=1)
+        self.assertAlmostEqual(1360, payloads[3]["elapsedMs"], delta=1)
         self.assertGreaterEqual(payloads[3]["holdMs"], 520)
         self.assertEqual("w2", payloads[4]["windowId"])
         proof = payloads[-1]["bossProof"]
         self.assertEqual("qyz_focus_burst_v2", proof["mode"])
         self.assertEqual("强攻", proof["stance"])
-        self.assertAlmostEqual(1395, proof["actions"][0]["t"], delta=1)
-        self.assertAlmostEqual(2895, proof["actions"][1]["t"], delta=2)
+        self.assertAlmostEqual(1360, proof["actions"][0]["t"], delta=1)
+        self.assertAlmostEqual(2860, proof["actions"][1]["t"], delta=2)
         self.assertEqual(1000, proof["playerHp"])
         self.assertFalse(proof["dead"])
         self.assertIs(proof["realtimeDamageApplied"], True)
@@ -623,10 +623,30 @@ class WorldBossMiniAppTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        for actual, expected in zip(hit_elapsed_ms, (1395, 7065, 12765)):
+        for actual, expected in zip(hit_elapsed_ms, (1300, 7000, 12700)):
             self.assertAlmostEqual(expected, actual, delta=1)
         self.assertEqual(3, result["data"]["result"]["completed_window_count"])
         self.assertTrue(result["data"]["result"]["full_window_run"])
+
+    def test_live_window_lead_stays_perfect_and_absorbs_observed_latency_spike(self):
+        plan = world_boss_miniapp.build_world_boss_action_plan(
+            {
+                "challengeId": "challenge-latency-guard",
+                "windows": [
+                    {"id": "w11", "centerMs": 58939, "hitMs": 620, "perfectMs": 210},
+                ],
+            },
+            rng=random.Random(27),
+        )
+
+        action = plan[0]
+        release_lead_ms = action["centerMs"] - action["elapsedMs"]
+        self.assertEqual(200, release_lead_ms)
+        self.assertLessEqual(release_lead_ms, action["perfectMs"])
+        # The latest production miss included roughly 760ms of arrival delay.
+        # Releasing at the safe early edge keeps that request inside hitMs.
+        arrival_delta_ms = action["elapsedMs"] + 760 - action["centerMs"]
+        self.assertLessEqual(abs(arrival_delta_ms), action["hitMs"])
 
     def test_joined_battle_polls_until_room_is_locked(self):
         calls = []
