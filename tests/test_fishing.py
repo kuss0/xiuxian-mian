@@ -1621,5 +1621,62 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(now + 8, effect.updates["next_fishing_time"])
 
 
+class FishingDailyRolloverTests(unittest.TestCase):
+    """跨日重置必须连同昨天的 daily_limit 结果一起清。
+
+    洞府公共入口的到期判定看到 last_result 里有 daily_limit 字样就跳过当天；
+    若翻日只清计数不清结果，身份会带着昨天的限次记录一直不开竿——线上 8 个
+    身份就是这样整天没钓鱼的。
+    """
+
+    def _snapshot(self, day, result):
+        return {
+            "fishing_daily_day": day,
+            "fishing_daily_count": 5,
+            "fishing_daily_limit": 5,
+            "fishing_last_result": result,
+        }
+
+    def test_rollover_clears_stale_daily_limit_result(self):
+        from model.features import fishing_behavior
+        from model.timing import get_day_key
+
+        yesterday_result = "MiniApp daily_limit｜fishing_daily_limit_reached"
+        now = 1785038400.0  # 2026-07-26 12:00 +08:00
+        next_day = now + 24 * 3600
+        snapshot = self._snapshot(get_day_key(now), yesterday_result)
+
+        day_key, count, _limit, updates = fishing_behavior.normalize_daily_counter(snapshot, next_day)
+
+        self.assertEqual(get_day_key(next_day), day_key)
+        self.assertEqual(0, count)
+        self.assertEqual(0, updates["fishing_daily_count"])
+        self.assertEqual("", updates["fishing_last_result"], "昨天的 daily_limit 结果必须随翻日清除")
+
+    def test_rollover_keeps_result_without_daily_limit_marker(self):
+        from model.features import fishing_behavior
+        from model.timing import get_day_key
+
+        now = 1785038400.0
+        next_day = now + 24 * 3600
+        snapshot = self._snapshot(get_day_key(now), "MiniApp settled｜5竿")
+
+        _day, _count, _limit, updates = fishing_behavior.normalize_daily_counter(snapshot, next_day)
+
+        self.assertNotIn("fishing_last_result", updates, "非限次结果不应被翻日清掉")
+
+    def test_same_day_never_touches_result(self):
+        from model.features import fishing_behavior
+        from model.timing import get_day_key
+
+        now = 1785038400.0
+        snapshot = self._snapshot(get_day_key(now), "MiniApp daily_limit｜fishing_daily_limit_reached")
+
+        _day, count, _limit, updates = fishing_behavior.normalize_daily_counter(snapshot, now)
+
+        self.assertEqual(5, count)
+        self.assertNotIn("fishing_last_result", updates, "同日 daily_limit 是真实状态，不能清")
+
+
 if __name__ == "__main__":
     unittest.main()
