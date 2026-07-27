@@ -1063,12 +1063,22 @@ class HealthObserverTests(unittest.TestCase):
                         priority TEXT NOT NULL DEFAULT '', source_module TEXT NOT NULL DEFAULT '',
                         op_id TEXT NOT NULL DEFAULT '', chain_id TEXT NOT NULL DEFAULT '', delete_policy TEXT NOT NULL DEFAULT ''
                     );
-                    CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '');
+                    CREATE TABLE identities(
+                        send_as_id INTEGER PRIMARY KEY,
+                        username TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 1
+                    );
                     CREATE TABLE identity_timers(
                         send_as_id INTEGER PRIMARY KEY,
                         next_concubine_time REAL NOT NULL DEFAULT 0,
                         next_deep_retreat_time REAL NOT NULL DEFAULT 0,
-                        next_yuanying_time REAL NOT NULL DEFAULT 0
+                        next_yuanying_time REAL NOT NULL DEFAULT 0,
+                        next_wild_training_time REAL NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE identity_module_state(
+                        send_as_id INTEGER PRIMARY KEY,
+                        wild_training_enabled INTEGER NOT NULL DEFAULT 0,
+                        tianxing_enabled INTEGER NOT NULL DEFAULT 0
                     );
                     CREATE TABLE identity_runtime_state(
                         send_as_id INTEGER PRIMARY KEY,
@@ -1093,6 +1103,14 @@ class HealthObserverTests(unittest.TestCase):
                         "next_probe_at": now + 240,
                     }),),
                 )
+                conn.execute("INSERT INTO identities(send_as_id, username, enabled) VALUES(101, 'frozen', 0)")
+                conn.execute(
+                    "INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(101, ?)",
+                    (now - 3600,),
+                )
+                conn.execute(
+                    "INSERT INTO identity_module_state(send_as_id, wild_training_enabled, tianxing_enabled) VALUES(101, 1, 0)"
+                )
                 conn.commit()
 
             result = health_observer.read_db_business_state(db_path, now)
@@ -1102,6 +1120,10 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(1, len(alerts))
         self.assertEqual(2, alerts[0]["count"])
         self.assertEqual("SendAsPeerInvalidError", alerts[0]["sample"]["last_error"])
+        wild_alerts = [item for item in result["alerts"] if "public wild-training lag" in item["message"]]
+        self.assertEqual(1, len(wild_alerts))
+        self.assertEqual(1, wild_alerts[0]["count"])
+        self.assertEqual(101, wild_alerts[0]["sample"][0]["identity_id"])
 
     def test_business_db_state_ignores_stuck_phases_for_disabled_identity(self):
         now = 1_780_500_000.0

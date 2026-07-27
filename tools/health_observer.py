@@ -1484,6 +1484,33 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         },
                     )
                 )
+                module_rows = fetch_table_rows_by_identity(conn, "identity_module_state")
+                timer_rows = fetch_table_rows_by_identity(conn, "identity_timers")
+                identity_rows = fetch_table_rows_by_identity(conn, "identities")
+                public_wild_lag = []
+                for identity_id in channel_restore_ids:
+                    modules = module_rows.get(identity_id, {})
+                    if not boolish(modules.get("wild_training_enabled")) or boolish(modules.get("tianxing_enabled")):
+                        continue
+                    next_time = positive_epoch(timer_rows.get(identity_id, {}).get("next_wild_training_time"))
+                    overdue_sec = int(now - next_time) if next_time > 0 and now > next_time else 0
+                    if overdue_sec <= NEXT_LAG_WARN_SEC:
+                        continue
+                    identity = identity_rows.get(identity_id, {})
+                    public_wild_lag.append({
+                        "identity_id": identity_id,
+                        "username": identity.get("username"),
+                        "overdue_sec": overdue_sec,
+                        "next_time": local_ts(next_time),
+                    })
+                if public_wild_lag:
+                    alerts.append(
+                        business_alert(
+                            f"channel-frozen public wild-training lag: {len(public_wild_lag)}",
+                            count=len(public_wild_lag),
+                            sample=public_wild_lag[:8],
+                        )
+                    )
             pending_rows = conn.execute(
                 """
                 SELECT send_as_id, cmd, sent_at, timeout, retry, max_retry, source_module

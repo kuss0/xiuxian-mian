@@ -21,9 +21,11 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_identity_enabled,
     get_miniapp_auto_config,
     get_miniapp_state_records,
     get_wild_training_strategy,
+    is_cave_public_identity_available,
     set_wild_training_strategy,
     state,
     use_identity,
@@ -316,6 +318,15 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     if preflight.get("route_allowed"):
         _clear_tianxing_prepare_retry()
         return True
+    identity_id = int(get_current_identity_id() or 0)
+    if not get_identity_enabled(identity_id) and is_cave_public_identity_available(identity_id):
+        _schedule_retry(now)
+        _schedule_tianxing_prepare_retry(now)
+        state["wild_training_last_result"] = "频道身份冻结，等待天星探索前置恢复"
+        state["wild_training_last_result_at"] = 0
+        state["wild_training_last_error"] = "公共入口可用，但推命/改命群命令当前不可发送"
+        save_state()
+        return False
     if str(preflight.get("stage") or "") == "prediction_conflict":
         if due_at <= now and _recent_craft_prediction_consume_attempt_for_due(due_at, now):
             await _send_tianxing_panel_calibration(now, "炼制推命消费后需查盘确认探索路线")

@@ -159,6 +159,35 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         prep_mock.assert_awaited_once()
         run_mock.assert_not_awaited()
 
+    async def test_channel_health_frozen_tianxing_waits_without_group_command(self):
+        now = 1_700_000_000.0
+        self._enable(now=now, strategy="深入", tianxing=True)
+        state_module.set_identity_enabled(991201, False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "restore_identity_ids": [991201],
+            "frozen_identity_ids": [991201],
+        })
+        preflight = {
+            "route_allowed": False,
+            "timeline_required": True,
+            "stage": "timeline_waiting",
+            "reason": "缺少探索推命",
+        }
+        with state_module.use_identity(991201), \
+                patch.object(wild_training, "build_tianxing_route_preflight_plan", return_value=preflight), \
+                patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+                patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
+                patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
+                patch.object(wild_training, "save_state"):
+            prepared = await wild_training._prepare_wild_training_tianxing_route(now, due_at=now)
+
+        self.assertFalse(prepared)
+        send_mock.assert_not_awaited()
+        timeline_mock.assert_not_awaited()
+        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("频道身份冻结", state_module.state["wild_training_last_result"])
+
     async def test_busy_worker_does_not_prepare_tianxing_or_create_waiting_task(self):
         now = 1_700_000_000.0
         self._enable(now=now, strategy="深入", tianxing=True)

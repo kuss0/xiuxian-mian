@@ -261,6 +261,7 @@ from .state import (
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
+    is_cave_public_identity_available,
     set_channel_send_as_health,
     set_identity_enabled,
     set_game_bot_ids,
@@ -2044,7 +2045,8 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
     global _due_wild_training_last_diag_at
     candidates = []
     for scan_index, identity_id in enumerate(get_identity_ids()):
-        if not get_identity_enabled(identity_id):
+        identity_enabled = bool(get_identity_enabled(identity_id))
+        if not is_cave_public_identity_available(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
@@ -2079,23 +2081,26 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                         state["wild_training_last_error"] = "天星探索已放行，恢复错峰计时已压回立即消费窗口"
                         next_time = scheduler_now
                         mark_dirty()
-            if next_time <= 0 or next_time > scheduler_now:
-                if next_time > scheduler_now:
-                    with use_identity(identity_id):
-                        windows = build_tianxing_consume_window(
-                            "探索",
-                            now=scheduler_now,
-                            due_at=next_time,
-                            reason="野外历练",
-                            require_change_fate=True,
-                        )
-                        if (
-                            windows
-                            and state.get("tianxing_enabled")
-                            and not _tianxing_prepare_retry_blocks(scheduler_now)
-                        ):
-                            candidates.append((0, next_time, scan_index, identity_id, scheduler_now))
-                            continue
+            if next_time <= 0:
+                if not identity_enabled:
+                    candidates.append((3, scheduler_now, scan_index, identity_id, scheduler_now))
+                continue
+            if next_time > scheduler_now:
+                with use_identity(identity_id):
+                    windows = build_tianxing_consume_window(
+                        "探索",
+                        now=scheduler_now,
+                        due_at=next_time,
+                        reason="野外历练",
+                        require_change_fate=True,
+                    )
+                    if (
+                        windows
+                        and state.get("tianxing_enabled")
+                        and not _tianxing_prepare_retry_blocks(scheduler_now)
+                    ):
+                        candidates.append((0, next_time, scan_index, identity_id, scheduler_now))
+                        continue
                 continue
             priority = 1 if state.get("tianxing_enabled") else 2
             candidates.append((priority, next_time, scan_index, identity_id, scheduler_now))
