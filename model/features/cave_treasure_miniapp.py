@@ -98,6 +98,7 @@ CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     ".我的灵兽",
 })
 CAVE_EXTERNAL_ACTIONS = frozenset({
+    "fate_cards",
     "trial",
     "tianji_trial",
     "fishing",

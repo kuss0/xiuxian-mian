@@ -510,12 +510,14 @@ class WebAppCoreTests(unittest.TestCase):
         registry = miniapp_registry.build_known_miniapp_registry()
 
         self.assertEqual(
-            ("cave_treasure", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"),
+            ("cave_treasure", "fate_cards", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"),
             registry.keys(),
         )
         self.assertFalse(registry.require("fishing").default_enabled)
         self.assertFalse(registry.require("trial").default_enabled)
         self.assertFalse(registry.require("cave_treasure").default_enabled)
+        self.assertTrue(registry.require("fate_cards").manual_only)
+        self.assertFalse(registry.require("fate_cards").default_enabled)
         self.assertFalse(registry.require("tree").default_enabled)
         self.assertTrue(registry.require("tree").manual_only)
         self.assertTrue(registry.require("world_boss").manual_only)
@@ -2152,7 +2154,7 @@ class WebAppCoreTests(unittest.TestCase):
         plans = miniapp_registry.build_known_miniapp_flow_plans()
 
         self.assertEqual(
-            {"cave_treasure", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"},
+            {"cave_treasure", "fate_cards", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"},
             set(plans),
         )
         self.assertTrue(plans["stargazer"].manual_only)
@@ -2161,6 +2163,8 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertFalse(plans["trial"].default_enabled)
         self.assertTrue(plans["cave_treasure"].manual_only)
         self.assertFalse(plans["cave_treasure"].default_enabled)
+        self.assertTrue(plans["fate_cards"].manual_only)
+        self.assertFalse(plans["fate_cards"].default_enabled)
         self.assertTrue(plans["tree"].manual_only)
         self.assertFalse(plans["tree"].default_enabled)
         self.assertIn("生产自动化", plans["tree"].note)
