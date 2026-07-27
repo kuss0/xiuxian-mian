@@ -158,6 +158,12 @@ def _public_entry_lock(identity_id):
     return lock
 
 
+def is_cave_public_entry_busy(identity_id):
+    """Return whether this identity currently owns an in-process public-entry operation."""
+    lock = _PUBLIC_ENTRY_LOCKS.get(_identity_id(identity_id))
+    return bool(lock and lock.locked())
+
+
 def _public_entry_allowed():
     return get_global_enabled() or get_global_pause_source() == "tianzun_maintenance"
 
@@ -3017,6 +3023,7 @@ __all__ = [
     "extract_cave_deep_seclusion_state",
     "extract_cave_tianjige_command_message",
     "handle_cave_treasure_miniapp_entry",
+    "is_cave_public_entry_busy",
     "revoke_cave_treasure_miniapp_manual_run",
     "run_cave_public_deep_retreat_action",
     "run_cave_public_fishing",

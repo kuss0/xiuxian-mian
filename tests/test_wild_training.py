@@ -188,6 +188,52 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("频道身份冻结", state_module.state["wild_training_last_result"])
 
+    async def test_due_frozen_tianxing_does_not_create_worker_or_log_false_start(self):
+        now = 1_700_000_000.0
+        self._enable(now=now, strategy="深入", tianxing=True)
+        state_module.set_identity_enabled(991201, False)
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "restore_identity_ids": [991201],
+            "frozen_identity_ids": [991201],
+        })
+        preflight = {
+            "route_allowed": False,
+            "timeline_required": True,
+            "stage": "timeline_waiting",
+            "reason": "缺少探索推命",
+        }
+        with state_module.use_identity(991201), \
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]), \
+                patch.object(wild_training, "build_tianxing_route_preflight_plan", return_value=preflight), \
+                patch.object(wild_training, "_launch_wild_training_miniapp_worker") as launch_mock, \
+                patch.object(wild_training, "console_log") as log_mock, \
+                patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
+                patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        launch_mock.assert_not_called()
+        log_mock.assert_not_called()
+        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("频道身份冻结", state_module.state["wild_training_last_result"])
+
+    async def test_due_shared_public_entry_busy_does_not_create_worker(self):
+        now = 1_700_000_000.0
+        self._enable(now=now)
+        with state_module.use_identity(991201), \
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]), \
+                patch.object(wild_training, "is_cave_public_entry_busy", return_value=True), \
+                patch.object(wild_training, "_launch_wild_training_miniapp_worker") as launch_mock, \
+                patch.object(wild_training, "console_log") as log_mock, \
+                patch.object(wild_training.random, "uniform", return_value=180), \
+                patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        launch_mock.assert_not_called()
+        log_mock.assert_not_called()
+        self.assertEqual(now + 180, state_module.state["next_wild_training_time"])
+        self.assertEqual("MiniApp 串行等待", state_module.state["wild_training_last_result"])
+
     async def test_busy_worker_does_not_prepare_tianxing_or_create_waiting_task(self):
         now = 1_700_000_000.0
         self._enable(now=now, strategy="深入", tianxing=True)

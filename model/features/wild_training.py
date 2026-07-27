@@ -31,7 +31,7 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining
-from .cave_treasure_runtime import run_cave_public_wild_training
+from .cave_treasure_runtime import is_cave_public_entry_busy, run_cave_public_wild_training
 from .tianxing import (
     apply_tianxing_passive,
     build_tianxing_consume_window,
@@ -258,6 +258,21 @@ def _schedule_miniapp_busy_retry(now, reason="洞府公共入口繁忙"):
     return state["next_wild_training_time"]
 
 
+def _defer_frozen_tianxing_route(now, preflight):
+    if preflight.get("route_allowed") or not state.get("tianxing_enabled"):
+        return False
+    identity_id = int(get_current_identity_id() or 0)
+    if get_identity_enabled(identity_id) or not is_cave_public_identity_available(identity_id):
+        return False
+    _schedule_retry(now)
+    _schedule_tianxing_prepare_retry(now)
+    state["wild_training_last_result"] = "频道身份冻结，等待天星探索前置恢复"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = "公共入口可用，但推命/改命群命令当前不可发送"
+    save_state()
+    return True
+
+
 def _recent_craft_prediction_consume_attempt_for_due(due_at, now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
@@ -318,14 +333,7 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     if preflight.get("route_allowed"):
         _clear_tianxing_prepare_retry()
         return True
-    identity_id = int(get_current_identity_id() or 0)
-    if not get_identity_enabled(identity_id) and is_cave_public_identity_available(identity_id):
-        _schedule_retry(now)
-        _schedule_tianxing_prepare_retry(now)
-        state["wild_training_last_result"] = "频道身份冻结，等待天星探索前置恢复"
-        state["wild_training_last_result_at"] = 0
-        state["wild_training_last_error"] = "公共入口可用，但推命/改命群命令当前不可发送"
-        save_state()
+    if _defer_frozen_tianxing_route(now, preflight):
         return False
     if str(preflight.get("stage") or "") == "prediction_conflict":
         if due_at <= now and _recent_craft_prediction_consume_attempt_for_due(due_at, now):
@@ -532,6 +540,11 @@ async def _run_wild_training_miniapp_worker(identity_id, urls, due_at):
             gap = time.time() - float(_WILD_TRAINING_MINIAPP_LAST_RUN_AT or 0)
             if gap < WILD_TRAINING_MINIAPP_MIN_GAP_SEC:
                 await asyncio.sleep(WILD_TRAINING_MINIAPP_MIN_GAP_SEC - gap)
+            if is_cave_public_entry_busy(identity_id):
+                with use_identity(identity_id):
+                    _schedule_miniapp_busy_retry(time.time())
+                return
+            console_log(f"🏞️ MiniApp 野外开始串行执行：{strategy}", scope="identity", limit=220)
             for url in list(urls)[:3]:
                 result = await run_cave_public_wild_training(identity_id, url, strategy, now=time.time())
                 if result.get("ok") or not _wild_training_entry_failure_can_fallback(result):
@@ -611,6 +624,18 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
     if _wild_training_miniapp_worker_busy():
         _schedule_miniapp_busy_retry(now)
         return
+    if is_cave_public_entry_busy(identity_id):
+        _schedule_miniapp_busy_retry(now)
+        return
+    if state.get("tianxing_enabled"):
+        preflight = build_tianxing_route_preflight_plan(
+            "探索",
+            reason="野外历练 MiniApp",
+            now=now,
+            require_change_fate=True,
+        )
+        if _defer_frozen_tianxing_route(now, preflight):
+            return
     due_at = next_time
     strategy = normalize_wild_training_strategy(get_wild_training_strategy())
     state["next_wild_training_time"] = now + WILD_TRAINING_MINIAPP_RUN_LEASE_SEC
@@ -618,9 +643,7 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = ""
     save_state()
-    if _launch_wild_training_miniapp_worker(identity_id, urls, due_at):
-        console_log(f"🏞️ MiniApp 野外开始串行执行：{strategy}", scope="identity", limit=220)
-    else:
+    if not _launch_wild_training_miniapp_worker(identity_id, urls, due_at):
         _schedule_miniapp_busy_retry(now)
 
 
