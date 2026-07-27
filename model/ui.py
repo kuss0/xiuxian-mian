@@ -7757,7 +7757,11 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
     extra = {}
     try:
         ok, message, extra = await ui_run_cave_public_entry(identity_id, action, "")
-        if action in {"treasure", "fishing"} and isinstance(extra, dict) and extra.get("daily_exhausted"):
+        if (
+            action in {"treasure", "fishing"}
+            and isinstance(extra, dict)
+            and (extra.get("daily_exhausted") or extra.get("terminal_skip"))
+        ):
             _cave_public_background_daily_done.add((action, get_day_key(time.time()), int(identity_id)))
     except asyncio.CancelledError:
         raise

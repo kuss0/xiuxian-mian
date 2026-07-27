@@ -787,6 +787,36 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.clear()
             ui._cave_public_background_state.update(background_snapshot)
 
+    async def test_cave_public_background_marks_fishing_terminal_skip_as_daily_done(self):
+        identity_id = 1001
+        daily_done_snapshot = set(ui._cave_public_background_daily_done)
+        retry_snapshot = dict(ui._cave_public_background_retry_at)
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._cave_public_background_daily_done.clear()
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_state.update({"running": True, "next_run_at": 0})
+            with patch.object(
+                ui,
+                "ui_run_cave_public_entry",
+                new=AsyncMock(return_value=(
+                    True,
+                    "无可用鱼饵，今日跳过灵溪垂钓",
+                    {"skipped": "bait_missing", "terminal_skip": True},
+                )),
+            ):
+                with patch.object(ui, "console_log"):
+                    await ui._execute_cave_public_background_action(identity_id, "fishing", 20)
+
+            self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, time.time()))
+        finally:
+            ui._cave_public_background_daily_done.clear()
+            ui._cave_public_background_daily_done.update(daily_done_snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retry_snapshot)
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
     async def test_world_boss_miniapp_config_is_default_off_and_clamped(self):
         state_module._meta_state["miniapp_auto_config"] = {}
 
