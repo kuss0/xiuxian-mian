@@ -69,5 +69,20 @@ wxjerry `9243e92` 增加按身份持久 HTTP Session、直连失败后切配置�
 - 代理池仍不进入生产。直连/配置代理的单向故障切换只能在独立 Lab 验证，429、业务关闭
   和未知非幂等结果不得换代理或重放。
 
+本次同时补记此前遗漏的 `01ccb3b1`：上游已把原万兽谷群命令放养模块替换为
+“万兽谷·驭灵行迹” MiniApp，本地仍只有 `model/features/ranch.py` 的旧文本链，因此这是
+当前最明确的“上游已有、本地没有”玩法缺口。上游接口包括：
+
+- `/api/miniapp/xianxia-spirit-beast/start`
+- `/api/miniapp/xianxia-spirit-beast/expedition/start`
+- `/api/miniapp/xianxia-spirit-beast/expedition/choose`
+
+上游实现会选择灵兽与区域，并在每次行迹中最多作 3 次路线选择；但其实现使用同步
+`requests.post`、自有重试和整套新状态字段，不能直接覆盖本地公共洞府 session、全局
+MiniApp 预算、脱敏 capture 和三层调度。该玩法应走独立 Gate：先只读识别
+`externalApps key=spirit_beast` 与 token；再用真实脱敏回包建立 adapter/离线回放；
+`expedition/start` 和 `choose` 均按非幂等动作禁传输层自动重放；单身份 canary 通过后再
+评审是否退役旧 `ranch.py` 主动发送链。
+
 因此当前可吸收项分层为：HTTP 事件寿命/回包证据修复已在主线落地；WebSocket 实时观察
-保留为下一独立 Lab；上游生产分支禁止整包 cherry-pick。
+和万兽谷驭灵行迹保留为独立 Lab；上游生产分支禁止整包 cherry-pick。
