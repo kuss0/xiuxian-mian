@@ -45,6 +45,11 @@ class LegacyRouteReportTests(unittest.TestCase):
         self.assertEqual(1, len(wild["direct_send_calls"]))
         self.assertEqual(1, len(wild["sent_events"]))
         self.assertEqual(1, len(result["unresolved_send_calls"]))
+        unresolved = result["unresolved_send_calls"][0]
+        self.assertEqual("run", unresolved["function"])
+        self.assertEqual("run", unresolved["scope"])
+        self.assertEqual("command", unresolved["command_expr"])
+        self.assertEqual({"model/sample.py": 1}, result["unresolved_summary"]["by_path"])
 
     def test_command_matching_requires_a_command_boundary(self):
         self.assertTrue(report._command_matches(".洞府", ".洞府"))
@@ -55,6 +60,49 @@ class LegacyRouteReportTests(unittest.TestCase):
         tree = report.ast.parse('f"{CMD_FISHING_OPEN} 银须灵鲢"')
         command = report._resolve_command_expr(tree.body[0].value, {"CMD_FISHING_OPEN": ".开鱼"})
         self.assertEqual(".开鱼 银须灵鲢", command)
+
+    def test_dynamic_command_reports_candidate_assignments_and_call_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            model_dir = root / "model"
+            model_dir.mkdir(parents=True)
+            (model_dir / "config.py").write_text('CMD_TOWER = ".闯塔"\n', encoding="utf-8")
+            (model_dir / "sample.py").write_text(
+                "class Runner:\n"
+                "    async def run(self, send_game_command, target):\n"
+                "        command = f'{CMD_TOWER} {target}'\n"
+                "        await send_game_command(command, family='tower', source_module='闯塔', track=False)\n",
+                encoding="utf-8",
+            )
+
+            result = report.build_source_evidence(model_dir)
+
+        unresolved = result["unresolved_send_calls"][0]
+        self.assertEqual("Runner.run", unresolved["scope"])
+        self.assertEqual([".闯塔 *"], unresolved["candidate_commands"])
+        self.assertEqual(["tower_text_run"], unresolved["candidate_route_keys"])
+        self.assertEqual("tower", unresolved["family_expr"])
+        self.assertEqual("闯塔", unresolved["source_module_expr"])
+        self.assertEqual("False", unresolved["track_expr"])
+
+    def test_dynamic_command_reports_module_alias_candidate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            model_dir = root / "model"
+            model_dir.mkdir(parents=True)
+            (model_dir / "config.py").write_text('CMD_WORLD_BOSS_STATUS = ".世界boss"\n', encoding="utf-8")
+            (model_dir / "sample.py").write_text(
+                "WORLD_BOSS_STATUS_QUERY_COMMAND = CMD_WORLD_BOSS_STATUS\n"
+                "async def run(send_game_command):\n"
+                "    await send_game_command(WORLD_BOSS_STATUS_QUERY_COMMAND)\n",
+                encoding="utf-8",
+            )
+
+            result = report.build_source_evidence(model_dir)
+
+        unresolved = result["unresolved_send_calls"][0]
+        self.assertEqual([".世界boss"], unresolved["candidate_commands"])
+        self.assertEqual(["world_boss_text_run"], unresolved["candidate_route_keys"])
 
 
 if __name__ == "__main__":

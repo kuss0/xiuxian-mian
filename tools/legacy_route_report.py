@@ -91,6 +91,21 @@ ROUTE_CATALOG = (
         "commands": (".天阶状态",),
         "symbols": ("CMD_TIANTI_STATUS",),
     },
+    {
+        "key": "world_boss_text_run",
+        "label": "世界 Boss 旧文本行动链",
+        "policy": "miniapp_only_auto",
+        "commands": (".世界boss", ".讨伐青元子"),
+        "symbols": (
+            "CMD_WORLD_BOSS_STATUS",
+            "CMD_QINGYUANZI_SUPPRESS",
+            "CMD_QINGYUANZI_GUARD",
+            "CMD_QINGYUANZI_ATTACK",
+            "CMD_QINGYUANZI_BREAK",
+            "WORLD_BOSS_STATUS_QUERY_COMMAND",
+            "WORLD_BOSS_ACTION_COMMANDS",
+        ),
+    },
 )
 
 
@@ -177,6 +192,93 @@ def _call_command_node(node: ast.Call) -> ast.AST | None:
     return None
 
 
+def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
+
+
+def _enclosing_scope(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> dict[str, str]:
+    function_name = ""
+    class_name = ""
+    current = parents.get(node)
+    while current is not None:
+        if not function_name and isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_name = current.name
+        elif not class_name and isinstance(current, ast.ClassDef):
+            class_name = current.name
+        current = parents.get(current)
+    scope = ".".join(part for part in (class_name, function_name) if part) or "<module>"
+    return {
+        "class": class_name,
+        "function": function_name,
+        "scope": scope,
+    }
+
+
+def _source_expr(source: str, node: ast.AST | None) -> str:
+    if node is None:
+        return ""
+    return str(ast.get_source_segment(source, node) or "").strip()
+
+
+def _call_keyword_expr(node: ast.Call, name: str, source: str, constants: dict[str, str]) -> str:
+    for keyword in node.keywords:
+        if keyword.arg != name:
+            continue
+        resolved = _resolve_command_expr(keyword.value, constants)
+        if resolved:
+            return resolved
+        if isinstance(keyword.value, ast.Constant):
+            return repr(keyword.value.value)
+        return _source_expr(source, keyword.value)
+    return ""
+
+
+def _candidate_name_values(
+    command_node: ast.AST | None,
+    call_node: ast.Call,
+    parents: dict[ast.AST, ast.AST],
+    constants: dict[str, str],
+) -> list[str]:
+    if not isinstance(command_node, ast.Name):
+        return []
+    owner: ast.AST | None = parents.get(call_node)
+    while owner is not None and not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+        owner = parents.get(owner)
+    if owner is None:
+        return []
+    owners = [owner]
+    module_owner = owner
+    while module_owner is not None and not isinstance(module_owner, ast.Module):
+        module_owner = parents.get(module_owner)
+    if module_owner is not None and module_owner is not owner:
+        owners.append(module_owner)
+    values: list[str] = []
+    for assignment_owner in owners:
+        for candidate in ast.walk(assignment_owner):
+            if int(getattr(candidate, "lineno", 0) or 0) >= int(getattr(call_node, "lineno", 0) or 0):
+                continue
+            target: ast.AST | None = None
+            value: ast.AST | None = None
+            if isinstance(candidate, ast.Assign):
+                if len(candidate.targets) != 1:
+                    continue
+                target, value = candidate.targets[0], candidate.value
+            elif isinstance(candidate, ast.AnnAssign):
+                target, value = candidate.target, candidate.value
+            elif isinstance(candidate, ast.NamedExpr):
+                target, value = candidate.target, candidate.value
+            if not isinstance(target, ast.Name) or target.id != command_node.id:
+                continue
+            resolved = _resolve_command_expr(value, constants)
+            if resolved and resolved not in values:
+                values.append(resolved)
+    return values
+
+
 def _source_paths(model_dir: Path) -> list[Path]:
     return sorted(path for path in model_dir.rglob("*.py") if path.is_file())
 
@@ -209,6 +311,7 @@ def build_source_evidence(model_dir: Path) -> dict[str, Any]:
             continue
         relative = str(path.relative_to(model_dir.parent))
         lines = source.splitlines()
+        parents = _parent_map(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and node.id in symbol_routes:
                 routes[symbol_routes[node.id]]["symbol_refs"].append({
@@ -228,10 +331,24 @@ def build_source_evidence(model_dir: Path) -> dict[str, Any]:
                 continue
             command_node = _call_command_node(node)
             command = _resolve_command_expr(command_node, constants)
+            scope = _enclosing_scope(node, parents)
+            candidate_commands = _candidate_name_values(command_node, node, parents, constants)
             evidence = {
                 "path": relative,
                 "line": int(getattr(node, "lineno", 0) or 0),
                 "command": command,
+                "command_expr": _source_expr(source, command_node),
+                "candidate_commands": candidate_commands,
+                "candidate_route_keys": sorted({
+                    route_key
+                    for candidate in candidate_commands
+                    if (route_key := _route_for_command(candidate))
+                }),
+                **scope,
+                "family_expr": _call_keyword_expr(node, "family", source, constants),
+                "source_module_expr": _call_keyword_expr(node, "source_module", source, constants),
+                "priority_expr": _call_keyword_expr(node, "priority", source, constants),
+                "track_expr": _call_keyword_expr(node, "track", source, constants),
                 "source": lines[int(getattr(node, "lineno", 1) or 1) - 1].strip() if lines else "",
             }
             route_key = _route_for_command(command)
@@ -244,7 +361,22 @@ def build_source_evidence(model_dir: Path) -> dict[str, Any]:
         for key in ("direct_send_calls", "symbol_refs", "literal_refs"):
             route[key].sort(key=lambda item: (item["path"], item["line"]))
     unresolved_send_calls.sort(key=lambda item: (item["path"], item["line"]))
-    return {"routes": routes, "unresolved_send_calls": unresolved_send_calls}
+    unresolved_by_path: dict[str, int] = {}
+    unresolved_by_scope: dict[str, int] = {}
+    for item in unresolved_send_calls:
+        path = str(item.get("path") or "")
+        scope_name = f"{path}:{item.get('scope') or '<module>'}"
+        unresolved_by_path[path] = unresolved_by_path.get(path, 0) + 1
+        unresolved_by_scope[scope_name] = unresolved_by_scope.get(scope_name, 0) + 1
+    return {
+        "routes": routes,
+        "unresolved_send_calls": unresolved_send_calls,
+        "unresolved_summary": {
+            "count": len(unresolved_send_calls),
+            "by_path": dict(sorted(unresolved_by_path.items(), key=lambda item: (-item[1], item[0]))),
+            "by_scope": dict(sorted(unresolved_by_scope.items(), key=lambda item: (-item[1], item[0]))),
+        },
+    }
 
 
 def _message_paths(messages_dir: Path, day: str, days: int) -> list[Path]:
@@ -311,6 +443,7 @@ def build_report(
         "days": max(1, int(days)),
         "routes": routes,
         "unresolved_send_calls": source["unresolved_send_calls"],
+        "unresolved_summary": source["unresolved_summary"],
     }
 
 
@@ -327,7 +460,10 @@ def format_report(report: dict[str, Any]) -> str:
             f"sent={sent_summary.get('count', 0)} last={sent_summary.get('last_ts') or '-'} "
             f"by_day={json.dumps(sent_summary.get('by_day') or {}, ensure_ascii=False, sort_keys=True)}"
         )
+    unresolved_summary = report.get("unresolved_summary") or {}
     lines.append(f"- unresolved dynamic send_game_command calls: {len(report['unresolved_send_calls'])}")
+    for path, count in list((unresolved_summary.get("by_path") or {}).items())[:12]:
+        lines.append(f"  - {path}: {count}")
     return "\n".join(lines)
 
 
