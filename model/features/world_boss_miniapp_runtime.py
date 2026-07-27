@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 import time
 from pathlib import Path
 
@@ -231,6 +232,7 @@ async def run_world_boss_miniapp_event(
                     capture_sink=capture_sink,
                     capture_source=f"world_boss:battle:{identity_id}",
                     window_skip_count=window_skip_count,
+                    stop_event=stop_event,
                 )
             finally:
                 if session is not None:
@@ -266,6 +268,9 @@ async def run_world_boss_miniapp_event(
             return battle_result
 
     priority_owner = f"world_boss:{int(now)}"
+    # All selected identities share one server-side event.  Once it closes,
+    # stop stale local timelines before they emit more /hit requests.
+    stop_event = threading.Event()
     begin_miniapp_priority_window(priority_owner)
     try:
         joined = await asyncio.gather(*(join_one(identity_id) for identity_id in (identity_ids or ())))

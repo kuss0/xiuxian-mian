@@ -1547,6 +1547,56 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, run_state["miniapp_auto_results"][-1]["summary"]["realtime_hit_count"])
         self.assertIn("命中2 完美1 伤害300亿 质量分900", audit_mock.await_args.args[0])
 
+    async def test_miniapp_event_closed_contribution_is_reported_as_partial_not_failure(self):
+        now = 1_784_500_100.0
+        event_key = "miniapp-partial"
+        state_module.set_world_boss_run_state({
+            "event_key": event_key,
+            "miniapp_auto_status": "running",
+            "miniapp_auto_started_at": now,
+        })
+
+        async def fake_runtime(*_args, **_kwargs):
+            return {
+                "ok": False,
+                "status": "partial",
+                "joined_count": 1,
+                "results": [
+                    {"identity_id": 8659059191, "phase": "join", "ok": True, "status": "joined"},
+                    {
+                        "identity_id": 8659059191,
+                        "phase": "battle",
+                        "ok": False,
+                        "status": "event_closed_partial",
+                        "summary": {
+                            "accepted_hit_count": 12,
+                            "accepted_perfect_count": 11,
+                            "accepted_damage_yi": 600,
+                            "planned_window_count": 16,
+                        },
+                    },
+                ],
+            }
+
+        with (
+            patch.object(world_boss, "run_world_boss_miniapp_event", new=fake_runtime),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            await world_boss._run_world_boss_miniapp_automation(
+                event_key,
+                [8659059191],
+                SimpleNamespace(id=12008),
+                MINIAPP_OPEN_TEXT,
+                now,
+                0,
+            )
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertIn("部分 1｜失败 0", run_state["last_result"])
+        self.assertIn("部分 1｜失败 0", audit_mock.await_args.args[0])
+        self.assertIn("命中12/16", audit_mock.await_args.args[0])
+
     def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
         # Same login account can only enter one MiniApp role. Pick the strongest
         # role per account, then cap total simultaneous entries to four accounts.

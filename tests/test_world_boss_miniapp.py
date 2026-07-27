@@ -1,5 +1,6 @@
 import json
 import random
+import threading
 import unittest
 
 from model.features import world_boss_miniapp
@@ -20,6 +21,79 @@ class FakeClock:
 
 
 class WorldBossMiniAppTests(unittest.TestCase):
+    def test_expires_in_caps_local_timeline_before_late_windows(self):
+        duration = world_boss_miniapp._world_boss_challenge_duration_ms({
+            "durationMs": 28000,
+            "maxDurationMs": 90000,
+            "expiresIn": 75,
+            "windows": [{"id": "late", "centerMs": 87000, "hitMs": 620}],
+        })
+        self.assertEqual(75000, duration)
+
+    def test_expiry_trims_late_windows_and_finishes_before_server_close(self):
+        calls = []
+        hit_windows = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-expiry-trim",
+                        "durationMs": 6000,
+                        "maxDurationMs": 8000,
+                        "expiresIn": 7,
+                        "windows": [
+                            {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w3", "centerMs": 5000, "hitMs": 620, "perfectMs": 210},
+                        ],
+                    },
+                }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 0}
+            if endpoint == "hit":
+                hit_windows.append(request["payload"]["windowId"])
+                return 200, {"ok": True, "hit": {"attemptConsumed": False, "perfect": True, "damageYi": 100}}
+            if endpoint == "finish":
+                return 200, {
+                    "ok": True,
+                    "result": {"score": 200, "hits": len(hit_windows), "realtime_damage_yi": 200},
+                }
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_EXPIRY_TRIM",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["w1", "w2"], hit_windows)
+        self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
+        plan_event = next(event for event in result["events"] if event["step"] == "plan")
+        self.assertEqual(1, plan_event["expiry_trimmed_window_count"])
+
+    def test_positive_damage_overrides_false_attempt_consumed_flag(self):
+        self.assertTrue(world_boss_miniapp._world_boss_hit_was_consumed({
+            "attempt_consumed": False,
+            "damage_yi": 42,
+            "perfect": False,
+        }))
+        self.assertFalse(world_boss_miniapp._world_boss_hit_was_consumed({
+            "attempt_consumed": False,
+            "damage_yi": 0,
+            "perfect": False,
+        }))
+
     def test_nangongque_protocol_adapter_is_manual_single_attempt_and_redacted(self):
         adapter = world_boss_miniapp.build_nangongque_miniapp_adapter()
         self.assertTrue(adapter.manual_only)
@@ -424,6 +498,62 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual("boss_event_closed", result["status"])
         self.assertEqual(["start"], calls)
+
+    def test_event_closed_after_real_hits_reconciles_state_without_finish(self):
+        calls = []
+        clock = FakeClock()
+        stop_event = threading.Event()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-closed-after-hit",
+                        "durationMs": 4200,
+                        "maxDurationMs": 6000,
+                        "windows": [
+                            {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
+                        ],
+                    },
+                }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 0}
+            if endpoint == "hit" and request["payload"]["windowId"] == "w1":
+                return 200, {
+                    "ok": True,
+                    "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                    "boss": {"actionLimit": 1, "actionsUsed": 0, "actionsRemaining": 1},
+                }
+            if endpoint == "hit":
+                return 409, {"ok": False, "error": "boss_event_closed"}
+            if endpoint == "state":
+                return 200, {"ok": True, "boss": {"eventStatus": "closed"}}
+            if endpoint == "finish":
+                self.fail("closed event must not submit finish")
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_CLOSED_AFTER_HIT",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            stop_event=stop_event,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("event_closed_partial", result["status"])
+        self.assertEqual(["start", "begin", "hit", "hit", "state"], calls)
+        self.assertEqual(1, result["data"]["result"]["accepted_hit_count"])
+        self.assertEqual(100, result["data"]["result"]["accepted_damage_yi"])
+        self.assertTrue(stop_event.is_set())
 
     def test_identity_selection_is_returned_without_combat(self):
         calls = []

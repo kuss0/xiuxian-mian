@@ -75,6 +75,8 @@ WORLD_BOSS_START_MAX_CONSECUTIVE_429 = 3
 WORLD_BOSS_AUTO_START_DELAY_SEC = 0.28
 WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC = 1.25
 WORLD_BOSS_FINISH_GRACE_MS = 2200
+WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS = 2200
+WORLD_BOSS_EXPIRY_HIT_MARGIN_MS = 500
 
 WORLD_BOSS_ERROR_TYPES = (
     "boss_token_missing",
@@ -958,6 +960,17 @@ def _world_boss_start_refresh_delay(data, override=None):
     )
 
 
+def _world_boss_challenge_expiry_ms(challenge):
+    challenge = dict(challenge or {})
+    raw_expires_in = challenge.get("expiresIn", challenge.get("expires_in"))
+    expires_in = _float_value(raw_expires_in, 0.0)
+    if expires_in <= 0:
+        return 0
+    # The API has used seconds for expiresIn; accept millisecond-shaped values
+    # as well so this does not become another hard-coded unit assumption.
+    return max(1_000, int(round(expires_in if expires_in >= 1_000 else expires_in * 1_000)))
+
+
 def _world_boss_challenge_duration_ms(challenge):
     challenge = dict(challenge or {})
     windows = challenge.get("windows") if isinstance(challenge.get("windows"), list) else []
@@ -971,7 +984,15 @@ def _world_boss_challenge_duration_ms(challenge):
             last_window_end,
             _window_center_ms(window) + max(1, _int_value(window.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)),
         )
-    return max(1_000, min(max_duration, max(base_duration, last_window_end + 9_000)))
+    calculated_duration = max(base_duration, last_window_end + 9_000)
+    # ``expiresIn`` is the server-side lifetime of this challenge, not a
+    # suggestion to keep submitting every locally supplied window.  The live
+    # 2026-07-27 capture supplied windows beyond the event lifetime; waiting
+    # for those windows made the final POST arrive after boss_event_closed.
+    expiry_ms = _world_boss_challenge_expiry_ms(challenge)
+    if expiry_ms:
+        calculated_duration = min(calculated_duration, expiry_ms)
+    return max(1_000, min(max_duration, calculated_duration))
 
 
 def _world_boss_requires_begin(challenge):
@@ -1048,6 +1069,9 @@ def _world_boss_start_business_summary(data, challenge=None):
         "player_max_hp": _present_int(player, "maxHp", "max_hp"),
         "player_attack_bonus": _present_float(player, "attackBonus", "attack_bonus"),
         "player_root": str(player.get("root") or player.get("spiritualRoot") or "")[:80],
+        "duration_ms": _present_int(challenge, "durationMs", "duration_ms"),
+        "max_duration_ms": _present_int(challenge, "maxDurationMs", "max_duration_ms"),
+        "expires_in_ms": _world_boss_challenge_expiry_ms(challenge),
         "window_count": len(windows),
         "windows": [
             {
@@ -1081,13 +1105,18 @@ def _world_boss_hit_business_summary(data):
 
 def _world_boss_hit_was_consumed(summary):
     summary = dict(summary or {})
+    # ``attemptConsumed`` is the per-entry/action quota flag.  In the live
+    # protocol it becomes false after the first hit while the same response
+    # still carries positive damage and a lowered boss HP.  Treat explicit
+    # business evidence as authoritative for contribution accounting; using
+    # the quota flag alone silently erased most of the score.
+    if _float_value(summary.get("damage_yi"), 0.0) > 0:
+        return True
+    if summary.get("perfect") is True:
+        return True
     if summary.get("attempt_consumed") is not None:
         return bool(summary.get("attempt_consumed"))
-    return bool(
-        _float_value(summary.get("damage_yi"), 0.0) > 0
-        or summary.get("perfect") is True
-        or summary.get("hit_evidence_present") is True
-    )
+    return bool(summary.get("hit_evidence_present"))
 
 
 def _world_boss_finish_business_summary(data, *, hit_summary=None):
@@ -1156,6 +1185,106 @@ def _world_boss_has_effective_contribution(summary):
             "accepted_hit_count",
             "accepted_damage_yi",
         )
+    )
+
+
+def _world_boss_state_is_terminal(data):
+    """Return whether a read-only state response closes the shared event."""
+
+    terminal_words = {
+        "closed", "finished", "ended", "settlement", "settled",
+        "complete", "completed", "inactive", "expired",
+    }
+    for mapping in _nested_mappings(data):
+        for key in ("eventStatus", "event_status", "roomStatus", "room_status", "status"):
+            value = str(mapping.get(key) or "").strip().lower()
+            if value and any(word == value or word in value for word in terminal_words):
+                return True
+        if any(isinstance(mapping.get(key), dict) for key in ("result", "settlement")):
+            return True
+    return False
+
+
+def _world_boss_partial_summary(hit_summary, *, state_data=None):
+    """Build a safe contribution summary when finish is no longer possible."""
+
+    summary = dict(hit_summary or {})
+    state_data = state_data if isinstance(state_data, dict) else {}
+    state_result = _mapping_from_payload(state_data, ("result", "settlement"))
+    if state_result:
+        authoritative = _world_boss_finish_business_summary(
+            state_data,
+            hit_summary=summary,
+        )
+        authoritative["state_reconciled"] = True
+        return authoritative
+    summary.update({
+        "state_reconciled": bool(state_data),
+        "event_closed": True,
+        "completed_window_count": max(
+            _int_value(summary.get("completed_window_count"), 0),
+            _int_value(summary.get("accepted_hit_count"), 0),
+        ),
+    })
+    return summary
+
+
+def reconcile_world_boss_closed_battle_lab(
+    *,
+    token,
+    init_data,
+    transport,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    events=None,
+    hit_summary=None,
+    stop_event=None,
+):
+    """Reconcile a closed event once without replaying a mutation."""
+
+    adapter = adapter or build_world_boss_miniapp_adapter()
+    events = events if events is not None else []
+    state_request = build_world_boss_miniapp_request(
+        "state", token=token, init_data=init_data, adapter=adapter,
+    )
+    state_result = execute_miniapp_http_request(
+        state_request,
+        transport,
+        backoff_sec=(),
+        sleeper=sleeper,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key="closed_state_reconcile",
+    )
+    _append_http_event(events, "closed_state_reconcile", state_result)
+    state_data = state_result.data if state_result.ok and isinstance(state_result.data, dict) else {}
+    summary = _world_boss_partial_summary(hit_summary, state_data=state_data)
+    summary["state_terminal"] = _world_boss_state_is_terminal(state_data)
+    _append_business_capture(
+        capture_sink,
+        source=capture_source,
+        step="closed_state_reconcile",
+        summary=summary,
+    )
+    if stop_event is not None and hasattr(stop_event, "set"):
+        stop_event.set()
+    if state_result.ok and _world_boss_has_effective_contribution(summary):
+        authoritative = bool(_mapping_from_payload(state_data, ("result", "settlement")))
+        return _flow_result(
+            authoritative,
+            "settled" if authoritative else "event_closed_partial",
+            error="" if authoritative else "world boss closed after partial contribution",
+            data={"result": summary},
+            events=events,
+        )
+    return _flow_result(
+        False,
+        "event_closed_partial" if _int_value(summary.get("accepted_hit_count"), 0) > 0 else "boss_event_closed",
+        error="world boss event closed before finish",
+        data={"result": summary},
+        events=events,
     )
 
 
@@ -1377,6 +1506,7 @@ def run_world_boss_joined_battle_lab_flow(
     state_poll_interval_sec=None,
     entry_token="",
     window_skip_count=0,
+    stop_event=None,
 ):
     """Wait for room lock, refresh the joined session, then execute one battle."""
 
@@ -1576,6 +1706,25 @@ def run_world_boss_joined_battle_lab_flow(
     except ValueError as exc:
         return _flow_result(False, "not_ready", error=exc, events=events)
     plan = filter_world_boss_action_plan(full_plan, initial_elapsed_ms)
+    challenge_expiry_ms = _world_boss_challenge_expiry_ms(challenge)
+    expiry_finish_target_ms = 0
+    expiry_trimmed_window_count = 0
+    if challenge_expiry_ms:
+        expiry_finish_target_ms = max(
+            1_000,
+            challenge_expiry_ms - WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS,
+        )
+        expiry_hit_cutoff_ms = max(
+            0,
+            expiry_finish_target_ms - WORLD_BOSS_EXPIRY_HIT_MARGIN_MS,
+        )
+        untrimmed_count = len(plan)
+        plan = [
+            action
+            for action in plan
+            if _int_value(action.get("elapsedMs"), 0) <= expiry_hit_cutoff_ms
+        ]
+        expiry_trimmed_window_count = untrimmed_count - len(plan)
     requested_window_skip = max(0, _int_value(window_skip_count, 0))
     effective_window_skip = min(requested_window_skip, max(0, len(plan) - 1))
     effective_plan = (
@@ -1590,6 +1739,9 @@ def run_world_boss_joined_battle_lab_flow(
         "full_window_count": len(plan),
         "window_skip_count": effective_window_skip,
         "expired_window_count": len(full_plan) - len(plan),
+        "expiry_trimmed_window_count": expiry_trimmed_window_count,
+        "challenge_expiry_ms": challenge_expiry_ms,
+        "expiry_finish_target_ms": expiry_finish_target_ms,
         "current_elapsed_ms": initial_elapsed_ms,
         "server_elapsed_ms_ignored": server_elapsed_ms,
     })
@@ -1615,6 +1767,20 @@ def run_world_boss_joined_battle_lab_flow(
         "actions_remaining": None,
         "actions_used": None,
     }
+
+    def reconcile_closed_event():
+        return reconcile_world_boss_closed_battle_lab(
+            token=current_token,
+            init_data=init_data,
+            transport=transport,
+            adapter=adapter,
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            events=events,
+            hit_summary=server_hit_summary,
+            stop_event=stop_event,
+        )
 
     def process_missed_windows(current_elapsed_ms):
         nonlocal player_hp, dead, death_elapsed_ms
@@ -1656,6 +1822,8 @@ def run_world_boss_joined_battle_lab_flow(
     for action_index, action in enumerate(effective_plan):
         if dead:
             break
+        if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
+            return reconcile_closed_event()
         action = dict(action)
         release_lead_ms = _adaptive_world_boss_release_lead_ms(
             action,
@@ -1733,6 +1901,8 @@ def run_world_boss_joined_battle_lab_flow(
         _append_http_event(events, "hit", hit_result)
         if not hit_result.ok:
             status = classify_world_boss_miniapp_error(hit_result.error)
+            if status == "boss_event_closed":
+                return reconcile_closed_event()
             if status == "boss_action_limit" and server_hit_summary["attempted_hit_count"] > 0:
                 events.append({
                     "step": "action_limit_after_hits",
@@ -1831,13 +2001,24 @@ def run_world_boss_joined_battle_lab_flow(
     else:
         finish_target_ms = min(
             challenge_duration_ms,
-            _world_boss_last_window_end_ms(challenge) + WORLD_BOSS_FINISH_GRACE_MS,
+            max(
+                (
+                    _int_value(action.get("centerMs"), 0)
+                    + _int_value(action.get("hitMs"), WORLD_BOSS_DEFAULT_HIT_MS)
+                    for action in effective_plan
+                ),
+                default=0,
+            ) + WORLD_BOSS_FINISH_GRACE_MS,
         )
+    if expiry_finish_target_ms:
+        finish_target_ms = min(finish_target_ms, expiry_finish_target_ms)
     current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
     if finish_target_ms > current_elapsed_ms:
         sleeper((finish_target_ms - current_elapsed_ms) / 1000.0)
     finish_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
     process_missed_windows(finish_elapsed_ms)
+    if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
+        return reconcile_closed_event()
     if dead and death_elapsed_ms + 1250 > finish_elapsed_ms:
         sleeper((death_elapsed_ms + 1250 - finish_elapsed_ms) / 1000.0)
         finish_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
@@ -1866,6 +2047,8 @@ def run_world_boss_joined_battle_lab_flow(
     _append_http_event(events, "finish", finish_result)
     if not finish_result.ok:
         status = classify_world_boss_miniapp_error(finish_result.error)
+        if status == "boss_event_closed":
+            return reconcile_closed_event()
         return _flow_result(False, status, error=finish_result.error, data=finish_result.data, events=events, proof=proof)
     finish_data = finish_result.data if isinstance(finish_result.data, dict) else {}
     if _verification_required(finish_data):

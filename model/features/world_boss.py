@@ -1541,8 +1541,21 @@ async def _run_world_boss_miniapp_automation(
         for item in run_state["miniapp_auto_results"]
         if item.get("phase") == "battle" and item.get("ok") and item.get("status") == "settled"
     ]
-    failed = [item for item in run_state["miniapp_auto_results"] if not item.get("ok")]
-    run_state["last_result"] = f"MiniApp 入场 {joined_count}｜结算 {len(settled)}｜失败 {len(failed)}"
+    partial = [
+        item
+        for item in run_state["miniapp_auto_results"]
+        if item.get("phase") == "battle"
+        and not item.get("ok")
+        and item.get("status") in {"event_closed_partial"}
+    ]
+    failed = [
+        item
+        for item in run_state["miniapp_auto_results"]
+        if not item.get("ok") and item not in partial
+    ]
+    run_state["last_result"] = (
+        f"MiniApp 入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}"
+    )
     _set_run_state(run_state)
     detail_parts = []
     for item in run_state["miniapp_auto_results"]:
@@ -1577,7 +1590,7 @@ async def _run_world_boss_miniapp_automation(
         detail_parts.append(detail)
     details = "、".join(detail_parts) or "无明细"
     await send_audit_log(
-        f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜失败 {len(failed)}\n{details}",
+        f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}\n{details}",
         scope="global",
         priority="high" if failed else "medium",
         limit=420,

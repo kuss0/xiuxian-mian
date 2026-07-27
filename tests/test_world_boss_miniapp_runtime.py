@@ -117,6 +117,49 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual({11: 0, 22: 2}, received)
 
+    async def test_parallel_battles_share_one_terminal_stop_event(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+        stop_events = []
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            return SimpleNamespace(
+                joined=True,
+                identity_id=kwargs["identity_id"],
+                session_token="qyz_SESSION",
+                safe_summary=lambda: {"joined": True, "status": "joined"},
+            )
+
+        def fake_battle(_receipt, **kwargs):
+            stop_events.append(kwargs.get("stop_event"))
+            return {
+                "ok": True,
+                "status": "settled",
+                "data": {"result": {"score": 100, "realtime_hit_count": 1}},
+                "error": "",
+            }
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11, 22, 33, 44],
+                event,
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(4, len(stop_events))
+        self.assertIsNotNone(stop_events[0])
+        self.assertTrue(all(item is stop_events[0] for item in stop_events))
+
     async def test_battle_priority_micro_stagger_preserves_candidate_order(self):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
