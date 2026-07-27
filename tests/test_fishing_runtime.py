@@ -2192,28 +2192,28 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
     def test_runtime_send_gap_whitelist_is_limited_to_fast_modules(self):
-        self.assertTrue(
+        self.assertFalse(
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_URGENT_REACTIVE,
                 ".钓鱼状态",
                 intent={"source_module": "灵溪垂钓"},
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_EVENT_BURST,
                 ".提竿",
                 intent={"source_module": "灵溪垂钓"},
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_EVENT_BURST,
                 ".开鱼 银须灵鲢",
                 intent={"source_module": "灵溪垂钓"},
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_EVENT_BURST,
                 ".鱼篓",
@@ -2263,13 +2263,13 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_runtime_module_gap_enforces_fast_module_minimum(self):
+    def test_runtime_module_gap_is_reserved_for_storage_transfers(self):
         runtime_module._MODULE_LAST_SEND_AT.clear()
         runtime_module._MODULE_LAST_SEND_AT["灵溪垂钓"] = 100.0
         runtime_module._MODULE_LAST_SEND_AT["储物袋"] = 100.0
 
         self.assertEqual(
-            102.0,
+            0.0,
             runtime_module._module_send_gap_ready_at({"source_module": "灵溪垂钓"}, now_mono=100.5),
         )
         self.assertEqual(

@@ -246,7 +246,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(920001, payload["message_id"])
         self.assertEqual(".闯塔", payload["text"])
 
-    async def test_identity_gap_applies_after_whitelisted_burst_send(self):
+    async def test_identity_gap_applies_after_regular_event_send(self):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = 0.0
         runtime._MODULE_LAST_SEND_AT.clear()
@@ -273,7 +273,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             ):
                 self.assertEqual(100.0, clock["mono"])
 
-            self.assertEqual(0.0, runtime._GAME_LAST_SEND_AT)
+            self.assertEqual(100.0, runtime._GAME_LAST_SEND_AT)
             self.assertEqual(100.0, runtime._IDENTITY_LAST_SEND_AT[send_as_id])
 
             async with runtime._send_slot(
