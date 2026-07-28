@@ -1,7 +1,9 @@
 from pathlib import Path
 
 from model.config import STATE_DIR
+from model import miniapp_capture_summary
 from model.features import cave_treasure_runtime, fishing_runtime, stargazer, tree_runtime, trial_runtime
+from tools import business_semantic_report, miniapp_daily_report
 
 
 def test_runtime_capture_dirs_follow_configured_state_dir():
@@ -11,6 +13,9 @@ def test_runtime_capture_dirs_follow_configured_state_dir():
     assert stargazer.STARGAZER_MINIAPP_CAPTURE_DIR == expected
     assert tree_runtime.TREE_MINIAPP_CAPTURE_DIR == expected
     assert trial_runtime.TRIAL_MINIAPP_CAPTURE_DIR == expected
+    assert miniapp_capture_summary.DEFAULT_CAPTURE_DIR == expected
+    assert miniapp_daily_report.CAPTURE_DIR == expected
+    assert business_semantic_report.CAPTURE_DIR == expected
 
 
 def test_capture_store_uses_isolated_test_state_dir():

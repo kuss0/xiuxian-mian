@@ -13,7 +13,9 @@ from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CAPTURE_DIR = PROJECT_ROOT / "data" / "state" / "miniapp_capture"
+DATA_DIR = Path(os.environ.get("XIUXIAN_DATA_DIR") or PROJECT_ROOT / "data")
+STATE_DIR = Path(os.environ.get("XIUXIAN_STATE_DIR") or DATA_DIR / "state")
+CAPTURE_DIR = STATE_DIR / "miniapp_capture"
 DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
 TZ_LOCAL = ZoneInfo("Asia/Shanghai")
 

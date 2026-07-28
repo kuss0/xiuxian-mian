@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -17,9 +18,11 @@ from typing import Any, Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MESSAGES_DIR = PROJECT_ROOT / "data" / "messages"
-CAPTURE_DIR = PROJECT_ROOT / "data" / "state" / "miniapp_capture"
-WORLD_BOSS_CAPTURE_DIR = PROJECT_ROOT / "data" / "messages" / "miniapp-captures"
+DATA_DIR = Path(os.environ.get("XIUXIAN_DATA_DIR") or PROJECT_ROOT / "data")
+STATE_DIR = Path(os.environ.get("XIUXIAN_STATE_DIR") or DATA_DIR / "state")
+MESSAGES_DIR = Path(os.environ.get("XIUXIAN_MESSAGES_DIR") or DATA_DIR / "messages")
+CAPTURE_DIR = STATE_DIR / "miniapp_capture"
+WORLD_BOSS_CAPTURE_DIR = MESSAGES_DIR / "miniapp-captures"
 TZ_LOCAL = timezone(timedelta(hours=8))
 
 _TS_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S")

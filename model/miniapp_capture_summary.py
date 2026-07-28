@@ -13,11 +13,11 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from .config import STATE_DIR
 from .webapp_core import sanitize_webapp_secret_text
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CAPTURE_DIR = PROJECT_ROOT / "data" / "state" / "miniapp_capture"
+DEFAULT_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 _GAME_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,48}$")
 
 
