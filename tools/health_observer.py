@@ -422,7 +422,7 @@ def read_service_states(services: Iterable[str]) -> dict[str, dict[str, str]]:
         "systemctl",
         "show",
         *services,
-        "--property=Id,ActiveState,SubState,MainPID,NRestarts,ExecMainStartTimestamp,ExecMainStatus,ExecMainCode",
+        "--property=Id,ActiveState,SubState,UnitFileState,MainPID,NRestarts,ExecMainStartTimestamp,ExecMainStatus,ExecMainCode",
         "--no-pager",
     ]
     code, stdout, stderr = run_command(args)
@@ -1769,13 +1769,14 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
             continue
         if info.get("ActiveState") != "active" or info.get("SubState") != "running":
             if service in OPTIONAL_INACTIVE_SERVICES:
-                add_risk(
-                    "optional_service_inactive",
-                    f"{service} inactive: {info.get('ActiveState')}/{info.get('SubState')}",
-                    "warn",
-                    6,
-                    service=service,
-                )
+                if str(info.get("UnitFileState") or "").strip().lower() != "disabled":
+                    add_risk(
+                        "optional_service_inactive",
+                        f"{service} inactive: {info.get('ActiveState')}/{info.get('SubState')}",
+                        "warn",
+                        6,
+                        service=service,
+                    )
             else:
                 add_risk(
                     "service_not_running",
@@ -2075,7 +2076,8 @@ def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[
             continue
         if info.get("ActiveState") != "active" or info.get("SubState") != "running":
             if service in OPTIONAL_INACTIVE_SERVICES:
-                reasons.append(f"{service} inactive: {info.get('ActiveState')}/{info.get('SubState')}")
+                if str(info.get("UnitFileState") or "").strip().lower() != "disabled":
+                    reasons.append(f"{service} inactive: {info.get('ActiveState')}/{info.get('SubState')}")
             else:
                 reasons.append(f"{service} not running: {info.get('ActiveState')}/{info.get('SubState')}")
                 service_errors += 1

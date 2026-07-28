@@ -582,6 +582,48 @@ class HealthObserverTests(unittest.TestCase):
         self.assertNotIn("service_not_running", codes)
         self.assertNotIn("listener_heartbeat_stale", codes)
 
+    def test_health_payload_does_not_warn_for_explicitly_disabled_optional_listener(self):
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service", "xiuxian-listener.service"),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-29 03:45:00",
+            "status": "ok",
+            "services": {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running", "UnitFileState": "enabled"},
+                "xiuxian-listener.service": {
+                    "ActiveState": "inactive",
+                    "SubState": "dead",
+                    "UnitFileState": "disabled",
+                },
+            },
+            "listener": {
+                "available": True,
+                "status": "stopped",
+                "age_sec": 999999,
+                "path": "/tmp/listener_heartbeat.json",
+            },
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {"message_state": {}, "db_state": {}, "alerts": []},
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+        status, reasons = health_observer.classify_snapshot(snapshot["services"], [])
+
+        codes = {item["code"] for item in payload["risk_reasons"]}
+        self.assertNotIn("optional_service_inactive", codes)
+        self.assertEqual("ok", status)
+        self.assertEqual([], reasons)
+
     def test_health_payload_ignores_stopped_listener_heartbeat_when_sidecar_is_not_observed(self):
         cfg = health_observer.ObserverConfig(
             project_root=Path("/opt/xiuxian-main"),
