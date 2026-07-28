@@ -3,7 +3,7 @@
 ## Verdict
 
 - Lab implementation: **green**.
-- Production deployment: **not approved by this review**.
+- Production deployment: **approved and completed after mainline review**.
 - The old `fbecbe91` candidate was not cherry-picked. It changes the default
   guard-backup cadence from the production six-hour policy to 30 minutes and
   restores over the state DB without first removing stale WAL/SHM sidecars.
@@ -101,18 +101,26 @@ Both generations passed `quick_check`, retained all 24 identities, and left no
 guard WAL/SHM files. The restore rehearsal selected a deliberately preserved
 previous generation after corrupting current and recovered all 24 identities.
 
-## Remaining Production Gate
+## Production Gate Result
 
-Before any merge/deploy:
+The mainline controller completed the production gate on 2026-07-29:
 
-1. Review the staged rename/manifest ordering and environment-key compatibility.
-2. Run the full test suite on the exact merge candidate.
-3. Create an explicit production DB backup and record current guard manifest.
-4. Deploy in a low-activity window; restart only `xiuxian.service`.
-5. Verify 24 identities, pending queue zero, health/watchdog/preflight, and that
-   no backup is written by a no-change save.
-6. Observe the first natural periodic generation and one controlled Lab-only
-   previous-generation restore rehearsal. Do not induce a production collapse.
+1. Replayed the Lab commit onto current mainline `8314c60b`; focused persistence
+   tests passed (`118 passed, 50 subtests passed`) and the exact merge candidate
+   passed the full suite (`3400 passed, 535 subtests passed`).
+2. `compileall` and `git diff --check` passed. The production DB and existing
+   guard both passed `PRAGMA quick_check` with 24 identities and zero pending
+   tasks.
+3. Created `data/state/chaogu_state.db.pre-persistence-p2-20260729073703` and
+   `/root/xiuxian-main-live-guard/manifest.pre-persistence-p2-20260729073703.json`.
+4. Deployed commit `919352cb` in a low-activity window and restarted only
+   `xiuxian.service`.
+5. Startup restored 24 identities successfully; pending remained zero;
+   health/watchdog/preflight were normal apart from the known frozen channel
+   send-as cohort.
+6. The startup no-change save did not rewrite the guard: the current DB and
+   manifest retained their `2026-07-29 02:24:18` timestamps.
 
-Until that separate approval, P2 remains a Lab candidate and current production
-backup/restore behavior remains unchanged.
+The first natural six-hour generation remains an observation checkpoint. A
+previous-generation restore continues to be rehearsed only against copied Lab
+databases; production corruption must not be induced for validation.
