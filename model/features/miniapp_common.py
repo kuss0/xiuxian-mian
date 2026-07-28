@@ -11,11 +11,13 @@ Before this module each adapter defined its own `_requests_transport`,
 transport had to be applied in seven places and was in practice applied in one.
 """
 
+import time
+
 import requests
 
 from ..config import TG_REQUESTS_PROXIES
 from ..state import get_current_identity_id
-from ..webapp_core import sanitize_webapp_secret_text
+from ..webapp_core import safe_miniapp_event_detail, sanitize_webapp_secret_text
 
 
 def resolve_identity_id(value=None):
@@ -28,6 +30,24 @@ def resolve_identity_id(value=None):
 
 DEFAULT_MINIAPP_HTTP_TIMEOUT = (5, 20)
 MINIAPP_DEFAULT_USER_AGENT = "Mozilla/5.0"
+MINIAPP_BUSINESS_CAPTURE_ADAPTERS = frozenset({
+    "fishing",
+    "trial",
+    "cave_treasure",
+    "stargazer",
+    "tree",
+})
+MINIAPP_BUSINESS_CAPTURE_KEYS = frozenset({
+    "settled_count",
+    "rods",
+    "caught",
+    "empty",
+    "catches",
+    "found_main",
+    "collect_count",
+    "gains",
+    "items",
+})
 
 
 def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=None, proxies=None):
@@ -85,9 +105,49 @@ def append_http_event(events, step, result):
     })
 
 
+def append_business_capture(capture_sink, *, adapter_key, detail, source="", created_at=None):
+    """Append one settlement-only record without protocol credentials.
+
+    Callers must reduce a response to the fixed business fields above before it
+    reaches this helper. The second whitelist here is intentional defense in
+    depth: an accidental raw response/token/session field is dropped instead of
+    becoming another long-lived capture format.
+    """
+    if capture_sink is None:
+        return {}
+    adapter_key = str(adapter_key or "").strip()
+    if adapter_key not in MINIAPP_BUSINESS_CAPTURE_ADAPTERS:
+        return {}
+    raw_detail = dict(detail or {})
+    business = {
+        key: raw_detail[key]
+        for key in MINIAPP_BUSINESS_CAPTURE_KEYS
+        if key in raw_detail
+    }
+    record = safe_miniapp_event_detail({
+        "adapter_key": adapter_key,
+        "step_key": f"business:{adapter_key}",
+        "ok": True,
+        "created_at": float(created_at if created_at is not None else time.time()),
+        "source": sanitize_webapp_secret_text(source, limit=120),
+        "business": business,
+    })
+    try:
+        if hasattr(capture_sink, "append"):
+            capture_sink.append(record)
+        else:
+            capture_sink(record)
+    except Exception:
+        # Capture is diagnostic/accounting plumbing and must never turn a
+        # confirmed game settlement into a failed business action.
+        return {}
+    return record
+
+
 __all__ = [
     "DEFAULT_MINIAPP_HTTP_TIMEOUT",
     "MINIAPP_DEFAULT_USER_AGENT",
+    "append_business_capture",
     "append_http_event",
     "build_miniapp_transport",
 ]

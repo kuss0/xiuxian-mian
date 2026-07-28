@@ -19,7 +19,7 @@ from ..state import (
 )
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
-from .miniapp_common import resolve_identity_id as _identity_id
+from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
 from .tree_miniapp import (
     extract_tree_miniapp_launch,
     normalize_tree_score_profile,
@@ -321,6 +321,31 @@ def _tree_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+def _record_tree_business_capture(capture_sink, result, *, source, now):
+    result = dict(result or {})
+    if not result.get("ok"):
+        return {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
+    items = rewards.get("items") if isinstance(rewards.get("items"), dict) else {}
+    gains = rewards.get("gains") if isinstance(rewards.get("gains"), dict) else {}
+    runs = data.get("runs") if isinstance(data.get("runs"), list) else []
+    settled_count = len(runs) or (1 if str(result.get("status") or "") == "settled" else 0)
+    if settled_count <= 0:
+        return {}
+    return append_business_capture(
+        capture_sink,
+        adapter_key="tree",
+        detail={
+            "settled_count": settled_count,
+            "gains": gains,
+            "items": items,
+        },
+        source=source,
+        created_at=now,
+    )
+
+
 def _quota_text(state, mode):
     state = state if isinstance(state, dict) else {}
     quota = state.get(mode) if isinstance(state.get(mode), dict) else {}
@@ -508,11 +533,13 @@ async def handle_tree_miniapp_entry(
             priority="low",
             limit=200,
         )
+        capture_sink = _tree_miniapp_capture_store(now)
+        capture_source = f"tree_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
         common_kwargs = {
             "token": launch.get("token"),
             "webview_url": launch.get("webview_url"),
-            "capture_sink": _tree_miniapp_capture_store(now),
-            "capture_source": f"tree_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+            "capture_sink": capture_sink,
+            "capture_source": capture_source,
         }
         if is_daily:
             result = await run_tree_miniapp_daily_production_flow(
@@ -528,6 +555,7 @@ async def handle_tree_miniapp_entry(
                 score_profile=dict(auth.get("score_profile") or {}),
                 **common_kwargs,
             )
+        _record_tree_business_capture(capture_sink, result, source=capture_source, now=now)
         result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
         result_phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
         _set_coordinator(
@@ -583,15 +611,18 @@ async def run_tree_miniapp_daily_direct(
 
     async with lock:
         _set_coordinator("running", auth=auth, now=now)
+        capture_sink = _tree_miniapp_capture_store(now)
+        capture_source = f"tree_public:{identity_id}:{auth['day_key']}"
         result = await run_tree_miniapp_daily_production_flow(
             identity_id,
             token=token,
             webview_url=webview_url,
             init_data=init_data,
-            capture_sink=_tree_miniapp_capture_store(now),
-            capture_source=f"tree_public:{identity_id}:{auth['day_key']}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
             score_profiles=auth["score_profiles"],
         )
+        _record_tree_business_capture(capture_sink, result, source=capture_source, now=now)
         result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
         phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
         if phase not in {"completed", "blocked", "unknown"}:

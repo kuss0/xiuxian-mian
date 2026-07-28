@@ -33,16 +33,17 @@ from .cave_treasure_miniapp import (
     run_cave_treasure_miniapp_production_flow,
 )
 from .trial_miniapp import build_trial_launch_args
-from .trial_runtime import _format_trial_summary, _trial_batch_materials, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
+from .trial_runtime import _format_trial_summary, _record_trial_business_capture, _trial_batch_materials, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
 from .tower_miniapp import build_tower_launch_args, format_tower_delta, run_tower_miniapp_production_flow
-from .miniapp_common import resolve_identity_id as _identity_id
+from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
     _fishing_reset_jitter_sec,
+    _record_fishing_business_capture,
     _remaining_miniapp_chain_rounds,
     _send_fishing_daily_completion_summary,
 )
@@ -1463,6 +1464,35 @@ def _capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+def _record_cave_treasure_business_capture(capture_sink, result, *, source, now):
+    result = dict(result or {})
+    if not result.get("ok"):
+        return {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    settled_count = _parse_int(data.get("settled_count"), 0)
+    if settled_count <= 0:
+        return {}
+    rows = data.get("results") if isinstance(data.get("results"), list) else []
+    found_main = sum(
+        1
+        for item in rows
+        if isinstance(item, dict) and bool(item.get("foundMain") or item.get("found_main"))
+    )
+    rewards, gains = _collect_materials(data)
+    return append_business_capture(
+        capture_sink,
+        adapter_key="cave_treasure",
+        detail={
+            "settled_count": settled_count,
+            "found_main": found_main,
+            "gains": gains,
+            "items": rewards,
+        },
+        source=source,
+        created_at=now,
+    )
+
+
 def _tower_capture_store(now):
     day_key = get_day_key(now)
     path = CAVE_TREASURE_MINIAPP_CAPTURE_DIR / f"tower-{day_key}.jsonl"
@@ -1945,6 +1975,8 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
             message = f"洞府寻宝身份读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
             return {"ok": False, "message": message, "extra": {}}
+        capture_sink = _capture_store(now)
+        capture_source = f"cave_public_treasure:{identity_id}"
         result = await run_cave_treasure_miniapp_production_flow(
             identity_id,
             token=token,
@@ -1952,9 +1984,10 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
             init_data=session.get("init_data") or "",
             player_id=session.get("player_id"),
             max_steps=CAVE_TREASURE_MANUAL_MAX_STEPS,
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_treasure:{identity_id}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        _record_cave_treasure_business_capture(capture_sink, result, source=capture_source, now=now)
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         state = data.get("state") if isinstance(data.get("state"), dict) else {}
         inventory_record = _record_cave_treasure_inventory_delta(identity_id, result, now=now)
@@ -2060,6 +2093,8 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             message = "洞府天机试炼入口已请求，但未返回可用试炼 URL"
             await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
             return {"ok": False, "message": message, "extra": {}}
+        capture_sink = _trial_miniapp_capture_store(now)
+        capture_source = f"cave_public_trial:{identity_id}"
         result = await run_trial_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
@@ -2067,9 +2102,10 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             init_data=dwelling_init_data,
             player_id=selected_player_id,
             max_rounds=99,
-            capture_sink=_trial_miniapp_capture_store(now),
-            capture_source=f"cave_public_trial:{identity_id}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        _record_trial_business_capture(capture_sink, result, source=capture_source, now=now)
         summary = _format_trial_summary(result)
         message = f"洞府天机试炼公共入口：{summary}"
         completed_ok = bool(result.get("ok")) or str(result.get("status") or "") == "daily_limit"
@@ -2313,6 +2349,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             max_rounds = _remaining_miniapp_chain_rounds(now)
             pond_choice = str(state.get("fishing_pond") or "")
             bait_choice = str(state.get("fishing_bait") or "")
+        capture_sink = _fishing_miniapp_capture_store(now)
+        capture_source = f"cave_public_fishing:{identity_id}"
         result = await run_fishing_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
@@ -2321,9 +2359,10 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             max_rounds=max_rounds,
             pond_choice=pond_choice,
             bait_choice=bait_choice,
-            capture_sink=_fishing_miniapp_capture_store(now),
-            capture_source=f"cave_public_fishing:{identity_id}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        _record_fishing_business_capture(capture_sink, result, source=capture_source, now=now)
         terminal_message = ""
         with use_identity(identity_id):
             public_only_bait_missing = bool(
@@ -2782,6 +2821,8 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             return {"ok": False, "message": "洞府观星台入口未返回可用 URL", "extra": {}}
         with use_identity(identity_id):
             star_choice = stargazer.get_stargazer_star_choice()
+        capture_sink = stargazer._stargazer_miniapp_capture_store(now)
+        capture_source = f"cave_public_stargazer:{identity_id}"
         result = await run_stargazer_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
@@ -2789,12 +2830,24 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             star_choice=star_choice,
             init_data=init_data,
             player_id=selected_player_id,
-            capture_sink=stargazer._stargazer_miniapp_capture_store(now),
-            capture_source=f"cave_public_stargazer:{identity_id}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        result = dict(result or {})
+        result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        action_counts = result_data.get("action_counts") if isinstance(result_data.get("action_counts"), dict) else {}
+        item_deltas = result_data.get("item_deltas") if isinstance(result_data.get("item_deltas"), dict) else {}
+        collect_count = _parse_int(action_counts.get("collect"), 0)
+        if result.get("ok") and collect_count > 0:
+            append_business_capture(
+                capture_sink,
+                adapter_key="stargazer",
+                detail={"collect_count": collect_count, "items": item_deltas},
+                source=capture_source,
+                created_at=now,
+            )
         with use_identity(identity_id):
             handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
-        result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
         return {
             "ok": bool(handled and result.get("ok")),
             "message": f"洞府观星台：{result.get('status') or ('完成' if handled else '未处理')}",
@@ -2989,14 +3042,17 @@ async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, ma
             priority="low",
             limit=180,
         )
+        capture_sink = _capture_store(now)
+        capture_source = f"cave_treasure_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
         result = await run_cave_treasure_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
             webview_url=launch.get("webview_url"),
             max_steps=CAVE_TREASURE_MANUAL_MAX_STEPS,
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_treasure_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        _record_cave_treasure_business_capture(capture_sink, result, source=capture_source, now=now)
         summary = _format_cave_treasure_summary(result)
         _record_cave_treasure_inventory_delta(
             identity_id,

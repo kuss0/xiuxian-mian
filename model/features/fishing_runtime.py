@@ -43,6 +43,7 @@ from .fishing_miniapp import (
     extract_fishing_miniapp_launch,
     run_fishing_miniapp_production_flow,
 )
+from .miniapp_common import append_business_capture
 from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas, start_storage_bag_gift_batch
 
 
@@ -1136,6 +1137,50 @@ def _fishing_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+def _record_fishing_business_capture(capture_sink, result, *, source, now):
+    result = dict(result or {})
+    if not result.get("ok"):
+        return {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
+    if settled_count <= 0:
+        return {}
+    catches = extract_fishing_miniapp_catches(data)
+    catch_rows = [
+        {
+            "fish": str(item.get("fish") or "").strip(),
+            "grade": str(item.get("grade") or "").strip(),
+            "weight": str(item.get("weight") or "").strip(),
+        }
+        for item in catches
+        if isinstance(item, dict) and str(item.get("fish") or "").strip()
+    ]
+    catch_rewards = [
+        reward
+        for item in catches
+        if isinstance(item, dict)
+        for reward in (item.get("rewards") or ())
+        if isinstance(reward, dict)
+    ]
+    standalone_rewards = [] if catches else _extract_miniapp_loose_rewards(data)
+    caught = len(catch_rows)
+    return append_business_capture(
+        capture_sink,
+        adapter_key="fishing",
+        detail={
+            "settled_count": settled_count,
+            "rods": settled_count,
+            "caught": caught,
+            "empty": max(0, settled_count - caught),
+            "catches": catch_rows,
+            "gains": _extract_miniapp_numeric_gains(data),
+            "items": _dedupe_miniapp_rewards(catch_rewards + standalone_rewards),
+        },
+        source=source,
+        created_at=now,
+    )
+
+
 async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_id=0):
     if not state.get("fishing_enabled"):
         return False
@@ -1213,6 +1258,8 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
             priority="low",
             limit=180,
         )
+        capture_sink = _fishing_miniapp_capture_store(now)
+        capture_source = f"fishing_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
         result = await run_fishing_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
@@ -1220,10 +1267,11 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
             max_rounds=max_rounds,
             pond_choice=str(state.get("fishing_pond") or ""),
             bait_choice=str(state.get("fishing_bait") or ""),
-            capture_sink=_fishing_miniapp_capture_store(now),
-            capture_source=f"fishing_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
         result = dict(result or {})
+        _record_fishing_business_capture(capture_sink, result, source=capture_source, now=now)
         summary = _apply_fishing_miniapp_result(result, now, result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0))
         await _send_fishing_miniapp_harvest_summary(result)
         status = str(result.get("status") or "").strip()

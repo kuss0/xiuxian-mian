@@ -17,6 +17,7 @@ from ..runtime import console_log, send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from ..webapp_core import MiniAppCaptureStore
+from .miniapp_common import append_business_capture
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_deltas, apply_storage_bag_item_text_delta
 from .stargazer_miniapp import extract_stargazer_miniapp_launch, run_stargazer_miniapp_production_flow
@@ -431,14 +432,29 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
                 priority="low",
                 limit=180,
             )
+        capture_sink = _stargazer_miniapp_capture_store(now)
+        capture_source = f"stargazer_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
         result = await run_stargazer_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
             webview_url=launch.get("webview_url"),
             star_choice=star_choice,
-            capture_sink=_stargazer_miniapp_capture_store(now),
-            capture_source=f"stargazer_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        result = dict(result or {})
+        result_data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+        action_counts = result_data.get("action_counts") if isinstance(result_data.get("action_counts"), dict) else {}
+        item_deltas = result_data.get("item_deltas") if isinstance(result_data.get("item_deltas"), dict) else {}
+        collect_count = int(action_counts.get("collect", 0) or 0)
+        if result.get("ok") and collect_count > 0:
+            append_business_capture(
+                capture_sink,
+                adapter_key="stargazer",
+                detail={"collect_count": collect_count, "items": item_deltas},
+                source=capture_source,
+                created_at=now,
+            )
         return await _finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
 
 

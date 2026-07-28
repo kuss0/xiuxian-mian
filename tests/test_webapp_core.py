@@ -626,6 +626,7 @@ class WebAppCoreTests(unittest.TestCase):
         detail = webapp_core.safe_miniapp_event_detail({
             "token": "fish_SECRET999",
             "initData": "query_id=abc&hash=VERY_SECRET",
+            "sessionId": "raw-session-secret",
             "url": "https://t.me/fanrenxiuxian_bot?startapp=fish_SECRET999",
             "phase": "waiting",
         })
@@ -634,8 +635,40 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("waiting", detail["phase"])
         self.assertEqual("t.me", detail["url"]["host"])
         self.assertTrue(detail["token"]["present"])
+        self.assertTrue(detail["sessionId"]["present"])
         self.assertNotIn("fish_SECRET999", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
+        self.assertNotIn("raw-session-secret", serialized)
+
+    def test_business_capture_keeps_only_settlement_whitelist(self):
+        capture = webapp_core.MiniAppCaptureStore()
+
+        record = miniapp_common.append_business_capture(
+            capture,
+            adapter_key="trial",
+            source="trial_runtime:1001:9 token=trial_SECRET999",
+            created_at=123.0,
+            detail={
+                "settled_count": 2,
+                "gains": {"天机残痕": 3},
+                "items": {"天机砂": 1},
+                "token": "trial_SECRET999",
+                "initData": "query_id=abc&hash=VERY_SECRET",
+                "sessionId": "raw-session-secret",
+                "response": {"raw": "must-not-persist"},
+            },
+        )
+        stored = capture.records[0]
+        serialized = json.dumps(stored, ensure_ascii=False)
+
+        self.assertEqual(record, stored)
+        self.assertEqual("business:trial", stored["step_key"])
+        self.assertEqual({"settled_count", "gains", "items"}, set(stored["business"]))
+        self.assertIn("天机砂", serialized)
+        self.assertNotIn("trial_SECRET999", serialized)
+        self.assertNotIn("VERY_SECRET", serialized)
+        self.assertNotIn("raw-session-secret", serialized)
+        self.assertNotIn("must-not-persist", serialized)
 
     def test_miniapp_api_url_rejects_unknown_host_and_path(self):
         adapter = fishing_miniapp.build_fishing_miniapp_adapter(api_base_url="https://evil.example")

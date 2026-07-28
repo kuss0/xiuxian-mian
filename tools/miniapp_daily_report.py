@@ -51,6 +51,19 @@ def _body(record: dict) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _business(record: dict) -> dict:
+    business = record.get("business") or {}
+    return business if isinstance(business, dict) else {}
+
+
+def _business_records(records, step_key: str):
+    return [
+        record
+        for record in records
+        if record.get("ok") and record.get("step_key") == step_key and _business(record)
+    ]
+
+
 def _int(value, default: int = 0) -> int:
     try:
         return int(float(str(value).replace(",", "")))
@@ -70,6 +83,13 @@ def _add_gain(counter: Counter, name: str, amount=0):
     value = _int(amount, 0)
     if name and value > 0:
         counter[name] += value
+
+
+def _add_gains(counter: Counter, gains):
+    if not isinstance(gains, dict):
+        return
+    for name, amount in gains.items():
+        _add_gain(counter, name, amount)
 
 
 def _add_loot(counter: Counter, items):
@@ -116,7 +136,27 @@ def summarize_fishing(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     rewards = Counter()
     gains = Counter()
     rods = caught = empty = 0
-    for record in _iter_records("fishing", day, capture_dir) or ():
+    records = list(_iter_records("fishing", day, capture_dir) or ())
+    business_records = _business_records(records, "business:fishing")
+    if business_records:
+        for record in business_records:
+            business = _business(record)
+            record_rods = _int(business.get("rods") or business.get("settled_count"), 0)
+            record_caught = _int(business.get("caught"), 0)
+            rods += record_rods
+            caught += record_caught
+            empty += _int(business.get("empty"), max(0, record_rods - record_caught))
+            catches = business.get("catches") or ()
+            if isinstance(catches, dict):
+                catches = [catches]
+            for item in catches:
+                if isinstance(item, dict):
+                    _add_item(fish, item.get("fish") or item.get("name") or "未知灵鱼", 1)
+            _add_gains(gains, business.get("gains"))
+            _add_loot(rewards, business.get("items"))
+        return {"rods": rods, "caught": caught, "empty": empty, "fish": fish, "rewards": rewards, "gains": gains}
+
+    for record in records:
         if record.get("step_key") != "result" or not record.get("ok"):
             continue
         result = _body(record).get("result") or {}
@@ -145,7 +185,17 @@ def summarize_trial(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     rewards = Counter()
     count = 0
     errors = 0
-    for record in _iter_records("trial", day, capture_dir) or ():
+    records = list(_iter_records("trial", day, capture_dir) or ())
+    business_records = _business_records(records, "business:trial")
+    if business_records:
+        for record in business_records:
+            business = _business(record)
+            count += _int(business.get("settled_count"), 0)
+            _add_gains(gains, business.get("gains"))
+            _add_loot(rewards, business.get("items"))
+        return {"count": count, "errors": errors, "gains": gains, "rewards": rewards}
+
+    for record in records:
         if record.get("step_key") != "finish":
             continue
         if not record.get("ok"):
@@ -171,27 +221,63 @@ def summarize_cave_treasure(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     rewards = Counter()
     count = 0
     found_main = 0
-    for record in _iter_records("cave_treasure", day, capture_dir) or ():
+    found_main_known = False
+    records = list(_iter_records("cave_treasure", day, capture_dir) or ())
+    business_records = _business_records(records, "business:cave_treasure")
+    if business_records:
+        found_main_known = all("found_main" in _business(record) for record in business_records)
+        for record in business_records:
+            business = _business(record)
+            count += _int(business.get("settled_count"), 0)
+            found_main += _int(business.get("found_main"), 0)
+            _add_gains(gains, business.get("gains"))
+            _add_loot(rewards, business.get("items"))
+        return {
+            "count": count,
+            "found_main": found_main,
+            "found_main_known": found_main_known,
+            "gains": gains,
+            "rewards": rewards,
+        }
+
+    for record in records:
         if record.get("step_key") != "action:settle" or not record.get("ok"):
             continue
         body = _body(record)
         result = body.get("huntResult") if isinstance(body.get("huntResult"), dict) else {}
         count += 1
-        if result.get("foundMain"):
-            found_main += 1
+        if "foundMain" in result:
+            found_main_known = True
+            if result.get("foundMain"):
+                found_main += 1
         _add_gain(gains, "洞府贡献", _first_int_by_keys(result, ("contribution", "contributionGain", "contribution_gain")))
         _add_gain(gains, "修为", _first_int_by_keys(result, ("cultivationGain", "xiuweiGain", "xiuwei_gain")))
         _add_gain(gains, "灵石", _first_int_by_keys(result, ("lingshiGain", "spiritStoneGain", "stoneGain", "stone_gain")))
         _add_gain(gains, "经验", _first_int_by_keys(result, ("expGain", "exp_gain", "experienceGain", "experience")))
         for key in ("loot", "rewards", "reward", "bonusLoot", "drops", "items", "materials", "item_deltas", "itemDeltas"):
             _add_loot(rewards, result.get(key))
-    return {"count": count, "found_main": found_main, "gains": gains, "rewards": rewards}
+    return {
+        "count": count,
+        "found_main": found_main,
+        "found_main_known": found_main_known,
+        "gains": gains,
+        "rewards": rewards,
+    }
 
 
 def summarize_stargazer(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     action_counts = Counter()
     rewards = Counter()
-    for record in _iter_records("stargazer", day, capture_dir) or ():
+    records = list(_iter_records("stargazer", day, capture_dir) or ())
+    business_records = _business_records(records, "business:stargazer")
+    if business_records:
+        for record in business_records:
+            business = _business(record)
+            action_counts["collect"] += _int(business.get("collect_count"), 0)
+            _add_loot(rewards, business.get("items"))
+        return {"actions": action_counts, "rewards": rewards}
+
+    for record in records:
         if not record.get("ok"):
             continue
         step = str(record.get("step_key") or "")
@@ -208,8 +294,18 @@ def summarize_tree(day: str, capture_dir: Path = CAPTURE_DIR) -> dict:
     runs = Counter()
     gains = Counter()
     rewards = Counter()
-    for record in _iter_records("tree", day, capture_dir) or ():
-        if record.get("step_key") != "run_submit" or not record.get("ok"):
+    records = list(_iter_records("tree", day, capture_dir) or ())
+    business_records = _business_records(records, "business:tree")
+    if business_records:
+        for record in business_records:
+            business = _business(record)
+            _add_gains(gains, business.get("gains"))
+            _add_loot(rewards, business.get("items"))
+        return {"runs": runs, "gains": gains, "rewards": rewards}
+
+    for record in records:
+        step_key = str(record.get("step_key") or "")
+        if not (step_key == "run_submit" or step_key.endswith(":run_submit")) or not record.get("ok"):
             continue
         body = _body(record)
         run = body.get("run") if isinstance(body.get("run"), dict) else {}
@@ -252,7 +348,9 @@ def build_report(day: str, capture_dir: Path = CAPTURE_DIR) -> str:
             parts.append("奖励:" + _format_counter(trial["rewards"]))
         lines.append("🧪 天机试炼：" + "｜".join(parts))
     if cave["count"]:
-        parts = [f"{cave['count']}局", f"主宝{cave['found_main']}"]
+        parts = [f"{cave['count']}局"]
+        if cave.get("found_main_known"):
+            parts.append(f"主宝{cave['found_main']}")
         if cave["gains"]:
             parts.append("收益:" + _format_gains(cave["gains"]))
         if cave["rewards"]:

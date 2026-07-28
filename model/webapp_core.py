@@ -138,6 +138,8 @@ SENSITIVE_MINIAPP_EVENT_KEYWORDS = (
     "tgwebappdata",
     "initdata",
     "init_data",
+    "sessionid",
+    "session_id",
     "query_id",
     "hash",
     "signature",

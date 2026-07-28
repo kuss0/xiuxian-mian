@@ -1471,6 +1471,7 @@ def run_tree_miniapp_game_lab_flow(
     submitted_score = _int_value(submit_result.data.get("score"), int(proof_summary.get("score") or 0))
     if server_verification and not server_verification.get("ok", True):
         submitted_score = 0
+    data["rewards"] = summarize_tree_rewards(submit_result.data)
     data["submit"] = {
         "score": submitted_score,
         "data_keys": sorted(str(key) for key in submit_result.data),

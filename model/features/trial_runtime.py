@@ -9,7 +9,7 @@ from ..state import get_current_identity_id, get_global_enabled, get_global_paus
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from .trial_miniapp import extract_trial_miniapp_launch, run_trial_miniapp_production_flow
-from .miniapp_common import resolve_identity_id as _identity_id
+from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
 
 
 TRIAL_MANUAL_AUTH_TTL_SEC = 10 * 60
@@ -223,6 +223,30 @@ def _trial_miniapp_capture_store(now):
     return MiniAppCaptureStore(path, keep_memory=False)
 
 
+def _record_trial_business_capture(capture_sink, result, *, source, now):
+    result = dict(result or {})
+    if not result.get("ok"):
+        return {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
+    if settled_count <= 0:
+        settled_count = 1 if str(result.get("status") or "") == "settled" else 0
+    if settled_count <= 0:
+        return {}
+    rewards, gains = _collect_trial_materials(data)
+    return append_business_capture(
+        capture_sink,
+        adapter_key="trial",
+        detail={
+            "settled_count": settled_count,
+            "gains": gains,
+            "items": rewards,
+        },
+        source=source,
+        created_at=now,
+    )
+
+
 def start_trial_miniapp_batch_run(identity_ids, *, now=None, timeout_sec=TRIAL_BATCH_TIMEOUT_SEC):
     now = float(now or time.time())
     ids = []
@@ -405,14 +429,17 @@ async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_fa
                 priority="low",
                 limit=180,
             )
+        capture_sink = _trial_miniapp_capture_store(now)
+        capture_source = f"trial_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
         result = await run_trial_miniapp_production_flow(
             identity_id,
             token=launch.get("token"),
             webview_url=launch.get("webview_url"),
             max_rounds=TRIAL_MANUAL_MAX_ROUNDS,
-            capture_sink=_trial_miniapp_capture_store(now),
-            capture_source=f"trial_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}",
+            capture_sink=capture_sink,
+            capture_source=capture_source,
         )
+        _record_trial_business_capture(capture_sink, result, source=capture_source, now=now)
         summary = _format_trial_summary(result)
         safe_summary = html.escape(summary, quote=False)
         if batch_id:
