@@ -823,10 +823,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertEqual("脉稳偏低", state_module.state["tree_pulse_last_error"])
                     status_text = tree.get_tree_status_text()
 
-                self.assertIn("当前玩法：云梦灵眼定脉", status_text)
-                self.assertIn("进度：72.50%", status_text)
-                self.assertIn("今日定脉：1/6", status_text)
-                self.assertIn("脉稳：62/100；浊息/紊乱：3/165", status_text)
+                self.assertIn("旧版群命令自动化：已归档", status_text)
+                self.assertIn("当前执行入口：MiniApp", status_text)
 
     def test_save_state_migrates_existing_runtime_table_before_upsert(self):
         with tempfile.TemporaryDirectory() as tmpdir:
