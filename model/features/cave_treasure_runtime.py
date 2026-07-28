@@ -2654,6 +2654,18 @@ def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now)
     }
 
 
+def _unbridged_cave_tianjige_observation(command, message):
+    """Keep an unowned panel observable without presenting it as synced state."""
+    raw_message = str(message or "").strip()
+    first_line = re.sub(r"\s+", " ", raw_message.splitlines()[0] if raw_message else "").strip()
+    return {
+        "command": str(command or "").strip(),
+        "message_digest": stable_payload_digest(raw_message),
+        "message_length": len(raw_message),
+        "first_line": first_line[:120],
+    }
+
+
 async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, command, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -2703,6 +2715,21 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
             await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
             return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
+        if normalized_command == ".我的灵兽":
+            observation = _unbridged_cave_tianjige_observation(normalized_command, message)
+            final_message = "洞府天机阁灵兽面板已读取，但本地尚无对应 reducer；仅观察，不更新放养状态"
+            await send_audit_log(
+                f"📖 {final_message}｜首行={observation['first_line'] or '-'}｜摘要={observation['message_digest']}",
+                scope="identity",
+                send_as_id=identity_id,
+                priority="normal",
+                limit=320,
+            )
+            return {
+                "ok": False,
+                "message": final_message,
+                "extra": {"command": normalized_command, "observation": observation},
+            }
         sync_result = _sync_cave_tianjige_read_only_message(
             identity_id,
             normalized_command,
