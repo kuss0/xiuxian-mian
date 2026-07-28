@@ -411,14 +411,14 @@
         + '<input type="checkbox" data-world-boss-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '>'
         + '<span>' + esc(item.label || item.identity_id) + '</span>'
         + '</label>'
-        + '<label class="miniapp-world-boss-skip"><span>少出手</span>'
+        + '<label class="miniapp-world-boss-skip"><span>额外少出手</span>'
         + '<input type="number" min="0" max="32" step="1" data-world-boss-window-skip="' + esc(item.identity_id) + '" value="' + esc(item.window_skip_count || 0) + '">'
         + '</label>'
         + '</div>';
     }).join('') : '<span class="miniapp-empty">暂无可用登录账户</span>';
     return ''
       + '<section class="miniapp-score-config" data-world-boss-auto="1">'
-      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行</span></div>'
+      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行｜固定预留尾窗 ' + esc(automation.world_boss_auto_finish_reserve_windows || 2) + '</span></div>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-enabled="1"' + (automation.world_boss_auto_enabled ? ' checked' : '') + '><span>自动参与</span></label>'
       + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'

@@ -34,6 +34,10 @@ from .world_boss_miniapp import (
 
 WORLD_BOSS_MINIAPP_HTTP_TIMEOUT = (5, 20)
 WORLD_BOSS_MINIAPP_CAPTURE_DIR = Path(MESSAGES_DIR) / "miniapp-captures"
+# The event can be killed by other players before the local 16-window timeline
+# ends.  Leave two tail windows unused so every account has time to submit its
+# own final settlement while preserving per-identity low-profile adjustments.
+WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS = 2
 
 
 def extract_world_boss_miniapp_launch(event, *, message_text=""):
@@ -142,9 +146,11 @@ async def run_world_boss_miniapp_event(
     def window_skip_for(identity_id):
         raw_value = raw_window_skips.get(identity_id, raw_window_skips.get(str(identity_id), 0))
         try:
-            return max(0, min(32, int(raw_value or 0)))
+            identity_extra = max(0, min(32, int(raw_value or 0)))
         except (TypeError, ValueError, OverflowError):
-            return 0
+            identity_extra = 0
+        total = min(32, WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS + identity_extra)
+        return total, identity_extra
 
     async def join_one(raw_identity_id):
         identity_id = int(raw_identity_id or 0)
@@ -193,6 +199,7 @@ async def run_world_boss_miniapp_event(
             }
             await _emit_progress(progress_callback, join_result)
             return None, join_result
+        total_window_skip, identity_extra_window_skip = window_skip_for(identity_id)
         join_result = {
             "identity_id": identity_id,
             "phase": "join",
@@ -207,7 +214,8 @@ async def run_world_boss_miniapp_event(
                 receipt,
                 identity_transport,
                 session,
-                window_skip_for(identity_id),
+                total_window_skip,
+                identity_extra_window_skip,
             ), join_result
         if session is not None:
             session.close()
@@ -215,7 +223,15 @@ async def run_world_boss_miniapp_event(
         return None, join_result
 
     async def battle_one(context, priority_index):
-        identity_id, init_data, receipt, identity_transport, session, window_skip_count = context
+        (
+            identity_id,
+            init_data,
+            receipt,
+            identity_transport,
+            session,
+            window_skip_count,
+            identity_extra_window_skip,
+        ) = context
         launch_delay_sec = float(priority_index) * battle_priority_gap_sec
         if launch_delay_sec > 0:
             await asyncio.sleep(launch_delay_sec)
@@ -244,6 +260,8 @@ async def run_world_boss_miniapp_event(
                 battle_summary = {}
             else:
                 battle_summary = dict(battle_summary)
+            battle_summary["finish_reserve_window_count"] = WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
+            battle_summary["identity_extra_window_skip_count"] = identity_extra_window_skip
             battle_summary["launch_priority_index"] = int(priority_index)
             battle_summary["launch_delay_ms"] = int(round(launch_delay_sec * 1000))
             battle_result = {
@@ -295,6 +313,7 @@ async def run_world_boss_miniapp_event(
 
 
 __all__ = [
+    "WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS",
     "extract_world_boss_miniapp_launch",
     "request_world_boss_miniapp_init_data",
     "run_world_boss_miniapp_event",

@@ -114,6 +114,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_yuanying,
 )
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
+from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_runtime import (
     authorize_tree_miniapp_manual_run,
@@ -421,6 +422,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "world_boss_auto_account_limit": 1,
     "world_boss_auto_account_gap_sec": 3,
     "world_boss_auto_excluded_identity_ids": [],
+    "world_boss_auto_finish_reserve_windows": WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS,
     "world_boss_auto_window_skip_by_identity": {},
     "tree_daily_enabled_identity_ids": [],
 }
@@ -521,6 +523,7 @@ def normalize_miniapp_auto_config(config=None):
     except (TypeError, ValueError, OverflowError):
         result["world_boss_auto_account_gap_sec"] = 3
     result["world_boss_auto_account_gap_sec"] = max(1, min(15, result["world_boss_auto_account_gap_sec"]))
+    result["world_boss_auto_finish_reserve_windows"] = WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
     excluded_ids = result.get("world_boss_auto_excluded_identity_ids") or []
     if not isinstance(excluded_ids, (list, tuple, set)):
         excluded_ids = []
@@ -724,6 +727,10 @@ def get_miniapp_auto_config_snapshot(now=None):
             "account_id": int(get_identity_account(identity_id) or 0),
             "auto_enabled": int(identity_id) not in excluded_world_boss_ids,
             "window_skip_count": int(world_boss_window_skips.get(str(identity_id), 0) or 0),
+            "total_window_skip_count": (
+                WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
+                + int(world_boss_window_skips.get(str(identity_id), 0) or 0)
+            ),
         }
         for identity_id in world_boss_candidate_ids
     ]

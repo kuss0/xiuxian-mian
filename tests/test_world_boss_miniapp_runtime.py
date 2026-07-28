@@ -75,7 +75,7 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if item["phase"] == "battle"
         ))
 
-    async def test_per_identity_window_skip_is_forwarded_only_to_selected_identity(self):
+    async def test_finish_reserve_and_per_identity_extra_skip_are_combined(self):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
         )
@@ -115,7 +115,16 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual({11: 0, 22: 2}, received)
+        self.assertEqual({11: 2, 22: 4}, received)
+        summaries = {
+            item["identity_id"]: item["summary"]
+            for item in result["results"]
+            if item["phase"] == "battle"
+        }
+        self.assertEqual(2, summaries[11]["finish_reserve_window_count"])
+        self.assertEqual(0, summaries[11]["identity_extra_window_skip_count"])
+        self.assertEqual(2, summaries[22]["finish_reserve_window_count"])
+        self.assertEqual(2, summaries[22]["identity_extra_window_skip_count"])
 
     async def test_parallel_battles_share_one_terminal_stop_event(self):
         event = SimpleNamespace(

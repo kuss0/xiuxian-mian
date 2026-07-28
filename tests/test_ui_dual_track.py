@@ -141,6 +141,8 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "诊断" in script
     assert "data-world-boss-window-skip" in script
     assert "window_skip_by_identity" in script
+    assert "额外少出手" in script
+    assert "world_boss_auto_finish_reserve_windows" in script
     assert 'data-cave-public-action="tianti_status"' in script
     assert script.count('data-cave-public-action="yuanying"') == 1
     assert "flow_replacement_uncatalogued" in script

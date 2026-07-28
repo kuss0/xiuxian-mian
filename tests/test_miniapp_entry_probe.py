@@ -893,6 +893,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         initial = ui.get_miniapp_status_snapshot()["automation"]
         self.assertFalse(initial["world_boss_auto_enabled"])
         self.assertEqual(1, initial["world_boss_auto_account_limit"])
+        self.assertEqual(2, initial["world_boss_auto_finish_reserve_windows"])
 
         with patch.object(ui, "save_state", return_value=True) as save_mock:
             ok, message = await ui.ui_set_world_boss_miniapp_config({
@@ -911,6 +912,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, automation["world_boss_auto_account_gap_sec"])
         self.assertEqual([301299112, 8659059191], automation["world_boss_auto_excluded_identity_ids"])
         self.assertEqual({"301299112": 2}, automation["world_boss_auto_window_skip_by_identity"])
+        self.assertEqual(2, automation["world_boss_auto_finish_reserve_windows"])
         self.assertIn("少出手身份 1 个", message)
         save_mock.assert_called_once()
 

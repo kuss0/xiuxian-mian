@@ -37,7 +37,11 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, parse_wait_time
-from .world_boss_miniapp_runtime import extract_world_boss_miniapp_launch, run_world_boss_miniapp_event
+from .world_boss_miniapp_runtime import (
+    WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS,
+    extract_world_boss_miniapp_launch,
+    run_world_boss_miniapp_event,
+)
 
 
 WORLD_BOSS_MODULE_NAME = "真仙试锋"
@@ -1585,7 +1589,13 @@ async def _run_world_boss_miniapp_automation(
             if rejected:
                 detail += f" 窗口拒绝{rejected}"
             skipped = _coerce_int(summary.get("window_skip_count"), 0)
-            if skipped:
+            finish_reserve = _coerce_int(summary.get("finish_reserve_window_count"), 0)
+            identity_extra = _coerce_int(summary.get("identity_extra_window_skip_count"), 0)
+            if finish_reserve:
+                detail += f" 结算预留{finish_reserve}"
+            if identity_extra:
+                detail += f" 额外少出手{identity_extra}"
+            elif skipped and not finish_reserve:
                 detail += f" 主动少出手{skipped}"
         detail_parts.append(detail)
     details = "、".join(detail_parts) or "无明细"
@@ -1671,6 +1681,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
             message = (
                 f"🗡 真仙试锋小程序（MiniApp）自动参与已启动：{'、'.join(_identity_label(identity_id) for identity_id in auto_identity_ids)}"
                 f"\n{len(auto_identity_ids)} 个登录账户并行入场并各自运行战斗时间线；单账户内部请求保持串行。"
+                f"统一预留尾部 {WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS} 个窗口用于提前结算。"
             ) if started else "🗡 真仙试锋 MiniApp 已有事件任务运行，本次广播仅去重记录。"
         elif auto_config["enabled"] and not launch:
             run_state["miniapp_auto_status"] = "entry_missing"
