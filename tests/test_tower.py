@@ -9,6 +9,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import runtime
 from model import state as state_module
+from model.features import passive_inbox
 from model.features import tower
 from model.timing import get_day_key
 
@@ -121,3 +122,19 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
         with state_module.use_identity(identity_id):
             self.assertNotIn(5001, state_module.state["pending_tasks"])
+
+    async def test_passive_legacy_tower_card_marks_day_complete_without_send(self):
+        identity_id = 8659059305
+        now = 1_700_000_400.0
+        self._prepare_identity(identity_id)
+        with state_module.use_identity(identity_id), \
+                patch.object(tower, "save_state"):
+            changed = passive_inbox._apply_tower_passive(
+                "【琉璃问心塔】\n本次共闯过 21 层。",
+                now,
+                "tower",
+            )
+
+            self.assertTrue(changed)
+            self.assertEqual(get_day_key(now), state_module.state["last_tower_day"])
+            self.assertGreater(state_module.state["next_tower_time"], now)

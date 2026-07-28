@@ -34,6 +34,7 @@ TOWER_MINIAPP_MAX_FAILURE_BACKOFF_SEC = 4 * 60 * 60
 TOWER_MINIAPP_ENTRY_RETRY_SEC = 60 * 60
 TOWER_MINIAPP_MIN_GAP_SEC = 5
 TOWER_MINIAPP_UPSTREAM_CIRCUIT_SEC = 10 * 60
+TOWER_DONE_HINTS = ("已经闯过", "已闯塔", "已在塔中", "你今日已挑战失败，道心受挫。")
 
 _TOWER_TASKS = {}
 _TOWER_RUN_LOCK = None
@@ -115,6 +116,11 @@ def _mark_done_today(now):
     next_ts = _schedule_next_day(now)
     save_state()
     return next_ts
+
+
+def _mark_tower_done_today(now):
+    """Compatibility reducer for observed command-era tower replies."""
+    return _mark_done_today(now)
 
 
 def _set_failure_retry(now, *, entry_missing=False):
