@@ -65,6 +65,7 @@ TREE_MINIAPP_FLY_MAX_BEAM_WIDTH = 640
 TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS = 120000
 TREE_MINIAPP_FLY_MAX_PLAN_FRAMES = 7600
 TREE_MINIAPP_FLY_MIN_VERIFIED_SCORE_RATIO = 0.8
+TREE_MINIAPP_JUMP_MIN_VERIFIED_SCORE_RATIO = 0.8
 TREE_MINIAPP_JUMP_START = {"x": 116.0, "y": 246.0, "r": 34.0}
 TREE_MINIAPP_FLY_HIT_POLYGON = (
     (-24.0, 2.0), (-18.0, -8.0), (-7.0, -12.0), (8.0, -12.0), (20.0, -8.0),
@@ -258,13 +259,25 @@ def _tree_server_verification(data):
 def _tree_fly_verification_mismatch(client_score, server_score, verification):
     """Stop spending fly quota when server replay diverges materially."""
 
+    return _tree_verification_mismatch("fly", client_score, server_score, verification)
+
+
+def _tree_verification_mismatch(mode, client_score, server_score, verification):
+    """Stop spending one mode's quota when server replay diverges materially."""
+
     client_score = _int_value(client_score, 0)
     server_score = _int_value(server_score, 0)
     if client_score <= 0 or server_score <= 0:
         return False
     if not isinstance(verification, dict) or not verification:
         return False
-    return server_score < client_score * TREE_MINIAPP_FLY_MIN_VERIFIED_SCORE_RATIO
+    ratio = {
+        "jump": TREE_MINIAPP_JUMP_MIN_VERIFIED_SCORE_RATIO,
+        "fly": TREE_MINIAPP_FLY_MIN_VERIFIED_SCORE_RATIO,
+    }.get(str(mode or "").strip().lower())
+    if ratio is None:
+        return False
+    return server_score < client_score * ratio
 
 
 def _float_value(value, default=0.0):
@@ -1092,6 +1105,7 @@ def run_tree_miniapp_daily_lab_flow(
         mode: tree_miniapp_ranking_target(start_result.data, mode, profiles.get(mode))
         for mode in ("jump", "fly")
     }
+    verification_mismatch_modes = []
 
     for mode in ("jump", "fly"):
         try:
@@ -1184,6 +1198,12 @@ def run_tree_miniapp_daily_lab_flow(
             if server_verification and not server_verification.get("ok", True):
                 submitted_score = 0
             client_score = _int_value(proof.get("clientScore"), score)
+            run_verification_mismatch = _tree_verification_mismatch(
+                mode,
+                client_score,
+                submitted_score,
+                server_verification,
+            )
             reward_summary = summarize_tree_rewards(submit_result.data)
             _merge_tree_reward_counts(rewards["items"], reward_summary.get("items"))
             _merge_tree_reward_counts(rewards["gains"], reward_summary.get("gains"))
@@ -1198,6 +1218,7 @@ def run_tree_miniapp_daily_lab_flow(
                 "quota_before": quota_before,
                 "rewards": reward_summary,
                 "server_verification": server_verification,
+                "verification_mismatch": run_verification_mismatch,
             })
 
             next_state = _authoritative_tree_state(submit_result.data)
@@ -1248,30 +1269,32 @@ def run_tree_miniapp_daily_lab_flow(
                     events=events,
                     error=error,
                 )
-            if mode == "fly" and _tree_fly_verification_mismatch(
-                client_score,
-                submitted_score,
-                server_verification,
-            ):
+            if run_verification_mismatch:
                 error = (
-                    "fly server verification mismatch; "
+                    f"{mode} server verification mismatch; "
                     f"client={client_score} server={submitted_score}; "
-                    "stop remaining daily attempts"
+                    f"stop remaining {mode} attempts"
                 )
                 errors.append(error)
-                return _flow_result(
-                    False,
-                    "verification_mismatch",
-                    data=_daily_tree_data(
-                        phase="blocked",
-                        state=state,
-                        runs=runs,
-                        rewards=rewards,
-                        errors=errors,
-                    ),
-                    events=events,
-                    error=error,
-                )
+                verification_mismatch_modes.append(mode)
+                break
+
+    if verification_mismatch_modes:
+        modes = ",".join(verification_mismatch_modes)
+        error = f"server verification mismatch in {modes}; affected modes stopped"
+        return _flow_result(
+            False,
+            "verification_mismatch",
+            data=_daily_tree_data(
+                phase="blocked",
+                state=state,
+                runs=runs,
+                rewards=rewards,
+                errors=errors,
+            ),
+            events=events,
+            error=error,
+        )
 
     complete = all(
         (state.get("quota_known") or {}).get(mode)
@@ -1610,6 +1633,7 @@ __all__ = [
     "TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS",
     "TREE_MINIAPP_FLY_MAX_PLAN_FRAMES",
     "TREE_MINIAPP_FLY_MIN_VERIFIED_SCORE_RATIO",
+    "TREE_MINIAPP_JUMP_MIN_VERIFIED_SCORE_RATIO",
     "TREE_MINIAPP_GAME_KEY",
     "TREE_MINIAPP_MAX_TARGET_SCORE",
     "TREE_MINIAPP_MIN_TARGET_SCORE",

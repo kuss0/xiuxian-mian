@@ -100,6 +100,73 @@ class TreeRuntimeSummaryTests(unittest.TestCase):
         self.assertIn("服务校验 ok=0,hit=1,score=0,durationMs=1234", summary)
         self.assertIn("stop remaining daily attempts", summary)
 
+    def test_tree_summary_reports_nonzero_server_verification_mismatch(self):
+        summary = tree_runtime._format_tree_summary({
+            "ok": False,
+            "status": "verification_mismatch",
+            "error": "server verification mismatch in jump; affected modes stopped",
+            "data": {
+                "phase": "blocked",
+                "quotas": {
+                    "jump": {"used": 1, "limit": 3, "remaining": 2},
+                    "fly": {"used": 1, "limit": 1, "remaining": 0},
+                },
+                "runs": [
+                    {
+                        "mode": "jump",
+                        "client_score": 75,
+                        "score": 45,
+                        "verification_mismatch": True,
+                        "server_verification": {"ok": True, "score": 45},
+                    },
+                    {
+                        "mode": "fly",
+                        "client_score": 10,
+                        "score": 10,
+                        "verification_mismatch": False,
+                    },
+                ],
+            },
+        })
+
+        self.assertIn("服务验轨偏差 跳 client=75/server=45，已停止对应模式", summary)
+
+    def test_tree_partial_verified_runs_still_record_business_rewards(self):
+        with patch.object(tree_runtime, "append_business_capture", return_value={"ok": True}) as capture:
+            result = tree_runtime._record_tree_business_capture(
+                object(),
+                {
+                    "ok": False,
+                    "status": "verification_mismatch",
+                    "data": {
+                        "runs": [{"mode": "jump", "score": 45}],
+                        "rewards": {
+                            "items": {"灵木": 1},
+                            "gains": {"贡献": 3},
+                        },
+                    },
+                },
+                source="tree-test",
+                now=123.0,
+            )
+
+        self.assertEqual({"ok": True}, result)
+        self.assertEqual(1, capture.call_args.kwargs["detail"]["settled_count"])
+        self.assertEqual({"灵木": 1}, capture.call_args.kwargs["detail"]["items"])
+        self.assertEqual({"贡献": 3}, capture.call_args.kwargs["detail"]["gains"])
+
+    def test_tree_failed_run_without_confirmed_submit_does_not_record_business_capture(self):
+        with patch.object(tree_runtime, "append_business_capture") as capture:
+            result = tree_runtime._record_tree_business_capture(
+                object(),
+                {"ok": False, "status": "result_unknown", "data": {"runs": []}},
+                source="tree-test",
+                now=123.0,
+            )
+
+        self.assertEqual({}, result)
+        capture.assert_not_called()
+
 
 class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

@@ -324,8 +324,6 @@ def _tree_miniapp_capture_store(now):
 
 def _record_tree_business_capture(capture_sink, result, *, source, now):
     result = dict(result or {})
-    if not result.get("ok"):
-        return {}
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
     items = rewards.get("items") if isinstance(rewards.get("items"), dict) else {}
@@ -384,6 +382,19 @@ def _format_tree_summary(result):
                 parts.append("跳分 " + "/".join(jump_scores))
             if fly_scores:
                 parts.append("飞分 " + "/".join(fly_scores))
+            verification_mismatches = [
+                item
+                for item in runs
+                if bool(item.get("verification_mismatch"))
+            ]
+            if verification_mismatches:
+                mismatch_parts = []
+                for item in verification_mismatches:
+                    mode_label = "跳" if item.get("mode") == "jump" else "飞"
+                    mismatch_parts.append(
+                        f"{mode_label} client={int(item.get('client_score') or 0)}/server={int(item.get('score') or 0)}"
+                    )
+                parts.append("服务验轨偏差 " + "、".join(mismatch_parts) + "，已停止对应模式")
             failed_verification = next(
                 (
                     item.get("server_verification")
