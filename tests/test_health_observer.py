@@ -582,6 +582,42 @@ class HealthObserverTests(unittest.TestCase):
         self.assertNotIn("service_not_running", codes)
         self.assertNotIn("listener_heartbeat_stale", codes)
 
+    def test_health_payload_ignores_stopped_listener_heartbeat_when_sidecar_is_not_observed(self):
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service", "xiuxian-safety-watchdog.service"),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-29 03:20:00",
+            "status": "ok",
+            "services": {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-safety-watchdog.service": {"ActiveState": "active", "SubState": "running"},
+            },
+            "listener": {
+                "available": True,
+                "status": "stopped",
+                "age_sec": 999999,
+                "path": "/tmp/listener_heartbeat.json",
+            },
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {"message_state": {}, "db_state": {}, "alerts": []},
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        codes = {item["code"] for item in payload["risk_reasons"]}
+        self.assertNotIn("listener_heartbeat_stale", codes)
+        self.assertNotIn("listener_heartbeat_missing", codes)
+
     def test_health_payload_uses_fishing_business_density_thresholds(self):
         cfg = health_observer.ObserverConfig(
             project_root=Path("/opt/xiuxian-main"),

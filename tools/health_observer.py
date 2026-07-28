@@ -1786,7 +1786,11 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
                 )
 
     listener = snapshot.get("listener") if isinstance(snapshot.get("listener"), dict) else {}
-    listener_expected = "xiuxian-listener.service" in services or bool(listener.get("available"))
+    listener_status = str(listener.get("status") or "").strip().lower()
+    listener_expected = "xiuxian-listener.service" in services or (
+        bool(listener.get("available"))
+        and listener_status not in {"stopped", "inactive", "disabled"}
+    )
     if listener_expected:
         listener_service = services.get("xiuxian-listener.service") if isinstance(services.get("xiuxian-listener.service"), dict) else {}
         listener_running = listener_service.get("ActiveState") == "active" and listener_service.get("SubState") == "running"
