@@ -434,6 +434,29 @@ def _schedule_panel_wait(now, wait_sec):
     return state["next_small_world_time"]
 
 
+def _reconcile_cached_prayer_deadline(now):
+    """Shorten a stale timer from an authoritative cached prayer countdown."""
+    if _phase() != "idle":
+        return False
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot.get("has_wait"):
+        return False
+    try:
+        updated_at = float(snapshot.get("updated_at", 0) or 0)
+        wait_sec = int(snapshot.get("wait_sec", 0) or 0)
+        current_next = float(state.get("next_small_world_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if updated_at <= 0 or wait_sec <= 0 or current_next <= 0:
+        return False
+    prayer_due_at = float(updated_at + wait_sec + CD_BUFFER_SEC)
+    if current_next <= prayer_due_at:
+        return False
+    state["next_small_world_time"] = prayer_due_at
+    mark_dirty()
+    return True
+
+
 def _schedule_god_followup(now):
     cooldown_until = float(now + SMALL_WORLD_GOD_FOLLOWUP_SEC)
     state["small_world_god_cooldown_until"] = cooldown_until
@@ -2395,6 +2418,9 @@ async def run_small_world_scheduler(now):
 async def _run_small_world_scheduler(now):
     if not state.get("small_world_enabled"):
         return
+
+    if _reconcile_cached_prayer_deadline(now):
+        save_state()
 
     barrier_msg_id = int(state.get("small_world_barrier_msg_id", 0) or 0)
     barrier_deadline = float(state.get("small_world_barrier_due_at", 0) or 0)

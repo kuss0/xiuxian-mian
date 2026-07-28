@@ -97,6 +97,30 @@ class _StateIsolationMixin:
         super().tearDown()
 
 
+class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
+    def test_cached_prayer_deadline_shortens_stale_six_hour_timer(self):
+        now = 1_700_000_000.0
+        wait_sec = 4 * 3600
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["small_world_phase"] = "idle"
+            state_module.state["next_small_world_time"] = now + 6 * 3600
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_wait": True,
+                "wait_sec": wait_sec,
+                "updated_at": now,
+            }
+            with patch.object(small_world, "mark_dirty") as dirty_mock:
+                changed = small_world._reconcile_cached_prayer_deadline(now)
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                now + wait_sec + small_world.CD_BUFFER_SEC,
+                state_module.state["next_small_world_time"],
+            )
+            dirty_mock.assert_called_once()
+
+
 class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_parse_latest_temple_panel_fields(self):
         panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)

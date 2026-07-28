@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
-from ..config import CMD_TIANTI_STATUS, STATE_DIR
+from ..config import CD_BUFFER_SEC, CMD_TIANTI_STATUS, STATE_DIR
 from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
@@ -1342,6 +1342,40 @@ def _cave_small_world_harvest_due(now):
     return float(state.get("small_world_next_public_harvest_at", 0) or 0) <= float(now or time.time())
 
 
+def _cave_small_world_prayer_due_at(small_world, now):
+    small_world = small_world if isinstance(small_world, dict) else {}
+    if small_world.get("has_prayer"):
+        return float(now)
+    try:
+        remaining = int(small_world.get("prayer_remaining_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        remaining = 0
+    if remaining <= 0:
+        return 0.0
+    return float(now + remaining + CD_BUFFER_SEC)
+
+
+def _cave_small_world_next_check_at(small_world, now, *, default_delay=CAVE_SMALL_WORLD_CYCLE_SEC):
+    prayer_due_at = _cave_small_world_prayer_due_at(small_world, now)
+    if prayer_due_at > 0:
+        return prayer_due_at
+    return float(now + default_delay)
+
+
+def _preserve_small_world_timer_after_harvest(existing_next_time, small_world, now):
+    """A harvest-only MiniApp pass must not postpone the prayer state machine."""
+    try:
+        existing_next_time = float(existing_next_time or 0)
+    except (TypeError, ValueError):
+        existing_next_time = 0.0
+    prayer_due_at = _cave_small_world_prayer_due_at(small_world, now)
+    if existing_next_time <= 0:
+        return prayer_due_at
+    if prayer_due_at <= 0:
+        return existing_next_time
+    return min(existing_next_time, prayer_due_at)
+
+
 def _plan_cave_public_small_world_action(overview, *, now=None):
     now = float(now or time.time())
     small_world = overview.get("small_world") if isinstance(overview, dict) and isinstance(overview.get("small_world"), dict) else {}
@@ -1758,6 +1792,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
         return {"ok": False, "message": error, "extra": {}}
     with use_identity(identity_id):
         next_time = float(state.get("next_small_world_time", 0) or 0)
+        existing_next_time = next_time
         next_harvest_at = float(state.get("small_world_next_public_harvest_at", 0) or 0)
         harvest_due = _cave_small_world_harvest_due(now)
         if harvest_only and not state.get("small_world_harvest_enabled"):
@@ -1873,7 +1908,7 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             elif action:
                 state["small_world_refresh_count"] = 0
                 state["small_world_phase"] = "idle"
-                state["next_small_world_time"] = now + CAVE_SMALL_WORLD_CYCLE_SEC
+                state["next_small_world_time"] = _cave_small_world_next_check_at(small_world, now)
                 if action in {"miracle_sermon", "miracle_relief"}:
                     state["small_world_god_cooldown_until"] = now + CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC
                 state["small_world_last_error"] = ""
@@ -1911,13 +1946,19 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 else:
                     state["small_world_refresh_count"] = 0
                     state["small_world_phase"] = "idle"
-                    state["next_small_world_time"] = now + CAVE_SMALL_WORLD_CYCLE_SEC
+                    state["next_small_world_time"] = _cave_small_world_next_check_at(small_world, now)
                     state["small_world_last_error"] = str(plan.get("reason") or "")
                     refresh_note = plan.get("reason") or "无需动作，6 小时后再查"
                 faith = small_world.get("faith", 0)
                 stability = small_world.get("stability", 0)
                 prayer = small_world.get("prayer_title") or "无祈愿"
                 message = f"洞府小世界已检查：信仰 {faith}｜稳定 {stability}｜{prayer}｜{refresh_note}"
+            if harvest_only:
+                state["next_small_world_time"] = _preserve_small_world_timer_after_harvest(
+                    existing_next_time,
+                    small_world,
+                    now,
+                )
             save_state()
         await send_audit_log(
             f"🌏 {message}",

@@ -2358,6 +2358,60 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["small_world_next_public_harvest_at"],
             )
 
+    async def test_cave_public_harvest_preserves_earlier_prayer_timer(self):
+        now = 1_700_000_001.0
+        existing_next_time = now + 5 * 3600
+        prayer_wait_sec = 4 * 3600
+        flow_result = {
+            "ok": True,
+            "status": "acted",
+            "data": {
+                "action": "collect",
+                "plan": {"action": "collect", "harvest_due": True},
+                "action_result": {"rawMessage": "收割成功，获得 800 香火。"},
+                "overview": {
+                    "small_world": {
+                        "available": True,
+                        "has_world": True,
+                        "faith": 96,
+                        "stability": 100,
+                        "pending_incense": 0,
+                        "incense_stock": 1800,
+                        "has_prayer": False,
+                        "prayer_remaining_seconds": prayer_wait_sec,
+                    },
+                },
+            },
+        }
+        with state_module.use_identity(1001):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["next_small_world_time"] = existing_next_time
+            state_module.state["small_world_next_public_harvest_at"] = now - 1
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value={
+                    "ok": True,
+                    "init_data": "dwelling_init_data",
+                    "player_id": 1001,
+                    "result": {"ok": True},
+                })), \
+                patch.object(cave_treasure_runtime, "run_cave_small_world_production_flow", new=AsyncMock(return_value=flow_result)), \
+                patch.object(cave_treasure_runtime, "save_state"), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_small_world_sync(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+                harvest_only=True,
+            )
+
+        self.assertTrue(result["ok"])
+        with state_module.use_identity(1001):
+            self.assertEqual(
+                now + prayer_wait_sec + cave_treasure_runtime.CD_BUFFER_SEC,
+                state_module.state["next_small_world_time"],
+            )
+
     async def test_cave_public_small_world_uses_shared_three_hour_god_cooldown(self):
         now = 1_700_000_001.0
         flow_result = {
