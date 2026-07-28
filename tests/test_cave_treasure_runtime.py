@@ -1720,6 +1720,40 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
         self.assertEqual(160, state_module.state["concubine_affinity"])
 
+    async def test_public_tianjige_beast_panel_is_observation_only_until_reducer_exists(self):
+        now = 1_700_000_500.0
+        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        raw_message = (
+            "@local_user 的灵兽伙伴们：\n\n"
+            "- 啼魂兽 (休息中)\n"
+            "  - 品阶: 1阶, 等级: 7\n"
+            "  - 战力: 29\n"
+            "- 噬金虫 (巡边中)\n"
+            "  - 品阶: 2阶, 等级: 39\n"
+            "  - 战力: 491"
+        )
+        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        audit_mock = AsyncMock()
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=audit_mock):
+            response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                ".我的灵兽",
+                now=now,
+            )
+
+        self.assertFalse(response["ok"])
+        self.assertIn("仅观察，不更新放养状态", response["message"])
+        self.assertEqual(".我的灵兽", flow_mock.await_args.kwargs["command"])
+        observation = response["extra"]["observation"]
+        self.assertEqual("@local_user 的灵兽伙伴们：", observation["first_line"])
+        self.assertNotIn("raw_message", response["extra"])
+        self.assertNotIn("SECRET", json.dumps(response, ensure_ascii=False))
+        self.assertIn("本地尚无对应 reducer", audit_mock.await_args.args[0])
+
     async def test_deep_seclusion_action_flow_disables_http_retries(self):
         http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已结算"}})
         with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
