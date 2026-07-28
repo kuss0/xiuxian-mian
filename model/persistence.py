@@ -145,10 +145,19 @@ SQLITE_JOURNAL_MODE = os.environ.get("XIUXIAN_SQLITE_JOURNAL_MODE", "WAL").strip
 
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
+LIVE_GUARD_PREVIOUS_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.previous.db")
 LIVE_GUARD_MANIFEST_FILE = os.path.join(LIVE_GUARD_DIR, "manifest.json")
+try:
+    _live_guard_refresh_sec = float(
+        os.environ.get("XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC")
+        or os.environ.get("XIUXIAN_LIVE_GUARD_REFRESH_SEC")
+        or 6 * 3600
+    )
+except (TypeError, ValueError, OverflowError):
+    _live_guard_refresh_sec = 6 * 3600
 LIVE_GUARD_REFRESH_SEC = max(
     300.0,
-    float(os.environ.get("XIUXIAN_LIVE_GUARD_REFRESH_SEC", 6 * 3600) or 6 * 3600),
+    _live_guard_refresh_sec,
 )
 
 IDENTITY_PROFILE_PERSISTED_COLUMNS = (
@@ -2611,40 +2620,122 @@ def _roster_looks_suspicious(roster):
     return len(roster) <= 2
 
 
-def _write_live_guard_backup(conn):
+def _read_live_guard_manifest():
+    try:
+        with open(LIVE_GUARD_MANIFEST_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _remove_sqlite_artifacts(db_file):
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.remove(str(db_file) + suffix)
+        except FileNotFoundError:
+            pass
+
+
+def _remove_sqlite_sidecars(db_file):
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            os.remove(str(db_file) + suffix)
+        except FileNotFoundError:
+            pass
+
+
+def _sqlite_sidecars_exist(db_file):
+    return any(
+        os.path.exists(str(db_file) + suffix)
+        for suffix in ("-wal", "-shm", "-journal")
+    )
+
+
+def _inspect_identity_db_file(db_file):
+    result = {
+        "exists": bool(db_file and os.path.exists(db_file)),
+        "valid": False,
+        "has_identity_table": False,
+        "roster": [],
+    }
+    if not result["exists"]:
+        return result
+    conn = None
+    try:
+        conn = _open_sqlite_conn(db_file, set_journal_mode=False)
+        rows = conn.execute("PRAGMA quick_check").fetchall()
+        checks = [str(row[0] or "").strip().lower() for row in rows]
+        if checks != ["ok"]:
+            return result
+        result["valid"] = True
+        result["has_identity_table"] = bool(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identities'"
+            ).fetchone()
+        )
+        if result["has_identity_table"]:
+            result["roster"] = _read_identity_roster_from_conn(conn)
+        return result
+    except Exception:
+        return result
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _validate_live_guard_db_file(db_file, *, expected_roster=None):
+    inspection = _inspect_identity_db_file(db_file)
+    if not inspection["valid"] or not inspection["has_identity_table"]:
+        return []
+    roster = inspection["roster"]
+    if expected_roster is not None and list(roster) != list(expected_roster):
+        return []
+    return roster
+
+
+def _live_guard_backup_reason(
+    *,
+    roster_changed=False,
+    account_structure_changed=False,
+    committed_change=False,
+    now=None,
+):
+    if not committed_change:
+        return ""
+    if not os.path.exists(LIVE_GUARD_DB_FILE):
+        return "bootstrap"
+    if roster_changed:
+        return "roster_changed"
+    if account_structure_changed:
+        return "account_structure_changed"
+    manifest = _read_live_guard_manifest()
+    try:
+        saved_at = float(manifest.get("saved_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        saved_at = 0.0
+    current = float(now if now is not None else time.time())
+    if saved_at <= 0 or current - saved_at >= LIVE_GUARD_REFRESH_SEC:
+        return "periodic"
+    return ""
+
+
+def _write_live_guard_backup(conn, *, reason="periodic"):
     if not _identity_collapse_guard_enabled():
-        return
+        return False
     if os.environ.get("XIUXIAN_DISABLE_LIVE_DB_BACKUP") == "1":
-        return
+        return False
     roster = _read_identity_roster_from_conn(conn)
     if not _roster_looks_like_live(roster):
-        return
+        return False
+    staging_db = LIVE_GUARD_DB_FILE + ".next"
     try:
         os.makedirs(LIVE_GUARD_DIR, exist_ok=True)
         now = time.time()
         identity_ids = [send_as_id for send_as_id, _username in roster]
-        try:
-            with open(LIVE_GUARD_MANIFEST_FILE, "r", encoding="utf-8") as handle:
-                existing_manifest = json.load(handle)
-        except Exception:
-            existing_manifest = {}
-        existing_ids = existing_manifest.get("identity_ids") if isinstance(existing_manifest, dict) else []
-        existing_ids = [int(value) for value in existing_ids or []]
-        saved_at = float(existing_manifest.get("saved_at", 0) or 0) if isinstance(existing_manifest, dict) else 0.0
-        if (
-            os.path.exists(LIVE_GUARD_DB_FILE)
-            and existing_ids == identity_ids
-            and now - saved_at < LIVE_GUARD_REFRESH_SEC
-        ):
-            return
-
-        tmp_db_file = LIVE_GUARD_DB_FILE + ".tmp"
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            try:
-                os.remove(tmp_db_file + suffix)
-            except FileNotFoundError:
-                pass
-        backup_conn = sqlite3.connect(tmp_db_file, timeout=SQLITE_TIMEOUT_SEC)
+        existing_manifest = _read_live_guard_manifest()
+        _remove_sqlite_artifacts(staging_db)
+        backup_conn = sqlite3.connect(staging_db, timeout=SQLITE_TIMEOUT_SEC)
         try:
             backup_conn.execute("PRAGMA journal_mode=DELETE")
             backup_conn.execute("PRAGMA synchronous=FULL")
@@ -2653,23 +2744,93 @@ def _write_live_guard_backup(conn):
             backup_conn.commit()
         finally:
             backup_conn.close()
-        for suffix in ("-wal", "-shm"):
+        if _validate_live_guard_db_file(staging_db, expected_roster=roster) != roster:
+            raise RuntimeError("live guard staging validation failed")
+
+        try:
+            previous_saved_at = float(existing_manifest.get("previous_saved_at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            previous_saved_at = 0.0
+        previous_reason = str(existing_manifest.get("previous_reason") or "")
+        current_roster = _validate_live_guard_db_file(LIVE_GUARD_DB_FILE)
+        rotated_current = False
+        if _roster_looks_like_live(current_roster):
+            _remove_sqlite_artifacts(LIVE_GUARD_PREVIOUS_DB_FILE)
+            had_sidecars = _sqlite_sidecars_exist(LIVE_GUARD_DB_FILE)
+            _remove_sqlite_sidecars(LIVE_GUARD_DB_FILE)
+            if (
+                had_sidecars
+                and _validate_live_guard_db_file(
+                    LIVE_GUARD_DB_FILE,
+                    expected_roster=current_roster,
+                ) != current_roster
+            ):
+                raise RuntimeError("live guard current generation changed after sidecar cleanup")
+            os.replace(LIVE_GUARD_DB_FILE, LIVE_GUARD_PREVIOUS_DB_FILE)
+            rotated_current = True
             try:
-                os.remove(LIVE_GUARD_DB_FILE + suffix)
-            except FileNotFoundError:
-                pass
-        os.replace(tmp_db_file, LIVE_GUARD_DB_FILE)
+                previous_saved_at = float(existing_manifest.get("saved_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                previous_saved_at = 0.0
+            previous_reason = str(existing_manifest.get("reason") or "")
+        else:
+            _remove_sqlite_artifacts(LIVE_GUARD_DB_FILE)
+
+        try:
+            os.replace(staging_db, LIVE_GUARD_DB_FILE)
+        except Exception:
+            if rotated_current and not os.path.exists(LIVE_GUARD_DB_FILE):
+                shutil.copy2(LIVE_GUARD_PREVIOUS_DB_FILE, LIVE_GUARD_DB_FILE)
+            raise
+        previous_roster = (
+            current_roster
+            if rotated_current
+            else _validate_live_guard_db_file(LIVE_GUARD_PREVIOUS_DB_FILE)
+        )
         manifest = {
+            "schema": 2,
             "saved_at": now,
+            "reason": str(reason or "periodic"),
             "identity_count": len(roster),
             "identity_ids": identity_ids,
+            "previous_available": _roster_looks_like_live(previous_roster),
+            "previous_saved_at": previous_saved_at,
+            "previous_reason": previous_reason,
         }
         tmp_manifest = LIVE_GUARD_MANIFEST_FILE + ".tmp"
         with open(tmp_manifest, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, sort_keys=True)
         os.replace(tmp_manifest, LIVE_GUARD_MANIFEST_FILE)
+        return True
+    finally:
+        _remove_sqlite_artifacts(staging_db)
+
+
+def _try_write_live_guard_backup(conn, *, reason):
+    try:
+        return _write_live_guard_backup(conn, reason=reason)
     except Exception:
         traceback.print_exc()
+        return False
+
+
+def _select_live_guard_restore_file():
+    for backup_file in (LIVE_GUARD_DB_FILE, LIVE_GUARD_PREVIOUS_DB_FILE):
+        roster = _validate_live_guard_db_file(backup_file)
+        if _roster_looks_like_live(roster):
+            return backup_file, roster
+    return "", []
+
+
+def _archive_sqlite_artifacts(db_file, archive_file):
+    copied = False
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        source = str(db_file) + suffix
+        if not os.path.exists(source):
+            continue
+        shutil.copy2(source, str(archive_file) + suffix)
+        copied = True
+    return copied
 
 
 def _maybe_restore_live_guard_backup():
@@ -2679,27 +2840,47 @@ def _maybe_restore_live_guard_backup():
         return False
     if os.environ.get("XIUXIAN_ALLOW_IDENTITY_COLLAPSE") == "1":
         return False
-    current_roster = _read_identity_roster_from_db_file(DB_FILE)
-    if not _roster_looks_suspicious(current_roster):
+    current_inspection = _inspect_identity_db_file(DB_FILE)
+    current_roster = current_inspection["roster"]
+    current_is_suspicious = bool(
+        current_inspection["exists"]
+        and (
+            not current_inspection["valid"]
+            or (
+                current_inspection["has_identity_table"]
+                and not current_roster
+            )
+            or _roster_looks_suspicious(current_roster)
+        )
+    )
+    if not current_is_suspicious:
         return False
-    backup_roster = _read_identity_roster_from_db_file(LIVE_GUARD_DB_FILE)
-    if not _roster_looks_like_live(backup_roster):
+    backup_file, backup_roster = _select_live_guard_restore_file()
+    if not backup_file:
         return False
+    restore_tmp = DB_FILE + ".restore.tmp"
     try:
         if _db_conn is not None:
             _db_conn.close()
         backup_name = f"{DB_FILE}.suspicious-{int(time.time())}"
-        if os.path.exists(DB_FILE):
-            shutil.copy2(DB_FILE, backup_name)
-        shutil.copy2(LIVE_GUARD_DB_FILE, DB_FILE)
+        _archive_sqlite_artifacts(DB_FILE, backup_name)
+        _remove_sqlite_artifacts(restore_tmp)
+        shutil.copy2(backup_file, restore_tmp)
+        if _validate_live_guard_db_file(restore_tmp, expected_roster=backup_roster) != backup_roster:
+            raise RuntimeError("live guard restore staging validation failed")
+        _remove_sqlite_artifacts(DB_FILE)
+        os.replace(restore_tmp, DB_FILE)
         print(
             "Restored live state DB from guard backup after suspicious roster: "
-            f"current={len(current_roster)} backup={len(backup_roster)} saved_bad={backup_name}"
+            f"current={len(current_roster)} backup={len(backup_roster)} "
+            f"source={backup_file} saved_bad={backup_name}"
         )
         return True
     except Exception:
         traceback.print_exc()
         return False
+    finally:
+        _remove_sqlite_artifacts(restore_tmp)
 
 
 
@@ -2759,15 +2940,24 @@ def save_state():
                 != current_identity_snapshots[send_as_id]
             )
         )
+        deleted_identity_ids = tuple(sorted(existing_ids - current_ids))
 
         if changed_meta_keys:
             _save_meta_state(conn, changed_meta_keys, snapshot=current_meta_snapshot)
-        for send_as_id in sorted(existing_ids - current_ids):
+        for send_as_id in deleted_identity_ids:
             delete_identity_from_db(send_as_id)
         for send_as_id in changed_identity_ids:
             upsert_identity_to_db(send_as_id)
         conn.commit()
-        _write_live_guard_backup(conn)
+        backup_reason = _live_guard_backup_reason(
+            roster_changed=bool(deleted_identity_ids or current_ids - existing_ids),
+            account_structure_changed=bool(
+                {"accounts", "identity_account_map"}.intersection(changed_meta_keys)
+            ),
+            committed_change=bool(changed_meta_keys or changed_identity_ids or deleted_identity_ids),
+        )
+        if backup_reason:
+            _try_write_live_guard_backup(conn, reason=backup_reason)
         persistence_shadow.safe_commit(shadow_sample)
         _record_persistence_snapshots(current_meta_snapshot, current_identity_snapshots)
         _state_dirty = False

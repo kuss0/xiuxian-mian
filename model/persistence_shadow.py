@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 
 DEFAULT_FLUSH_INTERVAL_SEC = 60.0
-DEFAULT_BACKUP_INTERVAL_SEC = 30 * 60.0
+DEFAULT_BACKUP_INTERVAL_SEC = 6 * 3600.0
 PROCESS_STARTED_AT = time.time()
 
 
@@ -71,6 +71,19 @@ def _float_env(name: str, default: float, minimum: float) -> float:
     except (TypeError, ValueError, OverflowError):
         value = default
     return max(minimum, value)
+
+
+def _backup_interval_sec() -> float:
+    raw = (
+        os.environ.get("XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC")
+        or os.environ.get("XIUXIAN_LIVE_GUARD_REFRESH_SEC")
+        or DEFAULT_BACKUP_INTERVAL_SEC
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        value = DEFAULT_BACKUP_INTERVAL_SEC
+    return max(300.0, value)
 
 
 def build_profile_snapshot(profile: dict[str, Any] | None) -> tuple[Any, ...]:
@@ -258,7 +271,7 @@ def _candidate_backup_reason(sample: dict[str, Any], now: float) -> str:
         return "roster_changed"
     if {"accounts", "identity_account_map"}.intersection(sample.get("changed_meta_keys") or ()):
         return "account_structure_changed"
-    interval = _float_env("XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC", DEFAULT_BACKUP_INTERVAL_SEC, 60.0)
+    interval = _backup_interval_sec()
     if now - float(_STATE.get("candidate_last_backup_at") or 0) >= interval:
         return "periodic"
     return ""

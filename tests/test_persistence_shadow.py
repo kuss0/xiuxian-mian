@@ -102,7 +102,7 @@ def test_shadow_counts_no_change_delta_and_candidate_backups():
             "XIUXIAN_PERSISTENCE_SHADOW_ENABLED": "1",
             "XIUXIAN_PERSISTENCE_SHADOW_DIR": tmp,
             "XIUXIAN_PERSISTENCE_SHADOW_FLUSH_INTERVAL_SEC": "1",
-            "XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC": "60",
+            "XIUXIAN_LIVE_GUARD_BACKUP_INTERVAL_SEC": "300",
         },
     ):
         persistence_shadow.reset_for_tests()
@@ -127,7 +127,7 @@ def test_shadow_counts_no_change_delta_and_candidate_backups():
                 meta_snapshot={"global_enabled": "0"},
                 identity_snapshots={1: _identity_snapshot(2), 2: _identity_snapshot(1)},
             ),
-            now=161,
+            now=401,
         )
         persistence_shadow.commit(
             persistence_shadow.capture(
@@ -135,9 +135,9 @@ def test_shadow_counts_no_change_delta_and_candidate_backups():
                 meta_snapshot={"global_enabled": "0"},
                 identity_snapshots={1: _identity_snapshot(2)},
             ),
-            now=162,
+            now=402,
         )
-        persistence_shadow.force_flush(now=163)
+        persistence_shadow.force_flush(now=403)
         rows = [
             json.loads(line)
             for path in Path(tmp).glob("*.jsonl")
@@ -156,6 +156,17 @@ def test_shadow_counts_no_change_delta_and_candidate_backups():
     assert reasons == {"periodic": 1, "roster_changed": 1}
     serialized = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
     assert "profile" not in serialized
+
+
+def test_shadow_backup_interval_uses_legacy_refresh_fallback():
+    with patch.dict(
+        os.environ,
+        {
+            "XIUXIAN_LIVE_GUARD_REFRESH_SEC": "7200",
+        },
+        clear=True,
+    ):
+        assert persistence_shadow._backup_interval_sec() == 7200
 
 
 def test_shadow_report_requires_time_and_restart_evidence():
