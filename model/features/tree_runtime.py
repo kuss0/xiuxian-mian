@@ -5,6 +5,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ..config import STATE_DIR
 from ..miniapp_state import record_miniapp_state
 from ..runtime import send_audit_log
 from ..state import (
@@ -30,7 +31,7 @@ from .tree_miniapp import (
 
 TREE_MINIAPP_MANUAL_AUTH_TTL_SEC = 10 * 60
 TREE_MINIAPP_DEFAULT_MODE = "jump"
-TREE_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+TREE_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 
 _MANUAL_AUTH = {}
 _GLOBAL_RUN_LOCK = None

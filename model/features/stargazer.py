@@ -10,6 +10,7 @@ from ..config import (
     CMD_STARGAZER_PANEL,
     CMD_STARGAZER_SOOTHE,
     RETRY_MAX_SEC,
+    STATE_DIR,
     STARGAZER_STAR_DURATIONS,
 )
 from ..persistence import save_state
@@ -51,7 +52,7 @@ STARGAZER_MINIAPP_ENTRY_KEYWORDS = (
     "迁入",
 )
 STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
-STARGAZER_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+STARGAZER_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 _MINIAPP_MANUAL_AUTH_UNTIL = {}
 _MINIAPP_RUN_LOCKS = {}
 

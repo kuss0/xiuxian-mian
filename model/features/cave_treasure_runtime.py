@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
-from ..config import CMD_TIANTI_STATUS
+from ..config import CMD_TIANTI_STATUS, STATE_DIR
 from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
@@ -51,7 +51,7 @@ from .fishing_runtime import (
 
 CAVE_TREASURE_MANUAL_AUTH_TTL_SEC = 10 * 60
 CAVE_TREASURE_MANUAL_MAX_STEPS = 48
-CAVE_TREASURE_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+CAVE_TREASURE_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 CAVE_SMALL_WORLD_RESOURCE_PAUSE_SEC = 6 * 3600
 CAVE_SMALL_WORLD_CYCLE_SEC = 6 * 3600
 CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC = 8 * 3600

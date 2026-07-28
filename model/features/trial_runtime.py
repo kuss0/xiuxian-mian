@@ -4,6 +4,7 @@ import re
 import time
 from pathlib import Path
 
+from ..config import STATE_DIR
 from ..runtime import send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_display_name, is_cave_public_identity_available, get_send_as_profile
 from ..timing import get_day_key
@@ -15,7 +16,7 @@ from .miniapp_common import append_business_capture, resolve_identity_id as _ide
 TRIAL_MANUAL_AUTH_TTL_SEC = 10 * 60
 TRIAL_MANUAL_MAX_ROUNDS = 99
 TRIAL_BATCH_TIMEOUT_SEC = 45 * 60
-TRIAL_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+TRIAL_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}

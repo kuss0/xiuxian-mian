@@ -15,6 +15,7 @@ from ..config import (
     CMD_FISHING_OPEN,
     CMD_FISHING_PROBE,
     CMD_FISHING_STATUS,
+    STATE_DIR,
     TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
@@ -82,7 +83,7 @@ _SEND_LOCKS = {}
 # Kept as an empty compatibility surface for older tests and diagnostics. The
 # active fishing runtime no longer records or sends text fishing commands.
 _RECENT_COMMANDS = {}
-FISHING_MINIAPP_CAPTURE_DIR = Path(__file__).resolve().parents[2] / "data" / "state" / "miniapp_capture"
+FISHING_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 
 
 
