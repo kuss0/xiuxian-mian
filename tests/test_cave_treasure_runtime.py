@@ -2360,7 +2360,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cave_public_harvest_preserves_earlier_prayer_timer(self):
         now = 1_700_000_001.0
-        existing_next_time = now + 5 * 3600
+        existing_next_time = now + 4 * 3600 + 10 * 60
         prayer_wait_sec = 4 * 3600
         flow_result = {
             "ok": True,
@@ -2408,7 +2408,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         with state_module.use_identity(1001):
             self.assertEqual(
-                now + prayer_wait_sec + cave_treasure_runtime.CD_BUFFER_SEC,
+                existing_next_time,
                 state_module.state["next_small_world_time"],
             )
 

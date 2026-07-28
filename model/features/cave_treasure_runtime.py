@@ -1368,12 +1368,9 @@ def _preserve_small_world_timer_after_harvest(existing_next_time, small_world, n
         existing_next_time = float(existing_next_time or 0)
     except (TypeError, ValueError):
         existing_next_time = 0.0
-    prayer_due_at = _cave_small_world_prayer_due_at(small_world, now)
-    if existing_next_time <= 0:
-        return prayer_due_at
-    if prayer_due_at <= 0:
+    if existing_next_time > 0:
         return existing_next_time
-    return min(existing_next_time, prayer_due_at)
+    return _cave_small_world_prayer_due_at(small_world, now)
 
 
 def _plan_cave_public_small_world_action(overview, *, now=None):

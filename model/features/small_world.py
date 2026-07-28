@@ -450,9 +450,9 @@ def _reconcile_cached_prayer_deadline(now):
     if updated_at <= 0 or wait_sec <= 0 or current_next <= 0:
         return False
     prayer_due_at = float(updated_at + wait_sec + CD_BUFFER_SEC)
-    if current_next <= prayer_due_at:
+    if current_next <= prayer_due_at + SMALL_WORLD_JITTER_MAX_SEC:
         return False
-    state["next_small_world_time"] = prayer_due_at
+    state["next_small_world_time"] = prayer_due_at + SMALL_WORLD_JITTER_MIN_SEC
     mark_dirty()
     return True
 

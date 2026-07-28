@@ -115,10 +115,30 @@ class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
 
             self.assertTrue(changed)
             self.assertEqual(
-                now + wait_sec + small_world.CD_BUFFER_SEC,
+                now + wait_sec + small_world.CD_BUFFER_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC,
                 state_module.state["next_small_world_time"],
             )
             dirty_mock.assert_called_once()
+
+    def test_cached_prayer_deadline_preserves_normal_jitter(self):
+        now = 1_700_000_000.0
+        wait_sec = 4 * 3600
+        expected_next = now + wait_sec + small_world.CD_BUFFER_SEC + 10 * 60
+        state_module.ensure_identity_registered(1001)
+        with state_module.use_identity(1001):
+            state_module.state["small_world_phase"] = "idle"
+            state_module.state["next_small_world_time"] = expected_next
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_wait": True,
+                "wait_sec": wait_sec,
+                "updated_at": now,
+            }
+            with patch.object(small_world, "mark_dirty") as dirty_mock:
+                changed = small_world._reconcile_cached_prayer_deadline(now)
+
+            self.assertFalse(changed)
+            self.assertEqual(expected_next, state_module.state["next_small_world_time"])
+            dirty_mock.assert_not_called()
 
 
 class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
