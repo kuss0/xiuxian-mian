@@ -1385,6 +1385,19 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             self.assertEqual(proof["clientScore"], replay["score"])
             self.assertLessEqual(replay["score"], 96)
 
+    def test_tree_jump_consumed_proof_matches_server_center_score_cap(self):
+        seed = "27f5f1778c9d2a8df101"
+        charges = [
+            0.3331, 0.35, 0.4023, 0.5073, 0.4955, 0.5061,
+            0.5042, 0.4704, 0.4318, 0.3881, 0.3263, 0.9729,
+        ]
+
+        replay = tree_miniapp.simulate_tree_jump_run(seed, charges)
+
+        self.assertEqual(46, replay["score"])
+        self.assertEqual(11, replay["jumps"])
+        self.assertTrue(replay["gameOver"])
+
     def test_tree_jump_proof_clamps_manual_canary_to_safe_cap(self):
         proof, summary = tree_miniapp.build_tree_game_proof(
             "jump",

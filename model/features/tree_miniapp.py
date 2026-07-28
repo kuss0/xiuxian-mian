@@ -66,6 +66,7 @@ TREE_MINIAPP_FLY_MAX_PLAN_DURATION_MS = 120000
 TREE_MINIAPP_FLY_MAX_PLAN_FRAMES = 7600
 TREE_MINIAPP_FLY_MIN_VERIFIED_SCORE_RATIO = 0.8
 TREE_MINIAPP_JUMP_MIN_VERIFIED_SCORE_RATIO = 0.8
+TREE_MINIAPP_JUMP_CENTER_SCORE_CAP = 6
 TREE_MINIAPP_JUMP_START = {"x": 116.0, "y": 246.0, "r": 34.0}
 TREE_MINIAPP_FLY_HIT_POLYGON = (
     (-24.0, 2.0), (-18.0, -8.0), (-7.0, -12.0), (8.0, -12.0), (20.0, -8.0),
@@ -649,7 +650,9 @@ def _score_jump_landing(next_platform, landing, center_combo):
     hit = error <= edge
     center = error <= perfect
     next_center_combo = int(center_combo or 0) + 1 if center else 0
-    points = next_center_combo * 2 if hit and center else 1 if hit else 0
+    points = 0
+    if hit:
+        points = min(next_center_combo * 2, TREE_MINIAPP_JUMP_CENTER_SCORE_CAP) if center else 1
     return {
         "hit": bool(hit),
         "center": bool(center),
