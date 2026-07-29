@@ -3041,16 +3041,17 @@ async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
 
 
 async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=None):
-    """Read `.天阶状态` through Tianjige and calibrate the existing reducer."""
+    """Read `.天阶状态` through Tianjige and calibrate the existing reducer.
+
+    This is status-only. It remains safe when climb automation is disabled;
+    the normal tianti scheduler still owns every state-changing action.
+    """
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
     if identity_id <= 0:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
-    with use_identity(identity_id):
-        if not state.get("tianti_enabled"):
-            return {"ok": False, "message": "天阶模块已关闭", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
@@ -3098,9 +3099,17 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
             await send_audit_log(f"☁️ {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
             return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
 
+        payload = dict(sync_result.get("payload") or {})
+        with use_identity(identity_id):
+            progress_current = int(
+                payload.get("progress_current", state.get("tianti_progress_current", 0)) or 0
+            )
+            progress_total = int(
+                payload.get("progress_total", state.get("tianti_progress_total", 0)) or 0
+            )
         final_message = "洞府天机阁天阶状态已同步（只读，不触发登阶）"
         await send_audit_log(
-            f"☁️ {final_message}｜进度 {sync_result.get('payload', {}).get('progress_current', 0)}/{sync_result.get('payload', {}).get('progress_total', 0)}",
+            f"☁️ {final_message}｜进度 {progress_current}/{progress_total}",
             scope="identity",
             send_as_id=identity_id,
             priority="low",

@@ -759,15 +759,18 @@ def get_miniapp_auto_config_snapshot(now=None):
     for identity_id in get_identity_ids():
         if not is_cave_public_identity_available(identity_id):
             continue
+        profile = get_send_as_profile(identity_id) or {}
+        sect_name = str(profile.get("sect_name") or "").strip()
         with use_identity(identity_id):
             tianti_enabled = bool(state.get("tianti_enabled"))
-        if not tianti_enabled:
+        if not tianti_enabled and "凌霄" not in sect_name and int(identity_id) not in tianti_public_ids:
             continue
         cave_public_tianti_status_candidates.append({
             "identity_id": int(identity_id),
             "label": get_identity_ui_display_name(identity_id),
             "account_id": int(get_identity_account(identity_id) or 0),
             "auto_enabled": int(identity_id) in tianti_public_ids,
+            "climb_enabled": tianti_enabled,
         })
     return {
         **safe_config,
@@ -7867,7 +7870,11 @@ def _cave_public_background_action_due(action, identity_id, now):
             due_times = [item for item in (next_time, followup_time) if item > 0]
             return not due_times or min(due_times) <= now
         if action == "tianti_status":
-            return is_tianti_public_status_selected(identity_id) and is_tianti_status_sync_due(now, identity_id)
+            return is_tianti_public_status_selected(identity_id) and is_tianti_status_sync_due(
+                now,
+                identity_id,
+                require_enabled=False,
+            )
         if action == "yuanying":
             if not state.get("yuanying_enabled"):
                 return False

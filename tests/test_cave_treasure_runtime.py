@@ -1545,7 +1545,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "问心状态：今日尚未问心"
         )
         with state_module.use_identity(1001) as identity_state:
-            identity_state["tianti_enabled"] = True
+            identity_state["tianti_enabled"] = False
 
         session = {
             "ok": True,
@@ -1570,6 +1570,38 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(12, state_module.state["tianti_progress_total"])
         self.assertEqual(1, state_module.state["tianti_cycle_count"])
         self.assertEqual(0, state_module.state["tianti_last_climb_msg_id"])
+
+    async def test_public_tianti_status_audit_uses_preserved_progress_for_partial_panel(self):
+        now = 1_700_000_500.0
+        raw_message = (
+            "【凌霄云阶】\n"
+            "登阶冷却：可立即登阶\n"
+            "问心状态：今日尚未问心"
+        )
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["tianti_enabled"] = False
+            identity_state["tianti_progress_current"] = 10
+            identity_state["tianti_progress_total"] = 12
+
+        session = {
+            "ok": True,
+            "init_data": "query_id=abc&hash=SECRET",
+            "player_id": 1001,
+        }
+        result = {"ok": True, "data": {"actionResult": {"ok": True, "rawMessage": raw_message}}}
+        audit_mock = AsyncMock()
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=audit_mock):
+            response = await cave_treasure_runtime.run_cave_public_tianti_status(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=now,
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertIn("进度 10/12", audit_mock.await_args.args[0])
 
     async def test_public_tianjige_yinluo_status_replays_existing_reducer(self):
         now = 1_700_000_500.0

@@ -508,6 +508,20 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
         save_mock.assert_called_once()
 
+    def test_tianti_public_candidate_includes_lingxiao_with_climb_disabled(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, sect_name="凌霄宫")
+        with state_module.use_identity(identity_id):
+            state_module.state["tianti_enabled"] = False
+        with patch.object(ui, "get_identity_ids", return_value=[identity_id]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True):
+            candidates = ui.get_miniapp_status_snapshot()["automation"]["cave_public_tianti_status_candidates"]
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual(identity_id, candidates[0]["identity_id"])
+        self.assertFalse(candidates[0]["climb_enabled"])
+
     async def test_cave_public_config_rejects_unsupported_fate_choice_before_save(self):
         with patch.object(ui, "save_state", return_value=True) as save_mock:
             ok, message = await ui.ui_set_cave_public_config({
@@ -716,7 +730,12 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         identity_id = 1001
         state_module.ensure_identity_registered(identity_id)
         with state_module.use_identity(identity_id):
-            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_enabled"] = False
+            state_module.state["tianti_progress_current"] = 0
+            state_module.state["tianti_cycle_count"] = 0
+            state_module.state["tianti_gangfeng_level"] = 0
+            state_module.state["tianti_cooldown_text"] = "未记录"
+            state_module.state["tianti_wenxin_status"] = "未记录"
             state_module.state["tianti_last_status_seen_at"] = 0
             state_module.state["next_tianti_status_time"] = 0
         config = {

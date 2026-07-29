@@ -354,6 +354,28 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertFalse(tianti.is_tianti_public_status_selected())
 
+    def test_selected_public_tianti_status_can_sync_while_climb_is_disabled(self):
+        send_as_id = 95030
+        now = 30_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_enabled"] = False
+            state_module.state["tianti_progress_current"] = 0
+            state_module.state["tianti_cycle_count"] = 0
+            state_module.state["tianti_gangfeng_level"] = 0
+            state_module.state["tianti_cooldown_text"] = "未记录"
+            state_module.state["tianti_wenxin_status"] = "未记录"
+            state_module.state["next_tianti_status_time"] = 0
+
+            self.assertFalse(tianti.is_tianti_status_sync_due(now, send_as_id))
+            self.assertTrue(
+                tianti.is_tianti_status_sync_due(
+                    now,
+                    send_as_id,
+                    require_enabled=False,
+                )
+            )
+
     def test_selected_public_tianti_status_does_not_fall_back_to_group_send(self):
         send_as_id = 95028
         now = 28_000.0

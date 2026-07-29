@@ -655,8 +655,12 @@ def _tianti_status_sync_due(now):
     return False
 
 
-def is_tianti_status_sync_due(now, send_as_id=None):
-    """Check status freshness against an explicit identity when provided."""
+def is_tianti_status_sync_due(now, send_as_id=None, *, require_enabled=True):
+    """Check status freshness against an explicit identity when provided.
+
+    Public Tianjige status sync is a read-only calibration path and may be
+    explicitly selected while the climb automation remains disabled.
+    """
     timestamp = float(now or time.time())
     if send_as_id is not None:
         try:
@@ -665,8 +669,10 @@ def is_tianti_status_sync_due(now, send_as_id=None):
             identity_id = 0
         if identity_id > 0:
             with use_identity(identity_id):
-                return bool(state.get("tianti_enabled")) and _tianti_status_sync_due(timestamp)
-    return bool(state.get("tianti_enabled")) and _tianti_status_sync_due(timestamp)
+                enabled = bool(state.get("tianti_enabled"))
+                return (enabled or not require_enabled) and _tianti_status_sync_due(timestamp)
+    enabled = bool(state.get("tianti_enabled"))
+    return (enabled or not require_enabled) and _tianti_status_sync_due(timestamp)
 
 
 def is_tianti_public_status_selected(send_as_id=None):
