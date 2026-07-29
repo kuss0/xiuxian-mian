@@ -46,7 +46,7 @@ from .config import (
     is_account_offline,
 )
 from .features.dungeon_quiet import format_dungeon_quiet_until, get_dungeon_quiet_reason, is_dungeon_quiet_active
-from .features import replica_huanglong
+from .features import replica_commands, replica_huanglong
 from .features.replica_panel import (
     ReplicaCdKindSnapshot,
     ReplicaCdOverviewSnapshot,
@@ -13056,57 +13056,35 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
     return await _send_lightweight_replica_notice(room, result_text, html=True, buttons=buttons)
 
 
+def _replica_ticket_query_context():
+    return replica_commands.ReplicaTicketQueryContext(
+        query_command=".查询副本",
+        get_listener_account_id=_get_replica_event_listener_account_id,
+        claim_event=_claim_runtime_event,
+        cleanup_run_state=_cleanup_replica_run_state,
+        format_ticket_reply=_format_replica_ticket_query_reply,
+        build_open_buttons=lambda chat_id, listener_account_id, **kwargs: _build_lightweight_open_button_rows(
+            chat_id,
+            listener_account_id,
+            replica_kinds=_REPLICA_AUTOMATED_QUERY_KINDS,
+            limit_per_kind=3,
+            **kwargs,
+        ),
+        strip_html=_strip_html_code_tags,
+        send_group_message=_send_replica_group_message,
+    )
+
+
 async def _handle_replica_ticket_query_command(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
-    if not listener_account_id:
-        return False
-    raw_text = str(getattr(event, "raw_text", "") or "").strip()
-    if raw_text != ".查询副本":
-        return False
-    if not _claim_runtime_event(event, scope="replica_ticket_query"):
-        return True
-    now = time.time()
-    records = _cleanup_replica_run_state(now)
-    reply_text = _format_replica_ticket_query_reply(html=True)
-    buttons = _build_lightweight_open_button_rows(
-        event.chat_id,
-        listener_account_id,
-        now=now,
-        records=records,
-        replica_kinds=_REPLICA_AUTOMATED_QUERY_KINDS,
-        limit_per_kind=3,
-    )
-    await _send_replica_group_message(
-        event.client,
-        event.chat_id,
-        reply_text,
-        parse_mode="html",
-        listener_account_id=listener_account_id,
-        log_text=_strip_html_code_tags(reply_text),
-        buttons=buttons,
-    )
-    return True
+    return await replica_commands.handle_ticket_query(_replica_ticket_query_context(), event)
 
 
 def _parse_lightweight_open_command(raw_text):
-    match = _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE.match(str(raw_text or "").strip())
-    if not match:
-        return "", ""
-    rest = str(match.group("rest") or "").strip()
-    if not rest:
-        return "", ""
-    selector = ""
-    replica_kind = ""
-    for token in re.split(r"\s+", rest):
-        if not token:
-            continue
-        token_kind = _resolve_replica_kind_alias(token)
-        if token_kind and not replica_kind:
-            replica_kind = token_kind
-            continue
-        if not selector:
-            selector = token
-    return selector, replica_kind
+    return replica_commands.parse_lightweight_open_command(
+        raw_text,
+        _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE,
+        _resolve_replica_kind_alias,
+    )
 
 
 async def _handle_lightweight_open_command(event):
@@ -13321,23 +13299,10 @@ async def _handle_lightweight_open_command(event):
 
 
 def _parse_lightweight_join_usernames(raw_text):
-    match = _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE.match(str(raw_text or "").strip())
-    if not match:
-        return []
-    rest = str(match.group("rest") or "").strip()
-    if not rest:
-        return []
-    selectors = []
-    seen = set()
-    tokens = [token for token in re.split(r"[\s,，、]+", rest) if token]
-    for token in tokens:
-        normalized = str(token or "").strip()
-        key = normalized.lstrip("@").casefold()
-        if not normalized or key in seen:
-            continue
-        seen.add(key)
-        selectors.append(normalized)
-    return selectors
+    return replica_commands.parse_lightweight_join_usernames(
+        raw_text,
+        _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE,
+    )
 
 
 async def _handle_lightweight_join_command(event):
@@ -14545,20 +14510,24 @@ async def _handle_legacy_replica_dispatch_notice(event):
     return True
 
 
+def _replica_command_match_context():
+    return replica_commands.ReplicaCommandMatchContext(
+        query_command=".查询副本",
+        open_pattern=_REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE,
+        enter_pattern=_REPLICA_ENTER_COMMAND_RE,
+        kunwu_kind=_REPLICA_KIND_KUNWU,
+        kunwu_enter_command=_REPLICA_KIND_META[_REPLICA_KIND_KUNWU]["enter_command"],
+        dissolve_command=_VIRTUAL_HALL_DISSOLVE_COMMAND,
+        is_xiaoji_query_command=_is_xiaoji_query_command,
+        resolve_kind_alias=_resolve_replica_kind_alias,
+    )
+
+
 def is_replica_group_command_text(text):
-    raw_text = str(text or "").strip()
-    if not raw_text.startswith("."):
-        return False
-    if raw_text == ".查询副本" or _is_xiaoji_query_command(raw_text):
-        return True
-    if _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE.match(raw_text):
-        _selector, requested_kind = _parse_lightweight_open_command(raw_text)
-        return requested_kind == _REPLICA_KIND_KUNWU
-    if _REPLICA_ENTER_COMMAND_RE.match(raw_text):
-        return raw_text == _REPLICA_KIND_META[_REPLICA_KIND_KUNWU]["enter_command"]
-    if raw_text == _VIRTUAL_HALL_DISSOLVE_COMMAND:
-        return True
-    return False
+    return replica_commands.is_replica_group_command_text(
+        _replica_command_match_context(),
+        text,
+    )
 
 
 async def _handle_replica_group_command(event):

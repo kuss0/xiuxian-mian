@@ -97,3 +97,24 @@ Gate A 已销号。下一物理拆分候选改为 Gate B 日志群只读面板�
 验证：`tests/test_replica_panel.py tests/test_replica_boundary_report.py tests/test_replica_huanglong.py tests/test_log_group_display.py tests/test_replica_absorb.py` 为 `308 passed, 45 subtests passed`。边界报告显示 `control.py` 对副本巨型模块的面板导入面已收敛为单个 `build_log_group_replica_panel`。
 
 Gate B 已销号。下一步为 Gate C 轻量命令编排 context；在 context 完成前继续禁止搬动房间生命周期、发送恢复和路线 reducer。
+
+## Gate C1 实施结果
+
+2026-07-30 已完成 Gate C 的第一段低风险边界：
+
+- 新模块 `model/features/replica_commands.py` 定义 `ReplicaTicketQueryContext` 和
+  `ReplicaCommandMatchContext`，不导入生产 state、runtime 或巨型副本模块。
+- `.查询副本` 的事件认领、只读快照、按钮构造和消息发送编排改由显式 context 注入；
+  `app_replica.py` 保留原 handler facade，因此现有 patch 路径和生产入口不变。
+- 轻量开房/加入参数解析与 `is_replica_group_command_text()` 的昆吾快速分流移入独立
+  模块；开房、加入、进入、解散的房间写入与发送状态机仍由 `app_replica.py` 单一持有。
+- AST 报告中轻量命令段跨区出边从 `169` 降为 `165`，入边从 `7` 降为 `6`；巨型文件
+  当前 `14571` 行。没有迁移 reducer、按钮 token 或发送恢复。
+
+验证：`tests/test_replica_commands.py tests/test_replica_absorb.py
+tests/test_replica_boundary_report.py tests/test_replica_panel.py
+tests/test_log_group_display.py` 为 `309 passed, 45 subtests passed`；全量
+`3441 passed, 535 subtests passed`，`compileall` 与 `git diff --check` 通过。
+
+Gate C 尚未整体销号。下一段 C2 应优先抽取 open flow 的高层编排端口；join/enter/
+dissolve 涉及职业、神识、房间占用和发送未知恢复，继续留到端口边界稳定后处理。
