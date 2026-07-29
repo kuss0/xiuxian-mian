@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import quote, urlencode
 
 from model import webapp_core
-from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_common, miniapp_registry, stargazer_miniapp, tree_miniapp, trial_miniapp
+from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_common, miniapp_registry, spirit_beast_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class WebAppCoreTests(unittest.TestCase):
@@ -510,7 +510,7 @@ class WebAppCoreTests(unittest.TestCase):
         registry = miniapp_registry.build_known_miniapp_registry()
 
         self.assertEqual(
-            ("cave_treasure", "fate_cards", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"),
+            ("cave_treasure", "fate_cards", "fishing", "spirit_beast", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"),
             registry.keys(),
         )
         self.assertFalse(registry.require("fishing").default_enabled)
@@ -2196,7 +2196,7 @@ class WebAppCoreTests(unittest.TestCase):
         plans = miniapp_registry.build_known_miniapp_flow_plans()
 
         self.assertEqual(
-            {"cave_treasure", "fate_cards", "fishing", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"},
+            {"cave_treasure", "fate_cards", "fishing", "spirit_beast", "stargazer", "tower", "tree", "trial", "world_boss", "world_boss_nangongque"},
             set(plans),
         )
         self.assertTrue(plans["stargazer"].manual_only)

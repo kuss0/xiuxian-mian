@@ -128,7 +128,7 @@ RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
     re.IGNORECASE,
 )
 RE_MINIAPP_START_TOKEN = re.compile(
-    r"\b(?P<kind>fish|farm|boss|qyz|nqb|rpt|stk|trial|df|tree|fate)[_-][A-Za-z0-9_-]{4,}\b",
+    r"\b(?P<kind>fish|farm|boss|qyz|nqb|rpt|stk|trial|df|tree|fate|spiritbeast)[_-][A-Za-z0-9_-]{4,}\b",
     re.IGNORECASE,
 )
 RE_WEBAPP_URL = re.compile(
@@ -1582,6 +1582,8 @@ def summarize_webapp_url(url, *, button_text="", message_text=""):
 
 def infer_webapp_game_hint(*, button_text="", message_text="", host=""):
     text = f"{button_text}\n{message_text}\n{host}".lower()
+    if any(keyword in text for keyword in ("万兽谷", "驭灵行迹", "spiritbeast", "xianxia-spirit-beast")):
+        return "spirit_beast"
     if any(keyword in text for keyword in ("天机命脉", "xianxia-fate-cards", "fate_cards", "fate_", "fate-")):
         return "fate_cards"
     if any(keyword in text for keyword in ("灵溪", "垂钓", "钓鱼", "fish")):
