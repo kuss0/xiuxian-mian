@@ -99,6 +99,93 @@ class ReplicaCommandBoundaryTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual("副本", send_mock.await_args.kwargs["log_text"])
 
+    async def test_open_command_keeps_unknown_send_in_injected_flow_store(self):
+        send_game = AsyncMock(return_value=None)
+        send_group = AsyncMock(return_value=SimpleNamespace(id=700))
+        upsert_flow = Mock(return_value=True)
+        remove_flow = Mock(return_value=True)
+        schedule_retry = Mock(return_value=True)
+        context = replica_commands.ReplicaOpenCommandContext(
+            config=replica_commands.ReplicaOpenCommandConfig(
+                command_pattern=OPEN_RE,
+                cangkun_kind="cangkun",
+                open_timeout_sec=60,
+            ),
+            runtime=replica_commands.ReplicaOpenRuntimePort(
+                get_listener_account_id=Mock(return_value=9001),
+                claim_event=Mock(return_value=True),
+                send_game_command=send_game,
+                build_send_intent=Mock(return_value={"source_module": "自动副本"}),
+                schedule_fast_retry=schedule_retry,
+                now=Mock(side_effect=[1000.0, 1001.0]),
+            ),
+            identity=replica_commands.ReplicaOpenIdentityPort(
+                resolve_kind_alias=_resolve_kind_alias,
+                resolve_identity=Mock(return_value=991201),
+                is_identity_enabled=Mock(return_value=True),
+                select_open_kind=Mock(return_value="cangkun"),
+                format_ticket_counts=Mock(return_value="苍x1"),
+                get_openable_kinds=Mock(return_value=["cangkun"]),
+                is_open_requirement_available=Mock(return_value=True),
+                format_open_requirement=Mock(return_value=""),
+                get_ticket_count=Mock(return_value=1),
+                get_identity_username=Mock(return_value="Leader"),
+                get_kind_name=Mock(return_value="苍坤洞府"),
+                get_open_game_command=Mock(return_value=".开启苍坤洞府"),
+                get_identity_block_reason=Mock(return_value=""),
+            ),
+            state=replica_commands.ReplicaOpenStatePort(
+                mark_notice_once=Mock(return_value=True),
+                get_active_room=Mock(return_value=None),
+                find_active_flow=Mock(return_value=None),
+                is_flow_active=Mock(return_value=False),
+                remove_flow=remove_flow,
+                make_flow_id=Mock(return_value="flow-1"),
+                upsert_flow=upsert_flow,
+            ),
+            view=replica_commands.ReplicaOpenViewPort(
+                format_usage=Mock(return_value="<code>usage</code>"),
+                format_next_commands=Mock(return_value="next"),
+                format_open_commands_for_identity=Mock(return_value="open"),
+                format_open_command_for_identity=Mock(return_value=".开启副本 @leader 苍"),
+                format_existing_room_notice=Mock(return_value="room"),
+                existing_room_buttons=Mock(return_value=[]),
+                format_existing_open_notice=Mock(return_value="flow"),
+                existing_open_buttons=Mock(return_value=[]),
+                build_open_buttons=Mock(return_value=[["open"]]),
+                build_flow_buttons=Mock(return_value=[["flow"]]),
+                strip_html=Mock(side_effect=lambda text: text),
+                send_group_message=send_group,
+            ),
+        )
+        event = SimpleNamespace(
+            raw_text=".开启副本 @leader 苍",
+            chat_id=-100777,
+            sender_id=42,
+            id=600,
+            client=object(),
+        )
+
+        handled = await replica_commands.handle_lightweight_open_command(context, event)
+
+        self.assertTrue(handled)
+        send_game.assert_awaited_once_with(
+            ".开启苍坤洞府",
+            track=False,
+            send_as_id=991201,
+            priority="urgent_reactive",
+            source_module="自动副本",
+        )
+        self.assertEqual(2, upsert_flow.call_count)
+        pending_flow = upsert_flow.call_args.args[0]
+        self.assertEqual("flow-1", pending_flow["flow_id"])
+        self.assertEqual(0, pending_flow["open_command_msg_id"])
+        self.assertEqual(1001.0, pending_flow["open_send_unknown_at"])
+        self.assertIn("发送结果未知", pending_flow["last_error"])
+        schedule_retry.assert_not_called()
+        remove_flow.assert_not_called()
+        self.assertIn("等待开房广播", send_group.await_args.args[2])
+
 
 if __name__ == "__main__":
     unittest.main()

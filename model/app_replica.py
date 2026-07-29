@@ -13087,215 +13087,67 @@ def _parse_lightweight_open_command(raw_text):
     )
 
 
-async def _handle_lightweight_open_command(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
-    if not listener_account_id:
-        return False
-    raw_text = str(getattr(event, "raw_text", "") or "").strip()
-    if not _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE.match(raw_text):
-        return False
-    if not _claim_runtime_event(event, scope="replica_lightweight_open"):
-        return True
-    now = time.time()
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    selector, requested_kind = _parse_lightweight_open_command(raw_text)
-    if not selector:
-        text = f"用法：{_format_lightweight_open_usage(html=True)}\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, now=now),
-        )
-        return True
-    identity_id = _resolve_replica_command_identity(selector)
-    if identity_id <= 0 or not get_identity_enabled(identity_id):
-        text = f"未找到可用身份：{escape(selector)}\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, now=now),
-        )
-        return True
-    replica_kind = _select_open_replica_kind(identity_id, requested_kind=requested_kind)
-    if not replica_kind:
-        ticket_text = _format_replica_ticket_counts(identity_id) or "无可用门票"
-        requested_text = _REPLICA_KIND_META.get(requested_kind, {}).get("name") if requested_kind else "副本"
-        reason_text = ticket_text
-        openable_kinds = _get_openable_replica_kinds(identity_id)
-        if not requested_kind and len(openable_kinds) > 1:
-            sender_id = int(getattr(event, "sender_id", 0) or 0)
-            dedupe_key = f"ambiguous_open:{chat_id}:{sender_id}:{identity_id}"
-            if not _mark_lightweight_notice_once(dedupe_key, now):
-                return True
-            open_commands = _format_lightweight_open_commands_for_identity(identity_id, html=True)
-            text = (
-                f"{escape(selector)} 有多种可开副本（{escape(ticket_text)}），请指定类型，避免默认误开虚天殿。\n\n"
-                "开房兜底命令：\n"
-                f"{open_commands}\n\n"
-                + _format_lightweight_next_commands(".查询副本", html=True)
-            )
-            await _send_replica_group_message(
-                event.client,
-                event.chat_id,
-                text,
-                parse_mode="html",
-                listener_account_id=listener_account_id,
-                log_text=_strip_html_code_tags(text),
-                buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, identity_id=identity_id, now=now),
-            )
-            return True
-        if requested_kind and not _is_replica_open_requirement_available(identity_id, requested_kind):
-            reason_text = _format_replica_open_requirement(identity_id, requested_kind) or ticket_text
-        elif (
-            not requested_kind
-            and _get_replica_ticket_kind_count(identity_id, _REPLICA_KIND_CANGKUN) > 0
-            and not _is_replica_open_requirement_available(identity_id, _REPLICA_KIND_CANGKUN)
-        ):
-            reason_text = f"{ticket_text}；{_format_replica_open_requirement(identity_id, _REPLICA_KIND_CANGKUN)}"
-        text = f"{escape(selector)} 不能开启{escape(requested_text)}：{escape(reason_text)}\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, identity_id=identity_id, now=now),
-        )
-        return True
-    leader_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-    active_room = _get_active_lightweight_room(chat_id, replica_kind=replica_kind, now=now)
-    if active_room:
-        text = _format_lightweight_existing_room_notice(active_room, html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_lightweight_existing_room_notice_buttons(active_room),
-        )
-        return True
-    active_flow = _find_active_lightweight_open_flow(chat_id, replica_kind=replica_kind, now=now)
-    if active_flow:
-        if _is_lightweight_open_flow_active(active_flow, now=now):
-            text = _format_lightweight_existing_open_notice(active_flow, html=True)
-            await _send_replica_group_message(
-                event.client,
-                event.chat_id,
-                text,
-                parse_mode="html",
-                listener_account_id=listener_account_id,
-                log_text=_strip_html_code_tags(text),
-                buttons=_lightweight_existing_open_notice_buttons(active_flow),
-            )
-            return True
-        _remove_lightweight_open_flow(active_flow.get("flow_id"))
-    flow = {
-        "flow_id": _make_lightweight_flow_id(chat_id, identity_id, now),
-        "phase": "opening",
-        "replica_chat_id": chat_id,
-        "listener_account_id": int(listener_account_id or 0),
-        "leader_identity_id": int(identity_id or 0),
-        "leader_username": leader_username,
-        "replica_kind": replica_kind,
-        "selector": selector,
-        "replica_command_msg_id": int(getattr(event, "id", 0) or 0),
-        "open_command_msg_id": 0,
-        "open_requested_at": now,
-        "updated_at": now,
-        "expires_at": now + _REPLICA_LIGHTWEIGHT_OPEN_TIMEOUT_SEC,
-        "last_error": "",
-    }
-    _upsert_lightweight_open_flow(flow)
-    command = (_REPLICA_TICKET_META.get(replica_kind) or {}).get("open_command")
-    blocked_reason = _get_replica_identity_block_reason(identity_id, now=now)
-    if blocked_reason:
-        _remove_lightweight_open_flow(flow.get("flow_id"))
-        text = (
-            f"{escape(command)} 未发送：{escape(selector)}（{escape(blocked_reason)}）\n\n"
-            + _format_lightweight_next_commands(_format_lightweight_open_command_for_identity(identity_id, replica_kind), html=True)
-        )
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, identity_id=identity_id, now=now),
-        )
-        return True
-    msg = await send_game_command(
-        command,
-        track=False,
-        send_as_id=identity_id,
-        priority="urgent_reactive",
-        **_replica_send_intent(
-            op_id=f"replica_lightweight_open:{chat_id}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
-            chain_id=f"replica_lightweight_open:{replica_kind}:{flow['flow_id']}",
+def _replica_open_command_context():
+    return replica_commands.ReplicaOpenCommandContext(
+        config=replica_commands.ReplicaOpenCommandConfig(
+            command_pattern=_REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE,
+            cangkun_kind=_REPLICA_KIND_CANGKUN,
+            open_timeout_sec=_REPLICA_LIGHTWEIGHT_OPEN_TIMEOUT_SEC,
+        ),
+        runtime=replica_commands.ReplicaOpenRuntimePort(
+            get_listener_account_id=_get_replica_event_listener_account_id,
+            claim_event=_claim_runtime_event,
+            send_game_command=send_game_command,
+            build_send_intent=_replica_send_intent,
+            schedule_fast_retry=_schedule_lightweight_game_command_fast_retry,
+            now=time.time,
+        ),
+        identity=replica_commands.ReplicaOpenIdentityPort(
+            resolve_kind_alias=_resolve_replica_kind_alias,
+            resolve_identity=_resolve_replica_command_identity,
+            is_identity_enabled=get_identity_enabled,
+            select_open_kind=_select_open_replica_kind,
+            format_ticket_counts=_format_replica_ticket_counts,
+            get_openable_kinds=_get_openable_replica_kinds,
+            is_open_requirement_available=_is_replica_open_requirement_available,
+            format_open_requirement=_format_replica_open_requirement,
+            get_ticket_count=_get_replica_ticket_kind_count,
+            get_identity_username=lambda identity_id: (get_send_as_profile(identity_id) or {}).get("username") or "",
+            get_kind_name=lambda replica_kind: (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "",
+            get_open_game_command=lambda replica_kind: (_REPLICA_TICKET_META.get(replica_kind) or {}).get("open_command") or "",
+            get_identity_block_reason=_get_replica_identity_block_reason,
+        ),
+        state=replica_commands.ReplicaOpenStatePort(
+            mark_notice_once=_mark_lightweight_notice_once,
+            get_active_room=_get_active_lightweight_room,
+            find_active_flow=_find_active_lightweight_open_flow,
+            is_flow_active=_is_lightweight_open_flow_active,
+            remove_flow=_remove_lightweight_open_flow,
+            make_flow_id=_make_lightweight_flow_id,
+            upsert_flow=_upsert_lightweight_open_flow,
+        ),
+        view=replica_commands.ReplicaOpenViewPort(
+            format_usage=_format_lightweight_open_usage,
+            format_next_commands=_format_lightweight_next_commands,
+            format_open_commands_for_identity=_format_lightweight_open_commands_for_identity,
+            format_open_command_for_identity=_format_lightweight_open_command_for_identity,
+            format_existing_room_notice=_format_lightweight_existing_room_notice,
+            existing_room_buttons=_lightweight_existing_room_notice_buttons,
+            format_existing_open_notice=_format_lightweight_existing_open_notice,
+            existing_open_buttons=_lightweight_existing_open_notice_buttons,
+            build_open_buttons=_build_lightweight_open_button_rows,
+            build_flow_buttons=_build_lightweight_open_flow_action_buttons,
+            strip_html=_strip_html_code_tags,
+            send_group_message=_send_replica_group_message,
         ),
     )
-    msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
-    if msg_id <= 0:
-        unknown_at = time.time()
-        flow.update({
-            "open_command_msg_id": 0,
-            "open_send_unknown_at": unknown_at,
-            "updated_at": unknown_at,
-            "last_error": "开房发送结果未知，等待开房广播",
-        })
-        _upsert_lightweight_open_flow(flow)
-        blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送结果未知"
-        text = (
-            f"{escape(command)} 已请求：{escape(selector)}（{escape(blocked_reason)}），等待开房广播；未重复发送。\n\n"
-            + _format_lightweight_next_commands(".查询副本", ".解散副本", html=True)
-        )
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_flow_action_buttons(flow),
-        )
-        return True
-    flow.update({"open_command_msg_id": msg_id, "updated_at": time.time()})
-    _upsert_lightweight_open_flow(flow)
-    _schedule_lightweight_game_command_fast_retry(
-        "open",
-        identity_id,
-        replica_kind,
-        flow["flow_id"],
-        command,
-        chat_id,
-        int(getattr(event, "id", 0) or 0),
-        msg_id,
+
+
+async def _handle_lightweight_open_command(event):
+    return await replica_commands.handle_lightweight_open_command(
+        _replica_open_command_context(),
+        event,
     )
-    text = (
-        f"已用 {escape(leader_username or selector)} 发送 {escape(command)}，等待开房广播。\n\n"
-        + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=True)
-    )
-    await _send_replica_group_message(
-        event.client,
-        event.chat_id,
-        text,
-        parse_mode="html",
-        listener_account_id=listener_account_id,
-        log_text=_strip_html_code_tags(text),
-        buttons=_build_lightweight_open_flow_action_buttons(flow),
-    )
-    return True
 
 
 def _parse_lightweight_join_usernames(raw_text):

@@ -118,3 +118,25 @@ tests/test_log_group_display.py` 为 `309 passed, 45 subtests passed`；全量
 
 Gate C 尚未整体销号。下一段 C2 应优先抽取 open flow 的高层编排端口；join/enter/
 dissolve 涉及职业、神识、房间占用和发送未知恢复，继续留到端口边界稳定后处理。
+
+## Gate C2 实施结果
+
+2026-07-30 已完成轻量开房高层编排拆分：
+
+- `model/features/replica_commands.py` 新增配置、runtime、identity、state、view 五组窄端口，
+  承接 `.开启副本` 从事件认领、身份/门票选择、已有房间或 pending 判定，到单次开房发送
+  和结果未知保守落账的线性编排。
+- `model/app_replica.py` 保留 `_handle_lightweight_open_command` facade，并在每次调用时绑定
+  原有状态读写、按钮、发送意图和快重试函数；现有测试 patch 路径保持有效。
+- pending flow、房间生命周期、按钮 token、开房广播 reducer、快重试实现和消息恢复均未搬迁，
+  仍由 `app_replica.py` 单一持有；本轮没有改变发送次数、超时和业务文案。
+
+验证：`tests/test_replica_commands.py tests/test_replica_absorb.py
+tests/test_replica_boundary_report.py tests/test_replica_panel.py
+tests/test_log_group_display.py` 为 `310 passed, 45 subtests passed`。巨型文件降至
+`14423` 行；轻量命令段跨区出边 `165 -> 137`，其中到轻量房间域 `121 -> 96`，
+入边保持 `6`，跨区强连通环仍为 `0`。全量为 `3442 passed, 535 subtests passed`；
+`py_compile` 与 `git diff --check` 通过。
+
+Gate C 仍未整体销号。下一段只评审 join 的高层命令编排端口；enter/dissolve、职业与神识
+规划、房间 reducer 和恢复链继续保持原边界。
