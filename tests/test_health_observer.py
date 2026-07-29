@@ -278,6 +278,23 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_warn_line_ignores_expected_dungeon_quiet_deferral(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "[sanshaoyedejian1] 🤫 虚天殿静场令生效中，暂缓普通指令：.剥离咒源 @jfdffdddd｜恢复 2026-07-29 10:03:48 UTC+8"
+            )
+        )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "[WalterWA2000] 📝 点卯未发送：dungeon_quiet，延后至 2026-07-29 10:17:50 UTC+8"
+            )
+        )
+        self.assertTrue(
+            health_observer.is_warn_journal_line(
+                "[WalterWA2000] ⏳ 指令排队超时未发送：.宗门点卯 | >100s"
+            )
+        )
+
     def test_warn_line_ignores_worker_shutdown_timeout_during_code_reload(self):
         self.assertFalse(
             health_observer.is_warn_journal_line(

@@ -1055,6 +1055,17 @@ async def _recover_pending_explore_rift_result_from_message_log(now):
     return "stale"
 
 
+def _log_explore_rift_recovery(recovered):
+    recovered = str(recovered or "").strip()
+    if not recovered:
+        return
+    console_log(
+        f"🕳 探寻裂缝已从消息日志恢复：{state.get('explore_rift_last_result') or recovered}",
+        scope="identity",
+        limit=240,
+    )
+
+
 def get_explore_rift_status_text():
     last_result = str(state.get("explore_rift_last_result") or "").strip() or "无"
     last_error = str(state.get("explore_rift_last_error") or "").strip() or "无"
@@ -1559,7 +1570,7 @@ async def _run_explore_rift_scheduler_unlocked(now):
                     limit=260,
                 )
             else:
-                await send_audit_log(f"🕳 探寻裂缝日志补偿：{state.get('explore_rift_last_result') or recovered}", scope="identity", limit=240)
+                _log_explore_rift_recovery(recovered)
             return
     if reply_to_msg_id <= 0 and _is_unknown_send_summary(state.get("explore_rift_last_result")):
         unknown_summary = str(state.get("explore_rift_last_result") or "")
@@ -1579,7 +1590,7 @@ async def _run_explore_rift_scheduler_unlocked(now):
         if recovered:
             _clear_unknown_rift_snapshot()
             save_state()
-            await send_audit_log(f"🕳 探寻裂缝日志补偿：{state.get('explore_rift_last_result') or recovered}", scope="identity", limit=240)
+            _log_explore_rift_recovery(recovered)
             return
         if reply_due_at > now:
             return
@@ -1620,7 +1631,7 @@ async def _run_explore_rift_scheduler_unlocked(now):
         recovered = await _recover_explore_rift_from_message_log(now, command_msg_id=reply_to_msg_id)
         if recovered:
             save_state()
-            await send_audit_log(f"🕳 探寻裂缝日志补偿：{state.get('explore_rift_last_result') or recovered}", scope="identity", limit=240)
+            _log_explore_rift_recovery(recovered)
             return
         _clear_explore_rift_pending()
         retry_delay = RETRY_MAX_SEC

@@ -48,6 +48,7 @@ CAVE_TREASURE_MINIAPP_ENDPOINTS = {
     "section": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}section",
     "external": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}external",
     "command_center": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}command-center",
+    "meditation": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}meditation",
     "deep_seclusion": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}deep-seclusion",
     "journey": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}journey",
     "small_world": f"{CAVE_TREASURE_MINIAPP_API_PATH_PREFIX}small-world",
@@ -361,6 +362,22 @@ def build_cave_small_world_action_request(
         init_data_session=init_data_session,
         init_data=init_data,
         payload=action_payload,
+        adapter=adapter,
+    )
+
+
+def build_cave_meditation_settle_request(
+    *,
+    token,
+    init_data_session=None,
+    init_data="",
+    adapter=None,
+):
+    return build_cave_treasure_miniapp_request(
+        "meditation",
+        token=token,
+        init_data_session=init_data_session,
+        init_data=init_data,
         adapter=adapter,
     )
 
@@ -2007,6 +2024,62 @@ async def run_cave_deep_seclusion_action_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_cave_meditation_settle_production_flow(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+    init_data="",
+):
+    """Settle the dwelling quiet room once without replaying an uncertain POST."""
+    adapter = adapter or build_cave_treasure_miniapp_adapter()
+    token = str(token or "").strip()
+    webview_url = str(webview_url or "").strip()
+    try:
+        init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        request = build_cave_meditation_settle_request(
+            token=token,
+            init_data=init_data,
+            adapter=adapter,
+        )
+        action_result = await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            _flow_transport(transport),
+            backoff_sec=(),
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="meditation:settle",
+        )
+        if not action_result.ok:
+            return _flow_result(
+                False,
+                "failed",
+                error=action_result.error,
+                data=action_result.data,
+                events=[{"step": "meditation:settle", "ok": False}],
+            )
+        return _flow_result(
+            True,
+            "settled",
+            data=action_result.data,
+            events=[{"step": "meditation:settle", "ok": True}],
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 __all__ = [
     "CAVE_TREASURE_MINIAPP_GAME_KEY",
     "CAVE_TREASURE_MINIAPP_ENDPOINTS",
@@ -2015,6 +2088,7 @@ __all__ = [
     "CAVE_TIANJIGE_ALLOWED_COMMANDS",
     "build_cave_deep_seclusion_action_request",
     "build_cave_external_action_request",
+    "build_cave_meditation_settle_request",
     "build_cave_tianjige_command_request",
     "find_cave_external_app",
     "find_cave_external_apps",
@@ -2037,6 +2111,7 @@ __all__ = [
     "normalize_cave_small_world_action",
     "request_cave_treasure_miniapp_init_data",
     "run_cave_deep_seclusion_action_production_flow",
+    "run_cave_meditation_settle_production_flow",
     "run_cave_dwelling_start_production_flow",
     "run_cave_external_action_production_flow",
     "run_cave_small_world_production_flow",

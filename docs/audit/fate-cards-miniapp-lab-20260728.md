@@ -40,3 +40,28 @@
 4. 即使任务完成并出现 `quest.canSettle=true`，当前也只报告 `manual_settle`，不自动结算。
 
 后续要进入单号 canary，必须先确定命择策略是人工配置、固定业务选择，还是等待服务端增加默认字段。确认前不得批量抽牌或结算。
+
+## 2026-07-29 实现与生产 Canary
+
+主线没有把首项当作服务端默认值，而是新增显式命择策略：
+
+- UI 可选择 `accept`（承命）或 `hide`（藏锋）；`defy`（逆命）继续阻断。
+- 全局自动开关默认且现网保持关闭；手动动作和后台调度复用同一状态机。
+- `draw`、`interpret`、`choose`、静室 `meditation`、最终 `settle` 均为单次 POST，HTTP 层不重试。
+- 每次状态变更后重新请求 `/start`，以服务端状态确认动作是否生效；传输未知时不盲目重放。
+- 静室使用 `/api/miniapp/xianxia-dwelling/meditation`，不是命脉页面自身的伪结算接口。
+- 同日收益写入顶层累计 `gains`；兼容旧记录中的 `meditation.gains` 与 `reward`，且顶层累计存在时不重复并入旧字段。
+
+生产只使用身份 `7538826434` 做单号 canary，命择为 `accept`：
+
+1. 首轮各执行一次 `draw`、`interpret`、`choose` 和静室结算，均为 HTTP 200、`attempt=1`。
+2. 首轮静室获得修为 `+18`，任务进度为 `9/30`，状态 `waiting_quest`。
+3. 约 30 分钟后静室再次可结算；第二轮仅执行一次静室结算，任务达到 `30/30`。
+4. 随后仅执行一次 `/settle`，获得天机残痕 `+2`，最终状态为 `settled`。
+5. 最终累计播报与状态记录均为：修为 `+36`、天机残痕 `+2`。
+
+脱敏 capture 中变更请求计数为：`draw=1`、`interpret=1`、`choose=1`、`meditation=2`（两个独立可结算窗口）、`settle=1`；所有变更请求均只有 `attempt=1`，没有重复提交。入口 token、initData、`tgWebAppData` 未写入审计文档或状态记录。
+
+验证：相关聚焦回归 `410 passed, 13 subtests passed`；全量 `3424 passed, 535 subtests passed`；UI HTTP smoke 覆盖 76 条鉴权路由并通过；`compileall`、MiniApp JS 语法检查和 `git diff --check` 均通过。
+
+结论：协议、状态机、UI 与单号生产闭环均已验证。功能可以保留上线，但全局自动开关继续默认关闭；扩大身份范围属于独立业务授权，不由本次 canary 自动开启。

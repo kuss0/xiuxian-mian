@@ -757,6 +757,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(explore_rift.random, "uniform", return_value=0),
                     patch.object(explore_rift, "save_state"),
                     patch.object(storage_bag, "save_state"),
+                    patch.object(explore_rift, "console_log") as console_mock,
                     patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
                 ):
                     await explore_rift.run_explore_rift_scheduler(now)
@@ -766,7 +767,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("修为未损 ｜ 奖励：四级妖丹x2", state_module.state["explore_rift_last_result"])
         records = state_module.get_storage_bag_records()
         self.assertEqual(2, records[str(identity_id)]["items"]["四级妖丹"])
-        self.assertTrue(any("日志补偿" in str(call.args[0]) for call in audit_mock.await_args_list))
+        self.assertFalse(any("日志补偿" in str(call.args[0]) for call in audit_mock.await_args_list))
+        self.assertTrue(any("已从消息日志恢复" in str(call.args[0]) for call in console_mock.call_args_list))
 
     async def test_tianxing_explore_result_reports_high_priority_before_normal_audit(self):
         identity_id = self._prepare_identity()

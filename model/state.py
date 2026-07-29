@@ -1515,6 +1515,7 @@ def is_cave_public_auto_enabled(action, identity_id=None):
         "deep_status": "cave_public_deep_status_enabled",
         "treasure": "cave_public_treasure_enabled",
         "trial": "cave_public_trial_enabled",
+        "fate_cards": "cave_public_fate_cards_enabled",
         "fishing": "cave_public_fishing_enabled",
         "stargazer": "cave_public_stargazer_enabled",
         "yuanying": "cave_public_yuanying_enabled",

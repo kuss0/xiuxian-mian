@@ -28,6 +28,7 @@ from .cave_treasure_miniapp import (
     run_cave_dwelling_snapshot_production_flow,
     run_cave_external_action_production_flow,
     run_cave_journey_action_production_flow,
+    run_cave_meditation_settle_production_flow,
     run_cave_small_world_production_flow,
     run_cave_tianjige_command_production_flow,
     run_cave_treasure_miniapp_production_flow,
@@ -38,6 +39,15 @@ from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniap
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
 from .tower_miniapp import build_tower_launch_args, format_tower_delta, run_tower_miniapp_production_flow
+from .fate_cards_miniapp import (
+    FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY,
+    extract_fate_cards_launch_from_payload,
+    find_fate_cards_external_app,
+    normalize_fate_cards_choice_key,
+    request_fate_cards_miniapp_init_data,
+    run_fate_cards_action_production,
+    run_fate_cards_start_probe_production,
+)
 from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
@@ -63,6 +73,7 @@ CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
 CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
 CAVE_YUANYING_STATUS_RECHECK_SEC = 30 * 60
 WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC = 60
+FATE_CARDS_WAIT_RETRY_SEC = 30 * 60
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
@@ -434,6 +445,10 @@ def _find_tower_launch_in_cave_payload(value):
                 "safe_summary": launch.safe_summary(),
             }
     return {}
+
+
+def _find_fate_cards_launch_in_cave_payload(value):
+    return extract_fate_cards_launch_from_payload(value)
 
 
 def _selected_player_error(overview, identity_id):
@@ -835,6 +850,148 @@ def _format_material_summary(data):
     if rewards:
         parts.append("奖励:" + "、".join(f"{name}x{amount}" for name, amount in sorted(rewards.items()) if amount > 0))
     return "｜".join(parts)
+
+
+def _fate_cards_state_from_result(result):
+    data = (result or {}).get("data") if isinstance((result or {}).get("data"), dict) else {}
+    return data.get("state") if isinstance(data.get("state"), dict) else {}
+
+
+def _fate_cards_action_confirmed(action, fate_state, *, expected=""):
+    action = str(action or "").strip().lower()
+    fate_state = dict(fate_state or {})
+    if action == "draw":
+        return bool(fate_state.get("has_drawn"))
+    if action == "interpret":
+        return bool(fate_state.get("has_ai_reading"))
+    if action == "choose":
+        return str(fate_state.get("choice_key") or "").strip() == str(expected or "").strip()
+    if action == "settle":
+        quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
+        return str(quest.get("status") or "").strip().lower() == "settled"
+    return False
+
+
+def _fate_cards_retry_after_sec(fate_state):
+    fate_state = dict(fate_state or {})
+    quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
+    if str(quest.get("metric") or "").strip().lower() == "wait_seconds":
+        remaining = max(0, _parse_int(quest.get("target"), 0) - _parse_int(quest.get("progress"), 0))
+        if remaining > 0:
+            return max(30, min(FATE_CARDS_WAIT_RETRY_SEC, remaining + 5))
+    return FATE_CARDS_WAIT_RETRY_SEC
+
+
+def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=None, meditation=None):
+    fate_state = dict(fate_state or {})
+    quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
+    challenge_date = str(fate_state.get("challenge_date") or "")
+    previous = dict(get_miniapp_state_records().get(f"{int(identity_id)}:fate_cards") or {})
+    previous_state = previous.get("state") if isinstance(previous.get("state"), dict) else {}
+    cumulative_gains = {}
+    if str(previous_state.get("challenge_date") or "") == challenge_date:
+        previous_gains = previous_state.get("gains") if isinstance(previous_state.get("gains"), dict) else {}
+        previous_sources = (previous_gains,)
+        if not previous_gains:
+            previous_meditation = (
+                previous_state.get("meditation")
+                if isinstance(previous_state.get("meditation"), dict)
+                else {}
+            )
+            previous_sources = (
+                previous_meditation.get("gains")
+                if isinstance(previous_meditation.get("gains"), dict)
+                else {},
+                previous_state.get("reward")
+                if isinstance(previous_state.get("reward"), dict)
+                else {},
+            )
+        for source in previous_sources:
+            for name, amount in source.items():
+                parsed = _parse_int(amount, 0)
+                if parsed > 0:
+                    key = str(name)
+                    cumulative_gains[key] = int(cumulative_gains.get(key, 0) or 0) + parsed
+    current_gains = {}
+    for source in (dict((meditation or {}).get("gains") or {}), dict(reward or {})):
+        for name, amount in source.items():
+            parsed = _parse_int(amount, 0)
+            if parsed > 0:
+                current_gains[str(name)] = int(current_gains.get(str(name), 0) or 0) + parsed
+    for name, amount in current_gains.items():
+        cumulative_gains[name] = int(cumulative_gains.get(name, 0) or 0) + amount
+    payload = {
+        "challenge_date": challenge_date,
+        "status": str(status or ""),
+        "question_key": str(fate_state.get("question_key") or fate_state.get("default_question_key") or ""),
+        "choice_key": str(fate_state.get("choice_key") or ""),
+        "trace_balance": _parse_int(fate_state.get("trace_balance"), 0),
+        "quest": {
+            "title": str(quest.get("title") or ""),
+            "metric": str(quest.get("metric") or ""),
+            "progress": _parse_int(quest.get("progress"), 0),
+            "target": _parse_int(quest.get("target"), 0),
+            "status": str(quest.get("status") or ""),
+            "can_settle": bool(quest.get("can_settle")),
+        },
+        "reward": dict(reward or {}),
+        "meditation": dict(meditation or {}),
+        "gains": cumulative_gains,
+    }
+    source_id = (
+        f"fate_cards:{payload['challenge_date'] or get_day_key(now)}:"
+        f"{payload['choice_key'] or '-'}:{stable_payload_digest(payload)}"
+    )
+    return record_miniapp_state(
+        identity_id,
+        "fate_cards",
+        payload,
+        source="fate_cards_miniapp",
+        source_id=source_id,
+        now=now,
+        outputs=("daily_record", "quest_state", "reward_delta"),
+    )
+
+
+async def _run_fate_cards_action_and_reconcile(
+    identity_id,
+    action,
+    *,
+    token,
+    webview_url,
+    init_data,
+    payload,
+    capture_sink,
+    capture_source,
+    expected="",
+):
+    action_result = await run_fate_cards_action_production(
+        identity_id,
+        action,
+        token=token,
+        webview_url=webview_url,
+        init_data=init_data,
+        payload=payload,
+        capture_sink=capture_sink,
+        capture_source=f"{capture_source}:{action}",
+    )
+    probe_result = await run_fate_cards_start_probe_production(
+        identity_id,
+        token=token,
+        webview_url=webview_url,
+        init_data=init_data,
+        capture_sink=capture_sink,
+        capture_source=f"{capture_source}:{action}:reconcile",
+    )
+    fate_state = _fate_cards_state_from_result(probe_result)
+    confirmed = bool(probe_result.get("ok") and _fate_cards_action_confirmed(action, fate_state, expected=expected))
+    return {
+        "ok": confirmed,
+        "action_result": action_result,
+        "probe_result": probe_result,
+        "state": fate_state,
+        "error": "" if confirmed else str(action_result.get("error") or probe_result.get("error") or f"{action}_not_confirmed"),
+    }
 
 
 def _format_cave_treasure_summary(result):
@@ -2165,6 +2322,318 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         }
 
 
+async def run_cave_public_fate_cards(
+    identity_id,
+    public_entry_url,
+    *,
+    choice_key="accept",
+    now=None,
+):
+    """Complete one 天机命脉 chain through the public dwelling entry.
+
+    The configured choice is explicit. ``accept`` settles the dwelling quiet
+    room once; ``hide`` waits for the server-side timer. Every mutation is a
+    single POST followed by an authoritative ``/start`` reconciliation.
+    """
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    try:
+        choice_key = normalize_fate_cards_choice_key(choice_key, automation=True)
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc), "extra": {}}
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+
+    async with lock:
+        capture_sink = _capture_store(now)
+        capture_source = f"cave_public_fate_cards:{identity_id}"
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"{capture_source}:start",
+            include_details=True,
+        )
+        if not session.get("ok"):
+            message = f"洞府天机命脉身份读取失败：{session.get('error') or 'unknown'}"
+            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
+
+        dwelling_init_data = str(session.get("init_data") or "")
+        selected_player_id = session.get("player_id")
+        cave_result = dict(session.get("result") or {})
+        cave_data = dict(cave_result.get("data") or {})
+        cave_raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
+        cave_overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
+        external_app = find_fate_cards_external_app(cave_raw)
+        if not external_app or not external_app.get("available"):
+            message = "洞府公共入口未开放天机命脉"
+            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
+            return {"ok": True, "message": message, "extra": {"terminal_skip": True}}
+
+        launch = {}
+        if external_app.get("action"):
+            external_result = await run_cave_external_action_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                action=external_app["action"],
+                player_id=selected_player_id,
+                init_data=dwelling_init_data,
+                capture_sink=capture_sink,
+                capture_source=f"{capture_source}:external",
+            )
+            if not external_result.get("ok"):
+                message = f"洞府天机命脉动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
+                await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+                return {"ok": False, "message": message, "extra": {}}
+            launch = _find_fate_cards_launch_in_cave_payload(external_result.get("data") or {})
+        elif external_app.get("url"):
+            launch = _find_fate_cards_launch_in_cave_payload(external_app)
+        if not launch:
+            message = "洞府天机命脉入口已请求，但未返回可用 URL"
+            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
+            return {"ok": False, "message": message, "extra": {}}
+
+        try:
+            fate_init_data = await request_fate_cards_miniapp_init_data(
+                identity_id,
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+            )
+        except Exception as exc:
+            message = f"天机命脉 WebView 会话失败：{type(exc).__name__}: {exc}"
+            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
+
+        async def probe(source_suffix):
+            return await run_fate_cards_start_probe_production(
+                identity_id,
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                init_data=fate_init_data,
+                capture_sink=capture_sink,
+                capture_source=f"{capture_source}:{source_suffix}",
+            )
+
+        probe_result = await probe("fate_start")
+        fate_state = _fate_cards_state_from_result(probe_result)
+        if not probe_result.get("ok") or not fate_state:
+            message = f"天机命脉状态读取失败：{probe_result.get('error') or 'unknown'}"
+            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+            return {"ok": False, "message": message, "extra": {}}
+
+        if not fate_state.get("has_drawn"):
+            question_key = str(fate_state.get("default_question_key") or FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY).strip()
+            available_questions = {
+                str(item.get("key") or "").strip()
+                for item in fate_state.get("questions") or ()
+                if isinstance(item, dict)
+            }
+            if question_key not in available_questions:
+                message = "天机命脉页面未提供前端默认修行主题"
+                _record_fate_cards_state(identity_id, fate_state, now=now, status="question_unavailable")
+                return {"ok": False, "message": message, "extra": {}}
+            reconciled = await _run_fate_cards_action_and_reconcile(
+                identity_id,
+                "draw",
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                init_data=fate_init_data,
+                payload={"questionKey": question_key},
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+            )
+            fate_state = reconciled.get("state") or fate_state
+            if not reconciled.get("ok"):
+                message = f"天机命脉启牌未确认：{reconciled.get('error') or 'unknown'}"
+                _record_fate_cards_state(identity_id, fate_state, now=now, status="draw_unknown")
+                return {"ok": False, "message": message, "extra": {}}
+
+        if not fate_state.get("has_ai_reading"):
+            reconciled = await _run_fate_cards_action_and_reconcile(
+                identity_id,
+                "interpret",
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                init_data=fate_init_data,
+                payload={},
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+            )
+            fate_state = reconciled.get("state") or fate_state
+            if not reconciled.get("ok"):
+                message = f"天机命脉解读未确认：{reconciled.get('error') or 'unknown'}"
+                _record_fate_cards_state(identity_id, fate_state, now=now, status="interpret_unknown")
+                return {"ok": False, "message": message, "extra": {}}
+
+        current_choice = str(fate_state.get("choice_key") or "").strip()
+        if not current_choice:
+            available_choices = {
+                str(item.get("key") or "").strip()
+                for item in fate_state.get("choices") or ()
+                if isinstance(item, dict)
+            }
+            if choice_key not in available_choices:
+                message = f"天机命脉页面未提供配置命择 {choice_key}"
+                _record_fate_cards_state(identity_id, fate_state, now=now, status="choice_unavailable")
+                return {"ok": False, "message": message, "extra": {}}
+            reconciled = await _run_fate_cards_action_and_reconcile(
+                identity_id,
+                "choose",
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                init_data=fate_init_data,
+                payload={"choiceKey": choice_key},
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                expected=choice_key,
+            )
+            fate_state = reconciled.get("state") or fate_state
+            if not reconciled.get("ok"):
+                message = f"天机命脉承命未确认：{reconciled.get('error') or 'unknown'}"
+                _record_fate_cards_state(identity_id, fate_state, now=now, status="choose_unknown")
+                return {"ok": False, "message": message, "extra": {}}
+            current_choice = choice_key
+
+        quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
+        quest_status = str(quest.get("status") or "").strip().lower()
+        if quest_status in {"settled", "expired"}:
+            terminal_status = "settled" if quest_status == "settled" else "expired"
+            record = _record_fate_cards_state(identity_id, fate_state, now=now, status=terminal_status)
+            message = "天机命脉今日已结算" if quest_status == "settled" else "天机命脉今日已过期"
+            return {
+                "ok": True,
+                "message": message,
+                "extra": {"terminal_skip": True, "daily_exhausted": True, "record_key": record.get("record_key", "")},
+            }
+
+        meditation_summary = {}
+        gains = {}
+        reward = {}
+        if not quest.get("can_settle") and current_choice == "accept":
+            meditation = cave_overview.get("meditation") if isinstance(cave_overview.get("meditation"), dict) else {}
+            if not meditation.get("can_settle"):
+                retry_after = _fate_cards_retry_after_sec(fate_state)
+                record = _record_fate_cards_state(identity_id, fate_state, now=now, status="waiting_meditation")
+                message = "天机命脉已承命，静室暂无可结算修为"
+                console_log(message, scope="identity", limit=220)
+                return {
+                    "ok": True,
+                    "message": message,
+                    "extra": {"retry_after_sec": retry_after, "record_key": record.get("record_key", "")},
+                }
+            meditation_result = await run_cave_meditation_settle_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                init_data=dwelling_init_data,
+                capture_sink=capture_sink,
+                capture_source=f"{capture_source}:meditation",
+            )
+            med_rewards, med_gains = _collect_materials(meditation_result.get("data") or {})
+            gains.update(med_gains)
+            meditation_summary = {
+                "ok": bool(meditation_result.get("ok")),
+                "gains": med_gains,
+                "rewards": med_rewards,
+            }
+            probe_result = await probe("after_meditation")
+            fate_state = _fate_cards_state_from_result(probe_result) or fate_state
+            quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
+            if not meditation_result.get("ok") and not quest.get("can_settle"):
+                message = f"天机命脉静室结算未确认：{meditation_result.get('error') or 'unknown'}"
+                _record_fate_cards_state(
+                    identity_id,
+                    fate_state,
+                    now=now,
+                    status="meditation_unknown",
+                    meditation=meditation_summary,
+                )
+                return {"ok": False, "message": message, "extra": {"gains": gains}}
+
+        if not quest.get("can_settle"):
+            retry_after = _fate_cards_retry_after_sec(fate_state)
+            record = _record_fate_cards_state(
+                identity_id,
+                fate_state,
+                now=now,
+                status="waiting_quest",
+                meditation=meditation_summary,
+            )
+            message = "天机命脉任务进行中，等待服务端完成条件"
+            console_log(message, scope="identity", limit=220)
+            return {
+                "ok": True,
+                "message": message,
+                "extra": {"retry_after_sec": retry_after, "gains": gains, "record_key": record.get("record_key", "")},
+            }
+
+        reconciled = await _run_fate_cards_action_and_reconcile(
+            identity_id,
+            "settle",
+            token=launch.get("token"),
+            webview_url=launch.get("webview_url"),
+            init_data=fate_init_data,
+            payload={},
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+        )
+        fate_state = reconciled.get("state") or fate_state
+        action_data = (reconciled.get("action_result") or {}).get("data") or {}
+        reward = action_data.get("reward") if isinstance(action_data.get("reward"), dict) else {}
+        if not reconciled.get("ok"):
+            message = f"天机命脉领奖未确认：{reconciled.get('error') or 'unknown'}"
+            _record_fate_cards_state(
+                identity_id,
+                fate_state,
+                now=now,
+                status="settle_unknown",
+                reward=reward,
+                meditation=meditation_summary,
+            )
+            return {"ok": False, "message": message, "extra": {"gains": gains}}
+
+        for name, amount in reward.items():
+            gains[str(name)] = int(gains.get(str(name), 0) or 0) + _parse_int(amount, 0)
+        record = _record_fate_cards_state(
+            identity_id,
+            fate_state,
+            now=now,
+            status="settled",
+            reward=reward,
+            meditation=meditation_summary,
+        )
+        record_state = (record.get("record") or {}).get("state") if isinstance(record.get("record"), dict) else {}
+        cumulative_gains = record_state.get("gains") if isinstance(record_state.get("gains"), dict) else gains
+        material = "、".join(
+            f"{name}+{amount}" for name, amount in sorted(cumulative_gains.items()) if _parse_int(amount, 0) > 0
+        ) or "奖励已入账"
+        message = f"天机命脉完成：{material}"
+        await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
+        return {
+            "ok": True,
+            "message": message,
+            "extra": {
+                "daily_exhausted": True,
+                "settled_count": 1,
+                "gains": cumulative_gains,
+                "record_key": record.get("record_key", ""),
+            },
+        }
+
+
 async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
     """Run one identity's daily tower challenge through the dwelling entry."""
     identity_id = _identity_id(identity_id)
@@ -3147,6 +3616,7 @@ __all__ = [
     "is_cave_public_entry_busy",
     "revoke_cave_treasure_miniapp_manual_run",
     "run_cave_public_deep_retreat_action",
+    "run_cave_public_fate_cards",
     "run_cave_public_fishing",
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",

@@ -102,6 +102,7 @@ from .features.cave_treasure_runtime import (
     authorize_cave_treasure_miniapp_manual_run,
     revoke_cave_treasure_miniapp_manual_run,
     run_cave_public_deep_retreat_action,
+    run_cave_public_fate_cards,
     run_cave_public_fishing,
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
@@ -409,6 +410,8 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_treasure_enabled": True,
     "cave_public_treasure_channel_identity_ids": [],
     "cave_public_trial_enabled": True,
+    "cave_public_fate_cards_enabled": False,
+    "cave_public_fate_cards_choice_key": "accept",
     "cave_public_fishing_enabled": False,
     "cave_public_fishing_identity_ids": [],
     "cave_public_stargazer_enabled": False,
@@ -498,6 +501,7 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_deep_status_enabled",
         "cave_public_treasure_enabled",
         "cave_public_trial_enabled",
+        "cave_public_fate_cards_enabled",
         "cave_public_fishing_enabled",
         "cave_public_stargazer_enabled",
         "cave_public_yuanying_enabled",
@@ -510,6 +514,8 @@ def normalize_miniapp_auto_config(config=None):
     except (TypeError, ValueError, OverflowError):
         result["cave_public_delay_sec"] = 20
     result["cave_public_delay_sec"] = max(10, min(120, result["cave_public_delay_sec"]))
+    fate_choice = str(result.get("cave_public_fate_cards_choice_key") or "accept").strip().lower()
+    result["cave_public_fate_cards_choice_key"] = fate_choice if fate_choice in {"accept", "hide"} else "accept"
     urls = _cave_public_entry_urls_from_config(result)
     result["cave_public_entry_url"] = urls[0] if urls else ""
     result["cave_public_entry_urls"] = urls
@@ -641,6 +647,8 @@ def _cave_public_actions_from_config(config=None):
         actions.append("treasure")
     if config.get("cave_public_trial_enabled"):
         actions.append("trial")
+    if config.get("cave_public_fate_cards_enabled"):
+        actions.append("fate_cards")
     if config.get("cave_public_fishing_enabled"):
         actions.append("fishing")
     if config.get("cave_public_stargazer_enabled"):
@@ -7012,6 +7020,12 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 result = await run_cave_public_treasure(identity_id, url)
             elif normalized_action in {"trial", "tianji_trial"}:
                 result = await run_cave_public_trial(identity_id, url)
+            elif normalized_action in {"fate_cards", "fate", "tianji_fate"}:
+                result = await run_cave_public_fate_cards(
+                    identity_id,
+                    url,
+                    choice_key=normalize_miniapp_auto_config().get("cave_public_fate_cards_choice_key", "accept"),
+                )
             elif normalized_action in {"fishing", "fish"}:
                 result = await run_cave_public_fishing(identity_id, url)
             elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
@@ -7147,6 +7161,8 @@ def _normalize_cave_public_batch_actions(payload):
         "cave_treasure": "treasure",
         "hunt": "treasure",
         "tianji_trial": "trial",
+        "fate": "fate_cards",
+        "tianji_fate": "fate_cards",
         "fish": "fishing",
         "sect_farm": "stargazer",
         "star_farm": "stargazer",
@@ -7154,7 +7170,7 @@ def _normalize_cave_public_batch_actions(payload):
         "yuanying_launch": "yuanying",
         "tianjie_status": "tianti_status",
     }
-    allowed = {"small_world", "small_world_harvest", "deep_status", "treasure", "trial", "fishing", "stargazer", "yuanying", "tianti_status"}
+    allowed = {"small_world", "small_world_harvest", "deep_status", "treasure", "trial", "fate_cards", "fishing", "stargazer", "yuanying", "tianti_status"}
     actions = []
     seen = set()
     for raw in raw_actions or ():
@@ -7186,7 +7202,7 @@ def _cave_public_batch_identity_ids_for_action(action, all_identity_ids):
     if normalized_action == "tianti_status":
         selected_ids = set(normalize_miniapp_auto_config().get("cave_public_tianti_status_identity_ids") or [])
         return [identity_id for identity_id in available_ids if identity_id in selected_ids]
-    if normalized_action in {"small_world_harvest", "trial", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
+    if normalized_action in {"small_world_harvest", "trial", "fate_cards", "stargazer", "yuanying", "deep_status", "deep_start", "deep_settle", "deep_force"}:
         return available_ids
     result = []
     seen_accounts = set()
@@ -7260,6 +7276,7 @@ def _format_cave_public_batch_outcomes(summary):
     labels = {
         "trial": "天机试炼",
         "tianji_trial": "天机试炼",
+        "fate_cards": "天机命脉",
         "treasure": "洞府寻宝",
         "hunt": "洞府寻宝",
         "cave_treasure": "洞府寻宝",
@@ -7275,7 +7292,7 @@ def _format_cave_public_batch_outcomes(summary):
             continue
         parts = [f"{int(row.get('succeeded') or 0)}/{int(row.get('attempted') or 0)} 成功"]
         if settled_count > 0:
-            unit = "次" if action in {"trial", "tianji_trial"} else "局"
+            unit = "次" if action in {"trial", "tianji_trial", "fate_cards"} else "局"
             parts.append(f"结算 {settled_count}{unit}")
         gains = dict(row.get("gains") or {})
         rewards = dict(row.get("rewards") or {})
@@ -7296,6 +7313,7 @@ async def ui_set_cave_public_config(payload=None):
         "deep_status_enabled": "cave_public_deep_status_enabled",
         "treasure_enabled": "cave_public_treasure_enabled",
         "trial_enabled": "cave_public_trial_enabled",
+        "fate_cards_enabled": "cave_public_fate_cards_enabled",
         "fishing_enabled": "cave_public_fishing_enabled",
         "stargazer_enabled": "cave_public_stargazer_enabled",
         "yuanying_enabled": "cave_public_yuanying_enabled",
@@ -7304,6 +7322,11 @@ async def ui_set_cave_public_config(payload=None):
     for payload_key, config_key in mapping.items():
         if payload_key in payload:
             config[config_key] = _coerce_ui_bool(payload.get(payload_key))
+    if "fate_cards_choice_key" in payload:
+        fate_choice = str(payload.get("fate_cards_choice_key") or "").strip().lower()
+        if fate_choice not in {"accept", "hide"}:
+            return False, "天机命脉自动命择仅支持 accept/hide"
+        config["cave_public_fate_cards_choice_key"] = fate_choice
     if "fishing_identity_ids" in payload:
         raw_ids = payload.get("fishing_identity_ids") or []
         if not isinstance(raw_ids, (list, tuple, set)):
@@ -7807,6 +7830,17 @@ def _cave_public_background_action_due(action, identity_id, now):
                 if games_limit > 0 and games_used >= games_limit:
                     return False
             return True
+        if action == "fate_cards":
+            daily_done_key = ("fate_cards", get_day_key(now), int(identity_id))
+            if daily_done_key in _cave_public_background_daily_done:
+                return False
+            record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:fate_cards") or {})
+            record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
+            challenge_date = str(record_state.get("challenge_date") or "")
+            status = str(record_state.get("status") or "").strip().lower()
+            if challenge_date == get_day_key(now) and status in {"settled", "expired"}:
+                return False
+            return True
         if action == "fishing":
             if int(identity_id) not in set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or []):
                 return False
@@ -7873,7 +7907,8 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
         "fishing": 3,
         "stargazer": 4,
         "tianti_status": 4,
-        "treasure": 5,
+        "fate_cards": 5,
+        "treasure": 6,
     }.get(action, 9)
     due_at = 0.0
     with use_identity(identity_id):
@@ -7914,7 +7949,7 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
     try:
         ok, message, extra = await ui_run_cave_public_entry(identity_id, action, "")
         if (
-            action in {"treasure", "fishing"}
+            action in {"treasure", "fishing", "fate_cards"}
             and isinstance(extra, dict)
             and (extra.get("daily_exhausted") or extra.get("terminal_skip"))
         ):
@@ -7927,6 +7962,8 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
         finished_at = time.time()
         retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
         retry_sec = 60 if ok else 30 * 60
+        if isinstance(extra, dict) and float(extra.get("retry_after_sec", 0) or 0) > 0:
+            retry_sec = max(30, min(24 * 3600, float(extra.get("retry_after_sec") or 0)))
         if action in {"deep_status", "deep_settle"} and not ok:
             retry_sec = 30 * 60
         _cave_public_background_retry_at[(retry_action, int(identity_id))] = finished_at + retry_sec
@@ -7970,6 +8007,7 @@ async def _run_cave_public_background_scheduler(now, config):
         ("small_world_harvest", "cave_public_small_world_harvest_enabled"),
         ("fishing", "cave_public_fishing_enabled"),
         ("stargazer", "cave_public_stargazer_enabled"),
+        ("fate_cards", "cave_public_fate_cards_enabled"),
         ("treasure", "cave_public_treasure_enabled"),
         ("tianti_status", "cave_public_tianti_status_enabled"),
     )

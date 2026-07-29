@@ -1,5 +1,7 @@
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from model.features import cave_treasure_miniapp, fate_cards_miniapp
 from model.webapp_core import sanitize_webapp_secret_text, summarize_webapp_url, validate_miniapp_flow_plan
@@ -152,6 +154,68 @@ class FateCardsMiniAppTests(unittest.TestCase):
         safe = json.dumps(result, ensure_ascii=False)
         self.assertNotIn("fate_SECRET999", safe)
         self.assertNotIn("VERY_SECRET", safe)
+
+    def test_mutation_flow_disables_retries_and_validates_explicit_choice(self):
+        http_result = SimpleNamespace(
+            ok=True,
+            data={
+                "ok": True,
+                "record": {
+                    "questionKey": "cultivation",
+                    "choiceKey": "accept",
+                    "cards": [{}, {}, {}],
+                    "quest": {"status": "active", "progress": 0, "target": 30},
+                },
+            },
+            error="",
+            error_type="",
+            status_code=200,
+            elapsed_ms=10,
+            attempts=1,
+        )
+        with patch.object(fate_cards_miniapp, "execute_miniapp_http_request", return_value=http_result) as execute_mock:
+            result = fate_cards_miniapp.run_fate_cards_action(
+                "choose",
+                token="fate_SECRET999",
+                init_data="query_id=abc&hash=VERY_SECRET",
+                payload={"choiceKey": "accept"},
+                transport=lambda _request: None,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("accept", result["data"]["state"]["choice_key"])
+        self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
+        self.assertEqual("choose", execute_mock.call_args.kwargs["step_key"])
+        request = execute_mock.call_args.args[0]
+        self.assertEqual({"choiceKey": "accept"}, {
+            key: value for key, value in request["payload"].items() if key not in {"token", "initData"}
+        })
+
+        blocked = fate_cards_miniapp.run_fate_cards_action(
+            "choose",
+            token="fate_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            payload={"choiceKey": "unknown"},
+            transport=lambda _request: None,
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertIn("命择", blocked["error"])
+
+    def test_question_key_is_server_driven_but_format_checked(self):
+        self.assertEqual(
+            "future_path_2",
+            fate_cards_miniapp.normalize_fate_cards_question_key(" Future_Path_2 "),
+        )
+        with self.assertRaises(ValueError):
+            fate_cards_miniapp.normalize_fate_cards_question_key("../cultivation")
+
+    def test_reward_parser_reports_only_game_resource_gain(self):
+        reward = fate_cards_miniapp.parse_fate_cards_reward({
+            "ok": True,
+            "reward": {"tianjiTrace": 2, "balance": 14},
+        })
+        self.assertEqual({"天机残痕": 2}, reward)
 
     def test_cave_dynamic_action_and_launch_are_recognized(self):
         request = cave_treasure_miniapp.build_cave_external_action_request(

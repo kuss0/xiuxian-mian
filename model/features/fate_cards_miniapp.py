@@ -1,14 +1,15 @@
-"""Manual-only protocol adapter for the 天机命脉 MiniApp.
+"""Protocol adapter for the 天机命脉 MiniApp.
 
-The public page exposes several non-idempotent POST actions.  This module only
-executes ``/start`` automatically; draw, choose, and settle request builders
-require an explicit mutation opt-in so a Lab probe cannot consume a daily run
-by accident.
+The public page exposes several non-idempotent POST actions.  The generic flow
+plan remains read-only, while the dwelling runtime may execute an explicitly
+configured choice with one POST per action and an authoritative ``/start``
+reconciliation after each mutation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from urllib.parse import urljoin
 
@@ -43,6 +44,8 @@ FATE_CARDS_MINIAPP_ENDPOINTS = {
 }
 FATE_CARDS_MINIAPP_START_PARAM_PATTERN = r"fate[_-][A-Za-z0-9_-]{4,160}"
 FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY = "cultivation"
+FATE_CARDS_CHOICE_KEYS = frozenset({"accept", "defy", "hide"})
+FATE_CARDS_AUTOMATION_CHOICE_KEYS = frozenset({"accept", "hide"})
 FATE_CARDS_READ_ONLY_ENDPOINTS = frozenset({"start"})
 FATE_CARDS_MUTATION_ENDPOINTS = frozenset({"draw", "interpret", "choose", "settle"})
 FATE_CARDS_HTTP_TIMEOUT = (5, 20)
@@ -162,6 +165,21 @@ def build_fate_cards_miniapp_request(
         init_data=init_data,
         timeout_sec=FATE_CARDS_HTTP_TIMEOUT[1],
     )
+
+
+def normalize_fate_cards_question_key(value):
+    normalized = str(value or "").strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", normalized):
+        raise ValueError("天机命脉问天主题格式无效")
+    return normalized
+
+
+def normalize_fate_cards_choice_key(value, *, automation=False):
+    normalized = str(value or "").strip().lower()
+    allowed = FATE_CARDS_AUTOMATION_CHOICE_KEYS if automation else FATE_CARDS_CHOICE_KEYS
+    if normalized not in allowed:
+        raise ValueError("天机命脉命择不在自动化白名单" if automation else "天机命脉命择不在白名单")
+    return normalized
 
 
 def _normalize_option(item):
@@ -293,6 +311,15 @@ def decide_fate_cards_next_step(state):
     return {"action": "wait", "reason": status or "quest_incomplete", "safe_to_auto": True}
 
 
+def parse_fate_cards_reward(data):
+    if not isinstance(data, dict):
+        return {}
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    reward = root.get("reward") if isinstance(root.get("reward"), dict) else {}
+    trace_gain = _as_int(reward.get("tianjiTrace"), 0)
+    return {"天机残痕": trace_gain} if trace_gain > 0 else {}
+
+
 def find_fate_cards_external_app(value):
     """Find the current cave-directory entry without retaining its token URL."""
     fallback = {}
@@ -420,6 +447,72 @@ def run_fate_cards_start_probe(
     return _flow_result(True, "observed", data={"state": state}, events=events)
 
 
+def run_fate_cards_action(
+    endpoint,
+    *,
+    token,
+    init_data,
+    transport,
+    payload=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    """Execute one explicitly selected mutation without HTTP replay."""
+    endpoint = str(endpoint or "").strip().lower()
+    if endpoint not in FATE_CARDS_MUTATION_ENDPOINTS:
+        return _flow_result(False, "failed", error="mutation endpoint invalid")
+    token = str(token or "").strip()
+    init_data = str(init_data or "").strip()
+    if not token:
+        return _flow_result(False, "failed", error="token missing")
+    if not init_data:
+        return _flow_result(False, "failed", error="initData missing")
+    request_payload = dict(payload or {})
+    if endpoint == "draw":
+        try:
+            request_payload = {"questionKey": normalize_fate_cards_question_key(request_payload.get("questionKey"))}
+        except ValueError as exc:
+            return _flow_result(False, "failed", error=exc)
+    elif endpoint == "choose":
+        try:
+            request_payload = {"choiceKey": normalize_fate_cards_choice_key(request_payload.get("choiceKey"))}
+        except ValueError as exc:
+            return _flow_result(False, "failed", error=exc)
+    else:
+        request_payload = {}
+    adapter = adapter or build_fate_cards_miniapp_adapter()
+    result = execute_miniapp_http_request(
+        build_fate_cards_miniapp_request(
+            endpoint,
+            token=token,
+            init_data=init_data,
+            payload=request_payload,
+            adapter=adapter,
+            allow_mutation=True,
+        ),
+        transport,
+        backoff_sec=(),
+        sleeper=sleeper or time.sleep,
+        capture_sink=capture_sink,
+        capture_source=capture_source,
+        step_key=endpoint,
+    )
+    events = []
+    append_http_event(events, endpoint, result)
+    if not result.ok:
+        return _flow_result(False, "failed", error=result.error, data=result.data, events=events)
+    state = parse_fate_cards_state(result.data)
+    data = {"raw": dict(result.data or {})}
+    if state:
+        data["state"] = state
+    reward = parse_fate_cards_reward(result.data)
+    if reward:
+        data["reward"] = reward
+    return _flow_result(True, endpoint, data=data, events=events)
+
+
 async def run_fate_cards_start_probe_production(
     identity_id,
     *,
@@ -455,8 +548,48 @@ async def run_fate_cards_start_probe_production(
         return _flow_result(False, "failed", error=exc)
 
 
+async def run_fate_cards_action_production(
+    identity_id,
+    endpoint,
+    *,
+    token,
+    webview_url,
+    init_data="",
+    payload=None,
+    transport=None,
+    adapter=None,
+    sleeper=None,
+    capture_sink=None,
+    capture_source="",
+):
+    adapter = adapter or build_fate_cards_miniapp_adapter()
+    try:
+        init_data = str(init_data or "").strip() or await request_fate_cards_miniapp_init_data(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            adapter=adapter,
+        )
+        return await asyncio.to_thread(
+            run_fate_cards_action,
+            endpoint,
+            token=token,
+            init_data=init_data,
+            transport=transport or build_miniapp_transport(timeout=FATE_CARDS_HTTP_TIMEOUT),
+            payload=payload,
+            adapter=adapter,
+            sleeper=sleeper or time.sleep,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+        )
+    except Exception as exc:
+        return _flow_result(False, "failed", error=exc)
+
+
 __all__ = [
     "FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY",
+    "FATE_CARDS_AUTOMATION_CHOICE_KEYS",
+    "FATE_CARDS_CHOICE_KEYS",
     "FATE_CARDS_MINIAPP_GAME_KEY",
     "build_fate_cards_launch_args",
     "build_fate_cards_miniapp_adapter",
@@ -465,8 +598,13 @@ __all__ = [
     "decide_fate_cards_next_step",
     "extract_fate_cards_launch_from_payload",
     "find_fate_cards_external_app",
+    "normalize_fate_cards_choice_key",
+    "normalize_fate_cards_question_key",
+    "parse_fate_cards_reward",
     "parse_fate_cards_state",
     "request_fate_cards_miniapp_init_data",
+    "run_fate_cards_action",
+    "run_fate_cards_action_production",
     "run_fate_cards_start_probe",
     "run_fate_cards_start_probe_production",
 ]

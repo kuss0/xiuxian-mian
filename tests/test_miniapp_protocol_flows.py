@@ -395,6 +395,18 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 init_data="query_id=abc&hash=VERY_SECRET",
             )
 
+    def test_cave_meditation_settle_request_has_no_action_guess(self):
+        request = cave_treasure_miniapp.build_cave_meditation_settle_request(
+            token="df_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+
+        self.assertEqual("meditation", request["safe_summary"]["endpoint"])
+        self.assertEqual("df_SECRET999", request["payload"]["token"])
+        self.assertIn("initData", request["payload"])
+        self.assertEqual(set(), set(request["payload"]) - {"token", "initData"})
+        self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
+
     def test_cave_tianjige_command_request_is_strictly_whitelisted(self):
         request = cave_treasure_miniapp.build_cave_tianjige_command_request(
             ".元婴出窍",

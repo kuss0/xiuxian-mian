@@ -409,6 +409,35 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         run_mock.assert_awaited_once_with(1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999")
         send_mock.assert_not_awaited()
 
+    async def test_cave_public_entry_fate_cards_uses_persisted_explicit_choice_without_sending_command(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_fate_cards_enabled": False,
+            "cave_public_fate_cards_choice_key": "hide",
+        }
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_fate_cards", new=AsyncMock(return_value={
+                    "ok": True,
+                    "message": "天机命脉已承命，等待服务端完成条件",
+                    "extra": {"retry_after_sec": 1800},
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "fate_cards",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("天机命脉", message)
+        self.assertEqual(1800, extra["retry_after_sec"])
+        run_mock.assert_awaited_once_with(
+            1001,
+            "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            choice_key="hide",
+        )
+        send_mock.assert_not_awaited()
+
     async def test_cave_public_entry_yuanying_uses_http_runner_without_sending_command(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
@@ -437,6 +466,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             "cave_public_deep_status_enabled": False,
             "cave_public_treasure_enabled": False,
             "cave_public_trial_enabled": False,
+            "cave_public_fate_cards_enabled": False,
+            "cave_public_fate_cards_choice_key": "accept",
             "cave_public_fishing_enabled": False,
             "cave_public_fishing_identity_ids": [],
             "cave_public_tianti_status_enabled": False,
@@ -449,6 +480,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 "deep_status_enabled": False,
                 "treasure_enabled": True,
                 "trial_enabled": False,
+                "fate_cards_enabled": True,
+                "fate_cards_choice_key": "hide",
                 "fishing_enabled": True,
                 "fishing_identity_ids": [3820064579, "3765328695", "bad"],
                 "tianti_status_enabled": True,
@@ -464,6 +497,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(automation["cave_public_deep_status_enabled"])
         self.assertTrue(automation["cave_public_treasure_enabled"])
         self.assertFalse(automation["cave_public_trial_enabled"])
+        self.assertTrue(automation["cave_public_fate_cards_enabled"])
+        self.assertEqual("hide", automation["cave_public_fate_cards_choice_key"])
         self.assertTrue(automation["cave_public_fishing_enabled"])
         self.assertEqual([3765328695, 3820064579], automation["cave_public_fishing_identity_ids"])
         self.assertTrue(automation["cave_public_tianti_status_enabled"])
@@ -472,6 +507,17 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("small_world_enabled", state_module.get_miniapp_auto_config())
         self.assertNotIn("deep_retreat_enabled", state_module.get_miniapp_auto_config())
         save_mock.assert_called_once()
+
+    async def test_cave_public_config_rejects_unsupported_fate_choice_before_save(self):
+        with patch.object(ui, "save_state", return_value=True) as save_mock:
+            ok, message = await ui.ui_set_cave_public_config({
+                "fate_cards_enabled": True,
+                "fate_cards_choice_key": "defy",
+            })
+
+        self.assertFalse(ok)
+        self.assertIn("accept/hide", message)
+        save_mock.assert_not_called()
 
     async def test_cave_public_config_accepts_multiple_public_entry_urls_safely(self):
         with patch.object(ui, "save_state", return_value=True):

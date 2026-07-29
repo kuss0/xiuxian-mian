@@ -143,6 +143,10 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "window_skip_by_identity" in script
     assert "额外少出手" in script
     assert "world_boss_auto_finish_reserve_windows" in script
+    assert 'data-cave-public-switch="fate_cards"' in script
+    assert 'data-cave-public-fate-choice="1"' in script
+    assert 'data-cave-public-action="fate_cards"' in script
+    assert "fate_cards_choice_key" in script
     assert 'data-cave-public-action="tianti_status"' in script
     assert script.count('data-cave-public-action="yuanying"') == 1
     assert "flow_replacement_uncatalogued" in script

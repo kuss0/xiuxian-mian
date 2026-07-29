@@ -366,11 +366,16 @@
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="deep_status"' + (automation.cave_public_deep_status_enabled ? ' checked' : '') + '><span>闭关状态</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="treasure"' + (automation.cave_public_treasure_enabled ? ' checked' : '') + '><span>洞府寻宝</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="trial"' + (automation.cave_public_trial_enabled ? ' checked' : '') + '><span>天机试炼</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="fate_cards"' + (automation.cave_public_fate_cards_enabled ? ' checked' : '') + '><span>天机命脉</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="fishing"' + (automation.cave_public_fishing_enabled ? ' checked' : '') + '><span>频道钓鱼</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="stargazer"' + (automation.cave_public_stargazer_enabled ? ' checked' : '') + '><span>观星台</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="yuanying"' + (automation.cave_public_yuanying_enabled ? ' checked' : '') + '><span>元婴</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="tianti_status"' + (automation.cave_public_tianti_status_enabled ? ' checked' : '') + '><span>天阶状态</span></label>'
       + '</div>'
+      + '<label><span>天机命脉命择</span><select data-cave-public-fate-choice="1">'
+      + '<option value="accept"' + (automation.cave_public_fate_cards_choice_key === 'accept' ? ' selected' : '') + '>顺势承命 · 静室</option>'
+      + '<option value="hide"' + (automation.cave_public_fate_cards_choice_key === 'hide' ? ' selected' : '') + '>藏锋避劫 · 等待</option>'
+      + '</select></label>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>频道钓鱼白名单</strong><span>仅走公共入口，不发送群命令</span></div>'
       + fishingCandidateHtml
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>天阶状态白名单</strong><span>只读校准，不自动触发登阶</span></div>'
@@ -387,6 +392,7 @@
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world_harvest">收割香火</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="treasure">洞府寻宝</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="trial">天机试炼</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="fate_cards">天机命脉</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="fishing">频道钓鱼</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="stargazer">观星台</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tree">落云灵树</button>'
@@ -687,6 +693,7 @@
       return !!(input && input.checked);
     }
     var delayInput = panel && panel.querySelector('[data-cave-public-delay="1"]');
+    var fateChoiceInput = panel && panel.querySelector('[data-cave-public-fate-choice="1"]');
     var fishingIdentityIds = [];
     var tiantiStatusIdentityIds = [];
     if (panel) {
@@ -703,6 +710,8 @@
       deep_status_enabled: enabled('deep_status'),
       treasure_enabled: enabled('treasure'),
       trial_enabled: enabled('trial'),
+      fate_cards_enabled: enabled('fate_cards'),
+      fate_cards_choice_key: fateChoiceInput ? fateChoiceInput.value : 'accept',
       fishing_enabled: enabled('fishing'),
       fishing_identity_ids: fishingIdentityIds,
       stargazer_enabled: enabled('stargazer'),
@@ -722,6 +731,7 @@
     if (config.deep_status_enabled) actions.push('deep_status');
     if (config.treasure_enabled) actions.push('treasure');
     if (config.trial_enabled) actions.push('trial');
+    if (config.fate_cards_enabled) actions.push('fate_cards');
     if (config.fishing_enabled) actions.push('fishing');
     if (config.stargazer_enabled) actions.push('stargazer');
     if (config.yuanying_enabled) actions.push('yuanying');

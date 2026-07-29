@@ -49,7 +49,7 @@ TRANSIENT_TELEGRAM_CONTEXT_PATTERN = re.compile(
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
-    r"无补发|不补发|无需补发|口径：.*超时.*未发送.*不计|题库内超时未作答|题库匹配|自动化系统启动：全局暂停中|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|launching 超时，改用状态查询校准|共历心劫抉择无回合推进，已停止旧 prompt|续轮指令超时无确认，改用状态查询校准|准备补发一次|结果编辑未留存，已按正常周期恢复|交由模块状态机继续|安全锁拦截：.*短退避重试"
+    r"无补发|不补发|无需补发|口径：.*超时.*未发送.*不计|题库内超时未作答|题库匹配|自动化系统启动：全局暂停中|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|launching 超时，改用状态查询校准|共历心劫抉择无回合推进，已停止旧 prompt|续轮指令超时无确认，改用状态查询校准|准备补发一次|结果编辑未留存，已按正常周期恢复|交由模块状态机继续|安全锁拦截：.*短退避重试|虚天殿静场令生效中，暂缓普通指令|点卯未发送：dungeon_quiet，延后至"
 )
 TELETHON_WRONG_SESSION_PATTERN = re.compile(
     r"Security error while unpacking a received message: Server replied with a wrong session ID",
