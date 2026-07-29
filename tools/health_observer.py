@@ -1475,6 +1475,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 alerts.append(
                     business_alert(
                         f"channel send-as cohort frozen: {len(channel_frozen_ids)}",
+                        severity="info",
                         count=len(channel_frozen_ids),
                         sample={
                             "restore_count": len(channel_restore_ids),
@@ -1697,7 +1698,7 @@ def collect_business_snapshot(cfg: ObserverConfig, now: float) -> dict[str, obje
 
 def merge_status(base_status: str, business_alerts: list[dict[str, object]]) -> tuple[str, list[str]]:
     error_count = sum(1 for item in business_alerts if item.get("severity") == "error")
-    warn_count = len(business_alerts) - error_count
+    warn_count = sum(1 for item in business_alerts if item.get("severity") not in {"error", "info"})
     reasons: list[str] = []
     if error_count:
         reasons.append(f"business errors: {error_count}")
@@ -1851,6 +1852,15 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
         if not isinstance(alert, dict):
             continue
         severity = str(alert.get("severity") or "warn")
+        if severity == "info":
+            add_risk(
+                "business_alert",
+                str(alert.get("message") or "business alert"),
+                "info",
+                0,
+                sample=alert.get("sample"),
+            )
+            continue
         deduct = 16 if severity == "error" else 7
         add_risk(
             "business_alert",

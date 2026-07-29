@@ -1214,6 +1214,7 @@ class HealthObserverTests(unittest.TestCase):
         alerts = [item for item in result["alerts"] if "channel send-as cohort frozen" in item["message"]]
         self.assertEqual(1, len(alerts))
         self.assertEqual(2, alerts[0]["count"])
+        self.assertEqual("info", alerts[0]["severity"])
         self.assertEqual("SendAsPeerInvalidError", alerts[0]["sample"]["last_error"])
         wild_alerts = [item for item in result["alerts"] if "public wild-training lag" in item["message"]]
         self.assertEqual(1, len(wild_alerts))
@@ -2300,6 +2301,15 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertEqual("warn", status)
         self.assertIn("business warnings: 1", reasons)
+
+    def test_merge_status_keeps_expected_business_info_out_of_warning(self):
+        status, reasons = health_observer.merge_status(
+            "ok",
+            [health_observer.business_alert("channel cohort intentionally frozen", severity="info")],
+        )
+
+        self.assertEqual("ok", status)
+        self.assertEqual([], reasons)
 
 
 if __name__ == "__main__":
