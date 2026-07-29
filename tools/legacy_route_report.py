@@ -43,6 +43,13 @@ ROUTE_CATALOG = (
         "symbols": ("CMD_WILD_TRAINING",),
     },
     {
+        "key": "ranch_text_run",
+        "label": "放养旧文本链",
+        "policy": "retired_auto_send_passive_reply_only",
+        "commands": (".一键放养",),
+        "symbols": ("CMD_RANCH",),
+    },
+    {
         "key": "fishing_entry",
         "label": "钓鱼入口命令",
         "policy": "manual_compat_public_miniapp_preferred",

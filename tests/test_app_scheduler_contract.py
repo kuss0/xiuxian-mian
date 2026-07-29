@@ -18,7 +18,6 @@ from model import state as state_module
 
 IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
     "run_pet_scheduler": {"pet", "pet_warm", "pet_trial", "pet_formation"},
-    "run_ranch_scheduler": {"ranch"},
     "run_wild_training_scheduler": {"wild_training"},
     "run_formation_scheduler": {"formation"},
     "run_tianti_scheduler": {"tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"},
@@ -307,6 +306,14 @@ class AppSchedulerContractTests(unittest.TestCase):
         self.assertNotIn("run_tree_scheduler", ordinary)
         self.assertNotIn("run_tree_bootstrap_check", bridge)
         self.assertNotIn("run_tree_scheduler", bridge)
+
+    def test_legacy_ranch_scheduler_is_archived_out_of_runtime_order(self):
+        ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
+        bridge = app.get_scheduler_manifest_bridge_contract()
+
+        self.assertTrue(module_manifest.is_module_archived("放养"))
+        self.assertNotIn("run_ranch_scheduler", ordinary)
+        self.assertNotIn("run_ranch_scheduler", bridge)
 
     def test_important_runtime_scheduler_modules_have_behavior_spec_coverage(self):
         bridge = app.get_scheduler_manifest_bridge_contract()

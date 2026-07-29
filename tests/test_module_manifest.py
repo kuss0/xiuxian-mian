@@ -64,7 +64,6 @@ class ModuleManifestTests(unittest.TestCase):
                 "温养器灵",
                 "器灵试炼",
                 "布下剑阵",
-                "放养",
             "野外历练",
             "观星台",
             "观星",
@@ -99,6 +98,8 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("灵树", module_manifest.get_module_name_for_reply_family("tree_miniapp"))
         self.assertTrue(module_manifest.is_reply_family_archived("tree_panel"))
         self.assertTrue(module_manifest.is_reply_family_archived("tree_miniapp"))
+        self.assertEqual("放养", module_manifest.get_module_name_for_reply_family("ranch"))
+        self.assertTrue(module_manifest.is_reply_family_archived("ranch"))
         self.assertEqual("太一", module_manifest.get_module_name_for_reply_family("taiyi_yindao"))
         self.assertEqual("深度闭关", module_manifest.get_module_name_for_reply_family("deep_retreat"))
         self.assertEqual("储物袋", module_manifest.get_module_name_for_reply_family("storage_bag_buy"))
@@ -394,22 +395,24 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(41, summary["totals"]["active_modules"])
-        self.assertEqual(1, summary["totals"]["archived_modules"])
-        self.assertEqual(109, summary["totals"]["reply_families"])
-        self.assertEqual(5, summary["totals"]["archived_reply_families"])
-        self.assertEqual(88, summary["totals"]["covered_sample_families"])
+        self.assertEqual(40, summary["totals"]["active_modules"])
+        self.assertEqual(2, summary["totals"]["archived_modules"])
+        self.assertEqual(108, summary["totals"]["reply_families"])
+        self.assertEqual(6, summary["totals"]["archived_reply_families"])
+        self.assertEqual(87, summary["totals"]["covered_sample_families"])
         self.assertEqual(21, summary["totals"]["missing_sample_families"])
-        self.assertEqual(32, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(31, summary["totals"]["sample_complete_modules"])
         self.assertEqual(2, summary["totals"]["sample_partial_modules"])
         self.assertEqual(2, summary["totals"]["sample_missing_modules"])
         self.assertEqual(5, summary["totals"]["contract_only_modules"])
         self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["放养"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["天星宗"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["深度闭关"]["readiness"])
         self.assertEqual(module_manifest.READINESS_CONTRACT_ONLY, rows["玄骨考校"]["readiness"])
         self.assertEqual([], rows["灵树"]["missing_sample_families"])
         self.assertTrue(rows["灵树"]["archived"])
+        self.assertTrue(rows["放养"]["archived"])
         self.assertEqual([], rows["天星宗"]["missing_sample_families"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰烽烟"]["readiness"])
         self.assertEqual(["mulan_panel", "mulan_collect", "mulan_judge", "mulan_publish", "mulan_support"], rows["慕兰烽烟"]["missing_sample_families"])

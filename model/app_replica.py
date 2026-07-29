@@ -47,6 +47,18 @@ from .config import (
 )
 from .features.dungeon_quiet import format_dungeon_quiet_until, get_dungeon_quiet_reason, is_dungeon_quiet_active
 from .features import replica_huanglong
+from .features.replica_panel import (
+    ReplicaCdKindSnapshot,
+    ReplicaCdOverviewSnapshot,
+    ReplicaPanelKindSnapshot,
+    ReplicaPanelReadModel,
+    ReplicaPanelSnapshot,
+    bind_replica_panel_read_model,
+    format_log_group_replica_cd_overview as _render_bound_replica_cd_overview,
+    format_log_group_replica_help as _render_replica_help,
+    format_log_group_replica_panel as _render_bound_replica_panel,
+    render_log_group_replica_panel,
+)
 from .features.storage_bag import apply_storage_bag_item_deltas
 from .persistence import mark_dirty
 from .replica_query_aggregator_client import (
@@ -7585,29 +7597,32 @@ def _format_log_group_zhuimo_preview_section(summary, *, html=False):
     return _format_zhuimo_recommendation_section(leader_identity_id, html=html)
 
 
-def _format_log_group_replica_summary_panel(*, html=False):
-    now = time.time()
-    records = _cleanup_replica_run_state(now)
-    lines = []
+def _build_log_group_replica_summary_rows(now=None, records=None):
+    now = float(now or time.time())
+    records = records if isinstance(records, dict) else _cleanup_replica_run_state(now)
+    rows = []
     for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
         summary = _get_log_group_replica_kind_summary(replica_kind, now=now, records=records)
-        name = _REPLICA_KIND_META[replica_kind]["name"]
-        ready = int(summary.get("ready") or 0)
-        blocked = int(summary.get("blocked") or 0)
-        if ready > 0:
-            status = f"可开 {ready}"
-        elif blocked > 0:
-            status = f"不可开 {blocked}"
-        else:
-            status = "无票/无资格" if _replica_kind_requires_ticket(replica_kind) else "无资格"
-        lines.append(f"{name}：{status}")
-    lines.append("操作：先点查询按钮看单本；可开则可点开本按钮")
-    text = "\n".join(lines)
-    return escape(text) if html else text
+        meta = _REPLICA_KIND_META[replica_kind]
+        rows.append(ReplicaPanelKindSnapshot(
+            key=replica_kind,
+            name=meta["name"],
+            short=meta["short"],
+            requires_ticket=_replica_kind_requires_ticket(replica_kind),
+            ready=int(summary.get("ready") or 0),
+            blocked=int(summary.get("blocked") or 0),
+            missing=int(summary.get("missing") or 0),
+        ))
+    return tuple(rows)
 
 
-def format_log_group_replica_cd_overview(*, html=False, max_rows=10):
-    now = time.time()
+def _format_log_group_replica_summary_panel(*, html=False):
+    snapshot = ReplicaPanelSnapshot(mode="summary", summary_rows=_build_log_group_replica_summary_rows())
+    return render_log_group_replica_panel(snapshot, html=html)
+
+
+def _build_log_group_replica_cd_snapshot(now=None):
+    now = float(now or time.time())
     records = _cleanup_replica_run_state(now)
     candidate_ids = _get_replica_candidate_identity_ids(require_username=True)
     ready_counts = {replica_kind: 0 for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
@@ -7638,39 +7653,23 @@ def format_log_group_replica_cd_overview(*, html=False, max_rows=10):
         if detail_parts:
             detail_rows.append((username or f"身份{identity_id}", "｜".join(detail_parts)))
 
-    ready_text = "｜".join(
-        f"{_REPLICA_KIND_META[replica_kind]['short']}{ready_counts[replica_kind]}"
-        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
-    )
-    busy_text = "｜".join(
-        f"{_REPLICA_KIND_META[replica_kind]['short']}{busy_counts[replica_kind]}"
-        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
-        if busy_counts[replica_kind] > 0
-    )
-    limited_text = "｜".join(
-        f"{_REPLICA_KIND_META[replica_kind]['short']}{limited_counts[replica_kind]}"
-        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
-        if limited_counts[replica_kind] > 0
+    return ReplicaCdOverviewSnapshot(
+        kinds=tuple(
+            ReplicaCdKindSnapshot(
+                key=replica_kind,
+                short=_REPLICA_KIND_META[replica_kind]["short"],
+                ready=ready_counts[replica_kind],
+                busy=busy_counts[replica_kind],
+                limited=limited_counts[replica_kind],
+            )
+            for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
+        ),
+        detail_rows=tuple(detail_rows),
     )
 
-    lines = [
-        "副本 CD 概览",
-        f"可开：{ready_text}",
-        f"冷却/占用：{busy_text or '无'}",
-    ]
-    if limited_text:
-        lines.append(f"条件受限：{limited_text}")
-    if detail_rows:
-        lines.append("明细：")
-        visible_rows = detail_rows[:max(1, int(max_rows or 10))]
-        for username, detail_text in visible_rows:
-            lines.append(f"- {username}｜{detail_text}")
-        if len(detail_rows) > len(visible_rows):
-            lines.append(f"- 另 {len(detail_rows) - len(visible_rows)} 个略")
-    else:
-        lines.append("明细：无")
-    text = "\n".join(lines)
-    return escape(text) if html else text
+
+def format_log_group_replica_cd_overview(*, html=False, max_rows=10):
+    return _render_bound_replica_cd_overview(html=html, max_rows=max_rows)
 
 
 def _log_group_replica_query_button(context, replica_kind):
@@ -7750,22 +7749,17 @@ def _build_log_group_replica_summary_buttons(now=None, *, fallback_chat_id=0, fa
 
 
 def format_log_group_replica_help(*, html=False):
-    lines = [
-        "查询：.查询昆 / .查询虚 / .查询苍 / .查询坠 / .查询黄 / .查询落 / .查询小",
-        "总览：.查询副本",
-        "冷却：.副本cd",
-        "昆吾：点开昆 -> 加入/进入 -> 自动选路",
-        "房间：面板按钮可加入推荐、进入、解散、刷新",
-    ]
-    text = "\n".join(lines)
-    return escape(text) if html else text
+    return _render_replica_help(html=html)
 
 
-def format_log_group_replica_panel(query_text="", *, html=False):
+def _build_log_group_replica_panel_snapshot(query_text="", html=False):
     raw_text = str(query_text or "").strip()
     requested_kind = _resolve_log_group_replica_query_kind(raw_text)
     if not requested_kind and raw_text == ".查询副本":
-        return _format_log_group_replica_summary_panel(html=html)
+        return ReplicaPanelSnapshot(
+            mode="summary",
+            summary_rows=_build_log_group_replica_summary_rows(),
+        )
     now = time.time()
     room = _get_latest_lightweight_room(requested_kind, now=now) if requested_kind else _get_latest_lightweight_room(now=now)
     opener_summary = None
@@ -7780,20 +7774,25 @@ def format_log_group_replica_panel(query_text="", *, html=False):
             opener_section += f"｜冷却/占用 {blocked_count}"
         if html:
             opener_section = escape(opener_section)
-    lines = [
-        _format_log_group_replica_room_line(room, html=html),
-        opener_section,
-    ]
+    preview_lines = []
     if requested_kind == _REPLICA_KIND_ZHUIMO and not room:
         preview_section = _format_log_group_zhuimo_preview_section(opener_summary, html=html)
         if preview_section:
-            lines.append(preview_section)
+            preview_lines.append(preview_section)
     if requested_kind == _REPLICA_KIND_CANGKUN and not room:
         preview_section = _format_log_group_cangkun_preview_section(opener_summary, html=html)
         if preview_section:
-            lines.append(preview_section)
-    lines.append("操作：点按钮")
-    return "\n".join(lines)
+            preview_lines.append(preview_section)
+    return ReplicaPanelSnapshot(
+        mode="detail",
+        room_line=_format_log_group_replica_room_line(room, html=html),
+        opener_line=opener_section,
+        preview_lines=tuple(preview_lines),
+    )
+
+
+def format_log_group_replica_panel(query_text="", *, html=False):
+    return _render_bound_replica_panel(query_text, html=html)
 
 
 def _build_log_group_replica_panel_buttons(requested_kind="", now=None, *, fallback_chat_id=0, fallback_listener_account_id=0):
@@ -14576,6 +14575,12 @@ async def _handle_replica_group_command(event):
         if await handler(event):
             return True
     return False
+
+
+bind_replica_panel_read_model(ReplicaPanelReadModel(
+    build_panel_snapshot=_build_log_group_replica_panel_snapshot,
+    build_cd_snapshot=_build_log_group_replica_cd_snapshot,
+))
 
 
 __all__ = [

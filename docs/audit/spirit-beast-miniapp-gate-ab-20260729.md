@@ -26,8 +26,22 @@ wxjerry `origin/main=8ff9d90f` 对照确认，上游已将旧万兽谷放养链�
 - 没有执行 `start/expedition/start/choose` live 请求；没有从上游整块搬运同步
   requests、路线权重或重试状态机。
 - Gate C 需要录制脱敏回包、确认 `expedition` 状态终态/次数/奖励字段，并完成单
-  身份串行状态机和请求预算测试后另审。旧 `model/features/ranch.py` 保持不变，
-  不在本轮切换主链。
+  身份串行状态机和请求预算测试后另审。
+
+## 2026-07-30 旧链退役补记
+
+- `model/features/ranch.py` 已改为归档兼容面，不再包含消息日志回捞、补发、静场延后
+  或 `send_game_command()` 主动发送入口。
+- `放养` manifest 已标记 archived，旧 scheduler 已从 `model/app.py` 运行顺序和 bridge
+  中移除；启动恢复会 fail closed 清理旧主动字段。
+- 为避免丢失已在旧版本发起的行迹，只保留历史 `.一键放养` 回复解析和延迟
+  `【灵兽归来】` 广播匹配；匹配以 `ranch_return_pending + 身份标签` 为准，不要求旧
+  模块仍启用。
+- 此变更只关闭旧群命令自动链，不代表 Gate C 已开放；生产仍不会自动请求万兽谷
+  MiniApp 状态变更接口。
+- 回归：放养/调度/manifest/control/旧链报告定向 `148 passed, 5 subtests passed`；
+  合并副本 Gate B 后全量 `3437 passed, 535 subtests passed`，`compileall` 与
+  `git diff --check` 通过。
 
 ## 验证
 

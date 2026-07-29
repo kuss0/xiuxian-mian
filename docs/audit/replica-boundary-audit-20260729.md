@@ -84,3 +84,16 @@
 - 抽离后定向验证为 `366 passed, 45 subtests passed`。
 
 Gate A 已销号。下一物理拆分候选改为 Gate B 日志群只读面板；房间 reducer、加入/解散和路线执行继续留在原模块。
+
+## Gate B 实施结果
+
+2026-07-30 已完成日志群只读面板拆分：
+
+- 新模块 `model/features/replica_panel.py` 定义不可变只读快照、总览/CD/帮助纯格式化，以及显式 read-model 绑定接口。
+- `model/app_replica.py` 只负责从现有单一状态源构建快照，并继续独占房间写入、按钮 token、加入/进入/解散和 reducer；原格式化函数名保留 facade。
+- `model/control.py` 仅保留 `build_log_group_replica_panel` 这一项巨型模块依赖，用于附带按钮的面板；三个只读格式化函数改从独立模块导入。
+- AST 回归固定该边界，禁止 `control.py` 再次直接导入巨型模块中的只读格式化函数。
+
+验证：`tests/test_replica_panel.py tests/test_replica_boundary_report.py tests/test_replica_huanglong.py tests/test_log_group_display.py tests/test_replica_absorb.py` 为 `308 passed, 45 subtests passed`。边界报告显示 `control.py` 对副本巨型模块的面板导入面已收敛为单个 `build_log_group_replica_panel`。
+
+Gate B 已销号。下一步为 Gate C 轻量命令编排 context；在 context 完成前继续禁止搬动房间生命周期、发送恢复和路线 reducer。

@@ -600,6 +600,19 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["tree_enabled"])
 
+    def test_wanling_legacy_ranch_module_is_archived(self):
+        send_as_id = 990334
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="万灵宗", realm="结丹后期")
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("放养", True, send_as_id=send_as_id))
+
+        self.assertFalse(ok)
+        self.assertIn("放养模块已归档", message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["ranch_enabled"])
+
     def test_sanxiu_rejects_checkin_and_sect_teach_enable(self):
         send_as_id = 990361
         state_module.ensure_identity_registered(send_as_id)
@@ -840,6 +853,30 @@ class ControlBoolCoercionTests(unittest.TestCase):
             self.assertEqual({}, state_module.state["tianxing_observation"])
             self.assertEqual({}, state_module.state["yinluo_observation"])
         mark_dirty_mock.assert_called()
+
+    def test_startup_retires_legacy_ranch_without_losing_pending_return(self):
+        send_as_id = 990348
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True, sect_name="万灵宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["ranch_enabled"] = True
+            state_module.state["next_ranch_time"] = now + 300
+            state_module.state["ranch_reply_to_msg_id"] = 7788
+            state_module.state["ranch_reply_due_at"] = now + 60
+            state_module.state["ranch_return_pending"] = True
+            state_module.state["ranch_return_wait_since"] = now - 120
+
+        with patch.object(control, "mark_dirty"):
+            control.initialize_identity_runtime(send_as_id, now=now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["ranch_enabled"])
+            self.assertEqual(0, state_module.state["next_ranch_time"])
+            self.assertEqual(0, state_module.state["ranch_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["ranch_reply_due_at"])
+            self.assertTrue(state_module.state["ranch_return_pending"])
+            self.assertEqual(now - 120, state_module.state["ranch_return_wait_since"])
 
     def test_startup_availability_clears_stale_sanxiu_sect_modules(self):
         send_as_id = 990347

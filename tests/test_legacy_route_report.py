@@ -15,13 +15,14 @@ class LegacyRouteReportTests(unittest.TestCase):
             model_dir.mkdir(parents=True)
             messages_dir.mkdir(parents=True)
             (model_dir / "config.py").write_text(
-                'CMD_FISHING_LIFT = ".提竿"\nCMD_WILD_TRAINING = ".野外历练"\n',
+                'CMD_FISHING_LIFT = ".提竿"\nCMD_WILD_TRAINING = ".野外历练"\nCMD_RANCH = ".一键放养"\n',
                 encoding="utf-8",
             )
             (model_dir / "sample.py").write_text(
                 "async def run(send_game_command, command):\n"
                 "    await send_game_command(CMD_FISHING_LIFT)\n"
                 "    await send_game_command('.野外历练 深入')\n"
+                "    await send_game_command(CMD_RANCH)\n"
                 "    await send_game_command(command)\n",
                 encoding="utf-8",
             )
@@ -29,6 +30,7 @@ class LegacyRouteReportTests(unittest.TestCase):
                 {"event_type": "sent", "ts": "2026-07-28 01:00:00 UTC+8", "message_id": 1, "sender_id": 9, "text": ".提竿"},
                 {"event_type": "message", "ts": "2026-07-28 01:01:00 UTC+8", "message_id": 2, "sender_id": 9, "text": ".提竿"},
                 {"event_type": "sent", "ts": "2026-07-28 01:02:00 UTC+8", "message_id": 3, "sender_id": 9, "text": ".野外历练 深入"},
+                {"event_type": "sent", "ts": "2026-07-28 01:03:00 UTC+8", "message_id": 4, "sender_id": 9, "text": ".一键放养"},
             ]
             (messages_dir / "2026-07-28.log").write_text(
                 "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
@@ -39,11 +41,14 @@ class LegacyRouteReportTests(unittest.TestCase):
 
         fishing = result["routes"]["fishing_text_followup"]
         wild = result["routes"]["wild_training_text_run"]
+        ranch = result["routes"]["ranch_text_run"]
         self.assertEqual(1, len(fishing["direct_send_calls"]))
         self.assertEqual(1, len(fishing["sent_events"]))
         self.assertEqual({"2026-07-28": 1}, fishing["sent_summary"]["by_day"])
         self.assertEqual(1, len(wild["direct_send_calls"]))
         self.assertEqual(1, len(wild["sent_events"]))
+        self.assertEqual(1, len(ranch["direct_send_calls"]))
+        self.assertEqual(1, len(ranch["sent_events"]))
         self.assertEqual(1, len(result["unresolved_send_calls"]))
         unresolved = result["unresolved_send_calls"][0]
         self.assertEqual("run", unresolved["function"])

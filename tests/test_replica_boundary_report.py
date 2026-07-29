@@ -21,6 +21,10 @@ class ReplicaBoundaryReportTests(unittest.TestCase):
         self.assertIn("_handle_replica_group_command", runtime_names)
         self.assertIn("_handle_replica_progress_event", runtime_names)
         self.assertIn("handle_replica_button_callback", runtime_names)
+        self.assertIn("build_log_group_replica_panel", runtime_names)
+        self.assertNotIn("format_log_group_replica_cd_overview", runtime_names)
+        self.assertNotIn("format_log_group_replica_help", runtime_names)
+        self.assertNotIn("format_log_group_replica_panel", runtime_names)
         self.assertTrue(report["boundary_edges"])
 
 

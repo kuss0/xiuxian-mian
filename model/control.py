@@ -206,7 +206,12 @@ from .message_contract import (
 )
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
-from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
+from .features.ranch import (
+    clear_ranch_state,
+    get_ranch_status_text,
+    retire_ranch_legacy_state,
+    schedule_ranch_initial_check,
+)
 from .features.small_world import clear_small_world_state, get_small_world_status_text, restore_small_world_runtime, schedule_small_world_initial_check
 from .features.stargazer import get_stargazer_status_text
 from .features.tianxing import execute_tianxing_manual_action, get_tianxing_automation_pause_text, get_tianxing_status_text, set_tianxing_automation_paused
@@ -238,8 +243,8 @@ from .features.duel import (
 from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
-from .app_replica import (
-    build_log_group_replica_panel,
+from .app_replica import build_log_group_replica_panel
+from .features.replica_panel import (
     format_log_group_replica_cd_overview,
     format_log_group_replica_help,
     format_log_group_replica_panel,
@@ -1543,9 +1548,6 @@ def _manual_disable_ranch_module_state():
 
 
 def _manual_enable_ranch_module_state(now):
-    state["ranch_enabled"] = True
-    if float(state.get("next_ranch_time", 0) or 0) > now:
-        return
     schedule_ranch_initial_check(now, persist=False, keep_last_error=True)
 
 
@@ -3926,9 +3928,17 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
         if not is_module_available("登天阶", send_as_id) and state.get("tianti_enabled"):
             _disable_tianti_module_state()
             changed = True
-        if not is_module_available("放养", send_as_id) and state.get("ranch_enabled"):
-            _manual_disable_ranch_module_state()
-            changed = True
+        if state.get("ranch_enabled"):
+            if is_module_archived("放养"):
+                retire_ranch_legacy_state(
+                    persist=False,
+                    preserve_return_pending=True,
+                    record_reason=True,
+                )
+                changed = True
+            elif not is_module_available("放养", send_as_id):
+                _manual_disable_ranch_module_state()
+                changed = True
         if not is_module_available("合欢宗", send_as_id) and state.get("hehuan_enabled"):
             _disable_hehuan_module_state()
             changed = True
@@ -4391,7 +4401,20 @@ def initialize_identity_runtime(send_as_id, now=None):
             _schedule_module_immediate_retry("温养器灵", now)
         if state.get("pet_trial_enabled") and state.get("next_pet_trial_time", 0) <= 0:
             _schedule_module_immediate_retry("器灵试炼", now)
-        if state.get("ranch_enabled") and state.get("next_ranch_time", 0) <= 0:
+        ranch_has_active_legacy_state = bool(
+            state.get("ranch_enabled")
+            or state.get("next_ranch_time", 0)
+            or state.get("ranch_reply_to_msg_id", 0)
+            or state.get("ranch_reply_due_at", 0)
+            or state.get("ranch_retry_count", 0)
+        )
+        if is_module_archived("放养") and ranch_has_active_legacy_state:
+            retire_ranch_legacy_state(
+                persist=False,
+                preserve_return_pending=True,
+                record_reason=True,
+            )
+        elif state.get("ranch_enabled") and state.get("next_ranch_time", 0) <= 0:
             schedule_ranch_initial_check(now, persist=False, keep_last_error=True)
         if state.get("wild_training_enabled") and state.get("next_wild_training_time", 0) <= 0:
             state["wild_training_retry_count"] = 0

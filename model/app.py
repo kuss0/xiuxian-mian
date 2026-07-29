@@ -82,7 +82,7 @@ from .features.concubine import (
 from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, handle_pet_formation_reply, run_pet_scheduler
 from .features.passive_inbox import handle_passive_module_card, record_passive_inbox_event
 from .command_attempt import bind_shadow_evidence
-from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
+from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast
 from .features.rare_daily_report import run_rare_daily_report_scheduler
 from .features.duel_daily_report import run_duel_daily_report_scheduler
 from .features.jiyin import handle_jiyin_delayed_action_result, handle_jiyin_prompt, run_jiyin_scheduler
@@ -510,7 +510,6 @@ _PHASEFUL_IDENTITY_SCHEDULERS = (
 )
 _ORDINARY_IDENTITY_SCHEDULERS = (
     run_pet_scheduler,
-    run_ranch_scheduler,
     run_tianxing_scheduler,
     run_wild_training_scheduler,
     run_formation_scheduler,
@@ -580,7 +579,6 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_nanlong_scheduler": {"manifest_names": ("南陇侯",), "helper": False},
     "run_pet_scheduler": {"manifest_names": ("法宝", "温养器灵", "器灵试炼", "布下剑阵"), "helper": False},
     "run_quiz_scheduler": {"manifest_names": ("玄骨考校",), "helper": False},
-    "run_ranch_scheduler": {"manifest_names": ("放养",), "helper": False},
     "run_second_soul_bootstrap_check": {"manifest_names": ("第二元神",), "helper": True},
     "run_second_soul_scheduler": {"manifest_names": ("第二元神",), "helper": False},
     "run_small_world_scheduler": {"manifest_names": ("小世界",), "helper": False},
