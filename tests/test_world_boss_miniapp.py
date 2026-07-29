@@ -21,6 +21,67 @@ class FakeClock:
 
 
 class WorldBossMiniAppTests(unittest.TestCase):
+    def test_build_websocket_url_uses_same_origin_ticket_fallback(self):
+        urls = world_boss_miniapp.build_world_boss_websocket_urls({"ticket": "ws-secret"})
+
+        self.assertEqual(1, len(urls))
+        self.assertEqual(
+            "wss://asc.aiopenai.app/ws/miniapp/xianxia-world-boss/state?ticket=ws-secret",
+            urls[0],
+        )
+
+    def test_build_websocket_url_accepts_nested_same_origin_path(self):
+        urls = world_boss_miniapp.build_world_boss_websocket_urls({
+            "websocket": {
+                "ticket": "ws-secret",
+                "wsPath": "/ws/miniapp/xianxia-world-boss/state?format=compact&ticket=stale",
+            },
+        })
+
+        self.assertEqual(
+            "wss://asc.aiopenai.app/ws/miniapp/xianxia-world-boss/state?format=compact&ticket=ws-secret",
+            urls[0],
+        )
+        self.assertNotIn("stale", urls[0])
+
+    def test_build_websocket_url_rejects_foreign_or_wrong_service_urls(self):
+        with self.assertRaisesRegex(ValueError, "ticket invalid"):
+            world_boss_miniapp.build_world_boss_websocket_urls({
+                "ticket": "ws-secret",
+                "wsUrl": "wss://example.com/ws/miniapp/xianxia-world-boss/state",
+            })
+        with self.assertRaisesRegex(ValueError, "ticket invalid"):
+            world_boss_miniapp.build_world_boss_websocket_urls({
+                "ticket": "ws-secret",
+                "wsUrl": "wss://asc.aiopenai.app/ws/miniapp/unrelated/state",
+            })
+
+    def test_decode_websocket_ping_and_nested_state(self):
+        self.assertEqual(
+            {"type": "ping"},
+            world_boss_miniapp.decode_world_boss_websocket_message('{"type":"heartbeat"}'),
+        )
+        decoded = world_boss_miniapp.decode_world_boss_websocket_message(json.dumps({
+            "type": "snapshot",
+            "data": {
+                "state": {
+                    "serverTimeMs": 123456,
+                    "boss": {"eventStatus": "active", "roomStatus": "battle", "phase": 2},
+                },
+            },
+        }))
+
+        self.assertEqual("snapshot", decoded["type"])
+        self.assertEqual("battle", decoded["boss"]["roomStatus"])
+        self.assertEqual(123456, decoded["server_time_ms"])
+
+    def test_decode_websocket_ignores_invalid_or_unrelated_payload(self):
+        self.assertEqual({}, world_boss_miniapp.decode_world_boss_websocket_message("not-json"))
+        self.assertEqual(
+            {"type": "notice"},
+            world_boss_miniapp.decode_world_boss_websocket_message('{"type":"notice","data":{"x":1}}'),
+        )
+
     def test_expires_in_caps_local_timeline_before_late_windows(self):
         duration = world_boss_miniapp._world_boss_challenge_duration_ms({
             "durationMs": 28000,
@@ -818,6 +879,53 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(["start", "start", "hit", "finish"], calls)
         self.assertEqual(1.2, clock.sleeps[0])
+
+    def test_realtime_transition_wakes_start_refresh_without_replacing_http(self):
+        calls = []
+        waits = []
+        clock = FakeClock()
+        realtime_boss = {"roomStatus": "waiting"}
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start" and calls.count("start") == 1:
+                return 200, {"ok": True, "boss": {"roomStatus": "waiting"}}
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle"},
+                    "challenge": {
+                        "challengeId": "challenge-realtime-wake",
+                        "windows": [{"id": "w1", "centerMs": 1500}],
+                    },
+                }
+            if endpoint == "hit":
+                return 200, {"ok": True, "hit": {"damageYi": 1}}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"settled": True}}
+            self.fail(endpoint)
+
+        def realtime_waiter(timeout_sec):
+            waits.append(timeout_sec)
+            realtime_boss["roomStatus"] = "battle"
+            return True
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_SESSION",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            realtime_waiter=realtime_waiter,
+            realtime_state_provider=lambda: dict(realtime_boss),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["start", "start", "hit", "finish"], calls)
+        self.assertEqual([1.2], waits)
+        self.assertNotIn(1.2, clock.sleeps)
 
     def test_start_refresh_uses_page_join_intervals(self):
         calls = []

@@ -598,16 +598,25 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertGreaterEqual(proof["samples"], 180)
 
     def test_sanitize_webapp_secret_text_redacts_start_tokens(self):
-        text = "failed initData=query_id%3Dabc&hash=secret token=fish_SECRET999 startapp=farm_SECRET888 next=df_SECRET777 tree_SECRET666"
+        text = (
+            "failed initData=query_id%3Dabc&hash=secret token=fish_SECRET999 "
+            "sessionToken=session-secret ticket=ws-secret wsTicket=ws-secret-2 "
+            "ws_ticket=ws-secret-3 startapp=farm_SECRET888 next=df_SECRET777 tree_SECRET666"
+        )
         sanitized = webapp_core.sanitize_webapp_secret_text(text)
 
         self.assertIn("initData=<redacted>", sanitized)
         self.assertIn("token=<redacted>", sanitized)
+        self.assertIn("sessionToken=<redacted>", sanitized)
+        self.assertIn("ticket=<redacted>", sanitized)
+        self.assertIn("wsTicket=<redacted>", sanitized)
+        self.assertIn("ws_ticket=<redacted>", sanitized)
         self.assertIn("startapp=<redacted>", sanitized)
         self.assertNotIn("fish_SECRET999", sanitized)
         self.assertNotIn("farm_SECRET888", sanitized)
         self.assertNotIn("df_SECRET777", sanitized)
         self.assertNotIn("tree_SECRET666", sanitized)
+        self.assertNotIn("ws-secret", sanitized)
 
     def test_sanitize_webapp_secret_text_preserves_miniapp_error_codes(self):
         text = "finish failed: trial_invalid_proof trial_token_used token=trial_SECRET999 next=df_SECRET777"

@@ -7,9 +7,11 @@ command handling.
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from ..webapp_core import (
     MiniAppAdapter,
@@ -32,10 +34,13 @@ WORLD_BOSS_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-world-boss/"
 WORLD_BOSS_MINIAPP_ENDPOINTS = {
     "start": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}start",
     "state": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}state",
+    "ws_ticket": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}ws-ticket",
     "begin": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}begin",
     "hit": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}hit",
     "finish": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}finish",
 }
+WORLD_BOSS_MINIAPP_WS_PATH_PREFIX = "/ws/miniapp/xianxia-world-boss/"
+WORLD_BOSS_MINIAPP_WS_STATE_PATH = f"{WORLD_BOSS_MINIAPP_WS_PATH_PREFIX}state"
 WORLD_BOSS_MINIAPP_START_PARAM_PATTERN = r"qyz_[A-Za-z0-9_-]{4,160}"
 NANGONGQUE_MINIAPP_GAME_KEY = "world_boss_nangongque"
 NANGONGQUE_MINIAPP_LABEL = "南宫阙世界 Boss"
@@ -124,6 +129,123 @@ _NANGONGQUE_TERMINAL_ERROR_TYPES = {
     "missing_init_data",
     "cultivator_missing",
 }
+
+
+def _world_boss_websocket_ticket(ticket_data):
+    data = ticket_data if isinstance(ticket_data, dict) else {}
+    websocket = data.get("websocket") if isinstance(data.get("websocket"), dict) else {}
+    return str(
+        data.get("ticket")
+        or data.get("wsTicket")
+        or data.get("ws_ticket")
+        or websocket.get("ticket")
+        or ""
+    ).strip()
+
+
+def _world_boss_websocket_url_values(ticket_data):
+    data = ticket_data if isinstance(ticket_data, dict) else {}
+    websocket = data.get("websocket") if isinstance(data.get("websocket"), dict) else {}
+    values = []
+    for source in (data, websocket):
+        for key in ("wsUrl", "websocketUrl", "url", "wsPath", "path"):
+            value = str(source.get(key) or "").strip()
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
+def build_world_boss_websocket_urls(ticket_data, *, adapter=None):
+    """Build strict same-origin WebSocket URLs from a ws-ticket response."""
+
+    adapter = adapter or build_world_boss_miniapp_adapter()
+    api_url = urlparse(str(adapter.api_base_url or "").rstrip("/"))
+    if not api_url.hostname or api_url.scheme.lower() not in {"http", "https"}:
+        raise ValueError("world boss WebSocket API origin invalid")
+    websocket_scheme = "wss" if api_url.scheme.lower() == "https" else "ws"
+    websocket_origin = f"{websocket_scheme}://{api_url.netloc}/"
+    expected_port = api_url.port or (443 if websocket_scheme == "wss" else 80)
+    ticket = _world_boss_websocket_ticket(ticket_data)
+    raw_urls = _world_boss_websocket_url_values(ticket_data)
+    if not raw_urls and ticket:
+        raw_urls = [WORLD_BOSS_MINIAPP_WS_STATE_PATH]
+
+    urls = []
+    for raw_url in raw_urls:
+        try:
+            parsed = urlparse(urljoin(websocket_origin, raw_url))
+            if parsed.scheme.lower() == api_url.scheme.lower():
+                parsed = parsed._replace(scheme=websocket_scheme)
+            actual_port = parsed.port or (443 if parsed.scheme.lower() == "wss" else 80)
+        except ValueError:
+            continue
+        if (
+            parsed.scheme.lower() != websocket_scheme
+            or (parsed.hostname or "").lower() != (api_url.hostname or "").lower()
+            or actual_port != expected_port
+            or parsed.username
+            or parsed.password
+            or not parsed.path.startswith(WORLD_BOSS_MINIAPP_WS_PATH_PREFIX)
+        ):
+            continue
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if ticket:
+            for key in ("ticket", "wsTicket", "ws_ticket"):
+                query.pop(key, None)
+            query["ticket"] = [ticket]
+        encoded_query = urlencode([
+            (key, item)
+            for key, values in query.items()
+            for item in values
+        ])
+        normalized = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            encoded_query,
+            "",
+        ))
+        if normalized not in urls:
+            urls.append(normalized)
+    if not urls:
+        raise ValueError("world boss WebSocket ticket invalid")
+    return tuple(urls)
+
+
+def decode_world_boss_websocket_message(message):
+    """Normalize official ping and realtime boss-state messages."""
+
+    if isinstance(message, bytes):
+        message = message.decode("utf-8", errors="replace")
+    try:
+        data = json.loads(str(message or ""))
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    event_type = str(data.get("type") or data.get("event") or "").strip().lower()
+    if event_type in {"ping", "heartbeat"}:
+        return {"type": "ping"}
+    payload = data.get("data") if isinstance(data.get("data"), dict) else None
+    if payload is None:
+        payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+    state_payload = payload.get("state") if isinstance(payload.get("state"), dict) else None
+    if state_payload is None:
+        state_payload = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else payload
+    boss = state_payload.get("boss") if isinstance(state_payload.get("boss"), dict) else None
+    if boss is None and any(
+        key in state_payload
+        for key in ("bossName", "eventStatus", "roomStatus", "hpPercent", "participantCount")
+    ):
+        boss = state_payload
+    if not isinstance(boss, dict):
+        return {"type": event_type} if event_type else {}
+    return {
+        "type": event_type or "state",
+        "boss": dict(boss),
+        "server_time_ms": state_payload.get("serverTimeMs", data.get("serverTimeMs")),
+    }
 
 
 @dataclass(frozen=True)
@@ -237,6 +359,12 @@ def build_world_boss_miniapp_flow_plan():
                 endpoint="state",
                 required_payload_keys=("token", "initData"),
                 note="status-only room and boss updates; challenge does not come from this endpoint",
+            ),
+            MiniAppFlowStep(
+                key="ws_ticket",
+                endpoint="ws_ticket",
+                required_payload_keys=("token", "initData"),
+                note="optional same-origin realtime state feed; HTTP polling remains the fallback",
             ),
             MiniAppFlowStep(
                 key="start_refresh",
@@ -1507,6 +1635,8 @@ def run_world_boss_joined_battle_lab_flow(
     entry_token="",
     window_skip_count=0,
     stop_event=None,
+    realtime_waiter=None,
+    realtime_state_provider=None,
 ):
     """Wait for room lock, refresh the joined session, then execute one battle."""
 
@@ -1622,7 +1752,14 @@ def run_world_boss_joined_battle_lab_flow(
         if float(clock()) >= wait_deadline:
             return _flow_result(False, "battle_wait_timeout", error="world boss battle not started", events=events)
         previous_room_status = _world_boss_room_status(state_data) or previous_room_status
-        sleeper(_world_boss_start_refresh_delay(state_data, state_poll_interval_sec))
+        realtime_boss = realtime_state_provider() if callable(realtime_state_provider) else {}
+        if isinstance(realtime_boss, dict):
+            previous_room_status = str(realtime_boss.get("roomStatus") or previous_room_status).strip().lower()
+        refresh_delay = _world_boss_start_refresh_delay(state_data, state_poll_interval_sec)
+        if callable(realtime_waiter):
+            realtime_waiter(refresh_delay)
+        else:
+            sleeper(refresh_delay)
 
     if not challenge:
         return _flow_result(False, "not_ready", error="world boss challenge missing", events=events)

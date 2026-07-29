@@ -69,7 +69,7 @@
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
-pip install telethon segno "requests[socks]"
+pip install telethon segno "requests[socks]" "websockets>=15,<16"
 ```
 
 仓库暂时没有锁定依赖文件。升级依赖前先跑测试，不要在生产目录里临时试包。

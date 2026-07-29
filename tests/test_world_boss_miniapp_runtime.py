@@ -7,6 +7,206 @@ from model.features import world_boss_miniapp_runtime
 
 
 class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_realtime_feed_decodes_state_and_answers_ping(self):
+        sent = []
+        received_url = []
+
+        class FakeWebsocket:
+            def __init__(self):
+                self.messages = asyncio.Queue()
+                self.messages.put_nowait('{"type":"ping"}')
+                self.messages.put_nowait(
+                    '{"type":"state","data":{"boss":{"eventStatus":"active","roomStatus":"battle","phase":2}}}'
+                )
+
+            async def recv(self):
+                return await self.messages.get()
+
+            async def send(self, message):
+                sent.append(message)
+
+        websocket = FakeWebsocket()
+
+        class FakeConnection:
+            async def __aenter__(self):
+                return websocket
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return False
+
+        def connector(url, **_kwargs):
+            received_url.append(url)
+            return FakeConnection()
+
+        def transport(request):
+            self.assertEqual("ws_ticket", request["safe_summary"]["endpoint"])
+            return 200, {"ok": True, "ticket": "ws-secret"}
+
+        feed = world_boss_miniapp_runtime._WorldBossRealtimeFeed(
+            identity_id=11,
+            token="qyz_SESSION",
+            init_data="query_id=11&hash=secret",
+            transport=transport,
+            connector=connector,
+        )
+        self.assertTrue(await feed.start())
+        self.assertTrue(await asyncio.to_thread(feed.wait_for_update, 1.0))
+
+        self.assertEqual("battle", feed.latest_boss()["roomStatus"])
+        self.assertEqual(['{"type":"pong"}'], sent)
+        self.assertEqual(1, len(received_url))
+        self.assertIn("/ws/miniapp/xianxia-world-boss/state?ticket=ws-secret", received_url[0])
+        await feed.close()
+
+    async def test_realtime_feed_reconnects_after_connection_failure(self):
+        connect_attempts = 0
+        ticket_attempts = 0
+
+        class FakeWebsocket:
+            def __init__(self):
+                self.messages = asyncio.Queue()
+                self.messages.put_nowait(
+                    '{"type":"state","data":{"boss":{"eventStatus":"active","roomStatus":"battle"}}}'
+                )
+
+            async def recv(self):
+                return await self.messages.get()
+
+            async def send(self, _message):
+                return None
+
+        class FakeConnection:
+            def __init__(self, fail):
+                self.fail = fail
+
+            async def __aenter__(self):
+                if self.fail:
+                    raise OSError("temporary websocket failure")
+                return FakeWebsocket()
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return False
+
+        def connector(_url, **_kwargs):
+            nonlocal connect_attempts
+            connect_attempts += 1
+            return FakeConnection(connect_attempts == 1)
+
+        def transport(_request):
+            nonlocal ticket_attempts
+            ticket_attempts += 1
+            return 200, {"ok": True, "ticket": f"ws-secret-{ticket_attempts}"}
+
+        feed = world_boss_miniapp_runtime._WorldBossRealtimeFeed(
+            identity_id=11,
+            token="qyz_SESSION",
+            init_data="query_id=11&hash=secret",
+            transport=transport,
+            connector=connector,
+        )
+        with patch.object(world_boss_miniapp_runtime, "WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC", 0.01):
+            self.assertTrue(await feed.start())
+            for _attempt in range(100):
+                if feed.latest_boss().get("roomStatus") == "battle":
+                    break
+                await asyncio.sleep(0.01)
+
+        self.assertGreaterEqual(connect_attempts, 2)
+        self.assertGreaterEqual(ticket_attempts, 2)
+        self.assertEqual("battle", feed.latest_boss()["roomStatus"])
+        await feed.close()
+
+    async def test_realtime_feed_deduplicates_equivalent_state_signals(self):
+        feed = world_boss_miniapp_runtime._WorldBossRealtimeFeed(
+            identity_id=11,
+            token="qyz_SESSION",
+            init_data="query_id=11&hash=secret",
+            transport=lambda _request: None,
+            connector=object(),
+        )
+        boss = {"eventStatus": "active", "roomStatus": "battle", "phase": 2, "hpPercent": 90}
+        feed._publish(boss)
+        self.assertTrue(feed.wait_for_update(0))
+
+        feed._publish({**boss, "hpPercent": 80})
+        self.assertFalse(feed.wait_for_update(0))
+        self.assertEqual(80, feed.latest_boss()["hpPercent"])
+
+        feed._publish({**boss, "phase": 3})
+        self.assertTrue(feed.wait_for_update(0))
+
+    async def test_realtime_feed_summary_redacts_ticket_errors(self):
+        feed = world_boss_miniapp_runtime._WorldBossRealtimeFeed(
+            identity_id=11,
+            token="qyz_SESSION",
+            init_data="query_id=11&hash=secret",
+            transport=lambda _request: None,
+            connector=object(),
+        )
+        feed.last_error = "failed wss://asc.aiopenai.app/ws/state?ticket=ws-secret"
+
+        summary = feed.safe_summary()
+
+        self.assertNotIn("ws-secret", str(summary))
+        self.assertIn("ticket=<redacted>", summary["last_error"])
+
+    async def test_runtime_passes_optional_realtime_callbacks_to_battle(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+        callback_types = []
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            return SimpleNamespace(
+                joined=True,
+                identity_id=kwargs["identity_id"],
+                session_token="qyz_SESSION",
+                safe_summary=lambda: {"joined": True, "status": "joined"},
+            )
+
+        class FakeFeed:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def start(self):
+                return True
+
+            async def close(self):
+                return None
+
+            def wait_for_update(self, _timeout):
+                return False
+
+            def latest_boss(self):
+                return {}
+
+            def safe_summary(self):
+                return {"available": True, "connected": True, "reconnect_count": 0, "has_state": False, "last_error": ""}
+
+        def fake_battle(_receipt, **kwargs):
+            callback_types.append((callable(kwargs.get("realtime_waiter")), callable(kwargs.get("realtime_state_provider"))))
+            return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}, "error": ""}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "_websocket_connect", object()),
+            patch.object(world_boss_miniapp_runtime, "_WorldBossRealtimeFeed", FakeFeed),
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11],
+                event,
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([(True, True)], callback_types)
+
     def test_extract_rotating_bot_qyz_entry(self):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],

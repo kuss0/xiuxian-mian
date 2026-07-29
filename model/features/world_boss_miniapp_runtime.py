@@ -19,25 +19,219 @@ from ..webapp_core import (
     MiniAppCaptureStore,
     begin_miniapp_priority_window,
     build_miniapp_launch_request,
+    execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
     end_miniapp_priority_window,
     safe_miniapp_event_detail,
+    sanitize_webapp_secret_text,
 )
 from .world_boss_miniapp import (
     WORLD_BOSS_JOIN_WINDOW_SEC,
+    build_world_boss_miniapp_request,
     build_world_boss_miniapp_adapter,
+    build_world_boss_websocket_urls,
+    decode_world_boss_websocket_message,
     join_world_boss_miniapp_lab,
     run_world_boss_joined_battle_lab_flow,
 )
 
+try:
+    from websockets.asyncio.client import connect as _websocket_connect
+except ImportError:  # pragma: no cover - optional production dependency
+    _websocket_connect = None
+
 
 WORLD_BOSS_MINIAPP_HTTP_TIMEOUT = (5, 20)
 WORLD_BOSS_MINIAPP_CAPTURE_DIR = Path(MESSAGES_DIR) / "miniapp-captures"
+WORLD_BOSS_MINIAPP_WS_CONNECT_TIMEOUT_SEC = 8.0
+WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC = 5.0
+WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC = 5.0
 # The event can be killed by other players before the local 16-window timeline
 # ends.  Leave two tail windows unused so every account has time to submit its
 # own final settlement while preserving per-identity low-profile adjustments.
 WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS = 2
+
+
+def _world_boss_websocket_proxy():
+    return str(
+        (TG_REQUESTS_PROXIES or {}).get("https")
+        or (TG_REQUESTS_PROXIES or {}).get("http")
+        or ""
+    ).strip() or None
+
+
+class _WorldBossRealtimeFeed:
+    """Optional WebSocket wake-up feed; HTTP remains authoritative."""
+
+    def __init__(
+        self,
+        *,
+        identity_id,
+        token,
+        init_data,
+        transport,
+        capture_sink=None,
+        connector=None,
+    ):
+        self.identity_id = int(identity_id or 0)
+        self.token = str(token or "").strip()
+        self.init_data = str(init_data or "")
+        self.transport = transport
+        self.capture_sink = capture_sink
+        self.connector = connector if connector is not None else _websocket_connect
+        self.connected = False
+        self.last_error = ""
+        self.reconnect_count = 0
+        self._latest_boss = {}
+        self._last_signal = None
+        self._latest_lock = threading.Lock()
+        self._wake_event = threading.Event()
+        self._closed = asyncio.Event()
+        self._task = None
+
+    async def start(self):
+        if not self.connector or not self.token or not self.init_data or self.transport is None:
+            return False
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
+        return True
+
+    async def close(self):
+        self._closed.set()
+        self._wake_event.set()
+        task = self._task
+        self._task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def latest_boss(self):
+        with self._latest_lock:
+            return dict(self._latest_boss)
+
+    def safe_summary(self):
+        return {
+            "available": self.connector is not None,
+            "connected": bool(self.connected),
+            "reconnect_count": int(self.reconnect_count or 0),
+            "has_state": bool(self.latest_boss()),
+            "last_error": sanitize_webapp_secret_text(self.last_error),
+        }
+
+    def wait_for_update(self, timeout_sec):
+        signaled = self._wake_event.wait(max(0.0, float(timeout_sec or 0)))
+        if signaled:
+            self._wake_event.clear()
+        return bool(signaled)
+
+    def _publish(self, boss):
+        if not isinstance(boss, dict):
+            return
+        signal = (
+            str(boss.get("eventStatus") or ""),
+            str(boss.get("roomStatus") or ""),
+            bool(boss.get("battleLocked")),
+            str(boss.get("phase") or ""),
+            str(boss.get("failureReason") or ""),
+        )
+        with self._latest_lock:
+            self._latest_boss = dict(boss)
+            if signal == self._last_signal:
+                return
+            self._last_signal = signal
+        self._wake_event.set()
+
+    async def _request_ticket(self):
+        request = build_world_boss_miniapp_request(
+            "ws_ticket",
+            token=self.token,
+            init_data=self.init_data,
+        )
+        return await asyncio.to_thread(
+            execute_miniapp_http_request,
+            request,
+            self.transport,
+            backoff_sec=(),
+            capture_sink=self.capture_sink,
+            capture_source=f"world_boss:ws_ticket:{self.identity_id}",
+            step_key="ws_ticket",
+        )
+
+    async def _run(self):
+        first_connection = True
+        while not self._closed.is_set():
+            try:
+                ticket_result = await self._request_ticket()
+                if not ticket_result.ok:
+                    self.last_error = str(
+                        sanitize_webapp_secret_text(ticket_result.error) or "ws ticket failed"
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            self._closed.wait(),
+                            timeout=WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                urls = build_world_boss_websocket_urls(ticket_result.data)
+                connection_error = None
+                for url in urls:
+                    try:
+                        async with self.connector(
+                            url,
+                            proxy=_world_boss_websocket_proxy(),
+                            open_timeout=WORLD_BOSS_MINIAPP_WS_CONNECT_TIMEOUT_SEC,
+                            close_timeout=3,
+                            ping_interval=20,
+                            ping_timeout=20,
+                            max_size=2 * 1024 * 1024,
+                        ) as websocket:
+                            self.connected = True
+                            self.last_error = ""
+                            if not first_connection:
+                                self.reconnect_count += 1
+                            first_connection = False
+                            while not self._closed.is_set():
+                                raw_message = await asyncio.wait_for(
+                                    websocket.recv(),
+                                    timeout=WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC,
+                                )
+                                message = decode_world_boss_websocket_message(raw_message)
+                                if message.get("type") == "ping":
+                                    await websocket.send('{"type":"pong"}')
+                                    continue
+                                self._publish(message.get("boss"))
+                        connection_error = None
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        connection_error = exc
+                        self.connected = False
+                        self._wake_event.set()
+                        continue
+                if connection_error is not None:
+                    raise connection_error
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                self.last_error = "world boss WebSocket state timeout"
+            except Exception as exc:
+                self.last_error = str(
+                    sanitize_webapp_secret_text(exc) or "world boss WebSocket failed"
+                )
+            finally:
+                self.connected = False
+                self._wake_event.set()
+            if self._closed.is_set():
+                return
+            try:
+                await asyncio.wait_for(self._closed.wait(), timeout=WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC)
+            except asyncio.TimeoutError:
+                pass
 
 
 def extract_world_boss_miniapp_launch(event, *, message_text=""):
@@ -236,8 +430,24 @@ async def run_world_boss_miniapp_event(
         if launch_delay_sec > 0:
             await asyncio.sleep(launch_delay_sec)
         battle_token = getattr(receipt, "session_token", "") or launch["token"]
+        realtime_feed = None
+        realtime_summary = {"available": _websocket_connect is not None, "started": False}
         try:
             try:
+                if _websocket_connect is not None:
+                    def websocket_transport(request):
+                        return _requests_transport(request)
+
+                    candidate_feed = _WorldBossRealtimeFeed(
+                        identity_id=identity_id,
+                        token=battle_token,
+                        init_data=init_data,
+                        transport=websocket_transport,
+                        capture_sink=capture_sink,
+                    )
+                    if await candidate_feed.start():
+                        realtime_feed = candidate_feed
+                        realtime_summary["started"] = True
                 battle = await asyncio.to_thread(
                     run_world_boss_joined_battle_lab_flow,
                     receipt,
@@ -249,8 +459,13 @@ async def run_world_boss_miniapp_event(
                     capture_source=f"world_boss:battle:{identity_id}",
                     window_skip_count=window_skip_count,
                     stop_event=stop_event,
+                    realtime_waiter=realtime_feed.wait_for_update if realtime_feed else None,
+                    realtime_state_provider=realtime_feed.latest_boss if realtime_feed else None,
                 )
             finally:
+                if realtime_feed is not None:
+                    realtime_summary.update(realtime_feed.safe_summary())
+                    await realtime_feed.close()
                 if session is not None:
                     session.close()
             safe_battle = safe_miniapp_event_detail(battle)
@@ -264,6 +479,7 @@ async def run_world_boss_miniapp_event(
             battle_summary["identity_extra_window_skip_count"] = identity_extra_window_skip
             battle_summary["launch_priority_index"] = int(priority_index)
             battle_summary["launch_delay_ms"] = int(round(launch_delay_sec * 1000))
+            battle_summary["realtime_feed"] = dict(realtime_summary)
             battle_result = {
                 "identity_id": identity_id,
                 "phase": "battle",
