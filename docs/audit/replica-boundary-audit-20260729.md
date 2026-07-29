@@ -140,3 +140,22 @@ tests/test_log_group_display.py` 为 `310 passed, 45 subtests passed`。巨型�
 
 Gate C 仍未整体销号。下一段只评审 join 的高层命令编排端口；enter/dissolve、职业与神识
 规划、房间 reducer 和恢复链继续保持原边界。
+
+## Gate C3a 实施结果
+
+2026-07-30 继续抽离加入成员的通用串行 dispatch 尾段：
+
+- `replica_commands.py` 新增 runtime、identity、state、view 分组端口，承接 selector 去重、
+  身份门禁、加入占位、单次发送、未知发送落账、快重试调度和最终加入摘要。
+- 苍坤五职业/神识、落云掌天瓶、虚天卦象等副本特有前置仍在 `app_replica.py`，只有前置
+  通过后才进入新 dispatch；房间写入、加入 reducer、回包恢复和快重试实现也未迁移。
+- `_handle_lightweight_join_command` facade 与原 patch 路径不变，本轮不改变加入顺序、发送
+  次数、优先级、未知结果语义或日志群按钮。
+
+验证：同一组副本聚焦回归为 `311 passed, 45 subtests passed`；巨型文件降至
+`14363` 行，轻量命令段跨区出边 `137 -> 126`，其中到轻量房间域 `96 -> 91`，
+到虚天状态域 `24 -> 22`，入边保持 `6`，跨区强连通环仍为 `0`。全量为
+`3443 passed, 535 subtests passed`；`py_compile` 与 `git diff --check` 通过。
+
+Gate C 尚未整体销号。下一步先观察 C3a 生产边界，再决定是否抽 join 前置；enter/dissolve
+和房间生命周期仍不与该段合并迁移。

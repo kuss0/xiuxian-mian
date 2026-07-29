@@ -13157,6 +13157,47 @@ def _parse_lightweight_join_usernames(raw_text):
     )
 
 
+def _replica_join_dispatch_context():
+    return replica_commands.ReplicaJoinDispatchContext(
+        config=replica_commands.ReplicaJoinDispatchConfig(
+            cangkun_kind=_REPLICA_KIND_CANGKUN,
+        ),
+        runtime=replica_commands.ReplicaJoinDispatchRuntimePort(
+            send_game_command=send_game_command,
+            build_send_intent=_replica_send_intent,
+            schedule_fast_retry=_schedule_lightweight_game_command_fast_retry,
+            now=time.time,
+        ),
+        identity=replica_commands.ReplicaJoinDispatchIdentityPort(
+            resolve_identity=_resolve_replica_command_identity,
+            is_identity_enabled=get_identity_enabled,
+            is_cangkun_realm_available=_is_cangkun_realm_available,
+            format_cangkun_realm_requirement=_format_cangkun_realm_requirement,
+            get_identity_block_reason=_get_replica_identity_block_reason,
+            get_identity_username=lambda identity_id: (get_send_as_profile(identity_id) or {}).get("username") or "",
+        ),
+        state=replica_commands.ReplicaJoinDispatchStatePort(
+            reserve_join=_reserve_external_dispatch_join,
+            mark_join_sent=_mark_external_dispatch_join_sent,
+            set_room=_set_lightweight_last_room,
+        ),
+        view=replica_commands.ReplicaJoinDispatchViewPort(
+            get_kind_name=lambda replica_kind: (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本",
+            get_enter_command=lambda replica_kind: (_REPLICA_KIND_META.get(replica_kind) or {}).get("enter_command") or "",
+            is_room_enter_actionable=_is_lightweight_room_enter_actionable,
+            is_room_dissolve_actionable=_is_lightweight_room_dissolve_actionable,
+            get_room_team_identity_ids=_get_lightweight_room_team_identity_ids,
+            get_room_usernames=_get_lightweight_room_usernames,
+            format_team_notice_details=_format_replica_team_notice_details,
+            format_cangkun_sense=_format_cangkun_spiritual_sense_status,
+            format_next_commands=_format_lightweight_next_commands,
+            build_room_buttons=_build_lightweight_room_action_buttons,
+            strip_html=_strip_html_code_tags,
+            send_group_message=_send_replica_group_message,
+        ),
+    )
+
+
 async def _handle_lightweight_join_command(event):
     listener_account_id = _get_replica_event_listener_account_id(event)
     if not listener_account_id:
@@ -13337,115 +13378,14 @@ async def _handle_lightweight_join_command(event):
                 buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
             )
             return True
-    sent_usernames = []
-    unknown_usernames = []
-    skipped = []
-    seen_identity_ids = set()
-    for selector in selectors:
-        identity_id = _resolve_replica_command_identity(selector)
-        if identity_id <= 0:
-            skipped.append(_format_replica_skipped_selector(selector, "未找到身份"))
-            continue
-        if not get_identity_enabled(identity_id):
-            skipped.append(_format_replica_skipped_selector(selector, "身份未启用"))
-            continue
-        if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
-            skipped.append(_format_replica_skipped_selector(selector, _format_cangkun_realm_requirement(identity_id)))
-            continue
-        if identity_id == leader_identity_id or identity_id in seen_identity_ids:
-            continue
-        seen_identity_ids.add(identity_id)
-        blocked_reason = _get_replica_identity_block_reason(identity_id)
-        if blocked_reason:
-            skipped.append(_format_replica_skipped_selector(selector, blocked_reason))
-            continue
-        reserve_now = time.time()
-        allowed, reserve_reason = _reserve_external_dispatch_join(identity_id, replica_kind, room_id, event, reserve_now)
-        if not allowed:
-            skipped.append(_format_replica_skipped_selector(selector, reserve_reason))
-            continue
-        msg = await send_game_command(
-            command,
-            track=False,
-            send_as_id=identity_id,
-            priority="urgent_reactive",
-            **_replica_send_intent(
-                op_id=f"replica_lightweight_join:{int(getattr(event, 'chat_id', 0) or 0)}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
-                chain_id=f"replica_lightweight_room:{replica_kind}:{room_id}",
-            ),
-        )
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-        profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or selector)
-        sent_msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
-        if sent_msg_id > 0:
-            _mark_external_dispatch_join_sent(
-                identity_id,
-                replica_kind,
-                room_id,
-                sent_msg_id,
-                sent_at,
-            )
-            _schedule_lightweight_game_command_fast_retry(
-                "join",
-                identity_id,
-                replica_kind,
-                room_id,
-                command,
-                int(getattr(event, "chat_id", 0) or 0),
-                int(getattr(event, "id", 0) or 0),
-                sent_msg_id,
-            )
-            sent_usernames.append(profile_username)
-        else:
-            _mark_external_dispatch_join_sent(identity_id, replica_kind, room_id, 0, sent_at)
-            unknown_usernames.append(profile_username)
-    requested_usernames = sent_usernames + unknown_usernames
-    room["join_requested_usernames"] = _normalize_replica_username_list((room.get("join_requested_usernames") or []) + requested_usernames)
-    if unknown_usernames:
-        room["join_unknown_usernames"] = _normalize_replica_username_list((room.get("join_unknown_usernames") or []) + unknown_usernames)
-    room["updated_at"] = time.time()
-    _set_lightweight_last_room(room)
-    if unknown_usernames:
-        action_label = "已请求加入"
-    else:
-        action_label = "已发送加入" if sent_usernames else "未发送加入"
-    summary = f"{action_label}{_REPLICA_KIND_META[replica_kind]['name']} {room_id}：{' '.join(requested_usernames) if requested_usernames else '无'}"
-    if sent_usernames and unknown_usernames:
-        summary += f"\n已发出：{' '.join(sent_usernames)}"
-    if unknown_usernames:
-        summary += f"\n发送结果未知，等待游戏回包：{' '.join(unknown_usernames)}"
-    if skipped:
-        summary += f"\n未发送：{' '.join(skipped)}"
-    enter_actionable = _is_lightweight_room_enter_actionable(room)
-    if replica_kind == _REPLICA_KIND_CANGKUN:
-        cangkun_team_ids = _get_lightweight_room_team_identity_ids(room, now=time.time())
-        projected_usernames = _get_lightweight_room_usernames(room)
-        detail_lines = _format_replica_team_notice_details(
-            replica_kind,
-            projected_usernames,
-            now=time.time(),
-            team_professions_by_username=room.get("team_professions_by_username"),
-        )
-        if detail_lines:
-            summary += "\n预计队伍明细：\n" + "\n".join(detail_lines)
-        summary += "\n" + _format_cangkun_spiritual_sense_status(cangkun_team_ids)
-    summary = escape(summary)
-    next_commands = [_REPLICA_KIND_META[replica_kind]["enter_command"]] if enter_actionable else []
-    if _is_lightweight_room_dissolve_actionable(room):
-        next_commands.append(".解散副本")
-    if not next_commands:
-        next_commands.append(".查询副本")
-    summary += "\n\n" + _format_lightweight_next_commands(*next_commands, html=True)
-    await _send_replica_group_message(
-        event.client,
-        event.chat_id,
-        summary,
-        parse_mode="html",
-        listener_account_id=listener_account_id,
-        log_text=_strip_html_code_tags(summary),
-        buttons=_build_lightweight_room_action_buttons(room, include_enter=enter_actionable, include_dissolve=True, include_query=True),
+    return await replica_commands.dispatch_lightweight_join_members(
+        _replica_join_dispatch_context(),
+        event,
+        listener_account_id,
+        room,
+        selectors,
+        command,
     )
-    return True
 
 
 async def _handle_lightweight_enter_command(event):

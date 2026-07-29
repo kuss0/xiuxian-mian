@@ -186,6 +186,89 @@ class ReplicaCommandBoundaryTests(unittest.IsolatedAsyncioTestCase):
         remove_flow.assert_not_called()
         self.assertIn("等待开房广播", send_group.await_args.args[2])
 
+    async def test_join_dispatch_uses_grouped_ports_and_updates_room(self):
+        send_game = AsyncMock(return_value=SimpleNamespace(id=501, sent_at=1001.0))
+        send_group = AsyncMock(return_value=SimpleNamespace(id=700))
+        set_room = Mock(return_value=True)
+        mark_sent = Mock()
+        schedule_retry = Mock(return_value=True)
+        context = replica_commands.ReplicaJoinDispatchContext(
+            config=replica_commands.ReplicaJoinDispatchConfig(cangkun_kind="cangkun"),
+            runtime=replica_commands.ReplicaJoinDispatchRuntimePort(
+                send_game_command=send_game,
+                build_send_intent=Mock(return_value={"source_module": "自动副本"}),
+                schedule_fast_retry=schedule_retry,
+                now=Mock(side_effect=[1000.0, 1002.0]),
+            ),
+            identity=replica_commands.ReplicaJoinDispatchIdentityPort(
+                resolve_identity=Mock(return_value=991202),
+                is_identity_enabled=Mock(return_value=True),
+                is_cangkun_realm_available=Mock(return_value=True),
+                format_cangkun_realm_requirement=Mock(return_value=""),
+                get_identity_block_reason=Mock(return_value=""),
+                get_identity_username=Mock(return_value="Member"),
+            ),
+            state=replica_commands.ReplicaJoinDispatchStatePort(
+                reserve_join=Mock(return_value=(True, "")),
+                mark_join_sent=mark_sent,
+                set_room=set_room,
+            ),
+            view=replica_commands.ReplicaJoinDispatchViewPort(
+                get_kind_name=Mock(return_value="虚天殿"),
+                get_enter_command=Mock(return_value=".进入虚天殿"),
+                is_room_enter_actionable=Mock(return_value=True),
+                is_room_dissolve_actionable=Mock(return_value=True),
+                get_room_team_identity_ids=Mock(return_value=[]),
+                get_room_usernames=Mock(return_value=[]),
+                format_team_notice_details=Mock(return_value=[]),
+                format_cangkun_sense=Mock(return_value=""),
+                format_next_commands=Mock(return_value="next"),
+                build_room_buttons=Mock(return_value=[["room"]]),
+                strip_html=Mock(side_effect=lambda text: text),
+                send_group_message=send_group,
+            ),
+        )
+        room = {
+            "replica_kind": "virtual_hall",
+            "room_id": "47",
+            "leader_identity_id": 991201,
+        }
+        event = SimpleNamespace(chat_id=-100777, id=600, client=object())
+
+        handled = await replica_commands.dispatch_lightweight_join_members(
+            context,
+            event,
+            9001,
+            room,
+            ["@member"],
+            ".加入虚天殿 47",
+        )
+
+        self.assertTrue(handled)
+        send_game.assert_awaited_once_with(
+            ".加入虚天殿 47",
+            track=False,
+            send_as_id=991202,
+            priority="urgent_reactive",
+            source_module="自动副本",
+        )
+        mark_sent.assert_called_once_with(991202, "virtual_hall", "47", 501, 1001.0)
+        schedule_retry.assert_called_once_with(
+            "join",
+            991202,
+            "virtual_hall",
+            "47",
+            ".加入虚天殿 47",
+            -100777,
+            600,
+            501,
+        )
+        set_room.assert_called_once_with(room)
+        self.assertEqual(["@member"], room["join_requested_usernames"])
+        self.assertEqual(1002.0, room["updated_at"])
+        self.assertIn("已发送加入虚天殿 47：@member", send_group.await_args.args[2])
+        self.assertIn("next", send_group.await_args.args[2])
+
 
 if __name__ == "__main__":
     unittest.main()
