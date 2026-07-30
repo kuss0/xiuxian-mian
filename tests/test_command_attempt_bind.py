@@ -1,5 +1,7 @@
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -236,3 +238,17 @@ def test_offline_replay_reports_decisions_without_persisting(bind_identities, tm
     assert report["counts"] == {"matched": 1, "unmatched": 1}
     assert report["rows"][0]["matched_op_id"] == attempt.op_id
     assert list_evidence(attempt.op_id) == []
+
+
+def test_replay_tool_is_executable_from_repo_root():
+    tool = Path(__file__).parents[1] / "tools" / "attempt_bind_replay.py"
+    result = subprocess.run(
+        [sys.executable, str(tool), "--help"],
+        cwd=tool.parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Offline CommandAttempt binding replay" in result.stdout
