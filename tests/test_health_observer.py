@@ -1740,6 +1740,97 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(any(item["module"] == "fishing" for item in summary))
 
+    def test_module_summary_treats_stargazer_miniapp_error_with_retry_as_warn(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, stargazer_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_stargazer_panel_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    stargazer_last_action TEXT NOT NULL DEFAULT '',
+                    stargazer_queued_action TEXT NOT NULL DEFAULT '',
+                    stargazer_followup_due_at REAL NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'observer')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, stargazer_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_stargazer_panel_time) VALUES(42, 0)")
+            conn.execute(
+                """
+                INSERT INTO identity_runtime_state(
+                    send_as_id,
+                    stargazer_last_action,
+                    stargazer_queued_action,
+                    stargazer_followup_due_at
+                ) VALUES(42, 'miniapp_error', 'panel', ?)
+                """,
+                (now + 900,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+            stargazer = next(item for item in summary if item["module"] == "stargazer")
+            self.assertEqual("warn", stargazer["status"])
+            self.assertIn("状态:miniapp_error", stargazer["details"])
+
+            conn.execute(
+                """
+                UPDATE identity_runtime_state
+                SET stargazer_last_action='miniapp_waiting_panel',
+                    stargazer_queued_action='',
+                    stargazer_followup_due_at=0
+                WHERE send_as_id=42
+                """
+            )
+            conn.execute(
+                "UPDATE identity_timers SET next_stargazer_panel_time=? WHERE send_as_id=42",
+                (now + 3600,),
+            )
+            recovered = health_observer.build_module_summary(conn, now)
+
+        stargazer = next(item for item in recovered if item["module"] == "stargazer")
+        self.assertEqual("ok", stargazer["status"])
+
+    def test_module_summary_treats_unscheduled_stargazer_miniapp_error_as_error(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, stargazer_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_stargazer_panel_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    stargazer_last_action TEXT NOT NULL DEFAULT '',
+                    stargazer_queued_action TEXT NOT NULL DEFAULT '',
+                    stargazer_followup_due_at REAL NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'observer')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, stargazer_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_stargazer_panel_time) VALUES(42, 0)")
+            conn.execute(
+                """
+                INSERT INTO identity_runtime_state(
+                    send_as_id,
+                    stargazer_last_action,
+                    stargazer_queued_action,
+                    stargazer_followup_due_at
+                ) VALUES(42, 'miniapp_error', '', 0)
+                """
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        stargazer = next(item for item in summary if item["module"] == "stargazer")
+        self.assertEqual("error", stargazer["status"])
+
     def test_module_summary_treats_small_world_manifest_loss_as_game_result(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:

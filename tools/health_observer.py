@@ -65,7 +65,10 @@ COOLDOWN_REPLY_PATTERN = re.compile(
 UNANCHORED_GAME_BROADCAST_PATTERN = re.compile(
     r"【世界通告[｜】]|✨\s*(天道感应|元神回响)：|深度闭关总结|元神归窍总结|【深度闭关总结】"
 )
-MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
+MODULE_ERROR_ATTENTION_PATTERN = re.compile(
+    r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual|miniapp_error",
+    re.I,
+)
 BENIGN_MODULE_ERROR_PATTERN = re.compile(
     r"今日.*已达上限|今日.*已达\s*\d+\s*轮|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次|回到时间线重算|需重算时间线|不连续查盘|显灵失败，停止本轮"
 )
@@ -148,6 +151,15 @@ MODULE_HEALTH_SPECS = [
         "next_fields": (("next_fishing_time", "下次"),),
         "last_result_fields": (("fishing_last_result", "结果"),),
         "last_error_fields": (("fishing_last_error", "错误"),),
+    },
+    {
+        "key": "stargazer",
+        "label": "观星台",
+        "enabled": "stargazer_enabled",
+        "phase_fields": (("stargazer_queued_action", "待执行"),),
+        "due_fields": (("stargazer_followup_due_at", "重试截止"),),
+        "next_fields": (("next_stargazer_panel_time", "下次"),),
+        "last_error_fields": (("stargazer_last_action", "状态"),),
     },
     {
         "key": "hehuan",
@@ -1316,6 +1328,12 @@ def module_error_is_retryable_warning(field: str, text: object, payload: dict[st
 
 def module_error_has_scheduled_retry(text: object, spec: dict[str, object], value_for, now: float) -> bool:
     raw = str(text or "").strip()
+    if (
+        str(spec.get("key") or "") == "stargazer"
+        and raw == "miniapp_error"
+        and positive_epoch(value_for("stargazer_followup_due_at")) > now
+    ):
+        return True
     if not raw or "失败" not in raw:
         return False
     has_future_next = any(
