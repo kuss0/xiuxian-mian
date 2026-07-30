@@ -999,13 +999,20 @@ def build_world_boss_proof(
     if not clean_actions and duration_ms is None:
         raise ValueError("boss actions missing")
     payloads = [dict(item or {}) for item in hit_payloads or ()]
-    if duration_ms is None:
-        duration_ms = max(action["t"] + action["holdMs"] for action in clean_actions)
-        duration_ms = max(duration_ms, _int_value(challenge.get("minDurationMs"), 0))
-    if player_hp is None:
-        player_hp = _latest_value(payloads, ("playerHp", "hp"), challenge.get("playerHp", 0))
     if dead is None:
         dead = _latest_value(payloads, ("dead", "isDead"), challenge.get("dead", False))
+    minimum_duration_ms = 0 if dead else max(0, _int_value(challenge.get("minDurationMs"), 0))
+    maximum_duration_ms = max(0, _int_value(challenge.get("maxDurationMs"), 0))
+    expiry_ms = _world_boss_challenge_expiry_ms(challenge)
+    if maximum_duration_ms:
+        minimum_duration_ms = min(minimum_duration_ms, maximum_duration_ms)
+    if expiry_ms:
+        minimum_duration_ms = min(minimum_duration_ms, expiry_ms)
+    if duration_ms is None:
+        duration_ms = max(action["t"] + action["holdMs"] for action in clean_actions)
+    duration_ms = max(_int_value(duration_ms), minimum_duration_ms)
+    if player_hp is None:
+        player_hp = _latest_value(payloads, ("playerHp", "hp"), challenge.get("playerHp", 0))
     if client_stats is None:
         client_stats = _client_stats(payloads)
     if realtime_damage_applied is None:
@@ -2133,6 +2140,12 @@ def run_world_boss_joined_battle_lab_flow(
             break
 
     challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
+    minimum_finish_ms = min(
+        challenge_duration_ms,
+        max(0, _int_value(challenge.get("minDurationMs"), 0)),
+    )
+    if expiry_finish_target_ms:
+        minimum_finish_ms = min(minimum_finish_ms, expiry_finish_target_ms)
     if dead:
         finish_target_ms = min(challenge_duration_ms, death_elapsed_ms + 1250)
     else:
@@ -2147,6 +2160,10 @@ def run_world_boss_joined_battle_lab_flow(
                 default=0,
             ) + WORLD_BOSS_FINISH_GRACE_MS,
         )
+        # Low-profile identities may deliberately skip tail windows.  The
+        # server minimum still applies to settlement even when no more hits are
+        # planned, so keep the timeline alive without fabricating extra actions.
+        finish_target_ms = max(finish_target_ms, minimum_finish_ms)
     if expiry_finish_target_ms:
         finish_target_ms = min(finish_target_ms, expiry_finish_target_ms)
     current_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))

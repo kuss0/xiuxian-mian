@@ -356,6 +356,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
     def test_window_skip_count_omits_tail_windows_without_changing_server_limit(self):
         calls = []
         hit_windows = []
+        finish_proofs = []
         clock = FakeClock()
 
         def transport(request):
@@ -370,6 +371,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
                         "mode": "qyz_focus_burst_v2",
                         "challengeId": "challenge-window-skip",
                         "durationMs": 7600,
+                        "minDurationMs": 7200,
                         "windows": [
                             {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
                             {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
@@ -388,6 +390,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
                     "boss": {"actionLimit": 1, "actionsUsed": 0, "actionsRemaining": 1},
                 }
             if endpoint == "finish":
+                finish_proofs.append(request["payload"]["bossProof"])
                 return 200, {
                     "ok": True,
                     "result": {
@@ -418,6 +421,36 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(2, result["data"]["result"]["target_window_count"])
         self.assertEqual(2, result["data"]["result"]["window_skip_count"])
         self.assertFalse(result["data"]["result"]["full_window_run"])
+        self.assertGreaterEqual(finish_proofs[0]["durationMs"], 7200)
+
+    def test_explicit_proof_duration_cannot_undercut_server_minimum(self):
+        proof = world_boss_miniapp.build_world_boss_proof(
+            {
+                "mode": "qyz_focus_burst_v2",
+                "challengeId": "challenge-min-duration",
+                "minDurationMs": 75000,
+            },
+            [{"elapsedMs": 64000, "holdMs": 1200}],
+            [],
+            duration_ms=67500,
+        )
+
+        self.assertEqual(75000, proof["durationMs"])
+
+    def test_dead_proof_may_settle_before_normal_minimum(self):
+        proof = world_boss_miniapp.build_world_boss_proof(
+            {
+                "mode": "qyz_focus_burst_v2",
+                "challengeId": "challenge-dead-early",
+                "minDurationMs": 75000,
+            },
+            [{"elapsedMs": 12000, "holdMs": 1200}],
+            [],
+            duration_ms=14500,
+            dead=True,
+        )
+
+        self.assertEqual(14500, proof["durationMs"])
 
     def test_begin_uses_server_started_at_under_high_rtt(self):
         calls = []

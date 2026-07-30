@@ -50,3 +50,16 @@ wxjerry `91f3626c` 新增 WebSocket 实时状态和重连，可用于未来独�
 5. WA 保持候选优先级 0；4 个登录账号仍可并行，单账号内部请求继续串行。
 
 离线验收：focused `179 passed`；全量 `3395 passed, 535 subtests passed`。生产已部署，下一场真实事件仍是最终销号门槛。
+
+## 2026-07-30 少出手身份结算修复
+
+7 月 29 日生产 capture 暴露了“额外少出手”与服务端最短结算时长之间的独立缺口：
+
+- WA (`8659059191`) 与吧唧登录账号 (`301299112`) 均按配置完成 12 次有效命中，命中请求全部成功。
+- 两个身份在约 `67.5s` 提交 `/finish`，服务端均明确返回 HTTP 400 `boss_duration_too_short`。
+- 另外两个只使用固定结算预留的身份完成 14 次命中，并在约 `78.8s` 成功结算。
+- 根因是裁掉两个尾部窗口后，执行器同时用最后一个“实际出手窗口”提前了结算时刻，忽略 challenge 的 `minDurationMs`。
+
+修复后，额外少出手只减少 `/hit` 数量；存活身份仍保持时间线至服务端 `minDurationMs` 后再提交 `/finish`，不会补打被裁掉的窗口。死亡结算仍允许早于普通最短时长，避免改变原有死亡终态。proof 的显式 `durationMs` 同样不能低于可行的服务端最短时长，并受 `maxDurationMs`/`expiresIn` 上限约束。
+
+离线验收：世界 Boss focused `107 passed`；全量 `3469 passed, 536 subtests passed`；`py_compile` 与 `git diff --check` 通过。下一场真实事件需确认两个额外少出手身份均保留 12 次目标命中且 `/finish` 不再返回 `boss_duration_too_short`，通过后再销号。
