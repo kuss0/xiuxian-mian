@@ -4326,9 +4326,24 @@ async def handle_concubine_status_reply(text, now, reply_to, matched_family=None
         )
         return True
 
-    parsed = _parse_status_panel(text, now)
+    raw_text = text or ""
+    if _is_phaseful_summary_text(raw_text):
+        _set_phase("idle")
+        retry_at = _schedule_status_recheck(now)
+        if gift_status_flow:
+            state["concubine_gift_status_msg_id"] = 0
+            state["concubine_gift_attempt_day"] = ""
+            state["concubine_gift_last_error"] = "赠予前状态查询触发闭关/元婴结算，稍后重试"
+        else:
+            state["concubine_status_msg_id"] = 0
+            state["concubine_last_error"] = "侍妾状态查询触发闭关/元婴结算，稍后重试"
+        console_log(f"🌸 侍妾状态查询被闭关/元婴结算占用，延后至 {fmt_abs_ts(retry_at)} 校准。")
+        save_state()
+        return True
+
+    parsed = _parse_status_panel(raw_text, now)
     if not parsed:
-        state["concubine_last_error"] = f"未识别的侍妾状态回复: {(text or '')[:60]}"
+        state["concubine_last_error"] = f"未识别的侍妾状态回复: {raw_text[:60]}"
         _set_phase("idle")
         _clear_pending_msg_ids()
         _backoff_after_pending_timeout(now, "gift_status_pending" if gift_status_flow else "status_pending")

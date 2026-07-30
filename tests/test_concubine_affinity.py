@@ -811,6 +811,64 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(995, state_module.state["concubine_tianji_msg_id"])
         self.assertEqual(0, state_module.state["concubine_status_msg_id"])
 
+    async def test_status_reply_treats_phaseful_summary_as_consumed_and_rechecks(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "status_pending"
+            identity_state["concubine_status_msg_id"] = 533650
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "console_log"), \
+             patch.object(concubine.random, "uniform", return_value=60):
+            handled = await concubine.handle_concubine_status_reply(
+                "【元婴闭关结算】\n你的元婴在过去 12 小时内为你增加了 15600 点修为！",
+                now,
+                SimpleNamespace(raw_text=config.CMD_CONCUBINE_STATUS, id=533650),
+                matched_family="concubine_status",
+                current_msg_id=533651,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(now + 60, state_module.state["next_concubine_time"])
+        self.assertEqual(now - 1, state_module.state["concubine_dream_due_at"])
+        self.assertEqual(now - 1, state_module.state["concubine_tianji_due_at"])
+        self.assertIn("触发闭关/元婴结算", state_module.state["concubine_last_error"])
+
+    async def test_gift_status_phaseful_summary_preserves_daily_gift_retry(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        today = concubine._local_day_key(now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "gift_status_pending"
+            identity_state["concubine_gift_status_msg_id"] = 533650
+            identity_state["concubine_last_greet_day"] = today
+            identity_state["concubine_gift_attempt_day"] = today
+            identity_state["concubine_last_gift_day"] = ""
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "console_log"), \
+             patch.object(concubine.random, "uniform", return_value=60):
+            handled = await concubine.handle_concubine_status_reply(
+                "【深度闭关总结】\n本次深度闭关，你的修为最终变化了 5060 点！",
+                now,
+                SimpleNamespace(raw_text=config.CMD_CONCUBINE_STATUS, id=533650),
+                matched_family="concubine_status",
+                current_msg_id=533651,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_gift_status_msg_id"])
+        self.assertEqual("", state_module.state["concubine_gift_attempt_day"])
+        self.assertEqual("", state_module.state["concubine_last_gift_day"])
+        self.assertTrue(concubine._is_gift_recovery_due(now + 60))
+        self.assertIn("触发闭关/元婴结算", state_module.state["concubine_gift_last_error"])
+
     async def test_scheduler_defers_tianji_command_during_phaseful_summary_window(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now - 1)
