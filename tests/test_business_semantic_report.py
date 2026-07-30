@@ -147,7 +147,60 @@ def test_miniapp_rate_report_finds_saturation_and_error_types():
     assert result["ignored_non_http_records"] == 1
     assert result["max_window_count"] == 90
     assert result["status"] == "saturated"
+    assert result["terminal_counts"] == {}
     assert result["error_counts"] == {"rate_limit": 1}
+
+
+def test_miniapp_rate_report_separates_declared_business_terminal_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        base = datetime(2026, 7, 18, 10, 0, 0, tzinfo=TZ_LOCAL).timestamp()
+        rows = [
+            {
+                "created_at": base,
+                "method": "POST",
+                "adapter_key": "fishing",
+                "step_key": "next",
+                "ok": False,
+                "error": "fishing_daily_limit_reached",
+                "error_type": "app",
+            },
+            {
+                "created_at": base + 1,
+                "method": "POST",
+                "adapter_key": "trial",
+                "step_key": "next",
+                "ok": False,
+                "error": "today_exhausted",
+                "error_type": "app",
+            },
+            {
+                "created_at": base + 2,
+                "method": "POST",
+                "adapter_key": "fishing",
+                "step_key": "next",
+                "ok": False,
+                "error": "fishing_backend_broken",
+                "error_type": "app",
+            },
+            {
+                "created_at": base + 3,
+                "method": "POST",
+                "adapter_key": "unknown",
+                "step_key": "next",
+                "ok": False,
+                "error": "daily_limit",
+                "error_type": "app",
+            },
+        ]
+        _write_jsonl(root / "mixed-2026-07-18.jsonl", rows)
+        result = report.build_miniapp_rate_evidence(root, day="2026-07-18", days=1)
+
+    assert result["terminal_counts"] == {
+        "fishing_daily_limit_reached": 1,
+        "today_exhausted": 1,
+    }
+    assert result["error_counts"] == {"app": 2}
 
 
 def test_report_defaults_to_read_only_data_sources():
@@ -159,3 +212,4 @@ def test_report_defaults_to_read_only_data_sources():
     )
     assert result["small_world"]["script_roots"] == 0
     assert result["miniapp_rate"]["records"] == 0
+    assert result["miniapp_rate"]["terminal_counts"] == {}

@@ -38,6 +38,44 @@ _ACTION_RE = re.compile(
     r"^\.(?P<action>小世界|显灵|神迹\s+(?:布道|赈灾)|收割香火|神识淬炼(?:\s+\S+)?)"
 )
 
+# These are expected business terminal states declared by the corresponding
+# MiniApp flows. Keep this exact and module-scoped so an unknown application
+# error is never hidden by a broad substring match.
+_MINIAPP_EXPECTED_TERMINAL_ERRORS = {
+    "cave_treasure": frozenset({
+        "daily_games_exhausted",
+        "daily_limit",
+        "hunt_daily_limit",
+    }),
+    "fishing": frozenset({
+        "daily_limit",
+        "fishing_daily_limit",
+        "fishing_daily_limit_reached",
+        "fishing_no_remaining",
+        "no_remaining",
+        "remaining_empty",
+        "次数已尽",
+        "次数用完",
+    }),
+    "tree": frozenset({
+        "daily_limit",
+        "limit_reached",
+        "no_remaining",
+        "reward_claimed",
+        "season_closed",
+        "剩余 0",
+        "次数已尽",
+    }),
+    "trial": frozenset({
+        "daily_limit",
+        "limit_reached",
+        "no_remaining",
+        "today_exhausted",
+        "剩余 0",
+        "次数已尽",
+    }),
+}
+
 
 def _number(value: Any) -> int:
     try:
@@ -320,6 +358,14 @@ def _capture_paths(capture_dirs: Iterable[Path], day: str | None, days: int) -> 
     return [path for capture_dir in capture_dirs for path in sorted(capture_dir.glob("*.jsonl"))]
 
 
+def _expected_miniapp_terminal_error(record: dict[str, Any]) -> str:
+    adapter_key = str(record.get("adapter_key") or "").strip().lower()
+    error = str(record.get("error") or "").strip().lower()
+    if error and error in _MINIAPP_EXPECTED_TERMINAL_ERRORS.get(adapter_key, ()):
+        return error
+    return ""
+
+
 def build_miniapp_rate_evidence(
     capture_dir: Path | None = None,
     *,
@@ -346,6 +392,7 @@ def build_miniapp_rate_evidence(
                 "adapter_key": str(row.get("adapter_key") or ""),
                 "step_key": str(row.get("step_key") or ""),
                 "ok": bool(row.get("ok")),
+                "error": str(row.get("error") or ""),
                 "error_type": str(row.get("error_type") or ""),
                 "source": str(row.get("source") or ""),
             })
@@ -369,7 +416,14 @@ def build_miniapp_rate_evidence(
                 "count": count,
             })
 
-    error_counts = Counter(row["error_type"] for row in records if row["error_type"])
+    terminal_counts: Counter[str] = Counter()
+    error_counts: Counter[str] = Counter()
+    for row in records:
+        terminal_error = _expected_miniapp_terminal_error(row)
+        if terminal_error:
+            terminal_counts[terminal_error] += 1
+        elif row["error_type"]:
+            error_counts[row["error_type"]] += 1
     return {
         "day": day or "all-captures",
         "days": max(1, days),
@@ -386,6 +440,7 @@ def build_miniapp_rate_evidence(
             {**item, "start": _format_ts(item["start_ts"]), "end": _format_ts(item["end_ts"])}
             for item in saturation_windows
         ],
+        "terminal_counts": dict(sorted(terminal_counts.items())),
         "error_counts": dict(sorted(error_counts.items())),
         "status": "saturated" if saturation_windows else "below_limit",
     }
@@ -413,7 +468,11 @@ def main(argv: list[str] | None = None) -> int:
         small = report["small_world"]
         rate = report["miniapp_rate"]
         print(f"small-world: panels={small['script_panels']} deltas={small['summary']}")
-        print(f"miniapp rate: records={rate['records']} max={rate['max_window_count']}/{rate['limit']} status={rate['status']} errors={rate['error_counts']}")
+        print(
+            f"miniapp rate: records={rate['records']} "
+            f"max={rate['max_window_count']}/{rate['limit']} status={rate['status']} "
+            f"terminals={rate['terminal_counts']} errors={rate['error_counts']}"
+        )
     return 0
 
 
