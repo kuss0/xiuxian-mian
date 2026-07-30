@@ -45,7 +45,11 @@ BENIGN_HARD_CONTEXT_PATTERN = re.compile(
     re.I,
 )
 TRANSIENT_TELEGRAM_CONTEXT_PATTERN = re.compile(
-    r"Telegram is having internal issues InterdcCallErrorError\b",
+    r"Telegram is having internal issues (?:InterdcCallErrorError|RpcCallFailError)\b",
+    re.I,
+)
+BENIGN_TELEGRAM_STARTUP_CONTEXT_PATTERN = re.compile(
+    r"Telegram is having internal issues RpcCallFailError:.*\(caused by GetDialogsRequest\)",
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
@@ -518,6 +522,8 @@ def is_hard_journal_line(line: str) -> bool:
         return False
     if BENIGN_HARD_CONTEXT_PATTERN.search(text):
         return False
+    if BENIGN_TELEGRAM_STARTUP_CONTEXT_PATTERN.search(text):
+        return False
     if TRANSIENT_TELEGRAM_CONTEXT_PATTERN.search(text):
         return False
     if TELETHON_WRONG_SESSION_PATTERN.search(text):
@@ -528,6 +534,8 @@ def is_hard_journal_line(line: str) -> bool:
 def is_warn_journal_line(line: str) -> bool:
     text = str(line or "")
     if PASSIVE_OBSERVATION_CONTEXT_PATTERN.search(text):
+        return False
+    if BENIGN_TELEGRAM_STARTUP_CONTEXT_PATTERN.search(text):
         return False
     if TRANSIENT_TELEGRAM_CONTEXT_PATTERN.search(text):
         return True

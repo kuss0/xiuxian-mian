@@ -341,6 +341,26 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(health_observer.is_hard_journal_line(line))
         self.assertTrue(health_observer.is_warn_journal_line(line))
 
+    def test_startup_get_dialogs_rpc_call_fail_is_not_health_alert(self):
+        line = (
+            "Jul 30 08:00:08 pve python[1126265]: WARNING:xiuxian.telethon.account_301299112.client.users:"
+            "Telegram is having internal issues RpcCallFailError: Telegram is having internal issues, "
+            "please try again later. (caused by GetDialogsRequest)"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertFalse(health_observer.is_warn_journal_line(line))
+
+    def test_send_rpc_call_fail_error_is_transient_warning_not_hard(self):
+        line = (
+            "Jul 30 08:00:08 pve python[1126265]: Telegram is having internal issues "
+            "RpcCallFailError: Telegram is having internal issues, please try again later. "
+            "(caused by SendMessageRequest)"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertTrue(health_observer.is_warn_journal_line(line))
+
     def test_getting_difference_value_error_is_not_hard(self):
         line = (
             "Jul 04 23:21:56 pve python[1721578]: Getting difference for channel updates 1828482465 "
