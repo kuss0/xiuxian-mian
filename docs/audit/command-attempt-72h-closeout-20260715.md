@@ -150,3 +150,27 @@ Top `block_code`: `global_recovery_cooldown` 212, `send_as_peer_invalid` 107, `s
 | Gate 4 | Only if you **explicitly** request a new ADR review |
 
 **Bottom line:** 72 小时观察窗收口通过；影子继续跑；**不要**因为 `status=warn` 或出现了 `send_unknown` 样本就开控制面——那些正是影子该看见的事实。
+
+## 2026-07-30 follow-up checkpoint
+
+Read-only checkpoint at 10:20 UTC+8, after 440.25 hours of shadow observation:
+
+| Check | Current evidence |
+|------|------|
+| Sent-log root parity | **12317/12317**, missing 0 |
+| Written bindings | **14084 exact_reply_to_root**, non-strong 0 |
+| Attempt rows | 13738 |
+| Transport samples | sent 12317, blocked 1394, send_unknown 25, queued 2 |
+| Automatic resend | **0** |
+| Business takeover | **0** (`business` remains open by design) |
+| Capacity | DB 33.85 MB; approximate Attempt/evidence payload 2.91 MB |
+
+The 25 `send_unknown` rows and two orphaned `queued` rows are historical; the newest
+sample was last updated on 2026-07-22. They remain evidence for a future report-only
+design review, not authorization to recover, resend, close, archive, or mutate runtime
+state. Empty `command_family` rows have grown to 1039, mainly manual anchors, phaseful
+keepalives, duel equipment commands, and replica choices; this remains reporting debt
+under the shared send/reply freeze rather than a reason to alter transport semantics.
+
+**Decision unchanged:** Gate 0-3 remains healthy, shadow write/bind may continue, and
+Gate 4 is still not approved.
