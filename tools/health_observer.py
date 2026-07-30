@@ -113,6 +113,7 @@ NEXT_LAG_ERROR_SEC = 600
 OK_PRINT_INTERVAL_SEC = 10 * 60
 WARN_PRINT_INTERVAL_SEC = 15 * 60
 ERROR_PRINT_INTERVAL_SEC = 60
+WORLD_BOSS_MINIAPP_HEALTH_WINDOW_SEC = 3 * 3600
 MODULE_HEALTH_SPECS = [
     {
         "key": "tianxing",
@@ -996,6 +997,96 @@ def parse_json_dict(value: object) -> dict[str, object]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def analyze_world_boss_miniapp_health(
+    raw_state: object,
+    now: float,
+    *,
+    window_sec: int = WORLD_BOSS_MINIAPP_HEALTH_WINDOW_SEC,
+) -> dict[str, object]:
+    state = parse_json_dict(raw_state)
+    raw_results = state.get("miniapp_auto_results") or state.get("miniapp_auto_progress") or []
+    results = [dict(item) for item in raw_results if isinstance(item, dict)]
+    battle_results = [item for item in results if str(item.get("phase") or "").strip() == "battle"]
+    progress_epochs = []
+    for item in results:
+        updated_at = positive_epoch(item.get("updated_at"))
+        if updated_at > 0:
+            progress_epochs.append(updated_at)
+    reference_at = max(
+        [
+            positive_epoch(state.get("miniapp_auto_finished_at")),
+            positive_epoch(state.get("miniapp_auto_started_at")),
+            *progress_epochs,
+        ],
+        default=0.0,
+    )
+    age_sec = max(0, int(float(now) - reference_at)) if reference_at > 0 else 0
+    recent = reference_at > 0 and age_sec <= max(0, int(window_sec))
+
+    def result_sample(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "identity_id": positive_int(item.get("identity_id")),
+            "phase": str(item.get("phase") or ""),
+            "status": str(item.get("status") or ""),
+            "error": short_value(item.get("error"), 160),
+        }
+
+    duration_failures = [
+        item
+        for item in battle_results
+        if "boss_duration_too_short" in str(item.get("error") or "").lower()
+        or "boss_duration_too_short" in str(item.get("status") or "").lower()
+    ]
+    failure_statuses = {"partial", "event_closed_partial", "failed", "runtime_error"}
+    partial_or_failed = [
+        item
+        for item in results
+        if not bool(item.get("ok"))
+        or str(item.get("status") or "").strip().lower() in failure_statuses
+    ]
+    other_failures = [item for item in partial_or_failed if item not in duration_failures]
+    run_status = str(state.get("miniapp_auto_status") or "").strip().lower()
+    alerts: list[dict[str, object]] = []
+    if recent and duration_failures:
+        alerts.append(
+            business_alert(
+                f"recent world boss MiniApp minimum-duration failures: {len(duration_failures)}",
+                severity="error",
+                count=len(duration_failures),
+                sample=[result_sample(item) for item in duration_failures[:8]],
+            )
+        )
+    if recent and other_failures:
+        alerts.append(
+            business_alert(
+                f"recent world boss MiniApp partial/failed identities: {len(other_failures)}",
+                count=len(other_failures),
+                sample=[result_sample(item) for item in other_failures[:8]],
+            )
+        )
+    if recent and run_status in failure_statuses and not partial_or_failed:
+        alerts.append(
+            business_alert(
+                f"recent world boss MiniApp terminal status: {run_status}",
+                status=run_status,
+            )
+        )
+    return {
+        "available": bool(state),
+        "event_key": str(state.get("event_key") or ""),
+        "status": run_status,
+        "reference_at": reference_at,
+        "reference_ts": local_ts(reference_at) if reference_at > 0 else "",
+        "age_sec": age_sec,
+        "recent": recent,
+        "result_count": len(results),
+        "battle_count": len(battle_results),
+        "duration_failure_count": len(duration_failures),
+        "partial_or_failed_count": len(partial_or_failed),
+        "alerts": alerts,
+    }
+
+
 def boolish(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -1457,6 +1548,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     recovery_hold_until = 0.0
     recovery_throttle_until = 0.0
     account_target_memberships: dict[str, object] = {}
+    world_boss_miniapp_health: dict[str, object] = {}
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
@@ -1470,6 +1562,11 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             scheduling_suppressed = global_paused or recovery_active
             channel_send_as_health = parse_json_dict(meta_state.get("channel_send_as_health"))
             account_target_memberships = parse_json_dict(meta_state.get("account_target_memberships"))
+            world_boss_miniapp_health = analyze_world_boss_miniapp_health(
+                meta_state.get("world_boss_run_state"),
+                now,
+            )
+            alerts.extend(world_boss_miniapp_health.get("alerts") or [])
             blocked_accounts = []
             for raw_account_id, raw_record in account_target_memberships.items():
                 if not isinstance(raw_record, dict) or str(raw_record.get("status") or "") != "not_member":
@@ -1708,6 +1805,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "recovery_throttle_until": recovery_throttle_until,
         "channel_send_as_health": channel_send_as_health,
         "account_target_memberships": account_target_memberships,
+        "world_boss_miniapp_health": world_boss_miniapp_health,
         "alerts": alerts,
     }
 

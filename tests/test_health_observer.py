@@ -10,6 +10,96 @@ from tools import health_observer
 
 
 class HealthObserverTests(unittest.TestCase):
+    def test_world_boss_health_reports_recent_minimum_duration_failure_as_error(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_world_boss_miniapp_health(
+            {
+                "event_key": "2026-07-30:test",
+                "miniapp_auto_status": "partial",
+                "miniapp_auto_finished_at": now - 60,
+                "miniapp_auto_results": [
+                    {
+                        "identity_id": 301299112,
+                        "phase": "battle",
+                        "ok": False,
+                        "status": "failed",
+                        "error": "boss_duration_too_short",
+                    }
+                ],
+            },
+            now,
+        )
+
+        self.assertTrue(result["recent"])
+        self.assertEqual(1, result["duration_failure_count"])
+        self.assertEqual("error", result["alerts"][0]["severity"])
+        self.assertEqual(301299112, result["alerts"][0]["sample"][0]["identity_id"])
+
+    def test_world_boss_health_warns_for_recent_partial_or_failed_identity(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_world_boss_miniapp_health(
+            {
+                "event_key": "2026-07-30:test",
+                "miniapp_auto_status": "partial",
+                "miniapp_auto_finished_at": now - 60,
+                "miniapp_auto_results": [
+                    {
+                        "identity_id": 8659059191,
+                        "phase": "battle",
+                        "ok": False,
+                        "status": "event_closed_partial",
+                        "error": "world boss closed after partial contribution",
+                    }
+                ],
+            },
+            now,
+        )
+
+        self.assertTrue(result["recent"])
+        self.assertEqual(1, result["partial_or_failed_count"])
+        self.assertEqual("warn", result["alerts"][0]["severity"])
+        self.assertIn("partial/failed identities", result["alerts"][0]["message"])
+
+    def test_world_boss_health_ignores_historical_failure(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_world_boss_miniapp_health(
+            {
+                "event_key": "2026-07-29:test",
+                "miniapp_auto_status": "partial",
+                "miniapp_auto_finished_at": now - health_observer.WORLD_BOSS_MINIAPP_HEALTH_WINDOW_SEC - 1,
+                "miniapp_auto_results": [
+                    {
+                        "identity_id": 301299112,
+                        "phase": "battle",
+                        "ok": False,
+                        "status": "failed",
+                        "error": "boss_duration_too_short",
+                    }
+                ],
+            },
+            now,
+        )
+
+        self.assertFalse(result["recent"])
+        self.assertEqual(1, result["duration_failure_count"])
+        self.assertEqual([], result["alerts"])
+
+    def test_world_boss_health_warns_for_recent_terminal_status_without_results(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_world_boss_miniapp_health(
+            {
+                "event_key": "2026-07-30:test",
+                "miniapp_auto_status": "runtime_error",
+                "miniapp_auto_finished_at": now - 60,
+                "miniapp_auto_results": [],
+            },
+            now,
+        )
+
+        self.assertTrue(result["recent"])
+        self.assertEqual("warn", result["alerts"][0]["severity"])
+        self.assertIn("runtime_error", result["alerts"][0]["message"])
+
     def test_warn_journal_ignores_benign_locked_wording(self):
         self.assertFalse(
             health_observer.is_warn_journal_line(

@@ -1197,6 +1197,7 @@ class WebAppCoreTests(unittest.TestCase):
             if payload.get("action") == "soothe":
                 return {
                     "ok": True,
+                    "actionResult": {"ok": True, "message": "安抚完成"},
                     "domain": {"mode": "stars", "plots": [
                         {"key": "a", "empty": False, "status": "可收集"},
                         {"key": "b", "empty": False, "status": "可收集"},
@@ -1205,7 +1206,7 @@ class WebAppCoreTests(unittest.TestCase):
             if payload.get("action") == "collect":
                 return {
                     "ok": True,
-                    "message": "收集完成：获得【星辰精华】x2",
+                    "actionResult": {"ok": True, "message": "收集完成：获得【星辰精华】x2"},
                     "domain": {"mode": "stars", "plots": [
                         {"key": "a", "empty": True, "status": "空闲"},
                         {"key": "b", "empty": True, "status": "空闲"},
@@ -1214,6 +1215,7 @@ class WebAppCoreTests(unittest.TestCase):
             if payload.get("action") == "pull":
                 return {
                     "ok": True,
+                    "actionResult": {"ok": True, "message": "牵引完成"},
                     "domain": {"mode": "stars", "plots": [
                         {"key": "a", "empty": False, "status": "凝聚中", "remainingSec": 60},
                         {"key": "b", "empty": False, "status": "凝聚中", "remainingSec": 90},
@@ -1240,6 +1242,56 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("竹灵", calls[-1].get("starName"))
         self.assertNotIn("farm_SECRET999", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
+
+    def test_stargazer_miniapp_inner_business_failure_stops_without_repeating(self):
+        calls = []
+
+        def transport(request):
+            payload = dict(request.get("payload") or {})
+            calls.append(request["safe_summary"]["endpoint"])
+            if request["url"].endswith("/start"):
+                return {
+                    "ok": True,
+                    "domain": {"mode": "stars", "plots": [
+                        {"key": "a", "empty": False, "status": "元磁紊乱"},
+                    ]},
+                }
+            return {
+                "ok": True,
+                "actionResult": {"ok": False, "error": "cultivation_insufficient"},
+                "domain": {"mode": "stars", "plots": [
+                    {"key": "a", "empty": False, "status": "元磁紊乱"},
+                ]},
+            }
+
+        result = stargazer_miniapp.run_stargazer_miniapp_lab_flow(
+            token="farm_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+        )
+        serialized = json.dumps(result, ensure_ascii=False)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("action_failed", result["status"])
+        self.assertEqual("cultivation_insufficient", result["error"])
+        self.assertEqual({"soothe": 0, "collect": 0, "pull": 0}, result["data"]["action_counts"])
+        self.assertEqual(["start", "action"], calls)
+        self.assertNotIn("farm_SECRET999", serialized)
+        self.assertNotIn("VERY_SECRET", serialized)
+
+    def test_stargazer_miniapp_action_result_fails_closed_and_sanitizes(self):
+        missing = stargazer_miniapp.parse_stargazer_miniapp_action_result({"ok": True})
+        failed = stargazer_miniapp.parse_stargazer_miniapp_action_result({
+            "actionResult": {
+                "ok": False,
+                "error": "plot_busy initData=query_id%3Dabc%26hash%3DVERY_SECRET",
+            }
+        })
+
+        self.assertEqual("stargazer_action_result_missing", missing["error"])
+        self.assertFalse(failed["ok"])
+        self.assertIn("plot_busy", failed["error"])
+        self.assertNotIn("VERY_SECRET", failed["error"])
 
     def test_trial_miniapp_request_launch_and_flow_plan_are_lab_only(self):
         url = "https://t.me/fanrenxiuxian_bot?startapp=trial_SECRET999"

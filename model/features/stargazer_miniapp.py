@@ -347,7 +347,7 @@ def extract_stargazer_miniapp_item_deltas(data):
         for key in ("message", "text", "summary", "resultText", "result_text", "rewardText", "reward_text"):
             if key in value:
                 visit(value.get(key))
-        for key in ("result", "reward", "rewards", "items", "loot", "drops"):
+        for key in ("actionResult", "result", "reward", "rewards", "items", "loot", "drops"):
             if key in value:
                 visit(value.get(key))
 
@@ -365,6 +365,22 @@ def extract_stargazer_miniapp_item_deltas(data):
             if count > 0:
                 deltas[name] = int(deltas.get(name, 0) or 0) + count
     return deltas
+
+
+def parse_stargazer_miniapp_action_result(data):
+    payload = data if isinstance(data, dict) else {}
+    action_result = payload.get("actionResult")
+    if not isinstance(action_result, dict):
+        return {"ok": False, "error": "stargazer_action_result_missing", "message": ""}
+    message = sanitize_webapp_secret_text(action_result.get("message") or "")
+    if action_result.get("ok") is True:
+        return {"ok": True, "error": "", "message": message}
+    error = sanitize_webapp_secret_text(action_result.get("error") or "").strip()
+    return {
+        "ok": False,
+        "error": error or "stargazer_action_failed",
+        "message": message,
+    }
 
 
 def _flow_result(ok, status, *, error="", data=None, events=None):
@@ -478,6 +494,21 @@ def run_stargazer_miniapp_lab_flow(
                 "action_counts": action_counts,
                 "item_deltas": item_deltas,
             })
+        business_result = parse_stargazer_miniapp_action_result(action_result.data)
+        if not business_result["ok"]:
+            return _flow_result(
+                False,
+                "action_failed",
+                error=business_result["error"],
+                events=events,
+                data={
+                    "farm_state": farm_state,
+                    "decision": decision,
+                    "action_counts": action_counts,
+                    "item_deltas": item_deltas,
+                    "action_result": business_result,
+                },
+            )
         if action in action_counts:
             action_counts[action] += 1
         if action == "collect":
@@ -544,6 +575,7 @@ __all__ = [
     "extract_stargazer_miniapp_launch",
     "extract_stargazer_miniapp_item_deltas",
     "parse_stargazer_farm_state",
+    "parse_stargazer_miniapp_action_result",
     "request_stargazer_miniapp_init_data",
     "run_stargazer_miniapp_lab_flow",
     "run_stargazer_miniapp_production_flow",
