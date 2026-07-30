@@ -178,11 +178,7 @@ def _event_topic_id(event):
     reply_to = getattr(message, "reply_to", None)
     if reply_to is None:
         return 0
-    return int(
-        getattr(reply_to, "reply_to_top_id", 0)
-        or getattr(reply_to, "reply_to_msg_id", 0)
-        or 0
-    )
+    return int(getattr(reply_to, "reply_to_top_id", 0) or 0)
 
 
 def _red_packet_message_url(topic_id, message_id):

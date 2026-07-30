@@ -243,7 +243,12 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-1001680975844,
             id=11720276,
             sender_id=8789843163,
-            message=SimpleNamespace(reply_to=None),
+            message=SimpleNamespace(
+                reply_to=SimpleNamespace(
+                    reply_to_top_id=0,
+                    reply_to_msg_id=458347,
+                )
+            ),
         )
         with patch.object(red_packet_monitor, "console_log") as log_mock:
             self.assertFalse(await red_packet_monitor.observe_red_packet_candidate(event))
