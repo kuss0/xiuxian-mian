@@ -35,3 +35,12 @@
 
 - `tests/test_red_packet_monitor.py tests/test_health_observer.py`：`100 passed, 3 subtests passed`。
 - 真实生产证据同时覆盖阈值、双证据绑定、消息去重、三次提醒和直达链接。
+
+## 2026-07-30 话题边界收敛
+
+源群 `@ja_netfilter_group` 与修仙主群共用同一 supergroup，红包源频道固定为论坛话题
+`458347`。旧监听只校验群用户名，导致其他话题中的 `.讨红包` 和相关 Bot 文案虽然不会
+触发提醒，仍会污染运行日志为 `unparsed` 候选。现已在解析、缓存和去重前严格要求
+`topic_id=458347`；其他话题直接忽略，不进入候选账本。目标话题内的乱序撮合、50 LDC
+阈值、三次双渠道提醒和 `https://t.me/ja_netfilter_group/458347/<message_id>` 链接均
+保持不变。新增同群其他话题零日志回归，联合验证 `107 passed, 3 subtests passed`。

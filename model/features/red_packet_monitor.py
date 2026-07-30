@@ -8,6 +8,7 @@ from ..runtime import console_log, send_audit_log, send_log_bot_notification
 
 
 RED_PACKET_MONITOR_CHAT_USERNAME = "ja_netfilter_group"
+RED_PACKET_MONITOR_TOPIC_ID = 458347
 RED_PACKET_NOTIFICATION_CHAT_ID = -1004412426741
 RE_RED_PACKET_COMMAND = re.compile(
     r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)\s+(?P<count>\d+)\s*$"
@@ -263,6 +264,9 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
         return False
     if await _event_chat_username(event) != RED_PACKET_MONITOR_CHAT_USERNAME.casefold():
         return False
+    topic_id = _event_topic_id(event)
+    if topic_id != RED_PACKET_MONITOR_TOPIC_ID:
+        return False
     chat_id = int(getattr(event, "chat_id", 0) or 0)
     message_id = int(getattr(event, "id", 0) or 0)
     safe_text = re.sub(r"\s+", " ", text)[:500]
@@ -275,7 +279,7 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
         _remember_pending_command(chat_id, message_id, parsed, now)
         pending = _PENDING_COMMANDS.get((chat_id, message_id))
         if pending is not None:
-            pending["topic_id"] = _event_topic_id(event)
+            pending["topic_id"] = topic_id
         matched_created = _claim_pending_command_for_created(chat_id, message_id, parsed, now)
         if matched_created:
             _PENDING_COMMANDS.pop((chat_id, message_id), None)
@@ -293,10 +297,10 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
     elif created:
         matched = _claim_pending_created_packet(chat_id, message_id, created, now)
         if matched:
-            topic_id = _event_topic_id(event) or int(matched.get("topic_id", 0) or 0)
+            alert_topic_id = topic_id or int(matched.get("topic_id", 0) or 0)
             _schedule_red_packet_alert(
                 chat_id,
-                topic_id,
+                alert_topic_id,
                 message_id,
                 int(getattr(event, "sender_id", 0) or 0),
                 created,
@@ -307,7 +311,7 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
                 chat_id,
                 message_id,
                 int(getattr(event, "sender_id", 0) or 0),
-                _event_topic_id(event),
+                topic_id,
                 created,
                 now,
             )
@@ -329,6 +333,7 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
 
 __all__ = [
     "RED_PACKET_MONITOR_CHAT_USERNAME",
+    "RED_PACKET_MONITOR_TOPIC_ID",
     "RED_PACKET_NOTIFICATION_CHAT_ID",
     "observe_red_packet_candidate",
     "parse_red_packet_command",

@@ -70,6 +70,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458347,
             sender_id=123,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         with patch.object(red_packet_monitor, "console_log") as log_mock:
             self.assertTrue(await red_packet_monitor.observe_red_packet_candidate(event))
@@ -86,6 +87,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458348,
             sender_id=456,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         with patch.object(red_packet_monitor, "console_log") as log_mock:
             self.assertTrue(await red_packet_monitor.observe_red_packet_candidate(event))
@@ -107,6 +109,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458349,
             sender_id=456,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         with patch.object(red_packet_monitor, "console_log") as log_mock, patch.object(
             red_packet_monitor, "send_audit_log", new=AsyncMock()
@@ -123,6 +126,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458350,
             sender_id=123,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         created = SimpleNamespace(
             raw_text=(
@@ -177,6 +181,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458352,
             sender_id=123,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         blocked = SimpleNamespace(
             raw_text="⛔ 普通用户单个红包金额过高，已拦截。当前上限：500.00 LDC",
@@ -184,6 +189,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458353,
             sender_id=456,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         low_command = SimpleNamespace(
             raw_text=".发红包 10 5",
@@ -191,6 +197,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458354,
             sender_id=123,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         low_created = SimpleNamespace(
             raw_text="🧧 【LDC 红包】｜@user 10.00 LDC / 5 份",
@@ -198,6 +205,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458355,
             sender_id=456,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         with patch.object(red_packet_monitor, "console_log"), patch.object(
             red_packet_monitor, "send_audit_log", new=AsyncMock()
@@ -228,6 +236,19 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await red_packet_monitor.observe_red_packet_candidate(event))
         log_mock.assert_not_called()
 
+    async def test_same_group_other_topic_is_ignored(self):
+        event = SimpleNamespace(
+            raw_text=".讨红包",
+            chat=SimpleNamespace(username="ja_netfilter_group"),
+            chat_id=-1001680975844,
+            id=11720276,
+            sender_id=8789843163,
+            message=SimpleNamespace(reply_to=None),
+        )
+        with patch.object(red_packet_monitor, "console_log") as log_mock:
+            self.assertFalse(await red_packet_monitor.observe_red_packet_candidate(event))
+        log_mock.assert_not_called()
+
     async def test_created_packet_before_command_is_matched_afterward(self):
         created = SimpleNamespace(
             raw_text="🧧 【LDC 红包】｜@user 88.00 LDC / 20 份 请直接点击下方按钮抢红包",
@@ -243,6 +264,7 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-100123,
             id=458360,
             sender_id=123,
+            message=SimpleNamespace(reply_to=SimpleNamespace(reply_to_top_id=458347)),
         )
         with patch.object(red_packet_monitor, "console_log"), patch.object(
             red_packet_monitor, "send_audit_log", new=AsyncMock()
