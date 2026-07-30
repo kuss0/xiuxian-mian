@@ -1803,6 +1803,7 @@ def _start_world_boss_round_if_ready(now):
 
 async def _close_event(parsed, now, *, log=True):
     run_state = _get_run_state(now)
+    event_key = str(run_state.get("event_key") or "")
     result = str(parsed.get("result") or "结束").strip()
     conclusion_key = str(parsed.get("key") or result or get_day_key(now))
     duplicate = conclusion_key and conclusion_key == run_state.get("last_conclusion_key") and now - _coerce_float(run_state.get("last_conclusion_at"), 0) < 2 * 3600
@@ -1821,6 +1822,10 @@ async def _close_event(parsed, now, *, log=True):
             continue
         _clear_world_boss_pending_action(identity_state)
     _clear_world_boss_pending_tasks()
+    # Persist the terminal event boundary before awaiting log delivery. The
+    # MiniApp task can finish while the log-group send is queued; keeping this
+    # only in a local snapshot lets the later stale write erase its results.
+    _set_run_state(run_state, now=now)
     if log and not duplicate:
         await _maybe_log_progress(run_state, now, force=True)
         summary = _normalize_summary(run_state.get("summary"))
@@ -1848,7 +1853,16 @@ async def _close_event(parsed, now, *, log=True):
             priority="medium",
             limit=700,
         )
-    _set_run_state(run_state, now=now)
+    latest_state = _get_run_state(now)
+    if str(latest_state.get("event_key") or "") == event_key:
+        latest_state["active"] = False
+        latest_state["closed_at"] = max(_coerce_float(latest_state.get("closed_at"), 0), float(now))
+        latest_state["last_result"] = result
+        latest_state["last_conclusion_key"] = conclusion_key
+        latest_state["last_conclusion_at"] = float(now)
+        if parsed.get("participants_present") or participants > 0:
+            latest_state["participants"] = participants
+        _set_run_state(latest_state, now=now)
     return True
 
 

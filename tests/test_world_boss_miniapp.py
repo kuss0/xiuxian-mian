@@ -916,6 +916,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
     def test_realtime_transition_wakes_start_refresh_without_replacing_http(self):
         calls = []
         waits = []
+        sleeps_when_waiting = []
         clock = FakeClock()
         realtime_boss = {"roomStatus": "waiting"}
 
@@ -941,6 +942,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
         def realtime_waiter(timeout_sec):
             waits.append(timeout_sec)
+            sleeps_when_waiting.append(list(clock.sleeps))
             realtime_boss["roomStatus"] = "battle"
             return True
 
@@ -958,7 +960,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(["start", "start", "hit", "finish"], calls)
         self.assertEqual([1.2], waits)
-        self.assertNotIn(1.2, clock.sleeps)
+        self.assertEqual([[]], sleeps_when_waiting)
 
     def test_start_refresh_uses_page_join_intervals(self):
         calls = []

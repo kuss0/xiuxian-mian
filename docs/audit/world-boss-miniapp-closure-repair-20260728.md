@@ -63,3 +63,17 @@ wxjerry `91f3626c` 新增 WebSocket 实时状态和重连，可用于未来独�
 修复后，额外少出手只减少 `/hit` 数量；存活身份仍保持时间线至服务端 `minDurationMs` 后再提交 `/finish`，不会补打被裁掉的窗口。死亡结算仍允许早于普通最短时长，避免改变原有死亡终态。proof 的显式 `durationMs` 同样不能低于可行的服务端最短时长，并受 `maxDurationMs`/`expiresIn` 上限约束。
 
 离线验收：世界 Boss focused `107 passed`；全量 `3469 passed, 536 subtests passed`；`py_compile` 与 `git diff --check` 通过。下一场真实事件需确认两个额外少出手身份均保留 12 次目标命中且 `/finish` 不再返回 `boss_duration_too_short`，通过后再销号。
+
+## 2026-07-30 生产验收与结算竞态收口
+
+13:40 自然事件完成最终生产验收：
+
+- WA (`8659059191`) 与吧唧 (`301299112`) 均按额外少出手配置完成 `12/16` 命中、`12` 次完美，`/finish` HTTP 200 并归类为 `settled`。
+- 本场没有再次出现 `boss_duration_too_short`，证明额外少出手已只减少 `/hit`，没有缩短服务端最短结算时长。
+- Lsfnqy 与 Wise 在全服提前结束时分别保留 `14/13` 次有效命中，归类为 `event_closed_partial`；没有失败身份或重复入场/结算。
+
+本场还暴露了独立的异步竞态：结算广播处理器在等待日志群发送期间持有旧的 `running` 快照，MiniApp 任务完成并写入结果后，处理器会把旧快照整体写回，清空结果并触发下一轮“任务中断”误报。修复后 `_close_event()` 先持久化事件关闭边界，再发送日志，等待结束后只向最新同场状态合并关闭字段，不再覆盖 MiniApp 的 status/progress/results；若等待期间已经切换到新事件，也不会回写旧场状态。
+
+新增回归模拟日志等待期间 MiniApp 完成写入，确认最终仍为事件关闭、`partial` 状态和完整结果；同时修正实时唤醒用例中会被后续随机 `1.2s` 等待误撞的脆弱断言。验证：相关 `214 passed, 3 subtests passed`，实时唤醒用例重复 10 次通过，全量 `3486 passed, 536 subtests passed`，compileall 与 `git diff --check` 通过。
+
+部署前备份：`data/state/chaogu_state.db.pre-world-boss-close-race-20260730-1355`。本场运行账本已按脱敏 capture 校准为 WA/吧唧 `settled`、另外两号 `event_closed_partial`、事件 `功成`。14:00 主服务恢复后 24 身份加载成功，pending 为空，watchdog 正常，`NRestarts=0`。本验收项销号。

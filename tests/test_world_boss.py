@@ -1677,6 +1677,60 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("参战 0", conclusion_log)
         self.assertEqual(0, state_module.get_world_boss_run_state().get("participants"))
 
+    async def test_conclusion_log_wait_does_not_clobber_completed_miniapp_results(self):
+        now = 1_785_390_152.0
+        event_key = "2026-07-30:555666"
+        state_module.set_world_boss_run_state({
+            "active": True,
+            "event_key": event_key,
+            "opened_at": now - 140,
+            "miniapp_only": True,
+            "miniapp_auto_status": "running",
+            "miniapp_auto_started_at": now - 140,
+            "miniapp_auto_progress": [],
+            "miniapp_auto_results": [],
+        })
+        settled_result = {
+            "identity_id": 8659059191,
+            "phase": "battle",
+            "ok": True,
+            "status": "settled",
+            "summary": {"accepted_hit_count": 12, "accepted_perfect_count": 12},
+        }
+
+        async def finish_miniapp_while_conclusion_log_waits(*_args, **_kwargs):
+            latest = state_module.get_world_boss_run_state()
+            latest["miniapp_auto_status"] = "partial"
+            latest["miniapp_auto_finished_at"] = now + 1
+            latest["miniapp_auto_progress"] = [{**settled_result, "updated_at": now + 1}]
+            latest["miniapp_auto_results"] = [settled_result]
+            latest["last_result"] = "MiniApp 入场 1｜结算 1｜部分 0｜失败 0"
+            state_module.set_world_boss_run_state(latest)
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock(side_effect=finish_miniapp_while_conclusion_log_waits)),
+        ):
+            handled = await world_boss._close_event(
+                {
+                    "result": "功成",
+                    "key": "conclusion-race",
+                    "participants": 37,
+                    "participants_present": True,
+                },
+                now,
+            )
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertTrue(handled)
+        self.assertFalse(run_state["active"])
+        self.assertEqual(now, run_state["closed_at"])
+        self.assertEqual("功成", run_state["last_result"])
+        self.assertEqual("partial", run_state["miniapp_auto_status"])
+        self.assertEqual(now + 1, run_state["miniapp_auto_finished_at"])
+        self.assertEqual([settled_result], run_state["miniapp_auto_results"])
+        self.assertEqual(37, run_state["participants"])
+
     async def test_inactive_broadcast_closes_stale_event_and_clears_pending_without_enabled_identities(self):
         identity_id = 8659059191
         identity_state = self._register(identity_id, label="WalterWA2000", world_boss_enabled=False)
