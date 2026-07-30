@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -345,17 +346,25 @@ def build_small_world_evidence(
     }
 
 
-def _capture_paths(capture_dirs: Iterable[Path], day: str | None, days: int) -> list[Path]:
+def _capture_paths(
+    capture_dirs: Iterable[Path],
+    day: str | None,
+    days: int,
+    *,
+    now: float | None = None,
+) -> list[Path]:
     capture_dirs = tuple(Path(path) for path in capture_dirs)
-    if day:
-        end = datetime.strptime(day, "%Y-%m-%d").date()
-        paths: list[Path] = []
-        for offset in range(max(1, days)):
-            date_text = f"{end - timedelta(days=offset):%Y-%m-%d}"
-            for capture_dir in capture_dirs:
-                paths.extend(sorted(capture_dir.glob(f"*-{date_text}.jsonl")))
-        return paths
-    return [path for capture_dir in capture_dirs for path in sorted(capture_dir.glob("*.jsonl"))]
+    end = (
+        datetime.strptime(day, "%Y-%m-%d").date()
+        if day
+        else datetime.fromtimestamp(float(now if now is not None else time.time()), TZ_LOCAL).date()
+    )
+    paths: list[Path] = []
+    for offset in range(max(1, days)):
+        date_text = f"{end - timedelta(days=offset):%Y-%m-%d}"
+        for capture_dir in capture_dirs:
+            paths.extend(sorted(capture_dir.glob(f"*-{date_text}.jsonl")))
+    return paths
 
 
 def _expected_miniapp_terminal_error(record: dict[str, Any]) -> str:
@@ -373,11 +382,14 @@ def build_miniapp_rate_evidence(
     days: int = 3,
     limit: int = 90,
     window_sec: int = 60,
+    now: float | None = None,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     ignored_non_http_records = 0
     capture_dirs = (Path(capture_dir),) if capture_dir is not None else (CAPTURE_DIR, WORLD_BOSS_CAPTURE_DIR)
-    for path in _capture_paths(capture_dirs, day, days):
+    effective_now = float(now if now is not None else time.time())
+    effective_day = day or datetime.fromtimestamp(effective_now, TZ_LOCAL).strftime("%Y-%m-%d")
+    for path in _capture_paths(capture_dirs, day, days, now=effective_now):
         for row in _iter_json_lines(path):
             ts = float(row.get("created_at") or 0)
             if ts <= 0:
@@ -425,7 +437,7 @@ def build_miniapp_rate_evidence(
         elif row["error_type"]:
             error_counts[row["error_type"]] += 1
     return {
-        "day": day or "all-captures",
+        "day": effective_day,
         "days": max(1, days),
         "limit": int(limit),
         "window_sec": int(window_sec),
@@ -449,7 +461,7 @@ def build_miniapp_rate_evidence(
 def build_report(**kwargs) -> dict[str, Any]:
     return {
         "small_world": build_small_world_evidence(**{key: value for key, value in kwargs.items() if key in {"messages_dir", "day", "days", "now"}}),
-        "miniapp_rate": build_miniapp_rate_evidence(**{key: value for key, value in kwargs.items() if key in {"capture_dir", "day", "days", "limit", "window_sec"}}),
+        "miniapp_rate": build_miniapp_rate_evidence(**{key: value for key, value in kwargs.items() if key in {"capture_dir", "day", "days", "limit", "window_sec", "now"}}),
     }
 
 

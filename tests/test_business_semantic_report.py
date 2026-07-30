@@ -203,6 +203,42 @@ def test_miniapp_rate_report_separates_declared_business_terminal_errors():
     assert result["error_counts"] == {"app": 2}
 
 
+def test_miniapp_rate_default_day_honors_requested_lookback():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        now = datetime(2026, 7, 19, 12, 0, 0, tzinfo=TZ_LOCAL).timestamp()
+        _write_jsonl(
+            root / "trial-2026-07-17.jsonl",
+            [{
+                "created_at": now - 2 * 86400,
+                "method": "POST",
+                "adapter_key": "trial",
+                "ok": False,
+                "error_type": "historical",
+            }],
+        )
+        _write_jsonl(
+            root / "trial-2026-07-18.jsonl",
+            [{
+                "created_at": now - 86400,
+                "method": "POST",
+                "adapter_key": "trial",
+                "ok": False,
+                "error_type": "recent",
+            }],
+        )
+        _write_jsonl(
+            root / "trial-2026-07-19.jsonl",
+            [{"created_at": now, "method": "POST", "adapter_key": "trial", "ok": True, "error_type": ""}],
+        )
+
+        result = report.build_miniapp_rate_evidence(root, days=2, now=now)
+
+    assert result["day"] == "2026-07-19"
+    assert result["records"] == 2
+    assert result["error_counts"] == {"recent": 1}
+
+
 def test_report_defaults_to_read_only_data_sources():
     result = report.build_report(
         messages_dir=Path("/does/not/exist"),

@@ -151,3 +151,23 @@ Focused validation:
 This closes the instrumentation and evidence debt in item 5. Ongoing semantic
 monitoring continues, CommandAttempt remains shadow-only, and Gate 4 remains
 closed.
+
+## 8. 2026-07-30 MiniApp lookback correction
+
+The MiniApp half of `tools/business_semantic_report.py` previously scanned every
+capture file when `--day` was omitted, even though the report still printed the
+requested `--days` value. The message-log half already used today as the default
+end date, so one report mixed a bounded small-world window with an unbounded
+MiniApp window.
+
+The capture selector now defaults to the current local day and reads exactly the
+requested number of dated files. Explicit `--day` behavior is unchanged, and the
+tool remains read-only. A deterministic regression fixes `now` at 2026-07-19 and
+proves that `days=2` excludes the 2026-07-17 capture.
+
+After correction, the live three-day window contains 4,179 HTTP records, peaks at
+60/90 requests per minute, and has no saturation window. Its 27 application errors
+and one transient error are retained historical evidence: 21 pre-fix fishing proof
+failures, two already-fixed Boss minimum-duration failures, four event-close samples,
+and one trial timeout followed by successful multi-identity trial runs. They do not
+authorize retries, probes, Gate 4 control, or archive/delete work.
