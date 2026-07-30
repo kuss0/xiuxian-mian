@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,145 @@ from tools import health_observer
 
 
 class HealthObserverTests(unittest.TestCase):
+    def test_miniapp_capture_health_reports_recent_proof_failure_as_error(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now - 60,
+                    "adapter_key": "fishing",
+                    "source": "cave_public_fishing:301299112",
+                    "step_key": "finish",
+                    "status_code": 400,
+                    "ok": False,
+                    "error_type": "app",
+                    "error": "fishing_proof_invalid",
+                }
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["critical_count"])
+        self.assertEqual("error", result["alerts"][0]["severity"])
+        self.assertEqual("fishing", result["alerts"][0]["sample"][0]["adapter_key"])
+
+    def test_miniapp_capture_health_ignores_expected_terminal_and_old_failure(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now - 60,
+                    "adapter_key": "fishing",
+                    "ok": False,
+                    "error_type": "app",
+                    "error": "fishing_daily_limit_reached",
+                },
+                {
+                    "created_at": now - health_observer.MINIAPP_CAPTURE_HEALTH_WINDOW_SEC - 1,
+                    "adapter_key": "fishing",
+                    "ok": False,
+                    "error_type": "app",
+                    "error": "fishing_proof_invalid",
+                },
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["expected_terminal_count"])
+        self.assertEqual(0, result["critical_count"])
+        self.assertEqual([], result["alerts"])
+
+    def test_miniapp_capture_health_warns_for_recent_transient_failure(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now - 30,
+                    "adapter_key": "cave_treasure",
+                    "source": "cave_public_treasure:301299112",
+                    "step_key": "dwelling_start",
+                    "status_code": 502,
+                    "ok": False,
+                    "error_type": "transient",
+                    "error": "HTTP 502 returned non JSON",
+                }
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["warning_count"])
+        self.assertEqual("warn", result["alerts"][0]["severity"])
+
+    def test_miniapp_capture_health_ignores_recovered_transient_failure(self):
+        now = 1_780_500_000.0
+        source = "cave_public_treasure:301299112"
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now - 30,
+                    "adapter_key": "cave_treasure",
+                    "source": source,
+                    "step_key": "dwelling_start",
+                    "status_code": 502,
+                    "ok": False,
+                    "error_type": "transient",
+                    "error": "HTTP 502 returned non JSON",
+                },
+                {
+                    "created_at": now - 20,
+                    "adapter_key": "cave_treasure",
+                    "source": source,
+                    "step_key": "dwelling_start",
+                    "status_code": 200,
+                    "ok": True,
+                },
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["recovered_transient_count"])
+        self.assertEqual(0, result["warning_count"])
+        self.assertEqual([], result["alerts"])
+
+    def test_read_recent_miniapp_capture_events_uses_sanitized_http_rows_only(self):
+        now = 1_780_500_000.0
+        day_key = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capture_dir = Path(tmp_dir) / "data" / "state" / "miniapp_capture"
+            capture_dir.mkdir(parents=True)
+            path = capture_dir / f"fishing-{day_key}.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "created_at": now - 30,
+                                "adapter_key": "fishing",
+                                "step_key": "finish",
+                                "url_path": "/api/miniapp/xianxia-fishing/finish",
+                                "ok": False,
+                                "error": "fishing_proof_invalid",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "created_at": now - 20,
+                                "adapter_key": "fishing",
+                                "step_key": "business:fishing",
+                                "ok": True,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            rows = health_observer.read_recent_miniapp_capture_events(Path(tmp_dir), now)
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("finish", rows[0]["step_key"])
+
     def test_world_boss_health_reports_recent_minimum_duration_failure_as_error(self):
         now = 1_780_500_000.0
         result = health_observer.analyze_world_boss_miniapp_health(

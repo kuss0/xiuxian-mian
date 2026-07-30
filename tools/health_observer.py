@@ -114,6 +114,23 @@ OK_PRINT_INTERVAL_SEC = 10 * 60
 WARN_PRINT_INTERVAL_SEC = 15 * 60
 ERROR_PRINT_INTERVAL_SEC = 60
 WORLD_BOSS_MINIAPP_HEALTH_WINDOW_SEC = 3 * 3600
+MINIAPP_CAPTURE_HEALTH_WINDOW_SEC = 3 * 3600
+MINIAPP_CAPTURE_MAX_LINES_PER_FILE = 5000
+MINIAPP_EXPECTED_TERMINAL_ERRORS = {
+    "boss_event_closed",
+    "daily_limit_reached",
+    "fishing_daily_limit_reached",
+    "hunt_daily_limit",
+    "no_remaining",
+    "today_exhausted",
+    "trial_daily_limit_reached",
+}
+MINIAPP_CRITICAL_ERROR_MARKERS = (
+    "anti_cheat",
+    "duration_too_short",
+    "proof_invalid",
+    "proof_missing",
+)
 MODULE_HEALTH_SPECS = [
     {
         "key": "tianxing",
@@ -1087,6 +1104,158 @@ def analyze_world_boss_miniapp_health(
     }
 
 
+def read_recent_miniapp_capture_events(
+    project_root: Path,
+    now: float,
+    *,
+    window_sec: int = MINIAPP_CAPTURE_HEALTH_WINDOW_SEC,
+    max_lines_per_file: int = MINIAPP_CAPTURE_MAX_LINES_PER_FILE,
+) -> list[dict[str, object]]:
+    capture_dir = Path(project_root) / "data" / "state" / "miniapp_capture"
+    if not capture_dir.exists():
+        return []
+    start_at = max(0.0, float(now) - max(0, int(window_sec)))
+    day_keys = {
+        datetime.fromtimestamp(float(now)).strftime("%Y-%m-%d"),
+        datetime.fromtimestamp(start_at).strftime("%Y-%m-%d"),
+    }
+    rows: list[dict[str, object]] = []
+    for day_key in sorted(day_keys):
+        for path in sorted(capture_dir.glob(f"*-{day_key}.jsonl")):
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    lines = deque(handle, maxlen=max(1, int(max_lines_per_file)))
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                created_at = positive_epoch(payload.get("created_at"))
+                if created_at < start_at or created_at > float(now) + 60:
+                    continue
+                step_key = str(payload.get("step_key") or "").strip()
+                if step_key.startswith("business:") or not str(payload.get("url_path") or "").strip():
+                    continue
+                payload["_capture_path"] = path.name
+                payload["_epoch"] = created_at
+                rows.append(payload)
+    return rows
+
+
+def analyze_miniapp_capture_health(
+    records: Iterable[dict[str, object]],
+    now: float,
+    *,
+    window_sec: int = MINIAPP_CAPTURE_HEALTH_WINDOW_SEC,
+) -> dict[str, object]:
+    start_at = max(0.0, float(now) - max(0, int(window_sec)))
+    recent = []
+    for raw in records:
+        if not isinstance(raw, dict):
+            continue
+        created_at = positive_epoch(raw.get("created_at") or raw.get("_epoch"))
+        if created_at < start_at or created_at > float(now) + 60:
+            continue
+        if str(raw.get("adapter_key") or "").strip() == "world_boss":
+            # World Boss has a richer state-backed analyzer above.
+            continue
+        recent.append(raw)
+
+    failures = [item for item in recent if item.get("ok") is False]
+    latest_success_by_key: dict[tuple[str, str, str], float] = {}
+    for item in recent:
+        if item.get("ok") is not True:
+            continue
+        key = (
+            str(item.get("adapter_key") or "").strip(),
+            str(item.get("source") or "").strip(),
+            str(item.get("step_key") or "").strip(),
+        )
+        latest_success_by_key[key] = max(
+            latest_success_by_key.get(key, 0.0),
+            positive_epoch(item.get("created_at") or item.get("_epoch")),
+        )
+    expected_terminal = []
+    critical = []
+    warning = []
+    recovered_transient = []
+    for item in failures:
+        error = str(item.get("error") or "").strip()
+        error_key = error.lower()
+        status_code = positive_int(item.get("status_code"))
+        if error_key in MINIAPP_EXPECTED_TERMINAL_ERRORS:
+            expected_terminal.append(item)
+            continue
+        if status_code == 429 or "http 429" in error_key or any(
+            marker in error_key for marker in MINIAPP_CRITICAL_ERROR_MARKERS
+        ):
+            critical.append(item)
+            continue
+        is_transient = (
+            str(item.get("error_type") or "").strip().lower() == "transient"
+            or status_code >= 500
+            or "timed out" in error_key
+            or "timeout" in error_key
+        )
+        if is_transient:
+            key = (
+                str(item.get("adapter_key") or "").strip(),
+                str(item.get("source") or "").strip(),
+                str(item.get("step_key") or "").strip(),
+            )
+            created_at = positive_epoch(item.get("created_at") or item.get("_epoch"))
+            if latest_success_by_key.get(key, 0.0) > created_at:
+                recovered_transient.append(item)
+                continue
+        warning.append(item)
+
+    def sample(item: dict[str, object]) -> dict[str, object]:
+        created_at = positive_epoch(item.get("created_at") or item.get("_epoch"))
+        return {
+            "adapter_key": str(item.get("adapter_key") or ""),
+            "source": short_value(item.get("source"), 80),
+            "step_key": str(item.get("step_key") or ""),
+            "error_type": str(item.get("error_type") or ""),
+            "error": short_value(item.get("error"), 160),
+            "status_code": positive_int(item.get("status_code")),
+            "created_at": local_ts(created_at) if created_at > 0 else "",
+        }
+
+    alerts: list[dict[str, object]] = []
+    if critical:
+        alerts.append(
+            business_alert(
+                f"recent MiniApp critical failures: {len(critical)}",
+                severity="error",
+                count=len(critical),
+                sample=[sample(item) for item in critical[:8]],
+            )
+        )
+    if warning:
+        alerts.append(
+            business_alert(
+                f"recent MiniApp non-terminal failures: {len(warning)}",
+                count=len(warning),
+                sample=[sample(item) for item in warning[:8]],
+            )
+        )
+    return {
+        "available": bool(recent),
+        "window_sec": max(0, int(window_sec)),
+        "record_count": len(recent),
+        "failure_count": len(failures),
+        "expected_terminal_count": len(expected_terminal),
+        "recovered_transient_count": len(recovered_transient),
+        "critical_count": len(critical),
+        "warning_count": len(warning),
+        "alerts": alerts,
+    }
+
+
 def boolish(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -1815,13 +1984,22 @@ def collect_business_snapshot(cfg: ObserverConfig, now: float) -> dict[str, obje
     reset_after_epoch = read_safety_reset_epoch(cfg.project_root)
     message_state = analyze_message_events(events, now, cfg.business_window_sec, reset_after_epoch=reset_after_epoch)
     db_state = read_db_business_state(state_db_path(cfg.project_root), now)
-    alerts = list(message_state.get("alerts") or []) + list(db_state.get("alerts") or [])
+    miniapp_capture_health = analyze_miniapp_capture_health(
+        read_recent_miniapp_capture_events(cfg.project_root, now),
+        now,
+    )
+    alerts = (
+        list(message_state.get("alerts") or [])
+        + list(db_state.get("alerts") or [])
+        + list(miniapp_capture_health.get("alerts") or [])
+    )
     return {
         "message_log": str(current_message_log(cfg.project_root, now=now)),
         "reset_after_epoch": reset_after_epoch,
         "reset_after_ts": local_ts(reset_after_epoch) if reset_after_epoch > 0 else "",
         "message_state": message_state,
         "db_state": db_state,
+        "miniapp_capture_health": miniapp_capture_health,
         "alerts": alerts,
     }
 
