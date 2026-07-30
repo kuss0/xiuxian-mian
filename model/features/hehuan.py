@@ -18,6 +18,7 @@ from ..state import (
     get_identity_enabled,
     get_identity_ids,
     get_send_as_profile,
+    is_cave_public_auto_enabled,
     is_module_available,
     state,
     use_identity,
@@ -33,6 +34,7 @@ HEHUAN_OBSERVATION_STALE_SEC = 8 * 24 * 3600
 HEHUAN_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
 HEHUAN_AUTO_RETRY_LIMIT = 5
+HEHUAN_DEEP_RETREAT_DEFER_SEC = 5 * 60
 HEHUAN_RETRY_MIN_INTERVAL_MIN = 1
 HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN = 5
 HEHUAN_RETRY_MAX_INTERVAL_MIN = 30
@@ -1109,6 +1111,21 @@ def _set_hehuan_auto_block(observed, now, reason, next_time=None):
     save_state()
 
 
+def _should_defer_hehuan_for_public_deep_retreat(now):
+    if not state.get("deep_retreat_enabled"):
+        return False
+    if not is_cave_public_auto_enabled("deep_retreat"):
+        return False
+    phase = str(state.get("deep_retreat_phase") or "").strip()
+    if phase not in {"running", "summary_due", "observing_summary", "waiting_summary"}:
+        return False
+    try:
+        due_at = float(state.get("next_deep_retreat_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return due_at > 0 and due_at <= float(now)
+
+
 def _hehuan_unsent_block(command):
     block = get_last_game_send_block(get_current_identity_id(), command)
     code = str((block or {}).get("code") or "")
@@ -1359,6 +1376,15 @@ async def run_hehuan_scheduler(now):
         save_state()
         if wait_for_cooldown:
             return
+
+    if _should_defer_hehuan_for_public_deep_retreat(now):
+        _set_hehuan_auto_block(
+            observed,
+            now,
+            "深闭已到结算时间，等待洞府公共入口先同步，避免温养命令被闭关总结吞掉",
+            now + HEHUAN_DEEP_RETREAT_DEFER_SEC,
+        )
+        return
 
     plan = build_hehuan_manual_plan("warm", now=now)
     if not plan.get("allowed"):

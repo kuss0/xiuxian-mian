@@ -651,6 +651,38 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 123.0, observed["auto_pending_deadline_at"])
             self.assertEqual(observed["auto_pending_deadline_at"], observed["auto_next_time"])
 
+    async def test_scheduler_defers_warm_until_public_deep_retreat_settlement(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+            }
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["next_deep_retreat_time"] = now - 30
+            with (
+                patch.object(hehuan, "save_state") as save_mock,
+                patch.object(hehuan, "is_cave_public_auto_enabled", return_value=True),
+                patch.object(hehuan, "_ensure_hehuan_reply_anchor", new=AsyncMock()) as anchor_mock,
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            anchor_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual(
+                now + hehuan.HEHUAN_DEEP_RETREAT_DEFER_SEC,
+                observed["auto_next_time"],
+            )
+            self.assertIn("闭关总结吞掉", observed["auto_last_error"])
+
     async def test_scheduler_recovers_sent_warm_from_message_log_when_send_returns_none(self):
         base_dt = datetime(2026, 7, 5, 7, 18, 41, tzinfo=hehuan.TZ_LOCAL)
         now = base_dt.timestamp()
