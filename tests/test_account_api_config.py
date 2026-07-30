@@ -68,12 +68,22 @@ class AccountApiConfigTests(unittest.TestCase):
                 "api_hash": "secret-hash",
             }
         })
+        state_module.set_account_target_membership(111, {
+            "account_id": 111,
+            "game_group_id": -1001,
+            "status": "not_member",
+            "probe_status": "not_member",
+            "reason": "USER_NOT_PARTICIPANT",
+            "checked_at": 1_700_000_000.0,
+        })
         with patch.object(ui, "get_all_clients", return_value={}):
             snapshot = ui._get_runtime_accounts_snapshot()
         account = snapshot["111"]
         self.assertEqual("custom", account["api_source"])
         self.assertEqual(24680, account["api_id"])
         self.assertNotIn("api_hash", account)
+        self.assertEqual("not_member", account["target_group_status"])
+        self.assertEqual("USER_NOT_PARTICIPANT", account["target_group_reason"])
 
 
 class _FakeQrLogin:

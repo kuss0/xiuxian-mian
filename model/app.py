@@ -8,6 +8,13 @@ from types import SimpleNamespace
 from telethon import events, functions
 from telethon.errors import PeerIdInvalidError, SendAsPeerInvalidError
 
+from .account_membership import (
+    TargetGroupMembership,
+    TargetGroupMembershipProbe,
+    merge_account_membership_probe,
+    probe_target_group_membership,
+    resolve_account_identity_ids,
+)
 from .app_message_log import (
     _append_game_group_message_log,
     _append_replica_dispatch_group_message_log,
@@ -256,13 +263,16 @@ from .state import (
     get_global_enabled,
     get_global_pause_source,
     get_channel_send_as_health,
+    get_account_target_membership,
     get_identity_account,
+    get_identity_account_map,
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
     is_cave_public_identity_available,
     set_channel_send_as_health,
+    set_account_target_membership,
     set_identity_enabled,
     set_game_bot_ids,
     state,
@@ -1447,6 +1457,118 @@ def _get_bot_health_probe_identity_id():
         ):
             return int(identity_id)
     return None
+
+
+async def _probe_account_target_membership(account_id, *, now=None, force=False):
+    now = float(now or time.time())
+    try:
+        account_id = int(account_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    game_group_id = int(get_game_group_id() or 0)
+    if account_id <= 0 or game_group_id == 0 or is_account_offline(account_id):
+        return {}
+    previous = get_account_target_membership(account_id)
+    if (
+        not force
+        and int(previous.get("game_group_id") or 0) == game_group_id
+        and float(previous.get("next_probe_at") or 0) > now
+    ):
+        return previous
+    tc = get_registered_client(account_id)
+    if tc is None:
+        return previous
+    try:
+        async with account_rpc_slot(account_id=account_id, client_obj=tc):
+            probe = await asyncio.wait_for(
+                probe_target_group_membership(tc, game_group_id),
+                timeout=min(10.0, float(GAME_SEND_RPC_TIMEOUT_SEC)),
+            )
+    except asyncio.TimeoutError:
+        probe = TargetGroupMembershipProbe(
+            TargetGroupMembership.UNKNOWN,
+            reason="target membership probe timeout",
+            error_name="TIMEOUT",
+        )
+    except Exception as exc:
+        probe = TargetGroupMembershipProbe(
+            TargetGroupMembership.UNKNOWN,
+            reason=str(exc),
+            error_name=exc.__class__.__name__.upper(),
+        )
+
+    identity_ids = resolve_account_identity_ids(
+        account_id,
+        get_identity_account_map(),
+        get_identity_ids(),
+    )
+    record = merge_account_membership_probe(
+        previous,
+        probe,
+        account_id=account_id,
+        identity_ids=identity_ids,
+        game_group_id=game_group_id,
+        now=now,
+    )
+    set_account_target_membership(account_id, record)
+    mark_dirty()
+
+    previous_blocked = bool(
+        int(previous.get("game_group_id") or 0) == game_group_id
+        and str(previous.get("status") or "") == TargetGroupMembership.NOT_MEMBER.value
+    )
+    current_blocked = str(record.get("status") or "") == TargetGroupMembership.NOT_MEMBER.value
+    if current_blocked and not previous_blocked:
+        await send_audit_log(
+            (
+                f"⏸ 登录账号 {account_id} 已确认不在当前游戏群，群命令调度已冻结；"
+                "账号、身份、模块配置和公共 MiniApp 均保留。"
+            ),
+            scope="global",
+            limit=260,
+        )
+    elif previous_blocked and not current_blocked and probe.status in {
+        TargetGroupMembership.MEMBER,
+        TargetGroupMembership.NOT_APPLICABLE,
+    }:
+        await send_audit_log(
+            f"▶️ 登录账号 {account_id} 已重新确认可访问当前游戏群，群命令调度自动恢复。",
+            scope="global",
+            limit=240,
+        )
+    return record
+
+
+async def run_account_target_membership_probe_scheduler(now=None, *, force=False):
+    now = float(now or time.time())
+    account_ids = set()
+    for raw_account_id in get_accounts():
+        try:
+            account_id = int(raw_account_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if account_id > 0:
+            account_ids.add(account_id)
+    account_ids.update(
+        int(account_id)
+        for account_id in get_all_clients()
+        if int(account_id or 0) > 0
+    )
+    results = []
+    for account_id in sorted(account_ids):
+        record = get_account_target_membership(account_id)
+        due = (
+            int(record.get("game_group_id") or 0) != int(get_game_group_id() or 0)
+            or float(record.get("next_probe_at") or 0) <= now
+        )
+        if not force and not due:
+            continue
+        result = await _probe_account_target_membership(account_id, now=now, force=force)
+        if result:
+            results.append(result)
+        if not force:
+            break
+    return results
 
 
 async def _send_bot_health_probe():
@@ -3472,6 +3594,7 @@ async def bootstrap():
             print(f"启动额外账号 {acct_id_str} 失败: {tb}")
 
     await start_ui_server()
+    await run_account_target_membership_probe_scheduler(time.time(), force=True)
 
     # 获取 my_user_id：优先主 client，再尝试已登录账号
     if client.is_connected():
@@ -3632,6 +3755,8 @@ async def main_loop(stop_event=None, quiesce_event=None):
             )
             await _sleep_or_stop(stop_event, 5)
             continue
+
+        await run_account_target_membership_probe_scheduler(now)
 
         # bot 健康监测：疑似静默/探测中直接全局暂停，避免继续普通发送
         global _bot_silence_auto_paused

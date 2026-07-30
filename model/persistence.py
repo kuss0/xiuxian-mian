@@ -32,6 +32,7 @@ from .state import (
     get_global_recovery_hold_until,
     get_global_recovery_throttle_until,
     get_channel_send_as_health,
+    get_account_target_memberships,
     get_tiandao_judgement_enabled,
     get_dungeon_join_run_state,
     get_formation_run_state,
@@ -80,6 +81,7 @@ from .state import (
     set_global_recovery_hold_until,
     set_global_recovery_throttle_until,
     set_channel_send_as_health,
+    set_account_target_memberships,
     set_tiandao_judgement_enabled,
     set_game_bot_ids,
     set_game_listener_account_ids,
@@ -1032,6 +1034,7 @@ def _meta_defaults():
         "accounts": "{}",
         "identity_account_map": "{}",
         "identity_membership_initialized": "0",
+        "account_target_memberships": "{}",
     }
 
 
@@ -2298,6 +2301,11 @@ _META_STATE_CODEC = {
         get_channel_send_as_health,
         _encode_meta_json,
         lambda value: set_channel_send_as_health(_decode_meta_json(value, {})),
+    ),
+    "account_target_memberships": (
+        get_account_target_memberships,
+        _encode_meta_json,
+        lambda value: set_account_target_memberships(_decode_meta_json(value, {})),
     ),
     "formation_run_state": (
         get_formation_run_state,

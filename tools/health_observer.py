@@ -1456,6 +1456,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     global_pause_source = ""
     recovery_hold_until = 0.0
     recovery_throttle_until = 0.0
+    account_target_memberships: dict[str, object] = {}
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
@@ -1468,6 +1469,28 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             recovery_active = now < max(recovery_hold_until, recovery_throttle_until)
             scheduling_suppressed = global_paused or recovery_active
             channel_send_as_health = parse_json_dict(meta_state.get("channel_send_as_health"))
+            account_target_memberships = parse_json_dict(meta_state.get("account_target_memberships"))
+            blocked_accounts = []
+            for raw_account_id, raw_record in account_target_memberships.items():
+                if not isinstance(raw_record, dict) or str(raw_record.get("status") or "") != "not_member":
+                    continue
+                blocked_accounts.append({
+                    "account_id": positive_int(raw_record.get("account_id") or raw_account_id),
+                    "identity_count": len(raw_record.get("identity_ids") or []),
+                    "probe_status": raw_record.get("probe_status"),
+                    "reason": raw_record.get("reason") or raw_record.get("last_error"),
+                    "checked_at": raw_record.get("checked_at"),
+                    "next_probe_at": raw_record.get("next_probe_at"),
+                })
+            if blocked_accounts:
+                alerts.append(
+                    business_alert(
+                        f"accounts outside target group: {len(blocked_accounts)}",
+                        severity="info",
+                        count=len(blocked_accounts),
+                        sample=blocked_accounts[:8],
+                    )
+                )
             channel_status = str(channel_send_as_health.get("status") or "").strip().lower()
             channel_frozen_ids = [
                 int(identity_id)
@@ -1684,6 +1707,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "recovery_hold_until": recovery_hold_until,
         "recovery_throttle_until": recovery_throttle_until,
         "channel_send_as_health": channel_send_as_health,
+        "account_target_memberships": account_target_memberships,
         "alerts": alerts,
     }
 

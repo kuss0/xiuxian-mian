@@ -16,6 +16,12 @@ import requests
 from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
+from .account_membership import (
+    TargetGroupMembership,
+    classify_membership_error,
+    merge_account_membership_probe,
+    resolve_account_identity_ids,
+)
 from .command_attempt.runtime_shadow import (
     note_blocked as note_shadow_attempt_blocked,
     note_queued as note_shadow_attempt_queued,
@@ -229,6 +235,8 @@ from .state import (
     get_global_recovery_hold_until,
     get_global_recovery_throttle_until,
     get_channel_send_as_health,
+    get_account_target_membership,
+    get_identity_account_map,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
@@ -238,8 +246,10 @@ from .state import (
     has_active_identity_context,
     has_identity,
     is_auto_delete_sent_messages_enabled,
+    is_account_target_group_blocked,
     state,
     set_channel_send_as_health,
+    set_account_target_membership,
     set_identity_enabled,
     use_identity,
 )
@@ -373,6 +383,7 @@ _IDENTITY_UNBOUND_AUDIT_LAST = {}
 _SEND_AS_PEER_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_OBSERVATIONS = {}
+_ACCOUNT_TARGET_GROUP_AUDIT_LAST = {}
 _GAME_SEND_QUIESCED = False
 GAME_SEND_UNKNOWN_BLOCK_CODES = {"send_timeout", "send_exception"}
 GAME_SEND_UNSENT_BLOCK_CODES = {
@@ -382,6 +393,7 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "global_recovery_cooldown",
     "dungeon_quiet",
     "account_offline",
+    "account_not_in_target_group",
     "account_unbound",
     "account_client_missing",
     "account_client_not_ready",
@@ -410,6 +422,7 @@ CHANNEL_SEND_AS_GLOBAL_FAILURE_THRESHOLD = 3
 GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
+ACCOUNT_TARGET_GROUP_AUDIT_INTERVAL_SEC = 30 * 60
 WEAKNESS_BLOCK_AUDIT_INTERVAL_SEC = 5 * 60
 WEAKNESS_DEFAULT_SEC = 30 * 60
 WEAKNESS_BUFFER_SEC = 60
@@ -3478,6 +3491,76 @@ async def _log_account_offline_blocked(command, *, send_as_id, account_id, reaso
     )
 
 
+async def _log_account_target_group_blocked(command, *, send_as_id, account_id, record, force=False):
+    now = time.time()
+    audit_key = int(account_id or 0)
+    last_at = float(_ACCOUNT_TARGET_GROUP_AUDIT_LAST.get(audit_key, 0) or 0)
+    if not force and now - last_at < ACCOUNT_TARGET_GROUP_AUDIT_INTERVAL_SEC:
+        return
+    _ACCOUNT_TARGET_GROUP_AUDIT_LAST[audit_key] = now
+    await send_audit_log(
+        (
+            f"⏸ 登录账号不在当前游戏群：acc={audit_key}｜"
+            f"群命令已阻断，公共 MiniApp 保持可用｜"
+            f"跳过 {_truncate_log_text(command, limit=32)}｜"
+            f"{_truncate_log_text(record.get('reason') or record.get('last_error') or 'not_member', limit=72)}"
+        ),
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=260,
+    )
+
+
+def _persist_account_target_not_member(account_id, error, *, now=None):
+    probe = classify_membership_error(error)
+    if probe.status is not TargetGroupMembership.NOT_MEMBER:
+        return {}
+    now = float(now or time.time())
+    account_id = int(account_id or 0)
+    game_group_id = int(get_game_group_id() or 0)
+    if account_id <= 0 or game_group_id == 0:
+        return {}
+    identity_ids = resolve_account_identity_ids(
+        account_id,
+        get_identity_account_map(),
+        get_identity_ids(),
+    )
+    record = merge_account_membership_probe(
+        get_account_target_membership(account_id),
+        probe,
+        account_id=account_id,
+        identity_ids=identity_ids,
+        game_group_id=game_group_id,
+        now=now,
+    )
+    set_account_target_membership(account_id, record)
+    mark_dirty()
+    return record
+
+
+async def _account_target_group_blocks_send(command, *, send_as_id, account_id):
+    game_group_id = int(get_game_group_id() or 0)
+    if not is_account_target_group_blocked(account_id, game_group_id):
+        return False
+    record = get_account_target_membership(account_id)
+    _close_guard_for_unsent_command(command, send_as_id, "account_not_in_target_group")
+    await _log_account_target_group_blocked(
+        command,
+        send_as_id=send_as_id,
+        account_id=account_id,
+        record=record,
+    )
+    _record_game_send_block(
+        send_as_id,
+        command,
+        "account_not_in_target_group",
+        record.get("reason") or "登录账号不在当前游戏群",
+        definitely_unsent=True,
+        blocked_until=float(record.get("next_probe_at") or 0),
+    )
+    return True
+
+
 async def _log_identity_unbound_blocked(command, *, send_as_id):
     now = time.time()
     send_as_id = int(send_as_id or 0)
@@ -3910,6 +3993,13 @@ async def _send_game_command_impl(
             _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
             return None
 
+        if await _account_target_group_blocks_send(
+            command,
+            send_as_id=send_as_id,
+            account_id=account_id,
+        ):
+            return None
+
         flood_until = _account_flood_wait_until(account_id)
         if flood_until > 0:
             await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
@@ -4048,6 +4138,12 @@ async def _send_game_command_impl(
                     reason=get_account_offline_reason(account_id) or "账号离线",
                 )
                 _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
+                return None
+            if await _account_target_group_blocks_send(
+                command,
+                send_as_id=send_as_id,
+                account_id=account_id,
+            ):
                 return None
             flood_until = _account_flood_wait_until(account_id)
             if flood_until > 0:
@@ -4313,6 +4409,25 @@ async def _send_game_command_impl(
                 send_as_id=send_as_id,
                 account_id=account_id,
                 error=e,
+            )
+            return None
+        membership_record = _persist_account_target_not_member(account_id, e)
+        if membership_record:
+            _close_guard_for_unsent_command(command, send_as_id, "account_not_in_target_group")
+            await _log_account_target_group_blocked(
+                command,
+                send_as_id=send_as_id,
+                account_id=account_id,
+                record=membership_record,
+                force=True,
+            )
+            _record_game_send_block(
+                send_as_id,
+                command,
+                "account_not_in_target_group",
+                membership_record.get("reason") or _truncate_log_text(e, limit=120),
+                definitely_unsent=True,
+                blocked_until=float(membership_record.get("next_probe_at") or 0),
             )
             return None
         if account_id and _is_account_session_error(e):

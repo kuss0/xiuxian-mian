@@ -1218,6 +1218,20 @@ class HealthObserverTests(unittest.TestCase):
                         "next_probe_at": now + 240,
                     }),),
                 )
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('account_target_memberships', ?)",
+                    (json.dumps({
+                        "7001": {
+                            "account_id": 7001,
+                            "status": "not_member",
+                            "probe_status": "unknown",
+                            "identity_ids": [101, 102],
+                            "reason": "USER_NOT_PARTICIPANT",
+                            "checked_at": now - 60,
+                            "next_probe_at": now + 840,
+                        }
+                    }),),
+                )
                 conn.execute("INSERT INTO identities(send_as_id, username, enabled) VALUES(101, 'frozen', 0)")
                 conn.execute(
                     "INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(101, ?)",
@@ -1236,6 +1250,10 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(2, alerts[0]["count"])
         self.assertEqual("info", alerts[0]["severity"])
         self.assertEqual("SendAsPeerInvalidError", alerts[0]["sample"]["last_error"])
+        membership_alerts = [item for item in result["alerts"] if "outside target group" in item["message"]]
+        self.assertEqual(1, len(membership_alerts))
+        self.assertEqual("info", membership_alerts[0]["severity"])
+        self.assertEqual(7001, membership_alerts[0]["sample"][0]["account_id"])
         wild_alerts = [item for item in result["alerts"] if "public wild-training lag" in item["message"]]
         self.assertEqual(1, len(wild_alerts))
         self.assertEqual(1, wild_alerts[0]["count"])

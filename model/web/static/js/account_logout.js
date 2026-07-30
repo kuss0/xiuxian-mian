@@ -13,7 +13,11 @@ function getAccountLogoutAccounts() {
 function getAccountLogoutLabel(accountId) {
     const accounts = getAccountLogoutAccounts();
     const accountInfo = accounts[accountId] || {};
-    return ((accountInfo && accountInfo.username) || accountId) + ' (' + accountId + ')';
+    const membership = String(accountInfo.target_group_status || 'unknown');
+    const membershipSuffix = membership === 'not_member'
+        ? ' [不在游戏群]'
+        : (membership === 'unknown' && accountInfo.target_group_probe_status === 'unknown' ? ' [在群待确认]' : '');
+    return ((accountInfo && accountInfo.username) || accountId) + ' (' + accountId + ')' + membershipSuffix;
 }
 
 function getAccountLogoutBoundIdentities(accountId) {

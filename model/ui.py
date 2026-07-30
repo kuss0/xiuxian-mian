@@ -198,6 +198,7 @@ from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
     get_accounts,
+    get_account_target_membership,
     get_available_module_names,
     get_forum_topics,
     get_forum_topics_updated_at,
@@ -5948,6 +5949,11 @@ def _get_runtime_accounts_snapshot():
         account_info.pop("api_hash", None)
         account_info["offline"] = offline
         account_info["status"] = "offline" if offline else "online"
+        membership = get_account_target_membership(account_id)
+        account_info["target_group_status"] = str(membership.get("status") or "unknown")
+        account_info["target_group_probe_status"] = str(membership.get("probe_status") or "unknown")
+        account_info["target_group_reason"] = str(membership.get("reason") or membership.get("last_error") or "")
+        account_info["target_group_checked_at"] = fmt_abs_ts(float(membership.get("checked_at") or 0))
         if offline:
             account_info["offline_reason"] = get_account_offline_reason(account_id) or "账号不可用"
         else:
@@ -5964,6 +5970,13 @@ def _get_runtime_accounts_snapshot():
             "api_source": account_info.get("api_source") or "env",
             "offline": False,
             "status": "online",
+        })
+        membership = get_account_target_membership(account_id)
+        account_info.update({
+            "target_group_status": str(membership.get("status") or "unknown"),
+            "target_group_probe_status": str(membership.get("probe_status") or "unknown"),
+            "target_group_reason": str(membership.get("reason") or membership.get("last_error") or ""),
+            "target_group_checked_at": fmt_abs_ts(float(membership.get("checked_at") or 0)),
         })
         account_info.pop("offline_reason", None)
         accounts[str(account_id)] = account_info
