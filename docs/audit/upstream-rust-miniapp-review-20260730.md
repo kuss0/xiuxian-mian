@@ -57,3 +57,12 @@
 - 不吸收：整套 Rust MiniApp 框架、默认扩建、无真机证据的长老晋升、通用自动捐献。
 - 后续只保留两个独立候选 Gate：司星台扩建、星宫长老晋升，二者均默认关闭且不得共用一次授权。
 - 2026-07-30 11:39 主服务完成本批次唯一一次重启；11:44 只读 health observer 加载最终终态边界。两者 `active`、`NRestarts=0`，24 个身份恢复成功，pending 为空，health/watchdog 正常。
+
+## 14:28 增量复拉
+
+- wxjerry `origin/main` 从 `8ff9d90f` 前进到 `af82e49`，`origin/xuruodeaiban` 仍为 `cd2a2e64`。
+- 新提交只调整闯塔与侍妾远航完成日志：去掉重复的“下一轮”描述，并把闯塔层数直接放进完成行；没有协议、发送、回包或状态迁移变化。
+- 本地主线闯塔已经是公共洞府入口的独立 MiniApp scheduler，完成日志只有一行且 UI 状态保留下一次时间；侍妾远航也不存在上游同构实现，因此不搬该格式补丁。
+- Rust `origin/main=b2099d4`，`miniapp-channel=003af8c`、`xinggong-stars-miniapp=d5c6cce` 未出现新的可吸收提交。
+
+14:25 的生产自然样本进一步验证已吸收的观星台内层业务信封：`zhengyuan0213` 串行完成安抚 8、收集 1、牵引 8 座天雷星，物资为二级妖丹 x11、天雷竹 x11、金精矿 x3；所有 action 均 HTTP 200 且状态进入 `miniapp_waiting_panel`，没有重试或重复动作。

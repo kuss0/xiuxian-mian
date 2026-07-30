@@ -175,7 +175,7 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("error", result["alerts"][0]["severity"])
         self.assertEqual(301299112, result["alerts"][0]["sample"][0]["identity_id"])
 
-    def test_world_boss_health_warns_for_recent_partial_or_failed_identity(self):
+    def test_world_boss_health_reports_reconciled_event_close_as_info(self):
         now = 1_780_500_000.0
         result = health_observer.analyze_world_boss_miniapp_health(
             {
@@ -189,6 +189,12 @@ class HealthObserverTests(unittest.TestCase):
                         "ok": False,
                         "status": "event_closed_partial",
                         "error": "world boss closed after partial contribution",
+                        "summary": {
+                            "accepted_hit_count": 13,
+                            "event_closed": True,
+                            "state_reconciled": True,
+                            "state_terminal": True,
+                        },
                     }
                 ],
             },
@@ -197,6 +203,40 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertTrue(result["recent"])
         self.assertEqual(1, result["partial_or_failed_count"])
+        self.assertEqual(1, result["event_closed_partial_count"])
+        self.assertEqual(0, result["actionable_failure_count"])
+        self.assertEqual("info", result["alerts"][0]["severity"])
+        self.assertIn("event-closed contributors", result["alerts"][0]["message"])
+        self.assertEqual(13, result["alerts"][0]["sample"][0]["accepted_hit_count"])
+
+    def test_world_boss_health_warns_for_unreconciled_event_close(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_world_boss_miniapp_health(
+            {
+                "event_key": "2026-07-30:test",
+                "miniapp_auto_status": "partial",
+                "miniapp_auto_finished_at": now - 60,
+                "miniapp_auto_results": [
+                    {
+                        "identity_id": 8574677796,
+                        "phase": "battle",
+                        "ok": False,
+                        "status": "event_closed_partial",
+                        "error": "world boss closed before state reconciliation",
+                        "summary": {
+                            "accepted_hit_count": 13,
+                            "event_closed": True,
+                            "state_reconciled": False,
+                            "state_terminal": True,
+                        },
+                    }
+                ],
+            },
+            now,
+        )
+
+        self.assertEqual(0, result["event_closed_partial_count"])
+        self.assertEqual(1, result["actionable_failure_count"])
         self.assertEqual("warn", result["alerts"][0]["severity"])
         self.assertIn("partial/failed identities", result["alerts"][0]["message"])
 

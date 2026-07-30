@@ -77,3 +77,9 @@ wxjerry `91f3626c` 新增 WebSocket 实时状态和重连，可用于未来独�
 新增回归模拟日志等待期间 MiniApp 完成写入，确认最终仍为事件关闭、`partial` 状态和完整结果；同时修正实时唤醒用例中会被后续随机 `1.2s` 等待误撞的脆弱断言。验证：相关 `214 passed, 3 subtests passed`，实时唤醒用例重复 10 次通过，全量 `3486 passed, 536 subtests passed`，compileall 与 `git diff --check` 通过。
 
 部署前备份：`data/state/chaogu_state.db.pre-world-boss-close-race-20260730-1355`。本场运行账本已按脱敏 capture 校准为 WA/吧唧 `settled`、另外两号 `event_closed_partial`、事件 `功成`。14:00 主服务恢复后 24 身份加载成功，pending 为空，watchdog 正常，`NRestarts=0`。本验收项销号。
+
+## 健康观察语义收口
+
+结算后只读 health observer 仍把两个 `event_closed_partial` 计为 WARN，导致运行健康度长期停在 93。该状态并非运行失败：两个身份分别已有 14/13 次有效贡献，且结果同时带有 `event_closed=true`、`state_reconciled=true`、`state_terminal=true`，只是全服在它们提交 `/finish` 前结束。
+
+`tools/health_observer.py` 现仅在上述四项证据齐全且 `accepted_hit_count > 0` 时把该终态降为 INFO；缺少终态回读、未完成状态校准、零贡献、普通 partial/failed 和 `boss_duration_too_short` 仍维持 WARN/ERROR。focused `tests/test_health_observer.py tests/test_world_boss.py` 为 `159 passed, 3 subtests passed`，全量为 `3487 passed, 536 subtests passed`；生产 DB 只读运行后 health 为 100，两个部分贡献身份仍作为 INFO 保留在审计包中。只重启 `xiuxian-health-observer.service` 加载观察逻辑，主服务没有重启且保持 `NRestarts=0`。

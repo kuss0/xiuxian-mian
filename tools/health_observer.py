@@ -1053,11 +1053,13 @@ def analyze_world_boss_miniapp_health(
     recent = reference_at > 0 and age_sec <= max(0, int(window_sec))
 
     def result_sample(item: dict[str, object]) -> dict[str, object]:
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
         return {
             "identity_id": positive_int(item.get("identity_id")),
             "phase": str(item.get("phase") or ""),
             "status": str(item.get("status") or ""),
             "error": short_value(item.get("error"), 160),
+            "accepted_hit_count": positive_int(summary.get("accepted_hit_count")),
         }
 
     duration_failures = [
@@ -1073,7 +1075,22 @@ def analyze_world_boss_miniapp_health(
         if not bool(item.get("ok"))
         or str(item.get("status") or "").strip().lower() in failure_statuses
     ]
-    other_failures = [item for item in partial_or_failed if item not in duration_failures]
+    event_closed_partials = []
+    for item in partial_or_failed:
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+        if (
+            str(item.get("status") or "").strip().lower() == "event_closed_partial"
+            and bool(summary.get("event_closed"))
+            and bool(summary.get("state_reconciled"))
+            and bool(summary.get("state_terminal"))
+            and positive_int(summary.get("accepted_hit_count")) > 0
+        ):
+            event_closed_partials.append(item)
+    other_failures = [
+        item
+        for item in partial_or_failed
+        if item not in duration_failures and item not in event_closed_partials
+    ]
     run_status = str(state.get("miniapp_auto_status") or "").strip().lower()
     alerts: list[dict[str, object]] = []
     if recent and duration_failures:
@@ -1091,6 +1108,15 @@ def analyze_world_boss_miniapp_health(
                 f"recent world boss MiniApp partial/failed identities: {len(other_failures)}",
                 count=len(other_failures),
                 sample=[result_sample(item) for item in other_failures[:8]],
+            )
+        )
+    if recent and event_closed_partials:
+        alerts.append(
+            business_alert(
+                f"recent world boss MiniApp event-closed contributors: {len(event_closed_partials)}",
+                severity="info",
+                count=len(event_closed_partials),
+                sample=[result_sample(item) for item in event_closed_partials[:8]],
             )
         )
     if recent and run_status in failure_statuses and not partial_or_failed:
@@ -1112,6 +1138,8 @@ def analyze_world_boss_miniapp_health(
         "battle_count": len(battle_results),
         "duration_failure_count": len(duration_failures),
         "partial_or_failed_count": len(partial_or_failed),
+        "event_closed_partial_count": len(event_closed_partials),
+        "actionable_failure_count": len(duration_failures) + len(other_failures),
         "alerts": alerts,
     }
 
