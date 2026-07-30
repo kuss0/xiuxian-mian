@@ -35,6 +35,62 @@ class ReplicaCommandMatchContext:
 
 
 @dataclass(frozen=True)
+class ReplicaJoinPreflightConfig:
+    command_pattern: Pattern[str]
+    virtual_hall_kind: str
+    query_command: str
+    open_usage: str
+    join_usage: str
+    dissolve_command: str
+
+
+@dataclass(frozen=True)
+class ReplicaJoinPreflightRuntimePort:
+    get_listener_account_id: Callable[[Any], int]
+    claim_event: Callable[..., bool]
+    now: Callable[[], float] = time.time
+
+
+@dataclass(frozen=True)
+class ReplicaJoinPreflightStatePort:
+    get_room: Callable[..., Any]
+    find_active_flow: Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class ReplicaJoinPreflightViewPort:
+    format_existing_open_notice: Callable[..., str]
+    existing_open_buttons: Callable[[dict], Any]
+    format_next_commands: Callable[..., str]
+    build_open_buttons: Callable[..., Any]
+    existing_room_buttons: Callable[[dict], Any]
+    get_join_command: Callable[[str], str]
+    is_room_enter_actionable: Callable[[dict], bool]
+    format_virtual_hall_not_actionable_notice: Callable[..., str]
+    build_room_buttons: Callable[..., Any]
+    strip_html: Callable[[str], str]
+    send_group_message: Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class ReplicaJoinPreflightContext:
+    config: ReplicaJoinPreflightConfig
+    runtime: ReplicaJoinPreflightRuntimePort
+    state: ReplicaJoinPreflightStatePort
+    view: ReplicaJoinPreflightViewPort
+
+
+@dataclass(frozen=True)
+class ReplicaJoinPreflightResult:
+    terminal: bool
+    return_value: bool
+    listener_account_id: int = 0
+    room: Any = None
+    selectors: tuple[str, ...] = ()
+    command: str = ""
+
+
+@dataclass(frozen=True)
 class ReplicaOpenCommandConfig:
     command_pattern: Pattern[str]
     cangkun_kind: str
@@ -224,6 +280,111 @@ def format_replica_skipped_selector(selector, reason=""):
     selector = str(selector or "").strip() or "未知身份"
     reason = str(reason or "").strip()
     return f"{selector}({reason})" if reason else selector
+
+
+async def _send_join_preflight_notice(context, event, listener_account_id, text, buttons, *, log_text=""):
+    await context.view.send_group_message(
+        event.client,
+        event.chat_id,
+        text,
+        parse_mode="html",
+        listener_account_id=listener_account_id,
+        log_text=log_text or context.view.strip_html(text),
+        buttons=buttons,
+    )
+
+
+async def prepare_lightweight_join_command(context, event):
+    """Validate common join prerequisites without owning replica-specific rules."""
+    runtime = context.runtime
+    state = context.state
+    view = context.view
+    config = context.config
+
+    listener_account_id = runtime.get_listener_account_id(event)
+    if not listener_account_id:
+        return ReplicaJoinPreflightResult(terminal=True, return_value=False)
+    raw_text = str(getattr(event, "raw_text", "") or "").strip()
+    if not config.command_pattern.match(raw_text):
+        return ReplicaJoinPreflightResult(terminal=True, return_value=False)
+    if not runtime.claim_event(event, scope="replica_lightweight_join"):
+        return ReplicaJoinPreflightResult(terminal=True, return_value=True)
+
+    now = float(runtime.now())
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    room = state.get_room(chat_id, now=now)
+    if not room:
+        active_flow = state.find_active_flow(chat_id, now=now)
+        if active_flow:
+            text = view.format_existing_open_notice(active_flow, html=True)
+            await _send_join_preflight_notice(
+                context,
+                event,
+                listener_account_id,
+                text,
+                view.existing_open_buttons(active_flow),
+            )
+            return ReplicaJoinPreflightResult(terminal=True, return_value=True)
+        text = (
+            "没有已记录的副本房间，请先开房。\n\n"
+            + view.format_next_commands(config.query_command, config.open_usage, html=True)
+        )
+        await _send_join_preflight_notice(
+            context,
+            event,
+            listener_account_id,
+            text,
+            view.build_open_buttons(chat_id, listener_account_id, now=now),
+        )
+        return ReplicaJoinPreflightResult(terminal=True, return_value=True)
+
+    selectors = tuple(parse_lightweight_join_usernames(raw_text, config.command_pattern))
+    if not selectors:
+        text = (
+            f"用法：{config.join_usage}\n\n"
+            + view.format_next_commands(config.join_usage, config.dissolve_command, html=True)
+        )
+        await _send_join_preflight_notice(
+            context,
+            event,
+            listener_account_id,
+            text,
+            view.existing_room_buttons(room),
+        )
+        return ReplicaJoinPreflightResult(terminal=True, return_value=True)
+
+    replica_kind = str(room.get("replica_kind") or "")
+    room_id = str(room.get("room_id") or "").strip()
+    command = f"{view.get_join_command(replica_kind)} {room_id}"
+    if replica_kind == config.virtual_hall_kind and not view.is_room_enter_actionable(room):
+        text = view.format_virtual_hall_not_actionable_notice(room, html=True)
+        text += "\n\n" + view.format_next_commands(
+            config.dissolve_command,
+            config.query_command,
+            html=True,
+        )
+        await _send_join_preflight_notice(
+            context,
+            event,
+            listener_account_id,
+            text,
+            view.build_room_buttons(
+                room,
+                include_enter=False,
+                include_dissolve=True,
+                include_query=True,
+            ),
+        )
+        return ReplicaJoinPreflightResult(terminal=True, return_value=True)
+
+    return ReplicaJoinPreflightResult(
+        terminal=False,
+        return_value=True,
+        listener_account_id=int(listener_account_id),
+        room=room,
+        selectors=selectors,
+        command=command,
+    )
 
 
 async def _send_open_notice(context, event, listener_account_id, text, buttons):
@@ -659,6 +820,12 @@ async def handle_ticket_query(context, event):
 
 __all__ = [
     "ReplicaCommandMatchContext",
+    "ReplicaJoinPreflightConfig",
+    "ReplicaJoinPreflightContext",
+    "ReplicaJoinPreflightResult",
+    "ReplicaJoinPreflightRuntimePort",
+    "ReplicaJoinPreflightStatePort",
+    "ReplicaJoinPreflightViewPort",
     "ReplicaJoinDispatchConfig",
     "ReplicaJoinDispatchContext",
     "ReplicaJoinDispatchIdentityPort",
@@ -681,4 +848,5 @@ __all__ = [
     "normalize_replica_usernames",
     "parse_lightweight_join_usernames",
     "parse_lightweight_open_command",
+    "prepare_lightweight_join_command",
 ]

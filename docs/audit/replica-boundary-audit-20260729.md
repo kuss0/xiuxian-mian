@@ -159,3 +159,22 @@ Gate C 仍未整体销号。下一段只评审 join 的高层命令编排端口�
 
 Gate C 尚未整体销号。下一步先观察 C3a 生产边界，再决定是否抽 join 前置；enter/dissolve
 和房间生命周期仍不与该段合并迁移。
+
+## Gate C3b 实施结果
+
+2026-07-30 在没有主动发送副本命令的前提下，继续抽离加入命令的通用前置：
+
+- `replica_commands.py` 新增 join preflight 的 runtime/state/view 窄端口，承接事件认领、
+  房间/开房 pending 判定、参数解析、无房/用法提示和虚天殿不可加入提示。
+- `app_replica.py` 仍独占落云掌天瓶、苍坤五职业/神识等副本特有前置；通用 preflight
+  通过后才进入 C3a 的串行 dispatch。
+- 房间写入、加入 reducer、回包恢复、快重试实现、按钮 token、enter/dissolve 均未迁移，
+  现有 facade 与测试 patch 路径保持不变。
+
+验证：同一组副本聚焦回归为 `313 passed, 45 subtests passed`；巨型文件降至
+`14343` 行，轻量命令段跨区出边 `126 -> 118`，其中到轻量房间域 `91 -> 83`，
+到虚天状态域保持 `22`，入边保持 `6`，跨区强连通环仍为 `0`。全量为
+`3448 passed, 535 subtests passed`；`py_compile` 与 `git diff --check` 通过。
+
+Gate C 仍未整体销号。C3b 上线后等待自然副本样本；没有自然样本时不得为验证主动开房。
+下一物理候选继续后置，enter/dissolve 和房间生命周期不与本 Gate 合并。

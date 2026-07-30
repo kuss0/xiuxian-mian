@@ -13157,6 +13157,41 @@ def _parse_lightweight_join_usernames(raw_text):
     )
 
 
+def _replica_join_preflight_context():
+    return replica_commands.ReplicaJoinPreflightContext(
+        config=replica_commands.ReplicaJoinPreflightConfig(
+            command_pattern=_REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE,
+            virtual_hall_kind=_REPLICA_KIND_VIRTUAL_HALL,
+            query_command=".查询副本",
+            open_usage=_REPLICA_LIGHTWEIGHT_OPEN_USAGE,
+            join_usage=".加入副本 @用户名 @用户名",
+            dissolve_command=".解散副本",
+        ),
+        runtime=replica_commands.ReplicaJoinPreflightRuntimePort(
+            get_listener_account_id=_get_replica_event_listener_account_id,
+            claim_event=_claim_runtime_event,
+            now=time.time,
+        ),
+        state=replica_commands.ReplicaJoinPreflightStatePort(
+            get_room=_get_lightweight_last_room,
+            find_active_flow=_find_active_lightweight_open_flow,
+        ),
+        view=replica_commands.ReplicaJoinPreflightViewPort(
+            format_existing_open_notice=_format_lightweight_existing_open_notice,
+            existing_open_buttons=_lightweight_existing_open_notice_buttons,
+            format_next_commands=_format_lightweight_next_commands,
+            build_open_buttons=_build_lightweight_open_button_rows,
+            existing_room_buttons=_lightweight_existing_room_notice_buttons,
+            get_join_command=lambda replica_kind: (_REPLICA_KIND_META.get(replica_kind) or {}).get("join_command") or "",
+            is_room_enter_actionable=_is_lightweight_room_enter_actionable,
+            format_virtual_hall_not_actionable_notice=_format_virtual_hall_room_not_actionable_notice,
+            build_room_buttons=_build_lightweight_room_action_buttons,
+            strip_html=_strip_html_code_tags,
+            send_group_message=_send_replica_group_message,
+        ),
+    )
+
+
 def _replica_join_dispatch_context():
     return replica_commands.ReplicaJoinDispatchContext(
         config=replica_commands.ReplicaJoinDispatchConfig(
@@ -13199,73 +13234,18 @@ def _replica_join_dispatch_context():
 
 
 async def _handle_lightweight_join_command(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
-    if not listener_account_id:
-        return False
-    raw_text = str(getattr(event, "raw_text", "") or "").strip()
-    if not _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE.match(raw_text):
-        return False
-    if not _claim_runtime_event(event, scope="replica_lightweight_join"):
-        return True
-    room = _get_lightweight_last_room(int(getattr(event, "chat_id", 0) or 0), now=time.time())
-    if not room:
-        active_flow = _find_active_lightweight_open_flow(int(getattr(event, "chat_id", 0) or 0), now=time.time())
-        if active_flow:
-            text = _format_lightweight_existing_open_notice(active_flow, html=True)
-            await _send_replica_group_message(
-                event.client,
-                event.chat_id,
-                text,
-                parse_mode="html",
-                listener_account_id=listener_account_id,
-                log_text=_strip_html_code_tags(text),
-                buttons=_lightweight_existing_open_notice_buttons(active_flow),
-            )
-            return True
-        text = "没有已记录的副本房间，请先开房。\n\n" + _format_lightweight_next_commands(".查询副本", _REPLICA_LIGHTWEIGHT_OPEN_USAGE, html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_button_rows(
-                int(getattr(event, "chat_id", 0) or 0),
-                listener_account_id,
-                now=time.time(),
-            ),
-        )
-        return True
-    selectors = _parse_lightweight_join_usernames(raw_text)
-    if not selectors:
-        text = "用法：.加入副本 @用户名 @用户名\n\n" + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_lightweight_existing_room_notice_buttons(room),
-        )
-        return True
+    preflight = await replica_commands.prepare_lightweight_join_command(
+        _replica_join_preflight_context(),
+        event,
+    )
+    if preflight.terminal:
+        return preflight.return_value
+    listener_account_id = preflight.listener_account_id
+    room = preflight.room
+    selectors = list(preflight.selectors)
+    command = preflight.command
     replica_kind = room.get("replica_kind")
     room_id = str(room.get("room_id") or "").strip()
-    command = f"{_REPLICA_KIND_META[replica_kind]['join_command']} {room_id}"
-    if replica_kind == _REPLICA_KIND_VIRTUAL_HALL and not _is_lightweight_room_enter_actionable(room):
-        text = _format_virtual_hall_room_not_actionable_notice(room, html=True)
-        text += "\n\n" + _format_lightweight_next_commands(".解散副本", ".查询副本", html=True)
-        await _send_replica_group_message(
-            event.client,
-            event.chat_id,
-            text,
-            parse_mode="html",
-            listener_account_id=listener_account_id,
-            log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
-        )
-        return True
     leader_identity_id = int(room.get("leader_identity_id") or 0)
     if replica_kind == _REPLICA_KIND_LUOYUN:
         now_for_join = time.time()

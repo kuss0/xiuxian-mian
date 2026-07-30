@@ -269,6 +269,112 @@ class ReplicaCommandBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已发送加入虚天殿 47：@member", send_group.await_args.args[2])
         self.assertIn("next", send_group.await_args.args[2])
 
+    async def test_join_preflight_returns_ready_payload_without_sending(self):
+        room = {
+            "replica_kind": "kunwu",
+            "room_id": "47",
+            "leader_identity_id": 991201,
+        }
+        send_group = AsyncMock()
+        context = replica_commands.ReplicaJoinPreflightContext(
+            config=replica_commands.ReplicaJoinPreflightConfig(
+                command_pattern=JOIN_RE,
+                virtual_hall_kind="virtual_hall",
+                query_command=".查询副本",
+                open_usage=".开启副本 @用户名",
+                join_usage=".加入副本 @用户名 @用户名",
+                dissolve_command=".解散副本",
+            ),
+            runtime=replica_commands.ReplicaJoinPreflightRuntimePort(
+                get_listener_account_id=Mock(return_value=9001),
+                claim_event=Mock(return_value=True),
+                now=Mock(return_value=1000.0),
+            ),
+            state=replica_commands.ReplicaJoinPreflightStatePort(
+                get_room=Mock(return_value=room),
+                find_active_flow=Mock(return_value=None),
+            ),
+            view=replica_commands.ReplicaJoinPreflightViewPort(
+                format_existing_open_notice=Mock(return_value="flow"),
+                existing_open_buttons=Mock(return_value=[]),
+                format_next_commands=Mock(return_value="next"),
+                build_open_buttons=Mock(return_value=[]),
+                existing_room_buttons=Mock(return_value=[]),
+                get_join_command=Mock(return_value=".加入昆吾山"),
+                is_room_enter_actionable=Mock(return_value=True),
+                format_virtual_hall_not_actionable_notice=Mock(return_value="blocked"),
+                build_room_buttons=Mock(return_value=[]),
+                strip_html=Mock(side_effect=lambda text: text),
+                send_group_message=send_group,
+            ),
+        )
+        event = SimpleNamespace(
+            raw_text=".加入副本 @first @second",
+            chat_id=-100777,
+            id=600,
+            client=object(),
+        )
+
+        result = await replica_commands.prepare_lightweight_join_command(context, event)
+
+        self.assertFalse(result.terminal)
+        self.assertTrue(result.return_value)
+        self.assertEqual(9001, result.listener_account_id)
+        self.assertIs(room, result.room)
+        self.assertEqual(("@first", "@second"), result.selectors)
+        self.assertEqual(".加入昆吾山 47", result.command)
+        send_group.assert_not_awaited()
+
+    async def test_join_preflight_waits_for_existing_open_flow(self):
+        active_flow = {"flow_id": "flow-1"}
+        send_group = AsyncMock(return_value=SimpleNamespace(id=700))
+        context = replica_commands.ReplicaJoinPreflightContext(
+            config=replica_commands.ReplicaJoinPreflightConfig(
+                command_pattern=JOIN_RE,
+                virtual_hall_kind="virtual_hall",
+                query_command=".查询副本",
+                open_usage=".开启副本 @用户名",
+                join_usage=".加入副本 @用户名 @用户名",
+                dissolve_command=".解散副本",
+            ),
+            runtime=replica_commands.ReplicaJoinPreflightRuntimePort(
+                get_listener_account_id=Mock(return_value=9001),
+                claim_event=Mock(return_value=True),
+                now=Mock(return_value=1000.0),
+            ),
+            state=replica_commands.ReplicaJoinPreflightStatePort(
+                get_room=Mock(return_value=None),
+                find_active_flow=Mock(return_value=active_flow),
+            ),
+            view=replica_commands.ReplicaJoinPreflightViewPort(
+                format_existing_open_notice=Mock(return_value="等待开房广播"),
+                existing_open_buttons=Mock(return_value=[["flow"]]),
+                format_next_commands=Mock(return_value="next"),
+                build_open_buttons=Mock(return_value=[]),
+                existing_room_buttons=Mock(return_value=[]),
+                get_join_command=Mock(return_value=""),
+                is_room_enter_actionable=Mock(return_value=True),
+                format_virtual_hall_not_actionable_notice=Mock(return_value="blocked"),
+                build_room_buttons=Mock(return_value=[]),
+                strip_html=Mock(side_effect=lambda text: text),
+                send_group_message=send_group,
+            ),
+        )
+        event = SimpleNamespace(
+            raw_text=".加入副本 @first",
+            chat_id=-100777,
+            id=600,
+            client=object(),
+        )
+
+        result = await replica_commands.prepare_lightweight_join_command(context, event)
+
+        self.assertTrue(result.terminal)
+        self.assertTrue(result.return_value)
+        send_group.assert_awaited_once()
+        self.assertEqual("等待开房广播", send_group.await_args.args[2])
+        self.assertEqual([["flow"]], send_group.await_args.kwargs["buttons"])
+
 
 if __name__ == "__main__":
     unittest.main()
