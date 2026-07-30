@@ -40,6 +40,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import action_guard
 from model import state as state_module
 from model.features import passive_inbox, small_world, storage_bag
+from model.real_message_replay import iter_real_message_samples
+
+
+FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
 
 
 LATEST_SMALL_WORLD_PANEL = (
@@ -142,6 +146,33 @@ class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
 
 
 class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_real_message_fixture_covers_barrier_resource_shortage(self):
+        samples = list(iter_real_message_samples(FIXTURE_PATH, family="small_world_barrier"))
+
+        self.assertEqual(1, len(samples))
+        send_as_id = 8659059191
+        now = 1_800_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = True
+            state_module.state["small_world_barrier_msg_id"] = 487262
+            state_module.state["small_world_barrier_due_at"] = now + 60
+            with (
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await small_world.handle_small_world_barrier_reply(
+                    samples[0].text,
+                    now,
+                    reply_to=SimpleNamespace(id=487262, raw_text=".护界禁制"),
+                    matched_family="small_world_barrier",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["small_world_barrier_msg_id"])
+            self.assertIn("资源不足", state_module.state["small_world_last_error"])
+
     async def test_parse_latest_temple_panel_fields(self):
         panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)
 

@@ -518,9 +518,9 @@ class MessageContractTests(unittest.TestCase):
         payload = json.loads(out.getvalue())
         readiness = payload["readiness"]
         rows = {row["module"]: row for row in readiness["modules"]}
-        self.assertEqual(31, readiness["totals"]["sample_complete_modules"])
+        self.assertEqual(33, readiness["totals"]["sample_complete_modules"])
         self.assertEqual(2, readiness["totals"]["sample_partial_modules"])
-        self.assertEqual(2, readiness["totals"]["sample_missing_modules"])
+        self.assertEqual(0, readiness["totals"]["sample_missing_modules"])
         self.assertEqual(5, readiness["totals"]["contract_only_modules"])
         self.assertEqual(2, readiness["totals"]["archived_modules"])
         self.assertTrue(rows["灵树"]["strict"])
@@ -528,8 +528,11 @@ class MessageContractTests(unittest.TestCase):
         self.assertTrue(rows["放养"]["archived"])
         self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
         self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["放养"]["readiness"])
-        self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰烽烟"]["readiness"])
-        self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["婉心封魂"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["慕兰烽烟"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_PARTIAL, rows["婉心封魂"]["readiness"])
+        self.assertEqual([], rows["慕兰烽烟"]["missing_sample_families"])
+        self.assertEqual(["wanxin_moon_join"], rows["婉心封魂"]["missing_sample_families"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["小世界"]["readiness"])
 
     def test_report_tool_json_output_can_include_gap_classes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

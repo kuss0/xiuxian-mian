@@ -15,6 +15,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import action_guard
 from model import state as state_module
 from model.features import wanxin
+from model.real_message_replay import iter_real_message_samples
+
+
+FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
 
 
 class WanxinTests(unittest.IsolatedAsyncioTestCase):
@@ -1707,6 +1711,41 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(helper_id):
             helper_observed = wanxin.normalize_wanxin_observation(state_module.state["wanxin_observation"])
             self.assertEqual(0, helper_observed["assist"]["helper_next_identify_time"])
+
+    def test_real_message_fixtures_cover_evidenced_wanxin_families(self):
+        samples = {
+            sample.family: sample
+            for sample in iter_real_message_samples(FIXTURE_PATH, module="wanxin")
+        }
+        expected_types = {
+            "wanxin_panel": "panel",
+            "wanxin_visit": "visit_success",
+            "wanxin_protect": "protect_success",
+            "wanxin_deduce": "deduce_success",
+            "wanxin_commission": "commission_published",
+            "wanxin_cancel": "commission_cancelled",
+            "wanxin_accept": "commission_accepted",
+            "wanxin_assist_identify": "assist_identify_success",
+            "wanxin_assist_banner": "assist_banner_success",
+            "wanxin_assist_strip": "assist_strip_success",
+            "wanxin_moon_panel": "moon_panel",
+            "wanxin_moon_greet": "moon_greet_success",
+            "wanxin_moon_seal": "moon_seal_success",
+        }
+
+        self.assertTrue(set(expected_types).issubset(samples))
+        for family, expected_type in expected_types.items():
+            with self.subTest(family=family):
+                parsed = wanxin.parse_wanxin_text(
+                    samples[family].text,
+                    now=1_800_000_000.0,
+                    family=family,
+                )
+                self.assertIsNotNone(parsed)
+                self.assertEqual(expected_type, parsed["type"])
+
+        # No real moon-join reply has been captured yet; keep this gap visible.
+        self.assertNotIn("wanxin_moon_join", samples)
 
 if __name__ == "__main__":
     unittest.main()

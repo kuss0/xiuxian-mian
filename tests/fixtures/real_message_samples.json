@@ -796,5 +796,138 @@
     "family": "fishing",
     "event_type": "message",
     "text": "【灵溪垂钓】\n钓者：@WalterWA2000\n鱼塘：青溪浅滩\n天象：小雨\n鱼讯：静候鱼讯\n进度：□□□□□□□□□□ 0%\n\n你挂上 【灵米饵】，抛竿入水，敛息坐定。\n预计 47秒 内会有鱼讯。\n可用：.钓鱼状态 / .收竿"
+  },
+  "wanxin.panel.real_541161": {
+    "source": "data/messages/2026-07-30.log:121",
+    "module": "wanxin",
+    "family": "wanxin_panel",
+    "event_type": "message",
+    "text": "【婉心封魂】\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：18\n咒源：120\n\n可用：.探望南宫婉、.护持神魂、.推演封魂咒、.发布解咒委托 [灵石]。"
+  },
+  "wanxin.visit.real_541316": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:78",
+    "module": "wanxin",
+    "family": "wanxin_visit",
+    "event_type": "message",
+    "text": "【探望南宫婉】\n你以月殿旧令稳住她的神魂，南宫婉短暂醒转片刻。\n婉心 +3，魂封 -1。\n\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：104\n咒源：120"
+  },
+  "wanxin.protect.real_547234": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:1618",
+    "module": "wanxin",
+    "family": "wanxin_protect",
+    "event_type": "message",
+    "text": "【护持神魂】\n你耗费 800 修为，以神识与月魄护住南宫婉识海。\n魂封 -6，月魄 +1。\n\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：105\n咒源：120"
+  },
+  "wanxin.deduce.real_549203": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:2298",
+    "module": "wanxin",
+    "family": "wanxin_deduce",
+    "event_type": "message",
+    "text": "【推演封魂咒】\n你沿着素女禁纹反推咒源，隐约看见阴罗秘咒的残痕。\n咒源 +28。\n\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：2\n月魄：105\n咒源：120"
+  },
+  "wanxin.commission.real_355876": {
+    "source": "data/state/passive_event_ledger/2026-07-22.jsonl:2231",
+    "module": "wanxin",
+    "family": "wanxin_commission",
+    "event_type": "message",
+    "text": "【解咒委托已发布】\n委托 ID：376\n报酬：1 灵石\n需求：阴罗宗咒师可接取后使用 .辨认咒纹、.借幡镇魂、.剥离咒源 协助。\n\n阴罗宗玩家可用 .接取解咒委托 376 接取。"
+  },
+  "wanxin.cancel.real_446325": {
+    "source": "data/state/passive_event_ledger/2026-07-25.jsonl:6886",
+    "module": "wanxin",
+    "family": "wanxin_cancel",
+    "event_type": "message",
+    "text": "解咒委托已取消，已退回 1 灵石。"
+  },
+  "wanxin.accept.real_408177": {
+    "source": "data/state/passive_event_ledger/2026-07-24.jsonl:2354",
+    "module": "wanxin",
+    "family": "wanxin_accept",
+    "event_type": "message",
+    "text": "【咒契协定已成】\n阴罗宗弟子 @sanshaoyedejian1 已接取 @WalterWA2000 的解咒委托。\n可回复对方消息使用 .辨认咒纹、.借幡镇魂、.剥离咒源。"
+  },
+  "wanxin.assist_identify.real_355916": {
+    "source": "data/state/passive_event_ledger/2026-07-22.jsonl:2246",
+    "module": "wanxin",
+    "family": "wanxin_assist_identify",
+    "event_type": "message",
+    "text": "【阴罗辨咒】\n@sanshaoyedejian1 以阴罗秘法辨认封魂咒纹，替 @WalterWA2000 锁定咒源。\n咒源 +28，咒师贡献 +120。\n\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：68\n咒源：120"
+  },
+  "wanxin.assist_banner.real_408208": {
+    "source": "data/state/passive_event_ledger/2026-07-24.jsonl:2362",
+    "module": "wanxin",
+    "family": "wanxin_assist_banner",
+    "event_type": "message",
+    "text": "【借幡镇魂】\n@sanshaoyedejian1 借阴罗幡压住封魂咒反扑，幡面煞气被削去 80 点。\n@WalterWA2000 魂封 -15，月魄 +1；咒师贡献 +100。\n\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：84\n咒源：120"
+  },
+  "wanxin.assist_strip.real_408224": {
+    "source": "data/state/passive_event_ledger/2026-07-24.jsonl:2370",
+    "module": "wanxin",
+    "family": "wanxin_assist_strip",
+    "event_type": "message",
+    "text": "【剥离咒源成功】\n@sanshaoyedejian1 以阴罗幡截住咒源反噬，替 @WalterWA2000 剥下一段阴罗残咒。\n魂封 -10，咒源 +10。@WalterWA2000：【阴罗残咒】x1、【玄冰丹方残篇】x1；@sanshaoyedejian1：【封魂残煞】x1、报酬 1 灵石、贡献 +180。\n\n阶段：玄冰丹方（封魂未解）\n婉心：120\n魂封：0\n月魄：84\n咒源：120"
+  },
+  "wanxin.moon_panel.real_366675": {
+    "source": "data/state/passive_event_ledger/2026-07-22.jsonl:5487",
+    "module": "wanxin",
+    "family": "wanxin_moon_panel",
+    "event_type": "message",
+    "text": "【月影同参】\n侍妾：【南宫婉·月影】（随行中）\n情缘：314\n共鸣：已觉醒\n阶段：月影初醒\n婉心封魂：月殿余咒（封魂未解）\n婉心 63 | 魂封 27 | 月魄 11 | 咒源 11\n月影护持：无\n\n命令：.唤醒婉影、.婉影问安、.同参封魂、.月下合参、.侍妾远航 月殿寻痕。\n限制：婉影问安每日一次；同参封魂 8 小时冷却；月下合参 24 小时冷却。"
+  },
+  "wanxin.moon_greet.real_493382": {
+    "source": "data/state/passive_event_ledger/2026-07-27.jsonl:6828",
+    "module": "wanxin",
+    "family": "wanxin_moon_greet",
+    "event_type": "message",
+    "text": "【婉影问安】\n你与【南宫婉·月影】于月下静坐片刻。\n情缘 +6。\n婉心 +1，魂封 -2。\n婉心封魂：玄冰丹方（封魂未解）\n婉心 120 | 魂封 0 | 月魄 95 | 咒源 120"
+  },
+  "wanxin.moon_seal.real_552501": {
+    "source": "data/messages/2026-07-30.log:12706",
+    "module": "wanxin",
+    "family": "wanxin_moon_seal",
+    "event_type": "message",
+    "text": "【同参封魂】\n你与【南宫婉·月影】合坐月下，以月魄牵住封魂咒反噬。\n消耗：500修为、24情缘。\n魂封 -6，月魄 +2，咒源 +3。\n\n婉心封魂：玄冰丹方（封魂未解）\n婉心 120 | 魂封 0 | 月魄 41 | 咒源 120"
+  },
+  "mulan.collect.real_543663": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:539",
+    "module": "mulan",
+    "family": "mulan_collect",
+    "event_type": "message",
+    "text": "【慕兰谍影】\n日期：2026-07-30\n状态：待公开\n\n军报匣\n1. 今夜圣灯换焰，主灯会短暂离开护灯法士三十息。（未辨）\n2. 南营无人防守，所有法士都在主帐议事。（未辨）\n3. 圣灯已熄，只需正面冲阵便可夺灯。（未辨）\n\n建议流程：先 .辨报 <编号>，再 .公开军报 <编号>。"
+  },
+  "mulan.publish.real_543665": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:540",
+    "module": "mulan",
+    "family": "mulan_publish",
+    "event_type": "message",
+    "text": "【慕兰谍影·真报】\n前线采信了你的军报：今夜圣灯换焰，主灯会短暂离开护灯法士三十息。\n\n获得边境军功 +2。\n今日支援【破慕兰圣灯】时，将获得情报助力。"
+  },
+  "mulan.support.real_543669": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:543",
+    "module": "mulan",
+    "family": "mulan_support",
+    "event_type": "edit",
+    "text": "【慕兰烽烟 · 破慕兰圣灯】小胜\n你趁圣灯换焰之隙压下一道雷火，灯影溃散，禁制边缘露出破绽。\n\n- 你公开过的真军报正在发挥作用，本次风险降低。\n\n获得修为 +430\n获得灵石 +140\n获得材料 三级妖丹 x1\n\n边境军功 +5，累计 189\n连续支援 20 天"
+  },
+  "mulan.judge.real_544480": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:803",
+    "module": "mulan",
+    "family": "mulan_judge",
+    "event_type": "message",
+    "text": "【辨报·1】\n圣灯已熄，只需正面冲阵便可夺灯。\n\n研判：可疑\n线索：若圣灯真熄，前线不会仍有焰影压阵。\n\n若要交给前线，使用 .公开军报 1。"
+  },
+  "mulan.panel.real_544482": {
+    "source": "data/state/passive_event_ledger/2026-07-30.jsonl:804",
+    "module": "mulan",
+    "family": "mulan_panel",
+    "event_type": "message",
+    "text": "【慕兰烽烟】\n慕兰法士越过草原南下，圣灯压阵，天南边境烽火连营。黄龙山旧部与各派修士正在前线固守法阵、截断粮道、搜寻苍坤旧禁残线。\n\n【今日军议】\n- 天象：阵脚微裂，边境大阵有暗伤，护阵所得会更扎实。\n- 军议密令：夜袭法士营，押中可得额外军功和收益。\n- 险棋窗口：斥候探草原，风险上升；若成，可额外立功。\n- 粮道通畅：固守边境法阵，灵石收益提高。\n\n修士：@Lpprceqei\n今日状态：未支援\n累计边境军功：151\n连续支援：19 天\n押中密令：13 次\n险棋得手：5 次\n最近支援：2026-07-29\n\n可用行动\n- .支援慕兰 斥候：稳健探路，偏基础材料。\n- .支援慕兰 破灯：克制圣灯，低概率得【慕兰圣灯残焰】。\n- .支援慕兰 护阵：风险最低，偏灵石与阵旗残片。\n- .支援慕兰 奇袭：收益和风险最高，偏妖丹与蛇胆。\n- .灵兽边境：派灵兽巡边，带回军功、残图线索或前线补给。\n- .残图匣：拼合苍坤残图并按图探禁。\n- .刻印状态：查看法宝临战刻印，刻印会强化今日支援。\n\n个人战绩\n- 斥候探草原：6 次\n- 破慕兰圣灯：7 次\n- 固守边境法阵：12 次\n- 夜袭法士营：3 次"
+  },
+  "small_world.barrier.real_487263": {
+    "source": "data/state/passive_event_ledger/2026-07-27.jsonl:4835",
+    "module": "small_world",
+    "family": "small_world_barrier",
+    "event_type": "message",
+    "text": "香火不足！布下护界禁制需要 600 香火。"
   }
 }

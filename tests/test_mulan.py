@@ -15,6 +15,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import action_guard
 from model import state as state_module
 from model.features import mulan
+from model.real_message_replay import iter_real_message_samples
+
+
+FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
 
 
 class MulanTests(unittest.IsolatedAsyncioTestCase):
@@ -1064,6 +1068,27 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once()
             self.assertEqual(".支援慕兰 护阵", send_mock.await_args.args[0])
+
+    def test_real_message_fixtures_cover_all_mulan_families(self):
+        samples = {
+            sample.family: sample
+            for sample in iter_real_message_samples(FIXTURE_PATH, module="mulan")
+        }
+        expected = {"mulan_panel", "mulan_collect", "mulan_judge", "mulan_publish", "mulan_support"}
+        self.assertTrue(expected.issubset(samples))
+
+        collect = samples["mulan_collect"].text
+        self.assertEqual([1, 2, 3], mulan.parse_mulan_report_ids(collect))
+        self.assertEqual("suspicious", mulan.classify_mulan_judgement(samples["mulan_judge"].text))
+        self.assertEqual("true", mulan.classify_mulan_publish(samples["mulan_publish"].text))
+        self.assertEqual("破灯", mulan.parse_mulan_publish_result(samples["mulan_publish"].text)[2])
+        self.assertEqual("奇袭", mulan._support_action_from_panel(samples["mulan_panel"].text))
+        self.assertTrue(
+            mulan._is_mulan_terminal_recovery_text(
+                mulan.MULAN_PHASE_SUPPORT_PENDING,
+                samples["mulan_support"].text,
+            )
+        )
 
 
 if __name__ == "__main__":
