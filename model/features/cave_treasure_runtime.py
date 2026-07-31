@@ -1052,9 +1052,13 @@ def extract_cave_deep_seclusion_state(data):
     deep_state = {}
     for item in _iter_nested_dicts(data):
         normalized_keys = {_normalize_key(key) for key in item}
-        if "remainingseconds" not in normalized_keys:
-            continue
-        if normalized_keys.intersection({"active", "cansettle", "canstart", "statuscommand", "statustext"}):
+        has_deep_specific_field = bool(
+            normalized_keys.intersection({"remainingseconds", "endms", "canstart", "canforceexit", "statustext"})
+        )
+        has_deep_state_pair = "active" in normalized_keys and bool(
+            normalized_keys.intersection({"completed", "cansettle"})
+        )
+        if has_deep_specific_field or has_deep_state_pair:
             deep_state = item
             break
 
@@ -1071,15 +1075,75 @@ def extract_cave_deep_seclusion_state(data):
             deep_state.get("remainingSeconds", deep_state.get("remaining_seconds")),
         ),
     )
+    end_ms_raw = action_result.get(
+        "endMs",
+        action_result.get("end_ms", deep_state.get("endMs", deep_state.get("end_ms"))),
+    )
     remaining_seconds = None if remaining_raw is None else max(0, _parse_int(remaining_raw, 0))
+    end_ms = None if end_ms_raw is None else max(0, _parse_int(end_ms_raw, 0))
+    completed = optional_bool(action_result, "completed")
+    if completed is None:
+        completed = optional_bool(deep_state, "completed")
+    active = optional_bool(action_result, "active")
+    if active is None:
+        active = optional_bool(deep_state, "active")
+    can_settle = optional_bool(action_result, "canSettle", "can_settle")
+    if can_settle is None:
+        can_settle = optional_bool(deep_state, "canSettle", "can_settle")
     return {
         "known": bool(action_result or deep_state),
         "ok": optional_bool(action_result, "ok"),
-        "completed": optional_bool(action_result, "completed"),
-        "active": optional_bool(deep_state, "active"),
-        "can_settle": optional_bool(deep_state, "canSettle", "can_settle"),
+        "completed": completed,
+        "active": active,
+        "can_settle": can_settle,
         "remaining_seconds": remaining_seconds,
+        "end_ms": end_ms,
         "message": extract_cave_deep_seclusion_action_message(data),
+    }
+
+
+def _cave_public_deep_settle_preflight(identity_id, session, *, now):
+    """Require authoritative dashboard evidence before a settle POST."""
+
+    result_data = dict((session.get("result") or {}).get("data") or {})
+    snapshot_data = result_data.get("raw") if isinstance(result_data.get("raw"), dict) else result_data
+    snapshot = extract_cave_deep_seclusion_state(snapshot_data)
+    if snapshot.get("can_settle") is True or snapshot.get("completed") is True:
+        return {"send": True, "snapshot": snapshot}
+
+    if snapshot.get("known"):
+        end_ms = int(snapshot.get("end_ms") or 0)
+        remaining_seconds = snapshot.get("remaining_seconds")
+        if end_ms > int(now * 1000):
+            next_time = end_ms / 1000.0 + deep_retreat.CD_BUFFER_SEC
+        elif remaining_seconds is not None and remaining_seconds > 0:
+            next_time = now + remaining_seconds + deep_retreat.CD_BUFFER_SEC
+        else:
+            next_time = now + CAVE_DEEP_STATUS_RECHECK_SEC
+
+        if snapshot.get("active") is True and snapshot.get("can_settle") is not True:
+            with use_identity(identity_id):
+                deep_retreat.mark_deep_retreat_success(now, next_time)
+            return {
+                "send": False,
+                "reason": "still_running",
+                "phase": "running",
+                "snapshot": snapshot,
+                "retry_after_sec": max(30, next_time - now),
+            }
+
+    with use_identity(identity_id):
+        deep_retreat.clear_deep_retreat_summary_flags()
+        deep_retreat.set_deep_retreat_phase("launching")
+        state["deep_retreat_probe_pending"] = False
+        state["next_deep_retreat_time"] = now + CAVE_DEEP_STATUS_RECHECK_SEC
+        save_state()
+    return {
+        "send": False,
+        "reason": "snapshot_not_actionable" if snapshot.get("known") else "snapshot_missing",
+        "phase": "launching",
+        "snapshot": snapshot,
+        "retry_after_sec": CAVE_DEEP_STATUS_RECHECK_SEC,
     }
 
 
@@ -3519,6 +3583,54 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
             )
             await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
             return {"ok": False, "message": message, "extra": {}}
+        if action == "settle":
+            preflight = _cave_public_deep_settle_preflight(identity_id, session, now=now)
+            if not preflight.get("send"):
+                snapshot = dict(preflight.get("snapshot") or {})
+                sync_result = {
+                    "handled": True,
+                    "ready": False,
+                    "reason": str(preflight.get("reason") or "snapshot_missing"),
+                    "message_kind": "running" if preflight.get("reason") == "still_running" else "status",
+                    "phase": str(preflight.get("phase") or "launching"),
+                    "remaining_seconds": snapshot.get("remaining_seconds"),
+                    "end_ms": snapshot.get("end_ms"),
+                }
+                skipped_result = {
+                    "ok": True,
+                    "status": "preflight_skip",
+                    "data": {"deep_seclusion": snapshot},
+                }
+                record = _record_cave_deep_retreat_state(
+                    identity_id,
+                    action,
+                    skipped_result,
+                    sync_result,
+                    now=now,
+                )
+                if preflight.get("reason") == "still_running":
+                    remaining = snapshot.get("remaining_seconds")
+                    remaining_text = f"，剩余 {remaining} 秒" if remaining is not None else ""
+                    message = f"洞府闭关仍在进行{remaining_text}，未发送 settle"
+                else:
+                    message = "洞府闭关面板未明确可结算，未发送 settle｜30 分钟后查状态"
+                await send_audit_log(
+                    f"🧘 {message}",
+                    scope="identity",
+                    send_as_id=identity_id,
+                    priority="low",
+                    limit=240,
+                )
+                return {
+                    "ok": True,
+                    "message": message,
+                    "extra": {
+                        "record_key": record.get("record_key", ""),
+                        "sync": sync_result,
+                        "settle_skipped": True,
+                        "retry_after_sec": float(preflight.get("retry_after_sec") or CAVE_DEEP_STATUS_RECHECK_SEC),
+                    },
+                }
         result = await run_cave_deep_seclusion_action_production_flow(
             identity_id,
             token=token,

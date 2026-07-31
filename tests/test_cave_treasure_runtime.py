@@ -2123,6 +2123,29 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 3738 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
 
+    def test_deep_seclusion_state_extracts_dashboard_completion_fields(self):
+        snapshot = cave_treasure_runtime.extract_cave_deep_seclusion_state({
+            "dwelling": {
+                "meditation": {
+                    "deepSeclusion": {
+                        "active": True,
+                        "completed": False,
+                        "canSettle": False,
+                        "remainingSeconds": 3738,
+                        "endMs": 1_700_004_288_000,
+                        "statusText": "闭关中",
+                    },
+                },
+            },
+        })
+
+        self.assertTrue(snapshot["known"])
+        self.assertTrue(snapshot["active"])
+        self.assertFalse(snapshot["completed"])
+        self.assertFalse(snapshot["can_settle"])
+        self.assertEqual(3738, snapshot["remaining_seconds"])
+        self.assertEqual(1_700_004_288_000, snapshot["end_ms"])
+
     async def test_deep_seclusion_ambiguous_settle_defers_to_status(self):
         now = 1_700_000_575.0
         with state_module.use_identity(1001):
@@ -3022,6 +3045,127 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         session_mock.assert_awaited_once()
+
+    async def test_cave_public_deep_settle_skips_post_until_dashboard_is_ready(self):
+        now = 1_700_000_000.0
+        end_ms = int((now + 3738) * 1000)
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": 1001,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {
+                        "dwelling": {
+                            "meditation": {
+                                "deepSeclusion": {
+                                    "active": True,
+                                    "completed": False,
+                                    "canSettle": False,
+                                    "remainingSeconds": 3738,
+                                    "endMs": end_ms,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["next_deep_retreat_time"] = now - 1
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock()) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_deep_retreat_action(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                "settle",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["extra"]["settle_skipped"])
+        flow_mock.assert_not_awaited()
+        with state_module.use_identity(1001):
+            self.assertEqual("running", state_module.state["deep_retreat_phase"])
+            self.assertEqual(end_ms / 1000.0 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+
+    async def test_cave_public_deep_settle_posts_once_when_dashboard_is_complete(self):
+        session = {
+            "ok": True,
+            "init_data": "dwelling_init_data",
+            "player_id": 1001,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {
+                        "dwelling": {
+                            "meditation": {
+                                "deepSeclusion": {
+                                    "active": True,
+                                    "completed": True,
+                                    "canSettle": True,
+                                    "remainingSeconds": 0,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        summary = "【深度闭关总结】\n本次结算时长: 8.0 小时\n神魂吐纳次数: 32 周天"
+        flow_result = {"ok": True, "status": "settle", "data": {"actionResult": {"ok": True, "rawMessage": summary}}}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+                patch.object(cave_treasure_runtime, "sync_cave_deep_seclusion_action_result", new=AsyncMock(return_value={
+                    "handled": True,
+                    "message_kind": "summary",
+                    "phase": "post_summary_wait",
+                })), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_deep_retreat_action(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                "settle",
+                now=1_700_000_001.0,
+            )
+
+        self.assertTrue(result["ok"])
+        flow_mock.assert_awaited_once()
+
+    async def test_cave_public_deep_settle_missing_dashboard_stays_conservative(self):
+        now = 1_700_000_001.0
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["next_deep_retreat_time"] = now - 1
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value={
+                    "ok": True,
+                    "init_data": "dwelling_init_data",
+                    "player_id": 1001,
+                    "result": {"ok": True, "data": {"raw": {"ok": True}}},
+                })), \
+                patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock()) as flow_mock, \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_deep_retreat_action(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                "settle",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["extra"]["settle_skipped"])
+        flow_mock.assert_not_awaited()
+        with state_module.use_identity(1001):
+            self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + cave_treasure_runtime.CAVE_DEEP_STATUS_RECHECK_SEC, state_module.state["next_deep_retreat_time"])
 
     def test_cave_public_deep_status_replaces_send_as_identity_scheduler(self):
         state_module.set_miniapp_auto_config({
