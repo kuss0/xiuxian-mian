@@ -2965,6 +2965,127 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_small_world_time"],
             )
 
+    async def test_late_manifest_reply_preserves_newer_query_chain(self):
+        send_as_id = 8659059320
+        now = 7250.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 8802
+            state_module.state["small_world_manifest_msg_id"] = 0
+            state_module.state["small_world_last_error"] = "新查询已发起，等待小世界面板"
+            state_module.state["next_small_world_time"] = now + 1200
+            state_module.state["small_world_panel_snapshot"] = {
+                "faith": 80,
+                "faith_max": 100,
+                "stability": 90,
+                "stability_max": 100,
+                "population": 1000,
+                "capacity": 1000,
+            }
+
+            with patch.object(small_world, "save_state"):
+                handled = await small_world.handle_small_world_manifest_reply(
+                    "✅ 显灵成功！\n"
+                    "(信仰 +10, 稳定 +5, 人口 +0)\n"
+                    "下一次凡人祈愿感应需等待 360 分钟。",
+                    now,
+                    reply_to=SimpleNamespace(id=8801, raw_text=small_world.CMD_SMALL_WORLD_MANIFEST),
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("query_pending", state_module.state["small_world_phase"])
+            self.assertEqual(8802, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            self.assertEqual(80, state_module.state["small_world_panel_snapshot"]["faith"])
+            self.assertEqual("新查询已发起，等待小世界面板", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 1200, state_module.state["next_small_world_time"])
+
+    async def test_late_manifest_reply_preserves_harvest_before_manifest_chain(self):
+        send_as_id = 8659059321
+        now = 7260.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "harvest_before_manifest_sent"
+            state_module.state["small_world_harvest_msg_id"] = 8804
+            state_module.state["small_world_manifest_msg_id"] = 0
+            state_module.state["small_world_manifest_cost_text"] = "【新祈愿材料】x1"
+            state_module.state["small_world_last_error"] = "显灵前收割香火已发送，等待回执确认"
+            state_module.state["next_small_world_time"] = now + 1200
+            state_module.state["small_world_panel_snapshot"] = {
+                "faith": 90,
+                "faith_max": 100,
+                "stability": 90,
+                "stability_max": 100,
+                "population": 1000,
+                "capacity": 1000,
+            }
+
+            with patch.object(small_world, "save_state"):
+                handled = await small_world.handle_small_world_manifest_reply(
+                    "当前没有凡人祈愿需要处理。",
+                    now,
+                    reply_to=SimpleNamespace(id=8803, raw_text=small_world.CMD_SMALL_WORLD_MANIFEST),
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("harvest_before_manifest_sent", state_module.state["small_world_phase"])
+            self.assertEqual(8804, state_module.state["small_world_harvest_msg_id"])
+            self.assertEqual("【新祈愿材料】x1", state_module.state["small_world_manifest_cost_text"])
+            self.assertEqual("显灵前收割香火已发送，等待回执确认", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 1200, state_module.state["next_small_world_time"])
+            self.assertFalse(state_module.state["small_world_panel_snapshot"].get("has_prayer", False))
+
+    async def test_late_manifest_shortage_does_not_pause_newer_refine_chain(self):
+        send_as_id = 8659059322
+        now = 7270.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "refine_sent"
+            state_module.state["small_world_refine_msg_id"] = 8806
+            state_module.state["small_world_last_error"] = "神识淬炼已发送，等待回执确认"
+            state_module.state["next_small_world_time"] = now + 1200
+            state_module.state["small_world_panel_snapshot"] = {
+                "faith": 90,
+                "faith_max": 100,
+                "stability": 90,
+                "stability_max": 100,
+                "population": 1000,
+                "capacity": 1000,
+                "has_prayer": True,
+                "prayer_name": "新祈愿",
+            }
+
+            with (
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "_schedule_resource_pause") as pause_mock,
+            ):
+                handled = await small_world.handle_small_world_manifest_reply(
+                    "【玄冰丹】不足，无法显灵。",
+                    now,
+                    reply_to=SimpleNamespace(id=8805, raw_text=small_world.CMD_SMALL_WORLD_MANIFEST),
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled)
+            pause_mock.assert_not_called()
+            self.assertEqual("refine_sent", state_module.state["small_world_phase"])
+            self.assertEqual(8806, state_module.state["small_world_refine_msg_id"])
+            self.assertEqual("神识淬炼已发送，等待回执确认", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 1200, state_module.state["next_small_world_time"])
+            self.assertEqual("新祈愿", state_module.state["small_world_panel_snapshot"]["prayer_name"])
+
     async def test_manifest_expired_prayer_with_new_prayer_waits_guard_then_retries(self):
         send_as_id = 8659059312
         now = 7150.0

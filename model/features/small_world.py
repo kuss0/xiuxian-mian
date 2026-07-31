@@ -762,6 +762,21 @@ def _is_current_query_reply(reply_to, matched_family):
     return matched_family == "small_world_query" and _phase() == "query_pending"
 
 
+def _manifest_reply_has_newer_active_chain(matched_family):
+    """Return whether an exact late manifest reply must preserve a newer chain."""
+    if matched_family != "small_world_manifest":
+        return False
+    return _phase() in {
+        "query_pending",
+        "harvest_pending",
+        "harvest_sent",
+        "harvest_before_manifest_sent",
+        "refine_pending",
+        "refine_sent",
+        "preach_pending",
+    }
+
+
 def _get_preach_deadline():
     deadline = float(state.get("small_world_preach_due_at", 0) or 0)
     if deadline > 0:
@@ -2234,7 +2249,14 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
     orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
     if matched_family != "small_world_manifest" and CMD_SMALL_WORLD_MANIFEST not in orig_cmd:
         return False
+    preserve_newer_chain = _manifest_reply_has_newer_active_chain(matched_family)
     _close_small_world_action_guard("small_world_manifest", now)
+
+    if preserve_newer_chain:
+        # The old manifest action is complete, but its late reply must not
+        # overwrite a newer panel/action chain or its current status text.
+        save_state()
+        return True
 
     if _is_resource_shortage_text(raw_text):
         label = _resource_label_from_text(raw_text)
