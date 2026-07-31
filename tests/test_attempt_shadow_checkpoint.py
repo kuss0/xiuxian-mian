@@ -91,3 +91,43 @@ def test_checkpoint_warns_on_missing_root_and_non_strong_binding(tmp_path):
     assert report["status"] == "warn"
     assert report["sent_log_parity"]["missing_root_ids"] == [101]
     assert report["binding"]["non_strong_written_bindings"] == 1
+
+
+def test_checkpoint_keeps_old_attempt_anomalies_visible_without_current_warning(tmp_path):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE command_attempts SET transport = 'queued', root_msg_id = 0, last_error = 'old failure', updated_at = 1000"
+    )
+    conn.commit()
+    conn.close()
+
+    report = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=100000.0)
+
+    assert report["status"] == "ok"
+    assert report["attempts"]["stale_transport_over_300s"] == 1
+    assert report["attempts"]["last_error_count"] == 1
+    assert report["attempts"]["recent_stale_transport_over_300s"] == 0
+    assert report["attempts"]["recent_last_error_count"] == 0
+
+
+def test_checkpoint_warns_on_recent_attempt_anomalies(tmp_path):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE command_attempts SET transport = 'queued', root_msg_id = 0, last_error = 'new failure', updated_at = 99000"
+    )
+    conn.commit()
+    conn.close()
+
+    report = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=100000.0)
+
+    assert report["status"] == "warn"
+    assert report["attempts"]["recent_stale_transport_over_300s"] == 1
+    assert report["attempts"]["recent_last_error_count"] == 1

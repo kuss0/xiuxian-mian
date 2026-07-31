@@ -118,6 +118,13 @@ then writes JSON reports under:
 data/state/command_attempt_checkpoints/
 ```
 
+2026-07-31 的例行审计将健康口径拆成两层：全量累计字段继续保留历史
+`stale_transport_over_300s` 与 `last_error_count`，用于证明影子账本没有被改写；
+`status/reasons` 只由最近 24 小时新增的 stale transport / last_error 驱动，另输出
+`recent_stale_transport_over_300s` 与 `recent_last_error_count`。这样 7 月 13-22 日的
+真实历史样本继续可见，但不会让每次例行检查都伪装成刚发生的新事故。该调整只改
+只读报告，不更新 Attempt 行，不推断 business 终态，也不授权恢复、补发或 Gate 4。
+
 The accompanying systemd timer runs at 00:15 and 12:15 UTC+8 with up to five
 minutes randomized delay. It has no send, retry, cooldown, recovery, reducer,
 scheduler, or business-control authority.

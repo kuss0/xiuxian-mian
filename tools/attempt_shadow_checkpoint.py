@@ -27,6 +27,7 @@ STRONG_BIND_REASONS = {
     "explicit_op_id",
     "explicit_chain_id",
 }
+RECENT_ANOMALY_WINDOW_SEC = 24 * 3600
 
 
 def _json_dict(value):
@@ -94,13 +95,26 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
         if reason not in STRONG_BIND_REASONS:
             guessed_evidence += 1
 
-    stale_transport = sum(
-        1
+    stale_transport_rows = [
+        row
         for row in attempts
         if str(row["transport"] or "") in {"created", "queued", "sending"}
         and now - float(row["updated_at"] or 0) > 300
+    ]
+    stale_transport = len(stale_transport_rows)
+    last_error_rows = [row for row in attempts if str(row["last_error"] or "").strip()]
+    last_errors = len(last_error_rows)
+    recent_cutoff = now - RECENT_ANOMALY_WINDOW_SEC
+    recent_stale_transport = sum(
+        1
+        for row in stale_transport_rows
+        if float(row["updated_at"] or 0) >= recent_cutoff
     )
-    last_errors = sum(1 for row in attempts if str(row["last_error"] or "").strip())
+    recent_last_errors = sum(
+        1
+        for row in last_error_rows
+        if float(row["updated_at"] or 0) >= recent_cutoff
+    )
     blocked = sum(1 for row in attempts if str(row["transport"] or "") == "blocked")
     send_unknown = sum(1 for row in attempts if str(row["transport"] or "") == "send_unknown")
     approx_payload_bytes = sum(
@@ -119,10 +133,10 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
         reasons.append(f"sent-log parity missing {len(missing_root_ids)} roots")
     if guessed_evidence:
         reasons.append(f"non-strong evidence bindings {guessed_evidence}")
-    if stale_transport:
-        reasons.append(f"stale transport rows {stale_transport}")
-    if last_errors:
-        reasons.append(f"attempt errors {last_errors}")
+    if recent_stale_transport:
+        reasons.append(f"recent stale transport rows {recent_stale_transport}")
+    if recent_last_errors:
+        reasons.append(f"recent attempt errors {recent_last_errors}")
 
     return {
         "ts": datetime.fromtimestamp(now, TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
@@ -142,6 +156,9 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
             "send_unknown": send_unknown,
             "stale_transport_over_300s": stale_transport,
             "last_error_count": last_errors,
+            "recent_window_sec": RECENT_ANOMALY_WINDOW_SEC,
+            "recent_stale_transport_over_300s": recent_stale_transport,
+            "recent_last_error_count": recent_last_errors,
         },
         "sent_log_parity": {
             "sent_attempts": len(sent_attempts),
