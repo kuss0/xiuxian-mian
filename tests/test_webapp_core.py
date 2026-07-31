@@ -864,6 +864,13 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(["a", "b"], shape["keys"])
         self.assertNotIn("keys_truncated", shape)
 
+    def test_summarize_shape_does_not_disclose_string_lengths(self):
+        short = webapp_core.summarize_miniapp_json_shape({"token": "x"})
+        long = webapp_core.summarize_miniapp_json_shape({"token": "secret-value-with-distinct-length"})
+
+        self.assertEqual(short, long)
+        self.assertEqual({"type": "string"}, short["children"]["token"])
+
     def test_summarize_shape_stays_small_for_wide_nested_payload(self):
         """洞府 start 会带回整棵账号树；形状摘要必须保持在可存储量级。"""
         payload = {

@@ -1080,7 +1080,7 @@ def summarize_miniapp_json_shape(
         if item is None:
             return {"type": "null"}
         if isinstance(item, str):
-            return {"type": "string", "length": len(item)}
+            return {"type": "string"}
         return {"type": type(item).__name__}
 
     return visit(value, 0)

@@ -66,3 +66,12 @@
 - Rust `origin/main=b2099d4`，`miniapp-channel=003af8c`、`xinggong-stars-miniapp=d5c6cce` 未出现新的可吸收提交。
 
 14:25 的生产自然样本进一步验证已吸收的观星台内层业务信封：`zhengyuan0213` 串行完成安抚 8、收集 1、牵引 8 座天雷星，物资为二级妖丹 x11、天雷竹 x11、金精矿 x3；所有 action 均 HTTP 200 且状态进入 `miniapp_waiting_panel`，没有重试或重复动作。
+
+## 2026-07-31 增量复拉
+
+- wxjerry `origin/main=211af756`、`origin/xuruodeaiban=cd2a2e64`，相对上一轮没有新增提交。
+- Rust `origin/main=5eb86ec`、`miniapp-channel=814c9b0`、`world-boss-miniapp=a86b3d6`。禁止整包迁移其独立 MiniApp 框架。
+- 已吸收 `9ab0d04` 的诊断边界：本地 `summarize_miniapp_json_shape()` 原先虽然隐藏字符串值，仍保留字符串长度；长度会泄露 token/initData 形态。现统一只投影为 `{"type": "string"}`，数组长度继续保留用于协议结构诊断。
+- `90da9c1` 的会话结果归属问题不适用：本地生产 flow 在所属 runtime 调用栈内直接 `await` 并消费结果，没有按 app 反查首个 behavior 的共享回喂路径。
+- `814c9b0` 的凭据铸签运维刹车已有等价边界：本地没有脱离玩法调度的后台签名铸造循环；公共入口和独立玩法在请求 WebView 前均经过身份可用性/资格门禁。未新增另一套凭据刷新状态机。
+- 世界 Boss 提交 `77a5910`、`51a951c`、`57129a8` 涉及的请求预算、429 边界、裸确认、权威结算和身份装载可见性，本地主线已有对应实现与生产证据；没有发现需要移植的本地缺口。
