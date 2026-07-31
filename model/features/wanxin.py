@@ -74,6 +74,9 @@ WANXIN_UNAVAILABLE_BACKOFF_SEC = 24 * 3600
 WANXIN_PHASEFUL_DEFER_SEC = 5 * 60
 WANXIN_COMMISSION_TTL_SEC = 24 * 3600
 WANXIN_COMMISSION_CANCEL_RETRY_SEC = 10 * 60
+# The current game panel caps 咒源 at 120. Keep this in one place so a game
+# balance change only needs one calibration update.
+WANXIN_CURSE_SOURCE_CAP = 120
 
 WANXIN_ACTION_VISIT = "visit"
 WANXIN_ACTION_PROTECT = "protect"
@@ -236,6 +239,7 @@ def _default_wanxin_observation():
         "moon_soul": 0,
         "curse_source": 0,
         "last_observed_at": 0,
+        "panel_observed_at": 0,
         "next_visit_time": 0,
         "next_protect_time": 0,
         "next_deduce_time": 0,
@@ -355,6 +359,7 @@ def normalize_wanxin_observation(value=None):
         observed[key] = max(0, _safe_int(observed.get(key), 0))
     for key in (
         "last_observed_at",
+        "panel_observed_at",
         "next_visit_time",
         "next_protect_time",
         "next_deduce_time",
@@ -564,6 +569,7 @@ def _apply_panel_values(observed, values, now):
         observed.update(values)
         observed["available"] = "yes"
         observed["last_observed_at"] = float(now)
+        observed["panel_observed_at"] = float(now)
 
 
 def _parse_target_username(text):
@@ -1350,12 +1356,23 @@ def _set_next_time_for_action(observed, action, next_time):
 def _action_enabled(observed, action):
     config = normalize_wanxin_auto_config(observed.get("auto_config"))
     assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    # Older state has no panel_observed_at. A persisted stage is enough to
+    # recognize that its numeric fields came from a real panel reply.
+    panel_observed = bool(
+        float(observed.get("panel_observed_at", 0) or 0) > 0
+        or str(observed.get("stage") or "").strip()
+    )
     if action == WANXIN_ACTION_VISIT:
         return bool(config.get("visit_enabled"))
     if action == WANXIN_ACTION_PROTECT:
-        return bool(config.get("protect_enabled"))
+        return bool(config.get("protect_enabled")) and not (
+            panel_observed and int(observed.get("soul_seal", 0) or 0) <= 0
+        )
     if action == WANXIN_ACTION_DEDUCE:
-        return bool(config.get("deduce_enabled"))
+        return bool(config.get("deduce_enabled")) and not (
+            panel_observed
+            and int(observed.get("curse_source", 0) or 0) >= WANXIN_CURSE_SOURCE_CAP
+        )
     if action == WANXIN_ACTION_MOON_GREET:
         return bool(observed.get("moon_awakened") and config.get("moon_greet_enabled"))
     if action == WANXIN_ACTION_MOON_SEAL:

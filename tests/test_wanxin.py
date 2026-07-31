@@ -272,6 +272,53 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["concubine_affinity"] = 184
             self.assertTrue(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_MOON_SEAL))
 
+    def test_observed_empty_seal_or_full_source_disables_owner_actions(self):
+        observed = wanxin.normalize_wanxin_observation({
+            "panel_observed_at": 1_800_000_000.0,
+            "soul_seal": 0,
+            "curse_source": wanxin.WANXIN_CURSE_SOURCE_CAP,
+            "auto_config": {"protect_enabled": True, "deduce_enabled": True},
+        })
+
+        self.assertFalse(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_PROTECT))
+        self.assertFalse(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_DEDUCE))
+
+    def test_unobserved_owner_values_keep_conservative_actions_enabled(self):
+        observed = wanxin.normalize_wanxin_observation({
+            "last_observed_at": 1_800_000_000.0,
+            "soul_seal": 0,
+            "curse_source": wanxin.WANXIN_CURSE_SOURCE_CAP,
+            "auto_config": {"protect_enabled": True, "deduce_enabled": True},
+        })
+
+        self.assertTrue(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_PROTECT))
+        self.assertTrue(wanxin._action_enabled(observed, wanxin.WANXIN_ACTION_DEDUCE))
+
+    async def test_scheduler_skips_empty_seal_and_full_source_after_panel_observation(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_020.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "last_observed_at": now - 10,
+                "stage": "玄冰丹方（封魂未解）",
+                "auto_next_time": now - 1,
+                "soul_seal": 0,
+                "curse_source": wanxin.WANXIN_CURSE_SOURCE_CAP,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now - 1,
+                "next_deduce_time": now - 1,
+                "auto_config": {"protect_enabled": True, "deduce_enabled": True},
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertGreater(state_module.state["wanxin_observation"]["auto_next_time"], now)
+
     async def test_scheduler_default_off_does_not_send(self):
         identity_id = self._prepare_identity()
         with state_module.use_identity(identity_id):
