@@ -33,6 +33,7 @@ from ..persistence import save_state
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_channel_send_as_health,
     get_game_group_id,
     get_identity_display_name,
     get_identity_enabled,
@@ -1149,6 +1150,24 @@ def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_
     code = str((block or {}).get("code") or "").strip()
     reason = str((block or {}).get("reason") or "").strip()
     status = str((block or {}).get("status") or "").strip()
+    if code == "send_as_peer_invalid" and status == "unsent":
+        health = get_channel_send_as_health()
+        probe_at = float(health.get("next_probe_at", 0) or 0)
+        blocked_until = float((block or {}).get("blocked_until", 0) or 0)
+        retry_at = max(blocked_until, probe_at)
+        if retry_at <= now:
+            retry_at = now + 30 * 60
+        waiting_channel_probe = str(health.get("status") or "") == "closed" and probe_at > now
+        observed["auto_next_time"] = retry_at + CD_BUFFER_SEC
+        observed["auto_last_action"] = action
+        observed["auto_last_result"] = (
+            f"{WANXIN_ACTION_LABELS.get(action, action)} 未发送，等待频道身份复查"
+            if waiting_channel_probe else
+            f"{WANXIN_ACTION_LABELS.get(action, action)} 未发送，按身份退避"
+        )
+        observed["auto_last_error"] = reason or "频道身份不可用于当前游戏群"
+        _push_recent(observed, now, action, "send_as_peer_invalid", observed["auto_last_error"])
+        return False
     if status == "unknown" or not code:
         detail = reason or f"{command} 发送状态未知"
         _apply_uncertain_action_backoff(observed, action, now, detail)
@@ -1465,6 +1484,29 @@ async def _send_assist_action(observed, action, now):
         observed["commission"] = commission
     if assist_send_as_id <= 0 or not has_identity(assist_send_as_id):
         _schedule_next(observed, now, 30 * 60, error=f"协助身份不存在：{assist_send_as_id or '未配置'}")
+        return False
+    if not get_identity_enabled(assist_send_as_id):
+        health = get_channel_send_as_health()
+        frozen_ids = {
+            int(identity_id)
+            for identity_id in health.get("frozen_identity_ids") or ()
+            if str(identity_id or "").strip().lstrip("-").isdigit()
+        }
+        restore_ids = {
+            int(identity_id)
+            for identity_id in health.get("restore_identity_ids") or ()
+            if str(identity_id or "").strip().lstrip("-").isdigit()
+        }
+        if str(health.get("status") or "") == "closed" and assist_send_as_id in (frozen_ids | restore_ids):
+            probe_at = float(health.get("next_probe_at", 0) or 0)
+            retry_at = max(probe_at, now + 15) + CD_BUFFER_SEC
+            observed["auto_next_time"] = retry_at
+            observed["auto_last_action"] = action
+            observed["auto_last_result"] = f"{WANXIN_ACTION_LABELS.get(action, action)} 等待频道身份恢复"
+            observed["auto_last_error"] = "频道身份已冻结，等待后台权限复查"
+            _push_recent(observed, now, action, "channel_identity_frozen", observed["auto_last_error"])
+        else:
+            _schedule_next(observed, now, 30 * 60, error="协助身份已手动停用，未发送")
         return False
     if not _is_yinluo_identity(assist_send_as_id):
         _schedule_next(observed, now, 60 * 60, error=f"协助身份不是阴罗宗：{get_identity_display_name(assist_send_as_id)}")

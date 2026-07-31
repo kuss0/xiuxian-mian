@@ -364,6 +364,82 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
+    async def test_accepted_commission_waits_for_channel_probe_when_helper_is_frozen(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        state_module.set_identity_enabled(helper_id, False)
+        now = 1_800_000_040.0
+        probe_at = now + 240
+        state_module.set_channel_send_as_health({
+            "status": "closed",
+            "next_probe_at": probe_at,
+            "restore_identity_ids": [helper_id],
+            "frozen_identity_ids": [helper_id],
+        })
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "commission": {
+                    "id": 88,
+                    "accepted": True,
+                    "accepted_at": now - 60,
+                    "owner_username": "jfdffdddd",
+                    "helper_username": "sanshaoyedejian1",
+                },
+                "assist": {
+                    "send_as_id": helper_id,
+                    "identify_enabled": False,
+                    "banner_enabled": False,
+                    "strip_enabled": True,
+                    "next_strip_time": now - 1,
+                },
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(88, observed["commission"]["id"])
+            self.assertTrue(observed["commission"]["accepted"])
+            self.assertEqual(now - 1, observed["assist"]["next_strip_time"])
+            self.assertEqual(probe_at + wanxin.CD_BUFFER_SEC, observed["auto_next_time"])
+
+    async def test_send_as_peer_invalid_uses_blocked_until_without_consuming_action_cd(self):
+        now = 1_800_000_050.0
+        observed = {
+            "assist": {"next_strip_time": now - 1},
+            "auto_next_time": now - 1,
+        }
+        blocked_until = now + 1800
+        with patch.object(
+            wanxin,
+            "_send_block_info",
+            return_value={
+                "code": "send_as_peer_invalid",
+                "status": "unsent",
+                "reason": "频道身份不可用于当前游戏群",
+                "blocked_until": blocked_until,
+            },
+        ):
+            handled = wanxin._handle_unsent_or_uncertain_send(
+                observed,
+                wanxin.WANXIN_ACTION_STRIP,
+                ".剥离咒源 @jfdffdddd",
+                now,
+                send_as_id=3907536807,
+            )
+
+        self.assertFalse(handled)
+        self.assertEqual(now - 1, observed["assist"]["next_strip_time"])
+        self.assertEqual(blocked_until + wanxin.CD_BUFFER_SEC, observed["auto_next_time"])
+
     async def test_scheduler_waits_to_publish_until_strip_is_due(self):
         identity_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
