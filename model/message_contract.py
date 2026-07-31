@@ -147,6 +147,20 @@ def is_unhandled_routed_reply_event(event):
     )
 
 
+def _is_phaseful_prefix_reply(event):
+    """Recognize long-running settlements emitted before the requested reply."""
+    if not is_unhandled_routed_reply_event(event):
+        return False
+    if str(event.get("family") or "").strip() in {"yuanying", "deep_retreat"}:
+        return False
+    text = _clean_text(event.get("matched_text"))
+    return (
+        "元婴闭关结算" in text
+        or ("元神归窍总结" in text and "神游" in text)
+        or ("深度闭关总结" in text and "本次结算时长" in text)
+    )
+
+
 def _event_module_name(event):
     module = str(event.get("module") or "").strip()
     if module:
@@ -362,6 +376,8 @@ def iter_message_contract_gaps(path=None, limit=100, *, module="", family="", id
     events = passive_event_ledger.iter_passive_events(path=path, limit=limit)
     handled_keys = _handled_routed_reply_keys(events)
     for event in events:
+        if _is_phaseful_prefix_reply(event):
+            continue
         if _is_resolved_unhandled_routed_reply(event, handled_keys):
             continue
         if _filter_contract_event(event, module=module, family=family, identity_id=identity_id, reason=reason):
@@ -376,6 +392,8 @@ def iter_unhandled_routed_replies(path=None, limit=100, *, module="", family="",
     handled_keys = _handled_routed_reply_keys(events)
     for event in events:
         if not is_unhandled_routed_reply_event(event):
+            continue
+        if _is_phaseful_prefix_reply(event):
             continue
         if _is_resolved_unhandled_routed_reply(event, handled_keys):
             continue

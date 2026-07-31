@@ -429,7 +429,7 @@ async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
             await send_audit_log(f"👶 归窍总结命中多个身份，已跳过：{names}", scope="global", limit=280)
-        return
+        return False
 
     compact_text = RE_WHITESPACE.sub("", text or "")
     tags = get_send_as_tags(target_id)
@@ -455,8 +455,9 @@ async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None
             mark_yuanying_success(now)
             await update_yuanying_block_log_state(waiting=False, protect=False)
             console_log("👶 元婴宗闭关已结算并自动续闭，刷新下一轮观察时间。")
-            return
+            return True
         await finalize_summary_broadcast(YUANYING_SPEC, now)
+    return True
 
 
 async def run_yuanying_scheduler(now):

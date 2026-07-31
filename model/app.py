@@ -1881,7 +1881,7 @@ def _is_concubine_loss_broadcast_candidate(text):
 
 
 async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None, reply_context=None):
-    await _dispatch_broadcast_handlers(
+    phaseful_summary_handled = await _dispatch_broadcast_handlers(
         event,
         text,
         now,
@@ -1891,6 +1891,7 @@ async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None, repl
     )
     if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
         await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
+    return phaseful_summary_handled
 
 
 _NEW_MESSAGE_BROADCAST_HANDLERS = (
@@ -1923,17 +1924,21 @@ _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS = {
 
 
 async def _dispatch_broadcast_handlers(event, text, now, handlers, *, reply_to=None, reply_context=None):
+    phaseful_summary_handled = False
     for scope, handler in handlers:
         if not _claim_runtime_event(event, scope=scope):
             continue
         if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS:
-            await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
+            result = await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
         elif handler in _BROADCAST_REPLY_CONTEXT_HANDLERS:
-            await handler(text, now, event, reply_to=reply_to)
+            result = await handler(text, now, event, reply_to=reply_to)
         elif handler in _BROADCAST_EVENT_HANDLERS:
-            await handler(text, now, event)
+            result = await handler(text, now, event)
         else:
-            await handler(text, now)
+            result = await handler(text, now)
+        if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS and result:
+            phaseful_summary_handled = True
+    return phaseful_summary_handled
 
 
 async def _dispatch_tree_broadcast_fallbacks(event, text, now):
@@ -2097,7 +2102,7 @@ async def _dispatch_message_edited_concubine_loss(event, text, now):
 
 
 async def _dispatch_message_edited_phaseful_summaries(event, text, now, reply_to=None, reply_context=None):
-    await _dispatch_message_edited_broadcasts(
+    return await _dispatch_message_edited_broadcasts(
         event,
         text,
         now,
@@ -2125,17 +2130,21 @@ _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS = {
 
 
 async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, reply_to=None, reply_context=None):
+    phaseful_summary_handled = False
     for scope, handler in handlers:
         if not _claim_runtime_event(event, scope=scope):
             continue
         if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS:
-            await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
+            result = await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
         elif handler in _MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS:
-            await _run_for_all_identities(handler, text, now, False)
+            result = await _run_for_all_identities(handler, text, now, False)
         elif handler in _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS:
-            await handler(text, now, event)
+            result = await handler(text, now, event)
         else:
-            await handler(text, now)
+            result = await handler(text, now)
+        if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS and result:
+            phaseful_summary_handled = True
+    return phaseful_summary_handled
 
 
 async def _run_identity_schedulers(now):
@@ -3313,7 +3322,13 @@ async def on_message(event):
         # bot 健康证据必须来自指令关联回复；广播/通告仍解析，但不触发恢复。
         await _note_game_bot_activity(text, reply_to, reply_context, now=now)
 
-        await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to, reply_context=reply_context)
+        phaseful_summary_handled = await _dispatch_new_message_broadcasts(
+            event,
+            text,
+            now,
+            reply_to=reply_to,
+            reply_context=reply_context,
+        )
         await handle_huanglong_conscription_text(text, now)
         await handle_dungeon_join_bot_message(event, text, now)
         _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
@@ -3327,6 +3342,9 @@ async def on_message(event):
             return
 
         if await _run_claimed_prompt_handler("nanlong_prompt", handle_nanlong_prompt, text, now, event):
+            return
+
+        if phaseful_summary_handled:
             return
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
@@ -3450,7 +3468,7 @@ async def on_message_edited(event):
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
         await _dispatch_message_edited_concubine_loss(event, text, now)
-        await _dispatch_message_edited_phaseful_summaries(
+        phaseful_summary_handled = await _dispatch_message_edited_phaseful_summaries(
             event,
             text,
             now,
@@ -3462,6 +3480,9 @@ async def on_message_edited(event):
         _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
         await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")
         await _handle_replica_progress_event(event, now, event_type="edit")
+
+        if phaseful_summary_handled:
+            return
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(

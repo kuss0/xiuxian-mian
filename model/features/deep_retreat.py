@@ -536,7 +536,7 @@ def _match_deep_retreat_post_summary_identity(text, now=None, reply_context=None
 
 async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=None, reply_context=None):
     if not _is_deep_retreat_summary_text(text):
-        return
+        return False
 
     target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now, reply_context=reply_context)
     if target_id is None:
@@ -551,7 +551,7 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
                     matched_text=text,
                     decision="summary_already_finalized",
                 )
-            return
+            return True
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
             _record_deep_retreat_event(
@@ -576,7 +576,7 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
                 decision="summary_no_match_skip",
                 include_recent=False,
             )
-        return
+        return False
 
     with use_identity(target_id):
         _record_deep_retreat_event(
@@ -589,6 +589,7 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
         _clear_deep_retreat_remote_block_after_summary(now)
         if note_tianxing_retreat_force_exit_summary(text, now=now):
             save_state()
+    return True
 
 
 def _deep_retreat_tianxing_consume_due_at(now, config):

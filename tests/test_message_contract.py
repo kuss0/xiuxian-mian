@@ -212,6 +212,28 @@ class MessageContractTests(unittest.TestCase):
         self.assertEqual([], unhandled)
         self.assertEqual([], gaps)
 
+    def test_phaseful_settlement_before_unrelated_command_is_not_a_contract_gap(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                passive_event_ledger.append_passive_event(
+                    kind="skipped",
+                    module="问道",
+                    identity_id=7538826434,
+                    reason="unhandled_routed_reply",
+                    family="wendao",
+                    msg_id=561427,
+                    reply_to_msg_id=561426,
+                    matched_text="【元婴闭关结算】\n你的元婴在过去 9 小时内为你增加了 11700 点修为！",
+                    decision="handler_not_matched",
+                    now=1_781_077_200.0,
+                )
+                path = passive_event_ledger.get_passive_event_ledger_path(1_781_077_200.0)
+                unhandled = list(message_contract.iter_unhandled_routed_replies(path=path, limit=10))
+                gaps = list(message_contract.iter_message_contract_gaps(path=path, limit=10))
+
+        self.assertEqual([], unhandled)
+        self.assertEqual([], gaps)
+
     def test_report_tool_json_output_is_read_only_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
