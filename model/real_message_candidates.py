@@ -17,6 +17,14 @@ TEXT_FIELDS = (
 FAMILY_FIELDS = ("family", "reply_family", "matched_family")
 EVENT_TYPES = {"message", "edit", "sent"}
 
+_MULAN_FAMILY_MARKERS = {
+    "mulan_collect": ("慕兰谍影", "军报匣"),
+    "mulan_judge": ("辨报", "研判"),
+    "mulan_publish": ("慕兰谍影·真报", "前线采信"),
+    "mulan_panel": ("慕兰烽烟", "边境军功", "今日军议"),
+    "mulan_support": ("慕兰烽烟", "边境军功", "连续支援"),
+}
+
 
 def _clean_text(value):
     return str(value or "").replace("\r", "\n").strip()
@@ -59,6 +67,51 @@ def _record_msg_id(record):
         if value:
             return value
     return ""
+
+
+def _family_text_matches(family, text):
+    raw_text = _clean_text(text)
+    if not raw_text:
+        return False
+
+    markers = _MULAN_FAMILY_MARKERS.get(family)
+    if markers is not None:
+        return any(marker in raw_text for marker in markers)
+
+    if family.startswith("wanxin_"):
+        from .features.wanxin import looks_like_wanxin_text
+
+        return looks_like_wanxin_text(raw_text)
+    if family.startswith("hehuan_"):
+        from .features.hehuan import looks_like_hehuan_text
+
+        return looks_like_hehuan_text(raw_text) or (
+            family == "hehuan_dual"
+            and any(marker in raw_text for marker in ("同参道侣", "灵力交融"))
+        )
+    if family.startswith("tianxing_"):
+        from .features.tianxing import looks_like_tianxing_text
+
+        if looks_like_tianxing_text(raw_text):
+            return True
+        if family == "tianxing_change_fate":
+            return "天机值" in raw_text and any(marker in raw_text for marker in ("改命回天", "撬动命数"))
+        if family == "tianxing_retreat_farm":
+            return "合气丹" in raw_text and any(marker in raw_text for marker in ("精力", "继续闭关"))
+        return False
+    if family.startswith("yinluo_"):
+        from .features.yinluo import looks_like_yinluo_text
+
+        return looks_like_yinluo_text(raw_text) or (
+            family == "yinluo_soothe"
+            and "安抚" in raw_text
+            and "炼化槽" in raw_text
+        )
+    if family == "world_boss":
+        from .features.world_boss import looks_like_world_boss_text
+
+        return looks_like_world_boss_text(raw_text)
+    return True
 
 
 def _iter_json_records_from_value(value, source):
@@ -142,7 +195,9 @@ def build_candidate_sample_suggestions(
         "archived_family": 0,
         "module_filtered": 0,
         "family_filtered": 0,
+        "sent_event": 0,
         "no_text": 0,
+        "family_text_mismatch": 0,
         "duplicate_text": 0,
     }
     safe_limit = max(1, int(limit or 100))
@@ -165,6 +220,10 @@ def build_candidate_sample_suggestions(
         if requested_module and module_name != requested_module:
             skipped["module_filtered"] += 1
             continue
+        event_type = _safe_event_type(record.get("event_type") or record.get("kind"))
+        if event_type == "sent":
+            skipped["sent_event"] += 1
+            continue
         if filter_covered and candidate_family not in wanted_missing:
             skipped["covered_family"] += 1
             continue
@@ -172,13 +231,15 @@ def build_candidate_sample_suggestions(
         if not text:
             skipped["no_text"] += 1
             continue
+        if not _family_text_matches(candidate_family, text):
+            skipped["family_text_mismatch"] += 1
+            continue
         key = (candidate_family, _text_hash(text))
         if key in seen:
             skipped["duplicate_text"] += 1
             continue
         seen.add(key)
         msg_id = _record_msg_id(record)
-        event_type = _safe_event_type(record.get("event_type") or record.get("kind"))
         suffix = msg_id or str(len(suggestions) + 1)
         sample_id = f"candidate.{candidate_family}.{event_type}.{suffix}.{key[1]}"
         replay_module = replay_module_for_family(candidate_family) or module_name or str(record.get("module") or "").strip()

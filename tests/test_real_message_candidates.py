@@ -64,6 +64,65 @@ def test_candidate_report_reads_json_lines_from_log_files(tmp_path):
     assert report["suggestions"][0]["payload"]["family"] == "hehuan_escape"
 
 
+def test_candidate_report_skips_sent_events_but_keeps_reply_edits(tmp_path):
+    source = tmp_path / "passive.jsonl"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture)
+    _write_jsonl(
+        source,
+        [
+            {
+                "family": "hehuan_escape",
+                "event_type": "sent",
+                "msg_id": 1004,
+                "matched_text": ".挣脱心印",
+            },
+            {
+                "family": "hehuan_escape",
+                "event_type": "edit",
+                "msg_id": 1005,
+                "matched_text": "你咬破舌尖，强行挣脱心印束缚。",
+            },
+        ],
+    )
+
+    report = build_candidate_sample_suggestions([source], fixture_path=fixture)
+
+    assert report["total"] == 1
+    assert report["skipped"]["sent_event"] == 1
+    assert report["suggestions"][0]["sample_id"].startswith("candidate.hehuan_escape.edit.1005.")
+
+
+def test_candidate_report_rejects_cross_module_mulan_text(tmp_path):
+    source = tmp_path / "passive.jsonl"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture)
+    _write_jsonl(
+        source,
+        [
+            {
+                "family": "mulan_collect",
+                "event_type": "message",
+                "msg_id": 1006,
+                "matched_text": "【元婴闭关结算】本轮闭关获得修为 18000。",
+            },
+            {
+                "family": "mulan_collect",
+                "event_type": "message",
+                "msg_id": 1007,
+                "matched_text": "【慕兰谍影】今日军报匣中有三封待辨军报。",
+            },
+        ],
+    )
+
+    report = build_candidate_sample_suggestions([source], fixture_path=fixture)
+
+    assert report["total"] == 1
+    assert report["skipped"]["family_text_mismatch"] == 1
+    assert report["suggestions"][0]["sample_id"].startswith("candidate.mulan_collect.message.1007.")
+    assert "慕兰谍影" in report["suggestions"][0]["payload"]["text"]
+
+
 def test_candidate_report_skips_archived_tree_family_by_default(tmp_path):
     source = tmp_path / "passive.jsonl"
     _write_jsonl(
