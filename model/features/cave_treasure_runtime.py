@@ -2940,10 +2940,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
         _record_fishing_business_capture(capture_sink, result, source=capture_source, now=now)
         terminal_message = ""
         with use_identity(identity_id):
-            public_only_bait_missing = bool(
-                str(result.get("status") or "").strip() == "bait_missing"
-                and not state.get("fishing_enabled")
-            )
+            public_only_bait_missing = str(result.get("status") or "").strip() == "bait_missing"
             if public_only_bait_missing:
                 summary = _apply_fishing_miniapp_result(result, time.time())
                 state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(

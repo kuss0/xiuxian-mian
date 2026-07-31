@@ -945,7 +945,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         identity_id = 3504367853
         state_module.ensure_identity_registered(identity_id)
         with state_module.use_identity(identity_id):
-            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_enabled"] = True
             state_module.state["next_fishing_time"] = 0
             state_module.state["fishing_last_result"] = ""
             state_module.state["fishing_last_error"] = "old"
