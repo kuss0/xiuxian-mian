@@ -1154,7 +1154,10 @@ def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_
         health = get_channel_send_as_health()
         probe_at = float(health.get("next_probe_at", 0) or 0)
         blocked_until = float((block or {}).get("blocked_until", 0) or 0)
-        retry_at = max(blocked_until, probe_at)
+        if str(health.get("status") or "") == "closed" and probe_at > now:
+            retry_at = probe_at
+        else:
+            retry_at = blocked_until
         if retry_at <= now:
             retry_at = now + 30 * 60
         waiting_channel_probe = str(health.get("status") or "") == "closed" and probe_at > now

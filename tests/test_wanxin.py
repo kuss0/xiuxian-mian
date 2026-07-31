@@ -440,6 +440,33 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now - 1, observed["assist"]["next_strip_time"])
         self.assertEqual(blocked_until + wanxin.CD_BUFFER_SEC, observed["auto_next_time"])
 
+    def test_send_as_peer_invalid_prefers_channel_probe_when_global_health_is_closed(self):
+        now = 1_800_000_055.0
+        probe_at = now + 300
+        blocked_until = now + 1800
+        observed = {"assist": {"next_strip_time": now - 1}, "auto_next_time": now - 1}
+        state_module.set_channel_send_as_health({"status": "closed", "next_probe_at": probe_at})
+        with patch.object(
+            wanxin,
+            "_send_block_info",
+            return_value={
+                "code": "send_as_peer_invalid",
+                "status": "unsent",
+                "reason": "频道身份不可用于当前游戏群",
+                "blocked_until": blocked_until,
+            },
+        ):
+            handled = wanxin._handle_unsent_or_uncertain_send(
+                observed,
+                wanxin.WANXIN_ACTION_STRIP,
+                ".剥离咒源 @jfdffdddd",
+                now,
+                send_as_id=3907536807,
+            )
+
+        self.assertFalse(handled)
+        self.assertEqual(probe_at + wanxin.CD_BUFFER_SEC, observed["auto_next_time"])
+
     async def test_scheduler_waits_to_publish_until_strip_is_due(self):
         identity_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
