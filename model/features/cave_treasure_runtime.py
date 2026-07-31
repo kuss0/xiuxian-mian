@@ -71,7 +71,7 @@ CAVE_SMALL_WORLD_REFRESH_SEC = 10 * 60
 CAVE_SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
 CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
 CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
-CAVE_YUANYING_STATUS_RECHECK_SEC = 30 * 60
+CAVE_YUANYING_STATUS_RECHECK_SEC = yuanying.YUANYING_SPEC.cd_sec
 WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC = 60
 FATE_CARDS_WAIT_RETRY_SEC = 30 * 60
 
@@ -1219,10 +1219,14 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
             }
 
         if command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*元婴闭关", plain_message):
+            previous_next_time = float(state.get("next_yuanying_time", 0) or 0)
             state["yuanying_probe_pending"] = False
             yuanying.clear_yuanying_summary_flags()
             yuanying.set_yuanying_phase("running")
-            state["next_yuanying_time"] = float(now) + CAVE_YUANYING_STATUS_RECHECK_SEC
+            state["next_yuanying_time"] = max(
+                previous_next_time,
+                float(now) + CAVE_YUANYING_STATUS_RECHECK_SEC,
+            )
             save_state()
             return {
                 "handled": True,

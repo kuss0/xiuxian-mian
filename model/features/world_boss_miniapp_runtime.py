@@ -47,6 +47,7 @@ WORLD_BOSS_MINIAPP_CAPTURE_DIR = Path(MESSAGES_DIR) / "miniapp-captures"
 WORLD_BOSS_MINIAPP_WS_CONNECT_TIMEOUT_SEC = 8.0
 WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC = 5.0
 WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC = 5.0
+WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC = (1.0, 2.0, 3.0)
 # The event can be killed by other players before the local 16-window timeline
 # ends.  Leave two tail windows unused so every account has time to submit its
 # own final settlement while preserving per-identity low-profile adjustments.
@@ -370,17 +371,27 @@ async def run_world_boss_miniapp_event(
 
         try:
             init_data = await init_data_provider(identity_id, launch)
-            receipt = await asyncio.to_thread(
-                join_world_boss_miniapp_lab,
-                token=launch["token"],
-                init_data=init_data,
-                player_id=identity_id,
-                identity_id=identity_id,
-                account_id=get_identity_account(identity_id),
-                transport=identity_transport,
-                capture_sink=capture_sink,
-                capture_source=f"world_boss:join:{identity_id}",
-            )
+            receipt = None
+            for attempt in range(len(WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC) + 1):
+                receipt = await asyncio.to_thread(
+                    join_world_boss_miniapp_lab,
+                    token=launch["token"],
+                    init_data=init_data,
+                    player_id=identity_id,
+                    identity_id=identity_id,
+                    account_id=get_identity_account(identity_id),
+                    transport=identity_transport,
+                    capture_sink=capture_sink,
+                    capture_source=f"world_boss:join:{identity_id}",
+                )
+                if receipt.joined or str(receipt.status or "") != "boss_token_missing":
+                    break
+                if attempt >= len(WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC):
+                    break
+                retry_delay = WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC[attempt]
+                if time.time() + retry_delay - now > WORLD_BOSS_JOIN_WINDOW_SEC:
+                    break
+                await asyncio.sleep(retry_delay)
         except Exception as exc:
             if session is not None:
                 session.close()

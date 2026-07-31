@@ -1519,6 +1519,31 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_yuanying_time"],
             )
 
+    async def test_tianjige_yuanying_active_retreat_preserves_later_known_time(self):
+        now = 1_700_000_000.0
+        future_next_time = now + cave_treasure_runtime.CAVE_YUANYING_STATUS_RECHECK_SEC + 900
+        with state_module.use_identity(1001):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "running"
+            state_module.state["next_yuanying_time"] = future_next_time
+            with patch.object(cave_treasure_runtime, "save_state"):
+                sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
+                    1001,
+                    {
+                        "actionResult": {
+                            "ok": True,
+                            "rawMessage": "【元婴状态】\n状态: 元婴闭关\n已积累修为: 约 7123 点",
+                        },
+                    },
+                    now=now,
+                    command=yuanying.CMD_YUANYING_STATUS,
+                )
+
+            self.assertTrue(sync["handled"])
+            self.assertFalse(sync["ready"])
+            self.assertEqual("active_yuanying_retreat", sync["reason"])
+            self.assertEqual(future_next_time, state_module.state["next_yuanying_time"])
+
     async def test_tianjige_command_flow_disables_http_retries(self):
         http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已处理"}})
         with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
