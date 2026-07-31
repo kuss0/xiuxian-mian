@@ -398,11 +398,57 @@ def run_command(args: list[str], *, timeout: float = 8.0) -> tuple[int, str, str
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def read_proc_cmdline(pid: int) -> str:
+def read_proc_argv(pid: int) -> list[str]:
     try:
-        return (Path("/proc") / str(int(pid)) / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+        raw = (Path("/proc") / str(int(pid)) / "cmdline").read_bytes()
     except Exception:
+        return []
+    return [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
+
+
+def read_proc_cwd(pid: int) -> Path | None:
+    try:
+        return (Path("/proc") / str(int(pid)) / "cwd").resolve()
+    except Exception:
+        return None
+
+
+def resolve_xiuxian_script_argv(argv: list[str], cwd: Path | None = None) -> str:
+    """Resolve the actual xiuxian.py executed by a process, if any."""
+    if not argv:
         return ""
+
+    executable = Path(str(argv[0] or "")).name.lower()
+    script_arg = ""
+    if executable == "xiuxian.py":
+        script_arg = str(argv[0])
+    elif executable.startswith("python"):
+        skip_next = False
+        for raw_arg in argv[1:]:
+            arg = str(raw_arg or "")
+            if skip_next:
+                skip_next = False
+                continue
+            if arg in {"-c", "-m"}:
+                return ""
+            if arg in {"-W", "-X"}:
+                skip_next = True
+                continue
+            if arg.startswith("-"):
+                continue
+            if Path(arg).name != "xiuxian.py":
+                return ""
+            script_arg = arg
+            break
+    if not script_arg:
+        return ""
+
+    script_path = Path(script_arg)
+    if not script_path.is_absolute():
+        if cwd is None:
+            return str(script_path)
+        script_path = cwd / script_path
+    return str(script_path.resolve())
 
 
 def read_foreign_xiuxian_processes(project_root: Path) -> list[dict[str, object]]:
@@ -418,15 +464,17 @@ def read_foreign_xiuxian_processes(project_root: Path) -> list[dict[str, object]
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
-        cmdline = read_proc_cmdline(pid)
-        if "xiuxian.py" not in cmdline:
+        argv = read_proc_argv(pid)
+        script = resolve_xiuxian_script_argv(argv, read_proc_cwd(pid))
+        if not script:
             continue
-        if current_script in cmdline:
+        if script == current_script:
             continue
-        legacy = any(script in cmdline for script in legacy_scripts)
+        legacy = script in legacy_scripts
         rows.append({
             "pid": pid,
-            "cmdline": cmdline[:500],
+            "cmdline": " ".join(argv)[:500],
+            "script": script,
             "legacy": legacy,
         })
     return rows

@@ -504,6 +504,57 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertTrue(any(item["code"] == "foreign_xiuxian_process" for item in payload["risk_reasons"]))
 
+    def test_resolve_xiuxian_script_argv_ignores_search_commands(self):
+        self.assertEqual(
+            "",
+            health_observer.resolve_xiuxian_script_argv(
+                ["rg", "xiuxian.py|health_observer", "/opt/xiuxian-main"]
+            ),
+        )
+        self.assertEqual(
+            "",
+            health_observer.resolve_xiuxian_script_argv(
+                ["bash", "-lc", "ps -ef | rg xiuxian.py"]
+            ),
+        )
+
+    def test_resolve_xiuxian_script_argv_requires_python_entry_script(self):
+        self.assertEqual(
+            "",
+            health_observer.resolve_xiuxian_script_argv(
+                ["python", "tools/check_process.py", "xiuxian.py"],
+                Path("/opt/xiuxian-main"),
+            ),
+        )
+        self.assertEqual(
+            "",
+            health_observer.resolve_xiuxian_script_argv(
+                ["python", "-c", "print('xiuxian.py')"],
+                Path("/opt/xiuxian-main"),
+            ),
+        )
+        self.assertEqual(
+            "/opt/xiuxian-main/xiuxian.py",
+            health_observer.resolve_xiuxian_script_argv(
+                ["python", "-u", "xiuxian.py", "--worker"],
+                Path("/opt/xiuxian-main"),
+            ),
+        )
+        self.assertEqual(
+            "/opt/xiuxian/xiuxian.py",
+            health_observer.resolve_xiuxian_script_argv(
+                ["/usr/bin/python3", "/opt/xiuxian/xiuxian.py"],
+                Path("/tmp"),
+            ),
+        )
+        self.assertEqual(
+            "/opt/xiuxian/xiuxian.py",
+            health_observer.resolve_xiuxian_script_argv(
+                ["/opt/xiuxian/xiuxian.py", "--worker"],
+                Path("/tmp"),
+            ),
+        )
+
     def test_warn_line_ignores_no_resend_context(self):
         self.assertFalse(health_observer.is_warn_journal_line("启动校验：查询灵树状态（无补发）。"))
         self.assertFalse(health_observer.is_warn_journal_line("状态确认，不补发。"))
