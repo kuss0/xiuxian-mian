@@ -3611,9 +3611,9 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
                 if preflight.get("reason") == "still_running":
                     remaining = snapshot.get("remaining_seconds")
                     remaining_text = f"，剩余 {remaining} 秒" if remaining is not None else ""
-                    message = f"洞府闭关仍在进行{remaining_text}，未发送 settle"
+                    message = f"洞府闭关仍在进行{remaining_text}，已跳过 settle"
                 else:
-                    message = "洞府闭关面板未明确可结算，未发送 settle｜30 分钟后查状态"
+                    message = "洞府闭关面板缺少结算许可，已跳过 settle｜30 分钟后查状态"
                 await send_audit_log(
                     f"🧘 {message}",
                     scope="identity",
