@@ -219,6 +219,93 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("qyz_SECRET123", launch["token"])
         self.assertNotIn("qyz_SECRET123", str(launch["safe_summary"]))
 
+    def test_extract_registered_official_bot_self_entry(self):
+        raw_button = SimpleNamespace(
+            text="进入真仙战场",
+            url="https://t.me/xlqlcy_bot?startapp=qyz_SECRET123",
+        )
+        button = SimpleNamespace(text=raw_button.text, button=raw_button, url=raw_button.url)
+        event = SimpleNamespace(
+            sender_id=7228205882,
+            sender=SimpleNamespace(username="xlqlcy_bot", bot=True),
+            _xiuxian_sender_is_game_bot=True,
+            message=SimpleNamespace(buttons=[[button]]),
+        )
+
+        with patch.object(world_boss_miniapp_runtime, "get_game_bot_ids", return_value=[7228205882]):
+            launch = world_boss_miniapp_runtime.extract_world_boss_miniapp_launch(event)
+
+        self.assertEqual("xlqlcy_bot", launch["bot_username"])
+        self.assertEqual("qyz_SECRET123", launch["token"])
+        self.assertTrue(launch["dynamic_bot_verified"])
+        self.assertNotIn("qyz_SECRET123", str(launch["safe_summary"]))
+
+    def test_extract_dynamic_bot_rejects_unregistered_or_mismatched_sender(self):
+        event = SimpleNamespace(
+            sender_id=7228205882,
+            sender=SimpleNamespace(username="xlqlcy_bot", bot=True),
+            buttons=[[
+                SimpleNamespace(
+                    text="进入真仙战场",
+                    url="https://t.me/different_bot?startapp=qyz_SECRET123",
+                )
+            ]],
+        )
+
+        with patch.object(world_boss_miniapp_runtime, "get_game_bot_ids", return_value=[7228205882]):
+            self.assertEqual({}, world_boss_miniapp_runtime.extract_world_boss_miniapp_launch(event))
+
+        event.buttons[0][0].url = "https://t.me/xlqlcy_bot?startapp=qyz_SECRET123"
+        with patch.object(world_boss_miniapp_runtime, "get_game_bot_ids", return_value=[]):
+            self.assertEqual({}, world_boss_miniapp_runtime.extract_world_boss_miniapp_launch(event))
+
+    async def test_request_init_data_reuses_verified_dynamic_bot(self):
+        class FakeClient:
+            def __init__(self):
+                self.requested_bot = ""
+
+            async def get_entity(self, username):
+                return SimpleNamespace(username=username)
+
+            async def get_input_entity(self, bot):
+                return bot
+
+            async def __call__(self, request):
+                self.requested_bot = request.bot.username
+                return SimpleNamespace(
+                    url="https://asc.aiopenai.app/#tgWebAppData=query_id%3Dabc%26hash%3DSECRET"
+                )
+
+        class RpcSlot:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return False
+
+        client = FakeClient()
+        launch = {
+            "token": "qyz_SECRET123",
+            "webview_url": "https://t.me/xlqlcy_bot?startapp=qyz_SECRET123",
+            "bot_username": "xlqlcy_bot",
+            "dynamic_bot_verified": True,
+        }
+        with (
+            patch.object(
+                world_boss_miniapp_runtime,
+                "_get_identity_client_with_account",
+                return_value=(1, client),
+            ),
+            patch.object(world_boss_miniapp_runtime, "account_rpc_slot", return_value=RpcSlot()),
+        ):
+            init_data = await world_boss_miniapp_runtime.request_world_boss_miniapp_init_data(
+                301299112,
+                launch,
+            )
+
+        self.assertEqual("query_id=abc&hash=SECRET", init_data)
+        self.assertEqual("xlqlcy_bot", client.requested_bot)
+
     async def test_all_accounts_join_before_first_battle(self):
         calls = []
         progress = []

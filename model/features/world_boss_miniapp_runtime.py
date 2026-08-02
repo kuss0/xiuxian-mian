@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import threading
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ from telethon import functions
 
 from ..config import MESSAGES_DIR, TG_REQUESTS_PROXIES
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
-from ..state import get_identity_account
+from ..state import get_game_bot_ids, get_identity_account
 from ..timing import get_day_key
 from ..webapp_core import (
     MiniAppCaptureStore,
@@ -237,16 +238,44 @@ class _WorldBossRealtimeFeed:
 
 def extract_world_boss_miniapp_launch(event, *, message_text=""):
     adapter = build_world_boss_miniapp_adapter()
+    sender_id = int(getattr(event, "sender_id", 0) or 0)
+    sender = getattr(event, "sender", None)
+    sender_username = str(
+        getattr(sender, "username", "")
+        or getattr(event, "sender_username", "")
+        or ""
+    ).strip().lstrip("@")
+    sender_is_official_bot = bool(
+        (
+            getattr(event, "_xiuxian_sender_is_game_bot", False)
+            or sender_id in set(get_game_bot_ids())
+        )
+        and getattr(sender, "bot", getattr(event, "sender_is_bot", False))
+        and re.fullmatch(r"[A-Za-z0-9_]{5,64}_bot", sender_username, flags=re.IGNORECASE)
+    )
     for button_text, url in iter_webapp_entry_links(event, message_text=message_text):
         if not url:
             continue
+        dynamic_bot_verified = False
         launch = build_miniapp_launch_request(adapter, url)
+        if (
+            not launch.allowed
+            and launch.reason == "bot username not allowed"
+            and sender_is_official_bot
+            and launch.bot_username.casefold() == sender_username.casefold()
+        ):
+            launch = build_miniapp_launch_request(
+                build_world_boss_miniapp_adapter(bot_username=sender_username),
+                url,
+            )
+            dynamic_bot_verified = bool(launch.allowed)
         if launch.allowed and launch.start_param:
             return {
                 "token": launch.start_param,
                 "webview_url": url,
                 "button_text": str(button_text or ""),
                 "bot_username": launch.bot_username or adapter.bot_username,
+                "dynamic_bot_verified": dynamic_bot_verified,
                 "safe_summary": launch.safe_summary(),
             }
     return {}
@@ -261,6 +290,19 @@ async def request_world_boss_miniapp_init_data(identity_id, launch):
         start_param=launch.get("token") or "",
         bot_username=launch.get("bot_username") or "",
     )
+    if (
+        not request.allowed
+        and request.reason == "bot username not allowed"
+        and launch.get("dynamic_bot_verified")
+        and launch.get("bot_username")
+    ):
+        adapter = build_world_boss_miniapp_adapter(bot_username=launch["bot_username"])
+        request = build_miniapp_launch_request(
+            adapter,
+            launch.get("webview_url") or "",
+            start_param=launch.get("token") or "",
+            bot_username=launch.get("bot_username") or "",
+        )
     if not request.allowed:
         raise ValueError(request.reason or "world boss MiniApp launch not allowed")
     account_id, client = _get_identity_client_with_account(identity_id)
