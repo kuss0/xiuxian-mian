@@ -1044,6 +1044,21 @@ def _calc_refine_amount(stock):
     return max(0, (stock // 10) * 10)
 
 
+def _panel_has_due_tool_action(panel):
+    if int(state.get("small_world_refresh_count", 0) or 0) > 0:
+        return False
+    if (
+        state.get("small_world_harvest_enabled")
+        and not is_cave_public_auto_enabled("small_world_harvest")
+        and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE
+    ):
+        return True
+    return bool(
+        state.get("small_world_refine_enabled")
+        and _calc_refine_amount(panel.get("stock", 0)) >= 10
+    )
+
+
 def _small_world_population_deficit(panel):
     try:
         population = int(panel.get("population", 0) or 0)
@@ -1812,9 +1827,6 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
             _clear_chain_pending()
             return await _try_send_pending_god_action(now)
 
-    if panel.get("has_wait"):
-        return await _finish_no_prayer_panel(now, panel)
-
     # 香火只作为本轮刷新祈愿前的工具。进入刷新轮后继续收割会导致
     # ".小世界 -> 收割 -> 淬炼 -> 复查" 在每次刷新间重复出现。
     allow_tool_actions = int(state.get("small_world_refresh_count", 0) or 0) <= 0
@@ -1834,6 +1846,9 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
     if allow_tool_chain and allow_tool_actions and state.get("small_world_refine_enabled") and refine_amount >= 10:
         save_state()
         return await _send_refine(now, refine_amount)
+
+    if panel.get("has_wait"):
+        return await _finish_no_prayer_panel(now, panel)
 
     if manifest_refresh_enabled:
         return await _finish_no_prayer_panel(now, panel, allow_refresh=True)
@@ -2310,6 +2325,9 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
             state["small_world_last_error"] = "祈愿已超过 24 小时，天机已散"
         else:
             state["small_world_last_error"] = "显灵失败，停止本轮"
+        if "显灵成功" in raw_text and _panel_has_due_tool_action(state.get("small_world_panel_snapshot") or {}):
+            save_state()
+            return await _send_query(now, "显灵后复查")
         if new_prayer_cached and state.get("small_world_manifest_enabled"):
             state["next_small_world_time"] = float(now + SMALL_WORLD_SAME_COMMAND_GUARD_SEC)
         elif wait_sec > 0:

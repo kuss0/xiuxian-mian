@@ -844,6 +844,36 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             harvest_mock.assert_not_awaited()
             self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
 
+    async def test_prayer_wait_does_not_block_refine_tool_chain(self):
+        send_as_id = 8659059393
+        now = 2200.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【惊慕的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 1116.37\n"
+            "🏺 香火库存: 54875\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "下一次凡人祈愿感应需等待 360 分钟。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            with (
+                patch.object(small_world, "is_cave_public_auto_enabled", side_effect=lambda action: action == "small_world_harvest"),
+                patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+                patch.object(small_world, "_send_refine", new=AsyncMock(return_value=True)) as refine_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            harvest_mock.assert_not_awaited()
+            refine_mock.assert_awaited_once_with(now, 54870)
+
     async def test_refresh_round_does_not_harvest_again(self):
         send_as_id = 8659059292
         now = 2500.0
@@ -3474,6 +3504,74 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 now + 1 + small_world.SMALL_WORLD_MANIFEST_CD_SEC + small_world.CD_BUFFER_SEC + 60,
                 state_module.state["next_small_world_time"],
             )
+
+    async def test_manifest_success_rechecks_then_refines_during_prayer_wait(self):
+        send_as_id = 8659059394
+        now = 7400.0
+        state_module.ensure_identity_registered(send_as_id)
+        success_text = (
+            "✅ 显灵成功！\n"
+            "你赐下化开的药液，瘟疫瞬间消散，凡人对你顶礼膜拜！\n"
+            "(信仰 +15, 稳定 +5, 人口 +0)\n"
+            "下一次凡人祈愿感应需等待 360 分钟。"
+        )
+        panel_text = (
+            "【惊慕的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 1116.37\n"
+            "🏺 香火库存: 54875\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "下一次凡人祈愿感应需等待 360 分钟。"
+        )
+        sent_messages = [
+            SimpleNamespace(id=9002, sent_at=now + 1),
+            SimpleNamespace(id=9003, sent_at=now + 2),
+        ]
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 9001
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "瘟疫",
+                "manifest_cost": "清灵丹x2",
+                "pending_incense": 1116.37,
+                "stock": 54875,
+                "updated_at": now - 30,
+            }
+
+            with (
+                patch.object(small_world, "is_cave_public_auto_enabled", side_effect=lambda action: action == "small_world_harvest"),
+                patch.object(small_world, "send_game_command", new=AsyncMock(side_effect=sent_messages)) as send_mock,
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "console_log"),
+            ):
+                handled_manifest = await small_world.handle_small_world_manifest_reply(
+                    success_text,
+                    now,
+                    reply_to=SimpleNamespace(id=9001, raw_text=small_world.CMD_SMALL_WORLD_MANIFEST),
+                    matched_family="small_world_manifest",
+                )
+                handled_panel = await small_world.handle_small_world_query_reply(
+                    panel_text,
+                    now + 2,
+                    reply_to=SimpleNamespace(id=9002, raw_text=small_world.CMD_SMALL_WORLD_QUERY),
+                    matched_family="small_world_query",
+                )
+
+            self.assertTrue(handled_manifest)
+            self.assertTrue(handled_panel)
+            self.assertEqual(
+                [small_world.CMD_SMALL_WORLD_QUERY, f"{small_world.CMD_SMALL_WORLD_REFINE} 54870"],
+                [call.args[0] for call in send_mock.await_args_list],
+            )
+            self.assertEqual("refine_sent", state_module.state["small_world_phase"])
+            self.assertEqual(9003, state_module.state["small_world_refine_msg_id"])
 
     async def test_manifest_success_does_not_deduct_cultivation_as_storage_item(self):
         send_as_id = 8659059198
