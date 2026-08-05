@@ -102,6 +102,27 @@ class _StateIsolationMixin:
 
 
 class SmallWorldPrayerDeadlineTests(_StateIsolationMixin, unittest.TestCase):
+    def test_cached_refine_stock_shortens_stale_prayer_cycle_timer(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1002)
+        with state_module.use_identity(1002):
+            state_module.state["small_world_phase"] = "idle"
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["next_small_world_time"] = now + 6 * 3600
+            state_module.state["small_world_panel_snapshot"] = {
+                "stock": 54875,
+                "updated_at": now - 120,
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=120),
+                patch.object(small_world, "mark_dirty") as dirty_mock,
+            ):
+                changed = small_world._reconcile_cached_tool_deadline(now)
+
+            self.assertTrue(changed)
+            self.assertEqual(now + 120, state_module.state["next_small_world_time"])
+            dirty_mock.assert_called_once()
+
     def test_cached_prayer_deadline_shortens_stale_six_hour_timer(self):
         now = 1_700_000_000.0
         wait_sec = 4 * 3600

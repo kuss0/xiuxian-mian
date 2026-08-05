@@ -457,6 +457,28 @@ def _reconcile_cached_prayer_deadline(now):
     return True
 
 
+def _reconcile_cached_tool_deadline(now):
+    """Wake a tool action stranded behind an old prayer-cycle deadline."""
+    if _phase() != "idle":
+        return False
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict) or not _panel_has_due_tool_action(snapshot):
+        return False
+    try:
+        updated_at = float(snapshot.get("updated_at", 0) or 0)
+        current_next = float(state.get("next_small_world_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    now = float(now or time.time())
+    if updated_at <= 0 or now - updated_at > SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC:
+        return False
+    if 0 < current_next <= now + SMALL_WORLD_TOOL_STEP_MAX_SEC:
+        return False
+    _schedule_tool_step(now)
+    mark_dirty()
+    return True
+
+
 def _schedule_god_followup(now):
     cooldown_until = float(now + SMALL_WORLD_GOD_FOLLOWUP_SEC)
     state["small_world_god_cooldown_until"] = cooldown_until
@@ -1046,6 +1068,8 @@ def _calc_refine_amount(stock):
 
 def _panel_has_due_tool_action(panel):
     if int(state.get("small_world_refresh_count", 0) or 0) > 0:
+        return False
+    if _is_high_stock_silence_panel(panel):
         return False
     if (
         state.get("small_world_harvest_enabled")
@@ -2459,6 +2483,8 @@ async def _run_small_world_scheduler(now):
     if not state.get("small_world_enabled"):
         return
 
+    if _reconcile_cached_tool_deadline(now):
+        save_state()
     if _reconcile_cached_prayer_deadline(now):
         save_state()
 
