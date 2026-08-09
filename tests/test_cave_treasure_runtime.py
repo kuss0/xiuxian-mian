@@ -2351,6 +2351,56 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("manifest", manifest["action"])
         self.assertEqual("miracle_sermon", sermon["action"])
 
+    def test_cave_public_small_world_refine_keeps_1150_incense(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_refine_enabled"] = True
+
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "can_harvest": False,
+                    "incense_stock": 2300,
+                },
+            })
+
+        self.assertEqual("refine_shenshi", plan["action"])
+        self.assertEqual(1150, plan["payload"]["amount"])
+
+    def test_cave_public_small_world_does_not_refine_into_reserve(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_refine_enabled"] = True
+
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "can_harvest": False,
+                    "incense_stock": 1159,
+                },
+            })
+
+        self.assertNotIn("action", plan)
+
+    def test_cave_public_small_world_refine_amount_is_based_on_full_stock(self):
+        with state_module.use_identity(1001):
+            state_module.state["small_world_refine_enabled"] = True
+
+            plan = cave_treasure_runtime._plan_cave_public_small_world_action({
+                "small_world": {
+                    "available": True,
+                    "has_world": True,
+                    "has_prayer": False,
+                    "can_harvest": False,
+                    "incense_stock": 54875,
+                },
+            })
+
+        self.assertEqual("refine_shenshi", plan["action"])
+        self.assertEqual(53720, plan["payload"]["amount"])
+
     def test_cave_public_small_world_due_harvest_preempts_optional_sermon(self):
         now = 1_700_000_001.0
         with state_module.use_identity(1001):

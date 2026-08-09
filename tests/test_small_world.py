@@ -893,7 +893,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             harvest_mock.assert_not_awaited()
-            refine_mock.assert_awaited_once_with(now, 54870)
+            refine_mock.assert_awaited_once_with(now, 53720)
 
     async def test_refresh_round_does_not_harvest_again(self):
         send_as_id = 8659059292
@@ -1121,6 +1121,12 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1038, state_module.state["small_world_incense_stock"])
             self.assertEqual(now + 1 + 120, state_module.state["next_small_world_time"])
             self.assertIn("等待回执", state_module.state["small_world_last_error"])
+
+    def test_refine_amount_keeps_at_least_1150_incense(self):
+        self.assertEqual(0, small_world._calc_refine_amount(1150))
+        self.assertEqual(0, small_world._calc_refine_amount(1159))
+        self.assertEqual(1150, small_world._calc_refine_amount(2300))
+        self.assertEqual(53720, small_world._calc_refine_amount(54875))
 
     async def test_send_manifest_does_not_enter_generic_retry_queue(self):
         send_as_id = 8659059299
@@ -3588,7 +3594,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled_manifest)
             self.assertTrue(handled_panel)
             self.assertEqual(
-                [small_world.CMD_SMALL_WORLD_QUERY, f"{small_world.CMD_SMALL_WORLD_REFINE} 54870"],
+                [small_world.CMD_SMALL_WORLD_QUERY, f"{small_world.CMD_SMALL_WORLD_REFINE} 53720"],
                 [call.args[0] for call in send_mock.await_args_list],
             )
             self.assertEqual("refine_sent", state_module.state["small_world_phase"])

@@ -71,6 +71,8 @@ SMALL_WORLD_TOOL_STEP_MAX_SEC = 240
 SMALL_WORLD_THEFT_CALIBRATION_MIN_SEC = 30
 SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC = 90
 SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
+# 淬炼时保留一部分香火，避免收割后把库存烧空。
+SMALL_WORLD_REFINE_RESERVE_INCENSE = 1150
 SMALL_WORLD_DEFAULT_STATUS_MAX = 100
 SMALL_WORLD_HIGH_STOCK_SILENCE_FLOOR = 100_000
 # 布道、赈灾和安抚信徒共享同一条约 3 小时的神谕冷却。
@@ -1063,7 +1065,8 @@ def _calc_refine_amount(stock):
         stock = int(stock or 0)
     except (TypeError, ValueError):
         return 0
-    return max(0, (stock // 10) * 10)
+    available = stock - SMALL_WORLD_REFINE_RESERVE_INCENSE
+    return max(0, (available // 10) * 10)
 
 
 def _panel_has_due_tool_action(panel):
@@ -1648,7 +1651,12 @@ async def _send_harvest_before_manifest(now):
 
 
 async def _send_refine(now, amount):
-    amount = _calc_refine_amount(amount)
+    # Callers calculate the amount from the latest stock snapshot. Recomputing
+    # here would subtract the reserve a second time.
+    try:
+        amount = int(amount or 0)
+    except (TypeError, ValueError):
+        amount = 0
     if amount < 10:
         return await _send_query(now, "淬炼数量不足，复查小世界")
 

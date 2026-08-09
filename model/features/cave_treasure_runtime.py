@@ -14,7 +14,10 @@ from ..state import get_current_identity_id, get_global_enabled, get_global_paus
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
-from .small_world import SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER
+from .small_world import (
+    SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
+    _calc_refine_amount,
+)
 from .cave_treasure_miniapp import (
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
     build_cave_treasure_launch_args,
@@ -1649,7 +1652,7 @@ def _plan_cave_public_small_world_action(overview, *, now=None):
 
     if state.get("small_world_refine_enabled"):
         stock = int(small_world.get("incense_stock", 0) or 0)
-        amount = max(0, (stock // 10) * 10)
+        amount = _calc_refine_amount(stock)
         if amount >= 10:
             return {
                 "action": "refine_shenshi",
