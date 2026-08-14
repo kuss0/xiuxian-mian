@@ -73,6 +73,38 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertEqual("@target_user", state_module.get_guanxing_shift_target())
         self.assertEqual(25, state_module.get_guanxing_shift_delay_sec())
 
+    def test_basic_config_preserves_backup_route_when_older_client_omits_fields(self):
+        state_module.set_game_group_id(-1002083016447)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": -1002083016447,
+            "backup_group_ids": [-1001680975844],
+            "topic_id_by_group": {
+                "-1002083016447": 0,
+                "-1001680975844": 7310786,
+            },
+        })
+
+        with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
+            ok, message = asyncio.run(
+                ui.ui_set_basic_config(
+                    "-1002083016447",
+                    "8388633812",
+                    "0",
+                    True,
+                )
+            )
+
+        self.assertTrue(ok, message)
+        self.assertEqual(
+            [-1001680975844],
+            state_module.get_game_group_route_config()["backup_group_ids"],
+        )
+        self.assertEqual(
+            7310786,
+            state_module.get_game_group_route_config()["topic_id_by_group"]["-1001680975844"],
+        )
+
     def test_basic_config_accepts_guanxing_negative_shift_delay(self):
         with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
             ok, message = asyncio.run(

@@ -18,7 +18,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     REALM_SORT_INDEX,
     YUANYING_MIN_REALM_INDEX,
@@ -32,7 +32,9 @@ from ..state import (
     get_miniapp_auto_config,
     get_send_as_profile,
     get_world_boss_run_state,
+    get_world_boss_rotation_state,
     set_world_boss_run_state,
+    set_world_boss_rotation_state,
     state,
     use_identity,
 )
@@ -119,6 +121,10 @@ RE_CONTRIBUTION_ROW = re.compile(
     re.M,
 )
 RE_SETTLEMENT_ROW = re.compile(r"^\s*-\s*@(?P<username>[A-Za-z0-9_]+)[:：](?P<rewards>[^\n\r]+)", re.M)
+RE_RARE_DROP_ROW = re.compile(
+    r"^\s*-\s*@(?P<username>[A-Za-z0-9_]+)\s*获得\s*(?P<reward>[^\n\r]+)",
+    re.M,
+)
 
 _WORLD_BOSS_SCHEDULER_LOCK = asyncio.Lock()
 _WORLD_BOSS_ROUND_TASK = None
@@ -435,6 +441,16 @@ def _parse_settlement_rows(raw_text):
     return rows
 
 
+def _parse_rare_drop_rows(raw_text):
+    rows = []
+    for match in RE_RARE_DROP_ROW.finditer(str(raw_text or "")):
+        rows.append({
+            "username": str(match.group("username") or "").strip(),
+            "reward": str(match.group("reward") or "").strip(),
+        })
+    return rows
+
+
 def parse_world_boss_text(text, now=None):
     raw_text = str(text or "").strip()
     if not raw_text or raw_text.startswith("."):
@@ -463,6 +479,7 @@ def parse_world_boss_text(text, now=None):
             "participants_present": participants_match is not None,
             "contributions": _parse_contribution_rows(raw_text),
             "settlements": _parse_settlement_rows(raw_text),
+            "rare_drops": _parse_rare_drop_rows(raw_text),
             "key": _event_hash(raw_text),
         }
     if "当前没有进行中的【真仙试锋】" in raw_text:
@@ -970,6 +987,78 @@ def _miniapp_account_key(identity_id):
     return f"identity:{int(identity_id or 0)}"
 
 
+def _rotation_config():
+    raw = dict(get_miniapp_auto_config() or {})
+    account_ids = []
+    for raw_account_id in raw.get("world_boss_rotation_account_ids") or ():
+        account_id = _coerce_int(raw_account_id, 0)
+        if account_id > 0 and account_id not in account_ids:
+            account_ids.append(account_id)
+    target_reward = str(raw.get("world_boss_rotation_target_reward") or "斩青玉元").strip() or "斩青玉元"
+    return {
+        "account_ids": account_ids,
+        "target_reward": target_reward,
+    }
+
+
+def _account_rotation_identity_ids(account_id):
+    account_id = int(account_id or 0)
+    return sorted(
+        int(identity_id)
+        for identity_id in _miniapp_entry_candidate_identity_ids()
+        if int(get_identity_account(identity_id) or 0) == account_id
+    )
+
+
+def _normalized_rotation_state():
+    raw = get_world_boss_rotation_state()
+    accounts = raw.get("accounts") if isinstance(raw, dict) else {}
+    return {
+        "accounts": dict(accounts or {}) if isinstance(accounts, dict) else {},
+        "last_conclusion_key": str((raw or {}).get("last_conclusion_key") or ""),
+    }
+
+
+def _rotation_account_record(account_id):
+    account_id = int(account_id or 0)
+    rotation_state = _normalized_rotation_state()
+    raw = dict(rotation_state["accounts"].get(str(account_id)) or {})
+    candidates = _account_rotation_identity_ids(account_id)
+    completed_ids = {
+        _coerce_int(identity_id, 0)
+        for identity_id in raw.get("completed_identity_ids") or ()
+        if _coerce_int(identity_id, 0) > 0
+    }
+    completed_ids.intersection_update(candidates)
+    current_identity_id = _coerce_int(raw.get("current_identity_id"), 0)
+    if current_identity_id not in candidates or current_identity_id in completed_ids:
+        current_identity_id = next((identity_id for identity_id in candidates if identity_id not in completed_ids), 0)
+    return {
+        "account_id": account_id,
+        "identity_ids": candidates,
+        "current_identity_id": current_identity_id,
+        "completed_identity_ids": sorted(completed_ids),
+        "last_completed_identity_id": _coerce_int(raw.get("last_completed_identity_id"), 0),
+        "last_completed_at": _coerce_float(raw.get("last_completed_at"), 0),
+        "last_reward": str(raw.get("last_reward") or ""),
+    }
+
+
+def _save_rotation_account_record(record, *, conclusion_key=""):
+    rotation_state = _normalized_rotation_state()
+    account_id = int(record.get("account_id") or 0)
+    if account_id > 0:
+        rotation_state["accounts"][str(account_id)] = dict(record)
+    if conclusion_key:
+        rotation_state["last_conclusion_key"] = str(conclusion_key)
+    set_world_boss_rotation_state(rotation_state)
+    mark_dirty()
+
+
+def _rotation_identity_for_account(account_id):
+    return int(_rotation_account_record(account_id).get("current_identity_id") or 0)
+
+
 def select_world_boss_miniapp_entry_identities(limit=WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT):
     """Pick at most one world-boss MiniApp entry identity per login account."""
     try:
@@ -980,8 +1069,15 @@ def select_world_boss_miniapp_entry_identities(limit=WORLD_BOSS_MINIAPP_ACCOUNT_
     if limit <= 0:
         return []
     best_by_account = {}
+    rotation_accounts = set(_rotation_config()["account_ids"])
     for identity_id in _miniapp_entry_candidate_identity_ids():
         account_key = _miniapp_account_key(identity_id)
+        account_id = int(get_identity_account(identity_id) or 0)
+        if account_id in rotation_accounts:
+            current_identity_id = _rotation_identity_for_account(account_id)
+            if current_identity_id > 0:
+                best_by_account[account_key] = current_identity_id
+            continue
         current = best_by_account.get(account_key)
         if current is None or _strong_attacker_priority_key(identity_id) < _strong_attacker_priority_key(current):
             best_by_account[account_key] = int(identity_id)
@@ -1240,7 +1336,7 @@ async def _recover_world_boss_pending_from_message_log(identity_id, identity_sta
         now,
         lookback_sec=max(15 * 60, WORLD_BOSS_REPLY_TIMEOUT_SEC * 5),
         lookahead_sec=30,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(pending_msg_id, default=get_game_group_id(), send_as_id=identity_id),
         predicate=_is_world_boss_reply_log_entry,
     )
     if not replies:
@@ -1449,6 +1545,13 @@ def _world_boss_miniapp_auto_config():
         skip_count = max(0, min(32, _coerce_int(raw_skip_count, 0)))
         if identity_id > 0 and skip_count > 0:
             window_skip_by_identity[identity_id] = skip_count
+    rotation = _rotation_config()
+    # A rotation account's current identity always uses the full attack plan.
+    # Ignore stale per-identity skip values left from a previous fixed setup.
+    for account_id in rotation["account_ids"]:
+        current_identity_id = _rotation_identity_for_account(account_id)
+        if current_identity_id > 0:
+            window_skip_by_identity.pop(current_identity_id, None)
     return {
         "enabled": bool(raw.get("world_boss_auto_enabled")),
         "account_limit": account_limit,
@@ -1459,6 +1562,7 @@ def _world_boss_miniapp_auto_config():
             if _coerce_int(identity_id, 0) > 0
         },
         "window_skip_by_identity": window_skip_by_identity,
+        "rotation": rotation,
     }
 
 
@@ -1715,6 +1819,43 @@ def _local_world_boss_usernames():
     return usernames
 
 
+def _advance_world_boss_rotations(parsed, now, conclusion_key):
+    config = _rotation_config()
+    if not config["account_ids"] or not parsed.get("rare_drops"):
+        return []
+    rotation_state = _normalized_rotation_state()
+    if conclusion_key and rotation_state.get("last_conclusion_key") == conclusion_key:
+        return []
+    username_map = _local_world_boss_usernames()
+    advanced = []
+    for drop in parsed.get("rare_drops") or ():
+        reward = str(drop.get("reward") or "").strip()
+        if config["target_reward"] not in reward:
+            continue
+        identity_id = username_map.get(str(drop.get("username") or "").strip().lower(), 0)
+        account_id = int(get_identity_account(identity_id) or 0)
+        if identity_id <= 0 or account_id not in set(config["account_ids"]):
+            continue
+        record = _rotation_account_record(account_id)
+        if int(record.get("current_identity_id") or 0) != identity_id:
+            continue
+        completed_ids = set(record.get("completed_identity_ids") or ())
+        if identity_id in completed_ids:
+            continue
+        completed_ids.add(identity_id)
+        record["completed_identity_ids"] = sorted(completed_ids)
+        record["last_completed_identity_id"] = identity_id
+        record["last_completed_at"] = float(now)
+        record["last_reward"] = reward
+        record["current_identity_id"] = next(
+            (candidate for candidate in record.get("identity_ids") or () if candidate not in completed_ids),
+            0,
+        )
+        _save_rotation_account_record(record, conclusion_key=conclusion_key)
+        advanced.append(record)
+    return advanced
+
+
 def _format_local_world_boss_result(parsed):
     username_map = _local_world_boss_usernames()
     if not username_map:
@@ -1806,6 +1947,7 @@ async def _close_event(parsed, now, *, log=True):
     event_key = str(run_state.get("event_key") or "")
     result = str(parsed.get("result") or "结束").strip()
     conclusion_key = str(parsed.get("key") or result or get_day_key(now))
+    rotation_advances = _advance_world_boss_rotations(parsed, now, conclusion_key)
     duplicate = conclusion_key and conclusion_key == run_state.get("last_conclusion_key") and now - _coerce_float(run_state.get("last_conclusion_at"), 0) < 2 * 3600
     run_state["active"] = False
     run_state["closed_at"] = float(now)
@@ -1847,6 +1989,15 @@ async def _close_event(parsed, now, *, log=True):
             )
         if local_result:
             base += "\n" + local_result
+        if rotation_advances:
+            rotation_text = []
+            for record in rotation_advances:
+                completed_id = int(record.get("last_completed_identity_id") or 0)
+                next_id = int(record.get("current_identity_id") or 0)
+                detail = f"{_identity_label(completed_id)} 已获目标奖励"
+                detail += f"，下场切换 {_identity_label(next_id)}" if next_id else "，该账户轮换完成"
+                rotation_text.append(detail)
+            base += "\n身份轮换：" + "；".join(rotation_text)
         await send_audit_log(
             base,
             scope="global",

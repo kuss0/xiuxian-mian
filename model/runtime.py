@@ -229,6 +229,8 @@ from .state import (
     get_current_identity_id,
     get_game_bot_ids,
     get_game_group_id,
+    get_game_group_ids,
+    get_game_group_topic_id,
     get_game_topic_id,
     get_global_enabled,
     get_global_pause_source,
@@ -236,6 +238,7 @@ from .state import (
     get_global_recovery_throttle_until,
     get_channel_send_as_health,
     get_account_target_membership,
+    get_account_group_membership,
     get_identity_account_map,
     get_identity_account,
     get_identity_enabled,
@@ -250,6 +253,7 @@ from .state import (
     state,
     set_channel_send_as_health,
     set_account_target_membership,
+    set_account_group_membership,
     set_identity_enabled,
     use_identity,
 )
@@ -544,25 +548,50 @@ def _channel_send_as_invalid_key(send_as_id, *, account_id=None, game_group_id=N
     return resolved_account_id, resolved_group_id
 
 
+def _channel_send_as_cohort_invalid_until(account_id, game_group_id, *, now=None):
+    try:
+        key = (int(account_id or 0), int(game_group_id or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if key[0] <= 0 or key[1] == 0:
+        return 0.0
+    current = float(now or time.time())
+    until = float(_CHANNEL_SEND_AS_INVALID_UNTIL.get(key, 0) or 0)
+    health = get_channel_send_as_health()
+    persisted = health.get("cohort_invalid_until_by_group") or {}
+    if isinstance(persisted, dict):
+        until = max(until, float(persisted.get(f"{key[0]}:{key[1]}", 0) or 0))
+    if until <= current:
+        _CHANNEL_SEND_AS_INVALID_UNTIL.pop(key, None)
+        return 0.0
+    return until
+
+
 def _send_as_peer_invalid_until(send_as_id, *, account_id=None, game_group_id=None, now=None):
     try:
         identity_id = int(send_as_id or 0)
     except (TypeError, ValueError, OverflowError):
         return 0.0
     current = float(now or time.time())
-    identity_until = float(_SEND_AS_PEER_INVALID_UNTIL.get(identity_id, 0) or 0)
-    if identity_until <= current:
-        _SEND_AS_PEER_INVALID_UNTIL.pop(identity_id, None)
-        identity_until = 0.0
     cohort_key = _channel_send_as_invalid_key(
         identity_id,
         account_id=account_id,
         game_group_id=game_group_id,
     )
-    cohort_until = float(_CHANNEL_SEND_AS_INVALID_UNTIL.get(cohort_key, 0) or 0) if cohort_key else 0.0
-    if cohort_key and cohort_until <= current:
-        _CHANNEL_SEND_AS_INVALID_UNTIL.pop(cohort_key, None)
-        cohort_until = 0.0
+    cohort_until = (
+        _channel_send_as_cohort_invalid_until(cohort_key[0], cohort_key[1], now=current)
+        if cohort_key
+        else 0.0
+    )
+    identity_key = (identity_id, int((cohort_key or (0, game_group_id or get_game_group_id()))[1] or 0))
+    identity_until = max(
+        float(_SEND_AS_PEER_INVALID_UNTIL.get(identity_key, 0) or 0),
+        float(_SEND_AS_PEER_INVALID_UNTIL.get(identity_id, 0) or 0),
+    )
+    if identity_until <= current:
+        _SEND_AS_PEER_INVALID_UNTIL.pop(identity_key, None)
+        _SEND_AS_PEER_INVALID_UNTIL.pop(identity_id, None)
+        identity_until = 0.0
     return max(identity_until, cohort_until)
 
 
@@ -570,7 +599,8 @@ def _mark_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=Non
     now = float(now or time.time())
     until = now + SEND_AS_PEER_INVALID_BACKOFF_SEC
     identity_id = int(send_as_id or 0)
-    _SEND_AS_PEER_INVALID_UNTIL[identity_id] = until
+    group_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
+    _SEND_AS_PEER_INVALID_UNTIL[(identity_id, group_id)] = until
     return until
 
 
@@ -602,6 +632,39 @@ def _note_channel_send_as_invalid_observation(
     return len(observations)
 
 
+def _mark_channel_send_as_cohort_invalid(
+    account_id,
+    game_group_id,
+    *,
+    now=None,
+    invalid_until=None,
+):
+    try:
+        key = (int(account_id or 0), int(game_group_id or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if key[0] <= 0 or key[1] == 0:
+        return 0.0
+    if invalid_until is None:
+        until = float(now or time.time()) + SEND_AS_PEER_INVALID_BACKOFF_SEC
+    else:
+        try:
+            until = float(invalid_until or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if until <= float(now or time.time()):
+            _CHANNEL_SEND_AS_INVALID_UNTIL.pop(key, None)
+            return 0.0
+    _CHANNEL_SEND_AS_INVALID_UNTIL[key] = until
+    health = dict(get_channel_send_as_health())
+    persisted = dict(health.get("cohort_invalid_until_by_group") or {})
+    persisted[f"{key[0]}:{key[1]}"] = until
+    health["cohort_invalid_until_by_group"] = persisted
+    set_channel_send_as_health(health)
+    mark_dirty()
+    return until
+
+
 def _clear_channel_send_as_invalid_observations(account_id=None, game_group_id=None):
     try:
         key = (int(account_id or 0), int(game_group_id or 0))
@@ -613,6 +676,8 @@ def _clear_channel_send_as_invalid_observations(account_id=None, game_group_id=N
 
 def _clear_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=None):
     identity_id = int(send_as_id or 0)
+    group_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
+    _SEND_AS_PEER_INVALID_UNTIL.pop((identity_id, group_id), None)
     _SEND_AS_PEER_INVALID_UNTIL.pop(identity_id, None)
     cohort_key = _channel_send_as_invalid_key(
         identity_id,
@@ -621,6 +686,12 @@ def _clear_send_as_peer_invalid(send_as_id, *, account_id=None, game_group_id=No
     )
     if cohort_key:
         _CHANNEL_SEND_AS_INVALID_UNTIL.pop(cohort_key, None)
+        health = dict(get_channel_send_as_health())
+        persisted = dict(health.get("cohort_invalid_until_by_group") or {})
+        if persisted.pop(f"{cohort_key[0]}:{cohort_key[1]}", None) is not None:
+            health["cohort_invalid_until_by_group"] = persisted
+            set_channel_send_as_health(health)
+            mark_dirty()
 
 
 def _freeze_channel_send_as_identities(account_id, game_group_id, *, now=None):
@@ -1611,7 +1682,7 @@ def _pending_send_intent_kwargs(pending_item):
     return {key: value for key, value in intent.items() if value}
 
 
-def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None, intent=None, sent_at=None):
+def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None, intent=None, sent_at=None, game_group_id=None, topic_id=None):
     try:
         try:
             sent_at_value = float(sent_at or 0)
@@ -1625,9 +1696,9 @@ def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, 
             "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
             "event_type": "sent",
             "message_id": int(msg_id or 0),
-            "chat_id": get_game_group_id(),
+            "chat_id": int(game_group_id if game_group_id is not None else get_game_group_id() or 0),
             "sender_id": int(send_as_id or 0),
-            "topic_id": get_game_topic_id(),
+            "topic_id": int(topic_id if topic_id is not None else get_game_topic_id() or 0),
             "reply_to_msg_id": int(reply_to_msg_id or 0),
             "text": command or "",
         }
@@ -1954,7 +2025,7 @@ def _get_special_tracked_message_family(identity_state, msg_id):
     return None
 
 
-def _resolve_identity_message_owner(msg_id, send_as_id=None):
+def _resolve_identity_message_owner(msg_id, send_as_id=None, chat_id=None):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return None, None
@@ -1962,7 +2033,13 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None):
     _gc_reply_chain_tracker()
     tracker_payload = _reply_chain_tracker.get(msg_id)
     tracked_identity_id = int((tracker_payload or {}).get("send_as_id", 0) or 0)
-    if tracked_identity_id > 0 and has_identity(tracked_identity_id) and (send_as_id is None or int(send_as_id) == tracked_identity_id):
+    tracker_chat_id = int((tracker_payload or {}).get("chat_id", 0) or 0)
+    if (
+        tracked_identity_id > 0
+        and has_identity(tracked_identity_id)
+        and (send_as_id is None or int(send_as_id) == tracked_identity_id)
+        and (not chat_id or not tracker_chat_id or int(chat_id) == tracker_chat_id)
+    ):
         return tracked_identity_id, "reply_chain_tracker"
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
@@ -1970,6 +2047,10 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None):
         if not has_identity(identity_id):
             continue
         identity_state = get_identity_state(identity_id)
+        pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
+        pending_chat_id = int((pending_item or {}).get("chat_id", 0) or 0)
+        if chat_id and pending_chat_id and int(chat_id) != pending_chat_id:
+            continue
         if msg_id in identity_state["my_msg_ids"]:
             return identity_id, "my_msg_ids"
         if _get_special_tracked_message_family(identity_state, msg_id):
@@ -2050,7 +2131,7 @@ def _read_recent_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024)
     return data.splitlines()[-max(1, int(max_lines or 1)):]
 
 
-def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None):
+def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=None):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return None, None, 0, None
@@ -2077,6 +2158,8 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None):
                 payload_msg_id = 0
             if payload_msg_id != msg_id:
                 continue
+            if chat_id and int(payload.get("chat_id") or 0) != int(chat_id):
+                continue
             try:
                 identity_id = int(payload.get("sender_id") or 0)
             except (TypeError, ValueError):
@@ -2088,7 +2171,56 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None):
     return None, None, 0, None
 
 
-def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
+def get_sent_message_chat_id(msg_id, default=None, *, send_as_id=None):
+    """Return the route recorded for an outgoing message, if available."""
+    try:
+        target_msg_id = int(msg_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        target_msg_id = 0
+    if target_msg_id <= 0:
+        return int(get_game_group_id() if default is None else default or 0)
+    try:
+        target_send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        target_send_as_id = 0
+    for path in _recent_sent_message_log_paths():
+        if not os.path.exists(path):
+            continue
+        for line in reversed(_read_recent_message_log_tail(path)):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict) or str(payload.get("event_type") or "") != "sent":
+                continue
+            try:
+                message_id = int(payload.get("message_id") or 0)
+                chat_id = int(payload.get("chat_id") or 0)
+                sender_id = int(payload.get("sender_id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if message_id != target_msg_id or not chat_id:
+                continue
+            if target_send_as_id and sender_id != target_send_as_id:
+                continue
+            if message_id == target_msg_id:
+                return chat_id
+    return int(get_game_group_id() if default is None else default or 0)
+
+
+def get_pending_message_chat_id(send_as_id, msg_id, default=None):
+    try:
+        identity_state = get_identity_state(int(send_as_id or 0))
+        pending = identity_state.get("pending_tasks", {}).get(int(msg_id or 0)) or {}
+        chat_id = int(pending.get("chat_id") or 0)
+    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
+        chat_id = 0
+    if chat_id:
+        return chat_id
+    return get_sent_message_chat_id(msg_id, default=default, send_as_id=send_as_id)
+
+
+def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, chat_id=None):
     resolved_reply_to_msg_id = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
     if resolved_reply_to_msg_id <= 0:
         return {
@@ -2100,16 +2232,30 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
             "source": "",
         }
 
-    resolved_send_as_id, matched_via = _resolve_identity_message_owner(resolved_reply_to_msg_id, send_as_id=send_as_id)
+    resolved_send_as_id = None
+    family = None
+    root_msg_id = resolved_reply_to_msg_id
+    matched_via = None
+    if chat_id:
+        resolved_send_as_id, family, root_msg_id, matched_via = _resolve_identity_from_sent_message_log(
+            resolved_reply_to_msg_id,
+            send_as_id=send_as_id,
+            chat_id=chat_id,
+        )
+    if resolved_send_as_id is None:
+        resolved_send_as_id, matched_via = _resolve_identity_message_owner(
+            resolved_reply_to_msg_id,
+            send_as_id=send_as_id,
+            chat_id=chat_id,
+        )
     if resolved_send_as_id is None and reply_to is not None:
         resolved_send_as_id, matched_via = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
-    family = None
     source = ""
-    root_msg_id = resolved_reply_to_msg_id
     if resolved_send_as_id is None:
         resolved_send_as_id, family, root_msg_id, matched_via = _resolve_identity_from_sent_message_log(
             resolved_reply_to_msg_id,
             send_as_id=send_as_id,
+            chat_id=chat_id,
         )
     if resolved_send_as_id is not None:
         resolved_family, resolved_root_msg_id, resolved_source = _resolve_identity_message_family(
@@ -2141,7 +2287,7 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
     }
 
 
-def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, source=""):
+def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, source="", chat_id=None):
     msg_id = int(msg_id or 0)
     send_as_id = int(send_as_id or 0)
     family = str(family or "").strip()
@@ -2163,6 +2309,7 @@ def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, s
         "family": family,
         "root_msg_id": root_msg_id,
         "source": source,
+        "chat_id": int(chat_id or 0),
         "tracked_at": time.time(),
     }
     return True
@@ -3429,9 +3576,8 @@ async def _ensure_account_client_ready(tc):
         raise RuntimeError("UNAUTHORIZED: 账号 session 未授权，请重新登录")
 
 
-async def _handle_send_as_peer_invalid(command, *, send_as_id, account_id, error):
+async def _handle_send_as_peer_invalid(command, *, send_as_id, account_id, game_group_id, error):
     now = time.time()
-    game_group_id = get_game_group_id()
     until = _mark_send_as_peer_invalid(
         send_as_id,
         account_id=account_id,
@@ -3447,11 +3593,27 @@ async def _handle_send_as_peer_invalid(command, *, send_as_id, account_id, error
     newly_closed = False
     frozen_count = 0
     if failure_count >= CHANNEL_SEND_AS_GLOBAL_FAILURE_THRESHOLD:
-        newly_closed, frozen_count = _freeze_channel_send_as_identities(
-            account_id,
-            game_group_id,
-            now=now,
-        )
+        group_ids = get_game_group_ids()
+        if len(group_ids) > 1:
+            until = max(
+                until,
+                _mark_channel_send_as_cohort_invalid(account_id, game_group_id, now=now),
+            )
+            if all(
+                _channel_send_as_cohort_invalid_until(account_id, group_id, now=now) > now
+                for group_id in group_ids
+            ):
+                newly_closed, frozen_count = _freeze_channel_send_as_identities(
+                    account_id,
+                    int(group_ids[0]),
+                    now=now,
+                )
+        else:
+            newly_closed, frozen_count = _freeze_channel_send_as_identities(
+                account_id,
+                game_group_id,
+                now=now,
+            )
     _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
     if newly_closed:
         await send_audit_log(
@@ -3511,13 +3673,13 @@ async def _log_account_target_group_blocked(command, *, send_as_id, account_id, 
     )
 
 
-def _persist_account_target_not_member(account_id, error, *, now=None):
+def _persist_account_target_not_member(account_id, error, *, game_group_id=None, now=None):
     probe = classify_membership_error(error)
     if probe.status is not TargetGroupMembership.NOT_MEMBER:
         return {}
     now = float(now or time.time())
     account_id = int(account_id or 0)
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
     if account_id <= 0 or game_group_id == 0:
         return {}
     identity_ids = resolve_account_identity_ids(
@@ -3525,24 +3687,93 @@ def _persist_account_target_not_member(account_id, error, *, now=None):
         get_identity_account_map(),
         get_identity_ids(),
     )
+    previous = get_account_group_membership(account_id, game_group_id)
+    if not previous and game_group_id == int(get_game_group_id() or 0):
+        previous = get_account_target_membership(account_id)
     record = merge_account_membership_probe(
-        get_account_target_membership(account_id),
+        previous,
         probe,
         account_id=account_id,
         identity_ids=identity_ids,
         game_group_id=game_group_id,
         now=now,
     )
-    set_account_target_membership(account_id, record)
+    set_account_group_membership(account_id, game_group_id, record)
+    if game_group_id == int(get_game_group_id() or 0):
+        set_account_target_membership(account_id, record)
     mark_dirty()
     return record
 
 
+def _account_group_is_blocked(account_id, game_group_id):
+    record = get_account_group_membership(account_id, game_group_id)
+    if not record and int(game_group_id or 0) == int(get_game_group_id() or 0):
+        record = get_account_target_membership(account_id)
+    return bool(
+        int((record or {}).get("game_group_id") or 0) == int(game_group_id or 0)
+        and str((record or {}).get("status") or "") == "not_member"
+    )
+
+
+def _game_group_route_candidates(send_as_id, account_id, *, now=None):
+    current = float(now or time.time())
+    routes = []
+    primary_group_id = int(get_game_group_id() or 0)
+    routed_group_ids = get_game_group_ids()
+    configured_group_ids = routed_group_ids if routed_group_ids and int(routed_group_ids[0] or 0) == primary_group_id else [primary_group_id]
+    for group_id in dict.fromkeys(configured_group_ids):
+        group_id = int(group_id or 0)
+        if group_id == 0 or _account_group_is_blocked(account_id, group_id):
+            continue
+        invalid_until = _send_as_peer_invalid_until(
+            send_as_id,
+            account_id=account_id,
+            game_group_id=group_id,
+            now=current,
+        )
+        if invalid_until > current:
+            continue
+        routes.append((group_id, int(get_game_group_topic_id(group_id) or 0)))
+    return routes
+
+
+def _game_group_route_backoff_until(send_as_id, account_id, *, now=None):
+    current = float(now or time.time())
+    blocked_until = 0.0
+    for group_id in get_game_group_ids():
+        group_id = int(group_id or 0)
+        if group_id == 0 or _account_group_is_blocked(account_id, group_id):
+            continue
+        blocked_until = max(
+            blocked_until,
+            _send_as_peer_invalid_until(
+                send_as_id,
+                account_id=account_id,
+                game_group_id=group_id,
+                now=current,
+            ),
+        )
+    return blocked_until if blocked_until > current else 0.0
+
+
 async def _account_target_group_blocks_send(command, *, send_as_id, account_id):
-    game_group_id = int(get_game_group_id() or 0)
-    if not is_account_target_group_blocked(account_id, game_group_id):
+    if _game_group_route_candidates(send_as_id, account_id):
         return False
-    record = get_account_target_membership(account_id)
+    route_backoff_until = _game_group_route_backoff_until(send_as_id, account_id)
+    if route_backoff_until > 0:
+        _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
+        _record_game_send_block(
+            send_as_id,
+            command,
+            "send_as_peer_invalid",
+            "主备游戏群频道身份均处于发送退避",
+            definitely_unsent=True,
+            blocked_until=route_backoff_until,
+        )
+        return True
+    group_ids = get_game_group_ids()
+    primary_group_id = int(group_ids[0] if group_ids else get_game_group_id() or 0)
+    record = get_account_group_membership(account_id, primary_group_id) or get_account_target_membership(account_id)
     _close_guard_for_unsent_command(command, send_as_id, "account_not_in_target_group")
     await _log_account_target_group_blocked(
         command,
@@ -3745,6 +3976,8 @@ def _finalize_game_command_sent(
     append_sent_log=True,
     recovered=False,
     send_started_at=0,
+    game_group_id=None,
+    topic_id=None,
 ):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
@@ -3761,6 +3994,8 @@ def _finalize_game_command_sent(
             track=track,
             intent=send_intent,
             sent_at=sent_at,
+            game_group_id=game_group_id,
+            topic_id=topic_id,
         )
     msg = SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
     action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
@@ -3785,6 +4020,8 @@ def _finalize_game_command_sent(
                 "retry": 0,
                 "timeout": timeout,
                 "reply_to_msg_id": int(reply_to or 0),
+                "chat_id": int(game_group_id if game_group_id is not None else get_game_group_id() or 0),
+                "topic_id": int(topic_id if topic_id is not None else get_game_topic_id() or 0),
                 "priority": send_priority,
                 "max_retry": retry_limit,
             }
@@ -3794,7 +4031,13 @@ def _finalize_game_command_sent(
     note_game_command_sent(command, sent_at=sent_at, priority=send_priority, msg_id=msg_id)
     family = resolve_reply_family(command)
     if family:
-        track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
+        track_reply_chain_message(
+            msg_id,
+            send_as_id,
+            family,
+            root_msg_id=msg_id,
+            chat_id=int(game_group_id if game_group_id is not None else get_game_group_id() or 0),
+        )
     _notify_game_command_sent_observers(
         command,
         send_as_id,
@@ -3806,10 +4049,16 @@ def _finalize_game_command_sent(
         max_retry=max_retry,
         recovered=bool(recovered),
         send_elapsed_sec=max(0.0, sent_at - float(send_started_at or sent_at)),
+        game_group_id=int(game_group_id if game_group_id is not None else get_game_group_id() or 0),
+        topic_id=int(topic_id if topic_id is not None else get_game_topic_id() or 0),
         **send_intent,
     )
     _clear_game_send_block(send_as_id, command)
-    _clear_send_as_peer_invalid(send_as_id)
+    _clear_send_as_peer_invalid(
+        send_as_id,
+        account_id=get_identity_account(send_as_id),
+        game_group_id=game_group_id,
+    )
     note_shadow_attempt_sent(msg_id, sent_at=sent_at)
     return msg
 
@@ -3926,7 +4175,8 @@ async def _send_game_command_impl(
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     send_as_id = int(send_as_id)
-    topic_id = get_game_topic_id()
+    game_group_id = int(get_game_group_id() or 0)
+    topic_id = int(get_game_group_topic_id(game_group_id) or 0)
     send_priority = _normalize_send_priority(command, priority=priority)
     account_id = int(get_identity_account(send_as_id) or 0)
     send_request_started_at = 0.0
@@ -4006,19 +4256,6 @@ async def _send_game_command_impl(
             _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
             return None
 
-        send_as_invalid_until = _send_as_peer_invalid_until(send_as_id, account_id=account_id)
-        if send_as_invalid_until > 0:
-            _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
-            _record_game_send_block(
-                send_as_id,
-                command,
-                "send_as_peer_invalid",
-                f"频道身份不可用于当前游戏群，退避至 {fmt_abs_ts(send_as_invalid_until)}",
-                definitely_unsent=True,
-                blocked_until=send_as_invalid_until,
-            )
-            return None
-
         if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
             await _log_weakness_blocked(command, send_as_id=send_as_id)
             _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
@@ -4081,17 +4318,8 @@ async def _send_game_command_impl(
             )
             _record_game_send_block(send_as_id, command, "account_client_missing", reason)
             return None
-        game_group_id = get_game_group_id()
-        if not game_group_id:
+        if not get_game_group_ids():
             raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
-        reply_to_spec = None
-        if reply_to:
-            reply_to_spec = types.InputReplyToMessage(
-                reply_to_msg_id=int(reply_to),
-                top_msg_id=int(topic_id or 0) or None,
-            )
-        elif topic_id > 0:
-            reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
 
         effective_queue_timeout = _effective_send_queue_timeout(
             send_priority,
@@ -4149,18 +4377,6 @@ async def _send_game_command_impl(
             if flood_until > 0:
                 await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
                 _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
-                return None
-            send_as_invalid_until = _send_as_peer_invalid_until(send_as_id, account_id=account_id)
-            if send_as_invalid_until > 0:
-                _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
-                _record_game_send_block(
-                    send_as_id,
-                    command,
-                    "send_as_peer_invalid",
-                    f"频道身份不可用于当前游戏群，退避至 {fmt_abs_ts(send_as_invalid_until)}",
-                    definitely_unsent=True,
-                    blocked_until=send_as_invalid_until,
-                )
                 return None
             if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
                 await _log_weakness_blocked(command, send_as_id=send_as_id)
@@ -4237,33 +4453,78 @@ async def _send_game_command_impl(
                                 )
                             _record_game_send_block(send_as_id, command, "account_client_not_ready", reason)
                             return None
-                    rpc_stage = "resolve_group"
-                    try:
-                        peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-                    except ValueError:
-                        rpc_stage = "refresh_dialogs"
-                        await asyncio.wait_for(active_client.get_dialogs(), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-                        rpc_stage = "resolve_group_after_dialogs"
-                        peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-                    rpc_stage = "resolve_send_as"
-                    send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-                    rpc_stage = "send_message"
-                    send_request_started_at = time.time()
-                    send_task = asyncio.create_task(
-                        active_client(
-                            functions.messages.SendMessageRequest(
-                                peer=peer,
-                                message=command,
-                                reply_to=reply_to_spec,
-                                send_as=send_as_peer,
+                    routes = _game_group_route_candidates(send_as_id, account_id)
+                    if not routes:
+                        _record_game_send_block(
+                            send_as_id,
+                            command,
+                            "account_not_in_target_group",
+                            "主备游戏群均不可用",
+                            definitely_unsent=True,
+                        )
+                        return None
+                    result = None
+                    send_task = None
+                    for route_index, (game_group_id, topic_id) in enumerate(routes):
+                        reply_to_spec = None
+                        if reply_to:
+                            reply_to_spec = types.InputReplyToMessage(
+                                reply_to_msg_id=int(reply_to),
+                                top_msg_id=int(topic_id or 0) or None,
                             )
-                        ),
-                    )
-                    send_task.add_done_callback(_consume_background_task_result)
-                    result = await asyncio.wait_for(
-                        asyncio.shield(send_task),
-                        timeout=GAME_SEND_RPC_TIMEOUT_SEC,
-                    )
+                        elif topic_id > 0:
+                            reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
+                        rpc_stage = "resolve_group"
+                        try:
+                            try:
+                                peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                            except ValueError:
+                                rpc_stage = "refresh_dialogs"
+                                await asyncio.wait_for(active_client.get_dialogs(), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                                rpc_stage = "resolve_group_after_dialogs"
+                                peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                            rpc_stage = "resolve_send_as"
+                            send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                            rpc_stage = "send_message"
+                            send_request_started_at = time.time()
+                            send_task = asyncio.create_task(
+                                active_client(
+                                    functions.messages.SendMessageRequest(
+                                        peer=peer,
+                                        message=command,
+                                        reply_to=reply_to_spec,
+                                        send_as=send_as_peer,
+                                    )
+                                ),
+                            )
+                            send_task.add_done_callback(_consume_background_task_result)
+                            result = await asyncio.wait_for(
+                                asyncio.shield(send_task),
+                                timeout=GAME_SEND_RPC_TIMEOUT_SEC,
+                            )
+                            break
+                        except SendAsPeerInvalidError as route_error:
+                            send_request_started_at = 0.0
+                            await _handle_send_as_peer_invalid(
+                                command,
+                                send_as_id=send_as_id,
+                                account_id=account_id,
+                                game_group_id=game_group_id,
+                                error=route_error,
+                            )
+                            if route_index + 1 < len(routes):
+                                continue
+                            return None
+                        except Exception as route_error:
+                            membership_record = _persist_account_target_not_member(
+                                account_id,
+                                route_error,
+                                game_group_id=game_group_id,
+                            )
+                            if membership_record and route_index + 1 < len(routes):
+                                send_request_started_at = 0.0
+                                continue
+                            raise
             except FloodWaitError as flood_err:
                 flood_until = _mark_account_flood_wait(account_id, int(flood_err.seconds), now=time.time())
                 await send_audit_log(
@@ -4282,7 +4543,7 @@ async def _send_game_command_impl(
                         (
                             f"⚠️ 指令发送准备超时未发送：{_truncate_log_text(command, limit=48)} | "
                             f">{GAME_SEND_RPC_TIMEOUT_SEC}s | stage={rpc_stage} | "
-                            f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                            f"acc={account_id} group={game_group_id} topic={topic_id}"
                         ),
                         scope="identity",
                         send_as_id=send_as_id,
@@ -4315,6 +4576,8 @@ async def _send_game_command_impl(
                         append_sent_log=str(recovered.get("event_type") or "") != "sent",
                         recovered=True,
                         send_started_at=send_request_started_at,
+                        game_group_id=game_group_id,
+                        topic_id=topic_id,
                     )
                     if msg is not None:
                         await send_audit_log(
@@ -4332,7 +4595,7 @@ async def _send_game_command_impl(
                     (
                         f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
                         f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
-                        f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                        f"acc={account_id} group={game_group_id} topic={topic_id}"
                     ),
                     scope="identity",
                     send_as_id=send_as_id,
@@ -4357,6 +4620,8 @@ async def _send_game_command_impl(
                 max_retry=max_retry,
                 send_intent=send_intent,
                 send_started_at=send_request_started_at,
+                game_group_id=game_group_id,
+                topic_id=topic_id,
             )
             return msg
     except SendAsPeerInvalidError as e:
@@ -4364,6 +4629,7 @@ async def _send_game_command_impl(
             command,
             send_as_id=send_as_id,
             account_id=account_id,
+            game_group_id=game_group_id,
             error=e,
         )
         return None
@@ -4380,7 +4646,7 @@ async def _send_game_command_impl(
             (
                 f"⏳ 指令排队超时未发送：{_truncate_log_text(command, limit=48)} | "
                 f">{int(float(effective_queue_timeout or queue_timeout or 0))}s | "
-                f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                f"acc={account_id} group={game_group_id} topic={topic_id}"
             ),
             scope="identity",
             send_as_id=send_as_id,
@@ -4393,7 +4659,7 @@ async def _send_game_command_impl(
             (
                 f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
                 f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
-                f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                f"acc={account_id} group={game_group_id} topic={topic_id}"
             ),
             scope="identity",
             send_as_id=send_as_id,
@@ -4408,10 +4674,11 @@ async def _send_game_command_impl(
                 command,
                 send_as_id=send_as_id,
                 account_id=account_id,
+                game_group_id=game_group_id,
                 error=e,
             )
             return None
-        membership_record = _persist_account_target_not_member(account_id, e)
+        membership_record = _persist_account_target_not_member(account_id, e, game_group_id=game_group_id)
         if membership_record:
             _close_guard_for_unsent_command(command, send_as_id, "account_not_in_target_group")
             await _log_account_target_group_blocked(
@@ -4446,7 +4713,7 @@ async def _send_game_command_impl(
             (
                 f"❌ 指令发送失败：{_truncate_log_text(command, limit=48)} | "
                 f"{_truncate_log_text(e, limit=72)} | "
-                f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                f"acc={account_id} group={game_group_id} topic={topic_id}"
             ),
             scope="identity",
             send_as_id=send_as_id,
@@ -4662,7 +4929,7 @@ def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
     if sent_at <= 0:
         sent_at = max(0.0, now - max(300, RETRY_MAX_SEC + 60))
     lookback_sec = max(300, min(6 * 3600, int(max(0.0, now - sent_at) + 180)))
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_id = int(item.get("chat_id") or get_game_group_id() or 0)
     replies = find_message_log_replies(
         msg_id,
         now,

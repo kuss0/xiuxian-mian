@@ -59,6 +59,55 @@ class RuntimeReplyContextTests(unittest.TestCase):
         self.assertEqual("sent_message_log", context["matched_via"])
         self.assertEqual(7001, context["root_msg_id"])
 
+    def test_reply_context_filters_same_message_id_by_chat(self):
+        first_identity = self._register_identity(991201)
+        second_identity = self._register_identity(991202)
+        day = runtime.datetime.now(runtime.TZ_LOCAL).strftime("%Y-%m-%d")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            path = Path(tmpdir) / f"{day}.log"
+            path.write_text(
+                "\n".join([
+                    json.dumps({
+                        "event_type": "sent", "message_id": 7001, "chat_id": -1001,
+                        "sender_id": first_identity, "text": ".天机盘", "family": "tianxing_panel",
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "event_type": "sent", "message_id": 7001, "chat_id": -1002,
+                        "sender_id": second_identity, "text": ".世界boss", "family": "world_boss_status",
+                    }, ensure_ascii=False),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1002)
+
+        self.assertEqual(second_identity, context["send_as_id"])
+        self.assertEqual("world_boss_status", context["family"])
+
+    def test_sent_message_chat_lookup_filters_same_message_id_by_identity(self):
+        first_identity = self._register_identity(991201)
+        second_identity = self._register_identity(991202)
+        day = runtime.datetime.now(runtime.TZ_LOCAL).strftime("%Y-%m-%d")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            path = Path(tmpdir) / f"{day}.log"
+            path.write_text(
+                "\n".join([
+                    json.dumps({
+                        "event_type": "sent", "message_id": 7001, "chat_id": -1001,
+                        "sender_id": first_identity, "text": ".天机盘",
+                    }, ensure_ascii=False),
+                    json.dumps({
+                        "event_type": "sent", "message_id": 7001, "chat_id": -1002,
+                        "sender_id": second_identity, "text": ".世界boss",
+                    }, ensure_ascii=False),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            first_chat = runtime.get_sent_message_chat_id(7001, send_as_id=first_identity)
+            second_chat = runtime.get_sent_message_chat_id(7001, send_as_id=second_identity)
+
+        self.assertEqual(-1001, first_chat)
+        self.assertEqual(-1002, second_chat)
+
     def test_reply_context_does_not_recover_manual_message_from_log(self):
         identity_id = self._register_identity(991201)
         payload = {

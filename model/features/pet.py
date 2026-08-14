@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, CMD_PET_FORMATION, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..persistence import save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, get_pet_formation_command, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -33,6 +33,10 @@ PET_WARM_CD = 6 * 3600
 PET_FORMATION_BUFF_SEC = 12 * 3600
 PET_FORMATION_RETRY_BACKOFF_SEC = 15 * 60
 PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC = 5 * 60
+
+
+def _pet_send_was_definitely_unsent(command):
+    return classify_game_send_block(get_current_identity_id(), command).get("status") == "unsent"
 
 
 def _set_pet_next_time(next_time):
@@ -349,7 +353,7 @@ async def _recover_pet_formation_reply_from_message_log(now):
         sender_id=identity_id,
         start_ts=max(0.0, float(now or 0) - PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC),
         lookahead_sec=5,
-        chat_id=get_game_group_id(),
+        chat_id=0,
         command_predicate=lambda entry: (
             str((entry or {}).get("event_type") or "") == "sent"
             and str((entry or {}).get("text") or "").strip() == command
@@ -359,14 +363,19 @@ async def _recover_pet_formation_reply_from_message_log(now):
     command_msg_id = int((sent or {}).get("message_id") or 0)
     if command_msg_id <= 0:
         return False
+    command_chat_id = int((sent or {}).get("chat_id") or get_sent_message_chat_id(
+        command_msg_id,
+        default=get_game_group_id(),
+        send_as_id=identity_id,
+    ))
     replies = find_message_log_replies(
         command_msg_id,
         now,
         lookback_sec=PET_FORMATION_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=5,
+        chat_id=command_chat_id,
         predicate=lambda entry: (
             str((entry or {}).get("event_type") or "") in {"message", "edit"}
-            and int((entry or {}).get("chat_id") or 0) == int(get_game_group_id() or 0)
             and bool((entry or {}).get("sender_is_bot"))
         ),
     )
@@ -414,7 +423,7 @@ async def _run_pet_scheduler(now):
         )
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_formation_command()):
+            if _pet_send_was_definitely_unsent(get_pet_formation_command()):
                 state["pet_formation_last_error"] = ""
                 state["pet_formation_retry_count"] = 0
                 _set_pet_formation_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
@@ -437,7 +446,7 @@ async def _run_pet_scheduler(now):
         msg = await send_game_command(get_pet_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_command()):
+            if _pet_send_was_definitely_unsent(get_pet_command()):
                 state["pet_last_error"] = ""
                 _set_pet_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
                 return
@@ -458,7 +467,7 @@ async def _run_pet_scheduler(now):
         msg = await send_game_command(get_pet_trial_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_trial_command()):
+            if _pet_send_was_definitely_unsent(get_pet_trial_command()):
                 state["pet_trial_last_error"] = ""
                 _set_pet_trial_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
                 return
@@ -479,7 +488,7 @@ async def _run_pet_scheduler(now):
         msg = await send_game_command(get_pet_warm_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
-            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_warm_command()):
+            if _pet_send_was_definitely_unsent(get_pet_warm_command()):
                 state["pet_warm_last_error"] = ""
                 _set_pet_warm_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
                 return

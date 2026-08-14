@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
-from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_dungeon_join_run_state,
     get_game_bot_ids,
@@ -1118,11 +1118,15 @@ def _release_join_reservation(identity_id, dungeon_id):
         _join_keys.pop(key, None)
 
 
-def _has_logged_join_reply(first_msg_id, now):
+def _has_logged_join_reply(first_msg_id, now, *, identity_id=0):
     first_msg_id = int(first_msg_id or 0)
     if first_msg_id <= 0:
         return False
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_id = get_sent_message_chat_id(
+        first_msg_id,
+        default=get_game_group_id(),
+        send_as_id=identity_id,
+    )
     bot_ids = {int(bot_id or 0) for bot_id in get_game_bot_ids() if int(bot_id or 0) > 0}
 
     def is_game_bot_reply(entry):
@@ -1139,6 +1143,7 @@ def _has_logged_join_reply(first_msg_id, now):
             now,
             lookback_sec=DUNGEON_JOIN_LOG_REPLY_LOOKBACK_SEC,
             lookahead_sec=5,
+            chat_id=game_group_id,
             predicate=is_game_bot_reply,
         )
     )
@@ -1158,7 +1163,7 @@ def _should_fast_retry_join(identity_id, dungeon_id, first_msg_id, now):
         return False
     if first_msg_id and int(record.get("pending_msg_id") or 0) != int(first_msg_id or 0):
         return False
-    if _has_logged_join_reply(first_msg_id, now):
+    if _has_logged_join_reply(first_msg_id, now, identity_id=identity_id):
         return False
     if float(record.get("pending_until") or 0) <= float(now or 0):
         return False

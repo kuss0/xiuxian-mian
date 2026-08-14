@@ -12,7 +12,7 @@ from ..message_log_recovery import (
     sender_matches_identity,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     REALM_SORT_ORDER,
     get_current_identity_id,
@@ -1084,11 +1084,16 @@ def _find_consuming_duel_report(last_msg_id, set_at, now):
         return None
 
     report = None
+    command_chat_id = get_sent_message_chat_id(
+        last_msg_id,
+        default=get_game_group_id(),
+        send_as_id=get_current_identity_id(),
+    )
     for entry in reversed(_duel_day_log_entries(now)):
         if int((entry or {}).get("message_id") or 0) != int(last_msg_id or 0):
             continue
         entry_chat_id = int((entry or {}).get("chat_id") or 0)
-        if entry_chat_id and entry_chat_id != int(get_game_group_id() or 0):
+        if entry_chat_id and entry_chat_id != int(command_chat_id or 0):
             continue
         if not _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")):
             continue
@@ -1103,7 +1108,7 @@ def _find_consuming_duel_report(last_msg_id, set_at, now):
             now,
             lookback_sec=DUEL_TIANXING_RECONCILE_LOOKBACK_SEC,
             lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
-            chat_id=get_game_group_id(),
+            chat_id=command_chat_id,
             predicate=lambda entry: _is_duel_prediction_consuming_result(str((entry or {}).get("text") or "")),
         )
 
@@ -1343,7 +1348,7 @@ def _find_loadout_reply(now, predicate):
         now,
         lookback_sec=DUEL_LOADOUT_RECOVERY_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(reply_to_msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=lambda entry: predicate(str((entry or {}).get("text") or "")),
     )
     if replies:
@@ -2833,7 +2838,7 @@ async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
         now,
         lookback_sec=DUEL_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(reply_to_msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_is_duel_reply_log_entry,
     )
     for entry in replies:

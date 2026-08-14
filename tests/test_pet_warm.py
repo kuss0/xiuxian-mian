@@ -126,6 +126,32 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("", state_module.state[error_key])
                 self.assertEqual({}, state_module.state["pending_tasks"])
 
+    async def test_pet_touch_definitive_unsent_backoffs_without_failure(self):
+        send_as_id = 4319360789
+        now = 5000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, pet_name="青竹蜂云剑（神雷版）")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_enabled"] = True
+            state_module.state["next_pet_time"] = now - 1
+            with (
+                patch.object(pet.random, "uniform", return_value=600),
+                patch.object(pet.time, "time", return_value=now),
+                patch.object(pet, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(
+                    pet,
+                    "classify_game_send_block",
+                    return_value={"status": "unsent", "code": "send_as_peer_invalid"},
+                ),
+                patch.object(pet, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await pet.run_pet_scheduler(now)
+
+            self.assertEqual("", state_module.state["pet_last_error"])
+            self.assertEqual(now + 600, state_module.state["next_pet_time"])
+            audit_mock.assert_not_awaited()
+
     async def test_pet_touch_success_reply_confirms_and_clears_pending(self):
         send_as_id = 8659059189
         now = 6000.0

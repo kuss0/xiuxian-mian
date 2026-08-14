@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from ..config import CMD_HEHUAN_DUAL, GAME_TOPIC_ID, MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
-from ..runtime import get_last_game_send_block, send_audit_log, send_game_command
+from ..runtime import get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
@@ -1236,7 +1236,7 @@ def _recover_hehuan_pending_from_message_log(observed, now):
         now,
         lookback_sec=HEHUAN_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(pending_msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_is_hehuan_recoverable_reply_log_entry,
     )
     if not replies:

@@ -167,6 +167,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module.set_world_boss_run_state({})
+        state_module.set_world_boss_rotation_state({})
 
     def tearDown(self):
         task = getattr(world_boss, "_WORLD_BOSS_ROUND_TASK", None)
@@ -1455,6 +1456,73 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         config = world_boss._world_boss_miniapp_auto_config()
 
         self.assertEqual({301299112: 2}, config["window_skip_by_identity"])
+
+    def test_rotation_selects_current_identity_and_uses_full_attacks(self):
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="吧唧甲", world_boss_enabled=False)
+        self._register(second_id, label="吧唧乙", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青玉元",
+            "world_boss_auto_window_skip_by_identity": {str(first_id): 2},
+        }
+
+        selected = world_boss.select_world_boss_miniapp_entry_identities()
+        config = world_boss._world_boss_miniapp_auto_config()
+
+        self.assertEqual(first_id, selected[0])
+        self.assertNotIn(first_id, config["window_skip_by_identity"])
+
+    async def test_explicit_target_reward_advances_rotation_once(self):
+        now = 1_781_319_500.0
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="baji_one", world_boss_enabled=False)
+        self._register(second_id, label="baji_two", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青玉元",
+        }
+        parsed = world_boss.parse_world_boss_text(
+            "【世界通告｜真仙试锋击退】\n- 参战：12 人\n稀有掉落\n- @baji_one 获得 斩青玉元"
+        )
+
+        with patch.object(world_boss, "send_audit_log", new=AsyncMock()):
+            await world_boss._close_event(parsed, now)
+            await world_boss._close_event(parsed, now + 1)
+
+        record = state_module.get_world_boss_rotation_state()["accounts"][str(account_id)]
+        self.assertEqual([first_id], record["completed_identity_ids"])
+        self.assertEqual(second_id, record["current_identity_id"])
+
+    async def test_title_without_drop_does_not_advance_rotation(self):
+        now = 1_781_319_500.0
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="baji_one", world_boss_enabled=False)
+        self._register(second_id, label="baji_two", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青玉元",
+        }
+        parsed = world_boss.parse_world_boss_text("【世界通告｜真仙试锋斩青元者】\n- 参战：12 人")
+
+        with patch.object(world_boss, "send_audit_log", new=AsyncMock()):
+            await world_boss._close_event(parsed, now)
+
+        record = world_boss._rotation_account_record(account_id)
+        self.assertEqual([], record["completed_identity_ids"])
+        self.assertEqual(first_id, record["current_identity_id"])
 
     async def test_interrupted_miniapp_task_is_not_automatically_resumed(self):
         now = 1_781_319_500.0

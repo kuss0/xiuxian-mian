@@ -15,7 +15,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, has_active_reply_dispatch, send_game_command
+from ..runtime import console_log, get_sent_message_chat_id, has_active_reply_dispatch, send_game_command
 from ..state import (
     get_current_identity_id,
     get_formation_run_state,
@@ -531,7 +531,6 @@ def _cleanup_run_state(now=None):
 
 def _recover_timed_out_formation_replies(now):
     now = float(now or time.time())
-    game_group_id = int(get_game_group_id() or 0)
     snapshot = _normalize_run_state()
     recovered = 0
     for identity_key, attempts in list((snapshot.get("attempted_assists") or {}).items()):
@@ -550,15 +549,18 @@ def _recover_timed_out_formation_replies(now):
                 invite_msg_id = int(invite_key)
             except (TypeError, ValueError):
                 invite_msg_id = 0
+            game_group_id = get_sent_message_chat_id(
+                command_msg_id,
+                default=get_game_group_id(),
+                send_as_id=identity_id,
+            )
             entries = find_message_log_replies(
                 command_msg_id,
                 now,
                 lookback_sec=max(300, int(now - float((attempt or {}).get("sent_at") or deadline) + 60)),
                 lookahead_sec=5,
-                predicate=lambda entry: (
-                    str((entry or {}).get("event_type") or "") in {"message", "edit"}
-                    and int((entry or {}).get("chat_id") or 0) == game_group_id
-                ),
+                chat_id=game_group_id,
+                predicate=lambda entry: str((entry or {}).get("event_type") or "") in {"message", "edit"},
             )
             invite_entry = find_message_log_message(
                 invite_msg_id,

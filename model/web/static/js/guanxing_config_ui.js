@@ -17,12 +17,29 @@
     input.value = Number.isFinite(value) ? String(value) : '10';
   }
 
+  function fillGameGroupRoute(form) {
+    const root = form || document.getElementById('basic-config-form');
+    if (!root) return;
+    const route = getSnapshotValue('game_group_route_config', {}) || {};
+    const backups = Array.isArray(route.backup_group_ids) ? route.backup_group_ids : [];
+    const backupId = Number(backups[0] || 0);
+    const topics = route.topic_id_by_group || {};
+    const backupInput = root.querySelector('input[name="backup_game_group_id"]');
+    const backupTopicInput = root.querySelector('input[name="backup_game_topic_id"]');
+    if (backupInput) backupInput.value = backupId ? String(backupId) : '';
+    if (backupTopicInput) {
+      const topicId = Number(topics[String(backupId)] || 0);
+      backupTopicInput.value = topicId > 0 ? String(topicId) : '';
+    }
+  }
+
   const originalOpenBasicConfigModal = window.openBasicConfigModal;
   window.openBasicConfigModal = function () {
     if (typeof originalOpenBasicConfigModal === 'function') {
       originalOpenBasicConfigModal.apply(this, arguments);
     }
     fillGuanxingShiftDelay();
+    fillGameGroupRoute();
   };
 
   async function submitBasicConfigWithGuanxingDelay(event) {
@@ -33,6 +50,8 @@
       game_group_id: form.querySelector('input[name="game_group_id"]').value,
       game_bot_ids: form.querySelector('input[name="game_bot_ids"]').value,
       game_topic_id: form.querySelector('input[name="game_topic_id"]').value,
+      backup_game_group_id: form.querySelector('input[name="backup_game_group_id"]').value,
+      backup_game_topic_id: form.querySelector('input[name="backup_game_topic_id"]').value,
       auto_delete_sent_messages: !!form.querySelector('input[name="auto_delete_sent_messages"]').checked,
       tiandao_judgement_enabled: !!form.querySelector('input[name="tiandao_judgement_enabled"]').checked,
       guanxing_monitor_enabled: !!form.querySelector('input[name="guanxing_monitor_enabled"]').checked,

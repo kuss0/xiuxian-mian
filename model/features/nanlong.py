@@ -17,7 +17,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
@@ -510,7 +510,7 @@ async def _recover_nanlong_pending_reply_from_log(now):
         now,
         lookback_sec=NANLONG_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=NANLONG_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_is_nanlong_recovery_log_entry,
     )
     if not replies:

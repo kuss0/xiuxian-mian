@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_send_as_profile, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
@@ -277,6 +277,11 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
     if reply_to_msg_id <= 0:
         return False
     reply_to = SimpleNamespace(id=reply_to_msg_id, raw_text=CMD_WENDAO)
+    reply_chat_id = get_sent_message_chat_id(
+        reply_to_msg_id,
+        default=get_game_group_id(),
+        send_as_id=get_current_identity_id(),
+    )
     pending_result_msg_id = int(state.get("wendao_pending_result_msg_id", 0) or 0)
     if pending_result_msg_id > 0:
         entry = find_message_log_message(
@@ -284,7 +289,7 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
             now,
             lookback_sec=WENDAO_LOG_REPLAY_LOOKBACK_SEC,
             lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
-            chat_id=get_game_group_id(),
+            chat_id=reply_chat_id,
             predicate=_is_wendao_reply_log_entry,
         )
         if entry and not _is_same_pending_ack(entry, pending_result_msg_id):
@@ -302,7 +307,7 @@ async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
         now,
         lookback_sec=WENDAO_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
+        chat_id=reply_chat_id,
         predicate=_is_wendao_reply_log_entry,
     )
     handled_any = False

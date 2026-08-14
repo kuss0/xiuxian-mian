@@ -246,6 +246,24 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(920001, payload["message_id"])
         self.assertEqual(".闯塔", payload["text"])
 
+    def test_append_sent_message_log_uses_actual_route(self):
+        sent_at = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(runtime, "MESSAGES_DIR", tmpdir), \
+                patch.object(runtime, "cleanup_message_logs"):
+            runtime._append_sent_message_log(
+                920002,
+                ".天机盘",
+                301299112,
+                sent_at=sent_at,
+                game_group_id=-1001680975844,
+                topic_id=7310786,
+            )
+            payload = json.loads(next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").strip())
+
+        self.assertEqual(-1001680975844, payload["chat_id"])
+        self.assertEqual(7310786, payload["topic_id"])
+
     async def test_identity_gap_applies_after_regular_event_send(self):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = 0.0
@@ -389,6 +407,212 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         health = state_module.get_channel_send_as_health()
         self.assertNotEqual("closed", health.get("status"))
 
+    async def test_primary_definitive_send_as_failure_fails_over_once_to_backup(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_id(-1002083016447)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": -1002083016447,
+            "backup_group_ids": [-1001680975844],
+            "topic_id_by_group": {"-1002083016447": 0, "-1001680975844": 7310786},
+        })
+        client = _FakeClient([runtime.SendAsPeerInvalidError(request=None), "ok"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            result = await runtime.send_game_command(
+                ".天机盘", send_as_id=send_as_id, priority="probe", track=False
+            )
+
+        self.assertEqual(910001, result.id)
+        self.assertEqual(2, len(client.sent_requests))
+        self.assertEqual(-1001680975844, int(client.sent_requests[-1].peer.id))
+
+    async def test_repeated_primary_send_as_failures_back_off_account_cohort_to_backup(self):
+        account_id = 7001
+        identity_ids = [301299111, 301299112, 301299113]
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        for identity_id in identity_ids:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.set_identity_account(identity_id, account_id)
+        state_module.set_game_group_id(primary_group_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+        client = _FakeClient([
+            runtime.SendAsPeerInvalidError(request=None), "ok",
+            runtime.SendAsPeerInvalidError(request=None), "ok",
+            runtime.SendAsPeerInvalidError(request=None), "ok",
+            "ok",
+        ])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            for identity_id in identity_ids:
+                result = await runtime.send_game_command(
+                    ".天机盘", send_as_id=identity_id, priority="probe", track=False
+                )
+                self.assertIsNotNone(result)
+            sibling_id = 301299114
+            state_module.ensure_identity_registered(sibling_id)
+            state_module.set_identity_account(sibling_id, account_id)
+            result = await runtime.send_game_command(
+                ".观命", send_as_id=sibling_id, priority="probe", track=False
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(7, len(client.sent_requests))
+        self.assertEqual(backup_group_id, int(client.sent_requests[-1].peer.id))
+        self.assertNotEqual("closed", state_module.get_channel_send_as_health().get("status"))
+
+    async def test_all_route_cohort_failures_freeze_channel_identities(self):
+        account_id = 7001
+        identity_ids = [301299111, 301299112, 301299113]
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        for identity_id in [account_id, *identity_ids]:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.set_identity_account(identity_id, account_id)
+        state_module.set_game_group_id(primary_group_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+        client = _FakeClient([
+            runtime.SendAsPeerInvalidError(request=None),
+            runtime.SendAsPeerInvalidError(request=None),
+        ] * len(identity_ids))
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            for identity_id in identity_ids:
+                result = await runtime.send_game_command(
+                    ".天机盘", send_as_id=identity_id, priority="probe", track=False
+                )
+                self.assertIsNone(result)
+
+        health = state_module.get_channel_send_as_health()
+        self.assertEqual("closed", health["status"])
+        self.assertEqual(primary_group_id, health["game_group_id"])
+        self.assertEqual(identity_ids, health["restore_identity_ids"])
+        self.assertEqual(identity_ids, health["frozen_identity_ids"])
+        self.assertTrue(all(not state_module.get_identity_enabled(i) for i in identity_ids))
+        self.assertEqual(2 * len(identity_ids), len(client.sent_requests))
+
+    async def test_all_routes_in_send_as_backoff_are_not_reported_as_not_member(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_id(primary_group_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+        now = runtime.time.time()
+        runtime._SEND_AS_PEER_INVALID_UNTIL[(send_as_id, primary_group_id)] = now + 1800
+        runtime._SEND_AS_PEER_INVALID_UNTIL[(send_as_id, backup_group_id)] = now + 1800
+
+        with patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+            blocked = await runtime._account_target_group_blocks_send(
+                ".引道 水",
+                send_as_id=send_as_id,
+                account_id=account_id,
+            )
+
+        self.assertTrue(blocked)
+        send_block = runtime.classify_game_send_block(send_as_id, ".引道 水")
+        self.assertEqual("send_as_peer_invalid", send_block["code"])
+        self.assertEqual("unsent", send_block["status"])
+        self.assertGreater(send_block["blocked_until"], now)
+        audit_mock.assert_not_awaited()
+
+    async def test_primary_timeout_does_not_fail_over(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_id(-1002083016447)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": -1002083016447,
+            "backup_group_ids": [-1001680975844],
+            "topic_id_by_group": {"-1002083016447": 0, "-1001680975844": 7310786},
+        })
+        client = _FakeClient(["timeout"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.02),
+                patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 0.0),
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            result = await runtime.send_game_command(
+                ".天机盘", send_as_id=send_as_id, priority="probe", track=False
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(1, len(client.sent_requests))
+
     async def test_distinct_send_as_failures_close_the_whole_channel(self):
         account_id = 7001
         identity_ids = [301299111, 301299112, 301299113]
@@ -474,7 +698,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         account_id = 7001
         state_module.ensure_identity_registered(send_as_id)
         state_module.set_identity_account(send_as_id, account_id)
-        runtime._SEND_AS_PEER_INVALID_UNTIL[send_as_id] = runtime.time.time() + 1800
+        runtime._SEND_AS_PEER_INVALID_UNTIL[(send_as_id, 123456)] = runtime.time.time() + 1800
         runtime._CHANNEL_SEND_AS_INVALID_UNTIL[(account_id, 123456)] = runtime.time.time() + 1800
         client = _FakeClient(["ok"])
 
@@ -509,7 +733,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(910001, result.id)
-        self.assertNotIn(send_as_id, runtime._SEND_AS_PEER_INVALID_UNTIL)
+        self.assertNotIn((send_as_id, 123456), runtime._SEND_AS_PEER_INVALID_UNTIL)
         self.assertNotIn((account_id, 123456), runtime._CHANNEL_SEND_AS_INVALID_UNTIL)
 
     async def test_send_rpc_timeout_recovers_message_id_from_message_log(self):

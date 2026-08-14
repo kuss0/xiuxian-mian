@@ -22,6 +22,7 @@ from .app_message_log import (
 )
 from .app_runtime import (
     _claim_runtime_event,
+    _claim_runtime_semantic_event,
     _get_event_reply_header_msg_id,
     _has_runtime_message_consumed,
     _mark_runtime_message_consumed,
@@ -225,6 +226,8 @@ from .runtime import (
     clear_pending_by_reply,
     _clear_channel_send_as_invalid_observations,
     _clear_send_as_peer_invalid,
+    _mark_channel_send_as_cohort_invalid,
+    _mark_send_as_peer_invalid,
     console_log,
     GAME_SEND_RPC_TIMEOUT_SEC,
     GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC,
@@ -259,6 +262,8 @@ from .state import (
     get_accounts,
     get_game_bot_ids,
     get_game_group_id,
+    get_game_group_ids,
+    is_game_group_id,
     get_game_listener_account_ids,
     get_global_enabled,
     get_global_pause_source,
@@ -357,20 +362,24 @@ _due_tianxing_last_diag_at = 0.0
 
 async def run_channel_send_as_health_scheduler(now):
     record = dict(get_channel_send_as_health())
+    now = float(now or time.time())
     if str(record.get("status") or "") != "closed":
         return
-    now = float(now or time.time())
     if float(record.get("next_probe_at", 0) or 0) > now:
         return
     account_id = int(record.get("account_id") or 0)
-    game_group_id = int(get_game_group_id() or record.get("game_group_id") or 0)
+    configured_group_ids = get_game_group_ids()
+    if not configured_group_ids:
+        fallback_group_id = int(record.get("game_group_id") or get_game_group_id() or 0)
+        configured_group_ids = [fallback_group_id] if fallback_group_id else []
+    primary_group_id = int(configured_group_ids[0] if configured_group_ids else 0)
     restore_identity_ids = sorted({
         int(identity_id)
         for identity_id in record.get("restore_identity_ids") or []
         if int(identity_id or 0) > 0
     })
     client_obj = get_registered_client(account_id) if account_id > 0 else None
-    if client_obj is None or is_account_offline(account_id) or game_group_id == 0:
+    if client_obj is None or is_account_offline(account_id) or not configured_group_ids:
         record.update({
             "last_probe_at": now,
             "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
@@ -383,65 +392,80 @@ async def run_channel_send_as_health_scheduler(now):
         if not restore_identity_ids:
             raise ValueError("missing frozen channel identities")
         async with account_rpc_slot(account_id=account_id, client_obj=client_obj):
-            peer = await asyncio.wait_for(client_obj.get_input_entity(game_group_id), timeout=20)
-            restored_identity_ids = []
-            try:
-                result = await asyncio.wait_for(
-                    client_obj(functions.channels.GetSendAsRequest(peer=peer)),
-                    timeout=20,
-                )
-                available_identity_ids = set()
-                for send_as_peer in getattr(result, "peers", ()) or ():
-                    peer_obj = getattr(send_as_peer, "peer", None)
-                    for field in ("channel_id", "user_id", "chat_id"):
-                        peer_id = int(getattr(peer_obj, field, 0) or 0)
-                        if peer_id > 0:
-                            available_identity_ids.add(peer_id)
-                            break
-                candidate_identity_ids = [
-                    identity_id
-                    for identity_id in restore_identity_ids
-                    if identity_id in available_identity_ids
-                ]
-            except (PeerIdInvalidError, SendAsPeerInvalidError):
-                # Some supergroups reject GetSendAs while still accepting a
-                # valid SaveDefaultSendAs. Fall back to probing each frozen
-                # identity directly.
-                candidate_identity_ids = list(restore_identity_ids)
-
-            # GetSendAs can keep returning stale channel candidates after the
-            # group has disabled channel posting. Only a real send-as switch
-            # proves that an identity is usable again.
             personal_send_as = await asyncio.wait_for(
                 client_obj.get_input_entity(account_id),
                 timeout=20,
             )
-            try:
-                if not candidate_identity_ids:
-                    raise SendAsPeerInvalidError(request=None)
-                for identity_id in candidate_identity_ids:
+            restored_identity_ids = set()
+            restored_groups_by_identity = {}
+            probe_errors = []
+            for game_group_id in configured_group_ids:
+                unresolved_ids = [
+                    identity_id
+                    for identity_id in restore_identity_ids
+                    if identity_id not in restored_identity_ids
+                ]
+                if not unresolved_ids:
+                    break
+                try:
+                    peer = await asyncio.wait_for(
+                        client_obj.get_input_entity(game_group_id),
+                        timeout=20,
+                    )
                     try:
-                        probe_send_as = await asyncio.wait_for(
-                            client_obj.get_input_entity(identity_id),
+                        result = await asyncio.wait_for(
+                            client_obj(functions.channels.GetSendAsRequest(peer=peer)),
                             timeout=20,
                         )
-                        await asyncio.wait_for(
-                            client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=probe_send_as)),
-                            timeout=20,
-                        )
+                        available_identity_ids = set()
+                        for send_as_peer in getattr(result, "peers", ()) or ():
+                            peer_obj = getattr(send_as_peer, "peer", None)
+                            for field in ("channel_id", "user_id", "chat_id"):
+                                peer_id = int(getattr(peer_obj, field, 0) or 0)
+                                if peer_id > 0:
+                                    available_identity_ids.add(peer_id)
+                                    break
+                        candidate_identity_ids = [
+                            identity_id
+                            for identity_id in unresolved_ids
+                            if identity_id in available_identity_ids
+                        ]
                     except (PeerIdInvalidError, SendAsPeerInvalidError):
-                        continue
-                    restored_identity_ids.append(identity_id)
-            finally:
-                await asyncio.wait_for(
-                    client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
-                    timeout=20,
-                )
+                        candidate_identity_ids = list(unresolved_ids)
+
+                    try:
+                        for identity_id in candidate_identity_ids:
+                            try:
+                                probe_send_as = await asyncio.wait_for(
+                                    client_obj.get_input_entity(identity_id),
+                                    timeout=20,
+                                )
+                                await asyncio.wait_for(
+                                    client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=probe_send_as)),
+                                    timeout=20,
+                                )
+                            except (PeerIdInvalidError, SendAsPeerInvalidError):
+                                _mark_send_as_peer_invalid(
+                                    identity_id,
+                                    account_id=account_id,
+                                    game_group_id=game_group_id,
+                                    now=now,
+                                )
+                                continue
+                            restored_identity_ids.add(identity_id)
+                            restored_groups_by_identity.setdefault(identity_id, set()).add(int(game_group_id))
+                    finally:
+                        await asyncio.wait_for(
+                            client_obj(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=personal_send_as)),
+                            timeout=20,
+                        )
+                except Exception as exc:
+                    probe_errors.append(f"{game_group_id}:{type(exc).__name__}")
             if not restored_identity_ids:
                 raise SendAsPeerInvalidError(request=None)
     except (PeerIdInvalidError, SendAsPeerInvalidError) as exc:
         record.update({
-            "game_group_id": game_group_id,
+            "game_group_id": primary_group_id,
             "last_probe_at": now,
             "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
             "last_error": type(exc).__name__,
@@ -451,7 +475,7 @@ async def run_channel_send_as_health_scheduler(now):
         return
     except Exception as exc:
         record.update({
-            "game_group_id": game_group_id,
+            "game_group_id": primary_group_id,
             "last_probe_at": now,
             "next_probe_at": now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
             "last_error": f"{type(exc).__name__}: {str(exc)[:120]}",
@@ -461,12 +485,14 @@ async def run_channel_send_as_health_scheduler(now):
         return
 
     restored = 0
+    restored_identity_ids = sorted(restored_identity_ids)
     for identity_id in restored_identity_ids:
-        _clear_send_as_peer_invalid(
-            identity_id,
-            account_id=account_id,
-            game_group_id=game_group_id,
-        )
+        for game_group_id in restored_groups_by_identity.get(identity_id) or ():
+            _clear_send_as_peer_invalid(
+                identity_id,
+                account_id=account_id,
+                game_group_id=game_group_id,
+            )
         if identity_id in get_identity_ids() and not get_identity_enabled(identity_id):
             set_identity_enabled(identity_id, True)
             initialize_identity_runtime(identity_id, now)
@@ -490,11 +516,12 @@ async def run_channel_send_as_health_scheduler(now):
         )
     fully_open = not remaining_restore_ids
     if fully_open:
-        _clear_channel_send_as_invalid_observations(account_id, game_group_id)
+        for game_group_id in configured_group_ids:
+            _clear_channel_send_as_invalid_observations(account_id, game_group_id)
     set_channel_send_as_health({
         "status": "open" if fully_open else "closed",
         "account_id": account_id,
-        "game_group_id": game_group_id,
+        "game_group_id": primary_group_id,
         "opened_at": now,
         "last_probe_at": now,
         "next_probe_at": 0 if fully_open else now + CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
@@ -811,7 +838,7 @@ def _prune_observed_game_commands(now=None):
         _observed_game_commands.pop(msg_id, None)
 
 
-def _observe_game_command_for_bot_evidence(sender_id, text, msg_id, *, now=None):
+def _observe_game_command_for_bot_evidence(sender_id, text, msg_id, *, now=None, chat_id=0):
     command = str(text or "").strip()
     if not command.startswith("."):
         return None
@@ -828,6 +855,7 @@ def _observe_game_command_for_bot_evidence(sender_id, text, msg_id, *, now=None)
         "command": command,
         "family": resolve_reply_family(command) or "",
         "command_label": _normalize_command_label(command),
+        "chat_id": int(chat_id or 0),
         "at": now,
     }
     _observed_game_commands[msg_id] = item
@@ -877,7 +905,7 @@ def _tianxing_unthreaded_command_matches(text, parsed, command_item):
     return True
 
 
-def _candidate_unthreaded_tianxing_commands(text, now, *, event_id=0):
+def _candidate_unthreaded_tianxing_commands(text, now, *, event_id=0, chat_id=0):
     """Return recent command records eligible for a no-reply bind."""
     parsed = parse_tianxing_text(text, now=now)
     if not parsed:
@@ -897,6 +925,9 @@ def _candidate_unthreaded_tianxing_commands(text, now, *, event_id=0):
         except (TypeError, ValueError, OverflowError):
             continue
         if command_msg_id <= 0 or sender_id not in identity_ids or command_at <= 0:
+            continue
+        command_chat_id = int((item or {}).get("chat_id") or 0)
+        if chat_id and command_chat_id and int(chat_id) != command_chat_id:
             continue
         if event_id and command_msg_id >= int(event_id):
             continue
@@ -923,6 +954,7 @@ def _infer_unthreaded_tianxing_reply(event, text, now):
         text,
         now,
         event_id=getattr(event, "id", 0),
+        chat_id=getattr(event, "chat_id", 0),
     )
     if len(candidates) != 1:
         return None
@@ -936,6 +968,7 @@ def _infer_unthreaded_tianxing_reply(event, text, now):
         reply_to,
         reply_to_msg_id=command_msg_id,
         send_as_id=sender_id,
+        chat_id=int(getattr(event, "chat_id", 0) or 0),
     )
     if int((reply_context or {}).get("send_as_id") or 0) != sender_id:
         return None
@@ -959,7 +992,7 @@ def _observed_command_reply_matches(text, command_record):
     return bool(command_label and len(command_label) >= 2 and command_label in raw_text)
 
 
-def _track_manual_game_command(sender_id, text, msg_id):
+def _track_manual_game_command(sender_id, text, msg_id, *, chat_id=0):
     command = str(text or "").strip()
     if not command:
         return
@@ -971,6 +1004,7 @@ def _track_manual_game_command(sender_id, text, msg_id):
             family,
             root_msg_id=msg_id,
             source="manual_game_command",
+            chat_id=chat_id,
         )
 
 
@@ -1621,12 +1655,22 @@ def _get_event_listener_account_id(event):
     return 0
 
 
+def _configured_game_group_ids():
+    return {
+        int(group_id or 0)
+        for group_id in (get_game_group_id(), *get_game_group_ids())
+        if int(group_id or 0) != 0
+    }
+
+
 def _is_game_group_listener_event(event):
     try:
         chat_id = int(getattr(event, "chat_id", 0) or 0)
     except (TypeError, ValueError):
         chat_id = 0
-    if chat_id != int(get_game_group_id() or 0):
+    if chat_id not in _configured_game_group_ids():
+        # This guard runs before log-group command dispatch. Non-game events
+        # must remain eligible for their own handlers.
         return True
     listener_ids = set(get_game_listener_account_ids())
     if not listener_ids:
@@ -1650,7 +1694,11 @@ async def _resolve_event_reply(event):
         else:
             raise
     reply_header_msg_id = _get_event_reply_header_msg_id(event)
-    reply_context = get_reply_context(reply_to, reply_to_msg_id=reply_header_msg_id)
+    reply_context = get_reply_context(
+        reply_to,
+        reply_to_msg_id=reply_header_msg_id,
+        chat_id=int(getattr(event, "chat_id", 0) or 0),
+    )
     if reply_to is not None:
         try:
             reply_context["reply_to_sender_id"] = int(getattr(reply_to, "sender_id", 0) or 0)
@@ -1741,7 +1789,15 @@ def _is_logged_game_bot_reply(entry):
     return entry.get("sender_is_bot") is True
 
 
-async def _replay_early_replies_after_sent(send_as_id, command, sent_at, msg_id, *, allow_log_fallback=False):
+async def _replay_early_replies_after_sent(
+    send_as_id,
+    command,
+    sent_at,
+    msg_id,
+    *,
+    allow_log_fallback=False,
+    game_group_id=0,
+):
     await asyncio.sleep(_EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC)
     _prune_early_routed_replies()
     items = list(_early_routed_replies.pop(int(msg_id or 0), []))
@@ -1751,6 +1807,7 @@ async def _replay_early_replies_after_sent(send_as_id, command, sent_at, msg_id,
             time.time(),
             lookback_sec=max(30, int(time.time() - float(sent_at or time.time())) + 30),
             lookahead_sec=5,
+            chat_id=int(game_group_id or 0),
             predicate=_is_logged_game_bot_reply,
         )
         for entry in logged:
@@ -1824,6 +1881,7 @@ def _observe_sent_for_early_reply_replay(send_as_id, command, *, now, msg_id, **
             now,
             msg_id,
             allow_log_fallback=allow_log_fallback,
+            game_group_id=int(metadata.get("game_group_id") or 0),
         )
     )
 
@@ -1997,13 +2055,13 @@ async def _handle_tree_miniapp_broadcast_entry(text, now, event):
 
 async def _dispatch_miniapp_broadcast_fallbacks(event, text, now):
     raw_text = str(text or "")
-    if "天机试炼台" in raw_text and _claim_runtime_event(event, scope="trial_miniapp_orphan_entry"):
+    if "天机试炼台" in raw_text and _claim_runtime_semantic_event(raw_text, scope="trial_miniapp_orphan_entry"):
         if await _run_until_handled_for_enabled_identities(_handle_trial_miniapp_broadcast_entry, raw_text, now, event):
             return True
-    if "洞府" in raw_text and _claim_runtime_event(event, scope="cave_treasure_miniapp_orphan_entry"):
+    if "洞府" in raw_text and _claim_runtime_semantic_event(raw_text, scope="cave_treasure_miniapp_orphan_entry"):
         if await _run_until_handled_for_enabled_identities(_handle_cave_treasure_miniapp_broadcast_entry, raw_text, now, event):
             return True
-    if ("灵眼之树" in raw_text or "进入灵树" in raw_text) and _claim_runtime_event(event, scope="tree_miniapp_orphan_entry"):
+    if ("灵眼之树" in raw_text or "进入灵树" in raw_text) and _claim_runtime_semantic_event(raw_text, scope="tree_miniapp_orphan_entry"):
         if await _handle_tree_miniapp_broadcast_entry(raw_text, now, event):
             return True
     return False
@@ -2028,7 +2086,7 @@ async def _dispatch_small_world_broadcast_fallbacks(event, text, now):
 
 
 async def _dispatch_world_boss_broadcast_fallbacks(event, text, now):
-    if _claim_runtime_event(event, scope="world_boss_event"):
+    if _claim_runtime_semantic_event(text, scope="world_boss_event"):
         await handle_world_boss_broadcast(text, now, event=event)
 
 
@@ -2976,7 +3034,13 @@ async def _handle_routed_reply_event(
         if root_msg_id <= 0:
             root_msg_id = int(getattr(reply_to, "id", 0) or 0)
         if matched_family:
-            track_reply_chain_message(event.id, routed_identity_id, matched_family, root_msg_id=root_msg_id)
+            track_reply_chain_message(
+                event.id,
+                routed_identity_id,
+                matched_family,
+                root_msg_id=root_msg_id,
+                chat_id=event.chat_id,
+            )
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
@@ -3264,7 +3328,7 @@ async def on_message(event):
         if await handle_log_group_command(event):
             return
 
-    if event.chat_id != get_game_group_id():
+    if int(event.chat_id or 0) not in _configured_game_group_ids():
         return
     now = time.time()
     sender_is_game_bot = await _is_game_bot_event(event)
@@ -3277,7 +3341,13 @@ async def on_message(event):
     if identity_sender_id:
         _refresh_identity_username_from_event(event, identity_sender_id)
     if raw_text.startswith(".") and not sender_is_game_bot:
-        _observe_game_command_for_bot_evidence(sender_id, raw_text, event.id, now=now)
+        _observe_game_command_for_bot_evidence(
+            sender_id,
+            raw_text,
+            event.id,
+            now=now,
+            chat_id=event.chat_id,
+        )
     if raw_text.startswith(".") and identity_sender_id and get_global_enabled():
         note_game_command_observed(raw_text)
 
@@ -3291,7 +3361,7 @@ async def on_message(event):
                 msg_id=event.id,
                 reply_to=int(getattr(event, "reply_to_msg_id", 0) or 0),
             )
-            _track_manual_game_command(identity_sender_id, text, event.id)
+            _track_manual_game_command(identity_sender_id, text, event.id, chat_id=event.chat_id)
             observe_replica_game_command_message(event, identity_sender_id, now=now)
         try:
             await handle_dungeon_join_mention(event, text, now)
@@ -3434,7 +3504,7 @@ async def on_message_edited(event):
 
     _append_game_group_message_log(event, event_type="edit")
 
-    if event.chat_id != get_game_group_id():
+    if int(event.chat_id or 0) not in _configured_game_group_ids():
         return
     sender_is_game_bot = await _is_game_bot_event(event)
     if not sender_is_game_bot:

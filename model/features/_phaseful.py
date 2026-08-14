@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
-from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
+from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining
 
@@ -173,7 +173,11 @@ async def _replay_recovered_phaseful_replies(spec, command, msg, now=None):
     if msg_id <= 0:
         return False
     now = float(now if now is not None else time.time())
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_id = get_sent_message_chat_id(
+        msg_id,
+        default=get_game_group_id(),
+        send_as_id=get_current_identity_id(),
+    )
     replies = find_message_log_replies(
         msg_id,
         now,
@@ -182,7 +186,7 @@ async def _replay_recovered_phaseful_replies(spec, command, msg, now=None):
         chat_id=game_group_id,
         predicate=lambda entry: (
             str((entry or {}).get("event_type") or "") in {"message", "edit"}
-            and int((entry or {}).get("chat_id") or 0) == game_group_id
+            and int((entry or {}).get("chat_id") or 0) == int(game_group_id or 0)
             and bool((entry or {}).get("sender_is_bot"))
         ),
     )
@@ -1157,10 +1161,15 @@ async def delete_summary_trigger_msg(spec):
     msg_id = abs(int(msg_id))
     if is_auto_delete_sent_messages_enabled():
         try:
-            from ..runtime import _get_identity_client_with_account, _run_account_rpc
+            from ..runtime import _get_identity_client_with_account, _run_account_rpc, get_pending_message_chat_id
             account_id, client = _get_identity_client_with_account()
+            chat_id = get_pending_message_chat_id(
+                get_current_identity_id(),
+                msg_id,
+                default=get_game_group_id(),
+            )
             await _run_account_rpc(
-                client.delete_messages(get_game_group_id(), [msg_id]),
+                client.delete_messages(chat_id, [msg_id]),
                 account_id=account_id,
                 client_obj=client,
             )

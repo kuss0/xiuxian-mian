@@ -5354,10 +5354,15 @@ async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
         return
     if is_auto_delete_sent_messages_enabled():
         try:
-            from .runtime import _get_identity_client_with_account, _run_account_rpc
+            from .runtime import _get_identity_client_with_account, _run_account_rpc, get_pending_message_chat_id
             account_id, client = _get_identity_client_with_account(send_as_id)
+            chat_id = get_pending_message_chat_id(
+                send_as_id,
+                msg_id,
+                default=get_game_group_id(),
+            )
             await _run_account_rpc(
-                client.delete_messages(get_game_group_id(), [msg_id]),
+                client.delete_messages(chat_id, [msg_id]),
                 account_id=account_id,
                 client_obj=client,
             )

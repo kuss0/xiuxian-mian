@@ -422,6 +422,13 @@
         + '</label>'
         + '</div>';
     }).join('') : '<span class="miniapp-empty">暂无可用登录账户</span>';
+    var rotationAccounts = Array.isArray(automation.world_boss_rotation_accounts) ? automation.world_boss_rotation_accounts : [];
+    var rotationHtml = rotationAccounts.length ? rotationAccounts.map(function (item) {
+      return '<label class="miniapp-cave-switch">'
+        + '<input type="checkbox" data-world-boss-rotation-account="' + esc(item.account_id) + '"' + (item.enabled ? ' checked' : '') + '>'
+        + '<span>账户 ' + esc(item.account_id) + '｜当前 ' + esc(item.current_label || '待初始化') + '｜已完成 ' + esc(item.completed_count || 0) + '</span>'
+        + '</label>';
+    }).join('') : '<span class="miniapp-empty">暂无可轮换账户</span>';
     return ''
       + '<section class="miniapp-score-config" data-world-boss-auto="1">'
       + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行｜固定预留尾窗 ' + esc(automation.world_boss_auto_finish_reserve_windows || 2) + '</span></div>'
@@ -429,6 +436,9 @@
       + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'
       + '<div class="miniapp-cave-switches">' + candidateHtml + '</div>'
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>身份轮换</strong><span>明确获得目标奖励后推进</span></div>'
+      + '<label><span>目标奖励</span><input type="text" data-world-boss-rotation-reward="1" value="' + esc(automation.world_boss_rotation_target_reward || '斩青玉元') + '"></label>'
+      + '<div class="miniapp-cave-switches">' + rotationHtml + '</div>'
       + '<div class="miniapp-item-actions miniapp-form-actions"><button type="button" class="btn btn-secondary btn-compact" data-world-boss-config-save="1">保存设置</button></div>'
       + '</section>';
   }
@@ -774,7 +784,9 @@
         enabled: !!(panel.querySelector('[data-world-boss-enabled="1"]') || {}).checked,
         account_limit: (panel.querySelector('[data-world-boss-account-limit="1"]') || {}).value || 1,
         excluded_identity_ids: excludedIds,
-        window_skip_by_identity: windowSkipByIdentity
+        window_skip_by_identity: windowSkipByIdentity,
+        rotation_account_ids: Array.prototype.map.call(panel.querySelectorAll('[data-world-boss-rotation-account]:checked'), function (input) { return input.getAttribute('data-world-boss-rotation-account'); }),
+        rotation_target_reward: ((panel.querySelector('[data-world-boss-rotation-reward="1"]') || {}).value || '斩青玉元').trim()
       });
       flash(data.message || '世界 Boss MiniApp 设置已保存', false);
       if (data.miniapp) renderMiniAppStatus({ miniapp: data.miniapp });

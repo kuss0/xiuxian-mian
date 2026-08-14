@@ -47,7 +47,7 @@ from ..config import (
 from ..identity_levels import parse_second_soul_level_text, update_identity_level_record
 from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import save_state
-from ..runtime import clear_pending_tasks_by_commands, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, classify_game_send_block, console_log, get_sent_message_chat_id, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
@@ -966,8 +966,8 @@ async def _recover_second_soul_pending_from_message_log(now, phase):
             get_current_identity_id(),
             now,
             start_ts=max(0.0, float(now or 0) - SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC),
-            game_group_id=get_game_group_id(),
-            topic_id=get_game_topic_id(),
+            game_group_id=0,
+            topic_id=0,
             lookback_sec=SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC,
             lookahead_sec=5,
         )
@@ -981,9 +981,9 @@ async def _recover_second_soul_pending_from_message_log(now, phase):
         now,
         lookback_sec=SECOND_SOUL_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=5,
+        chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=lambda entry: (
             str((entry or {}).get("event_type") or "") in {"message", "edit"}
-            and int((entry or {}).get("chat_id") or 0) == int(get_game_group_id() or 0)
             and bool((entry or {}).get("sender_is_bot"))
         ),
     )

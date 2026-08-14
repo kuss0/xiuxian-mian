@@ -221,6 +221,48 @@ class MessageLogButtonTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 
+    def test_non_game_group_remains_eligible_for_log_handlers(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module.set_game_group_id(-100910)
+            event = SimpleNamespace(chat_id=-1004412426741, client=SimpleNamespace(name="log"))
+            self.assertTrue(app._is_game_group_listener_event(event))
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_backup_game_group_is_accepted_and_logged(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        event = SimpleNamespace(
+            id=91031,
+            chat_id=-1001680975844,
+            sender_id=7900199668,
+            raw_text="【世界通告｜真仙试锋开启】",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+        try:
+            state_module.set_game_group_route_config({
+                "enabled": True,
+                "primary_group_id": -1002083016447,
+                "backup_group_ids": [-1001680975844],
+                "topic_id_by_group": {"-1002083016447": 0, "-1001680975844": 7310786},
+            })
+            with tempfile.TemporaryDirectory() as tmpdir, patch.object(app_message_log, "MESSAGES_DIR", tmpdir):
+                app_message_log._append_game_group_message_log(event)
+                rows = [json.loads(line) for line in next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(1, len(rows))
+            self.assertEqual(-1001680975844, rows[0]["chat_id"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+    def test_semantic_claim_deduplicates_mirrored_group_broadcasts(self):
+        app_runtime._runtime_event_claims.clear()
+        text = "【世界通告｜真仙试锋开启】\n点击下方按钮进入真仙战场"
+        self.assertTrue(app_runtime._claim_runtime_semantic_event(text, scope="world_boss_event"))
+        self.assertFalse(app_runtime._claim_runtime_semantic_event(text, scope="world_boss_event"))
+
     def test_game_group_edit_log_keeps_distinct_text_for_same_message(self):
         first_edit = SimpleNamespace(
             id=91002,

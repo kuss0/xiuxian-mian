@@ -186,6 +186,50 @@ class AppSchedulerContractTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
 
+    def test_unthreaded_tianxing_reply_ignores_same_message_id_route_from_other_group(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        app._observed_game_commands.clear()
+        first_identity_id = 990099116
+        second_identity_id = 990099117
+        try:
+            for identity_id in (first_identity_id, second_identity_id):
+                state_module.ensure_identity_registered(identity_id)
+            app._observe_game_command_for_bot_evidence(
+                first_identity_id,
+                ".推命 斗法",
+                74460,
+                now=1000.0,
+                chat_id=-1002083016447,
+            )
+            app._observe_game_command_for_bot_evidence(
+                second_identity_id,
+                ".推命 斗法",
+                74461,
+                now=1000.0,
+                chat_id=-1001680975844,
+            )
+            reply_text = "你拨动司命盘，为 【斗法】 推下一段命数。此推命将在 8 小时 内生效。"
+            event = SimpleNamespace(id=74462, chat_id=-1001680975844, reply_to=None)
+            with patch.object(
+                app,
+                "get_reply_context",
+                return_value={
+                    "send_as_id": second_identity_id,
+                    "family": "tianxing_predict",
+                    "reply_to_msg_id": 74461,
+                    "root_msg_id": 74461,
+                },
+            ) as context_mock:
+                inferred = app._infer_unthreaded_tianxing_reply(event, reply_text, 1001.0)
+
+            self.assertIsNotNone(inferred)
+            self.assertEqual(second_identity_id, inferred[1]["send_as_id"])
+            self.assertEqual(-1001680975844, context_mock.call_args.kwargs["chat_id"])
+        finally:
+            app._observed_game_commands.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
     def test_phaseful_identity_schedulers_are_before_ordinary_schedulers(self):
         contract = app.get_identity_scheduler_order_contract()
 

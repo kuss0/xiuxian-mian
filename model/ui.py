@@ -204,6 +204,7 @@ from .state import (
     get_forum_topics_updated_at,
     get_game_bot_ids,
     get_game_group_id,
+    get_game_group_route_config,
     get_game_topic_id,
     get_global_enabled,
     get_global_pause_source,
@@ -236,6 +237,7 @@ from .state import (
     is_cave_public_identity_available,
     get_miniapp_auto_config,
     get_miniapp_state_records,
+    get_world_boss_rotation_state,
     get_divination_daily_limit,
     get_module_window_hours_local,
     get_pending_command,
@@ -259,6 +261,7 @@ from .state import (
     set_forum_topics,
     set_game_bot_ids,
     set_game_group_id,
+    set_game_group_route_config,
     set_game_topic_id,
     set_guanxing_monitor_enabled,
     set_guanxing_monitor_targets,
@@ -428,6 +431,8 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "world_boss_auto_excluded_identity_ids": [],
     "world_boss_auto_finish_reserve_windows": WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS,
     "world_boss_auto_window_skip_by_identity": {},
+    "world_boss_rotation_account_ids": [],
+    "world_boss_rotation_target_reward": "斩青玉元",
     "tree_daily_enabled_identity_ids": [],
 }
 TRIAL_DAILY_BATCH_WAVES = (
@@ -552,6 +557,14 @@ def normalize_miniapp_auto_config(config=None):
         if identity_id > 0 and skip_count > 0:
             normalized_window_skips[str(identity_id)] = skip_count
     result["world_boss_auto_window_skip_by_identity"] = normalized_window_skips
+    result["world_boss_rotation_account_ids"] = sorted({
+        int(account_id)
+        for account_id in result.get("world_boss_rotation_account_ids") or []
+        if str(account_id or "").strip().isdigit() and int(account_id) > 0
+    })
+    result["world_boss_rotation_target_reward"] = (
+        str(result.get("world_boss_rotation_target_reward") or "斩青玉元").strip() or "斩青玉元"
+    )
     tree_identity_ids = result.get("tree_daily_enabled_identity_ids") or []
     if not isinstance(tree_identity_ids, (list, tuple, set)):
         tree_identity_ids = []
@@ -743,6 +756,23 @@ def get_miniapp_auto_config_snapshot(now=None):
         }
         for identity_id in world_boss_candidate_ids
     ]
+    rotation_account_ids = set(config.get("world_boss_rotation_account_ids") or [])
+    rotation_accounts = []
+    rotation_state = get_world_boss_rotation_state()
+    rotation_records = (rotation_state or {}).get("accounts") if isinstance(rotation_state, dict) else {}
+    for account_id in sorted({int(get_identity_account(identity_id) or 0) for identity_id in get_identity_ids()}):
+        if account_id <= 0:
+            continue
+        record = dict((rotation_records or {}).get(str(account_id)) or {})
+        current_identity_id = int(record.get("current_identity_id") or 0)
+        completed_ids = [int(identity_id) for identity_id in record.get("completed_identity_ids") or []]
+        rotation_accounts.append({
+            "account_id": account_id,
+            "enabled": account_id in rotation_account_ids,
+            "current_identity_id": current_identity_id,
+            "current_label": get_identity_ui_display_name(current_identity_id) if current_identity_id else "待初始化",
+            "completed_count": len(completed_ids),
+        })
     fishing_public_ids = set(config.get("cave_public_fishing_identity_ids") or [])
     cave_public_fishing_candidates = []
     for identity_id in get_identity_ids():
@@ -776,6 +806,7 @@ def get_miniapp_auto_config_snapshot(now=None):
     return {
         **safe_config,
         "world_boss_candidates": world_boss_candidates,
+        "world_boss_rotation_accounts": rotation_accounts,
         "cave_public_fishing_candidates": cave_public_fishing_candidates,
         "cave_public_tianti_status_candidates": cave_public_tianti_status_candidates,
         "cave_public_entry_url_configured": bool(config.get("cave_public_entry_urls")),
@@ -4901,6 +4932,7 @@ def get_ui_snapshot(session_token=None, *, use_cache=False):
         "ui_url": UI_PUBLIC_BASE_URL,
         "account_user_id": state.get("my_user_id") or 0,
         "game_group_id": get_game_group_id(),
+        "game_group_route_config": get_game_group_route_config(),
         "game_bot_ids": get_game_bot_ids(),
         "game_topic_id": get_game_topic_id(),
         "forum_topics": get_forum_topics(),
@@ -6708,7 +6740,7 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
     return True, message, topics
 
 
-async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target=None, guanxing_shift_delay_sec=None, guanxing_monitor_targets=None, actor_id=None):
+async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target=None, guanxing_shift_delay_sec=None, guanxing_monitor_targets=None, actor_id=None, backup_game_group_id=None, backup_game_topic_id=None):
     raw_group_id = (str(game_group_id or "")).strip()
     if not raw_group_id:
         return False, "游戏群聊 ID 不能为空"
@@ -6750,6 +6782,32 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
         if topic_id < 0:
             return False, "话题 ID 不能为负数"
 
+    existing_route_config = get_game_group_route_config()
+    backup_fields_omitted = backup_game_group_id is None and backup_game_topic_id is None
+    if backup_fields_omitted:
+        existing_backups = list(existing_route_config.get("backup_group_ids") or [])
+        backup_game_group_id = existing_backups[0] if existing_backups else 0
+        backup_game_topic_id = (existing_route_config.get("topic_id_by_group") or {}).get(
+            str(int(backup_game_group_id or 0)),
+            0,
+        )
+    raw_backup_group_id = str(backup_game_group_id or "").strip()
+    backup_group_id = 0
+    if raw_backup_group_id:
+        try:
+            backup_group_id = int(raw_backup_group_id)
+        except (TypeError, ValueError):
+            return False, "备用群聊 ID 必须是整数"
+        if backup_group_id == group_id:
+            return False, "备用群不能与主群相同"
+    raw_backup_topic_id = str(backup_game_topic_id or "").strip()
+    try:
+        backup_topic_id = int(raw_backup_topic_id or 0)
+    except (TypeError, ValueError):
+        return False, "备用话题 ID 必须是整数"
+    if backup_topic_id < 0:
+        return False, "备用话题 ID 不能为负数"
+
     auto_delete_enabled = _coerce_ui_bool(auto_delete_sent_messages)
     tiandao_judgement_switch_enabled = _coerce_ui_bool(tiandao_judgement_enabled)
     guanxing_monitor_switch_enabled = _coerce_ui_bool(guanxing_monitor_enabled)
@@ -6787,6 +6845,15 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     set_game_group_id(group_id)
     normalized_bot_ids = set_game_bot_ids(parsed_bot_ids)
     set_game_topic_id(topic_id)
+    set_game_group_route_config({
+        "enabled": bool(backup_group_id),
+        "primary_group_id": group_id,
+        "backup_group_ids": [backup_group_id] if backup_group_id else [],
+        "topic_id_by_group": {
+            str(group_id): topic_id,
+            **({str(backup_group_id): backup_topic_id} if backup_group_id else {}),
+        },
+    })
     set_auto_delete_sent_messages(auto_delete_enabled)
     set_tiandao_judgement_enabled(tiandao_judgement_switch_enabled)
     set_guanxing_monitor_enabled(guanxing_monitor_switch_enabled)
@@ -6803,11 +6870,11 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     display_monitor_targets = ", ".join(normalized_monitor_targets) or "未选择"
     display_shift_delay = f"{normalized_shift_delay_sec:+d}秒"
     console_log(
-        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}｜观星首发偏移={display_shift_delay}{actor_suffix}",
+        f"🧩 已更新基础配置：主群={group_id}｜备用群={backup_group_id or '未启用'}｜bot={display_bots}｜主话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}｜观星首发偏移={display_shift_delay}{actor_suffix}",
         scope="global",
         limit=340,
     )
-    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'} ｜ 观星首发偏移 {display_shift_delay}"
+    return True, f"已更新基础配置：主群 {group_id} ｜ 备用群 {backup_group_id or '未启用'} ｜ bot {display_bots} ｜ 主话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'} ｜ 观星首发偏移 {display_shift_delay}"
 
 
 async def ui_send_miniapp_entry_probe(send_as_id, game_key):
@@ -7423,6 +7490,20 @@ async def ui_set_world_boss_miniapp_config(payload=None):
             if identity_id > 0 and skip_count > 0:
                 normalized_window_skips[str(identity_id)] = skip_count
         config["world_boss_auto_window_skip_by_identity"] = normalized_window_skips
+    if "rotation_account_ids" in payload:
+        raw_account_ids = payload.get("rotation_account_ids") or []
+        if not isinstance(raw_account_ids, (list, tuple, set)):
+            return False, "世界 Boss 轮换账户格式无效"
+        config["world_boss_rotation_account_ids"] = sorted({
+            int(account_id)
+            for account_id in raw_account_ids
+            if str(account_id or "").strip().isdigit() and int(account_id) > 0
+        })
+    if "rotation_target_reward" in payload:
+        target_reward = str(payload.get("rotation_target_reward") or "").strip()
+        if not target_reward:
+            return False, "世界 Boss 轮换目标奖励不能为空"
+        config["world_boss_rotation_target_reward"] = target_reward[:64]
     set_miniapp_auto_config(config)
     save_state()
     status = "开启" if config["world_boss_auto_enabled"] else "关闭"
@@ -7431,6 +7512,7 @@ async def ui_set_world_boss_miniapp_config(payload=None):
         "｜账户并行、账户内部串行"
         f"｜排除身份 {len(config['world_boss_auto_excluded_identity_ids'])} 个"
         f"｜少出手身份 {len(config['world_boss_auto_window_skip_by_identity'])} 个"
+        f"｜轮换账户 {len(config['world_boss_rotation_account_ids'])} 个"
     )
 
 
@@ -9135,7 +9217,7 @@ async def handle_ui_http(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("tiandao_judgement_enabled"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_shift_delay_sec"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"))
+                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("tiandao_judgement_enabled"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_shift_delay_sec"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"), backup_game_group_id=payload.get("backup_game_group_id"), backup_game_topic_id=payload.get("backup_game_topic_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)

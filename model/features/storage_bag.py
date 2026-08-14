@@ -11,7 +11,7 @@ from ..config import MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
-from ..runtime import _run_account_rpc, get_last_game_send_block, send_audit_log, send_game_command
+from ..runtime import _run_account_rpc, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
 from ..timing import fmt_abs_ts
 from . import workflow_log
@@ -106,6 +106,7 @@ _storage_bag_transfer_state = {
     "gift_index": 0,
     "gift_locator_command": "",
     "gift_locator_msg_id": 0,
+    "gift_locator_chat_id": 0,
     "gift_locator_reused": False,
     "gift_locator_deleted": False,
     "gift_locator_delete_error": "",
@@ -611,6 +612,7 @@ def _clear_storage_bag_transfer_state():
         "gift_index": 0,
         "gift_locator_command": "",
         "gift_locator_msg_id": 0,
+        "gift_locator_chat_id": 0,
         "gift_locator_reused": False,
         "gift_locator_deleted": False,
         "gift_locator_delete_error": "",
@@ -1337,7 +1339,12 @@ def _read_storage_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024
 
 
 def _is_storage_gift_anchor_topic(payload):
-    topic_id = int(get_game_topic_id() or 0)
+    try:
+        chat_id = int((payload or {}).get("chat_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        chat_id = 0
+    from ..state import get_game_group_topic_id
+    topic_id = int(get_game_group_topic_id(chat_id, default=get_game_topic_id()) or 0)
     if topic_id <= 0:
         return True
     try:
@@ -1371,7 +1378,6 @@ def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age
     except (TypeError, ValueError, OverflowError):
         now = time.time()
     min_ts = now - max(1, int(max_age_sec or STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC))
-    game_group_id = int(get_game_group_id() or 0)
     for path in _recent_storage_message_log_paths(now):
         if not os.path.exists(path):
             continue
@@ -1388,8 +1394,6 @@ def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age
                 chat_id = int(payload.get("chat_id", 0) or 0)
             except (TypeError, ValueError, OverflowError):
                 chat_id = 0
-            if game_group_id and chat_id != game_group_id:
-                continue
             if not _is_storage_gift_anchor_topic(payload):
                 continue
             if not _is_storage_gift_anchor_sender(payload, target_identity_id):
@@ -1405,7 +1409,7 @@ def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age
             except (TypeError, ValueError, OverflowError):
                 msg_id = 0
             if msg_id > 0:
-                return {"msg_id": msg_id, "ts": msg_ts, "text": text}
+                return {"msg_id": msg_id, "chat_id": chat_id, "ts": msg_ts, "text": text}
     return {}
 
 
@@ -1425,8 +1429,15 @@ async def _delete_storage_bag_gift_locator():
         account_id, client = _get_identity_client_for_rpc(int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0))
         if client is None:
             raise RuntimeError("身份客户端不可用")
+        chat_id = int(_storage_bag_transfer_state.get("gift_locator_chat_id", 0) or 0)
+        if not chat_id:
+            chat_id = get_sent_message_chat_id(
+                msg_id,
+                default=get_game_group_id(),
+                send_as_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0),
+            )
         await _run_account_rpc(
-            client.delete_messages(get_game_group_id(), [msg_id]),
+            client.delete_messages(chat_id, [msg_id]),
             account_id=account_id,
             client_obj=client,
         )
@@ -1527,6 +1538,7 @@ async def _start_storage_bag_gift_phase():
             "gift_index": 0,
             "gift_locator_command": anchor_text[:80],
             "gift_locator_msg_id": anchor_msg_id,
+            "gift_locator_chat_id": int(anchor.get("chat_id") or 0),
             "gift_locator_reused": True,
             "gift_locator_deleted": False,
             "gift_locator_delete_error": "",
@@ -1548,6 +1560,7 @@ async def _start_storage_bag_gift_phase():
         "gift_index": 0,
         "gift_locator_command": locator,
         "gift_locator_msg_id": 0,
+        "gift_locator_chat_id": 0,
         "gift_locator_reused": False,
         "gift_locator_deleted": False,
         "gift_locator_delete_error": "",
@@ -1576,6 +1589,11 @@ async def _start_storage_bag_gift_phase():
         await send_audit_log("❌ 储物袋定位发送失败。", limit=220)
         return False, message
     _storage_transfer_log(f"已发送赠送定位消息（消息ID={_storage_bag_transfer_state['gift_locator_msg_id']}）")
+    _storage_bag_transfer_state["gift_locator_chat_id"] = get_sent_message_chat_id(
+        _storage_bag_transfer_state["gift_locator_msg_id"],
+        default=get_game_group_id(),
+        send_as_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0),
+    )
     _record_storage_transfer_event(
         "赠送定位已发送",
         identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
@@ -2497,7 +2515,11 @@ async def _recover_storage_bag_transfer_waiting_step(step, now):
         now,
         lookback_sec=max(15 * 60, STORAGE_TRANSFER_REPLY_TIMEOUT_SEC * 10),
         lookahead_sec=30,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(
+            command_msg_id,
+            default=get_game_group_id(),
+            send_as_id=int(config.get("identity_id") or 0),
+        ),
         predicate=_is_storage_transfer_reply_log_entry,
     )
     if not replies:

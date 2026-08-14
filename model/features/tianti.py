@@ -19,7 +19,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_miniapp_auto_config, get_pending_command, get_tianti_rank_choice, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -1087,7 +1087,6 @@ async def _recover_due_tianti_replies(now):
         ("next_tianti_gangfeng_time", "tianti_last_gangfeng_msg_id", CMD_TIANTI_GANGFENG, "tianti_gangfeng"),
         ("next_tianti_status_time", "tianti_status_reply_to_msg_id", CMD_TIANTI_STATUS, "tianti_status"),
     )
-    game_group_id = int(get_game_group_id() or 0)
     for due_key, msg_key, command, family in specs:
         due_at = float(state.get(due_key, 0) or 0)
         if due_at <= 0 or due_at > float(now or 0):
@@ -1099,8 +1098,8 @@ async def _recover_due_tianti_replies(now):
                 get_current_identity_id(),
                 now,
                 start_ts=max(0.0, float(now or 0) - TIANTI_LOG_REPLAY_LOOKBACK_SEC),
-                game_group_id=game_group_id,
-                topic_id=get_game_topic_id(),
+                game_group_id=0,
+                topic_id=0,
                 lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC,
                 lookahead_sec=5,
             )
@@ -1114,9 +1113,9 @@ async def _recover_due_tianti_replies(now):
             now,
             lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC,
             lookahead_sec=5,
+            chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
             predicate=lambda entry: (
                 str((entry or {}).get("event_type") or "") in {"message", "edit"}
-                and int((entry or {}).get("chat_id") or 0) == game_group_id
                 and bool((entry or {}).get("sender_is_bot"))
             ),
         )

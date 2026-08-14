@@ -101,6 +101,7 @@ def find_message_log_replies_tail(
     lookback_sec=120,
     lookahead_sec=5,
     predicate=None,
+    chat_id=0,
     messages_dir=None,
     max_bytes=512 * 1024,
 ):
@@ -112,6 +113,7 @@ def find_message_log_replies_tail(
     command_msg_id = int(command_msg_id or 0)
     if command_msg_id <= 0:
         return []
+    chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
     start_ts = max(0.0, end_ts - max(1, int(lookback_sec or 1)))
     base_dir = Path(messages_dir or MESSAGES_DIR)
@@ -129,6 +131,8 @@ def find_message_log_replies_tail(
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
+                continue
+            if chat_id and int((entry or {}).get("chat_id") or 0) != chat_id:
                 continue
             if str((entry or {}).get("event_type") or "") not in {"message", "edit"}:
                 continue

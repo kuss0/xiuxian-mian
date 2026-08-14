@@ -25,7 +25,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import console_log, get_last_game_send_block, register_game_command_pre_send_guard, send_game_command
+from ..runtime import console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_pre_send_guard, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_world_boss_run_state, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
@@ -2464,7 +2464,7 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
         now,
         lookback_sec=lookback,
         lookahead_sec=10,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_tianxing_log_reply_predicate,
     )
     if not replies:
@@ -2541,7 +2541,7 @@ def _recover_tianxing_timeline_unthreaded_reply_from_message_log(now):
         start_ts=start_ts,
         lookback_sec=lookback_sec,
         lookahead_sec=5,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(command_msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         command_predicate=predicate,
     )
     # A message followed by edits is one result; deduplicate by message id and
@@ -2610,7 +2610,7 @@ def _recover_tianxing_daily_observe_from_message_log(observed, now):
             now,
             lookback_sec=max(900, int(max(0.0, float(now or time.time()) - float(command.get("ts_epoch") or day_start)) + 300)),
             lookahead_sec=10,
-            chat_id=get_game_group_id(),
+            chat_id=int(command.get("chat_id") or get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=identity_id)),
             predicate=_tianxing_log_reply_predicate,
         )
         for reply in reversed(replies):

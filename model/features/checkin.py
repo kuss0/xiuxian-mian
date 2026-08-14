@@ -419,13 +419,18 @@ async def cleanup_checkin_chain_messages():
         save_state()
         return
     try:
-        from ..runtime import _get_identity_client_with_account, _run_account_rpc
+        from ..runtime import _get_identity_client_with_account, _run_account_rpc, get_pending_message_chat_id
         account_id, client = _get_identity_client_with_account()
-        await _run_account_rpc(
-            client.delete_messages(get_game_group_id(), msg_ids),
-            account_id=account_id,
-            client_obj=client,
-        )
+        msg_ids_by_chat = {}
+        for msg_id in msg_ids:
+            chat_id = get_pending_message_chat_id(get_current_identity_id(), msg_id, default=get_game_group_id())
+            msg_ids_by_chat.setdefault(chat_id, []).append(msg_id)
+        for chat_id, routed_msg_ids in msg_ids_by_chat.items():
+            await _run_account_rpc(
+                client.delete_messages(chat_id, routed_msg_ids),
+                account_id=account_id,
+                client_obj=client,
+            )
     except Exception as e:
         print(f"cleanup_checkin_chain_messages failed: {e} | msg_ids={msg_ids}")
     for msg_id in msg_ids:

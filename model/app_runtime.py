@@ -27,6 +27,27 @@ def _claim_runtime_event(event, *, scope, ttl=120.0):
     return True
 
 
+def _claim_runtime_semantic_event(text, *, scope, ttl=120.0):
+    normalized = "\n".join(
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip()
+    )
+    if not normalized:
+        return True
+    now = time.time()
+    _gc_runtime_event_claims(now)
+    text_hash = hashlib.blake2s(
+        normalized.encode("utf-8", "surrogatepass"),
+        digest_size=12,
+    ).hexdigest()
+    claim_key = f"semantic:{scope}:{text_hash}"
+    if float(_runtime_event_claims.get(claim_key, 0) or 0) > now:
+        return False
+    _runtime_event_claims[claim_key] = now + float(ttl or 0)
+    return True
+
+
 def _gc_runtime_message_consumed(now=None):
     now = float(now if now is not None else time.time())
     expired_keys = [key for key, expires_at in _runtime_message_consumed.items() if float(expires_at or 0) <= now]
@@ -93,6 +114,7 @@ def _get_event_reply_header_msg_id(event):
 
 __all__ = [
     "_claim_runtime_event",
+    "_claim_runtime_semantic_event",
     "_claim_runtime_log_event",
     "_get_event_reply_header_msg_id",
     "_has_runtime_message_consumed",

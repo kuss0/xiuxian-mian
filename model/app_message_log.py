@@ -18,6 +18,8 @@ from .log_retention import cleanup_message_logs
 from .runtime import _run_account_rpc, send_audit_log
 from .state import (
     get_game_group_id,
+    get_game_group_ids,
+    is_game_group_id,
     get_game_listener_account_ids,
     get_replica_dispatch_group_ids,
     get_replica_dispatch_listener_account_map,
@@ -265,11 +267,12 @@ def _write_message_log(log_file, payload, *, scope="game"):
 
 
 def _append_game_group_message_log(event, *, event_type="message"):
-    if event.chat_id != get_game_group_id():
+    group_ids = list(dict.fromkeys([int(get_game_group_id() or 0), *get_game_group_ids()]))
+    if int(event.chat_id or 0) not in group_ids:
         return
     listener_account_id = _get_group_event_listener_account_id(
         event,
-        [get_game_group_id()],
+        group_ids,
         {},
     )
     configured_listener_ids = set(get_game_listener_account_ids())
@@ -324,7 +327,7 @@ def _get_replica_dispatch_event_listener_account_id(event):
         chat_id = int(getattr(event, "chat_id", 0) or 0)
     except (TypeError, ValueError):
         return 0
-    if chat_id and chat_id == get_game_group_id():
+    if chat_id and chat_id in {int(get_game_group_id() or 0), *get_game_group_ids()}:
         return 0
     if chat_id and chat_id == int(LOG_GROUP_ID or 0):
         return 0

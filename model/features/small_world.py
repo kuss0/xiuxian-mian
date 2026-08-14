@@ -24,7 +24,7 @@ from ..message_log_recovery import (
     recover_sent_command_from_message_log,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
@@ -1274,7 +1274,7 @@ async def _recover_small_world_reply_from_log(now, *, msg_id=0, family="", comma
         now,
         lookback_sec=SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=get_game_group_id(),
+        chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_is_small_world_reply_log_entry,
     )
     if not replies:

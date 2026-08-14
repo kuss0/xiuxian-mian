@@ -89,7 +89,7 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required", "explore_rift_rebirth_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "channel_send_as_health", "account_target_memberships", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "inventory_delta_records", "miniapp_state_records", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "duel_target_cooldowns", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_group_route_config", "account_group_memberships", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "global_pause_source", "global_recovery_hold_until", "global_recovery_throttle_until", "channel_send_as_health", "account_target_memberships", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "world_boss_rotation_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_kind_configs", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "inventory_delta_records", "miniapp_state_records", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "duel_target_cooldowns", "tree_miniapp_score_configs", "miniapp_auto_config", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
 REPLICA_KIND_KEYS = ("virtual_hall", "zhuimo", "huanglong", "cangkun", "kunwu", "luoyun", "xiaojigong")
 REPLICA_KIND_CONFIG_TEMPLATE = {
     "enabled": True,
@@ -848,6 +848,8 @@ IDENTITY_STATE_TEMPLATE = {
 GLOBAL_STATE_DEFAULTS = {
     "my_user_id": None,
     "game_group_id": int(GAME_GROUP_ID),
+    "game_group_route_config": {},
+    "account_group_memberships": {},
     "game_bot_ids": sorted(int(bot_id) for bot_id in GAME_BOT_IDS),
     "game_listener_account_ids": [],
     "game_topic_id": int(GAME_TOPIC_ID),
@@ -866,6 +868,7 @@ GLOBAL_STATE_DEFAULTS = {
     "divination_pending_exchanges": {},
     "divination_run_state": {},
     "world_boss_run_state": {},
+    "world_boss_rotation_state": {},
     "guanxing_monitor_enabled": False,
     "guanxing_monitor_targets": list(GUANXING_TARGET_KEYWORDS[:2]),
     "guanxing_shift_target": "",
@@ -2106,8 +2109,93 @@ def get_game_group_id():
     return int(_meta_state.get("game_group_id") or 0)
 
 
+def _normalize_game_group_route_config(value):
+    raw = dict(value or {}) if isinstance(value, dict) else {}
+    primary = int(raw.get("primary_group_id") or get_game_group_id() or 0)
+    backups = []
+    for item in raw.get("backup_group_ids") or ():
+        try:
+            group_id = int(item)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if group_id and group_id != primary and group_id not in backups:
+            backups.append(group_id)
+    raw_topics = raw.get("topic_id_by_group") or {}
+    topics = {}
+    if isinstance(raw_topics, dict):
+        for raw_group_id, raw_topic_id in raw_topics.items():
+            try:
+                group_id = int(raw_group_id)
+                topic_id = max(0, int(raw_topic_id or 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if group_id:
+                topics[str(group_id)] = topic_id
+    if primary and str(primary) not in topics:
+        topics[str(primary)] = get_game_topic_id()
+    return {
+        "enabled": bool(raw.get("enabled", bool(backups))),
+        "primary_group_id": primary,
+        "backup_group_ids": backups,
+        "topic_id_by_group": topics,
+    }
+
+
+def get_game_group_route_config():
+    config = _normalize_game_group_route_config(_meta_state.get("game_group_route_config") or {})
+    _meta_state["game_group_route_config"] = config
+    return copy.deepcopy(config)
+
+
+def set_game_group_route_config(config):
+    normalized = _normalize_game_group_route_config(config)
+    _meta_state["game_group_route_config"] = normalized
+    if normalized.get("primary_group_id"):
+        _meta_state["game_group_id"] = int(normalized["primary_group_id"])
+    return get_game_group_route_config()
+
+
+def get_game_group_ids():
+    config = get_game_group_route_config()
+    result = []
+    for group_id in (config.get("primary_group_id"), *(config.get("backup_group_ids") or ())):
+        try:
+            group_id = int(group_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if group_id and group_id not in result:
+            result.append(group_id)
+    if not result and get_game_group_id():
+        result.append(get_game_group_id())
+    return result
+
+
+def is_game_group_id(group_id):
+    try:
+        return int(group_id or 0) in set(get_game_group_ids())
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def get_game_group_topic_id(group_id, default=None):
+    try:
+        group_id = int(group_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return int(get_game_topic_id() if default is None else default or 0)
+    config = get_game_group_route_config()
+    topics = config.get("topic_id_by_group") or {}
+    if str(group_id) in topics:
+        return int(topics[str(group_id)] or 0)
+    return int(get_game_topic_id() if default is None else default or 0)
+
+
 def set_game_group_id(group_id):
     _meta_state["game_group_id"] = int(group_id or 0)
+    config = _normalize_game_group_route_config(_meta_state.get("game_group_route_config") or {})
+    config["primary_group_id"] = int(group_id or 0)
+    if int(group_id or 0):
+        config.setdefault("topic_id_by_group", {})[str(int(group_id))] = get_game_topic_id()
+    _meta_state["game_group_route_config"] = config
     _meta_state["replica_dispatch_group_ids"] = _normalize_replica_dispatch_group_ids(
         _meta_state.get("replica_dispatch_group_ids") or []
     )
@@ -2162,7 +2250,103 @@ def get_game_topic_id():
 
 def set_game_topic_id(topic_id):
     _meta_state["game_topic_id"] = int(topic_id or 0)
+    primary_group_id = get_game_group_id()
+    if primary_group_id:
+        config = _normalize_game_group_route_config(_meta_state.get("game_group_route_config") or {})
+        config.setdefault("topic_id_by_group", {})[str(primary_group_id)] = get_game_topic_id()
+        _meta_state["game_group_route_config"] = config
     return get_game_topic_id()
+
+
+def _normalize_account_group_memberships(records):
+    normalized = {}
+    if not isinstance(records, dict):
+        return normalized
+    for raw_key, raw_record in records.items():
+        if not isinstance(raw_record, dict):
+            continue
+        key_parts = str(raw_key).split(":", 1)
+        try:
+            account_id = int(raw_record.get("account_id") or key_parts[0] or 0)
+            game_group_id = int(raw_record.get("game_group_id") or (key_parts[1] if len(key_parts) > 1 else 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if account_id <= 0 or game_group_id == 0:
+            continue
+        status = str(raw_record.get("status") or "unknown").strip().lower()
+        probe_status = str(raw_record.get("probe_status") or status).strip().lower()
+        allowed = {"member", "not_member", "not_applicable", "unknown"}
+        if status not in allowed:
+            status = "unknown"
+        if probe_status not in allowed:
+            probe_status = "unknown"
+        identity_ids = []
+        for raw_identity_id in raw_record.get("identity_ids") or ():
+            try:
+                identity_id = int(raw_identity_id or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if identity_id > 0:
+                identity_ids.append(identity_id)
+        normalized[f"{account_id}:{game_group_id}"] = {
+            "account_id": account_id,
+            "game_group_id": game_group_id,
+            "identity_ids": sorted(set(identity_ids)),
+            "status": status,
+            "probe_status": probe_status,
+            "reason": str(raw_record.get("reason") or ""),
+            "last_error": str(raw_record.get("last_error") or ""),
+            "error_name": str(raw_record.get("error_name") or ""),
+            "checked_at": float(raw_record.get("checked_at") or 0),
+            "last_definitive_at": float(raw_record.get("last_definitive_at") or 0),
+            "next_probe_at": float(raw_record.get("next_probe_at") or 0),
+        }
+    return normalized
+
+
+def get_account_group_memberships():
+    records = _normalize_account_group_memberships(_meta_state.get("account_group_memberships") or {})
+    _meta_state["account_group_memberships"] = records
+    return copy.deepcopy(records)
+
+
+def set_account_group_memberships(records):
+    _meta_state["account_group_memberships"] = _normalize_account_group_memberships(records)
+    return get_account_group_memberships()
+
+
+def get_account_group_membership(account_id, game_group_id):
+    try:
+        key = f"{int(account_id or 0)}:{int(game_group_id or 0)}"
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    return dict(get_account_group_memberships().get(key) or {})
+
+
+def set_account_group_membership(account_id, game_group_id, record):
+    try:
+        account_id = int(account_id or 0)
+        game_group_id = int(game_group_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    records = get_account_group_memberships()
+    key = f"{account_id}:{game_group_id}"
+    if account_id <= 0 or game_group_id == 0 or not isinstance(record, dict):
+        records.pop(key, None)
+    else:
+        records[key] = {**record, "account_id": account_id, "game_group_id": game_group_id}
+    set_account_group_memberships(records)
+    return get_account_group_membership(account_id, game_group_id)
+
+
+def get_world_boss_rotation_state():
+    records = _meta_state.get("world_boss_rotation_state") or {}
+    return copy.deepcopy(records) if isinstance(records, dict) else {}
+
+
+def set_world_boss_rotation_state(records):
+    _meta_state["world_boss_rotation_state"] = records if isinstance(records, dict) else {}
+    return get_world_boss_rotation_state()
 
 
 def get_tiandao_judgement_enabled():
@@ -3000,7 +3184,12 @@ __all__ = [
     "remove_identity",
     "get_active_identity_id",
     "get_current_identity_id",
+    "get_account_group_membership",
+    "get_account_group_memberships",
     "get_game_group_id",
+    "get_game_group_ids",
+    "get_game_group_route_config",
+    "get_game_group_topic_id",
     "get_game_bot_ids",
     "get_game_listener_account_ids",
     "get_game_topic_id",
@@ -3026,6 +3215,7 @@ __all__ = [
     "get_identity_enabled",
     "is_cave_public_identity_available",
     "is_account_target_group_blocked",
+    "is_game_group_id",
     "get_identity_ui_display_name",
     "get_identity_ids",
     "get_identity_state",
@@ -3074,6 +3264,7 @@ __all__ = [
     "get_divination_pending_exchanges",
     "get_divination_run_state",
     "get_world_boss_run_state",
+    "get_world_boss_rotation_state",
     "get_storage_bag_api_config",
     "get_storage_bag_records",
     "get_storage_bag_item_rules",
@@ -3097,9 +3288,12 @@ __all__ = [
     "resolve_identity_selector",
     "resolve_identity_selector_detail",
     "set_game_group_id",
+    "set_game_group_route_config",
     "set_game_bot_ids",
     "set_game_listener_account_ids",
     "set_game_topic_id",
+    "set_account_group_membership",
+    "set_account_group_memberships",
     "set_dungeon_join_run_state",
     "set_replica_group_id",
     "set_replica_group_ids",
@@ -3145,6 +3339,7 @@ __all__ = [
     "set_divination_pending_exchanges",
     "set_divination_run_state",
     "set_world_boss_run_state",
+    "set_world_boss_rotation_state",
     "set_storage_bag_api_config",
     "set_storage_bag_records",
     "set_storage_bag_item_rules",
