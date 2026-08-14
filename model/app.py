@@ -122,7 +122,12 @@ from .features.tianxing import (
 from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.wanxin import handle_wanxin_reply, run_wanxin_global_cleanup_scheduler, run_wanxin_phaseful_cleanup_scheduler, run_wanxin_scheduler
-from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
+from .features.world_boss import (
+    calibrate_world_boss_rotation_from_inventory,
+    handle_world_boss_broadcast,
+    handle_world_boss_reply,
+    run_world_boss_scheduler,
+)
 from .features.small_world import (
     handle_small_world_barrier_reply,
     handle_small_world_disaster_broadcast,
@@ -3753,6 +3758,15 @@ async def bootstrap():
         except Exception:
             print(f"hydrate_identity_profile failed: {send_as_id}")
         enforce_identity_module_availability(send_as_id, persist=False)
+
+    rotation_calibrated = calibrate_world_boss_rotation_from_inventory()
+    if rotation_calibrated:
+        details = "、".join(
+            f"账户 {item['account_id']}:{','.join(str(identity_id) for identity_id in item['identity_ids'])}"
+            for item in rotation_calibrated
+        )
+        console_log(f"🗡 世界 Boss 轮换历史已由本地储物袋校准：{details}")
+        save_state()
 
     now = time.time()
     clear_expired_dungeon_quiet(now)

@@ -31,6 +31,7 @@ from ..state import (
     is_cave_public_identity_available,
     get_miniapp_auto_config,
     get_send_as_profile,
+    get_storage_bag_records,
     get_world_boss_run_state,
     get_world_boss_rotation_state,
     set_world_boss_run_state,
@@ -1028,8 +1029,16 @@ def _normalized_rotation_state():
     stored_target_reward = _normalize_rotation_target_reward((raw or {}).get("target_reward")) if (raw or {}).get("target_reward") else ""
     if stored_target_reward != target_reward:
         accounts = {}
+    calibrated_account_ids = {
+        _coerce_int(account_id, 0)
+        for account_id in (raw or {}).get("inventory_calibrated_account_ids") or ()
+        if _coerce_int(account_id, 0) > 0
+    }
+    if stored_target_reward != target_reward:
+        calibrated_account_ids = set()
     return {
         "accounts": dict(accounts or {}) if isinstance(accounts, dict) else {},
+        "inventory_calibrated_account_ids": sorted(calibrated_account_ids),
         "last_conclusion_key": str((raw or {}).get("last_conclusion_key") or "") if stored_target_reward == target_reward else "",
         "target_reward": target_reward,
     }
@@ -1064,6 +1073,72 @@ def get_world_boss_rotation_account_record(account_id):
     return _rotation_account_record(account_id)
 
 
+def _storage_record_owns_rotation_reward(record, target_reward):
+    if not isinstance(record, dict):
+        return False
+    items = record.get("items")
+    if not isinstance(items, dict):
+        return False
+    target_reward = _normalize_rotation_target_reward(target_reward)
+    for item_name, raw_count in items.items():
+        if _normalize_rotation_target_reward(item_name) != target_reward:
+            continue
+        if _coerce_int(raw_count, 0) > 0:
+            return True
+    return False
+
+
+def calibrate_world_boss_rotation_from_inventory():
+    """Seed legacy rotation ledgers from already-cached inventory evidence."""
+    config = _rotation_config()
+    if not config["account_ids"]:
+        return []
+    rotation_state = _normalized_rotation_state()
+    calibrated_account_ids = set(rotation_state.get("inventory_calibrated_account_ids") or ())
+    storage_records = get_storage_bag_records() or {}
+    calibrated = []
+    changed = False
+    for account_id in config["account_ids"]:
+        if account_id in calibrated_account_ids:
+            continue
+        record = _rotation_account_record(account_id)
+        candidate_ids = list(record.get("identity_ids") or ())
+        if not candidate_ids or any(
+            not isinstance(storage_records.get(str(identity_id)), dict)
+            for identity_id in candidate_ids
+        ):
+            continue
+        completed_ids = set(record.get("completed_identity_ids") or ())
+        owned_ids = [
+            identity_id
+            for identity_id in candidate_ids
+            if _storage_record_owns_rotation_reward(
+                storage_records.get(str(identity_id)),
+                config["target_reward"],
+            )
+        ]
+        if owned_ids:
+            completed_ids.update(owned_ids)
+            record["completed_identity_ids"] = sorted(completed_ids)
+            record["current_identity_id"] = next(
+                (identity_id for identity_id in record.get("identity_ids") or () if identity_id not in completed_ids),
+                0,
+            )
+            rotation_state["accounts"][str(account_id)] = record
+            calibrated.append({
+                "account_id": account_id,
+                "identity_ids": sorted(owned_ids),
+            })
+        calibrated_account_ids.add(account_id)
+        changed = True
+    if changed:
+        rotation_state["inventory_calibrated_account_ids"] = sorted(calibrated_account_ids)
+        rotation_state["target_reward"] = config["target_reward"]
+        set_world_boss_rotation_state(rotation_state)
+        mark_dirty()
+    return calibrated
+
+
 def _save_rotation_account_record(record, *, conclusion_key=""):
     rotation_state = _normalized_rotation_state()
     account_id = int(record.get("account_id") or 0)
@@ -1082,6 +1157,7 @@ def _rotation_identity_for_account(account_id):
 
 def select_world_boss_miniapp_entry_identities(limit=WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT):
     """Pick at most one world-boss MiniApp entry identity per login account."""
+    calibrate_world_boss_rotation_from_inventory()
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -2642,6 +2718,7 @@ def get_world_boss_status_text():
 
 
 __all__ = [
+    "calibrate_world_boss_rotation_from_inventory",
     "choose_world_boss_action",
     "clear_world_boss_identity_state",
     "get_world_boss_rotation_account_record",

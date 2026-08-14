@@ -7545,6 +7545,7 @@ async def ui_set_world_boss_miniapp_config(payload=None):
     if str(config.get("world_boss_rotation_target_reward") or "") != previous_rotation_target:
         set_world_boss_rotation_state({
             "accounts": {},
+            "inventory_calibrated_account_ids": list(config.get("world_boss_rotation_account_ids") or []),
             "last_conclusion_key": "",
             "target_reward": str(config.get("world_boss_rotation_target_reward") or ""),
         })

@@ -1478,6 +1478,54 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_id, selected[0])
         self.assertNotIn(first_id, config["window_skip_by_identity"])
 
+    def test_rotation_calibrates_legacy_empty_state_from_cached_inventory(self):
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="吧唧甲", world_boss_enabled=False)
+        self._register(second_id, label="吧唧乙", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module.set_storage_bag_records({
+            str(first_id): {"items": {"斩青元者": 1}},
+            str(second_id): {"items": {"斩青元者": 0}},
+        })
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青玉元",
+        }
+
+        selected = world_boss.select_world_boss_miniapp_entry_identities()
+
+        self.assertEqual(second_id, selected[0])
+        rotation_state = state_module.get_world_boss_rotation_state()
+        self.assertEqual([account_id], rotation_state["inventory_calibrated_account_ids"])
+        self.assertEqual(
+            [first_id],
+            rotation_state["accounts"][str(account_id)]["completed_identity_ids"],
+        )
+
+    def test_rotation_keeps_legacy_account_uncalibrated_until_cache_is_complete(self):
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="吧唧甲", world_boss_enabled=False)
+        self._register(second_id, label="吧唧乙", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module.set_storage_bag_records({
+            str(first_id): {"items": {"斩青元者": 0}},
+        })
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青元者",
+        }
+
+        selected = world_boss.select_world_boss_miniapp_entry_identities()
+
+        self.assertEqual(first_id, selected[0])
+        self.assertEqual({}, state_module.get_world_boss_rotation_state())
+
     def test_rotation_ui_uses_effective_initial_identity(self):
         account_id = 301299112
         first_id = 3504367852
@@ -1599,6 +1647,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual({
             "accounts": {},
+            "inventory_calibrated_account_ids": [],
             "last_conclusion_key": "",
             "target_reward": "另一奖励",
         }, state_module.get_world_boss_rotation_state())
