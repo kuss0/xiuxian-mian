@@ -268,6 +268,7 @@ from .state import (
     get_global_enabled,
     get_global_pause_source,
     get_channel_send_as_health,
+    get_account_group_membership,
     get_account_target_membership,
     get_identity_account,
     get_identity_account_map,
@@ -277,6 +278,7 @@ from .state import (
     get_send_as_profile,
     is_cave_public_identity_available,
     set_channel_send_as_health,
+    set_account_group_membership,
     set_account_target_membership,
     set_identity_enabled,
     set_game_bot_ids,
@@ -1493,16 +1495,18 @@ def _get_bot_health_probe_identity_id():
     return None
 
 
-async def _probe_account_target_membership(account_id, *, now=None, force=False):
+async def _probe_account_target_membership(account_id, *, game_group_id=None, now=None, force=False):
     now = float(now or time.time())
     try:
         account_id = int(account_id or 0)
     except (TypeError, ValueError, OverflowError):
         return {}
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
     if account_id <= 0 or game_group_id == 0 or is_account_offline(account_id):
         return {}
-    previous = get_account_target_membership(account_id)
+    previous = get_account_group_membership(account_id, game_group_id)
+    if not previous and game_group_id == int(get_game_group_id() or 0):
+        previous = get_account_target_membership(account_id)
     if (
         not force
         and int(previous.get("game_group_id") or 0) == game_group_id
@@ -1544,7 +1548,9 @@ async def _probe_account_target_membership(account_id, *, now=None, force=False)
         game_group_id=game_group_id,
         now=now,
     )
-    set_account_target_membership(account_id, record)
+    set_account_group_membership(account_id, game_group_id, record)
+    if game_group_id == int(get_game_group_id() or 0):
+        set_account_target_membership(account_id, record)
     mark_dirty()
 
     previous_blocked = bool(
@@ -1555,7 +1561,7 @@ async def _probe_account_target_membership(account_id, *, now=None, force=False)
     if current_blocked and not previous_blocked:
         await send_audit_log(
             (
-                f"⏸ 登录账号 {account_id} 已确认不在当前游戏群，群命令调度已冻结；"
+                f"⏸ 登录账号 {account_id} 已确认不在游戏群 {game_group_id}，该路由已冻结；"
                 "账号、身份、模块配置和公共 MiniApp 均保留。"
             ),
             scope="global",
@@ -1566,7 +1572,7 @@ async def _probe_account_target_membership(account_id, *, now=None, force=False)
         TargetGroupMembership.NOT_APPLICABLE,
     }:
         await send_audit_log(
-            f"▶️ 登录账号 {account_id} 已重新确认可访问当前游戏群，群命令调度自动恢复。",
+            f"▶️ 登录账号 {account_id} 已重新确认可访问游戏群 {game_group_id}，该路由自动恢复。",
             scope="global",
             limit=240,
         )
@@ -1590,18 +1596,26 @@ async def run_account_target_membership_probe_scheduler(now=None, *, force=False
     )
     results = []
     for account_id in sorted(account_ids):
-        record = get_account_target_membership(account_id)
-        due = (
-            int(record.get("game_group_id") or 0) != int(get_game_group_id() or 0)
-            or float(record.get("next_probe_at") or 0) <= now
-        )
-        if not force and not due:
-            continue
-        result = await _probe_account_target_membership(account_id, now=now, force=force)
-        if result:
-            results.append(result)
-        if not force:
-            break
+        for game_group_id in get_game_group_ids():
+            record = get_account_group_membership(account_id, game_group_id)
+            if not record and int(game_group_id or 0) == int(get_game_group_id() or 0):
+                record = get_account_target_membership(account_id)
+            due = (
+                int(record.get("game_group_id") or 0) != int(game_group_id or 0)
+                or float(record.get("next_probe_at") or 0) <= now
+            )
+            if not force and not due:
+                continue
+            result = await _probe_account_target_membership(
+                account_id,
+                game_group_id=game_group_id,
+                now=now,
+                force=force,
+            )
+            if result:
+                results.append(result)
+            if not force:
+                return results
     return results
 
 

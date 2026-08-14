@@ -1044,6 +1044,10 @@ def _rotation_account_record(account_id):
     }
 
 
+def get_world_boss_rotation_account_record(account_id):
+    return _rotation_account_record(account_id)
+
+
 def _save_rotation_account_record(record, *, conclusion_key=""):
     rotation_state = _normalized_rotation_state()
     account_id = int(record.get("account_id") or 0)
@@ -2603,6 +2607,7 @@ def get_world_boss_status_text():
 __all__ = [
     "choose_world_boss_action",
     "clear_world_boss_identity_state",
+    "get_world_boss_rotation_account_record",
     "get_world_boss_status_text",
     "handle_world_boss_broadcast",
     "handle_world_boss_reply",

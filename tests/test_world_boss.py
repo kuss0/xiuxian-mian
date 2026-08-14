@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import module_manifest
 from model import state as state_module
+from model import ui
 from model.features import world_boss
 
 
@@ -1476,6 +1477,32 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first_id, selected[0])
         self.assertNotIn(first_id, config["window_skip_by_identity"])
+
+    def test_rotation_ui_uses_effective_initial_identity(self):
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="吧唧甲", world_boss_enabled=False)
+        self._register(second_id, label="吧唧乙", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青玉元",
+        }
+
+        snapshot = ui.get_miniapp_auto_config_snapshot(now=1_781_319_500.0)
+        rotation = next(
+            item
+            for item in snapshot["world_boss_rotation_accounts"]
+            if item["account_id"] == account_id
+        )
+
+        self.assertEqual(first_id, rotation["current_identity_id"])
+        self.assertEqual(
+            state_module.get_identity_ui_display_name(first_id),
+            rotation["current_label"],
+        )
 
     async def test_explicit_target_reward_advances_rotation_once(self):
         now = 1_781_319_500.0

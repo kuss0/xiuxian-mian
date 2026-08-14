@@ -105,6 +105,21 @@ class GuanxingConfigTests(unittest.TestCase):
             state_module.get_game_group_route_config()["topic_id_by_group"]["-1001680975844"],
         )
 
+    def test_disabled_backup_route_is_retained_but_not_effective(self):
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        state_module.set_game_group_id(primary_group_id)
+        state_module.set_game_group_route_config({
+            "enabled": False,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+
+        self.assertEqual([backup_group_id], state_module.get_game_group_route_config()["backup_group_ids"])
+        self.assertEqual([primary_group_id], state_module.get_game_group_ids())
+        self.assertFalse(state_module.is_game_group_id(backup_group_id))
+
     def test_basic_config_accepts_guanxing_negative_shift_delay(self):
         with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
             ok, message = asyncio.run(

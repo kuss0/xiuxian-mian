@@ -736,9 +736,13 @@ def get_miniapp_auto_config_snapshot(now=None):
     safe_config.pop("cave_public_entry_url", None)
     safe_config.pop("cave_public_entry_urls", None)
     try:
-        from .features.world_boss import select_world_boss_miniapp_entry_identities
+        from .features.world_boss import (
+            get_world_boss_rotation_account_record,
+            select_world_boss_miniapp_entry_identities,
+        )
         world_boss_candidate_ids = select_world_boss_miniapp_entry_identities()
     except Exception:
+        get_world_boss_rotation_account_record = None
         world_boss_candidate_ids = []
     excluded_world_boss_ids = set(config.get("world_boss_auto_excluded_identity_ids") or [])
     world_boss_window_skips = dict(config.get("world_boss_auto_window_skip_by_identity") or {})
@@ -763,7 +767,11 @@ def get_miniapp_auto_config_snapshot(now=None):
     for account_id in sorted({int(get_identity_account(identity_id) or 0) for identity_id in get_identity_ids()}):
         if account_id <= 0:
             continue
-        record = dict((rotation_records or {}).get(str(account_id)) or {})
+        record = (
+            get_world_boss_rotation_account_record(account_id)
+            if get_world_boss_rotation_account_record is not None
+            else dict((rotation_records or {}).get(str(account_id)) or {})
+        )
         current_identity_id = int(record.get("current_identity_id") or 0)
         completed_ids = [int(identity_id) for identity_id in record.get("completed_identity_ids") or []]
         rotation_accounts.append({

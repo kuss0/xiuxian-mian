@@ -112,6 +112,59 @@ class AccountMembershipSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("member", state_module.get_account_target_membership(301299112)["status"])
         audit_mock.assert_awaited_once()
 
+    async def test_due_backup_membership_is_reprobed_and_restored(self):
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+        primary_record = {
+            "account_id": 301299112,
+            "game_group_id": primary_group_id,
+            "identity_ids": [301299112, 8659059191],
+            "status": "member",
+            "probe_status": "member",
+            "checked_at": 900.0,
+            "last_definitive_at": 900.0,
+            "next_probe_at": 2000.0,
+        }
+        state_module.set_account_target_membership(301299112, primary_record)
+        state_module.set_account_group_membership(301299112, primary_group_id, primary_record)
+        state_module.set_account_group_membership(301299112, backup_group_id, {
+            "account_id": 301299112,
+            "game_group_id": backup_group_id,
+            "identity_ids": [301299112, 8659059191],
+            "status": "not_member",
+            "probe_status": "not_member",
+            "reason": "USER_NOT_PARTICIPANT",
+            "checked_at": 100.0,
+            "last_definitive_at": 100.0,
+            "next_probe_at": 200.0,
+        })
+        fake_client = object()
+        membership_probe = AsyncMock(return_value=TargetGroupMembershipProbe(TargetGroupMembership.MEMBER))
+        with (
+            patch.object(app, "get_accounts", return_value={"301299112": {}}),
+            patch.object(app, "get_all_clients", return_value={301299112: fake_client}),
+            patch.object(app, "get_registered_client", return_value=fake_client),
+            patch.object(app, "is_account_offline", return_value=False),
+            patch.object(app, "probe_target_group_membership", new=membership_probe),
+            patch.object(app, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(app, "mark_dirty"),
+        ):
+            results = await app.run_account_target_membership_probe_scheduler(1000.0)
+
+        self.assertEqual(1, len(results))
+        self.assertEqual(backup_group_id, membership_probe.await_args.args[1])
+        self.assertEqual(
+            "member",
+            state_module.get_account_group_membership(301299112, backup_group_id)["status"],
+        )
+        audit_mock.assert_awaited_once()
+
 
 class AccountMembershipSendGateTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

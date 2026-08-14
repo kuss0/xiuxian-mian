@@ -2158,7 +2158,8 @@ def set_game_group_route_config(config):
 def get_game_group_ids():
     config = get_game_group_route_config()
     result = []
-    for group_id in (config.get("primary_group_id"), *(config.get("backup_group_ids") or ())):
+    backup_group_ids = (config.get("backup_group_ids") or ()) if config.get("enabled") else ()
+    for group_id in (config.get("primary_group_id"), *backup_group_ids):
         try:
             group_id = int(group_id or 0)
         except (TypeError, ValueError, OverflowError):

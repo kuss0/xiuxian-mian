@@ -4516,6 +4516,18 @@ async def _send_game_command_impl(
                                 continue
                             return None
                         except Exception as route_error:
+                            if _is_send_as_peer_invalid_error(route_error):
+                                send_request_started_at = 0.0
+                                await _handle_send_as_peer_invalid(
+                                    command,
+                                    send_as_id=send_as_id,
+                                    account_id=account_id,
+                                    game_group_id=game_group_id,
+                                    error=route_error,
+                                )
+                                if route_index + 1 < len(routes):
+                                    continue
+                                return None
                             membership_record = _persist_account_target_not_member(
                                 account_id,
                                 route_error,

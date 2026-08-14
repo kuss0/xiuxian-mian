@@ -443,6 +443,44 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(client.sent_requests))
         self.assertEqual(-1001680975844, int(client.sent_requests[-1].peer.id))
 
+    async def test_primary_text_send_as_failure_fails_over_once_to_backup(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_id(primary_group_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+        client = _FakeClient([RuntimeError("You can't send messages as the specified peer"), "ok"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            result = await runtime.send_game_command(
+                ".天机盘", send_as_id=send_as_id, priority="probe", track=False
+            )
+
+        self.assertEqual(910001, result.id)
+        self.assertEqual(2, len(client.sent_requests))
+        self.assertEqual(backup_group_id, int(client.sent_requests[-1].peer.id))
+
     async def test_repeated_primary_send_as_failures_back_off_account_cohort_to_backup(self):
         account_id = 7001
         identity_ids = [301299111, 301299112, 301299113]
