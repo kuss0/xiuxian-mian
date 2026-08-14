@@ -195,6 +195,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
                     "retry": 0,
                     "timeout": 10,
                     "reply_to_msg_id": 0,
+                    "chat_id": -1001680975844,
                     "priority": "normal",
                 }
             }
@@ -223,6 +224,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             priority=runtime.SEND_PRIORITY_RETRY,
             max_retry=1,
             reply_timeout=10,
+            target_chat_id=-1001680975844,
         )
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertNotIn(201, identity_state["pending_tasks"])

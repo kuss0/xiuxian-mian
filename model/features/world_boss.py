@@ -86,6 +86,10 @@ WORLD_BOSS_STRONG_MIN_REALM_INDEX = YUANYING_MIN_REALM_INDEX
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT = 4
+WORLD_BOSS_ROTATION_DEFAULT_REWARD = "斩青元者"
+WORLD_BOSS_ROTATION_REWARD_ALIASES = {
+    "斩青玉元": WORLD_BOSS_ROTATION_DEFAULT_REWARD,
+}
 WORLD_BOSS_MINIAPP_BATTLE_PRIORITY_GAP_SEC = 0.25
 WORLD_BOSS_LOCAL_USERNAME_ALIASES = {
     8659059191: ("WalterWA2000", "wa2000"),
@@ -994,11 +998,18 @@ def _rotation_config():
         account_id = _coerce_int(raw_account_id, 0)
         if account_id > 0 and account_id not in account_ids:
             account_ids.append(account_id)
-    target_reward = str(raw.get("world_boss_rotation_target_reward") or "斩青玉元").strip() or "斩青玉元"
+    target_reward = _normalize_rotation_target_reward(raw.get("world_boss_rotation_target_reward"))
     return {
         "account_ids": account_ids,
         "target_reward": target_reward,
     }
+
+
+def _normalize_rotation_target_reward(value):
+    reward = str(value or WORLD_BOSS_ROTATION_DEFAULT_REWARD).strip() or WORLD_BOSS_ROTATION_DEFAULT_REWARD
+    for legacy, current in WORLD_BOSS_ROTATION_REWARD_ALIASES.items():
+        reward = reward.replace(legacy, current)
+    return reward
 
 
 def _account_rotation_identity_ids(account_id):
@@ -1013,9 +1024,14 @@ def _account_rotation_identity_ids(account_id):
 def _normalized_rotation_state():
     raw = get_world_boss_rotation_state()
     accounts = raw.get("accounts") if isinstance(raw, dict) else {}
+    target_reward = _rotation_config()["target_reward"]
+    stored_target_reward = _normalize_rotation_target_reward((raw or {}).get("target_reward")) if (raw or {}).get("target_reward") else ""
+    if stored_target_reward != target_reward:
+        accounts = {}
     return {
         "accounts": dict(accounts or {}) if isinstance(accounts, dict) else {},
-        "last_conclusion_key": str((raw or {}).get("last_conclusion_key") or ""),
+        "last_conclusion_key": str((raw or {}).get("last_conclusion_key") or "") if stored_target_reward == target_reward else "",
+        "target_reward": target_reward,
     }
 
 
@@ -1055,6 +1071,7 @@ def _save_rotation_account_record(record, *, conclusion_key=""):
         rotation_state["accounts"][str(account_id)] = dict(record)
     if conclusion_key:
         rotation_state["last_conclusion_key"] = str(conclusion_key)
+    rotation_state["target_reward"] = _rotation_config()["target_reward"]
     set_world_boss_rotation_state(rotation_state)
     mark_dirty()
 
@@ -1825,20 +1842,40 @@ def _local_world_boss_usernames():
 
 def _advance_world_boss_rotations(parsed, now, conclusion_key):
     config = _rotation_config()
-    if not config["account_ids"] or not parsed.get("rare_drops"):
+    if not config["account_ids"]:
         return []
     rotation_state = _normalized_rotation_state()
     if conclusion_key and rotation_state.get("last_conclusion_key") == conclusion_key:
         return []
     username_map = _local_world_boss_usernames()
-    advanced = []
+    completion_evidence = []
+    seen_usernames = set()
     for drop in parsed.get("rare_drops") or ():
         reward = str(drop.get("reward") or "").strip()
-        if config["target_reward"] not in reward:
+        if config["target_reward"] not in _normalize_rotation_target_reward(reward):
             continue
-        identity_id = username_map.get(str(drop.get("username") or "").strip().lower(), 0)
+        username = str(drop.get("username") or "").strip().lower()
+        if username and username not in seen_usernames:
+            completion_evidence.append({"username": username, "reward": reward})
+            seen_usernames.add(username)
+    if config["target_reward"] == WORLD_BOSS_ROTATION_DEFAULT_REWARD:
+        for contribution in parsed.get("contributions") or ():
+            if _coerce_int(contribution.get("rank"), 0) != 1:
+                continue
+            username = str(contribution.get("username") or "").strip().lower()
+            if username and username not in seen_usernames:
+                completion_evidence.append({
+                    "username": username,
+                    "reward": f"第1名（{WORLD_BOSS_ROTATION_DEFAULT_REWARD}）",
+                })
+                seen_usernames.add(username)
+    advanced = []
+    rotation_accounts = set(config["account_ids"])
+    for evidence in completion_evidence:
+        reward = str(evidence.get("reward") or "").strip()
+        identity_id = username_map.get(str(evidence.get("username") or "").strip().lower(), 0)
         account_id = int(get_identity_account(identity_id) or 0)
-        if identity_id <= 0 or account_id not in set(config["account_ids"]):
+        if identity_id <= 0 or account_id not in rotation_accounts:
             continue
         record = _rotation_account_record(account_id)
         if int(record.get("current_identity_id") or 0) != identity_id:

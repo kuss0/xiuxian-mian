@@ -2205,6 +2205,37 @@ def get_sent_message_chat_id(msg_id, default=None, *, send_as_id=None):
                 continue
             if message_id == target_msg_id:
                 return chat_id
+    # The hot tail can cover only a few hours on busy days. This is a cold
+    # recovery path, so scan the two daily files fully before defaulting to the
+    # primary group and risking a cross-chat reply.
+    for path in _recent_sent_message_log_paths():
+        if not os.path.exists(path):
+            continue
+        matched_chat_id = 0
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(payload, dict) or str(payload.get("event_type") or "") != "sent":
+                        continue
+                    try:
+                        message_id = int(payload.get("message_id") or 0)
+                        chat_id = int(payload.get("chat_id") or 0)
+                        sender_id = int(payload.get("sender_id") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if message_id != target_msg_id or not chat_id:
+                        continue
+                    if target_send_as_id and sender_id != target_send_as_id:
+                        continue
+                    matched_chat_id = chat_id
+        except OSError:
+            continue
+        if matched_chat_id:
+            return matched_chat_id
     return int(get_game_group_id() if default is None else default or 0)
 
 
@@ -3715,12 +3746,18 @@ def _account_group_is_blocked(account_id, game_group_id):
     )
 
 
-def _game_group_route_candidates(send_as_id, account_id, *, now=None):
+def _game_group_route_candidates(send_as_id, account_id, *, now=None, target_chat_id=None):
     current = float(now or time.time())
     routes = []
     primary_group_id = int(get_game_group_id() or 0)
     routed_group_ids = get_game_group_ids()
     configured_group_ids = routed_group_ids if routed_group_ids and int(routed_group_ids[0] or 0) == primary_group_id else [primary_group_id]
+    try:
+        target_chat_id = int(target_chat_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        target_chat_id = 0
+    if target_chat_id:
+        configured_group_ids = [target_chat_id] if target_chat_id in {int(group_id or 0) for group_id in configured_group_ids} else []
     for group_id in dict.fromkeys(configured_group_ids):
         group_id = int(group_id or 0)
         if group_id == 0 or _account_group_is_blocked(account_id, group_id):
@@ -3737,10 +3774,15 @@ def _game_group_route_candidates(send_as_id, account_id, *, now=None):
     return routes
 
 
-def _game_group_route_backoff_until(send_as_id, account_id, *, now=None):
+def _game_group_route_backoff_until(send_as_id, account_id, *, now=None, target_chat_id=None):
     current = float(now or time.time())
     blocked_until = 0.0
-    for group_id in get_game_group_ids():
+    try:
+        target_chat_id = int(target_chat_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        target_chat_id = 0
+    group_ids = [target_chat_id] if target_chat_id else get_game_group_ids()
+    for group_id in group_ids:
         group_id = int(group_id or 0)
         if group_id == 0 or _account_group_is_blocked(account_id, group_id):
             continue
@@ -3756,10 +3798,14 @@ def _game_group_route_backoff_until(send_as_id, account_id, *, now=None):
     return blocked_until if blocked_until > current else 0.0
 
 
-async def _account_target_group_blocks_send(command, *, send_as_id, account_id):
-    if _game_group_route_candidates(send_as_id, account_id):
+async def _account_target_group_blocks_send(command, *, send_as_id, account_id, target_chat_id=None):
+    if _game_group_route_candidates(send_as_id, account_id, target_chat_id=target_chat_id):
         return False
-    route_backoff_until = _game_group_route_backoff_until(send_as_id, account_id)
+    route_backoff_until = _game_group_route_backoff_until(
+        send_as_id,
+        account_id,
+        target_chat_id=target_chat_id,
+    )
     if route_backoff_until > 0:
         _close_guard_for_unsent_command(command, send_as_id, "send_as_peer_invalid")
         _record_game_send_block(
@@ -3772,7 +3818,7 @@ async def _account_target_group_blocks_send(command, *, send_as_id, account_id):
         )
         return True
     group_ids = get_game_group_ids()
-    primary_group_id = int(group_ids[0] if group_ids else get_game_group_id() or 0)
+    primary_group_id = int(target_chat_id or (group_ids[0] if group_ids else get_game_group_id() or 0))
     record = get_account_group_membership(account_id, primary_group_id) or get_account_target_membership(account_id)
     _close_guard_for_unsent_command(command, send_as_id, "account_not_in_target_group")
     await _log_account_target_group_blocked(
@@ -4171,11 +4217,16 @@ async def _send_game_command_impl(
     delete_policy=None,
     queue_timeout=None,
     allow_maintenance_pause=False,
+    target_chat_id=None,
 ):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     send_as_id = int(send_as_id)
-    game_group_id = int(get_game_group_id() or 0)
+    try:
+        target_chat_id = int(target_chat_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        target_chat_id = 0
+    game_group_id = int(target_chat_id or get_game_group_id() or 0)
     topic_id = int(get_game_group_topic_id(game_group_id) or 0)
     send_priority = _normalize_send_priority(command, priority=priority)
     account_id = int(get_identity_account(send_as_id) or 0)
@@ -4247,6 +4298,7 @@ async def _send_game_command_impl(
             command,
             send_as_id=send_as_id,
             account_id=account_id,
+            target_chat_id=target_chat_id,
         ):
             return None
 
@@ -4371,6 +4423,7 @@ async def _send_game_command_impl(
                 command,
                 send_as_id=send_as_id,
                 account_id=account_id,
+                target_chat_id=target_chat_id,
             ):
                 return None
             flood_until = _account_flood_wait_until(account_id)
@@ -4453,7 +4506,11 @@ async def _send_game_command_impl(
                                 )
                             _record_game_send_block(send_as_id, command, "account_client_not_ready", reason)
                             return None
-                    routes = _game_group_route_candidates(send_as_id, account_id)
+                    routes = _game_group_route_candidates(
+                        send_as_id,
+                        account_id,
+                        target_chat_id=target_chat_id,
+                    )
                     if not routes:
                         _record_game_send_block(
                             send_as_id,
@@ -4751,6 +4808,7 @@ async def send_game_command(
     delete_policy=None,
     queue_timeout=None,
     allow_maintenance_pause=False,
+    target_chat_id=None,
 ):
     """Send through the legacy path while optionally recording a shadow attempt."""
     shadow_identity_id = None
@@ -4801,6 +4859,7 @@ async def send_game_command(
             delete_policy=delete_policy,
             queue_timeout=queue_timeout,
             allow_maintenance_pause=allow_maintenance_pause,
+            target_chat_id=target_chat_id,
         )
 
 
@@ -5107,6 +5166,9 @@ async def run_retry_scheduler(now, send_as_id=None):
             reply_to_msg_id = int((current_item or {}).get("reply_to_msg_id", 0) or 0)
             if reply_to_msg_id > 0:
                 reply_to_kwargs["reply_to"] = reply_to_msg_id
+            target_chat_id = int((current_item or {}).get("chat_id", 0) or 0)
+            if target_chat_id:
+                reply_to_kwargs["target_chat_id"] = target_chat_id
             new_msg = await send_game_command(
                 cmd,
                 send_as_id=identity_id,

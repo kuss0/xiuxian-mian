@@ -55,12 +55,13 @@ class FormationTests(unittest.IsolatedAsyncioTestCase):
             state_module.set_identity_account(identity_id, account_id)
         return identity_id
 
-    def _record_invite(self, now=1_700_000_000.0, message_id=7897745):
+    def _record_invite(self, now=1_700_000_000.0, message_id=7897745, chat_id=0):
         return formation.apply_formation_reply_snapshot(
             "",
             real_text("formation.invite.external_star_palace"),
             now,
             message_id=message_id,
+            chat_id=chat_id,
         )
 
     def test_real_invite_records_external_invite_without_identity_pending(self):
@@ -91,7 +92,7 @@ class FormationTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_schedules_then_sends_one_assist(self):
         now = 1_700_000_000.0
         identity_id = self._prepare_identity()
-        self._record_invite(now)
+        self._record_invite(now, chat_id=-1001680975844)
 
         with state_module.use_identity(identity_id):
             state_module.state["formation_enabled"] = True
@@ -109,6 +110,7 @@ class FormationTests(unittest.IsolatedAsyncioTestCase):
                     CMD_FORMATION_ASSIST,
                     track=False,
                     reply_to=7897745,
+                    target_chat_id=-1001680975844,
                     send_as_id=identity_id,
                     priority="urgent_reactive",
                     source_module="周天星斗",

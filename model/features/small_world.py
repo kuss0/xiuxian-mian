@@ -28,6 +28,7 @@ from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands,
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
+    get_game_group_ids,
     get_identity_enabled,
     get_identity_ids,
     get_send_as_tags,
@@ -1318,15 +1319,22 @@ def _recover_manifest_command_id_from_log(now):
         return msg_id
     identity_id = get_current_identity_id()
     start_at = _manifest_recovery_start_at(now)
-    recovered = recover_sent_command_from_message_log(
-        CMD_SMALL_WORLD_MANIFEST,
-        identity_id,
-        now,
-        start_ts=start_at,
-        game_group_id=get_game_group_id(),
-        lookback_sec=SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC,
-        lookahead_sec=SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC,
-    )
+    recovered = None
+    group_ids = [int(group_id or 0) for group_id in get_game_group_ids() if int(group_id or 0)]
+    if not group_ids:
+        group_ids = [int(get_game_group_id() or 0)]
+    for group_id in group_ids:
+        candidate = recover_sent_command_from_message_log(
+            CMD_SMALL_WORLD_MANIFEST,
+            identity_id,
+            now,
+            start_ts=start_at,
+            game_group_id=group_id,
+            lookback_sec=SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC,
+            lookahead_sec=SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC,
+        )
+        if candidate and float(candidate.get("ts_epoch") or 0) >= float((recovered or {}).get("ts_epoch") or 0):
+            recovered = candidate
     if not recovered:
         return 0
     try:

@@ -727,6 +727,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                             "retry": 0,
                             "timeout": 60.0,
                             "reply_to_msg_id": 0,
+                            "chat_id": -1001680975844,
+                            "topic_id": 7310786,
                             "max_retry": 1,
                             "priority": "chain",
                             "source_module": "太一",
@@ -739,7 +741,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.save_state())
                 conn = persistence.get_db_conn()
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
-                self.assertTrue({"source_module", "op_id", "chain_id", "delete_policy"}.issubset(columns))
+                self.assertTrue({"chat_id", "topic_id", "source_module", "op_id", "chain_id", "delete_policy"}.issubset(columns))
 
                 state_module._meta_state.clear()
                 state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
@@ -752,6 +754,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertEqual("taiyi-yindao-4567", item["op_id"])
                     self.assertEqual("taiyi-cycle-1", item["chain_id"])
                     self.assertEqual("auto_delete", item["delete_policy"])
+                    self.assertEqual(-1001680975844, item["chat_id"])
+                    self.assertEqual(7310786, item["topic_id"])
 
     def test_load_state_tolerates_runtime_column_list_newer_than_db_row(self):
         with tempfile.TemporaryDirectory() as tmpdir:

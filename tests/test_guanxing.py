@@ -114,6 +114,7 @@ class GuanxingShiftGuardTests(unittest.IsolatedAsyncioTestCase):
             f"{guanxing.CMD_GUANXING_SHIFT} @target",
             track=False,
             reply_to=702,
+            target_chat_id=state_module.get_game_group_id(),
             send_as_id=identity_id,
             priority="reactive",
         )

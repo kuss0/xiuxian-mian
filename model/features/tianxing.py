@@ -26,7 +26,7 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_pre_send_guard, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_world_boss_run_state, is_module_available, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_game_group_topic_id, get_game_topic_id, get_world_boss_run_state, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -2573,19 +2573,24 @@ def _recover_tianxing_daily_observe_from_message_log(observed, now):
     identity_id = int(get_current_identity_id() or 0)
     if identity_id <= 0:
         return False
-    game_group_id = int(get_game_group_id() or 0)
-    topic_id = int(get_game_topic_id() or 0)
+    game_group_ids = {int(group_id or 0) for group_id in get_game_group_ids()}
+    game_group_ids.discard(0)
+    if not game_group_ids:
+        game_group_ids = {int(get_game_group_id() or 0)}
+        game_group_ids.discard(0)
     day_start = _tianxing_day_start_ts(now)
 
     def command_predicate(entry):
         if str((entry or {}).get("event_type") or "") not in {"message", "sent"}:
             return False
-        if game_group_id and int((entry or {}).get("chat_id") or 0) != game_group_id:
+        entry_chat_id = int((entry or {}).get("chat_id") or 0)
+        if game_group_ids and entry_chat_id not in game_group_ids:
             return False
         if str((entry or {}).get("text") or "").strip() != CMD_TIANXING_OBSERVE:
             return False
         if not sender_matches_identity((entry or {}).get("sender_id"), identity_id):
             return False
+        topic_id = int(get_game_group_topic_id(entry_chat_id) or get_game_topic_id() or 0)
         reply_to = int((entry or {}).get("reply_to_msg_id") or 0)
         if topic_id > 0 and reply_to not in {0, topic_id}:
             return False

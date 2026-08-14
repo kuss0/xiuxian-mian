@@ -206,6 +206,8 @@ PENDING_TASK_PERSISTED_COLUMNS = (
     "retry",
     "timeout",
     "reply_to_msg_id",
+    "chat_id",
+    "topic_id",
     "max_retry",
     "priority",
     "source_module",
@@ -855,6 +857,8 @@ _SCHEMA_COLUMNS = {
         ("taiyi_last_error", "TEXT NOT NULL DEFAULT ''"),
     ),
     "pending_tasks": (
+        ("chat_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("topic_id", "INTEGER NOT NULL DEFAULT 0"),
         ("priority", "TEXT NOT NULL DEFAULT ''"),
         ("source_module", "TEXT NOT NULL DEFAULT ''"),
         ("op_id", "TEXT NOT NULL DEFAULT ''"),
@@ -1619,6 +1623,8 @@ def init_db():
             retry INTEGER NOT NULL,
             timeout REAL NOT NULL,
             reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            chat_id INTEGER NOT NULL DEFAULT 0,
+            topic_id INTEGER NOT NULL DEFAULT 0,
             max_retry INTEGER NOT NULL DEFAULT 1,
             priority TEXT NOT NULL DEFAULT '',
             source_module TEXT NOT NULL DEFAULT '',
@@ -1991,7 +1997,7 @@ def upsert_identity_to_db(send_as_id):
     conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),))
     for msg_id, item in identity_state.get("pending_tasks", {}).items():
         conn.execute(
-            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, max_retry, priority, source_module, op_id, chain_id, delete_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, chat_id, topic_id, max_retry, priority, source_module, op_id, chain_id, delete_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(msg_id),
                 int(send_as_id),
@@ -2000,6 +2006,8 @@ def upsert_identity_to_db(send_as_id):
                 int(item.get("retry", 0) or 0),
                 float(item.get("timeout", 0) or 0),
                 int(item.get("reply_to_msg_id", 0) or 0),
+                int(item.get("chat_id", 0) or 0),
+                int(item.get("topic_id", 0) or 0),
                 int(item.get("max_retry", RETRY_LIMIT) if item.get("max_retry", RETRY_LIMIT) is not None else RETRY_LIMIT),
                 str(item.get("priority", "") or ""),
                 str(item.get("source_module", "") or ""),
@@ -2085,6 +2093,8 @@ def _load_identity_from_db(send_as_id):
             "retry": row["retry"],
             "timeout": row["timeout"],
             "reply_to_msg_id": row["reply_to_msg_id"],
+            "chat_id": row["chat_id"] if "chat_id" in row.keys() else 0,
+            "topic_id": row["topic_id"] if "topic_id" in row.keys() else 0,
             "max_retry": row["max_retry"] if "max_retry" in row.keys() else RETRY_LIMIT,
             "priority": row["priority"] if "priority" in row.keys() else "",
             "source_module": row["source_module"] if "source_module" in row.keys() else "",

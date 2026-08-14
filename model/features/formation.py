@@ -242,7 +242,7 @@ def _set_identity_cooldown(identity_id, until_ts, now, *, result="", success=Fal
         mark_dirty()
 
 
-def _record_invite(parsed, now, *, message_id=0):
+def _record_invite(parsed, now, *, message_id=0, chat_id=0):
     message_id = int(message_id or 0)
     if message_id <= 0:
         return False
@@ -256,6 +256,7 @@ def _record_invite(parsed, now, *, message_id=0):
     run_state = _normalize_run_state()
     run_state.setdefault("active_invites", {})[str(message_id)] = {
         "msg_id": message_id,
+        "chat_id": int(chat_id or 0),
         "owner_username": owner_username,
         "created_at": float(now or 0),
         "expire_at": float(now or 0) + max(1, wait_sec),
@@ -435,13 +436,13 @@ def _record_failure(parsed, now, *, reply_to_msg_id=0, message_id=0, identity_id
     return kind != "help"
 
 
-def apply_formation_reply_snapshot(command_text, text, now, *, reply_to_msg_id=0, message_id=0, identity_id_hint=0, command_reply_to_msg_id=0):
+def apply_formation_reply_snapshot(command_text, text, now, *, reply_to_msg_id=0, message_id=0, identity_id_hint=0, command_reply_to_msg_id=0, chat_id=0):
     parsed = _parse_formation_text(text)
     kind = parsed.get("kind")
     if kind == "unknown":
         return False
     if kind == "invite":
-        return _record_invite(parsed, now, message_id=message_id)
+        return _record_invite(parsed, now, message_id=message_id, chat_id=chat_id)
     if kind == "success":
         return _record_success(parsed, now, message_id=message_id, reply_to_msg_id=reply_to_msg_id)
     return _record_failure(
@@ -468,6 +469,7 @@ async def handle_formation_event(text, now, event, reply_to=None, reply_context=
         reply_to_msg_id=reply_to_msg_id,
         message_id=int(getattr(event, "id", 0) or 0),
         identity_id_hint=int((reply_context or {}).get("send_as_id") or 0),
+        chat_id=int(getattr(event, "chat_id", 0) or 0),
     )
 
 
@@ -586,6 +588,7 @@ def _recover_timed_out_formation_replies(now):
                     reply_to_msg_id=int((entry or {}).get("reply_to_msg_id") or command_msg_id),
                     message_id=int((entry or {}).get("message_id") or 0),
                     identity_id_hint=identity_id,
+                    chat_id=int((entry or {}).get("chat_id") or 0),
                 )
                 after_pending = int(get_identity_state(identity_id).get("formation_pending_assist_msg_id", 0) or 0)
                 if before_pending > 0 and after_pending <= 0:
@@ -633,6 +636,10 @@ def _open_external_invites(run_state, now):
 
 async def _send_assist(identity_id, invite, now, run_state):
     invite_msg_id = int(invite.get("msg_id") or 0)
+    route_kwargs = {}
+    invite_chat_id = int(invite.get("chat_id") or 0)
+    if invite_chat_id:
+        route_kwargs["target_chat_id"] = invite_chat_id
     msg = await send_game_command(
         CMD_FORMATION_ASSIST,
         track=False,
@@ -640,6 +647,7 @@ async def _send_assist(identity_id, invite, now, run_state):
         send_as_id=identity_id,
         priority="urgent_reactive",
         source_module="周天星斗",
+        **route_kwargs,
     )
     if not msg:
         _record_attempt(run_state, identity_id, invite_msg_id, status="failed", reason="send_failed", updated_at=float(now or 0))

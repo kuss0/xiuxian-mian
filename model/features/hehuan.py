@@ -14,6 +14,8 @@ from ..runtime import get_last_game_send_block, get_sent_message_chat_id, send_a
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
+    get_game_group_ids,
+    get_game_group_topic_id,
     get_game_topic_id,
     get_identity_enabled,
     get_identity_ids,
@@ -563,7 +565,8 @@ def _is_baiji_log_entry(payload):
 
 
 def _is_game_topic_entry(payload):
-    topic_id = int(get_game_topic_id() or GAME_TOPIC_ID or 0)
+    chat_id = int((payload or {}).get("chat_id") or 0)
+    topic_id = int(get_game_group_topic_id(chat_id) or get_game_topic_id() or GAME_TOPIC_ID or 0)
     if topic_id <= 0:
         return False
     try:
@@ -622,7 +625,11 @@ def find_recent_hehuan_partner_anchor_msg_id(
         return 0
     now = float(now if now is not None else time.time())
     min_ts = now - max(1, int(max_age_sec or HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC))
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_ids = {int(group_id or 0) for group_id in get_game_group_ids()}
+    game_group_ids.discard(0)
+    if not game_group_ids:
+        game_group_ids = {int(get_game_group_id() or 0)}
+        game_group_ids.discard(0)
     partner_id = int(target_id or 0) or _resolve_identity_id_by_at_name(partner)
     for path in _recent_message_log_paths(now):
         if not os.path.exists(path):
@@ -636,7 +643,7 @@ def find_recent_hehuan_partner_anchor_msg_id(
                 continue
             if str(payload.get("event_type") or "") not in {"message", "sent"}:
                 continue
-            if game_group_id and int(payload.get("chat_id", 0) or 0) != game_group_id:
+            if game_group_ids and int(payload.get("chat_id", 0) or 0) not in game_group_ids:
                 continue
             if require_game_topic and not _is_game_topic_entry(payload):
                 continue
@@ -1260,7 +1267,11 @@ def _recover_hehuan_pending_from_message_log(observed, now):
 def _find_recent_hehuan_sent_from_message_log(send_as_id, command, now, *, reply_to_msg_id=0, op_id="", lookback_sec=180):
     now = float(now if now is not None else time.time())
     min_ts = now - max(1, int(lookback_sec or 180))
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_ids = {int(group_id or 0) for group_id in get_game_group_ids()}
+    game_group_ids.discard(0)
+    if not game_group_ids:
+        game_group_ids = {int(get_game_group_id() or 0)}
+        game_group_ids.discard(0)
     expected_command = str(command or "").strip()
     expected_reply_to = int(reply_to_msg_id or 0)
     expected_op_id = str(op_id or "").strip()
@@ -1279,7 +1290,7 @@ def _find_recent_hehuan_sent_from_message_log(send_as_id, command, now, *, reply
             event_type = str(payload.get("event_type") or "")
             if event_type not in {"sent", "message"}:
                 continue
-            if game_group_id and int(payload.get("chat_id", 0) or 0) != game_group_id:
+            if game_group_ids and int(payload.get("chat_id", 0) or 0) not in game_group_ids:
                 continue
             if str(payload.get("text") or "").strip() != expected_command:
                 continue

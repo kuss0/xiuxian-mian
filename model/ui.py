@@ -198,12 +198,14 @@ from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
     get_accounts,
+    get_account_group_membership,
     get_account_target_membership,
     get_available_module_names,
     get_forum_topics,
     get_forum_topics_updated_at,
     get_game_bot_ids,
     get_game_group_id,
+    get_game_group_ids,
     get_game_group_route_config,
     get_game_topic_id,
     get_global_enabled,
@@ -291,6 +293,7 @@ from .state import (
     set_storage_bag_records,
     set_tianjige_dao_path_records,
     set_miniapp_auto_config,
+    set_world_boss_rotation_state,
     set_tree_miniapp_score_configs,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
@@ -432,7 +435,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "world_boss_auto_finish_reserve_windows": WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS,
     "world_boss_auto_window_skip_by_identity": {},
     "world_boss_rotation_account_ids": [],
-    "world_boss_rotation_target_reward": "斩青玉元",
+    "world_boss_rotation_target_reward": "斩青元者",
     "tree_daily_enabled_identity_ids": [],
 }
 TRIAL_DAILY_BATCH_WAVES = (
@@ -562,9 +565,10 @@ def normalize_miniapp_auto_config(config=None):
         for account_id in result.get("world_boss_rotation_account_ids") or []
         if str(account_id or "").strip().isdigit() and int(account_id) > 0
     })
-    result["world_boss_rotation_target_reward"] = (
-        str(result.get("world_boss_rotation_target_reward") or "斩青玉元").strip() or "斩青玉元"
-    )
+    rotation_target_reward = str(result.get("world_boss_rotation_target_reward") or "斩青元者").strip() or "斩青元者"
+    result["world_boss_rotation_target_reward"] = {
+        "斩青玉元": "斩青元者",
+    }.get(rotation_target_reward, rotation_target_reward)
     tree_identity_ids = result.get("tree_daily_enabled_identity_ids") or []
     if not isinstance(tree_identity_ids, (list, tuple, set)):
         tree_identity_ids = []
@@ -5994,6 +5998,17 @@ def _get_runtime_accounts_snapshot():
         account_info["target_group_probe_status"] = str(membership.get("probe_status") or "unknown")
         account_info["target_group_reason"] = str(membership.get("reason") or membership.get("last_error") or "")
         account_info["target_group_checked_at"] = fmt_abs_ts(float(membership.get("checked_at") or 0))
+        account_info["game_group_memberships"] = [
+            {
+                "game_group_id": int(group_id),
+                "status": str(group_membership.get("status") or "unknown"),
+                "probe_status": str(group_membership.get("probe_status") or "unknown"),
+                "reason": str(group_membership.get("reason") or group_membership.get("last_error") or ""),
+                "checked_at": fmt_abs_ts(float(group_membership.get("checked_at") or 0)),
+            }
+            for group_id in get_game_group_ids()
+            for group_membership in [get_account_group_membership(account_id, group_id)]
+        ]
         if offline:
             account_info["offline_reason"] = get_account_offline_reason(account_id) or "账号不可用"
         else:
@@ -6017,6 +6032,17 @@ def _get_runtime_accounts_snapshot():
             "target_group_probe_status": str(membership.get("probe_status") or "unknown"),
             "target_group_reason": str(membership.get("reason") or membership.get("last_error") or ""),
             "target_group_checked_at": fmt_abs_ts(float(membership.get("checked_at") or 0)),
+            "game_group_memberships": [
+                {
+                    "game_group_id": int(group_id),
+                    "status": str(group_membership.get("status") or "unknown"),
+                    "probe_status": str(group_membership.get("probe_status") or "unknown"),
+                    "reason": str(group_membership.get("reason") or group_membership.get("last_error") or ""),
+                    "checked_at": fmt_abs_ts(float(group_membership.get("checked_at") or 0)),
+                }
+                for group_id in get_game_group_ids()
+                for group_membership in [get_account_group_membership(account_id, group_id)]
+            ],
         })
         account_info.pop("offline_reason", None)
         accounts[str(account_id)] = account_info
@@ -7461,6 +7487,7 @@ async def ui_set_cave_public_config(payload=None):
 async def ui_set_world_boss_miniapp_config(payload=None):
     payload = dict(payload or {})
     config = normalize_miniapp_auto_config()
+    previous_rotation_target = str(config.get("world_boss_rotation_target_reward") or "")
     if "enabled" in payload:
         config["world_boss_auto_enabled"] = _coerce_ui_bool(payload.get("enabled"))
     if "account_limit" in payload:
@@ -7511,8 +7538,16 @@ async def ui_set_world_boss_miniapp_config(payload=None):
         target_reward = str(payload.get("rotation_target_reward") or "").strip()
         if not target_reward:
             return False, "世界 Boss 轮换目标奖励不能为空"
-        config["world_boss_rotation_target_reward"] = target_reward[:64]
+        config["world_boss_rotation_target_reward"] = {
+            "斩青玉元": "斩青元者",
+        }.get(target_reward, target_reward)[:64]
     set_miniapp_auto_config(config)
+    if str(config.get("world_boss_rotation_target_reward") or "") != previous_rotation_target:
+        set_world_boss_rotation_state({
+            "accounts": {},
+            "last_conclusion_key": "",
+            "target_reward": str(config.get("world_boss_rotation_target_reward") or ""),
+        })
     save_state()
     status = "开启" if config["world_boss_auto_enabled"] else "关闭"
     return True, (

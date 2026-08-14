@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_sent_observer, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining
 
 
@@ -134,12 +134,16 @@ def _recover_phaseful_sent_from_message_log(command, attempt_started_at, now=Non
     now = float(now if now is not None else time.time())
     if now - attempt_started_at > PHASEFUL_SEND_TIMEOUT_RECOVERY_LOOKBACK_SEC:
         return None
-    game_group_id = int(get_game_group_id() or 0)
+    game_group_ids = {int(group_id or 0) for group_id in get_game_group_ids()}
+    game_group_ids.discard(0)
+    if not game_group_ids:
+        game_group_ids = {int(get_game_group_id() or 0)}
+        game_group_ids.discard(0)
 
     def predicate(entry):
         if str((entry or {}).get("event_type") or "") not in {"message", "sent"}:
             return False
-        if game_group_id and int((entry or {}).get("chat_id") or 0) != game_group_id:
+        if game_group_ids and int((entry or {}).get("chat_id") or 0) not in game_group_ids:
             return False
         if str((entry or {}).get("text") or "").strip() != command:
             return False

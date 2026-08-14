@@ -1503,6 +1503,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             state_module.get_identity_ui_display_name(first_id),
             rotation["current_label"],
         )
+        self.assertEqual("斩青元者", snapshot["world_boss_rotation_target_reward"])
 
     async def test_explicit_target_reward_advances_rotation_once(self):
         now = 1_781_319_500.0
@@ -1550,6 +1551,57 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         record = world_boss._rotation_account_record(account_id)
         self.assertEqual([], record["completed_identity_ids"])
         self.assertEqual(first_id, record["current_identity_id"])
+
+    async def test_rank_one_advances_rotation_when_title_was_already_owned(self):
+        now = 1_781_319_500.0
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="Waaiging", world_boss_enabled=False)
+        self._register(second_id, label="baji_two", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青元者",
+        }
+        parsed = world_boss.parse_world_boss_text(
+            "【世界通告｜真仙试锋击退】\n"
+            "- 参战：12 人\n"
+            "1. @Waaiging - 3999 分 ｜ 强攻 14 ｜ 伤害 9.99亿亿\n"
+            "结算\n"
+            "- @Waaiging：伐仙功 +7，修为 +5999，灵石 +97，贡献 +51"
+        )
+
+        with patch.object(world_boss, "send_audit_log", new=AsyncMock()):
+            await world_boss._close_event(parsed, now)
+
+        record = state_module.get_world_boss_rotation_state()["accounts"][str(account_id)]
+        self.assertEqual([first_id], record["completed_identity_ids"])
+        self.assertEqual(second_id, record["current_identity_id"])
+        self.assertEqual("第1名（斩青元者）", record["last_reward"])
+
+    async def test_ui_target_change_resets_rotation_generation(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_target_reward": "斩青元者",
+        }
+        state_module.set_world_boss_rotation_state({
+            "accounts": {"301299112": {"completed_identity_ids": [3504367852]}},
+            "last_conclusion_key": "old",
+            "target_reward": "斩青元者",
+        })
+
+        with patch.object(ui, "save_state", return_value=True):
+            ok, _message = await ui.ui_set_world_boss_miniapp_config({
+                "rotation_target_reward": "另一奖励",
+            })
+
+        self.assertTrue(ok)
+        self.assertEqual({
+            "accounts": {},
+            "last_conclusion_key": "",
+            "target_reward": "另一奖励",
+        }, state_module.get_world_boss_rotation_state())
 
     async def test_interrupted_miniapp_task_is_not_automatically_resumed(self):
         now = 1_781_319_500.0

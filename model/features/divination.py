@@ -1036,6 +1036,7 @@ async def _send_exchange(pending, now, *, reason="", refreshed_identity_ids=None
     pending = pending if isinstance(pending, dict) else {}
     identity_id = int(pending.get("target_identity_id") or 0)
     source_msg_id = int(pending.get("source_msg_id") or 0)
+    source_chat_id = int(pending.get("source_chat_id") or 0)
     key = str(pending.get("key") or "").strip()
     costs = pending.get("costs") if isinstance(pending.get("costs"), dict) else {}
     if not _is_supported_auto_exchange_target(pending.get("target_item")):
@@ -1063,6 +1064,7 @@ async def _send_exchange(pending, now, *, reason="", refreshed_identity_ids=None
             pending["last_error"] = f"天机阁API暂未确认资源满足：{shortage_text}"
         return False
 
+    route_kwargs = {"target_chat_id": source_chat_id} if source_chat_id else {}
     msg = await send_game_command(
         CMD_DIVINATION_EXCHANGE,
         track=True,
@@ -1074,6 +1076,7 @@ async def _send_exchange(pending, now, *, reason="", refreshed_identity_ids=None
         source_module="卜筮问天",
         op_id=f"divination_exchange:{key}",
         chain_id=f"divination:{key}",
+        **route_kwargs,
     )
     if not msg:
         pending["status"] = "failed"
@@ -1262,6 +1265,7 @@ async def handle_divination_reply(text, now, event=None, reply_to=None, matched_
         "target_item": treasure.get("target_item") or "",
         "costs": dict(treasure.get("costs") or {}),
         "source_msg_id": source_msg_id,
+        "source_chat_id": int(getattr(event, "chat_id", 0) or 0),
         "command_msg_id": int((reply_context or {}).get("reply_to_msg_id") or getattr(reply_to, "id", 0) or 0),
         "created_at": float(now or time.time()),
         "expires_at": float(now or time.time()) + window_sec,

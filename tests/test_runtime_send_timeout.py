@@ -264,6 +264,27 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(-1001680975844, payload["chat_id"])
         self.assertEqual(7310786, payload["topic_id"])
 
+    def test_sent_message_route_falls_back_to_full_daily_log(self):
+        sent_at = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(runtime, "MESSAGES_DIR", tmpdir), \
+                patch.object(runtime, "cleanup_message_logs"):
+            runtime._append_sent_message_log(
+                920003,
+                ".助阵",
+                301299112,
+                sent_at=sent_at,
+                game_group_id=-1001680975844,
+                topic_id=7310786,
+            )
+            log_path = next(Path(tmpdir).glob("*.log"))
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write("x" * (600 * 1024))
+            with patch.object(runtime, "_recent_sent_message_log_paths", return_value=[str(log_path)]):
+                chat_id = runtime.get_sent_message_chat_id(920003, send_as_id=301299112)
+
+        self.assertEqual(-1001680975844, chat_id)
+
     async def test_identity_gap_applies_after_regular_event_send(self):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = 0.0
@@ -480,6 +501,52 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(910001, result.id)
         self.assertEqual(2, len(client.sent_requests))
         self.assertEqual(backup_group_id, int(client.sent_requests[-1].peer.id))
+
+    async def test_explicit_reply_route_sends_only_to_source_group(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        backup_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_id(primary_group_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [backup_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(backup_group_id): 7310786},
+        })
+        client = _FakeClient(["ok"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+            result = await runtime.send_game_command(
+                ".助阵",
+                send_as_id=send_as_id,
+                priority="probe",
+                track=False,
+                reply_to=777,
+                target_chat_id=backup_group_id,
+            )
+
+        self.assertEqual(910001, result.id)
+        self.assertEqual(1, len(client.sent_requests))
+        request = client.sent_requests[0]
+        self.assertEqual(backup_group_id, int(request.peer.id))
+        self.assertEqual(777, int(request.reply_to.reply_to_msg_id))
+        self.assertEqual(7310786, int(request.reply_to.top_msg_id))
 
     async def test_repeated_primary_send_as_failures_back_off_account_cohort_to_backup(self):
         account_id = 7001

@@ -9,9 +9,10 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_game_group_id,
     get_guanxing_round_state,
     get_guanxing_shift_delay_sec,
     get_identity_enabled,
@@ -281,10 +282,17 @@ async def _send_guanxing_shift(identity_id, slot_key):
         return False, "观星改换目标未配置"
 
     shift_command = f"{CMD_GUANXING_SHIFT} {shift_target}"
+    query_msg_id = int(state.get("guanxing_last_query_msg_id", 0) or 0)
+    target_chat_id = get_sent_message_chat_id(
+        query_msg_id,
+        default=get_game_group_id(),
+        send_as_id=identity_id,
+    )
     msg = await send_game_command(
         shift_command,
         track=False,
         reply_to=panel_msg_id,
+        target_chat_id=target_chat_id,
         send_as_id=identity_id,
         priority="reactive",
     )
