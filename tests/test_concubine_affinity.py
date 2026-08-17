@@ -496,6 +496,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
                         "ts": self._log_ts(now - 30),
                         "event_type": "message",
                         "message_id": logged_panel_msg_id,
+                        "chat_id": -1001680975844,
                         "sender_id": send_as_id + 777,
                         "topic_id": 7310786,
                         "reply_to_msg_id": 776,
@@ -517,7 +518,13 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
                 await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_HEART, track=False, reply_to=logged_panel_msg_id, priority="chain")
+        mock_send.assert_awaited_once_with(
+            config.CMD_CONCUBINE_HEART,
+            track=False,
+            reply_to=logged_panel_msg_id,
+            priority="chain",
+            target_chat_id=-1001680975844,
+        )
         self.assertEqual("heart_pending", state_module.state["concubine_phase"])
         self.assertEqual(988, state_module.state["concubine_heart_msg_id"])
         self.assertEqual("凌玉灵", state_module.state["concubine_name"])
@@ -2740,6 +2747,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["concubine_heart_enabled"] = True
             identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_heart_msg_id"] = 9387600
             identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
             identity_state["concubine_heart_round"] = 2
 
@@ -2747,6 +2755,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             with state_module.use_identity(send_as_id), \
                  patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
                  patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "get_sent_message_chat_id", return_value=-1001680975844), \
                  patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
                 sent = await concubine._send_heart_choice(now)
                 workflow_events = _read_workflow_events(tmpdir)
@@ -2757,6 +2766,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             track=False,
             reply_to=prompt_msg_id,
             priority="urgent_reactive",
+            target_chat_id=-1001680975844,
             source_module="共历心劫",
             op_id=f"concubine_heart_choice:{send_as_id}:{prompt_msg_id}:round2:try0:{config.CMD_CONCUBINE_HEART_STEADY}",
             chain_id=f"concubine_heart_choice:{send_as_id}:{prompt_msg_id}:round2",
@@ -3123,6 +3133,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_availability"] = "available"
             identity_state["concubine_name"] = "凌玉灵"
             identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_panel_chat_id"] = -1001680975844
             identity_state["concubine_last_snapshot_at"] = now
             identity_state["concubine_heart_due_at"] = now - 1
             identity_state["action_guard_sessions"] = {
@@ -3152,6 +3163,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             track=False,
             reply_to=9387319,
             priority="chain",
+            target_chat_id=-1001680975844,
         )
         self.assertEqual("idle", state_module.state["concubine_phase"])
         self.assertNotIn("concubine_heart", state_module.state["action_guard_sessions"])
@@ -3172,6 +3184,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_availability"] = "available"
             identity_state["concubine_name"] = "凌玉灵"
             identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_panel_chat_id"] = -1001680975844
             identity_state["concubine_last_snapshot_at"] = now
             identity_state["concubine_heart_due_at"] = now - 1
 
@@ -3195,6 +3208,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             track=False,
             reply_to=9387319,
             priority="chain",
+            target_chat_id=-1001680975844,
         )
         self.assertEqual("idle", state_module.state["concubine_phase"])
         self.assertEqual(now + 600, state_module.state["concubine_heart_due_at"])
@@ -3216,6 +3230,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_availability"] = "available"
             identity_state["concubine_name"] = "凌玉灵"
             identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_panel_chat_id"] = -1001680975844
             identity_state["concubine_last_snapshot_at"] = now
             identity_state["concubine_heart_due_at"] = now - 1
 
@@ -3240,6 +3255,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             track=False,
             reply_to=9387319,
             priority="chain",
+            target_chat_id=-1001680975844,
         )
         self.assertEqual("idle", state_module.state["concubine_phase"])
         self.assertEqual(expected_due, state_module.state["concubine_heart_due_at"])
@@ -4292,6 +4308,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertEqual(panel_msg_id, state_module.state["concubine_last_panel_msg_id"])
+        self.assertEqual(-1001680975844, state_module.state["concubine_last_panel_chat_id"])
         self.assertEqual("凌玉灵", state_module.state["concubine_name"])
 
     async def test_external_same_name_status_panel_without_identity_context_is_ignored(self):
@@ -4397,9 +4414,37 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             await concubine.run_concubine_scheduler(now)
 
         self.assertTrue(handled)
-        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
+        mock_send.assert_awaited_once_with(
+            config.CMD_CONCUBINE_HEART,
+            track=False,
+            reply_to=panel_msg_id,
+            priority="chain",
+            target_chat_id=-1001680975844,
+        )
         self.assertEqual("heart_pending", state_module.state["concubine_phase"])
         self.assertEqual(988, state_module.state["concubine_heart_msg_id"])
+
+    async def test_heart_unknown_panel_group_refreshes_instead_of_cross_group_reply(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_panel_chat_id"] = 0
+            identity_state["concubine_last_snapshot_at"] = now
+
+        status_msg = SimpleNamespace(id=9388001, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)) as mock_send:
+            sent = await concubine._send_heart_command(now)
+
+        self.assertFalse(sent)
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_last_panel_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_last_panel_chat_id"])
 
     async def test_heart_missing_panel_reply_immediately_refreshes_status_panel(self):
         now = 1_700_000_000.0

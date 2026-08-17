@@ -48,7 +48,7 @@ from ..config import (
 )
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from . import workflow_log
@@ -175,6 +175,7 @@ PHASEFUL_SUMMARY_GUARD_PHASES = {"summary_due", "observing_summary", "waiting_su
 CONCUBINE_PARTNER_SNAPSHOT_KEYS = (
     "concubine_availability",
     "concubine_last_panel_msg_id",
+    "concubine_last_panel_chat_id",
     "concubine_name",
     "concubine_kind",
     "concubine_location",
@@ -1091,6 +1092,15 @@ def _heart_choice_send_kwargs(prompt_msg_id, round_no, try_no=0):
     }
 
 
+def _heart_choice_route_kwargs():
+    chat_id = get_sent_message_chat_id(
+        int(state.get("concubine_heart_msg_id", 0) or 0),
+        default=0,
+        send_as_id=get_current_identity_id(),
+    )
+    return {"target_chat_id": chat_id} if chat_id else {}
+
+
 def _schedule_voyage_wait(now):
     return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
     if return_at > now:
@@ -1712,13 +1722,15 @@ def _guard_heart_start_with_message_log(now):
 
 def _cached_heart_panel_anchor(now):
     panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+    panel_chat_id = int(state.get("concubine_last_panel_chat_id", 0) or 0)
     panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_seen_at <= 0:
+    if panel_msg_id <= 0 or panel_chat_id == 0 or panel_seen_at <= 0:
         return None
     if panel_seen_at < float(now or 0) - CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
         return None
     return {
         "msg_id": panel_msg_id,
+        "chat_id": panel_chat_id,
         "event_ts": panel_seen_at,
         "source": "cached_panel",
         "name": str(state.get("concubine_name") or ""),
@@ -1750,6 +1762,7 @@ def _find_recent_logged_heart_panel(now):
         if best is None or event_ts > float(best.get("event_ts", 0) or 0):
             best = {
                 "msg_id": msg_id,
+                "chat_id": int(payload.get("chat_id", 0) or 0),
                 "event_ts": event_ts,
                 "source": "message_log",
                 "name": str(parsed.get("name") or ""),
@@ -2997,6 +3010,7 @@ def _has_active_nanlong_pending(now):
 
 def _clear_partner_snapshot(*, clear_voyage=True):
     state["concubine_last_panel_msg_id"] = 0
+    state["concubine_last_panel_chat_id"] = 0
     state["concubine_name"] = ""
     state["concubine_kind"] = ""
     state["concubine_location"] = ""
@@ -3854,12 +3868,22 @@ async def _send_heart_command(now):
 
     panel_anchor = _resolve_heart_panel_anchor(now)
     panel_msg_id = int((panel_anchor or {}).get("msg_id", 0) or 0)
+    panel_chat_id = int((panel_anchor or {}).get("chat_id", 0) or 0)
     panel_source = str((panel_anchor or {}).get("source") or "")
-    if panel_msg_id <= 0:
+    if panel_msg_id <= 0 or panel_chat_id == 0:
+        state["concubine_last_panel_msg_id"] = 0
+        state["concubine_last_panel_chat_id"] = 0
+        state["concubine_last_snapshot_at"] = 0
         state["concubine_heart_last_error"] = "共历心劫需先刷新侍妾面板"
         await _send_status_command(now)
         return False
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
+    msg = await _send_concubine_game_command(
+        CMD_CONCUBINE_HEART,
+        track=False,
+        reply_to=panel_msg_id,
+        priority="chain",
+        target_chat_id=panel_chat_id,
+    )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else float(now)
     if not msg:
         guard_blocks_until = _heart_action_guard_blocks_until(sent_at)
@@ -4163,6 +4187,7 @@ async def _send_heart_choice(now):
         track=False,
         reply_to=prompt_msg_id,
         priority="urgent_reactive",
+        **_heart_choice_route_kwargs(),
         **_heart_choice_send_kwargs(prompt_msg_id, round_no),
     )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
@@ -4249,6 +4274,7 @@ async def _retry_heart_choice_once(now):
         track=False,
         reply_to=prompt_msg_id,
         priority="retry",
+        **_heart_choice_route_kwargs(),
         **_heart_choice_send_kwargs(prompt_msg_id, round_no, retry_count + 1),
     )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
@@ -4907,6 +4933,7 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
         _close_heart_action_guard(now, "heart_missing_panel_reply")
         state["concubine_heart_last_error"] = "共历心劫需要回复侍妾面板，已改为状态校准"
         state["concubine_last_panel_msg_id"] = 0
+        state["concubine_last_panel_chat_id"] = 0
         _clear_pending_msg_ids()
         await _send_status_command(now)
         save_state()

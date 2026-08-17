@@ -997,7 +997,7 @@ async def _apply_small_world_passive(text, now, family="", reply_context=None):
     return True
 
 
-def _apply_concubine_passive(text, now, family, current_msg_id=0):
+def _apply_concubine_passive(text, now, family, current_msg_id=0, current_chat_id=0):
     raw_text = str(text or "")
     parsed = concubine_mod._parse_status_panel(raw_text, now)
     if parsed:
@@ -1005,6 +1005,7 @@ def _apply_concubine_passive(text, now, family, current_msg_id=0):
         current_msg_id = _event_int(current_msg_id)
         if current_msg_id > 0:
             state["concubine_last_panel_msg_id"] = current_msg_id
+            state["concubine_last_panel_chat_id"] = _event_int(current_chat_id)
         return True
     voyage = concubine_mod._parse_voyage_text(raw_text, now)
     if voyage:
@@ -1601,7 +1602,13 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("concubine")
             changed = module_changed or changed
         elif family.startswith("concubine_"):
-            module_changed = _apply_concubine_passive(raw_text, now, family, current_msg_id=observed_msg_id)
+            module_changed = _apply_concubine_passive(
+                raw_text,
+                now,
+                family,
+                current_msg_id=observed_msg_id,
+                current_chat_id=observed_chat_id,
+            )
             if module_changed:
                 changed_modules.append("concubine")
             changed = module_changed or changed
