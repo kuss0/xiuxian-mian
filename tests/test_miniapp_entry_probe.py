@@ -1720,6 +1720,22 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((1001, "deep_status"), candidates[2])
         self.assertEqual((1001, "treasure"), candidates[3])
 
+    def test_cave_public_post_summary_deep_start_precedes_older_deep_backlog(self):
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(1001)
+        state_module.ensure_identity_registered(1002)
+        with state_module.use_identity(1001):
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["next_deep_retreat_time"] = now - 3600
+        with state_module.use_identity(1002):
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+        candidates = [(1001, "deep_settle"), (1002, "deep_start")]
+        candidates.sort(key=lambda item: ui._cave_public_background_candidate_sort_key(item[1], item[0], now))
+
+        self.assertEqual((1002, "deep_start"), candidates[0])
+
     def test_cave_public_background_selects_deep_action_from_phase(self):
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(1001)

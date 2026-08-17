@@ -92,6 +92,8 @@ WORLD_BOSS_ROTATION_REWARD_ALIASES = {
     "斩青玉元": WORLD_BOSS_ROTATION_DEFAULT_REWARD,
 }
 WORLD_BOSS_MINIAPP_BATTLE_PRIORITY_GAP_SEC = 0.25
+WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC = 7 * 24 * 3600
+WORLD_BOSS_IDENTITY_REJECTION_STATUSES = {"boss_identity_invalid"}
 WORLD_BOSS_LOCAL_USERNAME_ALIASES = {
     8659059191: ("WalterWA2000", "wa2000"),
     301299112: ("jfdffdddd",),
@@ -179,6 +181,7 @@ def _blank_run_state(now=None):
         "miniapp_auto_finished_at": 0,
         "miniapp_auto_progress": [],
         "miniapp_auto_results": [],
+        "miniapp_conclusion_evidence": {},
         "fallback_status_day": "",
         "fallback_status_at": 0,
         "last_priority_window_key": "",
@@ -1036,12 +1039,87 @@ def _normalized_rotation_state():
     }
     if stored_target_reward != target_reward:
         calibrated_account_ids = set()
+    raw_rejections = (raw or {}).get("identity_rejections") or {}
+    identity_rejections = {}
+    if isinstance(raw_rejections, dict):
+        for raw_identity_id, raw_record in raw_rejections.items():
+            identity_id = _coerce_int(raw_identity_id, 0)
+            if identity_id <= 0 or not isinstance(raw_record, dict):
+                continue
+            rejected_at = _coerce_float(raw_record.get("rejected_at"), 0)
+            suppress_until = _coerce_float(raw_record.get("suppress_until"), 0)
+            if suppress_until <= 0 and rejected_at > 0:
+                suppress_until = rejected_at + WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC
+            if suppress_until <= 0:
+                continue
+            identity_rejections[str(identity_id)] = {
+                "identity_id": identity_id,
+                "account_id": _coerce_int(raw_record.get("account_id"), 0),
+                "status": str(raw_record.get("status") or "boss_identity_invalid"),
+                "reason": _short_text(raw_record.get("reason") or "boss_identity_invalid", 120),
+                "rejected_at": rejected_at,
+                "suppress_until": suppress_until,
+            }
     return {
         "accounts": dict(accounts or {}) if isinstance(accounts, dict) else {},
         "inventory_calibrated_account_ids": sorted(calibrated_account_ids),
+        "identity_rejections": identity_rejections,
         "last_conclusion_key": str((raw or {}).get("last_conclusion_key") or "") if stored_target_reward == target_reward else "",
         "target_reward": target_reward,
     }
+
+
+def _identity_rejection_active(rotation_state, identity_id, now=None):
+    now = float(now if now is not None else time.time())
+    record = dict((rotation_state.get("identity_rejections") or {}).get(str(int(identity_id or 0))) or {})
+    return bool(record) and _coerce_float(record.get("suppress_until"), 0) > now
+
+
+def _record_world_boss_identity_rejection(identity_id, status, reason="", now=None):
+    identity_id = int(identity_id or 0)
+    status = str(status or "").strip().lower()
+    if identity_id <= 0 or status not in WORLD_BOSS_IDENTITY_REJECTION_STATUSES:
+        return False
+    now = float(now if now is not None else time.time())
+    rotation_state = _normalized_rotation_state()
+    rotation_state.setdefault("identity_rejections", {})[str(identity_id)] = {
+        "identity_id": identity_id,
+        "account_id": int(get_identity_account(identity_id) or 0),
+        "status": status,
+        "reason": _short_text(reason or status, 120),
+        "rejected_at": now,
+        "suppress_until": now + WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC,
+    }
+    set_world_boss_rotation_state(rotation_state)
+    mark_dirty()
+    return True
+
+
+def _clear_world_boss_identity_rejection(identity_id):
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0:
+        return False
+    rotation_state = _normalized_rotation_state()
+    if not rotation_state.setdefault("identity_rejections", {}).pop(str(identity_id), None):
+        return False
+    set_world_boss_rotation_state(rotation_state)
+    mark_dirty()
+    return True
+
+
+def _update_world_boss_identity_eligibility_from_result(item, now=None):
+    if not isinstance(item, dict) or str(item.get("phase") or "") != "join":
+        return False
+    identity_id = _coerce_int(item.get("identity_id"), 0)
+    if bool(item.get("ok")):
+        return _clear_world_boss_identity_rejection(identity_id)
+    status = str(item.get("status") or "").strip().lower()
+    return _record_world_boss_identity_rejection(
+        identity_id,
+        status,
+        item.get("error") or status,
+        now=now,
+    )
 
 
 def _rotation_account_record(account_id):
@@ -1049,6 +1127,11 @@ def _rotation_account_record(account_id):
     rotation_state = _normalized_rotation_state()
     raw = dict(rotation_state["accounts"].get(str(account_id)) or {})
     candidates = _account_rotation_identity_ids(account_id)
+    eligible_candidates = [
+        identity_id
+        for identity_id in candidates
+        if not _identity_rejection_active(rotation_state, identity_id)
+    ]
     completed_ids = {
         _coerce_int(identity_id, 0)
         for identity_id in raw.get("completed_identity_ids") or ()
@@ -1056,13 +1139,17 @@ def _rotation_account_record(account_id):
     }
     completed_ids.intersection_update(candidates)
     current_identity_id = _coerce_int(raw.get("current_identity_id"), 0)
-    if current_identity_id not in candidates or current_identity_id in completed_ids:
-        current_identity_id = next((identity_id for identity_id in candidates if identity_id not in completed_ids), 0)
+    if current_identity_id not in eligible_candidates or current_identity_id in completed_ids:
+        current_identity_id = next(
+            (identity_id for identity_id in eligible_candidates if identity_id not in completed_ids),
+            0,
+        )
     return {
         "account_id": account_id,
         "identity_ids": candidates,
         "current_identity_id": current_identity_id,
         "completed_identity_ids": sorted(completed_ids),
+        "suppressed_identity_ids": sorted(set(candidates) - set(eligible_candidates)),
         "last_completed_identity_id": _coerce_int(raw.get("last_completed_identity_id"), 0),
         "last_completed_at": _coerce_float(raw.get("last_completed_at"), 0),
         "last_reward": str(raw.get("last_reward") or ""),
@@ -1167,7 +1254,10 @@ def select_world_boss_miniapp_entry_identities(limit=WORLD_BOSS_MINIAPP_ACCOUNT_
         return []
     best_by_account = {}
     rotation_accounts = set(_rotation_config()["account_ids"])
+    rotation_state = _normalized_rotation_state()
     for identity_id in _miniapp_entry_candidate_identity_ids():
+        if _identity_rejection_active(rotation_state, identity_id):
+            continue
         account_key = _miniapp_account_key(identity_id)
         account_id = int(get_identity_account(identity_id) or 0)
         if account_id in rotation_accounts:
@@ -1680,6 +1770,7 @@ async def _run_world_boss_miniapp_automation(
         run_state = _get_run_state()
         if run_state.get("event_key") != event_key:
             return
+        _update_world_boss_identity_eligibility_from_result(item)
         record = {
             "identity_id": _coerce_int(item.get("identity_id"), 0),
             "phase": str(item.get("phase") or ""),
@@ -1733,6 +1824,8 @@ async def _run_world_boss_miniapp_automation(
         for item in (result.get("results") or [])
         if isinstance(item, dict)
     ][:16]
+    for item in run_state["miniapp_auto_results"]:
+        _update_world_boss_identity_eligibility_from_result(item)
     run_state["miniapp_auto_progress"] = [
         {
             **item,
@@ -1740,11 +1833,14 @@ async def _run_world_boss_miniapp_automation(
         }
         for item in run_state["miniapp_auto_results"]
     ]
+    _reconcile_world_boss_miniapp_results(run_state)
     joined_count = _coerce_int(result.get("joined_count"), 0)
     settled = [
         item
         for item in run_state["miniapp_auto_results"]
-        if item.get("phase") == "battle" and item.get("ok") and item.get("status") == "settled"
+        if item.get("phase") == "battle"
+        and item.get("ok")
+        and item.get("status") in {"settled", "conclusion_confirmed"}
     ]
     partial = [
         item
@@ -1861,6 +1957,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
     run_state["miniapp_auto_finished_at"] = 0
     run_state["miniapp_auto_progress"] = []
     run_state["miniapp_auto_results"] = []
+    run_state["miniapp_conclusion_evidence"] = {}
     run_state["next_status_query_at"] = 0
     run_state["next_action_at"] = 0
     if run_state["miniapp_only"]:
@@ -1914,6 +2011,72 @@ def _local_world_boss_usernames():
             if username:
                 usernames.setdefault(username.lower(), int(identity_id))
     return usernames
+
+
+def _world_boss_conclusion_evidence(parsed):
+    username_map = _local_world_boss_usernames()
+    evidence = {}
+    for item in parsed.get("contributions") or ():
+        identity_id = username_map.get(str(item.get("username") or "").strip().lower(), 0)
+        if identity_id <= 0:
+            continue
+        record = evidence.setdefault(str(identity_id), {"identity_id": identity_id})
+        record.update({
+            "rank": _coerce_int(item.get("rank"), 0),
+            "score": _coerce_int(item.get("score"), 0),
+            "attacks": _coerce_int(item.get("attacks"), 0),
+            "damage": str(item.get("damage") or "").strip(),
+        })
+    for item in parsed.get("settlements") or ():
+        identity_id = username_map.get(str(item.get("username") or "").strip().lower(), 0)
+        if identity_id <= 0:
+            continue
+        evidence.setdefault(str(identity_id), {"identity_id": identity_id})["rewards"] = _short_text(
+            item.get("rewards") or "",
+            160,
+        )
+    return evidence
+
+
+def _reconcile_world_boss_miniapp_results(run_state, evidence=None):
+    evidence = evidence if isinstance(evidence, dict) else run_state.get("miniapp_conclusion_evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    if not evidence:
+        return 0
+    confirmed_ids = set()
+    for field in ("miniapp_auto_results", "miniapp_auto_progress"):
+        reconciled = []
+        for raw_item in run_state.get(field) or ():
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            identity_key = str(_coerce_int(item.get("identity_id"), 0))
+            if (
+                item.get("phase") == "battle"
+                and item.get("status") == "event_closed_partial"
+                and identity_key in evidence
+            ):
+                summary = dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {}
+                summary["conclusion_confirmed"] = True
+                summary["conclusion"] = dict(evidence[identity_key])
+                item.update({
+                    "ok": True,
+                    "status": "conclusion_confirmed",
+                    "error": "",
+                    "summary": summary,
+                })
+                confirmed_ids.add(identity_key)
+            reconciled.append(item)
+        run_state[field] = reconciled
+    if confirmed_ids and str(run_state.get("miniapp_auto_status") or "").lower() == "partial":
+        battle_results = [
+            item
+            for item in run_state.get("miniapp_auto_results") or ()
+            if isinstance(item, dict) and item.get("phase") == "battle"
+        ]
+        if battle_results and all(bool(item.get("ok")) for item in battle_results):
+            run_state["miniapp_auto_status"] = "conclusion_confirmed"
+    return len(confirmed_ids)
 
 
 def _advance_world_boss_rotations(parsed, now, conclusion_key):
@@ -2064,6 +2227,9 @@ async def _close_event(parsed, now, *, log=True):
     event_key = str(run_state.get("event_key") or "")
     result = str(parsed.get("result") or "结束").strip()
     conclusion_key = str(parsed.get("key") or result or get_day_key(now))
+    conclusion_evidence = _world_boss_conclusion_evidence(parsed)
+    run_state["miniapp_conclusion_evidence"] = conclusion_evidence
+    _reconcile_world_boss_miniapp_results(run_state, conclusion_evidence)
     rotation_advances = _advance_world_boss_rotations(parsed, now, conclusion_key)
     duplicate = conclusion_key and conclusion_key == run_state.get("last_conclusion_key") and now - _coerce_float(run_state.get("last_conclusion_at"), 0) < 2 * 3600
     run_state["active"] = False
@@ -2123,6 +2289,8 @@ async def _close_event(parsed, now, *, log=True):
         )
     latest_state = _get_run_state(now)
     if str(latest_state.get("event_key") or "") == event_key:
+        latest_state["miniapp_conclusion_evidence"] = conclusion_evidence
+        _reconcile_world_boss_miniapp_results(latest_state, conclusion_evidence)
         latest_state["active"] = False
         latest_state["closed_at"] = max(_coerce_float(latest_state.get("closed_at"), 0), float(now))
         latest_state["last_result"] = result

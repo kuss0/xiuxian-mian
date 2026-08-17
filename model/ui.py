@@ -7543,9 +7543,11 @@ async def ui_set_world_boss_miniapp_config(payload=None):
         }.get(target_reward, target_reward)[:64]
     set_miniapp_auto_config(config)
     if str(config.get("world_boss_rotation_target_reward") or "") != previous_rotation_target:
+        previous_rotation_state = get_world_boss_rotation_state()
         set_world_boss_rotation_state({
             "accounts": {},
             "inventory_calibrated_account_ids": list(config.get("world_boss_rotation_account_ids") or []),
+            "identity_rejections": dict(previous_rotation_state.get("identity_rejections") or {}),
             "last_conclusion_key": "",
             "target_reward": str(config.get("world_boss_rotation_target_reward") or ""),
         })
@@ -8062,6 +8064,8 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
             due_at = float(state.get("next_yuanying_time", 0) or 0)
         elif action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             due_at = float(state.get("next_deep_retreat_time", 0) or 0)
+            if action == "deep_start" and str(state.get("deep_retreat_phase") or "") == "post_summary_wait":
+                priority = -1
         elif action == "small_world":
             due_times = [float(state.get("next_small_world_time", 0) or 0)]
             if state.get("small_world_harvest_enabled"):

@@ -1340,6 +1340,9 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self._register(301299112, label="jfdffdddd", world_boss_enabled=True)
         state_module.set_identity_account(8659059191, 101)
         state_module.set_identity_account(301299112, 102)
+        state_module.set_world_boss_run_state({
+            "miniapp_conclusion_evidence": {"8659059191": {"identity_id": 8659059191}},
+        })
 
         with (
             patch.object(world_boss, "save_state", return_value=True),
@@ -1362,6 +1365,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(run_state.get("active"))
         self.assertTrue(run_state.get("miniapp_only"))
         self.assertEqual({8659059191, 301299112}, set(run_state.get("miniapp_entry_identity_ids")))
+        self.assertEqual({}, run_state.get("miniapp_conclusion_evidence"))
         self.assertEqual(0, run_state.get("next_action_at"))
 
     async def test_miniapp_entry_candidates_ignore_legacy_world_boss_switch(self):
@@ -1477,6 +1481,37 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first_id, selected[0])
         self.assertNotIn(first_id, config["window_skip_by_identity"])
+
+    def test_rotation_skips_temporarily_rejected_identity_for_same_account(self):
+        now = 1_786_900_000.0
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="吧唧甲", world_boss_enabled=False)
+        self._register(second_id, label="吧唧乙", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青元者",
+        }
+
+        with patch.object(world_boss.time, "time", return_value=now):
+            world_boss._record_world_boss_identity_rejection(
+                first_id,
+                "boss_identity_invalid",
+                "403 boss_identity_invalid",
+                now=now,
+            )
+            selected = world_boss.select_world_boss_miniapp_entry_identities()
+            record = world_boss.get_world_boss_rotation_account_record(account_id)
+
+        self.assertEqual(second_id, selected[0])
+        self.assertEqual(second_id, record["current_identity_id"])
+        self.assertEqual([first_id], record["suppressed_identity_ids"])
+        rejection = state_module.get_world_boss_rotation_state()["identity_rejections"][str(first_id)]
+        self.assertEqual(account_id, rejection["account_id"])
+        self.assertEqual(now + world_boss.WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC, rejection["suppress_until"])
 
     def test_rotation_calibrates_legacy_empty_state_from_cached_inventory(self):
         account_id = 301299112
@@ -1648,6 +1683,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({
             "accounts": {},
             "inventory_calibrated_account_ids": [],
+            "identity_rejections": {},
             "last_conclusion_key": "",
             "target_reward": "另一奖励",
         }, state_module.get_world_boss_rotation_state())
@@ -1743,6 +1779,79 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, run_state["miniapp_auto_results"][-1]["summary"]["realtime_hit_count"])
         self.assertIn("命中2 完美1 伤害300亿 质量分900", audit_mock.await_args.args[0])
 
+    async def test_miniapp_invalid_join_is_suppressed_and_successful_join_clears_it(self):
+        now = 1_786_900_100.0
+        identity_id = 3504367852
+        self._register(identity_id, label="吧唧甲", world_boss_enabled=False)
+        state_module.set_identity_account(identity_id, 301299112)
+
+        async def invalid_runtime(*_args, **_kwargs):
+            return {
+                "ok": False,
+                "status": "partial",
+                "joined_count": 0,
+                "results": [{
+                    "identity_id": identity_id,
+                    "phase": "join",
+                    "ok": False,
+                    "status": "boss_identity_invalid",
+                    "error": "403 boss_identity_invalid",
+                }],
+            }
+
+        state_module.set_world_boss_run_state({"event_key": "invalid-join"})
+        with (
+            patch.object(world_boss, "run_world_boss_miniapp_event", new=invalid_runtime),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+            patch.object(world_boss.time, "time", return_value=now),
+        ):
+            await world_boss._run_world_boss_miniapp_automation(
+                "invalid-join",
+                [identity_id],
+                SimpleNamespace(id=12009),
+                MINIAPP_OPEN_TEXT,
+                now,
+                0,
+            )
+
+        self.assertIn(
+            str(identity_id),
+            state_module.get_world_boss_rotation_state().get("identity_rejections") or {},
+        )
+
+        async def successful_runtime(*_args, **_kwargs):
+            return {
+                "ok": True,
+                "status": "settled",
+                "joined_count": 1,
+                "results": [
+                    {"identity_id": identity_id, "phase": "join", "ok": True, "status": "joined"},
+                    {"identity_id": identity_id, "phase": "battle", "ok": True, "status": "settled"},
+                ],
+            }
+
+        state_module.set_world_boss_run_state({"event_key": "valid-join"})
+        with (
+            patch.object(world_boss, "run_world_boss_miniapp_event", new=successful_runtime),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+            patch.object(world_boss.time, "time", return_value=now + 60),
+        ):
+            await world_boss._run_world_boss_miniapp_automation(
+                "valid-join",
+                [identity_id],
+                SimpleNamespace(id=12010),
+                MINIAPP_OPEN_TEXT,
+                now + 60,
+                0,
+            )
+
+        self.assertNotIn(
+            str(identity_id),
+            state_module.get_world_boss_rotation_state().get("identity_rejections") or {},
+        )
+
     async def test_miniapp_event_closed_contribution_is_reported_as_partial_not_failure(self):
         now = 1_784_500_100.0
         event_key = "miniapp-partial"
@@ -1792,6 +1901,37 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("部分 1｜失败 0", run_state["last_result"])
         self.assertIn("部分 1｜失败 0", audit_mock.await_args.args[0])
         self.assertIn("命中12/16", audit_mock.await_args.args[0])
+
+    async def test_conclusion_calibrates_event_closed_partial_as_confirmed_participation(self):
+        now = 1_786_900_200.0
+        identity_id = 8659059191
+        self._register(identity_id, label="WalterWA2000", world_boss_enabled=False)
+        state_module.set_world_boss_run_state({
+            "event_key": "conclusion-calibration",
+            "miniapp_auto_status": "partial",
+            "miniapp_auto_started_at": now - 180,
+            "miniapp_auto_finished_at": now - 10,
+            "miniapp_auto_results": [{
+                "identity_id": identity_id,
+                "phase": "battle",
+                "ok": False,
+                "status": "event_closed_partial",
+                "error": "boss_event_closed",
+                "summary": {"accepted_hit_count": 13, "accepted_perfect_count": 13},
+            }],
+        })
+        parsed = world_boss.parse_world_boss_text(MINIAPP_CONCLUSION_TEXT, now=now)
+
+        with patch.object(world_boss, "send_audit_log", new=AsyncMock()):
+            await world_boss._close_event(parsed, now)
+
+        run_state = state_module.get_world_boss_run_state()
+        result = run_state["miniapp_auto_results"][0]
+        self.assertTrue(result["ok"])
+        self.assertEqual("conclusion_confirmed", result["status"])
+        self.assertEqual("conclusion_confirmed", run_state["miniapp_auto_status"])
+        self.assertTrue(result["summary"]["conclusion_confirmed"])
+        self.assertEqual(607, result["summary"]["conclusion"]["score"])
 
     def test_miniapp_entry_candidates_are_deduped_by_login_account_and_capped_at_four(self):
         # Same login account can only enter one MiniApp role. Pick the strongest
