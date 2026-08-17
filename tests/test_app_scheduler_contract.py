@@ -1797,6 +1797,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch.object(app, "note_game_bot_message", return_value="recover") as health_mock,
+                patch.object(app, "note_game_group_bot_activity") as group_activity_mock,
                 patch.object(app, "get_global_enabled", return_value=False),
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
@@ -1806,10 +1807,12 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                     12345,
                     {"send_as_id": 301299112, "family": "wild_training"},
                     now=1000.0,
+                    game_group_id=-1002083016447,
                 )
 
             toggle_mock.assert_awaited_once_with(True, source="bot_health_recovery")
             health_mock.assert_called_once_with(1000.0, reply_to_msg_id=12345)
+            group_activity_mock.assert_called_once_with(-1002083016447, now=1000.0)
             recovered_mock.assert_called_once_with("bot 恢复确认完成")
             self.assertFalse(app._bot_silence_auto_paused)
         finally:
@@ -1974,6 +1977,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch.object(app, "note_game_bot_message", return_value="recover") as health_mock,
+                patch.object(app, "note_game_group_bot_activity") as group_activity_mock,
                 patch.object(app, "get_global_enabled", return_value=False),
                 patch.object(app, "toggle_global_enabled", new=AsyncMock(return_value=(True, "ok"))) as toggle_mock,
                 patch.object(app, "mark_bot_health_recovered") as recovered_mock,
@@ -1983,9 +1987,11 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
                     12345,
                     {"send_as_id": 301299112, "family": "world_boss"},
                     now=1000.0,
+                    game_group_id=-1001680975844,
                 )
 
             health_mock.assert_not_called()
+            group_activity_mock.assert_not_called()
             toggle_mock.assert_not_awaited()
             recovered_mock.assert_not_called()
             self.assertTrue(app._bot_silence_auto_paused)

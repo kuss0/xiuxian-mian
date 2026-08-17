@@ -84,6 +84,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             copy.deepcopy(runtime._SEND_AS_PEER_INVALID_UNTIL),
             copy.deepcopy(runtime._CHANNEL_SEND_AS_INVALID_UNTIL),
             copy.deepcopy(runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS),
+            copy.deepcopy(runtime._GAME_GROUP_BOT_ACTIVITY_AT),
             dict(runtime._ACCOUNT_RPC_LOCKS),
             runtime.is_game_send_quiesced(),
         )
@@ -95,6 +96,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["send_as_profiles"] = {}
         state_module._meta_state["identity_account_map"] = {}
         runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.clear()
+        runtime._GAME_GROUP_BOT_ACTIVITY_AT.clear()
 
     def tearDown(self):
         runtime._GAME_SEND_LOCK = self._queue_snapshot[0]
@@ -114,9 +116,11 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._CHANNEL_SEND_AS_INVALID_UNTIL.update(copy.deepcopy(self._queue_snapshot[8]))
         runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.clear()
         runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.update(copy.deepcopy(self._queue_snapshot[9]))
+        runtime._GAME_GROUP_BOT_ACTIVITY_AT.clear()
+        runtime._GAME_GROUP_BOT_ACTIVITY_AT.update(copy.deepcopy(self._queue_snapshot[10]))
         runtime._ACCOUNT_RPC_LOCKS.clear()
-        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[10])
-        runtime.set_game_send_quiesced(self._queue_snapshot[11])
+        runtime._ACCOUNT_RPC_LOCKS.update(self._queue_snapshot[11])
+        runtime.set_game_send_quiesced(self._queue_snapshot[12])
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -463,6 +467,77 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(910001, result.id)
         self.assertEqual(2, len(client.sent_requests))
         self.assertEqual(-1001680975844, int(client.sent_requests[-1].peer.id))
+
+    def test_recent_bot_activity_promotes_only_active_listener_group_for_sends(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        alternate_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [alternate_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(alternate_group_id): 7310786},
+        })
+        now = 10_000.0
+        runtime.note_game_group_bot_activity(primary_group_id, now=now - 900)
+        runtime.note_game_group_bot_activity(alternate_group_id, now=now - 10)
+        runtime._GAME_GROUP_BOT_ACTIVITY_AT.clear()
+
+        routes = runtime._game_group_route_candidates(send_as_id, account_id, now=now)
+
+        self.assertEqual(alternate_group_id, routes[0][0])
+        snapshot = runtime.get_game_group_route_activity_snapshot(now=now)
+        self.assertEqual([primary_group_id, alternate_group_id], snapshot["listen_group_ids"])
+        self.assertEqual(primary_group_id, snapshot["preferred_send_group_id"])
+
+    def test_preferred_group_stays_first_when_both_listener_groups_are_active(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        alternate_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [alternate_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(alternate_group_id): 7310786},
+        })
+        now = 10_000.0
+        runtime.note_game_group_bot_activity(primary_group_id, now=now - 30)
+        runtime.note_game_group_bot_activity(alternate_group_id, now=now - 5)
+
+        routes = runtime._game_group_route_candidates(send_as_id, account_id, now=now)
+
+        self.assertEqual(primary_group_id, routes[0][0])
+
+    def test_explicit_source_group_is_not_reordered_by_other_group_activity(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        alternate_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [alternate_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(alternate_group_id): 7310786},
+        })
+        now = 10_000.0
+        runtime.note_game_group_bot_activity(alternate_group_id, now=now)
+
+        routes = runtime._game_group_route_candidates(
+            send_as_id,
+            account_id,
+            now=now,
+            target_chat_id=primary_group_id,
+        )
+
+        self.assertEqual([(primary_group_id, 0)], routes)
 
     async def test_primary_text_send_as_failure_fails_over_once_to_backup(self):
         send_as_id = 301299112

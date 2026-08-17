@@ -230,6 +230,7 @@ from .state import (
     get_game_bot_ids,
     get_game_group_id,
     get_game_group_ids,
+    get_game_group_route_config,
     get_game_group_topic_id,
     get_game_topic_id,
     get_global_enabled,
@@ -252,6 +253,7 @@ from .state import (
     is_account_target_group_blocked,
     state,
     set_channel_send_as_health,
+    set_game_group_route_config,
     set_account_target_membership,
     set_account_group_membership,
     set_identity_enabled,
@@ -387,6 +389,7 @@ _IDENTITY_UNBOUND_AUDIT_LAST = {}
 _SEND_AS_PEER_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_UNTIL = {}
 _CHANNEL_SEND_AS_INVALID_OBSERVATIONS = {}
+_GAME_GROUP_BOT_ACTIVITY_AT = {}
 _ACCOUNT_TARGET_GROUP_AUDIT_LAST = {}
 _GAME_SEND_QUIESCED = False
 GAME_SEND_UNKNOWN_BLOCK_CODES = {"send_timeout", "send_exception"}
@@ -423,6 +426,10 @@ SEND_AS_PEER_INVALID_BACKOFF_SEC = 30 * 60
 CHANNEL_SEND_AS_PROBE_INTERVAL_SEC = 5 * 60
 CHANNEL_SEND_AS_GLOBAL_FAILURE_WINDOW_SEC = 90
 CHANNEL_SEND_AS_GLOBAL_FAILURE_THRESHOLD = 3
+GAME_GROUP_PRIMARY_ACTIVITY_FRESH_SEC = 5 * 60
+GAME_GROUP_ROUTE_ACTIVITY_FRESH_SEC = 15 * 60
+GAME_GROUP_ROUTE_SWITCH_ADVANTAGE_SEC = 2 * 60
+GAME_GROUP_ACTIVITY_PERSIST_INTERVAL_SEC = 5 * 60
 GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
@@ -3746,6 +3753,93 @@ def _account_group_is_blocked(account_id, game_group_id):
     )
 
 
+def note_game_group_bot_activity(game_group_id, now=None):
+    try:
+        group_id = int(game_group_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if group_id == 0 or group_id not in {int(item or 0) for item in get_game_group_ids()}:
+        return False
+    observed_at = float(now if now is not None else time.time())
+    previous = float(_GAME_GROUP_BOT_ACTIVITY_AT.get(group_id, 0) or 0)
+    _GAME_GROUP_BOT_ACTIVITY_AT[group_id] = max(previous, observed_at)
+    route_config = get_game_group_route_config()
+    persisted = dict(route_config.get("bot_activity_at_by_group") or {})
+    persisted_at = float(persisted.get(str(group_id), 0) or 0)
+    if observed_at - persisted_at >= GAME_GROUP_ACTIVITY_PERSIST_INTERVAL_SEC:
+        persisted[str(group_id)] = observed_at
+        route_config["bot_activity_at_by_group"] = persisted
+        set_game_group_route_config(route_config)
+        mark_dirty()
+    return True
+
+
+def _game_group_bot_activity_at(group_id):
+    group_id = int(group_id or 0)
+    persisted = get_game_group_route_config().get("bot_activity_at_by_group") or {}
+    return max(
+        float(_GAME_GROUP_BOT_ACTIVITY_AT.get(group_id, 0) or 0),
+        float(persisted.get(str(group_id), 0) or 0),
+    )
+
+
+def get_game_group_route_activity_snapshot(now=None):
+    current = float(now if now is not None else time.time())
+    group_ids = [int(group_id or 0) for group_id in get_game_group_ids() if int(group_id or 0)]
+    primary_group_id = int(get_game_group_id() or 0)
+    rows = []
+    for group_id in group_ids:
+        last_bot_activity_at = _game_group_bot_activity_at(group_id)
+        age_sec = max(0, int(current - last_bot_activity_at)) if last_bot_activity_at > 0 else 0
+        rows.append({
+            "group_id": group_id,
+            "role": "preferred_send" if group_id == primary_group_id else "alternate_send",
+            "listening": True,
+            "last_bot_activity_at": last_bot_activity_at,
+            "bot_activity_age_sec": age_sec,
+            "bot_activity_fresh": bool(
+                last_bot_activity_at > 0
+                and current - last_bot_activity_at <= GAME_GROUP_ROUTE_ACTIVITY_FRESH_SEC
+            ),
+        })
+    return {
+        "listen_group_ids": group_ids,
+        "preferred_send_group_id": primary_group_id,
+        "groups": rows,
+    }
+
+
+def _order_game_group_ids_by_activity(group_ids, *, now=None):
+    ordered = [int(group_id or 0) for group_id in group_ids if int(group_id or 0)]
+    if len(ordered) <= 1:
+        return ordered
+    current = float(now if now is not None else time.time())
+    primary_group_id = ordered[0]
+    primary_activity_at = _game_group_bot_activity_at(primary_group_id)
+    if primary_activity_at > 0 and current - primary_activity_at <= GAME_GROUP_PRIMARY_ACTIVITY_FRESH_SEC:
+        return ordered
+    active_alternates = [
+        group_id
+        for group_id in ordered[1:]
+        if _game_group_bot_activity_at(group_id) > 0
+        and current - _game_group_bot_activity_at(group_id)
+        <= GAME_GROUP_ROUTE_ACTIVITY_FRESH_SEC
+        and (
+            primary_activity_at <= 0
+            or _game_group_bot_activity_at(group_id) - primary_activity_at
+            >= GAME_GROUP_ROUTE_SWITCH_ADVANTAGE_SEC
+        )
+    ]
+    if not active_alternates:
+        return ordered
+    active_alternates.sort(
+        key=_game_group_bot_activity_at,
+        reverse=True,
+    )
+    promoted = active_alternates[0]
+    return [promoted, *[group_id for group_id in ordered if group_id != promoted]]
+
+
 def _game_group_route_candidates(send_as_id, account_id, *, now=None, target_chat_id=None):
     current = float(now or time.time())
     routes = []
@@ -3758,6 +3852,8 @@ def _game_group_route_candidates(send_as_id, account_id, *, now=None, target_cha
         target_chat_id = 0
     if target_chat_id:
         configured_group_ids = [target_chat_id] if target_chat_id in {int(group_id or 0) for group_id in configured_group_ids} else []
+    else:
+        configured_group_ids = _order_game_group_ids_by_activity(configured_group_ids, now=current)
     for group_id in dict.fromkeys(configured_group_ids):
         group_id = int(group_id or 0)
         if group_id == 0 or _account_group_is_blocked(account_id, group_id):
@@ -5272,6 +5368,7 @@ __all__ = [
     "get_bot_health_snapshot",
     "get_bot_last_seen_at",
     "get_game_send_queue_snapshot",
+    "get_game_group_route_activity_snapshot",
     "GAME_SEND_UNKNOWN_BLOCK_CODES",
     "GAME_SEND_UNSENT_BLOCK_CODES",
     "has_active_reply_dispatch",
@@ -5291,6 +5388,7 @@ __all__ = [
     "note_bot_health_probe_attempt",
     "note_identity_weakness",
     "note_game_bot_message",
+    "note_game_group_bot_activity",
     "note_game_command_observed",
     "note_game_command_sent",
     "redeem_ui_login_token",

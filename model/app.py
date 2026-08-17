@@ -247,6 +247,7 @@ from .runtime import (
     mark_bot_health_recovered,
     note_bot_health_probe_attempt,
     note_game_bot_message,
+    note_game_group_bot_activity,
     note_game_command_observed,
     note_identity_weakness,
     register_game_command_sent_observer,
@@ -1215,11 +1216,19 @@ async def _is_game_bot_event(event):
     return False
 
 
-async def _note_game_bot_activity(text=None, reply_to=None, reply_context=None, *, now=None):
+async def _note_game_bot_activity(
+    text=None,
+    reply_to=None,
+    reply_context=None,
+    *,
+    now=None,
+    game_group_id=None,
+):
     global _bot_silence_auto_paused
     now = float(now if now is not None else time.time())
     if not _is_bot_health_reply_evidence(text, reply_to, reply_context, now=now):
         return
+    note_game_group_bot_activity(game_group_id, now=now)
     reply_to_msg_id = _bot_health_reply_to_msg_id(reply_to)
     bot_health_action = note_game_bot_message(now, reply_to_msg_id=reply_to_msg_id)
     if (
@@ -3409,7 +3418,13 @@ async def on_message(event):
             is_game_group=True,
         )
         # bot 健康证据必须来自指令关联回复；广播/通告仍解析，但不触发恢复。
-        await _note_game_bot_activity(text, reply_to, reply_context, now=now)
+        await _note_game_bot_activity(
+            text,
+            reply_to,
+            reply_context,
+            now=now,
+            game_group_id=event.chat_id,
+        )
 
         phaseful_summary_handled = await _dispatch_new_message_broadcasts(
             event,
@@ -3525,10 +3540,10 @@ async def on_message_edited(event):
 
     if int(event.chat_id or 0) not in _configured_game_group_ids():
         return
+    now = time.time()
     sender_is_game_bot = await _is_game_bot_event(event)
     if not sender_is_game_bot:
         try:
-            now = time.time()
             text = event.raw_text or ""
             await _handle_replica_progress_event(event, now, event_type="edit")
             await _handle_suspected_game_bot_reply(event, text, now, edited=True)
@@ -3536,7 +3551,6 @@ async def on_message_edited(event):
             print(traceback.format_exc())
         return
 
-    now = time.time()
     text = event.raw_text or ""
     observe_dungeon_quiet_text(text, now=now)
 
@@ -3553,7 +3567,13 @@ async def on_message_edited(event):
             is_game_group=True,
         )
         # bot 健康证据必须来自指令关联回复；广播/通告仍解析，但不触发恢复。
-        await _note_game_bot_activity(text, reply_to, reply_context, now=now)
+        await _note_game_bot_activity(
+            text,
+            reply_to,
+            reply_context,
+            now=now,
+            game_group_id=event.chat_id,
+        )
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
         await _dispatch_message_edited_concubine_loss(event, text, now)

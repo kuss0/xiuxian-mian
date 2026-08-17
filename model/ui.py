@@ -184,7 +184,7 @@ from .official_schedule import (
     replace_planned_batch as replace_official_schedule_planned_batch,
 )
 from .persistence import save_state
-from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_bot_health_snapshot, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_bot_health_snapshot, get_game_group_route_activity_snapshot, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .storage_bag_api_client import (
     REFRESH_PATH as STORAGE_BAG_API_REFRESH_PATH,
     VERIFY_PATH as STORAGE_BAG_API_VERIFY_PATH,
@@ -4933,6 +4933,8 @@ def get_ui_snapshot(session_token=None, *, use_cache=False):
         preview = duel_preview_by_id.get(int(identity.get("send_as_id") or 0)) or {}
         identity["duel_preset_preview"] = preview
     startup_alerts = get_startup_module_alerts()
+    game_group_route_snapshot = get_game_group_route_config()
+    game_group_route_snapshot.update(get_game_group_route_activity_snapshot())
     snapshot = {
         "generated_at": datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
         "duel_preset_plan": {
@@ -4944,7 +4946,7 @@ def get_ui_snapshot(session_token=None, *, use_cache=False):
         "ui_url": UI_PUBLIC_BASE_URL,
         "account_user_id": state.get("my_user_id") or 0,
         "game_group_id": get_game_group_id(),
-        "game_group_route_config": get_game_group_route_config(),
+        "game_group_route_config": game_group_route_snapshot,
         "game_bot_ids": get_game_bot_ids(),
         "game_topic_id": get_game_topic_id(),
         "forum_topics": get_forum_topics(),
@@ -6831,14 +6833,14 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
         try:
             backup_group_id = int(raw_backup_group_id)
         except (TypeError, ValueError):
-            return False, "备用群聊 ID 必须是整数"
+            return False, "第二监听群聊 ID 必须是整数"
         if backup_group_id == group_id:
-            return False, "备用群不能与主群相同"
+            return False, "第二监听群不能与首选发送群相同"
     raw_backup_topic_id = str(backup_game_topic_id or "").strip()
     try:
         backup_topic_id = int(raw_backup_topic_id or 0)
     except (TypeError, ValueError):
-        return False, "备用话题 ID 必须是整数"
+        return False, "第二监听群话题 ID 必须是整数"
     if backup_topic_id < 0:
         return False, "备用话题 ID 不能为负数"
 
@@ -6903,12 +6905,13 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     display_guanxing_monitor = "开启" if guanxing_monitor_switch_enabled else "关闭"
     display_monitor_targets = ", ".join(normalized_monitor_targets) or "未选择"
     display_shift_delay = f"{normalized_shift_delay_sec:+d}秒"
+    display_listen_groups = "、".join(str(value) for value in (group_id, backup_group_id) if value)
     console_log(
-        f"🧩 已更新基础配置：主群={group_id}｜备用群={backup_group_id or '未启用'}｜bot={display_bots}｜主话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}｜观星首发偏移={display_shift_delay}{actor_suffix}",
+        f"🧩 已更新基础配置：监听群={display_listen_groups}｜首选发送群={group_id}｜bot={display_bots}｜首选群话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}｜观星首发偏移={display_shift_delay}{actor_suffix}",
         scope="global",
         limit=340,
     )
-    return True, f"已更新基础配置：主群 {group_id} ｜ 备用群 {backup_group_id or '未启用'} ｜ bot {display_bots} ｜ 主话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'} ｜ 观星首发偏移 {display_shift_delay}"
+    return True, f"已更新基础配置：监听群 {display_listen_groups} ｜ 首选发送群 {group_id} ｜ bot {display_bots} ｜ 首选群话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'} ｜ 观星首发偏移 {display_shift_delay}"
 
 
 async def ui_send_miniapp_entry_probe(send_as_id, game_key):

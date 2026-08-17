@@ -2133,11 +2133,24 @@ def _normalize_game_group_route_config(value):
                 topics[str(group_id)] = topic_id
     if primary and str(primary) not in topics:
         topics[str(primary)] = get_game_topic_id()
+    raw_activity = raw.get("bot_activity_at_by_group") or {}
+    bot_activity_at_by_group = {}
+    configured_group_ids = {primary, *backups}
+    if isinstance(raw_activity, dict):
+        for raw_group_id, raw_observed_at in raw_activity.items():
+            try:
+                group_id = int(raw_group_id)
+                observed_at = max(0.0, float(raw_observed_at or 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if group_id in configured_group_ids and observed_at > 0:
+                bot_activity_at_by_group[str(group_id)] = observed_at
     return {
         "enabled": bool(raw.get("enabled", bool(backups))),
         "primary_group_id": primary,
         "backup_group_ids": backups,
         "topic_id_by_group": topics,
+        "bot_activity_at_by_group": bot_activity_at_by_group,
     }
 
 

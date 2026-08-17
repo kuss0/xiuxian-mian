@@ -96,6 +96,8 @@ class GuanxingConfigTests(unittest.TestCase):
             )
 
         self.assertTrue(ok, message)
+        self.assertIn("监听群 -1002083016447、-1001680975844", message)
+        self.assertIn("首选发送群 -1002083016447", message)
         self.assertEqual(
             [-1001680975844],
             state_module.get_game_group_route_config()["backup_group_ids"],
