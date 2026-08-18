@@ -1114,6 +1114,12 @@ def _update_world_boss_identity_eligibility_from_result(item, now=None):
     if bool(item.get("ok")):
         return _clear_world_boss_identity_rejection(identity_id)
     status = str(item.get("status") or "").strip().lower()
+    # Older runtime results could classify the HTTP 403 as generic ``failed``
+    # while preserving the useful application error in ``error``. Keep the
+    # rejection guard compatible with those already-persisted result shapes.
+    error = str(item.get("error") or "").strip().lower()
+    if status not in WORLD_BOSS_IDENTITY_REJECTION_STATUSES and "boss_identity_invalid" in error:
+        status = "boss_identity_invalid"
     return _record_world_boss_identity_rejection(
         identity_id,
         status,

@@ -1794,7 +1794,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
                     "identity_id": identity_id,
                     "phase": "join",
                     "ok": False,
-                    "status": "boss_identity_invalid",
+                    "status": "failed",
                     "error": "403 boss_identity_invalid",
                 }],
             }

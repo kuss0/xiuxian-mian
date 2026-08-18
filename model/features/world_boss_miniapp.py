@@ -85,6 +85,7 @@ WORLD_BOSS_EXPIRY_HIT_MARGIN_MS = 500
 
 WORLD_BOSS_ERROR_TYPES = (
     "boss_token_missing",
+    "boss_identity_invalid",
     "boss_event_closed",
     "boss_join_closed",
     "boss_action_limit",
