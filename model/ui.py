@@ -363,6 +363,7 @@ _cave_public_background_retry_at = {}
 _ui_state_get_cache = {"expires_at": 0.0, "snapshot": None}
 UI_STATE_GET_CACHE_SEC = 5.0
 CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC = 10 * 60
+CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC = 30 * 60
 # A successful MiniApp response is authoritative for the current process even
 # if a concurrent state snapshot save temporarily races with it. Keep this
 # short-lived marker as a second guard; the persisted miniapp state remains the
@@ -7131,6 +7132,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         normalized_action = str(action or "").strip().lower()
         result = {}
         attempted = []
+        token_failure_count = 0
         for index, url in enumerate(candidate_urls):
             if normalized_action == "small_world":
                 result = await run_cave_public_small_world_sync(identity_id, url)
@@ -7175,6 +7177,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 return False, "洞府公共入口动作无效", {}
             message = str(result.get("message") or "")
             attempted.append({"index": index, "ok": bool(result.get("ok")), "message": message[:120]})
+            if _is_cave_public_entry_token_failure(message):
+                token_failure_count += 1
             health_failure = _is_cave_public_entry_health_failure(message)
             if result.get("ok") or not health_failure:
                 _close_cave_public_upstream_circuit()
@@ -7192,10 +7196,20 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                     send_as_id=identity_id,
                     limit=220,
                 )
+        if attempted and token_failure_count == len(attempted):
+            _open_cave_public_upstream_circuit(
+                "洞府公共入口授权已过期，请更新入口 URL",
+                duration_sec=CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC,
+            )
+            message = (
+                f"{str(result.get('message') or '洞府公共入口授权失效')}｜"
+                f"入口授权已过期，已暂停 {int(CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC // 60)} 分钟；"
+                "请在 UI 更新最新洞府公共入口 URL"
+            )
         extra = dict(result.get("extra") or {})
         extra["entry_index"] = max(0, len(attempted) - 1)
         extra["entry_attempts"] = attempted
-        return bool(result.get("ok")), str(result.get("message") or ""), extra
+        return bool(result.get("ok")), message, extra
 
 
 def _is_cave_public_entry_health_failure(message):
@@ -7219,6 +7233,11 @@ def _is_cave_public_entry_health_failure(message):
     ))
 
 
+def _is_cave_public_entry_token_failure(message):
+    text = str(message or "").casefold()
+    return "dwelling_token_expired" in text or "入口授权已过期" in text
+
+
 def _is_cave_public_upstream_failure(message):
     text = str(message or "")
     lowered = text.casefold()
@@ -7235,9 +7254,13 @@ def _is_cave_public_upstream_failure(message):
     )
 
 
-def _open_cave_public_upstream_circuit(message, now=None):
+def _open_cave_public_upstream_circuit(message, now=None, duration_sec=None):
     opened_at = float(now or time.time())
-    open_until = opened_at + CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC
+    try:
+        duration = float(duration_sec or CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC)
+    except (TypeError, ValueError, OverflowError):
+        duration = float(CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC)
+    open_until = opened_at + max(30.0, duration)
     _cave_public_background_state.update({
         "circuit_open_until": open_until,
         "circuit_reason": str(message or "上游不可用")[:240],
@@ -7467,6 +7490,7 @@ async def ui_set_cave_public_config(payload=None):
         })
     if "delay_sec" in payload:
         config["cave_public_delay_sec"] = int(_normalize_cave_public_batch_delay(payload.get("delay_sec")))
+    entry_urls_changed = False
     if "public_entry_url" in payload or "public_entry_urls" in payload:
         public_urls = []
         public_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_url")))
@@ -7480,8 +7504,12 @@ async def ui_set_cave_public_config(payload=None):
                 valid_urls.append(public_entry_url)
             config["cave_public_entry_urls"] = valid_urls
             config["cave_public_entry_url"] = valid_urls[0]
+            entry_urls_changed = True
     set_miniapp_auto_config(config)
     save_state()
+    if entry_urls_changed:
+        _close_cave_public_upstream_circuit()
+        _cave_public_background_retry_at.clear()
     actions = _cave_public_actions_from_config(config)
     action_text = "、".join(actions) if actions else "无"
     return True, f"已保存洞府公共入口独立开关：{action_text}｜间隔 {config['cave_public_delay_sec']}s"

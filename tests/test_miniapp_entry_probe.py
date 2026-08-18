@@ -575,6 +575,64 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(extra["entry_attempts"]))
         self.assertEqual(2, run_mock.await_count)
 
+    async def test_cave_public_entry_token_expiry_falls_back_to_a_fresh_candidate(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._close_cave_public_upstream_circuit()
+            with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "run_cave_public_trial", new=AsyncMock(side_effect=[
+                        {"ok": False, "message": "洞府天机试炼身份读取失败：dwelling_token_expired", "extra": {}},
+                        {"ok": True, "message": "洞府天机试炼公共入口：完成", "extra": {}},
+                    ])) as run_mock:
+                ok, message, extra = await ui.ui_run_cave_public_entry(
+                    1001,
+                    "trial",
+                    "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+                )
+
+            self.assertTrue(ok)
+            self.assertIn("完成", message)
+            self.assertEqual(1, extra["entry_index"])
+            self.assertEqual(2, run_mock.await_count)
+            self.assertEqual(0, ui._cave_public_background_state["circuit_open_until"])
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
+    async def test_cave_public_entry_all_token_expiry_opens_entry_circuit(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._close_cave_public_upstream_circuit()
+            with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
+                        "ok": False,
+                        "message": "洞府天机试炼身份读取失败：dwelling_token_expired",
+                        "extra": {},
+                    })) as run_mock:
+                ok, message, extra = await ui.ui_run_cave_public_entry(
+                    1001,
+                    "trial",
+                    "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+                )
+
+            self.assertFalse(ok)
+            self.assertIn("入口授权已过期", message)
+            self.assertIn("更新最新洞府公共入口 URL", message)
+            self.assertEqual(1, extra["entry_index"])
+            self.assertEqual(2, len(extra["entry_attempts"]))
+            self.assertEqual(2, run_mock.await_count)
+            self.assertGreater(
+                ui._cave_public_background_state["circuit_open_until"],
+                time.time() + ui.CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC,
+            )
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
     async def test_cave_public_entry_run_opens_circuit_without_retrying_upstream_502(self):
         background_snapshot = dict(ui._cave_public_background_state)
         try:
