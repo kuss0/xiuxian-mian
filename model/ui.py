@@ -1,5 +1,6 @@
 import asyncio
 import glob
+import hashlib
 import html
 import inspect
 import ipaddress
@@ -428,6 +429,9 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_tianti_status_identity_ids": [],
     "cave_public_entry_url": "",
     "cave_public_entry_urls": [],
+    "cave_public_entry_token_blocked_signature": "",
+    "cave_public_entry_token_blocked_at": 0,
+    "cave_public_entry_token_blocked_reason": "",
     "cave_public_delay_sec": 20,
     "world_boss_auto_enabled": False,
     "world_boss_auto_account_limit": 1,
@@ -529,6 +533,18 @@ def normalize_miniapp_auto_config(config=None):
     urls = _cave_public_entry_urls_from_config(result)
     result["cave_public_entry_url"] = urls[0] if urls else ""
     result["cave_public_entry_urls"] = urls
+    result["cave_public_entry_token_blocked_signature"] = str(
+        result.get("cave_public_entry_token_blocked_signature") or ""
+    ).strip()
+    try:
+        result["cave_public_entry_token_blocked_at"] = float(
+            result.get("cave_public_entry_token_blocked_at") or 0
+        )
+    except (TypeError, ValueError, OverflowError):
+        result["cave_public_entry_token_blocked_at"] = 0
+    result["cave_public_entry_token_blocked_reason"] = str(
+        result.get("cave_public_entry_token_blocked_reason") or ""
+    ).strip()
     try:
         result["world_boss_auto_account_limit"] = int(result.get("world_boss_auto_account_limit", 1) or 1)
     except (TypeError, ValueError, OverflowError):
@@ -740,6 +756,11 @@ def get_miniapp_auto_config_snapshot(now=None):
     safe_config = dict(config)
     safe_config.pop("cave_public_entry_url", None)
     safe_config.pop("cave_public_entry_urls", None)
+    safe_config.pop("cave_public_entry_token_blocked_signature", None)
+    safe_config["cave_public_entry_token_blocked"] = _cave_public_entry_token_blocked(
+        config,
+        config.get("cave_public_entry_urls") or [],
+    )
     try:
         from .features.world_boss import (
             get_world_boss_rotation_account_record,
@@ -7120,12 +7141,21 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         return False, "身份不存在", {}
     if not is_cave_public_identity_available(identity_id):
         return False, "身份已停用", {}
+    using_config_urls = not bool(str(public_entry_url or "").strip())
     if public_entry_url:
         candidate_urls = _normalize_cave_public_entry_urls_value(public_entry_url)
     else:
         candidate_urls = list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or [])
     if not candidate_urls:
         return False, "缺少洞府公共入口 URL", {}
+    if using_config_urls and _cave_public_entry_token_blocked(
+        normalize_miniapp_auto_config(), candidate_urls
+    ):
+        return (
+            False,
+            "洞府公共入口授权已过期，已暂停重复请求；请在 UI 更新最新洞府公共入口 URL",
+            {"entry_token_blocked": True},
+        )
     if _cave_public_ui_run_lock.locked():
         return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {}
     async with _cave_public_ui_run_lock:
@@ -7179,6 +7209,19 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             attempted.append({"index": index, "ok": bool(result.get("ok")), "message": message[:120]})
             if _is_cave_public_entry_token_failure(message):
                 token_failure_count += 1
+            result_extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+            skip_after_token_failure = bool(
+                token_failure_count
+                and result.get("ok")
+                and result_extra.get("skipped")
+                and "最小间隔" in message
+            )
+            if skip_after_token_failure:
+                # The first candidate already touched the shared per-identity
+                # request timer. A later candidate can only report the local
+                # throttle skip; that is not a successful entry validation.
+                token_failure_count += 1
+                continue
             health_failure = _is_cave_public_entry_health_failure(message)
             if result.get("ok") or not health_failure:
                 _close_cave_public_upstream_circuit()
@@ -7201,15 +7244,21 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 "洞府公共入口授权已过期，请更新入口 URL",
                 duration_sec=CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC,
             )
+            if using_config_urls:
+                _persist_cave_public_entry_token_block(
+                    candidate_urls,
+                    "洞府公共入口授权已过期，请更新入口 URL",
+                )
             message = (
                 f"{str(result.get('message') or '洞府公共入口授权失效')}｜"
-                f"入口授权已过期，已暂停 {int(CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC // 60)} 分钟；"
+                f"入口授权已过期，已暂停重复请求；"
                 "请在 UI 更新最新洞府公共入口 URL"
             )
         extra = dict(result.get("extra") or {})
         extra["entry_index"] = max(0, len(attempted) - 1)
         extra["entry_attempts"] = attempted
-        return bool(result.get("ok")), message, extra
+        all_token_failed = bool(attempted and token_failure_count == len(attempted))
+        return (False if all_token_failed else bool(result.get("ok"))), message, extra
 
 
 def _is_cave_public_entry_health_failure(message):
@@ -7236,6 +7285,35 @@ def _is_cave_public_entry_health_failure(message):
 def _is_cave_public_entry_token_failure(message):
     text = str(message or "").casefold()
     return "dwelling_token_expired" in text or "入口授权已过期" in text
+
+
+def _cave_public_entry_urls_signature(urls):
+    normalized = _normalize_cave_public_entry_urls_value(urls)
+    if not normalized:
+        return ""
+    payload = "\n".join(normalized).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _cave_public_entry_token_blocked(config=None, urls=None):
+    config = normalize_miniapp_auto_config(config)
+    current_urls = list(urls or config.get("cave_public_entry_urls") or [])
+    blocked_signature = str(config.get("cave_public_entry_token_blocked_signature") or "").strip()
+    current_signature = _cave_public_entry_urls_signature(current_urls)
+    return bool(blocked_signature and current_signature and blocked_signature == current_signature)
+
+
+def _persist_cave_public_entry_token_block(urls, reason):
+    config = normalize_miniapp_auto_config()
+    configured_urls = list(config.get("cave_public_entry_urls") or [])
+    if _cave_public_entry_urls_signature(configured_urls) != _cave_public_entry_urls_signature(urls):
+        return False
+    config["cave_public_entry_token_blocked_signature"] = _cave_public_entry_urls_signature(configured_urls)
+    config["cave_public_entry_token_blocked_at"] = time.time()
+    config["cave_public_entry_token_blocked_reason"] = str(reason or "")[:240]
+    set_miniapp_auto_config(config)
+    save_state()
+    return True
 
 
 def _is_cave_public_upstream_failure(message):
@@ -7492,6 +7570,7 @@ async def ui_set_cave_public_config(payload=None):
         config["cave_public_delay_sec"] = int(_normalize_cave_public_batch_delay(payload.get("delay_sec")))
     entry_urls_changed = False
     if "public_entry_url" in payload or "public_entry_urls" in payload:
+        previous_urls = list(config.get("cave_public_entry_urls") or [])
         public_urls = []
         public_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_url")))
         public_urls.extend(_normalize_cave_public_entry_urls_value(payload.get("public_entry_urls")))
@@ -7504,7 +7583,11 @@ async def ui_set_cave_public_config(payload=None):
                 valid_urls.append(public_entry_url)
             config["cave_public_entry_urls"] = valid_urls
             config["cave_public_entry_url"] = valid_urls[0]
-            entry_urls_changed = True
+            entry_urls_changed = valid_urls != previous_urls
+            if entry_urls_changed:
+                config["cave_public_entry_token_blocked_signature"] = ""
+                config["cave_public_entry_token_blocked_at"] = 0
+                config["cave_public_entry_token_blocked_reason"] = ""
     set_miniapp_auto_config(config)
     save_state()
     if entry_urls_changed:
@@ -8464,6 +8547,13 @@ async def run_miniapp_daily_scheduler(now):
     config = get_miniapp_auto_config_snapshot(now)
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
+    public_entry_urls = list(raw_config.get("cave_public_entry_urls") or [])
+    if _cave_public_entry_token_blocked(raw_config, public_entry_urls):
+        return {
+            "started": False,
+            "reason": "entry_token_blocked",
+            "message": "洞府公共入口授权已过期，请先在 UI 更新入口 URL",
+        }
     circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
     if float(now) < circuit_open_until:
         return {

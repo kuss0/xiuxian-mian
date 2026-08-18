@@ -633,6 +633,82 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.clear()
             ui._cave_public_background_state.update(background_snapshot)
 
+    async def test_cave_public_entry_token_expiry_blocks_same_config_until_url_changes(self):
+        old_urls = [
+            "https://t.me/hantianzun21_bot?startapp=df_SECRET111",
+            "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+        ]
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": old_urls[0],
+            "cave_public_entry_urls": old_urls,
+        }
+        background_snapshot = dict(ui._cave_public_background_state)
+        try:
+            ui._close_cave_public_upstream_circuit()
+            run_mock = AsyncMock(side_effect=[
+                {
+                    "ok": False,
+                    "message": "洞府天机试炼身份读取失败：dwelling_token_expired",
+                    "extra": {},
+                },
+                {
+                    "ok": True,
+                    "message": "洞府小世界请求仍在最小间隔内，已跳过请求",
+                    "extra": {"skipped": True},
+                },
+            ])
+            with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                    patch.object(ui, "get_identity_enabled", return_value=True), \
+                    patch.object(ui, "run_cave_public_trial", new=run_mock), \
+                    patch.object(ui, "save_state", return_value=True) as save_mock:
+                ok, message, _extra = await ui.ui_run_cave_public_entry(1001, "trial", "")
+                blocked_ok, blocked_message, blocked_extra = await ui.ui_run_cave_public_entry(
+                    1001,
+                    "trial",
+                    "",
+                )
+
+            self.assertFalse(ok)
+            self.assertIn("已暂停重复请求", message)
+            self.assertFalse(blocked_ok)
+            self.assertIn("已暂停重复请求", blocked_message)
+            self.assertTrue(blocked_extra["entry_token_blocked"])
+            self.assertEqual(2, run_mock.await_count)
+            self.assertTrue(ui.normalize_miniapp_auto_config()["cave_public_entry_token_blocked_signature"])
+            save_mock.assert_called_once()
+
+            new_url = "https://t.me/hantianzun99_bot?startapp=df_FRESH333"
+            with patch.object(ui, "save_state", return_value=True):
+                changed, _message = await ui.ui_set_cave_public_config({
+                    "public_entry_urls": [new_url],
+                })
+            self.assertTrue(changed)
+            config = ui.normalize_miniapp_auto_config()
+            self.assertEqual([new_url], config["cave_public_entry_urls"])
+            self.assertEqual("", config["cave_public_entry_token_blocked_signature"])
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+
+    async def test_miniapp_scheduler_skips_persistently_expired_entry_urls(self):
+        urls = ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222"]
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": urls[0],
+            "cave_public_entry_urls": urls,
+            "cave_public_entry_token_blocked_signature": ui._cave_public_entry_urls_signature(urls),
+            "cave_public_entry_token_blocked_at": time.time(),
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        }
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=AsyncMock()) as tree_mock, \
+                patch.object(ui, "_run_cave_public_background_scheduler", new=AsyncMock()) as cave_mock:
+            result = await ui.run_miniapp_daily_scheduler(time.time())
+
+        self.assertFalse(result["started"])
+        self.assertEqual("entry_token_blocked", result["reason"])
+        tree_mock.assert_not_awaited()
+        cave_mock.assert_not_awaited()
+
     async def test_cave_public_entry_run_opens_circuit_without_retrying_upstream_502(self):
         background_snapshot = dict(ui._cave_public_background_state)
         try:
