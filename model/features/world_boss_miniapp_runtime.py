@@ -572,9 +572,19 @@ async def run_world_boss_miniapp_event(
 
     battle_results = [item for item in results if item.get("phase") == "battle"]
     effective_results = [item for item in battle_results if item.get("ok") and item.get("status") == "settled"]
+    failed_join_results = [
+        item
+        for item in results
+        if item.get("phase") == "join" and not item.get("ok")
+    ]
+    all_joined_settled = (
+        bool(contexts)
+        and not failed_join_results
+        and len(effective_results) == len(contexts)
+    )
     return {
-        "ok": bool(contexts) and len(effective_results) == len(contexts),
-        "status": "settled" if contexts and len(effective_results) == len(contexts) else "partial",
+        "ok": all_joined_settled,
+        "status": "settled" if all_joined_settled else "partial",
         "joined_count": len(contexts),
         "results": results,
         "entry": launch.get("safe_summary") or {},

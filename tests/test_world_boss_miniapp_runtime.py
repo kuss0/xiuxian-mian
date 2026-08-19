@@ -440,8 +440,56 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(result["ok"])
+        self.assertEqual("partial", result["status"])
         self.assertEqual(1, attempts)
         sleep_mock.assert_not_awaited()
+
+    async def test_partial_join_failure_does_not_report_event_as_settled(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            joined = kwargs["identity_id"] == 11
+            status = "joined" if joined else "boss_identity_invalid"
+            return SimpleNamespace(
+                joined=joined,
+                status=status,
+                session_token="qyz_SESSION" if joined else "",
+                safe_summary=lambda: {
+                    "joined": joined,
+                    "status": status,
+                    "error": "" if joined else "boss_identity_invalid",
+                },
+            )
+
+        def fake_battle(_receipt, **_kwargs):
+            return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}, "error": ""}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11, 22],
+                event,
+                opened_at=time.time(),
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("partial", result["status"])
+        self.assertEqual(1, result["joined_count"])
+        self.assertEqual(1, sum(item["phase"] == "battle" for item in result["results"]))
+        self.assertTrue(any(
+            item["phase"] == "join" and item["status"] == "boss_identity_invalid"
+            for item in result["results"]
+        ))
 
     async def test_finish_reserve_and_per_identity_extra_skip_are_combined(self):
         event = SimpleNamespace(
