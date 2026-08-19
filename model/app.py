@@ -248,6 +248,7 @@ from .runtime import (
     note_bot_health_probe_attempt,
     note_game_bot_message,
     note_game_group_bot_activity,
+    note_game_group_bot_reply,
     note_game_command_observed,
     note_identity_weakness,
     register_game_command_sent_observer,
@@ -1226,10 +1227,16 @@ async def _note_game_bot_activity(
 ):
     global _bot_silence_auto_paused
     now = float(now if now is not None else time.time())
+    routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    reply_to_msg_id = _bot_health_reply_to_msg_id(reply_to)
+    if routed_identity_id > 0 and reply_to_msg_id > 0:
+        # The bot may broadcast in only one of the configured groups. Once a
+        # real reply is tied to an identity, keep that identity on the source
+        # group for its next automatic command; never mirror-send to both.
+        note_game_group_bot_reply(routed_identity_id, game_group_id, now=now)
     if not _is_bot_health_reply_evidence(text, reply_to, reply_context, now=now):
         return
     note_game_group_bot_activity(game_group_id, now=now)
-    reply_to_msg_id = _bot_health_reply_to_msg_id(reply_to)
     bot_health_action = note_game_bot_message(now, reply_to_msg_id=reply_to_msg_id)
     if (
         bot_health_action is None
@@ -3469,6 +3476,7 @@ async def on_message(event):
                     inferred_reply_to,
                     inferred_context,
                     now=now,
+                    game_group_id=event.chat_id,
                 )
                 handled_reply = await _handle_routed_reply_event(
                     event,

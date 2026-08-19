@@ -2146,12 +2146,24 @@ def _normalize_game_group_route_config(value):
                 continue
             if group_id in configured_group_ids and observed_at > 0:
                 bot_activity_at_by_group[str(group_id)] = observed_at
+    raw_reply_routes = raw.get("bot_reply_group_by_identity") or {}
+    bot_reply_group_by_identity = {}
+    if isinstance(raw_reply_routes, dict):
+        for raw_identity_id, raw_group_id in raw_reply_routes.items():
+            try:
+                identity_id = int(raw_identity_id)
+                group_id = int(raw_group_id)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if identity_id > 0 and group_id in configured_group_ids:
+                bot_reply_group_by_identity[str(identity_id)] = group_id
     return {
         "enabled": bool(raw.get("enabled", bool(backups))),
         "primary_group_id": primary,
         "backup_group_ids": backups,
         "topic_id_by_group": topics,
         "bot_activity_at_by_group": bot_activity_at_by_group,
+        "bot_reply_group_by_identity": bot_reply_group_by_identity,
     }
 
 
@@ -2183,6 +2195,41 @@ def get_game_group_ids():
     if not result and get_game_group_id():
         result.append(get_game_group_id())
     return result
+
+
+def get_game_group_reply_route(send_as_id):
+    try:
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if send_as_id <= 0:
+        return 0
+    config = get_game_group_route_config()
+    try:
+        group_id = int((config.get("bot_reply_group_by_identity") or {}).get(str(send_as_id), 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return group_id if group_id in set(get_game_group_ids()) else 0
+
+
+def set_game_group_reply_route(send_as_id, group_id):
+    try:
+        send_as_id = int(send_as_id or 0)
+        group_id = int(group_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    config = _normalize_game_group_route_config(_meta_state.get("game_group_route_config") or {})
+    routes = dict(config.get("bot_reply_group_by_identity") or {})
+    valid_groups = set(get_game_group_ids())
+    if send_as_id <= 0:
+        return 0
+    if group_id in valid_groups:
+        routes[str(send_as_id)] = group_id
+    else:
+        routes.pop(str(send_as_id), None)
+    config["bot_reply_group_by_identity"] = routes
+    _meta_state["game_group_route_config"] = config
+    return group_id if group_id in valid_groups else 0
 
 
 def is_game_group_id(group_id):
@@ -3203,6 +3250,7 @@ __all__ = [
     "get_account_group_memberships",
     "get_game_group_id",
     "get_game_group_ids",
+    "get_game_group_reply_route",
     "get_game_group_route_config",
     "get_game_group_topic_id",
     "get_game_bot_ids",
@@ -3304,6 +3352,7 @@ __all__ = [
     "resolve_identity_selector_detail",
     "set_game_group_id",
     "set_game_group_route_config",
+    "set_game_group_reply_route",
     "set_game_bot_ids",
     "set_game_listener_account_ids",
     "set_game_topic_id",

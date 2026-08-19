@@ -6911,6 +6911,11 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
             str(group_id): topic_id,
             **({str(backup_group_id): backup_topic_id} if backup_group_id else {}),
         },
+        # Keep per-identity reply affinity when an older UI saves the basic
+        # config. The UI edits group membership, not observed bot routing.
+        "bot_reply_group_by_identity": dict(
+            existing_route_config.get("bot_reply_group_by_identity") or {}
+        ),
     })
     set_auto_delete_sent_messages(auto_delete_enabled)
     set_tiandao_judgement_enabled(tiandao_judgement_switch_enabled)

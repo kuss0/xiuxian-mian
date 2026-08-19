@@ -107,6 +107,36 @@ class GuanxingConfigTests(unittest.TestCase):
             state_module.get_game_group_route_config()["topic_id_by_group"]["-1001680975844"],
         )
 
+    def test_basic_config_preserves_identity_reply_route(self):
+        identity_id = 301299112
+        state_module.set_game_group_id(-1002083016447)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": -1002083016447,
+            "backup_group_ids": [-1001680975844],
+            "topic_id_by_group": {
+                "-1002083016447": 0,
+                "-1001680975844": 7310786,
+            },
+            "bot_reply_group_by_identity": {str(identity_id): -1001680975844},
+        })
+
+        with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
+            ok, message = asyncio.run(
+                ui.ui_set_basic_config(
+                    "-1002083016447",
+                    "8388633812",
+                    "0",
+                    True,
+                )
+            )
+
+        self.assertTrue(ok, message)
+        self.assertEqual(
+            -1001680975844,
+            state_module.get_game_group_reply_route(identity_id),
+        )
+
     def test_disabled_backup_route_is_retained_but_not_effective(self):
         primary_group_id = -1002083016447
         backup_group_id = -1001680975844

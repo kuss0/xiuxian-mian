@@ -230,6 +230,7 @@ from .state import (
     get_game_bot_ids,
     get_game_group_id,
     get_game_group_ids,
+    get_game_group_reply_route,
     get_game_group_route_config,
     get_game_group_topic_id,
     get_game_topic_id,
@@ -254,6 +255,7 @@ from .state import (
     state,
     set_channel_send_as_health,
     set_game_group_route_config,
+    set_game_group_reply_route,
     set_account_target_membership,
     set_account_group_membership,
     set_identity_enabled,
@@ -3774,6 +3776,26 @@ def note_game_group_bot_activity(game_group_id, now=None):
     return True
 
 
+def note_game_group_bot_reply(send_as_id, game_group_id, now=None):
+    """Remember the group where this identity most recently got a real reply.
+
+    This is a route hint only. It never sends or broadcasts anything; explicit
+    reply/message routes remain authoritative when a chain already has a chat.
+    """
+    try:
+        send_as_id = int(send_as_id or 0)
+        group_id = int(game_group_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if send_as_id <= 0 or group_id not in {int(item or 0) for item in get_game_group_ids()}:
+        return False
+    if get_game_group_reply_route(send_as_id) == group_id:
+        return True
+    set_game_group_reply_route(send_as_id, group_id)
+    mark_dirty()
+    return True
+
+
 def _game_group_bot_activity_at(group_id):
     group_id = int(group_id or 0)
     persisted = get_game_group_route_config().get("bot_activity_at_by_group") or {}
@@ -3853,7 +3875,13 @@ def _game_group_route_candidates(send_as_id, account_id, *, now=None, target_cha
     if target_chat_id:
         configured_group_ids = [target_chat_id] if target_chat_id in {int(group_id or 0) for group_id in configured_group_ids} else []
     else:
-        configured_group_ids = _order_game_group_ids_by_activity(configured_group_ids, now=current)
+        reply_group_id = get_game_group_reply_route(send_as_id)
+        if reply_group_id in configured_group_ids:
+            configured_group_ids = [reply_group_id, *[
+                group_id for group_id in configured_group_ids if group_id != reply_group_id
+            ]]
+        else:
+            configured_group_ids = _order_game_group_ids_by_activity(configured_group_ids, now=current)
     for group_id in dict.fromkeys(configured_group_ids):
         group_id = int(group_id or 0)
         if group_id == 0 or _account_group_is_blocked(account_id, group_id):

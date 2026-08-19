@@ -514,6 +514,53 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(primary_group_id, routes[0][0])
 
+    def test_identity_reply_group_hint_wins_over_global_primary_activity(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        alternate_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [alternate_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(alternate_group_id): 7310786},
+        })
+        now = 10_000.0
+        runtime.note_game_group_bot_activity(primary_group_id, now=now - 5)
+        runtime.note_game_group_bot_activity(alternate_group_id, now=now - 900)
+        self.assertTrue(runtime.note_game_group_bot_reply(send_as_id, alternate_group_id, now=now))
+
+        routes = runtime._game_group_route_candidates(send_as_id, account_id, now=now)
+
+        self.assertEqual(alternate_group_id, routes[0][0])
+        self.assertEqual(alternate_group_id, state_module.get_game_group_reply_route(send_as_id))
+
+    def test_explicit_source_group_remains_authoritative_over_identity_hint(self):
+        send_as_id = 301299112
+        account_id = 7001
+        primary_group_id = -1002083016447
+        alternate_group_id = -1001680975844
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        state_module.set_game_group_route_config({
+            "enabled": True,
+            "primary_group_id": primary_group_id,
+            "backup_group_ids": [alternate_group_id],
+            "topic_id_by_group": {str(primary_group_id): 0, str(alternate_group_id): 7310786},
+        })
+        runtime.note_game_group_bot_reply(send_as_id, alternate_group_id, now=10_000.0)
+
+        routes = runtime._game_group_route_candidates(
+            send_as_id,
+            account_id,
+            now=10_001.0,
+            target_chat_id=primary_group_id,
+        )
+
+        self.assertEqual([(primary_group_id, 0)], routes)
+
     def test_explicit_source_group_is_not_reordered_by_other_group_activity(self):
         send_as_id = 301299112
         account_id = 7001
