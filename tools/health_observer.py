@@ -41,7 +41,7 @@ WARN_PATTERN = re.compile(
 )
 PASSIVE_OBSERVATION_CONTEXT_PATTERN = re.compile(r"红包候选观察(?:｜|\|)", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
-    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:)|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
+    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:|Network is unreachable|Max retries exceeded|ConnectionError|ProxyError|Read timed out)|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
     re.I,
 )
 TRANSIENT_TELEGRAM_CONTEXT_PATTERN = re.compile(
@@ -1823,6 +1823,10 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             recovery_throttle_until = parse_optional_epoch(meta_state.get("global_recovery_throttle_until"))
             recovery_active = now < max(recovery_hold_until, recovery_throttle_until)
             scheduling_suppressed = global_paused or recovery_active
+            miniapp_config = parse_json_dict(meta_state.get("miniapp_auto_config"))
+            cave_entry_blocked = bool(
+                str(miniapp_config.get("cave_public_entry_token_blocked_signature") or "").strip()
+            )
             channel_send_as_health = parse_json_dict(meta_state.get("channel_send_as_health"))
             account_target_memberships = parse_json_dict(meta_state.get("account_target_memberships"))
             world_boss_miniapp_health = analyze_world_boss_miniapp_health(
@@ -1973,6 +1977,19 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 ):
                     phase = str(row[phase_key] or "")
                     next_time = float(row[next_key] or 0)
+                    if (
+                        cave_entry_blocked
+                        and module == "deep_retreat"
+                        and boolish(miniapp_config.get("cave_public_deep_status_enabled"))
+                    ) or (
+                        cave_entry_blocked
+                        and module == "yuanying"
+                        and boolish(miniapp_config.get("cave_public_yuanying_enabled"))
+                    ):
+                        # These schedulers intentionally yield to the shared
+                        # cave entry gate. An overdue phase is dependency
+                        # blocked, not an independent state-machine stall.
+                        continue
                     if not scheduling_suppressed and phase in PHASEFUL_ATTENTION_PHASES and next_time > 0 and now > next_time + 300:
                         stuck_phases.append({
                             "identity_id": identity_id,

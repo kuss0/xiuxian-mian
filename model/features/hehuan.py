@@ -47,6 +47,10 @@ HEHUAN_BAIJI_USERNAME = "jfdffdddd"
 HEHUAN_BAIJI_NAME = "吧唧"
 HEHUAN_ANCHOR_TEXT = "。"
 HEHUAN_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+# A real anchor-required reply can arrive after the retry storm has already
+# ended and the service may restart hours later.  Keep this replay window
+# separate from the short normal reply-recovery window.
+HEHUAN_ANCHOR_REQUIRED_REPLAY_LOOKBACK_SEC = 6 * 3600
 HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC = 30
 HEHUAN_FINAL_EDIT_WAIT_SEC = 3 * 60
 HEHUAN_UNSENT_BLOCK_CODES = {
@@ -663,6 +667,39 @@ def find_recent_hehuan_partner_anchor_msg_id(
     return 0
 
 
+def _find_hehuan_anchor_chat_id(anchor_msg_id, now=None):
+    """Resolve the chat containing an anchor, including partner messages.
+
+    The two configured game groups can route the same identity differently.
+    A reply-to message from the other group is not a valid warm-up anchor, so
+    the subsequent command must be sent to the anchor's actual chat.
+    """
+    try:
+        anchor_msg_id = int(anchor_msg_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        anchor_msg_id = 0
+    if anchor_msg_id <= 0:
+        return 0
+    for path in _recent_message_log_paths(float(now if now is not None else time.time())):
+        if not os.path.exists(path):
+            continue
+        for line in reversed(_read_message_log_tail(path)):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            try:
+                message_id = int(payload.get("message_id", 0) or 0)
+                chat_id = int(payload.get("chat_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if message_id == anchor_msg_id and chat_id:
+                return chat_id
+    return 0
+
+
 def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC):
     return find_recent_hehuan_partner_anchor_msg_id(
         HEHUAN_BAIJI_USERNAME,
@@ -875,6 +912,22 @@ def parse_hehuan_text(text, now=None, family=""):
             "last_insight": "",
             "error": "对方并非你的同参道侣",
         }
+    if "此功法需回复你的同参道侣方可施展" in raw_text:
+        return {
+            "path": PATH_TONGCAN,
+            "action": "双修 温养",
+            "result": "anchor_required",
+            "summary": "温养失败：需回复同参道侣的消息",
+            "partner": "",
+            "target": "",
+            "next_hehuan_time": float(now + 5 * 60),
+            "contract_until": 0,
+            "heart_seal_until": 0,
+            "last_gains": {},
+            "last_contrib_gain": 0,
+            "last_insight": "",
+            "error": "需回复你的同参道侣方可施展",
+        }
     if (
         "道友若欲双修" in raw_text
         or ("合欢宗" in raw_text and "双修、同参、心印与采补" in raw_text)
@@ -1000,7 +1053,7 @@ def apply_hehuan_passive(text, now=None, family=""):
     if parsed_partner:
         observed["last_partner"] = parsed_partner
         observed["last_partner_identity_id"] = _resolve_identity_id_by_at_name(parsed_partner)
-    elif result in {"contract_invalid", "cooldown", "pending"} and previous_partner:
+    elif result in {"contract_invalid", "cooldown", "pending", "anchor_required"} and previous_partner:
         observed["last_partner"] = previous_partner
     else:
         observed["last_partner"] = ""
@@ -1084,6 +1137,14 @@ def apply_hehuan_passive(text, now=None, family=""):
         observed["auto_next_time"] = float(now + 5 * 60)
         observed["auto_last_error"] = "温养失败疑似错误锚点，已保留既有同参关系并等待新锚点"
         observed["auto_last_error_at"] = float(now)
+        _reset_hehuan_auto_pending(observed)
+        auto_next_handled = True
+    elif result == "anchor_required":
+        observed["auto_next_time"] = float(parsed.get("next_hehuan_time") or now + 5 * 60)
+        observed["auto_last_error"] = "温养失败：未回复同参道侣消息，已等待下一次使用正确群锚点"
+        observed["auto_last_error_at"] = float(now)
+        observed["auto_retry_count"] = 0
+        observed["auto_retry_reason"] = ""
         _reset_hehuan_auto_pending(observed)
         auto_next_handled = True
     elif result == "pending":
@@ -1331,6 +1392,67 @@ def _find_recent_hehuan_sent_from_message_log(send_as_id, command, now, *, reply
     return best
 
 
+def _reconcile_recent_hehuan_anchor_required(observed, now):
+    """Replay a recent real anchor error after a retry storm or restart."""
+    now = float(now if now is not None else time.time())
+    min_ts = now - max(
+        15 * 60,
+        HEHUAN_LOG_REPLAY_LOOKBACK_SEC,
+        HEHUAN_ANCHOR_REQUIRED_REPLAY_LOOKBACK_SEC,
+    )
+    game_group_ids = {int(group_id or 0) for group_id in get_game_group_ids()}
+    game_group_ids.discard(0)
+    if not game_group_ids:
+        game_group_ids = {int(get_game_group_id() or 0)}
+        game_group_ids.discard(0)
+    identity_id = get_current_identity_id()
+    recent = []
+    for path in _recent_message_log_paths(now):
+        if not os.path.exists(path):
+            continue
+        for line in _read_message_log_tail(path):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            try:
+                chat_id = int(payload.get("chat_id", 0) or 0)
+                message_id = int(payload.get("message_id", 0) or 0)
+                reply_to = int(payload.get("reply_to_msg_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if chat_id not in game_group_ids or message_id <= 0:
+                continue
+            ts = _parse_message_log_ts(payload.get("ts"))
+            if ts < min_ts or ts > now + 60:
+                continue
+            recent.append((ts, payload))
+    recent.sort(key=lambda item: item[0], reverse=True)
+    root_commands = {
+        int(payload.get("message_id") or 0): payload
+        for _ts, payload in recent
+        if str(payload.get("event_type") or "") in {"sent", "message"}
+        and int(payload.get("sender_id") or 0) == int(identity_id or 0)
+        and str(payload.get("text") or "").strip() == ".双修 温养"
+    }
+    last_observed_at = float((observed or {}).get("last_observed_at", 0) or 0)
+    for ts, payload in recent:
+        if "此功法需回复你的同参道侣方可施展" not in str(payload.get("text") or ""):
+            continue
+        reply_to = int(payload.get("reply_to_msg_id") or 0)
+        root = root_commands.get(reply_to)
+        if not root or ts <= last_observed_at:
+            continue
+        return apply_hehuan_passive(
+            payload.get("text") or "",
+            now=ts,
+            family="hehuan_dual",
+        )
+    return False
+
+
 async def run_hehuan_scheduler(now):
     now = float(now if now is not None else time.time())
     dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
@@ -1350,6 +1472,10 @@ async def run_hehuan_scheduler(now):
         save_state()
     observed = latest
     if reminder_sent:
+        return
+
+    if _reconcile_recent_hehuan_anchor_required(observed, now):
+        save_state()
         return
 
     if not state.get("hehuan_enabled"):
@@ -1414,6 +1540,9 @@ async def run_hehuan_scheduler(now):
     send_kwargs = {}
     if anchor_msg_id > 0:
         send_kwargs["reply_to"] = anchor_msg_id
+        anchor_chat_id = _find_hehuan_anchor_chat_id(anchor_msg_id, now=now)
+        if anchor_chat_id:
+            send_kwargs["target_chat_id"] = anchor_chat_id
     op_id = f"hehuan-auto-warm-{int(now)}"
     msg = await send_game_command(
         plan["command"],

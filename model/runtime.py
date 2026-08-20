@@ -2499,7 +2499,15 @@ def _log_bot_poll_retry_delay(error_text, failure_count=1):
     if retry_after > 0:
         return max(float(LOG_BOT_POLL_INTERVAL_SEC), float(retry_after + 1))
     text = str(error_text or "")
-    if "HTTP 502" in text or text.startswith("timeout:"):
+    if (
+        "HTTP 502" in text
+        or text.startswith("timeout:")
+        or "Network is unreachable" in text
+        or "Max retries exceeded" in text
+        or "ConnectionError" in text
+        or "ProxyError" in text
+        or "Read timed out" in text
+    ):
         try:
             exponent = max(0, min(4, int(failure_count or 1) - 1))
         except (TypeError, ValueError, OverflowError):
@@ -2509,6 +2517,15 @@ def _log_bot_poll_retry_delay(error_text, failure_count=1):
             max(float(LOG_BOT_POLL_INTERVAL_SEC), 5.0 * (2 ** exponent)),
         )
     return float(LOG_BOT_POLL_INTERVAL_SEC)
+
+
+def _sanitize_log_bot_error(error_text):
+    """Keep bot credentials and request URLs out of service logs."""
+    text = str(error_text or "")
+    if LOG_BOT_TOKEN:
+        text = text.replace(str(LOG_BOT_TOKEN), "<redacted>")
+    text = re.sub(r"https?://api\.telegram\.org/bot[^/\s]+/", "https://api.telegram.org/bot<redacted>/", text)
+    return text[:800]
 
 
 def _call_log_bot_api(method, payload=None, *, read_timeout=LOG_BOT_READ_TIMEOUT_SEC):
@@ -2523,11 +2540,11 @@ def _call_log_bot_api(method, payload=None, *, read_timeout=LOG_BOT_READ_TIMEOUT
             proxies=TG_REQUESTS_PROXIES,
         )
     except requests.exceptions.Timeout as e:
-        return False, None, f"timeout: {e}"
+        return False, None, _sanitize_log_bot_error(f"timeout: {e}")
     except requests.exceptions.ProxyError as e:
-        return False, None, f"proxy error: {e}"
+        return False, None, _sanitize_log_bot_error(f"proxy error: {e}")
     except requests.exceptions.RequestException as e:
-        return False, None, str(e)
+        return False, None, _sanitize_log_bot_error(str(e))
     body = response.text
     if not response.ok:
         return False, None, f"HTTP {response.status_code}: {body}"

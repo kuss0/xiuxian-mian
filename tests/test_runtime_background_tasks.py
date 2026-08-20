@@ -180,6 +180,19 @@ class RuntimeBackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(60.0, runtime._log_bot_poll_retry_delay(error_text, 5))
         self.assertEqual(60.0, runtime._log_bot_poll_retry_delay(error_text, 99))
 
+    def test_log_bot_network_failure_uses_exponential_backoff_and_redacts_credentials(self):
+        error_text = (
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): "
+            "Max retries exceeded with url: /botsecret-token/getUpdates "
+            "(Caused by NewConnectionError('Network is unreachable'))"
+        )
+
+        self.assertEqual(10.0, runtime._log_bot_poll_retry_delay(error_text, 2))
+        with patch.object(runtime, "LOG_BOT_TOKEN", "secret-token"):
+            sanitized = runtime._sanitize_log_bot_error(error_text)
+        self.assertNotIn("secret-token", sanitized)
+        self.assertIn("bot<redacted>/getUpdates", sanitized)
+
     async def test_log_bot_callback_poller_stays_within_worker_stop_budget(self):
         stop_event = asyncio.Event()
         observed = {}

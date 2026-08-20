@@ -57,6 +57,17 @@ class HehuanParserTests(unittest.TestCase):
         self.assertEqual("success", parsed["result"])
         self.assertEqual("青元剑诀", parsed["last_insight"])
 
+    def test_warm_anchor_required_reply_is_parsed_as_a_business_failure(self):
+        parsed = hehuan.parse_hehuan_text(
+            "此功法需回复你的同参道侣方可施展。",
+            now=1_779_968_455.0,
+            family="hehuan_dual",
+        )
+
+        self.assertEqual("anchor_required", parsed["result"])
+        self.assertEqual("双修 温养", parsed["action"])
+        self.assertGreater(parsed["next_hehuan_time"], 1_779_968_455.0)
+
     def test_dual_cooldown_parses_target_and_result(self):
         parsed = hehuan.parse_hehuan_text(
             real_text("hehuan.dual.cooldown"),
@@ -863,6 +874,7 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once()
             self.assertEqual(".双修 温养", send_mock.await_args.args[0])
             self.assertEqual(8899, send_mock.await_args.kwargs["reply_to"])
+            self.assertEqual(-1001680975844, send_mock.await_args.kwargs["target_chat_id"])
             self.assertEqual(8899, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
 
     async def test_scheduler_resolves_renamed_partner_from_username_alias(self):
@@ -1172,6 +1184,115 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["auto_pending_msg_id"])
         self.assertEqual(0, observed["auto_retry_count"])
         self.assertEqual(now - 10 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+
+    async def test_scheduler_replays_recent_anchor_required_reply_without_resending(self):
+        base_dt = datetime(2026, 8, 21, 6, 40, tzinfo=hehuan.TZ_LOCAL)
+        now = base_dt.timestamp()
+        entries = [
+            {
+                "ts": "2026-08-21 06:39:30 UTC+8",
+                "event_type": "sent",
+                "message_id": 941816,
+                "chat_id": -1002083016447,
+                "sender_id": self.identity_id,
+                "reply_to_msg_id": 11874241,
+                "text": ".双修 温养",
+            },
+            {
+                "ts": "2026-08-21 06:39:31 UTC+8",
+                "event_type": "message",
+                "message_id": 941817,
+                "chat_id": -1002083016447,
+                "sender_id": 8944702077,
+                "reply_to_msg_id": 941816,
+                "text": "此功法需回复你的同参道侣方可施展。",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "2026-08-21.log").write_text(
+                "\n".join(json.dumps(item, ensure_ascii=False) for item in entries),
+                encoding="utf-8",
+            )
+            with state_module.use_identity(self.identity_id):
+                state_module.state["hehuan_enabled"] = True
+                state_module.state["hehuan_observation"] = {
+                    "last_observed_at": now - 3600,
+                    "contract_until": now + 3600,
+                    "next_hehuan_time": 0,
+                    "last_partner": "@dao_partner",
+                    "auto_next_time": now - 1,
+                    "auto_retry_count": hehuan.HEHUAN_AUTO_RETRY_LIMIT,
+                    "auto_retry_reason": "温养回复超时或被吞",
+                    "auto_last_error": "温养回复超时或被吞，补发已达 5 次上限",
+                }
+                with (
+                    patch.object(hehuan, "MESSAGES_DIR", tmpdir),
+                    patch.object(hehuan, "get_game_group_ids", return_value=(-1002083016447,)),
+                    patch.object(hehuan, "save_state") as save_mock,
+                    patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+                ):
+                    await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("anchor_required", observed["last_result"])
+            self.assertEqual("@dao_partner", observed["last_partner"])
+            self.assertEqual(0, observed["auto_retry_count"])
+            self.assertIn("正确群锚点", observed["auto_last_error"])
+
+    async def test_scheduler_replays_anchor_required_reply_after_normal_recovery_window(self):
+        base_dt = datetime(2026, 8, 21, 7, 38, tzinfo=hehuan.TZ_LOCAL)
+        now = base_dt.timestamp()
+        entries = [
+            {
+                "ts": "2026-08-21 06:39:30 UTC+8",
+                "event_type": "sent",
+                "message_id": 941826,
+                "chat_id": -1002083016447,
+                "sender_id": self.identity_id,
+                "reply_to_msg_id": 11874241,
+                "text": ".双修 温养",
+            },
+            {
+                "ts": "2026-08-21 06:39:31 UTC+8",
+                "event_type": "message",
+                "message_id": 941827,
+                "chat_id": -1002083016447,
+                "sender_id": 8944702077,
+                "reply_to_msg_id": 941826,
+                "text": "此功法需回复你的同参道侣方可施展。",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "2026-08-21.log").write_text(
+                "\n".join(json.dumps(item, ensure_ascii=False) for item in entries),
+                encoding="utf-8",
+            )
+            with state_module.use_identity(self.identity_id):
+                state_module.state["hehuan_enabled"] = True
+                state_module.state["hehuan_observation"] = {
+                    "last_observed_at": now - 3600,
+                    "contract_until": now + 3600,
+                    "next_hehuan_time": 0,
+                    "last_partner": "@dao_partner",
+                    "auto_next_time": now - 1,
+                    "auto_retry_count": hehuan.HEHUAN_AUTO_RETRY_LIMIT,
+                }
+                with (
+                    patch.object(hehuan, "MESSAGES_DIR", tmpdir),
+                    patch.object(hehuan, "get_game_group_ids", return_value=(-1002083016447,)),
+                    patch.object(hehuan, "save_state") as save_mock,
+                    patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+                ):
+                    await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("anchor_required", observed["last_result"])
+            self.assertEqual(0, observed["auto_retry_count"])
+            self.assertEqual("@dao_partner", observed["last_partner"])
 
     async def test_scheduler_treats_start_reply_without_final_edit_as_consumed(self):
         now = 1_780_000_000.0
