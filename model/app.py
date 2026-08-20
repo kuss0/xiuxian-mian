@@ -100,7 +100,7 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
-from .features.cave_treasure_runtime import capture_cave_public_entry_event, handle_cave_treasure_miniapp_entry
+from .features.cave_treasure_runtime import capture_cave_public_entry_event, discover_cave_public_entry_from_history, handle_cave_treasure_miniapp_entry
 from .features.trial_runtime import handle_trial_miniapp_entry
 from .features.tree_runtime import handle_tree_miniapp_entry
 from .features.tianxing import (
@@ -3805,6 +3805,13 @@ async def bootstrap():
         )
         console_log(f"🗡 世界 Boss 轮换历史已由本地储物袋校准：{details}")
         save_state()
+
+    try:
+        await asyncio.wait_for(discover_cave_public_entry_from_history(), timeout=20)
+    except asyncio.TimeoutError:
+        console_log("🧩 洞府公共入口启动历史采集超时，继续等待实时按钮。", scope="global")
+    except Exception:
+        print(traceback.format_exc())
 
     now = time.time()
     clear_expired_dungeon_quiet(now)

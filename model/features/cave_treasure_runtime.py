@@ -10,8 +10,8 @@ from ..config import CD_BUFFER_SEC, CMD_TIANTI_STATUS, STATE_DIR
 from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
-from ..runtime import console_log, send_audit_log
-from ..state import get_current_identity_id, get_game_bot_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, set_miniapp_auto_config, state, use_identity
+from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
+from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, set_miniapp_auto_config, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
@@ -284,7 +284,7 @@ def record_cave_public_entry_url(public_entry_url, *, max_urls=3):
     set_miniapp_auto_config(config)
     if changed or had_block:
         save_state()
-    return changed
+    return True
 
 
 def _event_sender_username(event):
@@ -324,6 +324,65 @@ async def capture_cave_public_entry_event(event, text=""):
     if not known and not official_bot:
         return False
     return record_cave_public_entry_url(launch.get("webview_url") or "")
+
+
+async def discover_cave_public_entry_from_history(*, group_ids=None, per_group_limit=80):
+    """Read recent configured-group history once and adopt the newest official entry."""
+    account_id, client = _get_any_authed_client_with_account()
+    if client is None:
+        return {"captured": False, "reason": "client_unavailable"}
+    groups = []
+    for value in group_ids or get_game_group_ids():
+        try:
+            group_id = int(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if group_id and group_id not in groups:
+            groups.append(group_id)
+    if not groups:
+        return {"captured": False, "reason": "group_missing"}
+
+    candidates = []
+    for group_id in groups:
+        try:
+            async with account_rpc_slot(account_id=account_id, client_obj=client):
+                messages = await client.get_messages(
+                    group_id,
+                    limit=max(1, min(200, int(per_group_limit or 80))),
+                )
+        except Exception as exc:
+            console_log(
+                f"🧩 洞府公共入口历史采集跳过群 {group_id}：{type(exc).__name__}",
+                scope="global",
+                limit=180,
+            )
+            continue
+        for message in messages or ():
+            launch = extract_cave_treasure_miniapp_launch(
+                message,
+                message_text=str(getattr(message, "raw_text", "") or ""),
+            )
+            if not launch:
+                continue
+            message_at = getattr(message, "date", None)
+            try:
+                timestamp = float(message_at.timestamp()) if message_at is not None else 0.0
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                timestamp = 0.0
+            candidates.append((timestamp, int(getattr(message, "id", 0) or 0), group_id, message))
+
+    for _timestamp, message_id, group_id, message in sorted(candidates, reverse=True):
+        if await capture_cave_public_entry_event(
+            message,
+            str(getattr(message, "raw_text", "") or ""),
+        ):
+            console_log(
+                f"🧩 洞府公共入口已从群历史动态更新：group={group_id}｜msg={message_id}",
+                scope="global",
+                limit=200,
+            )
+            return {"captured": True, "group_id": group_id, "message_id": message_id}
+    return {"captured": False, "reason": "entry_not_found"}
 _GAIN_KEYS = {
     "expgain": "经验",
     "experiencegain": "经验",

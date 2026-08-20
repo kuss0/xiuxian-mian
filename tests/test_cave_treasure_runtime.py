@@ -2,6 +2,8 @@ import copy
 import json
 import sys
 import unittest
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -351,6 +353,86 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fresh_url, config["cave_public_entry_url"])
         self.assertEqual([fresh_url], config["cave_public_entry_urls"])
         save_mock.assert_called_once()
+
+    async def test_history_discovery_adopts_newest_official_entry_across_groups(self):
+        older_url = "https://t.me/hantianzun21_bot?startapp=df_OLDER"
+        newest_url = "https://t.me/hantianzun123_bot?startapp=df_NEWEST"
+
+        def history_message(message_id, url, timestamp, username):
+            message = _cave_event(url)
+            message.id = message_id
+            message.raw_text = "【洞府】点击进入洞府"
+            message.date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            message.sender_id = message_id + 9000
+            message.sender = SimpleNamespace(username=username, bot=True)
+            return message
+
+        client = SimpleNamespace(get_messages=AsyncMock(side_effect=[
+            [history_message(11, older_url, 100, "hantianzun21_bot")],
+            [history_message(22, newest_url, 200, "hantianzun123_bot")],
+        ]))
+
+        @asynccontextmanager
+        async def slot(**_kwargs):
+            yield
+
+        with patch.object(cave_treasure_runtime, "_get_any_authed_client_with_account", return_value=(301299112, client)), \
+                patch.object(cave_treasure_runtime, "account_rpc_slot", side_effect=slot), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            result = await cave_treasure_runtime.discover_cave_public_entry_from_history(
+                group_ids=[-1001, -1002],
+                per_group_limit=20,
+            )
+
+        self.assertTrue(result["captured"])
+        self.assertEqual(-1002, result["group_id"])
+        self.assertEqual(22, result["message_id"])
+        self.assertEqual(newest_url, state_module.get_miniapp_auto_config()["cave_public_entry_url"])
+        self.assertEqual(2, client.get_messages.await_count)
+        save_mock.assert_called_once()
+
+    async def test_history_discovery_does_not_downgrade_when_newest_is_already_configured(self):
+        newest_url = "https://t.me/hantianzun123_bot?startapp=df_NEWEST"
+        older_url = "https://t.me/hantianzun21_bot?startapp=df_OLDER"
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": newest_url,
+            "cave_public_entry_urls": [newest_url, older_url],
+        })
+
+        def history_message(message_id, url, timestamp, username):
+            message = _cave_event(url)
+            message.id = message_id
+            message.raw_text = "【洞府】点击进入洞府"
+            message.date = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            message.sender_id = message_id + 9000
+            message.sender = SimpleNamespace(username=username, bot=True)
+            return message
+
+        client = SimpleNamespace(get_messages=AsyncMock(return_value=[
+            history_message(22, newest_url, 200, "hantianzun123_bot"),
+            history_message(11, older_url, 100, "hantianzun21_bot"),
+        ]))
+
+        @asynccontextmanager
+        async def slot(**_kwargs):
+            yield
+
+        with patch.object(cave_treasure_runtime, "_get_any_authed_client_with_account", return_value=(301299112, client)), \
+                patch.object(cave_treasure_runtime, "account_rpc_slot", side_effect=slot), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            result = await cave_treasure_runtime.discover_cave_public_entry_from_history(
+                group_ids=[-1001],
+                per_group_limit=20,
+            )
+
+        self.assertTrue(result["captured"])
+        self.assertEqual(22, result["message_id"])
+        config = state_module.get_miniapp_auto_config()
+        self.assertEqual(newest_url, config["cave_public_entry_url"])
+        self.assertEqual([newest_url, older_url], config["cave_public_entry_urls"])
+        save_mock.assert_not_called()
 
     async def test_cave_entry_runs_once_after_manual_authorization(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)
