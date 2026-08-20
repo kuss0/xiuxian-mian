@@ -100,7 +100,7 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
-from .features.cave_treasure_runtime import handle_cave_treasure_miniapp_entry
+from .features.cave_treasure_runtime import capture_cave_public_entry_event, handle_cave_treasure_miniapp_entry
 from .features.trial_runtime import handle_trial_miniapp_entry
 from .features.tree_runtime import handle_tree_miniapp_entry
 from .features.tianxing import (
@@ -3366,6 +3366,12 @@ async def on_message(event):
     if int(event.chat_id or 0) not in _configured_game_group_ids():
         return
     now = time.time()
+    # Dynamic public-entry capture is safe to run before bot classification:
+    # it only validates and stores an official WebApp button, never executes it.
+    try:
+        await capture_cave_public_entry_event(event, event.raw_text or "")
+    except Exception:
+        print(traceback.format_exc())
     sender_is_game_bot = await _is_game_bot_event(event)
     record_game_group_message(event, now=now, event_type="message")
 
@@ -3549,6 +3555,10 @@ async def on_message_edited(event):
     if int(event.chat_id or 0) not in _configured_game_group_ids():
         return
     now = time.time()
+    try:
+        await capture_cave_public_entry_event(event, event.raw_text or "")
+    except Exception:
+        print(traceback.format_exc())
     sender_is_game_bot = await _is_game_bot_event(event)
     if not sender_is_game_bot:
         try:

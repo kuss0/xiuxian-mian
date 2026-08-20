@@ -114,6 +114,11 @@ from .features.cave_treasure_runtime import (
     run_cave_public_treasure,
     run_cave_public_trial,
     run_cave_public_yuanying,
+    get_cave_public_entry_gate,
+    prepare_cave_public_entry_attempt,
+    note_cave_public_entry_success,
+    note_cave_public_entry_token_failure,
+    probe_cave_public_entry,
 )
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
 from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
@@ -432,6 +437,9 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_entry_token_blocked_signature": "",
     "cave_public_entry_token_blocked_at": 0,
     "cave_public_entry_token_blocked_reason": "",
+    "cave_public_entry_token_retry_at": 0,
+    "cave_public_entry_token_failure_count": 0,
+    "cave_public_entry_token_canary_at": 0,
     "cave_public_delay_sec": 20,
     "world_boss_auto_enabled": False,
     "world_boss_auto_account_limit": 1,
@@ -545,6 +553,17 @@ def normalize_miniapp_auto_config(config=None):
     result["cave_public_entry_token_blocked_reason"] = str(
         result.get("cave_public_entry_token_blocked_reason") or ""
     ).strip()
+    for key in ("cave_public_entry_token_retry_at", "cave_public_entry_token_canary_at"):
+        try:
+            result[key] = float(result.get(key) or 0)
+        except (TypeError, ValueError, OverflowError):
+            result[key] = 0.0
+    try:
+        result["cave_public_entry_token_failure_count"] = max(
+            0, int(result.get("cave_public_entry_token_failure_count") or 0)
+        )
+    except (TypeError, ValueError, OverflowError):
+        result["cave_public_entry_token_failure_count"] = 0
     try:
         result["world_boss_auto_account_limit"] = int(result.get("world_boss_auto_account_limit", 1) or 1)
     except (TypeError, ValueError, OverflowError):
@@ -7153,14 +7172,20 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         candidate_urls = list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or [])
     if not candidate_urls:
         return False, "缺少洞府公共入口 URL", {}
-    if using_config_urls and _cave_public_entry_token_blocked(
-        normalize_miniapp_auto_config(), candidate_urls
-    ):
-        return (
-            False,
-            "洞府公共入口授权已过期，已暂停重复请求；请在 UI 更新最新洞府公共入口 URL",
-            {"entry_token_blocked": True},
-        )
+    canary = False
+    if using_config_urls:
+        gate = prepare_cave_public_entry_attempt(candidate_urls, now=time.time())
+        if not gate.get("allowed"):
+            retry_at = float(gate.get("retry_at") or 0)
+            retry_text = f"，下次单次复核 {fmt_abs_ts(retry_at)}" if retry_at else ""
+            return (
+                False,
+                f"洞府公共入口授权已过期，已暂停重复请求{retry_text}；请在 UI 更新最新洞府公共入口 URL",
+                {"entry_token_blocked": True, "retry_at": retry_at},
+            )
+        if gate.get("canary"):
+            candidate_urls = list(gate.get("urls") or candidate_urls)[:1]
+            canary = True
     if _cave_public_ui_run_lock.locked():
         return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {}
     async with _cave_public_ui_run_lock:
@@ -7230,9 +7255,11 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             health_failure = _is_cave_public_entry_health_failure(message)
             if result.get("ok") or not health_failure:
                 _close_cave_public_upstream_circuit()
+                note_cave_public_entry_success([url])
                 extra = dict(result.get("extra") or {})
                 extra["entry_index"] = index
                 extra["entry_attempts"] = attempted
+                extra["entry_canary"] = canary
                 return bool(result.get("ok")), message, extra
             if _is_cave_public_upstream_failure(message):
                 _open_cave_public_upstream_circuit(message)
@@ -7251,7 +7278,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             )
             if using_config_urls:
                 _persist_cave_public_entry_token_block(
-                    candidate_urls,
+                    list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or candidate_urls),
                     "洞府公共入口授权已过期，请更新入口 URL",
                 )
             message = (
@@ -7302,23 +7329,12 @@ def _cave_public_entry_urls_signature(urls):
 
 def _cave_public_entry_token_blocked(config=None, urls=None):
     config = normalize_miniapp_auto_config(config)
-    current_urls = list(urls or config.get("cave_public_entry_urls") or [])
-    blocked_signature = str(config.get("cave_public_entry_token_blocked_signature") or "").strip()
-    current_signature = _cave_public_entry_urls_signature(current_urls)
-    return bool(blocked_signature and current_signature and blocked_signature == current_signature)
+    gate = get_cave_public_entry_gate(urls or config.get("cave_public_entry_urls"), now=time.time())
+    return bool(gate.get("blocked"))
 
 
 def _persist_cave_public_entry_token_block(urls, reason):
-    config = normalize_miniapp_auto_config()
-    configured_urls = list(config.get("cave_public_entry_urls") or [])
-    if _cave_public_entry_urls_signature(configured_urls) != _cave_public_entry_urls_signature(urls):
-        return False
-    config["cave_public_entry_token_blocked_signature"] = _cave_public_entry_urls_signature(configured_urls)
-    config["cave_public_entry_token_blocked_at"] = time.time()
-    config["cave_public_entry_token_blocked_reason"] = str(reason or "")[:240]
-    set_miniapp_auto_config(config)
-    save_state()
-    return True
+    return note_cave_public_entry_token_failure(urls, reason)
 
 
 def _is_cave_public_upstream_failure(message):
@@ -7590,9 +7606,15 @@ async def ui_set_cave_public_config(payload=None):
             config["cave_public_entry_url"] = valid_urls[0]
             entry_urls_changed = valid_urls != previous_urls
             if entry_urls_changed:
-                config["cave_public_entry_token_blocked_signature"] = ""
-                config["cave_public_entry_token_blocked_at"] = 0
-                config["cave_public_entry_token_blocked_reason"] = ""
+                for key in (
+                    "cave_public_entry_token_blocked_signature",
+                    "cave_public_entry_token_blocked_at",
+                    "cave_public_entry_token_blocked_reason",
+                    "cave_public_entry_token_retry_at",
+                    "cave_public_entry_token_failure_count",
+                    "cave_public_entry_token_canary_at",
+                ):
+                    config[key] = 0 if key.endswith(("_at", "_count")) else ""
     set_miniapp_auto_config(config)
     save_state()
     if entry_urls_changed:
@@ -8553,11 +8575,32 @@ async def run_miniapp_daily_scheduler(now):
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
     public_entry_urls = list(raw_config.get("cave_public_entry_urls") or [])
-    if _cave_public_entry_token_blocked(raw_config, public_entry_urls):
+    entry_gate = get_cave_public_entry_gate(public_entry_urls, now=now)
+    if entry_gate.get("blocked") and entry_gate.get("canary_due"):
+        canary_ids = [
+            identity_id for identity_id in get_identity_ids()
+            if is_cave_public_identity_available(identity_id)
+        ]
+        canary_gate = (
+            prepare_cave_public_entry_attempt(public_entry_urls, now=now)
+            if canary_ids else {"allowed": False, "urls": []}
+        )
+        canary_urls = list(canary_gate.get("urls") or [])
+        if canary_gate.get("allowed") and canary_ids and canary_urls:
+            result = await probe_cave_public_entry(canary_ids[0], canary_urls[0], now=now)
+            return {
+                "started": True,
+                "kind": "entry_canary",
+                "ok": bool(result.get("ok")),
+                "identity_id": canary_ids[0],
+                "message": str(result.get("message") or ""),
+            }
+    if entry_gate.get("blocked"):
         return {
             "started": False,
             "reason": "entry_token_blocked",
-            "message": "洞府公共入口授权已过期，请先在 UI 更新入口 URL",
+            "retry_at": float(entry_gate.get("retry_at") or 0),
+            "message": "洞府公共入口授权已过期，等待动态采集或低频单次复核",
         }
     circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
     if float(now) < circuit_open_until:

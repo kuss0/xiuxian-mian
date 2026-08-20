@@ -24,7 +24,12 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
-from .cave_treasure_runtime import run_cave_public_tower
+from .cave_treasure_runtime import (
+    get_cave_public_entry_gate,
+    is_cave_public_entry_token_failure,
+    note_cave_public_entry_token_failure,
+    run_cave_public_tower,
+)
 from .tower_miniapp import format_tower_delta
 
 
@@ -211,6 +216,8 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at):
                 if _is_upstream_failure(result.get("message")):
                     _TOWER_UPSTREAM_CIRCUIT_UNTIL = time.time() + TOWER_MINIAPP_UPSTREAM_CIRCUIT_SEC
                     break
+            if is_cave_public_entry_token_failure(result.get("message")):
+                note_cave_public_entry_token_failure(urls, result.get("message"))
             _TOWER_LAST_RUN_AT = time.time()
         with use_identity(identity_id):
             if result.get("ok"):
@@ -264,6 +271,12 @@ async def run_tower_scheduler(now):
     if not urls:
         next_retry = _set_failure_retry(float(now or time.time()), entry_missing=True)
         console_log(f"⚠️ 闯塔 MiniApp 缺少洞府公共入口，延后至 {fmt_abs_ts(next_retry)}", scope="identity", limit=220)
+        return
+    entry_gate = get_cave_public_entry_gate(urls, now=now)
+    if entry_gate.get("blocked"):
+        retry_at = float(entry_gate.get("retry_at") or 0)
+        state["next_tower_time"] = max(float(now) + TOWER_MINIAPP_ENTRY_RETRY_SEC, retry_at)
+        mark_dirty()
         return
     if time.time() < _TOWER_UPSTREAM_CIRCUIT_UNTIL:
         state["next_tower_time"] = _TOWER_UPSTREAM_CIRCUIT_UNTIL

@@ -56,6 +56,26 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["last_tower_msg_id"])
             self.assertGreater(state_module.state["next_tower_time"], now)
 
+    async def test_expired_public_entry_does_not_queue_tower_worker(self):
+        identity_id = 8659059309
+        now = 1_700_000_000.0
+        self._prepare_identity(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = ""
+            state_module.state["next_tower_time"] = now - 1
+            with patch.object(tower, "_is_tower_window_time", return_value=True), \
+                    patch.object(tower, "get_cave_public_entry_gate", return_value={
+                        "blocked": True,
+                        "retry_at": now + 7200,
+                    }), \
+                    patch.object(tower, "_launch_tower_worker") as launch_mock, \
+                    patch.object(tower, "mark_dirty"):
+                await tower.run_tower_scheduler(now)
+
+            launch_mock.assert_not_called()
+            self.assertEqual(now + 7200, state_module.state["next_tower_time"])
+
     async def test_worker_marks_success_done_and_never_sends_text_command(self):
         identity_id = 8659059302
         now = 1_700_000_100.0

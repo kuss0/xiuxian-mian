@@ -39,7 +39,7 @@ CAVE_TREASURE_MINIAPP_LABEL = "洞府寻宝"
 CAVE_TREASURE_MINIAPP_DEFAULT_API_BASE_URL = "https://asc.aiopenai.app"
 CAVE_TREASURE_MINIAPP_DEFAULT_BOT_USERNAME = "fanrenxiuxian_bot"
 CAVE_TREASURE_MINIAPP_ALLOWED_BOT_USERNAME_PATTERNS = (
-    r"hantianzun\d{2}_bot",
+    r"hantianzun\d+_bot",
 )
 CAVE_TREASURE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-dwelling/"
 CAVE_TREASURE_MINIAPP_ENDPOINTS = {

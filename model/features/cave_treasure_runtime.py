@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -10,7 +11,7 @@ from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, state, use_identity
+from ..state import get_current_identity_id, get_game_bot_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, set_miniapp_auto_config, state, use_identity
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
@@ -77,10 +78,252 @@ CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
 CAVE_YUANYING_STATUS_RECHECK_SEC = yuanying.YUANYING_SPEC.cd_sec
 WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC = 60
 FATE_CARDS_WAIT_RETRY_SEC = 30 * 60
+CAVE_PUBLIC_ENTRY_CANARY_LEASE_SEC = 20 * 60
+CAVE_PUBLIC_ENTRY_RETRY_BASE_SEC = 6 * 60 * 60
+CAVE_PUBLIC_ENTRY_RETRY_MAX_SEC = 24 * 60 * 60
 
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
 _PUBLIC_ENTRY_LOCKS = {}
+
+
+def _cave_public_entry_urls(value):
+    if isinstance(value, str):
+        values = re.split(r"[\r\n,，\s]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = ()
+    result = []
+    seen = set()
+    for item in values:
+        item = str(item or "").strip()
+        key = item.casefold()
+        if item and key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def cave_public_entry_urls_signature(urls):
+    normalized = _cave_public_entry_urls(urls)
+    return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest() if normalized else ""
+
+
+def get_cave_public_entry_gate(urls=None, *, now=None):
+    """Return the shared entry health gate without claiming a canary."""
+    config = dict(get_miniapp_auto_config() or {})
+    current_urls = _cave_public_entry_urls(urls or config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
+    signature = cave_public_entry_urls_signature(current_urls)
+    blocked_signature = str(config.get("cave_public_entry_token_blocked_signature") or "").strip()
+    if not current_urls or not blocked_signature or blocked_signature != signature:
+        return {"allowed": bool(current_urls), "blocked": False, "canary_due": False, "urls": current_urls}
+    now = float(now or time.time())
+    try:
+        retry_at = float(config.get("cave_public_entry_token_retry_at") or 0)
+    except (TypeError, ValueError, OverflowError):
+        retry_at = 0.0
+    if retry_at <= 0:
+        try:
+            blocked_at = float(config.get("cave_public_entry_token_blocked_at") or 0)
+        except (TypeError, ValueError, OverflowError):
+            blocked_at = 0.0
+        retry_at = (blocked_at or now) + CAVE_PUBLIC_ENTRY_RETRY_BASE_SEC
+    try:
+        claimed_at = float(config.get("cave_public_entry_token_canary_at") or 0)
+    except (TypeError, ValueError, OverflowError):
+        claimed_at = 0.0
+    if claimed_at and now < claimed_at + CAVE_PUBLIC_ENTRY_CANARY_LEASE_SEC:
+        return {
+            "allowed": False,
+            "blocked": True,
+            "canary_due": False,
+            "retry_at": claimed_at + CAVE_PUBLIC_ENTRY_CANARY_LEASE_SEC,
+            "urls": current_urls,
+            "reason": "洞府公共入口正在进行单次复核",
+        }
+    if retry_at <= 0 or now < retry_at:
+        return {
+            "allowed": False,
+            "blocked": True,
+            "canary_due": False,
+            "retry_at": retry_at,
+            "urls": current_urls,
+            "reason": str(config.get("cave_public_entry_token_blocked_reason") or "洞府公共入口授权已过期"),
+        }
+    return {
+        "allowed": False,
+        "blocked": True,
+        "canary_due": True,
+        "retry_at": retry_at,
+        "urls": current_urls,
+        "reason": "洞府公共入口进入低频单次复核窗口",
+    }
+
+
+def prepare_cave_public_entry_attempt(urls=None, *, now=None):
+    """Claim at most one URL for a post-failure canary; normal runs keep all candidates."""
+    now = float(now or time.time())
+    gate = get_cave_public_entry_gate(urls, now=now)
+    if not gate.get("blocked"):
+        return {**gate, "canary": False}
+    if not gate.get("canary_due"):
+        return {**gate, "canary": False}
+    config = dict(get_miniapp_auto_config() or {})
+    config["cave_public_entry_token_canary_at"] = now
+    set_miniapp_auto_config(config)
+    save_state()
+    return {**gate, "allowed": True, "blocked": False, "canary": True, "urls": gate.get("urls", [])[:1]}
+
+
+def note_cave_public_entry_success(urls=None):
+    config = dict(get_miniapp_auto_config() or {})
+    configured = _cave_public_entry_urls(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
+    attempted = _cave_public_entry_urls(urls or configured)
+    configured_keys = {url.casefold() for url in configured}
+    if configured and attempted and not any(item.casefold() in configured_keys for item in attempted):
+        return False
+    had_block = bool(
+        config.get("cave_public_entry_token_blocked_signature")
+        or config.get("cave_public_entry_token_retry_at")
+        or config.get("cave_public_entry_token_canary_at")
+        or config.get("cave_public_entry_token_failure_count")
+    )
+    if not had_block:
+        return False
+    for key in (
+        "cave_public_entry_token_blocked_signature",
+        "cave_public_entry_token_blocked_at",
+        "cave_public_entry_token_blocked_reason",
+        "cave_public_entry_token_retry_at",
+        "cave_public_entry_token_failure_count",
+        "cave_public_entry_token_canary_at",
+    ):
+        config[key] = 0 if key.endswith(("_at", "_count")) else ""
+    set_miniapp_auto_config(config)
+    save_state()
+    return True
+
+
+def note_cave_public_entry_token_failure(urls=None, reason="", *, now=None):
+    config = dict(get_miniapp_auto_config() or {})
+    configured = _cave_public_entry_urls(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
+    attempted = _cave_public_entry_urls(urls or configured)
+    configured_keys = {url.casefold() for url in configured}
+    if not configured or not attempted or not any(item.casefold() in configured_keys for item in attempted):
+        return False
+    signature = cave_public_entry_urls_signature(configured)
+    previous = int(config.get("cave_public_entry_token_failure_count") or 0)
+    failure_count = previous + 1
+    delay = min(CAVE_PUBLIC_ENTRY_RETRY_MAX_SEC, CAVE_PUBLIC_ENTRY_RETRY_BASE_SEC * (2 ** min(failure_count - 1, 2)))
+    now = float(now or time.time())
+    config.update({
+        "cave_public_entry_token_blocked_signature": signature,
+        "cave_public_entry_token_blocked_at": now,
+        "cave_public_entry_token_blocked_reason": str(reason or "洞府公共入口授权已过期")[:240],
+        "cave_public_entry_token_retry_at": now + delay,
+        "cave_public_entry_token_failure_count": failure_count,
+        "cave_public_entry_token_canary_at": 0,
+    })
+    set_miniapp_auto_config(config)
+    save_state()
+    return True
+
+
+def defer_cave_public_entry_canary(urls=None, reason="", *, now=None):
+    """Keep a stale entry blocked after an inconclusive canary failure."""
+    config = dict(get_miniapp_auto_config() or {})
+    configured = _cave_public_entry_urls(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
+    attempted = _cave_public_entry_urls(urls or configured)
+    configured_keys = {url.casefold() for url in configured}
+    if not configured or not attempted or not any(item.casefold() in configured_keys for item in attempted):
+        return False
+    signature = cave_public_entry_urls_signature(configured)
+    if str(config.get("cave_public_entry_token_blocked_signature") or "").strip() != signature:
+        return False
+    now = float(now or time.time())
+    config["cave_public_entry_token_retry_at"] = now + CAVE_PUBLIC_ENTRY_RETRY_BASE_SEC
+    config["cave_public_entry_token_canary_at"] = 0
+    if reason:
+        config["cave_public_entry_token_blocked_reason"] = str(reason)[:240]
+    set_miniapp_auto_config(config)
+    save_state()
+    return True
+
+
+def is_cave_public_entry_token_failure(value):
+    return "dwelling_token_expired" in str(value or "").casefold() or "入口授权已过期" in str(value or "")
+
+
+def record_cave_public_entry_url(public_entry_url, *, max_urls=3):
+    """Persist a validated public cave URL discovered from a live official button."""
+    request, _args = build_cave_treasure_launch_args(str(public_entry_url or "").strip())
+    if not request.allowed or not request.start_param:
+        return False
+    url = str(request.webview_url or "").strip()
+    if not url:
+        return False
+    config = dict(get_miniapp_auto_config() or {})
+    had_block = bool(config.get("cave_public_entry_token_blocked_signature"))
+    current = _cave_public_entry_urls(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
+    urls = [url] + [item for item in current if item.casefold() != url.casefold()]
+    urls = urls[:max(1, int(max_urls or 3))]
+    changed = urls != current
+    config["cave_public_entry_url"] = urls[0]
+    config["cave_public_entry_urls"] = urls
+    # A newly observed, validated URL supersedes the old token circuit.
+    for key in (
+        "cave_public_entry_token_blocked_signature",
+        "cave_public_entry_token_blocked_at",
+        "cave_public_entry_token_blocked_reason",
+        "cave_public_entry_token_retry_at",
+        "cave_public_entry_token_failure_count",
+        "cave_public_entry_token_canary_at",
+    ):
+        config[key] = 0 if key.endswith(("_at", "_count")) else ""
+    set_miniapp_auto_config(config)
+    if changed or had_block:
+        save_state()
+    return changed
+
+
+def _event_sender_username(event):
+    sender = getattr(event, "sender", None)
+    return str(
+        getattr(sender, "username", "")
+        or getattr(event, "sender_username", "")
+        or ""
+    ).strip().lstrip("@").casefold()
+
+
+async def capture_cave_public_entry_event(event, text=""):
+    """Capture an official dwelling button without authorizing or running gameplay."""
+    launch = extract_cave_treasure_miniapp_launch(event, message_text=text)
+    if not launch:
+        return False
+    sender_id = int(getattr(event, "sender_id", 0) or 0)
+    known = sender_id in set(get_game_bot_ids() or ())
+    sender = getattr(event, "sender", None)
+    if sender is None and not known:
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+    username = str(
+        getattr(sender, "username", "")
+        or getattr(event, "sender_username", "")
+        or ""
+    ).strip().lstrip("@").casefold()
+    official_bot = bool(
+        getattr(sender, "bot", False)
+        and (
+            username == "fanrenxiuxian_bot"
+            or re.fullmatch(r"hantianzun\d+_bot", username, flags=re.IGNORECASE)
+        )
+    )
+    if not known and not official_bot:
+        return False
+    return record_cave_public_entry_url(launch.get("webview_url") or "")
 _GAIN_KEYS = {
     "expgain": "经验",
     "experiencegain": "经验",
@@ -715,6 +958,32 @@ async def _load_cave_public_identity_session(
     }
     _record_cave_entry_safe_directory(identity_id, session.get("result") or {}, now=now)
     return session
+
+
+async def probe_cave_public_entry(identity_id, public_entry_url, *, now=None):
+    """Perform one read-only dwelling start request for shared entry revalidation."""
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if identity_id <= 0 or error:
+        return {"ok": False, "message": error or "身份不存在", "extra": {}}
+    session = await _load_cave_public_identity_session(
+        identity_id,
+        token,
+        webview_url,
+        now=now,
+        capture_source=f"cave_public_entry_canary:{identity_id}",
+        include_details=False,
+    )
+    if session.get("ok"):
+        note_cave_public_entry_success([public_entry_url])
+        return {"ok": True, "message": "洞府公共入口单次复核成功", "extra": {"canary": True}}
+    message = str(session.get("error") or "洞府公共入口单次复核失败")
+    if is_cave_public_entry_token_failure(message):
+        note_cave_public_entry_token_failure([public_entry_url], message, now=now)
+    else:
+        defer_cave_public_entry_canary([public_entry_url], message, now=now)
+    return {"ok": False, "message": message, "extra": {"canary": True}}
 
 
 def _entry_mentions_current_identity(text):
@@ -3671,12 +3940,13 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
 
 async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0, require_identity_match=False):
     identity_id = _identity_id()
+    launch = extract_cave_treasure_miniapp_launch(event, message_text=text)
+    if not launch:
+        return False
+    await capture_cave_public_entry_event(event, text)
     if identity_id <= 0 or not _has_manual_auth(identity_id, now):
         return False
     if require_identity_match and not _entry_mentions_current_identity(text):
-        return False
-    launch = extract_cave_treasure_miniapp_launch(event, message_text=text)
-    if not launch:
         return False
     global_enabled = get_global_enabled()
     maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()

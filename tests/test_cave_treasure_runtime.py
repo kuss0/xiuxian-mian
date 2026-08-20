@@ -43,6 +43,60 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
 
+    def test_expired_entry_allows_only_one_low_frequency_canary(self):
+        now = 1_700_000_000.0
+        urls = [
+            "https://t.me/hantianzun35_bot?startapp=df_OLD1",
+            "https://t.me/fanrenxiuxian_bot?startapp=df_OLD2",
+        ]
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": urls[0],
+            "cave_public_entry_urls": urls,
+            "cave_public_entry_token_blocked_signature": cave_treasure_runtime.cave_public_entry_urls_signature(urls),
+            "cave_public_entry_token_blocked_at": now,
+            "cave_public_entry_token_retry_at": now + 60,
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        })
+
+        blocked = cave_treasure_runtime.prepare_cave_public_entry_attempt(urls, now=now + 30)
+        self.assertFalse(blocked["allowed"])
+
+        with patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            canary = cave_treasure_runtime.prepare_cave_public_entry_attempt(urls, now=now + 61)
+            second = cave_treasure_runtime.prepare_cave_public_entry_attempt(urls, now=now + 62)
+
+        self.assertTrue(canary["allowed"])
+        self.assertTrue(canary["canary"])
+        self.assertEqual([urls[0]], canary["urls"])
+        self.assertFalse(second["allowed"])
+        save_mock.assert_called_once()
+
+    async def test_failed_entry_canary_defers_next_probe_without_fanout(self):
+        now = 1_700_000_000.0
+        url = "https://t.me/fanrenxiuxian_bot?startapp=df_OLD1"
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": url,
+            "cave_public_entry_urls": [url],
+            "cave_public_entry_token_blocked_signature": cave_treasure_runtime.cave_public_entry_urls_signature([url]),
+            "cave_public_entry_token_blocked_at": now - 7200,
+            "cave_public_entry_token_retry_at": now - 1,
+            "cave_public_entry_token_canary_at": now,
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        })
+        with patch.object(
+            cave_treasure_runtime,
+            "_load_cave_public_identity_session",
+            new=AsyncMock(return_value={"ok": False, "error": "HTTP 502 returned non JSON"}),
+        ) as load_mock, patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            result = await cave_treasure_runtime.probe_cave_public_entry(1001, url, now=now)
+
+        self.assertFalse(result["ok"])
+        load_mock.assert_awaited_once()
+        config = state_module.get_miniapp_auto_config()
+        self.assertEqual(now + cave_treasure_runtime.CAVE_PUBLIC_ENTRY_RETRY_BASE_SEC, config["cave_public_entry_token_retry_at"])
+        self.assertEqual(0, config["cave_public_entry_token_canary_at"])
+        save_mock.assert_called_once()
+
     async def test_public_wild_training_executes_once_and_returns_server_cooldown(self):
         now = 1_700_000_000.0
         with state_module.use_identity(1001) as identity_state:
@@ -203,6 +257,100 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(handled)
         flow_mock.assert_not_awaited()
+
+    async def test_official_cave_entry_is_dynamically_persisted_without_running_game(self):
+        fresh_url = "https://t.me/hantianzun35_bot?startapp=df_FRESH_DYNAMIC"
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": "https://t.me/fanrenxiuxian_bot?startapp=df_OLD",
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_OLD"],
+            "cave_public_entry_token_blocked_signature": "blocked",
+            "cave_public_entry_token_blocked_at": 1_699_999_000.0,
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        })
+        event = _cave_event(fresh_url)
+        event.sender_id = 9001
+        with state_module.use_identity(1001), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[9001]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock, \
+                patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock()) as flow_mock:
+            handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
+                event,
+                "【洞府】点击进入洞府",
+                1_700_000_000.0,
+            )
+
+        self.assertFalse(handled)
+        flow_mock.assert_not_awaited()
+        config = state_module.get_miniapp_auto_config()
+        self.assertEqual(fresh_url, config["cave_public_entry_url"])
+        self.assertEqual(fresh_url, config["cave_public_entry_urls"][0])
+        self.assertEqual("", config["cave_public_entry_token_blocked_signature"])
+        save_mock.assert_called_once()
+
+    async def test_same_official_cave_entry_refresh_clears_stale_block(self):
+        url = "https://t.me/hantianzun35_bot?startapp=df_FRESH_DYNAMIC"
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": url,
+            "cave_public_entry_urls": [url],
+            "cave_public_entry_token_blocked_signature": cave_treasure_runtime.cave_public_entry_urls_signature([url]),
+            "cave_public_entry_token_blocked_at": 1_699_999_000.0,
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        })
+        event = _cave_event(url)
+        event.sender_id = 9001
+        with state_module.use_identity(1001), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[9001]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
+                event,
+                "【洞府】点击进入洞府",
+                1_700_000_000.0,
+            )
+
+        self.assertFalse(handled)
+        self.assertEqual("", state_module.get_miniapp_auto_config()["cave_public_entry_token_blocked_signature"])
+        save_mock.assert_called_once()
+
+    async def test_unrecognized_sender_cannot_persist_cave_entry(self):
+        old_url = "https://t.me/fanrenxiuxian_bot?startapp=df_OLD"
+        fresh_url = "https://t.me/hantianzun35_bot?startapp=df_FRESH_DYNAMIC"
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": old_url,
+            "cave_public_entry_urls": [old_url],
+        })
+        event = _cave_event(fresh_url)
+        event.sender_id = 7777
+        with state_module.use_identity(1001), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[9001]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
+                event,
+                "【洞府】点击进入洞府",
+                1_700_000_000.0,
+            )
+
+        self.assertFalse(handled)
+        self.assertEqual(old_url, state_module.get_miniapp_auto_config()["cave_public_entry_url"])
+        save_mock.assert_not_called()
+
+    async def test_new_official_shard_can_be_captured_before_bot_registry_update(self):
+        fresh_url = "https://t.me/hantianzun123_bot?startapp=df_FRESH_DYNAMIC"
+        event = _cave_event(fresh_url)
+        event.sender_id = 987654321
+        event.sender = SimpleNamespace(username="hantianzun123_bot", bot=True)
+        with state_module.use_identity(1001), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            captured = await cave_treasure_runtime.capture_cave_public_entry_event(
+                event,
+                "【洞府】点击进入洞府",
+            )
+
+        self.assertTrue(captured)
+        config = state_module.get_miniapp_auto_config()
+        self.assertEqual(fresh_url, config["cave_public_entry_url"])
+        self.assertEqual([fresh_url], config["cave_public_entry_urls"])
+        save_mock.assert_called_once()
 
     async def test_cave_entry_runs_once_after_manual_authorization(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)

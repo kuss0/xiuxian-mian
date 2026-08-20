@@ -114,6 +114,25 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 43_200, state_module.state["next_wild_training_time"])
         self.assertIn("均衡", state_module.state["wild_training_last_result"])
 
+    async def test_expired_public_entry_does_not_queue_identity_worker(self):
+        now = 1_700_000_000.0
+        self._enable(now=now)
+        urls = ["https://t.me/fanrenxiuxian_bot?startapp=df_OLD"]
+        with state_module.use_identity(991201), \
+                patch.object(wild_training, "_wild_training_public_entry_urls", return_value=urls), \
+                patch.object(wild_training, "get_cave_public_entry_gate", return_value={
+                    "blocked": True,
+                    "retry_at": now + 3600,
+                    "reason": "dwelling_token_expired",
+                }), \
+                patch.object(wild_training, "_launch_wild_training_miniapp_worker") as launch_mock, \
+                patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        launch_mock.assert_not_called()
+        self.assertEqual(now + wild_training.WILD_TRAINING_MINIAPP_ENTRY_RETRY_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("等待动态采集", state_module.state["wild_training_last_result"])
+
     async def test_server_cooldown_sync_uses_returned_next_time(self):
         now = 1_700_000_000.0
         self._enable(now=now)

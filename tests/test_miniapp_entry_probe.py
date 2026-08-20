@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from model import ui
 from model import state as state_module
+from model.features import cave_treasure_runtime
 
 
 class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
@@ -660,7 +661,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                     patch.object(ui, "get_identity_enabled", return_value=True), \
                     patch.object(ui, "run_cave_public_trial", new=run_mock), \
-                    patch.object(ui, "save_state", return_value=True) as save_mock:
+                    patch.object(cave_treasure_runtime, "save_state", return_value=True) as save_mock:
                 ok, message, _extra = await ui.ui_run_cave_public_entry(1001, "trial", "")
                 blocked_ok, blocked_message, blocked_extra = await ui.ui_run_cave_public_entry(
                     1001,
@@ -708,6 +709,38 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("entry_token_blocked", result["reason"])
         tree_mock.assert_not_awaited()
         cave_mock.assert_not_awaited()
+
+    async def test_miniapp_scheduler_canary_uses_only_first_identity_and_url(self):
+        now = 1_700_000_000.0
+        urls = [
+            "https://t.me/hantianzun21_bot?startapp=df_SECRET111",
+            "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+        ]
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_url": urls[0],
+            "cave_public_entry_urls": urls,
+            "cave_public_entry_token_blocked_signature": ui._cave_public_entry_urls_signature(urls),
+            "cave_public_entry_token_blocked_at": now - 7200,
+            "cave_public_entry_token_retry_at": now - 1,
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        }
+        state_module.ensure_identity_registered(1001)
+        state_module.ensure_identity_registered(1002)
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "save_state"), \
+                patch.object(ui, "probe_cave_public_entry", new=AsyncMock(return_value={
+                    "ok": False,
+                    "message": "dwelling_token_expired",
+                })) as probe_mock, \
+                patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=AsyncMock()) as tree_mock:
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertTrue(result["started"])
+        self.assertEqual("entry_canary", result["kind"])
+        probe_mock.assert_awaited_once_with(1001, urls[0], now=now)
+        tree_mock.assert_not_awaited()
 
     async def test_cave_public_entry_run_opens_circuit_without_retrying_upstream_502(self):
         background_snapshot = dict(ui._cave_public_background_state)

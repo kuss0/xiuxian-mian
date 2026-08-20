@@ -31,7 +31,13 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining
-from .cave_treasure_runtime import is_cave_public_entry_busy, run_cave_public_wild_training
+from .cave_treasure_runtime import (
+    get_cave_public_entry_gate,
+    is_cave_public_entry_busy,
+    is_cave_public_entry_token_failure,
+    note_cave_public_entry_token_failure,
+    run_cave_public_wild_training,
+)
 from .tianxing import (
     apply_tianxing_passive,
     build_tianxing_consume_window,
@@ -549,6 +555,8 @@ async def _run_wild_training_miniapp_worker(identity_id, urls, due_at):
                 result = await run_cave_public_wild_training(identity_id, url, strategy, now=time.time())
                 if result.get("ok") or not _wild_training_entry_failure_can_fallback(result):
                     break
+            if is_cave_public_entry_token_failure(result.get("message")):
+                note_cave_public_entry_token_failure(urls, result.get("message"))
             _WILD_TRAINING_MINIAPP_LAST_RUN_AT = time.time()
         with use_identity(identity_id):
             outcome = await _apply_miniapp_result(result, time.time())
@@ -619,6 +627,14 @@ async def _run_wild_training_miniapp_scheduler_unlocked(now):
     urls = _wild_training_public_entry_urls()
     if not urls:
         _set_miniapp_failure(now, "缺少洞府公共入口", entry_missing=True)
+        return
+    entry_gate = get_cave_public_entry_gate(urls, now=now)
+    if entry_gate.get("blocked"):
+        retry_at = float(entry_gate.get("retry_at") or 0)
+        state["next_wild_training_time"] = max(now + WILD_TRAINING_MINIAPP_ENTRY_RETRY_SEC, retry_at)
+        state["wild_training_last_result"] = "MiniApp 公共入口等待动态采集/单次复核"
+        state["wild_training_last_error"] = str(entry_gate.get("reason") or "洞府公共入口授权已过期")[:240]
+        save_state()
         return
     identity_id = int(get_current_identity_id() or 0)
     if _wild_training_miniapp_worker_busy():
