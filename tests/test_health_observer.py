@@ -1717,7 +1717,15 @@ class HealthObserverTests(unittest.TestCase):
                 )
                 conn.execute(
                     "INSERT INTO meta(key, value) VALUES('miniapp_auto_config', ?)",
-                    ('{"cave_public_entry_token_blocked_signature":"blocked","cave_public_deep_status_enabled":true}',),
+                    (json.dumps({
+                        "cave_public_entry_urls": ["https://entry.example/cave"],
+                        "cave_public_entry_token_blocked_signature": health_observer._cave_public_entry_urls_signature(
+                            ["https://entry.example/cave"]
+                        ),
+                        "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+                        "cave_public_entry_token_retry_at": 1_780_503_600.0,
+                        "cave_public_deep_status_enabled": True,
+                    }),),
                 )
                 conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
                 conn.execute(
@@ -1769,7 +1777,15 @@ class HealthObserverTests(unittest.TestCase):
                 )
                 conn.execute(
                     "INSERT INTO meta(key, value) VALUES('miniapp_auto_config', ?)",
-                    ('{"cave_public_entry_token_blocked_signature":"blocked","cave_public_deep_status_enabled":true}',),
+                    (json.dumps({
+                        "cave_public_entry_urls": ["https://entry.example/cave"],
+                        "cave_public_entry_token_blocked_signature": health_observer._cave_public_entry_urls_signature(
+                            ["https://entry.example/cave"]
+                        ),
+                        "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+                        "cave_public_entry_token_retry_at": 1_780_503_600.0,
+                        "cave_public_deep_status_enabled": True,
+                    }),),
                 )
                 conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
                 conn.execute(
@@ -1787,6 +1803,68 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(deep["next"][0]["lag_without_anchor"])
         self.assertNotEqual("error", deep["status"])
         self.assertFalse(any("module runtime errors" in item["message"] for item in result["alerts"]))
+        blocked_alert = next(item for item in result["alerts"] if "cave public entry blocked" in item["message"])
+        self.assertEqual("warn", blocked_alert["severity"])
+        self.assertEqual("dwelling_token_expired", blocked_alert["sample"]["reason"])
+        self.assertNotEqual("unknown", blocked_alert["sample"]["retry_at"])
+
+    def test_business_db_state_does_not_suppress_idle_deep_lag_for_stale_cave_block(self):
+        now = 1_780_500_000.0
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "state.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    CREATE TABLE pending_tasks(
+                        msg_id INTEGER PRIMARY KEY, send_as_id INTEGER NOT NULL, cmd TEXT NOT NULL,
+                        sent_at REAL NOT NULL, retry INTEGER NOT NULL, timeout REAL NOT NULL,
+                        reply_to_msg_id INTEGER NOT NULL DEFAULT 0, max_retry INTEGER NOT NULL DEFAULT 3,
+                        source_module TEXT NOT NULL DEFAULT '', op_id TEXT NOT NULL DEFAULT '',
+                        chain_id TEXT NOT NULL DEFAULT '', delete_policy TEXT NOT NULL DEFAULT ''
+                    );
+                    CREATE TABLE identities(
+                        send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1
+                    );
+                    CREATE TABLE identity_timers(
+                        send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0,
+                        next_deep_retreat_time REAL NOT NULL DEFAULT 0, next_yuanying_time REAL NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE identity_runtime_state(
+                        send_as_id INTEGER PRIMARY KEY, concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                        deep_retreat_phase TEXT NOT NULL DEFAULT 'idle', deep_retreat_summary_sent_at REAL NOT NULL DEFAULT 0,
+                        yuanying_phase TEXT NOT NULL DEFAULT 'idle', yuanying_summary_sent_at REAL NOT NULL DEFAULT 0,
+                        tower_reply_due_at REAL NOT NULL DEFAULT 0, last_tower_msg_id INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE identity_module_state(
+                        send_as_id INTEGER PRIMARY KEY, deep_retreat_enabled INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('miniapp_auto_config', ?)",
+                    (json.dumps({
+                        "cave_public_entry_urls": ["https://entry.example/new"],
+                        "cave_public_entry_token_blocked_signature": "old-signature",
+                        "cave_public_deep_status_enabled": True,
+                    }),),
+                )
+                conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+                conn.execute(
+                    "INSERT INTO identity_timers(send_as_id, next_deep_retreat_time) VALUES(42, ?)",
+                    (now - 700,),
+                )
+                conn.execute("INSERT INTO identity_runtime_state(send_as_id) VALUES(42)")
+                conn.execute(
+                    "INSERT INTO identity_module_state(send_as_id, deep_retreat_enabled) VALUES(42, 1)"
+                )
+
+            result = health_observer.read_db_business_state(db_path, now)
+
+        deep = next(item for item in result["module_summary"] if item["module"] == "deep_retreat")
+        self.assertTrue(deep["next"][0]["lag_without_anchor"])
+        self.assertEqual("error", deep["status"])
+        self.assertTrue(any("module runtime errors" in item["message"] for item in result["alerts"]))
 
     def test_business_db_state_counts_module_pending_without_task_queue(self):
         now = 1_780_500_000.0

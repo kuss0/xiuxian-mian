@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import hashlib
 import json
 import os
 import re
@@ -812,6 +813,29 @@ def business_alert(message: str, *, severity: str = "warn", **extra) -> dict[str
     }
     payload.update({key: value for key, value in extra.items() if value is not None})
     return payload
+
+
+def _normalize_cave_public_entry_urls(value: object) -> list[str]:
+    if isinstance(value, str):
+        values = re.split(r"[\r\n,，\s]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = ()
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
+
+
+def _cave_public_entry_urls_signature(value: object) -> str:
+    urls = _normalize_cave_public_entry_urls(value)
+    return hashlib.sha256("\n".join(urls).encode("utf-8")).hexdigest() if urls else ""
 
 
 def event_ref(item: dict[str, object]) -> dict[str, object]:
@@ -1831,15 +1855,70 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             recovery_active = now < max(recovery_hold_until, recovery_throttle_until)
             scheduling_suppressed = global_paused or recovery_active
             miniapp_config = parse_json_dict(meta_state.get("miniapp_auto_config"))
+            current_entry_urls = _normalize_cave_public_entry_urls(
+                miniapp_config.get("cave_public_entry_urls")
+                or miniapp_config.get("cave_public_entry_url")
+            )
+            current_entry_signature = _cave_public_entry_urls_signature(current_entry_urls)
+            blocked_entry_signature = str(
+                miniapp_config.get("cave_public_entry_token_blocked_signature") or ""
+            ).strip()
             cave_entry_blocked = bool(
-                str(miniapp_config.get("cave_public_entry_token_blocked_signature") or "").strip()
+                current_entry_signature
+                and blocked_entry_signature
+                and blocked_entry_signature == current_entry_signature
             )
             cave_blocked_modules = set()
+            cave_public_module_flags = {
+                "small_world": "cave_public_small_world_enabled",
+                "small_world_harvest": "cave_public_small_world_harvest_enabled",
+                "treasure": "cave_public_treasure_enabled",
+                "trial": "cave_public_trial_enabled",
+                "fate_cards": "cave_public_fate_cards_enabled",
+                "fishing": "cave_public_fishing_enabled",
+                "stargazer": "cave_public_stargazer_enabled",
+                "deep_retreat": "cave_public_deep_status_enabled",
+                "yuanying": "cave_public_yuanying_enabled",
+                "tianti_status": "cave_public_tianti_status_enabled",
+            }
+            cave_public_enabled_modules = {
+                module
+                for module, flag in cave_public_module_flags.items()
+                if boolish(miniapp_config.get(flag))
+            }
             if cave_entry_blocked:
                 if boolish(miniapp_config.get("cave_public_deep_status_enabled")):
                     cave_blocked_modules.add("deep_retreat")
                 if boolish(miniapp_config.get("cave_public_yuanying_enabled")):
                     cave_blocked_modules.add("yuanying")
+                retry_at = parse_optional_epoch(miniapp_config.get("cave_public_entry_token_retry_at"))
+                alerts.append(
+                    business_alert(
+                        "cave public entry blocked: "
+                        + (", ".join(sorted(cave_public_enabled_modules)) or "no module selected"),
+                        severity="warn" if cave_public_enabled_modules else "info",
+                        sample={
+                            "reason": str(
+                                miniapp_config.get("cave_public_entry_token_blocked_reason")
+                                or "unknown"
+                            ),
+                            "retry_at": local_ts(retry_at) if retry_at > 0 else "unknown",
+                            "entry_url_count": len(current_entry_urls),
+                            "affected_modules": sorted(cave_public_enabled_modules),
+                        },
+                    )
+                )
+            elif blocked_entry_signature:
+                alerts.append(
+                    business_alert(
+                        "stale cave public entry block marker ignored",
+                        severity="info",
+                        sample={
+                            "entry_url_count": len(current_entry_urls),
+                            "signature_matches": False,
+                        },
+                    )
+                )
             channel_send_as_health = parse_json_dict(meta_state.get("channel_send_as_health"))
             account_target_memberships = parse_json_dict(meta_state.get("account_target_memberships"))
             world_boss_miniapp_health = analyze_world_boss_miniapp_health(
