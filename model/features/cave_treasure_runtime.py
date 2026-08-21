@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
+from telethon import functions
+
 from ..config import CD_BUFFER_SEC, CMD_TIANTI_STATUS, STATE_DIR
 from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
@@ -335,6 +337,17 @@ async def capture_cave_public_entry_event(event, text=""):
     return record_cave_public_entry_url(launch.get("webview_url") or "")
 
 
+async def _get_pinned_cave_entry_message(client, group_id):
+    """Read one group's pinned message without traversing its full history."""
+    entity = await client.get_entity(group_id)
+    full = await client(functions.channels.GetFullChannelRequest(channel=entity))
+    full_chat = getattr(full, "full_chat", None)
+    pinned_id = int(getattr(full_chat, "pinned_msg_id", 0) or 0)
+    if pinned_id <= 0:
+        return None
+    return await client.get_messages(group_id, ids=pinned_id)
+
+
 async def discover_cave_public_entry_from_history(*, group_ids=None, per_group_limit=80):
     """Read recent configured-group history once and adopt the newest official entry."""
     account_id, client = _get_any_authed_client_with_account()
@@ -413,6 +426,35 @@ async def discover_cave_public_entry_from_history(*, group_ids=None, per_group_l
                 except (AttributeError, TypeError, ValueError, OverflowError):
                     timestamp = 0.0
                 candidates.append((timestamp, int(getattr(message, "id", 0) or 0), group_id, message))
+
+    # The official card is commonly pinned. Pinned lookup is the authoritative
+    # fallback when both the recent window and server-side search miss it.
+    if not candidates:
+        for group_id in groups:
+            try:
+                async with account_rpc_slot(account_id=account_id, client_obj=client):
+                    message = await _get_pinned_cave_entry_message(client, group_id)
+            except Exception as exc:
+                console_log(
+                    f"🧩 洞府公共入口置顶采集跳过群 {group_id}：{type(exc).__name__}",
+                    scope="global",
+                    limit=180,
+                )
+                continue
+            if message is None:
+                continue
+            launch = extract_cave_treasure_miniapp_launch(
+                message,
+                message_text=str(getattr(message, "raw_text", "") or ""),
+            )
+            if not launch:
+                continue
+            message_at = getattr(message, "date", None)
+            try:
+                timestamp = float(message_at.timestamp()) if message_at is not None else 0.0
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                timestamp = 0.0
+            candidates.append((timestamp, int(getattr(message, "id", 0) or 0), group_id, message))
 
     for _timestamp, message_id, group_id, message in sorted(candidates, reverse=True):
         if await capture_cave_public_entry_event(

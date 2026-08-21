@@ -571,6 +571,34 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("洞府", client.get_messages.await_args_list[1].kwargs["search"])
         save_mock.assert_called_once()
 
+    async def test_history_discovery_uses_pinned_entry_when_search_misses(self):
+        fresh_url = "https://t.me/hantianzun123_bot?startapp=df_PINNED"
+        message = _cave_event(fresh_url)
+        message.id = 44
+        message.raw_text = "公共洞府入口"
+        message.date = datetime.fromtimestamp(400, tz=timezone.utc)
+        message.sender_id = 9044
+        message.sender = SimpleNamespace(username="hantianzun123_bot", bot=True)
+        client = SimpleNamespace(get_messages=AsyncMock(return_value=[]))
+
+        @asynccontextmanager
+        async def slot(**_kwargs):
+            yield
+
+        with patch.object(cave_treasure_runtime, "_get_any_authed_client_with_account", return_value=(301299112, client)), \
+                patch.object(cave_treasure_runtime, "account_rpc_slot", side_effect=slot), \
+                patch.object(cave_treasure_runtime, "_get_pinned_cave_entry_message", new=AsyncMock(return_value=message)), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            result = await cave_treasure_runtime.discover_cave_public_entry_from_history(
+                group_ids=[-1001],
+                per_group_limit=20,
+            )
+
+        self.assertTrue(result["captured"])
+        self.assertEqual(fresh_url, state_module.get_miniapp_auto_config()["cave_public_entry_url"])
+        save_mock.assert_called_once()
+
     async def test_cave_entry_runs_once_after_manual_authorization(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)
         flow_result = {
