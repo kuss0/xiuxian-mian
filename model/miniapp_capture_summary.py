@@ -141,6 +141,13 @@ def _latest_text(ts):
     return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _nonnegative_float(value):
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _summary_text(value, *, limit=220):
     return sanitize_webapp_secret_text(value, limit=limit)
 
@@ -171,6 +178,8 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
             "latest": None,
             "latest_ok": None,
             "latest_error": None,
+            "retry_after_count": 0,
+            "retry_after_max_sec": 0.0,
         })
         item["count"] += 1
         if row.get("ok"):
@@ -191,6 +200,12 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
         item["request_secret_keys"].update(str(key) for key in (summary.get("secret_keys") or []))
         response = row.get("response") if isinstance(row.get("response"), dict) else {}
         item["response_keys"].update(str(key) for key in (response.get("data_keys") or _shape_keys(response.get("body_shape"))))
+        retry_after_sec = _nonnegative_float(
+            row.get("retry_after_sec") or response.get("retry_after_sec")
+        )
+        if retry_after_sec > 0:
+            item["retry_after_count"] += 1
+            item["retry_after_max_sec"] = max(item["retry_after_max_sec"], retry_after_sec)
         latest = item["latest"]
         if latest is None or float(row.get("created_at") or 0) >= float(latest.get("created_at") or 0):
             item["latest"] = row
@@ -210,6 +225,9 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
         latest_error = item.get("latest_error") or {}
         request = latest.get("request") if isinstance(latest.get("request"), dict) else {}
         response = latest.get("response") if isinstance(latest.get("response"), dict) else {}
+        latest_retry_after_sec = _nonnegative_float(
+            latest.get("retry_after_sec") or response.get("retry_after_sec")
+        )
         count = int(item["count"] or 0)
         endpoint_items.append({
             "method": item["method"],
@@ -235,11 +253,15 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
             "latest_success_at_text": _latest_text(latest_ok.get("created_at")),
             "latest_error_at": float(latest_error.get("created_at") or 0),
             "latest_error_at_text": _latest_text(latest_error.get("created_at")),
+            "retry_after_count": int(item["retry_after_count"] or 0),
+            "retry_after_max_sec": float(item["retry_after_max_sec"] or 0),
+            "latest_retry_after_sec": latest_retry_after_sec,
         })
     endpoint_items.sort(key=lambda item: (item["url_path"], item["step_key"]))
 
     recent = []
     for row in sorted((row for row in (records or []) if isinstance(row, dict)), key=lambda r: float(r.get("created_at") or 0))[-8:]:
+        response = row.get("response") if isinstance(row.get("response"), dict) else {}
         recent.append({
             "created_at": float(row.get("created_at") or 0),
             "created_at_text": _latest_text(row.get("created_at")),
@@ -249,6 +271,9 @@ def summarize_miniapp_capture_records(game_key, records, *, day="", path="", tot
             "ok": bool(row.get("ok")),
             "status_code": int(row.get("status_code") or 0),
             "elapsed_ms": int(row.get("elapsed_ms") or 0),
+            "retry_after_sec": _nonnegative_float(
+                row.get("retry_after_sec") or response.get("retry_after_sec")
+            ),
             "error": _summary_text(row.get("error"), limit=220),
         })
 
@@ -307,6 +332,11 @@ def format_miniapp_capture_summary(summary):
             )
         if item.get("latest_error"):
             lines.append(f"  latest_error: {item.get('latest_error')}")
+        if item.get("retry_after_count"):
+            lines.append(
+                f"  retry_after: count={item.get('retry_after_count')} "
+                f"max={item.get('retry_after_max_sec')}s"
+            )
     if not summary.get("endpoints"):
         lines.append("- no capture samples")
     return "\n".join(lines)

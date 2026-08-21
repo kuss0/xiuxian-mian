@@ -17,8 +17,7 @@ import time
 
 import requests
 from requests.adapters import HTTPAdapter
-from requests.exceptions import ConnectionError as RequestsConnectionError
-from requests.exceptions import ConnectTimeout, RequestException
+from requests.exceptions import RequestException
 
 from ..config import TG_REQUESTS_PROXIES
 from ..state import get_current_identity_id
@@ -88,7 +87,7 @@ def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=Non
 
 
 class _MiniAppSessionPool:
-    """Keep one HTTP session per adapter/identity and route direct-first."""
+    """Keep one HTTP session per adapter/identity on its configured route."""
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -114,9 +113,10 @@ class _MiniAppSessionPool:
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
+                route = "config_proxy" if proxies else "direct"
                 entry = {
-                    "route": "direct",
-                    "session": self._new_session("direct", proxies),
+                    "route": route,
+                    "session": self._new_session(route, proxies),
                     "request_lock": threading.Lock(),
                 }
                 self._entries[key] = entry
@@ -132,7 +132,7 @@ class _MiniAppSessionPool:
                 and entry.get("request_lock") is request_lock
             )
 
-    def invalidate(self, adapter_key, identity_id, session, proxies, *, prefer_proxy=False, request_lock=None):
+    def invalidate(self, adapter_key, identity_id, session, proxies, *, request_lock=None):
         key = self._key(adapter_key, identity_id)
         old_session = None
         with self._lock:
@@ -140,7 +140,7 @@ class _MiniAppSessionPool:
             if not isinstance(entry, dict) or entry.get("session") is not session:
                 return
             old_session = entry.get("session")
-            route = "config_proxy" if prefer_proxy and proxies else str(entry.get("route") or "direct")
+            route = str(entry.get("route") or "direct")
             self._entries[key] = {
                 "route": route,
                 "session": self._new_session(route, proxies),
@@ -189,10 +189,10 @@ def build_pooled_miniapp_transport(
 ):
     """Build a production transport with bounded session reuse.
 
-    The first route is direct. A connection-level failure replaces the stale
-    session and moves that adapter/identity pair to the configured proxy route
-    for the next retry. All retries still pass through the global MiniApp
-    limiter in ``execute_miniapp_http_request``.
+    Configured proxies are used from the first request. Without configured
+    proxies the route is direct. A connection-level failure replaces the stale
+    session without changing the selected route. All retries still pass through
+    the global MiniApp limiter in ``execute_miniapp_http_request``.
     """
     effective_proxies = dict(
         (TG_REQUESTS_PROXIES or {}) if proxies is None else (proxies or {})
@@ -202,7 +202,7 @@ def build_pooled_miniapp_transport(
 
     def _transport(request):
         while True:
-            session, route, request_lock = _MINIAPP_SESSION_POOL.acquire(
+            session, _route, request_lock = _MINIAPP_SESSION_POOL.acquire(
                 adapter_key,
                 identity_id,
                 effective_proxies,
@@ -235,7 +235,6 @@ def build_pooled_miniapp_transport(
                     identity_id,
                     session,
                     effective_proxies,
-                    prefer_proxy=route == "direct" and isinstance(exc, (RequestsConnectionError, ConnectTimeout)),
                     request_lock=request_lock,
                 )
                 raise
@@ -264,7 +263,7 @@ def append_http_event(events, step, result):
     world boss carry `proof`, status fallbacks differ), so collapsing them
     would trade a real regression risk for a cosmetic win.
     """
-    events.append({
+    event = {
         "step": step,
         "ok": bool(result.ok),
         "status_code": int(result.status_code or 0),
@@ -272,7 +271,10 @@ def append_http_event(events, step, result):
         "attempts": int(result.attempts or 0),
         "data_keys": sorted(result.data) if isinstance(result.data, dict) else [],
         "error": sanitize_webapp_secret_text(result.error),
-    })
+    }
+    if float(getattr(result, "retry_after_sec", 0) or 0) > 0:
+        event["retry_after_sec"] = float(result.retry_after_sec)
+    events.append(event)
 
 
 def append_business_capture(capture_sink, *, adapter_key, detail, source="", created_at=None):

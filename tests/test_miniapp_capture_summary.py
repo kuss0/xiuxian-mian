@@ -1,6 +1,10 @@
 import json
 
-from model.miniapp_capture_summary import format_miniapp_capture_summary, get_miniapp_capture_summary
+from model.miniapp_capture_summary import (
+    format_miniapp_capture_summary,
+    get_miniapp_capture_summary,
+    summarize_miniapp_capture_records,
+)
 
 
 def test_miniapp_capture_summary_groups_endpoint_and_keeps_redaction(tmp_path):
@@ -17,6 +21,7 @@ def test_miniapp_capture_summary_groups_endpoint_and_keeps_redaction(tmp_path):
                 "url_path": "/api/miniapp/xianxia-fishing/result",
                 "status_code": 200,
                 "ok": True,
+                "retry_after_sec": 7,
                 "elapsed_ms": 123,
                 "created_at": 1783354167.0,
                 "source": "unit",
@@ -69,10 +74,33 @@ def test_miniapp_capture_summary_groups_endpoint_and_keeps_redaction(tmp_path):
     assert summary["ok_records"] == 1
     assert summary["endpoints"][0]["request_payload_keys"] == ["initData", "token"]
     assert summary["endpoints"][0]["response_keys"] == ["ok", "result"]
+    assert summary["endpoints"][0]["retry_after_count"] == 1
+    assert summary["endpoints"][0]["retry_after_max_sec"] == 7.0
+    assert summary["recent"][0]["retry_after_sec"] == 7.0
     assert "xianxia-fishing/result" in rendered
+    assert "retry_after: count=1 max=7.0s" in rendered
     assert "query_id=" not in text
     assert "hash=" not in text
     assert "fish_SECRET" not in text
+
+
+def test_miniapp_capture_summary_reads_legacy_nested_retry_after():
+    summary = summarize_miniapp_capture_records(
+        "fishing",
+        [{
+            "step_key": "start",
+            "method": "POST",
+            "url_path": "/api/miniapp/xianxia-fishing/start",
+            "status_code": 429,
+            "ok": False,
+            "created_at": 1783354167.0,
+            "response": {"retry_after_sec": 120},
+        }],
+    )
+
+    assert summary["endpoints"][0]["retry_after_count"] == 1
+    assert summary["endpoints"][0]["latest_retry_after_sec"] == 120.0
+    assert summary["recent"][0]["retry_after_sec"] == 120.0
 
 
 def test_miniapp_capture_summary_sanitizes_adversarial_error_and_source(tmp_path):

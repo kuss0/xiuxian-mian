@@ -2868,13 +2868,21 @@ def _parse_status_panel(text, now):
         "location": matched.group("location").strip(),
         "affinity": int(affinity_match.group(1)) if affinity_match else 0,
         "oath": oath_match.group(1).strip() if oath_match else "",
-        "dream_due_at": _parse_wait_due_at(dream_match.group(1), now) if dream_match else 0.0,
+        "dream_due_at": _parse_wait_due_at(
+            dream_match.group(1),
+            now,
+            coarse_minute_buffer=True,
+        ) if dream_match else 0.0,
         "tianji_due_at": _parse_wait_due_at(
             tianji_match.group(1),
             now,
             coarse_minute_buffer=True,
         ) if tianji_match else 0.0,
-        "heart_due_at": _parse_wait_due_at(heart_match.group(1), now) if heart_match else 0.0,
+        "heart_due_at": _parse_wait_due_at(
+            heart_match.group(1),
+            now,
+            coarse_minute_buffer=True,
+        ) if heart_match else 0.0,
         "tianji_chain": tianji_chain,
         "tianji_chain_due_at": tianji_chain_due_at,
         "fragment_progresses": progresses,

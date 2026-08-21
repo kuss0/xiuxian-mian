@@ -1520,6 +1520,17 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             concubine._parse_wait_due_at("199分钟30秒", now, coarse_minute_buffer=True),
         )
 
+        panel_text = (
+            "你的道心侍妾: 【凌玉灵】 (状态: 随行中)\n"
+            "- 入梦寻图冷却: 199分钟\n"
+            "- 共历心劫冷却: 199分钟\n"
+            "- 天机代卜冷却: 199分钟"
+        )
+        parsed = concubine._parse_status_panel(panel_text, now)
+        self.assertEqual(now + 199 * 60 + 65, parsed["dream_due_at"])
+        self.assertEqual(now + 199 * 60 + 65, parsed["heart_due_at"])
+        self.assertEqual(now + 199 * 60 + 65, parsed["tianji_due_at"])
+
     async def test_status_snapshot_does_not_regress_future_tianji_cooldown(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

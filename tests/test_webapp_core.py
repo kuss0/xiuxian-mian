@@ -768,6 +768,33 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(7, limited.retry_after_sec)
         self.assertEqual(7.0, limited.safe_summary()["retry_after_sec"])
 
+        capped = webapp_core._response_retry_after_sec(
+            {"headers": {"Retry-After": "999999"}}
+        )
+        self.assertEqual(webapp_core.MAX_MINIAPP_RETRY_AFTER_SEC, capped)
+
+        calls.clear()
+        sleeps.clear()
+
+        def long_rate_limit(_request):
+            calls.append(1)
+            return {
+                "status_code": 429,
+                "json": {"ok": False, "error": "rate_limit"},
+                "headers": {"Retry-After": "120"},
+            }
+
+        limited = webapp_core.execute_miniapp_http_request(
+            request,
+            long_rate_limit,
+            backoff_sec=(1,),
+            sleeper=sleeps.append,
+        )
+        self.assertFalse(limited.ok)
+        self.assertEqual(120, limited.retry_after_sec)
+        self.assertEqual(1, len(calls))
+        self.assertEqual([], sleeps)
+
     def test_shared_transport_reuses_session_when_supplied(self):
         calls = []
 
@@ -845,7 +872,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(1, miniapp_common.close_pooled_miniapp_sessions(adapter_key="trial", identity_id=11))
         self.assertTrue(sessions[0].closed)
 
-    def test_pooled_transport_falls_back_to_config_proxy_after_connection_failure(self):
+    def test_pooled_transport_uses_configured_proxy_before_request(self):
         sessions = []
 
         class _FakeSession:
@@ -857,8 +884,6 @@ class WebAppCoreTests(unittest.TestCase):
                 return None
 
             def request(self, *_args, **_kwargs):
-                if len(sessions) == 1:
-                    raise requests.exceptions.ConnectionError("direct unavailable")
                 return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
 
             def close(self):
@@ -877,14 +902,11 @@ class WebAppCoreTests(unittest.TestCase):
                 identity_id=22,
                 proxies=proxies,
             )
-            with self.assertRaises(requests.exceptions.ConnectionError):
-                transport({"method": "POST", "url": "https://example.invalid/start"})
             result = transport({"method": "POST", "url": "https://example.invalid/start"})
 
         self.assertEqual(200, result.status_code)
-        self.assertEqual(2, len(sessions))
-        self.assertTrue(sessions[0].closed)
-        self.assertEqual(proxies, sessions[1].proxies)
+        self.assertEqual(1, len(sessions))
+        self.assertEqual(proxies, sessions[0].proxies)
         miniapp_common.close_pooled_miniapp_sessions()
 
     def test_pooled_transport_read_timeout_rebuilds_without_proxy_switch(self):
@@ -910,13 +932,12 @@ class WebAppCoreTests(unittest.TestCase):
             sessions.append(session)
             return session
 
-        proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
         miniapp_common.close_pooled_miniapp_sessions()
         with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
             transport = miniapp_common.build_pooled_miniapp_transport(
                 adapter_key="trial",
                 identity_id=33,
-                proxies=proxies,
+                proxies={},
             )
             with self.assertRaises(requests.exceptions.ReadTimeout):
                 transport({"method": "POST", "url": "https://example.invalid/start"})
@@ -924,6 +945,48 @@ class WebAppCoreTests(unittest.TestCase):
 
         self.assertEqual(200, result.status_code)
         self.assertEqual({}, sessions[1].proxies)
+        miniapp_common.close_pooled_miniapp_sessions()
+
+    def test_pooled_transport_proxy_failure_stays_on_configured_proxy(self):
+        sessions = []
+
+        class _FakeSession:
+            def __init__(self, index):
+                self.index = index
+                self.proxies = {}
+
+            def mount(self, *_args):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                if self.index == 0:
+                    raise requests.exceptions.ConnectionError("proxy unavailable")
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+            def close(self):
+                return None
+
+        def session_factory():
+            session = _FakeSession(len(sessions))
+            sessions.append(session)
+            return session
+
+        proxies = {"https": "http://127.0.0.1:7890"}
+        miniapp_common.close_pooled_miniapp_sessions()
+        with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
+            transport = miniapp_common.build_pooled_miniapp_transport(
+                adapter_key="trial",
+                identity_id=34,
+                proxies=proxies,
+            )
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                transport({"method": "POST", "url": "https://example.invalid/start"})
+            result = transport({"method": "POST", "url": "https://example.invalid/start"})
+
+        self.assertEqual(200, result.status_code)
+        self.assertEqual(2, len(sessions))
+        self.assertEqual(proxies, sessions[0].proxies)
+        self.assertEqual(proxies, sessions[1].proxies)
         miniapp_common.close_pooled_miniapp_sessions()
 
     def test_pooled_transport_waiter_uses_replacement_session_after_failure(self):
@@ -969,7 +1032,7 @@ class WebAppCoreTests(unittest.TestCase):
             transport = miniapp_common.build_pooled_miniapp_transport(
                 adapter_key="fishing",
                 identity_id=44,
-                proxies={"https": "http://127.0.0.1:7890"},
+                proxies={},
             )
             first = threading.Thread(target=call_transport, args=(transport,))
             second = threading.Thread(target=call_transport, args=(transport,))
@@ -988,6 +1051,38 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(1, sessions[0].calls)
         self.assertEqual(1, sessions[1].calls)
         miniapp_common.close_pooled_miniapp_sessions()
+
+    def test_http_event_and_capture_keep_retry_after_without_secrets(self):
+        result = webapp_core.MiniAppHttpResult(
+            ok=False,
+            status_code=429,
+            error="rate_limit token=fish_SECRET999",
+            error_type="transient",
+            retryable=True,
+            retry_after_sec=7,
+            attempts=1,
+        )
+        events = []
+        miniapp_common.append_http_event(events, "start", result)
+        self.assertEqual(7.0, events[0]["retry_after_sec"])
+
+        request = fishing_miniapp.build_fishing_miniapp_request(
+            "start",
+            token="fish_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+        )
+        record = webapp_core.build_miniapp_capture_record(
+            request,
+            result,
+            result=result,
+            step_key="start",
+        )
+        safe = record.safe_record()
+        self.assertEqual(7.0, safe["retry_after_sec"])
+        self.assertEqual(7.0, safe["response"]["retry_after_sec"])
+        serialized = json.dumps(safe, ensure_ascii=False)
+        self.assertNotIn("fish_SECRET999", serialized)
+        self.assertNotIn("VERY_SECRET", serialized)
 
     def test_shared_append_http_event_sanitizes_and_keeps_schema(self):
         events = []

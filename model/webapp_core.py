@@ -39,6 +39,8 @@ DEFAULT_MINIAPP_REQUEST_MIN_INTERVAL_SEC = 1.0
 DEFAULT_MINIAPP_REQUEST_MAX_PER_RUN = 32
 DEFAULT_MINIAPP_REQUEST_MAX_ATTEMPTS = 2
 DEFAULT_MINIAPP_REQUEST_MAX_CONSECUTIVE_FAILURES = 2
+MAX_MINIAPP_RETRY_AFTER_SEC = 24 * 60 * 60
+MAX_MINIAPP_INLINE_RETRY_AFTER_SEC = 60
 DEFAULT_MINIAPP_GLOBAL_REQUEST_LIMIT = 90
 DEFAULT_MINIAPP_GLOBAL_WINDOW_SEC = 60.0
 MINIAPP_CAPTURE_MAX_TEXT = 400
@@ -1140,13 +1142,14 @@ def _response_retry_after_sec(response, *, now=None):
     if raw_value in (None, ""):
         return 0.0
     try:
-        return max(0.0, float(str(raw_value).strip()))
+        retry_after_sec = max(0.0, float(str(raw_value).strip()))
     except (TypeError, ValueError):
         try:
             due_at = parsedate_to_datetime(str(raw_value).strip()).timestamp()
         except (TypeError, ValueError, OverflowError):
             return 0.0
-        return max(0.0, due_at - float(time.time() if now is None else now))
+        retry_after_sec = max(0.0, due_at - float(time.time() if now is None else now))
+    return min(MAX_MINIAPP_RETRY_AFTER_SEC, retry_after_sec)
 
 
 def _coerce_json_body(body):
@@ -1217,9 +1220,10 @@ class MiniAppCaptureRecord:
     source: str = ""
     request: dict = field(default_factory=dict)
     response: dict = field(default_factory=dict)
+    retry_after_sec: float = 0.0
 
     def safe_record(self):
-        return {
+        record = {
             "adapter_key": self.adapter_key,
             "step_key": self.step_key,
             "endpoint": self.endpoint,
@@ -1237,6 +1241,9 @@ class MiniAppCaptureRecord:
             "request": safe_miniapp_event_detail(self.request),
             "response": safe_miniapp_event_detail(self.response),
         }
+        if self.retry_after_sec > 0:
+            record["retry_after_sec"] = float(self.retry_after_sec)
+        return record
 
 
 class MiniAppCaptureStore:
@@ -1339,6 +1346,8 @@ def build_miniapp_capture_record(
         "parse_error": parse_error,
         "data_keys": sorted(str(key) for key in data) if isinstance(data, dict) else [],
     }
+    if result.retry_after_sec > 0:
+        response_detail["retry_after_sec"] = float(result.retry_after_sec)
     return MiniAppCaptureRecord(
         adapter_key=_string(safe_request.get("adapter_key") or safe_request.get("game_key")),
         step_key=_string(step_key or safe_request.get("step_key") or endpoint),
@@ -1361,6 +1370,7 @@ def build_miniapp_capture_record(
             "header_keys": sorted(str(key) for key in dict((request or {}).get("headers") or {})),
         },
         response=response_detail,
+        retry_after_sec=float(result.retry_after_sec or 0),
     )
 
 
@@ -1461,6 +1471,8 @@ def execute_miniapp_http_request(
             ),
         )
         if result.ok or not result.retryable or attempt >= attempts_total:
+            return result
+        if result.retry_after_sec > MAX_MINIAPP_INLINE_RETRY_AFTER_SEC:
             return result
         if sleeper is not None:
             sleeper(max(delays[attempt - 1], float(result.retry_after_sec or 0)))
