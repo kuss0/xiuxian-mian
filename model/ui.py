@@ -105,6 +105,7 @@ from .features.cave_treasure_runtime import (
     run_cave_public_deep_retreat_action,
     run_cave_public_fate_cards,
     run_cave_public_fishing,
+    run_cave_public_inventory,
     run_cave_public_small_world_sync,
     run_cave_public_stargazer,
     run_cave_public_tianjige_read_only,
@@ -1038,6 +1039,15 @@ def get_miniapp_status_snapshot(send_as_id=None):
             "tree": get_tree_miniapp_score_config(send_as_id),
         },
     }
+_storage_bag_miniapp_state = {
+    "running": False,
+    "last_ok": False,
+    "last_message": "",
+    "last_updated_at": 0,
+    "updated_count": 0,
+    "changed_count": 0,
+    "skipped_count": 0,
+}
 _storage_bag_api_state = {
     "running": False,
     "running_kind": "",
@@ -1293,6 +1303,33 @@ def _is_storage_bag_transfer_busy():
     snapshot = get_storage_bag_transfer_snapshot() or {}
     batch = snapshot.get("batch") if isinstance(snapshot.get("batch"), dict) else {}
     return bool(snapshot.get("running") or batch.get("running"))
+
+
+def get_storage_bag_miniapp_snapshot():
+    config = normalize_miniapp_auto_config()
+    entry_urls = list(config.get("cave_public_entry_urls") or [])
+    entry_gate = get_cave_public_entry_gate(entry_urls, now=time.time())
+    target_ids = [
+        int(identity_id)
+        for identity_id in get_identity_ids()
+        if get_identity_enabled(identity_id) and is_cave_public_identity_available(identity_id)
+    ]
+    return {
+        "configured": bool(entry_urls),
+        "entry_count": len(entry_urls),
+        "entry_blocked": bool(entry_gate.get("blocked")),
+        "entry_block_reason": str(entry_gate.get("reason") or ""),
+        "entry_retry_at": fmt_abs_ts(entry_gate.get("retry_at") or 0),
+        "target_count": len(target_ids),
+        "running": bool(_storage_bag_miniapp_state.get("running")),
+        "last_ok": bool(_storage_bag_miniapp_state.get("last_ok")),
+        "last_message": str(_storage_bag_miniapp_state.get("last_message") or ""),
+        "last_updated_at": fmt_abs_ts(_storage_bag_miniapp_state.get("last_updated_at") or 0),
+        "updated_count": int(_storage_bag_miniapp_state.get("updated_count") or 0),
+        "changed_count": int(_storage_bag_miniapp_state.get("changed_count") or 0),
+        "skipped_count": int(_storage_bag_miniapp_state.get("skipped_count") or 0),
+        "source": "cave_inventory_miniapp",
+    }
 
 
 def get_storage_bag_api_snapshot():
@@ -2779,6 +2816,74 @@ def _notify_storage_bag_api_refresh(ok, message, *, updated_count=0, changed_cou
         skipped_count=skipped_count,
     )
     _fire_and_forget(send_audit_log(text, scope="global", limit=280, priority="medium"))
+
+
+async def ui_refresh_storage_bag_from_miniapp(payload=None):
+    payload = payload if isinstance(payload, dict) else {}
+    if _storage_bag_miniapp_state.get("running"):
+        return False, "洞府 MiniApp 储物袋刷新正在进行中", get_storage_bag_miniapp_snapshot()
+    if _is_storage_bag_api_busy():
+        return False, "天机阁 API 备用读取正在进行中", get_storage_bag_miniapp_snapshot()
+    if _is_storage_bag_transfer_busy():
+        return False, "储物袋转移正在进行中，暂不刷新库存", get_storage_bag_miniapp_snapshot()
+
+    known_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    requested_ids = payload.get("identity_ids") if isinstance(payload.get("identity_ids"), list) else None
+    identity_ids = []
+    for raw_identity_id in requested_ids if requested_ids is not None else get_identity_ids():
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id not in known_ids or identity_id in identity_ids:
+            continue
+        if not get_identity_enabled(identity_id) or not is_cave_public_identity_available(identity_id):
+            continue
+        identity_ids.append(identity_id)
+    if not identity_ids:
+        return False, "没有可刷新的在线身份", get_storage_bag_miniapp_snapshot()
+    if not _cave_public_entry_urls_from_config():
+        return False, "缺少洞府公共入口 URL", get_storage_bag_miniapp_snapshot()
+
+    _storage_bag_miniapp_state["running"] = True
+    updated_count = 0
+    changed_count = 0
+    skipped_count = 0
+    errors = []
+    try:
+        for index, identity_id in enumerate(identity_ids):
+            ok, result_message, extra = await ui_run_cave_public_entry(identity_id, "inventory", "")
+            extra = extra if isinstance(extra, dict) else {}
+            if ok:
+                updated_count += 1
+                changed_count += int(bool(extra.get("changed")))
+                continue
+            skipped_count += 1
+            errors.append(f"{get_identity_display_name(identity_id)}：{result_message}")
+            if extra.get("entry_token_blocked"):
+                skipped_count += max(0, len(identity_ids) - index - 1)
+                break
+    finally:
+        now = time.time()
+        ok = updated_count > 0
+        if ok:
+            message = f"已通过洞府 MiniApp 刷新 {updated_count} 个在线身份"
+            if changed_count:
+                message += f"（内容变化 {changed_count} 个）"
+            if skipped_count:
+                message += f"，跳过 {skipped_count} 个"
+        else:
+            message = errors[0] if errors else "洞府 MiniApp 储物袋刷新失败"
+        _storage_bag_miniapp_state.update({
+            "running": False,
+            "last_ok": ok,
+            "last_message": message,
+            "last_updated_at": now,
+            "updated_count": updated_count,
+            "changed_count": changed_count,
+            "skipped_count": skipped_count,
+        })
+    return ok, message, get_storage_bag_miniapp_snapshot()
 
 
 async def ui_refresh_storage_bag_from_api(payload=None, *, notify_log_group=False):
@@ -5017,6 +5122,7 @@ def get_ui_snapshot(session_token=None, *, use_cache=False):
         "runtime_health": get_runtime_health_snapshot(),
         "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
+        "storage_bag_miniapp": get_storage_bag_miniapp_snapshot(),
         "storage_bag_api": get_storage_bag_api_snapshot(),
         "quiz_ai": get_quiz_ai_snapshot(),
         "tianjige_dao_path": get_tianjige_dao_path_snapshot(),
@@ -7210,6 +7316,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 )
             elif normalized_action in {"fishing", "fish"}:
                 result = await run_cave_public_fishing(identity_id, url)
+            elif normalized_action in {"inventory", "storage_bag", "bag"}:
+                result = await run_cave_public_inventory(identity_id, url)
             elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
                 result = await run_cave_public_stargazer(identity_id, url)
             elif normalized_action in {"tower", "pagoda"}:
@@ -9366,6 +9474,22 @@ async def handle_ui_http(reader, writer):
                         extra={"models": model_payload} if model_payload else None,
                         include_snapshot=False,
                     )
+            elif path == "/api/storage-bag-miniapp-refresh":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, miniapp_snapshot = await ui_refresh_storage_bag_from_miniapp(payload)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(
+                        ok,
+                        message=message if ok else "",
+                        error="" if ok else message,
+                        snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                        extra={"storage_bag_miniapp": miniapp_snapshot},
+                    )
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/storage-bag-api-verify":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -10206,6 +10330,7 @@ async def stop_ui_server():
 
 __all__ = [
     "get_identity_ui_snapshot",
+    "get_storage_bag_miniapp_snapshot",
     "get_storage_bag_api_snapshot",
     "get_storage_bag_snapshot",
     "get_storage_bag_sync_snapshot",
@@ -10224,6 +10349,7 @@ __all__ = [
     "ui_start_storage_bag_transfer",
     "ui_start_storage_bag_sync",
     "ui_refresh_identity_from_api",
+    "ui_refresh_storage_bag_from_miniapp",
     "ui_refresh_storage_bag_from_api",
     "ui_refresh_tianjige_dao_path_from_api",
     "ui_set_storage_bag_api_config",

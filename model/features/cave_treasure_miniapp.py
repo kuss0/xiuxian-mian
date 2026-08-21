@@ -59,6 +59,9 @@ CAVE_TREASURE_MINIAPP_ENDPOINTS = {
 }
 CAVE_TREASURE_MINIAPP_START_PARAM_PATTERN = r"(?:df_)?[A-Za-z0-9_-]{4,160}"
 CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT = (5, 20)
+CAVE_INVENTORY_REQUIRED_FIELDS = ("items", "materials", "treasures", "active")
+CAVE_INVENTORY_GENERAL_SECTION = "法宝/丹药/杂物"
+CAVE_INVENTORY_MATERIAL_SECTION = "材料"
 CAVE_TREASURE_SENDABLE_ACTIONS = {
     "enter",
     "search",
@@ -874,6 +877,97 @@ def _parse_command_center(account):
     }
 
 
+def _normalize_cave_inventory_player_id(value):
+    player_id = _coerce_int(value, 0)
+    if player_id <= -1_000_000_000_000:
+        return -player_id - 1_000_000_000_000
+    return player_id
+
+
+def has_complete_cave_inventory_snapshot(data):
+    root = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    account = root.get("account") if isinstance(root, dict) and isinstance(root.get("account"), dict) else {}
+    bag = account.get("bagTreasure") if isinstance(account.get("bagTreasure"), dict) else None
+    return bool(
+        _coerce_int(account.get("playerId"), 0)
+        and
+        isinstance(bag, dict)
+        and all(isinstance(bag.get(field), list) for field in CAVE_INVENTORY_REQUIRED_FIELDS)
+    )
+
+
+def _parse_cave_inventory_rows(rows, section_name):
+    if not isinstance(rows, list):
+        raise ValueError(f"洞府 MiniApp 储物袋{section_name}数据不完整")
+    items = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"洞府 MiniApp 储物袋{section_name}条目无效")
+        name = str(row.get("name") or "").strip()
+        try:
+            quantity = int(row.get("quantity"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"洞府 MiniApp 储物袋{section_name}数量无效") from exc
+        if not name or quantity < 0:
+            raise ValueError(f"洞府 MiniApp 储物袋{section_name}条目无效")
+        if quantity > 0:
+            items[name] = items.get(name, 0) + quantity
+    return items
+
+
+def parse_cave_inventory_snapshot(data, *, expected_player_id=None):
+    """Parse only a proven-complete dwelling inventory section response."""
+
+    root = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    if not isinstance(root, dict):
+        raise ValueError("洞府 MiniApp 库存回包无效")
+    account = root.get("account") if isinstance(root.get("account"), dict) else None
+    if not isinstance(account, dict):
+        raise ValueError("洞府 MiniApp 库存回包缺少账号资料")
+    player_id = _coerce_int(account.get("playerId"), 0)
+    if not player_id:
+        raise ValueError("洞府 MiniApp 库存回包缺少 playerId")
+    if expected_player_id is not None and (
+        _normalize_cave_inventory_player_id(player_id)
+        != _normalize_cave_inventory_player_id(expected_player_id)
+    ):
+        raise ValueError("洞府 MiniApp 库存回包身份不匹配")
+    bag = account.get("bagTreasure")
+    if not isinstance(bag, dict):
+        raise ValueError("洞府 MiniApp 库存回包缺少 bagTreasure")
+    if not all(isinstance(bag.get(field), list) for field in CAVE_INVENTORY_REQUIRED_FIELDS):
+        raise ValueError("洞府 MiniApp 库存回包不是完整 inventory 分段")
+
+    general_items = _parse_cave_inventory_rows(bag.get("items"), CAVE_INVENTORY_GENERAL_SECTION)
+    for name, quantity in _parse_cave_inventory_rows(
+        bag.get("treasures"),
+        CAVE_INVENTORY_GENERAL_SECTION,
+    ).items():
+        general_items[name] = general_items.get(name, 0) + quantity
+    material_items = _parse_cave_inventory_rows(
+        bag.get("materials"),
+        CAVE_INVENTORY_MATERIAL_SECTION,
+    )
+    # active is an equipped subset of treasures and may omit quantity. Its list
+    # presence proves completeness, but counting it would duplicate treasures.
+
+    sections = {
+        CAVE_INVENTORY_GENERAL_SECTION: general_items,
+        CAVE_INVENTORY_MATERIAL_SECTION: material_items,
+    }
+    items = {}
+    for section_items in sections.values():
+        for name, quantity in section_items.items():
+            items[name] = items.get(name, 0) + quantity
+    return {
+        "complete": True,
+        "player_id": player_id,
+        "items": items,
+        "sections": sections,
+        "empty": not bool(items),
+    }
+
+
 def parse_cave_dwelling_overview(data):
     """Normalize the new dwelling MiniApp dashboard without leaking WebApp URLs."""
 
@@ -893,6 +987,9 @@ def parse_cave_dwelling_overview(data):
     hunt_used = _coerce_int(hunt_panel.get("used"), 0)
     hunt_limit = _coerce_int(hunt_panel.get("limit"), 0)
     hunt_remaining = _coerce_int(hunt_panel.get("remaining"), max(0, hunt_limit - hunt_used) if hunt_limit else 0)
+    inventory = {}
+    if has_complete_cave_inventory_snapshot(root):
+        inventory = parse_cave_inventory_snapshot(root, expected_player_id=account.get("playerId"))
     return {
         "ok": bool(root.get("ok", data.get("ok", False))),
         "player_id": _coerce_int(account.get("playerId") or identity.get("selectedPlayerId"), 0),
@@ -944,6 +1041,7 @@ def parse_cave_dwelling_overview(data):
         "journey": _parse_cave_journey_overview(journey),
         "external_apps": _parse_external_apps(account),
         "command_center": _parse_command_center(account),
+        "inventory": inventory,
     }
 
 
@@ -2080,6 +2178,9 @@ async def run_cave_meditation_settle_production_flow(
 
 
 __all__ = [
+    "CAVE_INVENTORY_GENERAL_SECTION",
+    "CAVE_INVENTORY_MATERIAL_SECTION",
+    "CAVE_INVENTORY_REQUIRED_FIELDS",
     "CAVE_TREASURE_MINIAPP_GAME_KEY",
     "CAVE_TREASURE_MINIAPP_ENDPOINTS",
     "CAVE_EXTERNAL_ACTIONS",
@@ -2104,6 +2205,8 @@ __all__ = [
     "normalize_cave_external_action",
     "normalize_cave_journey_action",
     "normalize_cave_wild_experience_mode",
+    "has_complete_cave_inventory_snapshot",
+    "parse_cave_inventory_snapshot",
     "parse_cave_dwelling_overview",
     "parse_cave_treasure_state",
     "build_cave_small_world_action_request",

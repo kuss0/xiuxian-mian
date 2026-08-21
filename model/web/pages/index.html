@@ -217,11 +217,13 @@
 <div id='storage-bag-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide storage-bag-modal-card'>    <div class='modal-header'>
 <h3 class='modal-title'>储物袋</h3>
 <button class='icon-btn' type='button' data-close-modal='storage-bag'>×</button>
-    </div>    <div class='storage-bag-body'>    <div class='form-label'>只展示已解析快照；同步需要手动勾选身份，保护账号不会被读取。</div>    <div class='storage-bag-actions'>
+</div>    <div class='storage-bag-body'>    <div class='form-label'>库存主来源为洞府公共入口 MiniApp；命令同步和天机阁 API 仅作手动备用。</div>    <div class='storage-bag-actions'>
 <label class='checkbox-inline checkbox-inline-small'><input type='checkbox' id='storage-bag-select-all' /> 全选可同步身份</label>
 <button type='button' class='btn btn-secondary' id='storage-bag-transfer-open-btn'>转移</button>
 <button type='button' class='btn btn-secondary' id='storage-bag-gift-open-btn'>赠送</button>
-<button type='button' class='btn' id='storage-bag-sync-btn'>同步</button>
+<button type='button' class='btn' id='storage-bag-miniapp-refresh-btn'>MiniApp刷新</button>
+<button type='button' class='btn btn-secondary' id='storage-bag-sync-btn'>命令同步</button>
+<span id='storage-bag-miniapp-status' class='form-label form-label-inline'></span>
 <span id='storage-bag-sync-status' class='form-label form-label-inline'></span>
 </div>    <div id='storage-bag-toolbar' class='storage-bag-toolbar'>
 </div>    <div id='storage-bag-table-wrap' class='storage-bag-table-wrap'>

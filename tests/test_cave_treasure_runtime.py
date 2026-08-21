@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import inventory_delta
 from model import state as state_module
 from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, deep_retreat, tianti, yinluo, yuanying
 
@@ -19,6 +20,22 @@ from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubi
 def _cave_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=df_SECRET999"):
     button = SimpleNamespace(button=SimpleNamespace(text="进入洞府", url=url))
     return SimpleNamespace(id=6001, message=SimpleNamespace(buttons=[[button]]))
+
+
+def _cave_inventory_payload(player_id=1001, *, items=None, materials=None, treasures=None, active=None):
+    return {
+        "ok": True,
+        "account": {
+            "playerId": player_id,
+            "bagTreasure": {
+                "items": list(items if items is not None else [{"name": "黄芽丹", "quantity": 3}]),
+                "materials": list(materials if materials is not None else [{"name": "天雷竹", "quantity": 2}]),
+                "treasures": list(treasures if treasures is not None else [{"name": "玄铁剑", "quantity": 1}]),
+                "active": list(active if active is not None else [{"name": "玄铁剑", "quantity": 1}]),
+            },
+        },
+        "snapshot": {"level": "action", "partial": True, "domains": ["inventory"]},
+    }
 
 
 class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -44,6 +61,97 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
+
+    def test_complete_cave_inventory_parser_sums_general_and_materials_only(self):
+        parsed = cave_treasure_miniapp.parse_cave_inventory_snapshot(
+            _cave_inventory_payload(
+                items=[{"name": "玄铁剑", "quantity": 1}],
+                materials=[{"name": "天雷竹", "quantity": 2}],
+                treasures=[{"name": "玄铁剑", "quantity": 3}],
+                active=[{"name": "玄铁剑", "quantity": 1}],
+            ),
+            expected_player_id=1001,
+        )
+        self.assertTrue(parsed["complete"])
+        self.assertEqual({"玄铁剑": 4, "天雷竹": 2}, parsed["items"])
+        self.assertEqual(2, len(parsed["sections"]))
+
+    def test_cave_inventory_parser_rejects_partial_or_wrong_identity(self):
+        partial = _cave_inventory_payload()
+        partial["account"]["bagTreasure"].pop("active")
+        with self.assertRaisesRegex(ValueError, "完整 inventory"):
+            cave_treasure_miniapp.parse_cave_inventory_snapshot(partial, expected_player_id=1001)
+        with self.assertRaisesRegex(ValueError, "身份不匹配"):
+            cave_treasure_miniapp.parse_cave_inventory_snapshot(
+                _cave_inventory_payload(2002),
+                expected_player_id=1001,
+            )
+
+    def test_apply_cave_inventory_snapshot_allows_explicit_empty_and_preserves_on_reject(self):
+        state_module.set_storage_bag_records({
+            "1001": {"items": {"旧物": 9}, "sections": {}, "updated_at": 1},
+        })
+        empty = _cave_inventory_payload(items=[], materials=[], treasures=[], active=[])
+        applied = cave_treasure_runtime.apply_cave_inventory_snapshot(1001, empty, now=100)
+        self.assertTrue(applied["empty"])
+        self.assertEqual({}, state_module.get_storage_bag_records()["1001"]["items"])
+
+        state_module.set_storage_bag_records({
+            "1001": {"items": {"保留物": 7}, "sections": {}, "updated_at": 100},
+        })
+        with self.assertRaises(ValueError):
+            cave_treasure_runtime.apply_cave_inventory_snapshot(
+                1001,
+                {"account": {"playerId": 1001, "bagTreasure": {"items": []}}},
+                now=200,
+            )
+        self.assertEqual(
+            {"保留物": 7},
+            state_module.get_storage_bag_records()["1001"]["items"],
+        )
+
+    def test_complete_cave_inventory_snapshot_supersedes_older_deltas(self):
+        inventory_delta.record_inventory_delta(
+            1001,
+            source="cave_treasure_miniapp",
+            source_id="old-settlement",
+            items={"黄芽丹": 2},
+            now=90,
+        )
+        cave_treasure_runtime.apply_cave_inventory_snapshot(
+            1001,
+            _cave_inventory_payload(),
+            now=100,
+        )
+        freshness = inventory_delta.build_inventory_freshness_snapshot(
+            [1001],
+            state_module.get_storage_bag_records(),
+            now=110,
+        )
+        row = freshness["rows"][0]
+        self.assertEqual({}, row["pending_deltas"])
+        self.assertEqual({"黄芽丹": 2}, row["stale_deltas"])
+
+    async def test_cave_public_inventory_reads_section_and_applies_snapshot(self):
+        flow_result = {"ok": True, "status": "ok", "data": _cave_inventory_payload()}
+        with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value={
+                    "ok": True,
+                    "init_data": "init",
+                    "player_id": 1001,
+                    "result": {"ok": True},
+                })), \
+                patch.object(cave_treasure_runtime, "run_cave_dwelling_snapshot_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock:
+            result = await cave_treasure_runtime.run_cave_public_inventory(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                now=1000,
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual({"黄芽丹": 3, "天雷竹": 2, "玄铁剑": 1}, state_module.get_storage_bag_records()["1001"]["items"])
+        self.assertEqual("cave_inventory_miniapp", state_module.get_storage_bag_records()["1001"]["source"])
+        self.assertEqual("section", flow_mock.await_args.kwargs["endpoint"])
+        self.assertEqual("inventory", flow_mock.await_args.kwargs["section"])
 
     def test_expired_entry_allows_only_one_low_frequency_canary(self):
         now = 1_700_000_000.0
@@ -433,6 +541,35 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(newest_url, config["cave_public_entry_url"])
         self.assertEqual([newest_url, older_url], config["cave_public_entry_urls"])
         save_mock.assert_not_called()
+
+    async def test_history_discovery_uses_keyword_search_when_recent_window_has_no_entry(self):
+        fresh_url = "https://t.me/hantianzun123_bot?startapp=df_SEARCHED"
+        message = _cave_event(fresh_url)
+        message.id = 33
+        message.raw_text = "【洞府】点击进入洞府"
+        message.date = datetime.fromtimestamp(300, tz=timezone.utc)
+        message.sender_id = 9033
+        message.sender = SimpleNamespace(username="hantianzun123_bot", bot=True)
+        client = SimpleNamespace(get_messages=AsyncMock(side_effect=[[], [message]]))
+
+        @asynccontextmanager
+        async def slot(**_kwargs):
+            yield
+
+        with patch.object(cave_treasure_runtime, "_get_any_authed_client_with_account", return_value=(301299112, client)), \
+                patch.object(cave_treasure_runtime, "account_rpc_slot", side_effect=slot), \
+                patch.object(cave_treasure_runtime, "get_game_bot_ids", return_value=[]), \
+                patch.object(cave_treasure_runtime, "save_state") as save_mock:
+            result = await cave_treasure_runtime.discover_cave_public_entry_from_history(
+                group_ids=[-1001],
+                per_group_limit=20,
+            )
+
+        self.assertTrue(result["captured"])
+        self.assertEqual(fresh_url, state_module.get_miniapp_auto_config()["cave_public_entry_url"])
+        self.assertEqual(2, client.get_messages.await_count)
+        self.assertEqual("洞府", client.get_messages.await_args_list[1].kwargs["search"])
+        save_mock.assert_called_once()
 
     async def test_cave_entry_runs_once_after_manual_authorization(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0)

@@ -959,6 +959,16 @@
   flex: 0 0 auto;
 }
 
+.storage-bag-api-fallback > summary {
+  cursor: pointer;
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.storage-bag-api-fallback[open] > summary {
+  margin-bottom: 10px;
+}
+
 .storage-bag-api-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));

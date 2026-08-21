@@ -11,8 +11,8 @@ from ..inventory_delta import record_inventory_delta, stable_payload_digest
 from ..miniapp_state import record_miniapp_state
 from ..persistence import save_state
 from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
-from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, set_miniapp_auto_config, state, use_identity
-from ..timing import get_day_key
+from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_storage_bag_records, state, use_identity
+from ..timing import fmt_abs_ts, get_day_key
 from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
 from .small_world import (
@@ -25,6 +25,7 @@ from .cave_treasure_miniapp import (
     extract_cave_treasure_miniapp_launch,
     find_cave_external_app,
     merge_cave_dwelling_snapshot_data,
+    parse_cave_inventory_snapshot,
     parse_cave_dwelling_overview,
     request_cave_treasure_miniapp_init_data,
     run_cave_deep_seclusion_action_production_flow,
@@ -378,6 +379,40 @@ async def discover_cave_public_entry_from_history(*, group_ids=None, per_group_l
             except (AttributeError, TypeError, ValueError, OverflowError):
                 timestamp = 0.0
             candidates.append((timestamp, int(getattr(message, "id", 0) or 0), group_id, message))
+
+    # Busy game groups can push the public dwelling card outside the recent
+    # window within minutes. Fall back to Telegram's server-side text search so
+    # startup recovery can still find an older official card without sending a
+    # game command or scanning a large unfiltered history range.
+    if not candidates:
+        for group_id in groups:
+            try:
+                async with account_rpc_slot(account_id=account_id, client_obj=client):
+                    messages = await client.get_messages(
+                        group_id,
+                        limit=max(1, min(200, int(per_group_limit or 80))),
+                        search="洞府",
+                    )
+            except Exception as exc:
+                console_log(
+                    f"🧩 洞府公共入口关键词回溯跳过群 {group_id}：{type(exc).__name__}",
+                    scope="global",
+                    limit=180,
+                )
+                continue
+            for message in messages or ():
+                launch = extract_cave_treasure_miniapp_launch(
+                    message,
+                    message_text=str(getattr(message, "raw_text", "") or ""),
+                )
+                if not launch:
+                    continue
+                message_at = getattr(message, "date", None)
+                try:
+                    timestamp = float(message_at.timestamp()) if message_at is not None else 0.0
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    timestamp = 0.0
+                candidates.append((timestamp, int(getattr(message, "id", 0) or 0), group_id, message))
 
     for _timestamp, message_id, group_id, message in sorted(candidates, reverse=True):
         if await capture_cave_public_entry_event(
@@ -1025,6 +1060,129 @@ async def _load_cave_public_identity_session(
     }
     _record_cave_entry_safe_directory(identity_id, session.get("result") or {}, now=now)
     return session
+
+
+def apply_cave_inventory_snapshot(identity_id, payload, *, expected_player_id=None, now=None):
+    """Atomically replace one local bag only from a complete, matching snapshot."""
+
+    identity_id = _identity_id(identity_id)
+    if identity_id <= 0:
+        raise ValueError("身份不存在")
+    snapshot = parse_cave_inventory_snapshot(
+        payload,
+        expected_player_id=expected_player_id if expected_player_id is not None else identity_id,
+    )
+    if _normalize_dwelling_identity_id(snapshot.get("player_id")) != _normalize_dwelling_identity_id(identity_id):
+        raise ValueError("洞府 MiniApp 库存回包不属于目标身份")
+
+    now = float(now or time.time())
+    records = dict(get_storage_bag_records() or {})
+    previous = records.get(str(identity_id)) if isinstance(records.get(str(identity_id)), dict) else {}
+    previous_items = previous.get("items") if isinstance(previous.get("items"), dict) else {}
+    items = dict(snapshot.get("items") or {})
+    sections = {
+        str(name): dict(section_items or {})
+        for name, section_items in (snapshot.get("sections") or {}).items()
+        if str(name or "").strip() and isinstance(section_items, dict)
+    }
+    profile = get_send_as_profile(identity_id)
+    records[str(identity_id)] = {
+        "identity_id": identity_id,
+        "label": profile.get("label") or profile.get("username") or profile.get("daohao") or str(identity_id),
+        "owner": profile.get("username") or profile.get("label") or profile.get("daohao") or str(identity_id),
+        "owner_username": profile.get("username") or "",
+        "updated_at": now,
+        "updated_at_text": fmt_abs_ts(now),
+        "items": items,
+        "sections": sections,
+        "empty": bool(snapshot.get("empty")),
+        "source": "cave_inventory_miniapp",
+    }
+    set_storage_bag_records(records)
+    save_state()
+    return {
+        "updated": True,
+        "changed": dict(previous_items or {}) != items,
+        "identity_id": identity_id,
+        "item_count": len(items),
+        "empty": not bool(items),
+        "record": records[str(identity_id)],
+    }
+
+
+async def run_cave_public_inventory(identity_id, public_entry_url, *, now=None):
+    """Refresh one complete storage-bag snapshot through the public dwelling entry."""
+
+    identity_id = _identity_id(identity_id)
+    now = float(now or time.time())
+    if identity_id <= 0:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    if not is_cave_public_identity_available(identity_id):
+        return {"ok": False, "message": "身份已停用", "extra": {}}
+    if not _public_entry_allowed():
+        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    if error:
+        return {"ok": False, "message": error, "extra": {}}
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+
+    async with lock:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_inventory_start:{identity_id}",
+            include_details=False,
+        )
+        if not session.get("ok"):
+            return {
+                "ok": False,
+                "message": f"洞府储物袋身份读取失败：{session.get('error') or 'unknown'}",
+                "extra": {"phase": "session_failed"},
+            }
+        result = await run_cave_dwelling_snapshot_production_flow(
+            identity_id,
+            token=token,
+            webview_url=webview_url,
+            endpoint="section",
+            section="inventory",
+            init_data=session.get("init_data") or "",
+            player_id=session.get("player_id"),
+            capture_sink=_capture_store(now),
+            capture_source=f"cave_public_inventory:{identity_id}",
+        )
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "message": f"洞府储物袋读取失败：{result.get('error') or result.get('status') or 'unknown'}",
+                "extra": {"phase": "inventory_failed"},
+            }
+        try:
+            applied = apply_cave_inventory_snapshot(
+                identity_id,
+                result.get("data") or {},
+                expected_player_id=session.get("player_id"),
+                now=now,
+            )
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "message": str(exc),
+                "extra": {"phase": "inventory_rejected", "snapshot_preserved": True},
+            }
+        return {
+            "ok": True,
+            "message": f"洞府 MiniApp 储物袋已刷新：{applied['item_count']} 项",
+            "extra": {
+                "phase": "inventory_applied",
+                "changed": bool(applied.get("changed")),
+                "empty": bool(applied.get("empty")),
+                "item_count": int(applied.get("item_count") or 0),
+            },
+        }
 
 
 async def probe_cave_public_entry(identity_id, public_entry_url, *, now=None):
@@ -4091,10 +4249,12 @@ __all__ = [
     "extract_cave_tianjige_command_message",
     "handle_cave_treasure_miniapp_entry",
     "is_cave_public_entry_busy",
+    "apply_cave_inventory_snapshot",
     "revoke_cave_treasure_miniapp_manual_run",
     "run_cave_public_deep_retreat_action",
     "run_cave_public_fate_cards",
     "run_cave_public_fishing",
+    "run_cave_public_inventory",
     "run_cave_public_small_world_sync",
     "run_cave_public_stargazer",
     "run_cave_public_tianjige_read_only",

@@ -18,6 +18,10 @@
     return snapshot().storage_bag_api || {};
   }
 
+  function storageMiniappData() {
+    return snapshot().storage_bag_miniapp || {};
+  }
+
   function rows() {
     return Array.isArray(storageData().rows) ? storageData().rows : [];
   }
@@ -672,7 +676,9 @@
       ? `<span class="storage-bag-api-status${api.last_ok ? '' : ' storage-bag-api-status-error'}">${esc(api.last_message)}${api.last_updated_at && api.last_updated_at !== '-' ? ' ｜ ' + esc(api.last_updated_at) : ''}</span>`
       : '';
     panel.innerHTML = `
-      <form id="storage-bag-api-form" class="storage-bag-api-form">
+      <details class="storage-bag-api-fallback">
+        <summary>天机阁 API 手动备用</summary>
+        <form id="storage-bag-api-form" class="storage-bag-api-form">
         <div class="storage-bag-api-grid">
           <label class="field-label">Base URL<input class="text-input" name="storage_bag_api_base_url" value="${esc(api.base_url || 'https://asc.aiopenai.app')}" autocomplete="off" /></label>
           <label class="field-label">API Token<input class="text-input" name="storage_bag_api_token" type="password" placeholder="${esc(tokenPlaceholder || '可留空，验证时自动读取')}" autocomplete="new-password" /></label>
@@ -681,16 +687,18 @@
         <div class="storage-bag-api-actions">
           <button type="button" class="btn btn-secondary" data-storage-bag-api-save="1">保存 API</button>
           <button type="button" class="btn btn-secondary" data-storage-bag-api-verify="1"${api.running ? ' disabled' : ''}>${api.running ? '验证中' : '验证'}</button>
-          <button type="button" class="btn" data-storage-bag-api-refresh="1"${api.running || !api.configured ? ' disabled' : ''}>${api.running ? '读取中' : 'API读取'}</button>
+          <button type="button" class="btn btn-secondary" data-storage-bag-api-refresh="1"${api.running || !api.configured ? ' disabled' : ''}>${api.running ? '读取中' : '备用读取'}</button>
           ${verifyLine}
           ${keepaliveError}
           ${lastLine}
         </div>
-      </form>`;
+        </form>
+      </details>`;
   }
 
   function renderSyncControls() {
     const sync = snapshot().storage_bag_sync || {};
+    const miniapp = storageMiniappData();
     const transfer = snapshot().storage_bag_transfer || {};
     const transferBatch = transfer.batch || {};
     const running = !!sync.running;
@@ -702,6 +710,21 @@
     const btn = document.getElementById('storage-bag-sync-btn');
     const selectAll = document.getElementById('storage-bag-select-all');
     const status = document.getElementById('storage-bag-sync-status');
+    const miniappBtn = document.getElementById('storage-bag-miniapp-refresh-btn');
+    const miniappStatus = document.getElementById('storage-bag-miniapp-status');
+    if (miniappBtn) {
+      miniappBtn.disabled = !!miniapp.running || transferRunning || !miniapp.configured || !!miniapp.entry_blocked;
+      miniappBtn.textContent = miniapp.running ? '刷新中' : 'MiniApp刷新';
+      miniappBtn.title = miniapp.entry_blocked
+        ? (miniapp.entry_block_reason || '洞府公共入口授权已过期，等待动态更新')
+        : (miniapp.configured ? '通过洞府公共入口串行刷新在线身份完整库存' : '尚未配置洞府公共入口');
+    }
+    if (miniappStatus) {
+      const blockedStatus = miniapp.entry_blocked
+        ? `入口待更新${miniapp.entry_retry_at && miniapp.entry_retry_at !== '未设置' ? `，复核 ${miniapp.entry_retry_at}` : ''}`
+        : '';
+      miniappStatus.textContent = miniapp.last_message || blockedStatus || (miniapp.configured ? `可刷新 ${Number(miniapp.target_count || 0)} 个在线身份` : '缺少洞府公共入口');
+    }
     if (btn) {
       btn.disabled = running || transferRunning;
       btn.textContent = running ? '同步中' : (transferRunning ? runningLabel : '同步');
@@ -1006,6 +1029,19 @@
     }
   }
 
+  async function refreshStorageBagMiniapp() {
+    try {
+      const data = await post('/api/storage-bag-miniapp-refresh', {});
+      setFlash(data.message || '已通过洞府 MiniApp 刷新储物袋', false);
+      if (typeof applySnapshot === 'function') applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
+      renderStorageBagTable();
+    } catch (error) {
+      setFlash((error && error.message) || '洞府 MiniApp 储物袋刷新失败', true);
+      if (typeof refreshState === 'function') await refreshState({ silent: true, keepFlash: true });
+      renderStorageBagTable();
+    }
+  }
+
   function collectStorageBagApiPayload() {
     const form = document.getElementById('storage-bag-api-form');
     if (!form) return {};
@@ -1141,6 +1177,7 @@
     if (event.target.closest('[data-open-storage-bag]')) return openStorageBagModal();
     if (event.target.closest('#storage-bag-transfer-open-btn')) return openTransferModal();
     if (event.target.closest('#storage-bag-gift-open-btn')) return openGiftModal();
+    if (event.target.closest('#storage-bag-miniapp-refresh-btn')) return refreshStorageBagMiniapp();
     if (event.target.closest('#storage-bag-sync-btn')) return syncStorageBag();
     if (event.target.closest('[data-storage-bag-api-save]')) return saveStorageBagApiConfig();
     if (event.target.closest('[data-storage-bag-api-verify]')) return verifyStorageBagApi();

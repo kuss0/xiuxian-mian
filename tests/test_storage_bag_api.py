@@ -98,6 +98,15 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             "dao_path_updated_count": 0,
             "dao_path_skipped_count": 0,
         })
+        ui._storage_bag_miniapp_state.update({
+            "running": False,
+            "last_ok": False,
+            "last_message": "",
+            "last_updated_at": 0,
+            "updated_count": 0,
+            "changed_count": 0,
+            "skipped_count": 0,
+        })
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -120,6 +129,15 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             "dao_path_updated_count": 0,
             "dao_path_skipped_count": 0,
         })
+        ui._storage_bag_miniapp_state.update({
+            "running": False,
+            "last_ok": False,
+            "last_message": "",
+            "last_updated_at": 0,
+            "updated_count": 0,
+            "changed_count": 0,
+            "skipped_count": 0,
+        })
 
     def test_api_identity_candidates_and_lookup_include_username_aliases(self):
         state_module.update_send_as_profile(
@@ -141,6 +159,56 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             storage_bag_api_runtime.storage_bag_api_identity_lookup()["source"],
         )
         self.assertEqual(self.identity_id, ui._storage_bag_api_identity_lookup()["source"])
+
+    async def test_miniapp_inventory_refresh_is_primary_and_serial(self):
+        calls = []
+
+        async def fake_run(identity_id, action, url):
+            calls.append((identity_id, action, url))
+            return True, "已刷新", {"changed": True}
+
+        with patch.object(ui, "_cave_public_entry_urls_from_config", return_value=["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"]), \
+                patch.object(ui, "ui_run_cave_public_entry", new=fake_run), \
+                patch.object(ui, "get_identity_ids", return_value=[self.identity_id]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True):
+            ok, message, snapshot = await ui.ui_refresh_storage_bag_from_miniapp({})
+
+        self.assertTrue(ok)
+        self.assertIn("洞府 MiniApp", message)
+        self.assertEqual([(self.identity_id, "inventory", "")], calls)
+        self.assertEqual(1, snapshot["updated_count"])
+        self.assertEqual(1, snapshot["changed_count"])
+
+    def test_miniapp_inventory_ui_exposes_primary_and_api_backup(self):
+        html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
+        script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+        self.assertIn("storage-bag-miniapp-refresh-btn", html)
+        self.assertIn("/api/storage-bag-miniapp-refresh", script)
+        self.assertIn("entry_blocked", script)
+        self.assertIn("天机阁 API 手动备用", script)
+
+    def test_miniapp_inventory_snapshot_exposes_expired_entry_gate(self):
+        url = "https://t.me/fanrenxiuxian_bot?startapp=df_EXPIRED"
+        state_module.set_miniapp_auto_config({
+            "cave_public_entry_url": url,
+            "cave_public_entry_urls": [url],
+            "cave_public_entry_token_blocked_signature": ui._cave_public_entry_urls_signature([url]),
+            "cave_public_entry_token_blocked_at": 1_700_000_000,
+            "cave_public_entry_token_retry_at": 1_700_003_600,
+            "cave_public_entry_token_blocked_reason": "dwelling_token_expired",
+        })
+
+        with patch.object(ui.time, "time", return_value=1_700_000_100), \
+                patch.object(ui, "get_identity_ids", return_value=[self.identity_id]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True):
+            snapshot = ui.get_storage_bag_miniapp_snapshot()
+
+        self.assertTrue(snapshot["configured"])
+        self.assertTrue(snapshot["entry_blocked"])
+        self.assertEqual("dwelling_token_expired", snapshot["entry_block_reason"])
+        self.assertNotEqual("未设置", snapshot["entry_retry_at"])
 
     async def test_single_identity_refresh_falls_back_to_previous_username(self):
         state_module.update_send_as_profile(
