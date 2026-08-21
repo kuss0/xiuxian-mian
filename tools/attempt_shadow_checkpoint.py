@@ -49,16 +49,19 @@ def _counter_rows(rows, *keys):
 def _sent_log_ids(start_at, end_at, messages_dir):
     sent_ids = set()
     files_seen = set()
-    for entry, _entry_at in iter_message_log_entries_between(start_at, end_at, messages_dir=messages_dir):
+    coverage_start_at = 0.0
+    for entry, entry_at in iter_message_log_entries_between(start_at, end_at, messages_dir=messages_dir):
+        if entry_at > 0 and (coverage_start_at <= 0 or entry_at < coverage_start_at):
+            coverage_start_at = float(entry_at)
+        raw_ts = str((entry or {}).get("ts") or "")[:10]
+        if raw_ts:
+            files_seen.add(raw_ts)
         if str((entry or {}).get("event_type") or "") != "sent":
             continue
         msg_id = int((entry or {}).get("message_id") or 0)
         if msg_id > 0:
             sent_ids.add(msg_id)
-        raw_ts = str((entry or {}).get("ts") or "")[:10]
-        if raw_ts:
-            files_seen.add(raw_ts)
-    return sent_ids, sorted(files_seen)
+    return sent_ids, sorted(files_seen), coverage_start_at
 
 
 def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
@@ -80,8 +83,23 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
     observation_hours = max((now - observation_start) / 3600, 1 / 60)
     sent_attempts = [row for row in attempts if str(row["transport"] or "") == "sent"]
     root_ids = {int(row["root_msg_id"] or 0) for row in sent_attempts if int(row["root_msg_id"] or 0) > 0}
-    sent_log_ids, log_days = _sent_log_ids(max(0, observation_start - 60), now + 60, messages_dir)
-    missing_root_ids = sorted(root_ids - sent_log_ids)
+    sent_log_ids, log_days, log_coverage_start_at = _sent_log_ids(
+        max(0, observation_start - 60),
+        now + 60,
+        messages_dir,
+    )
+    parity_attempts = [
+        row
+        for row in sent_attempts
+        if log_coverage_start_at <= 0
+        or float(row["sent_at"] or row["updated_at"] or row["created_at"] or 0) >= log_coverage_start_at
+    ]
+    parity_root_ids = {
+        int(row["root_msg_id"] or 0)
+        for row in parity_attempts
+        if int(row["root_msg_id"] or 0) > 0
+    }
+    missing_root_ids = sorted(parity_root_ids - sent_log_ids)
 
     bind_reasons = Counter()
     bind_anchors = Counter()
@@ -162,8 +180,15 @@ def build_checkpoint(*, db_path=DB_FILE, messages_dir=MESSAGES_DIR, now=None):
         },
         "sent_log_parity": {
             "sent_attempts": len(sent_attempts),
-            "rooted_attempts": len(root_ids),
-            "roots_in_persisted_sent_logs": len(root_ids & sent_log_ids),
+            "log_coverage_start_at": log_coverage_start_at,
+            "log_coverage_start": (
+                datetime.fromtimestamp(log_coverage_start_at, TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8")
+                if log_coverage_start_at > 0
+                else ""
+            ),
+            "excluded_before_log_coverage": max(0, len(sent_attempts) - len(parity_attempts)),
+            "rooted_attempts": len(parity_root_ids),
+            "roots_in_persisted_sent_logs": len(parity_root_ids & sent_log_ids),
             "missing_root_count": len(missing_root_ids),
             "missing_root_ids": missing_root_ids[:100],
         },

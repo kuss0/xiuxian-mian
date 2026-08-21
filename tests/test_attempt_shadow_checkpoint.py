@@ -93,6 +93,29 @@ def test_checkpoint_warns_on_missing_root_and_non_strong_binding(tmp_path):
     assert report["binding"]["non_strong_written_bindings"] == 1
 
 
+def test_checkpoint_excludes_attempts_older_than_retained_message_log_coverage(tmp_path):
+    db_path = tmp_path / "state.db"
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir()
+    _prepare_db(db_path)
+    (messages_dir / "1970-01-01.log").write_text(
+        json.dumps({
+            "ts": "1970-01-01 08:17:30 UTC+8",
+            "event_type": "message",
+            "message_id": 999,
+            "text": "retained log starts after the attempt",
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    report = build_checkpoint(db_path=db_path, messages_dir=messages_dir, now=1100.0)
+
+    assert report["status"] == "ok"
+    assert report["sent_log_parity"]["excluded_before_log_coverage"] == 1
+    assert report["sent_log_parity"]["rooted_attempts"] == 0
+    assert report["sent_log_parity"]["missing_root_count"] == 0
+
+
 def test_checkpoint_keeps_old_attempt_anomalies_visible_without_current_warning(tmp_path):
     db_path = tmp_path / "state.db"
     messages_dir = tmp_path / "messages"
