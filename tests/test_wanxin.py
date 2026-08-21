@@ -22,6 +22,11 @@ FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
 
 
 class WanxinTests(unittest.IsolatedAsyncioTestCase):
+    def test_default_assist_identity_tracks_reincarnated_account(self):
+        observed = wanxin.normalize_wanxin_observation()
+
+        self.assertEqual(8613500668, observed["assist"]["send_as_id"])
+
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
