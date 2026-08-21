@@ -1093,6 +1093,73 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual([12.0, 24.0], clock.sleeps[:2])
         self.assertEqual(3, calls.count("start"))
 
+    def test_join_retry_after_returns_rate_limited_without_state_calibration(self):
+        calls = []
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 429, {"ok": False, "error": "rate limited"}, {"Retry-After": "120"}
+
+        receipt = world_boss_miniapp.join_world_boss_miniapp_lab(
+            token="qyz_RATE_JOIN",
+            init_data="query_id=x&hash=y",
+            player_id=77,
+            identity_id=7700,
+            transport=transport,
+        )
+
+        self.assertFalse(receipt.joined)
+        self.assertEqual("rate_limited", receipt.status)
+        self.assertEqual(120, receipt.retry_after_sec)
+        self.assertEqual(["start"], calls)
+
+    def test_long_start_retry_after_does_not_poll_state_or_sleep(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 429, {"ok": False, "error": "rate limited"}, {"Retry-After": "120"}
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_RATE_BATTLE",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("rate_limited", result["status"])
+        self.assertEqual(120, result["retry_after_sec"])
+        self.assertEqual(["start"], calls)
+        self.assertEqual([], clock.sleeps)
+
+    def test_short_retry_after_does_not_sleep_past_battle_deadline(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            calls.append(request["safe_summary"]["endpoint"])
+            return 429, {"ok": False, "error": "rate limited"}, {"Retry-After": "10"}
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_RATE_DEADLINE",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            battle_wait_timeout_sec=5,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("rate_limited", result["status"])
+        self.assertEqual(10, result["retry_after_sec"])
+        self.assertEqual(["start"], calls)
+        self.assertEqual([], clock.sleeps)
+
     def test_session_token_error_resets_to_entry_token_before_battle(self):
         tokens = []
         clock = FakeClock()

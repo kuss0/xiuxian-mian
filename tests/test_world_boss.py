@@ -1902,6 +1902,49 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("部分 1｜失败 0", audit_mock.await_args.args[0])
         self.assertIn("命中12/16", audit_mock.await_args.args[0])
 
+    async def test_miniapp_rate_limit_wait_is_kept_in_run_state_and_audit(self):
+        now = 1_784_500_200.0
+        event_key = "miniapp-rate-limited"
+        identity_id = 8659059191
+        state_module.set_world_boss_run_state({
+            "event_key": event_key,
+            "miniapp_auto_status": "running",
+            "miniapp_auto_started_at": now,
+        })
+
+        async def fake_runtime(*_args, **_kwargs):
+            return {
+                "ok": False,
+                "status": "partial",
+                "joined_count": 0,
+                "results": [{
+                    "identity_id": identity_id,
+                    "phase": "join",
+                    "ok": False,
+                    "status": "rate_limited",
+                    "error": "HTTP 429",
+                    "retry_after_sec": 120,
+                }],
+            }
+
+        with (
+            patch.object(world_boss, "run_world_boss_miniapp_event", new=fake_runtime),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            await world_boss._run_world_boss_miniapp_automation(
+                event_key,
+                [identity_id],
+                SimpleNamespace(id=12011),
+                MINIAPP_OPEN_TEXT,
+                now,
+                0,
+            )
+
+        result = state_module.get_world_boss_run_state()["miniapp_auto_results"][0]
+        self.assertEqual(120, result["retry_after_sec"])
+        self.assertIn("限流等待120秒", audit_mock.await_args.args[0])
+
     async def test_conclusion_calibrates_event_closed_partial_as_confirmed_participation(self):
         now = 1_786_900_200.0
         identity_id = 8659059191

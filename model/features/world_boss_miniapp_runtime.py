@@ -540,6 +540,7 @@ async def run_world_boss_miniapp_event(
                 "status": str(battle.get("status") or "failed"),
                 "summary": battle_summary,
                 "error": str(safe_battle.get("error") or ""),
+                "retry_after_sec": float(safe_battle.get("retry_after_sec", 0) or 0),
             }
             await _emit_progress(progress_callback, battle_result)
             return battle_result

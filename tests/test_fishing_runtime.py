@@ -1303,6 +1303,39 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["fishing_last_error"])
             self.assertGreater(state_module.state["next_fishing_time"], now)
 
+    def test_miniapp_failure_honors_server_retry_after(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 15, 8, 0, 0)
+        with state_module.use_identity(identity_id), \
+                patch.object(fishing_runtime, "save_state"), \
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"), \
+                patch.object(fishing_runtime.random, "uniform", return_value=0):
+            fishing_runtime._apply_fishing_miniapp_result({
+                "ok": False,
+                "status": "failed",
+                "error": "HTTP 429",
+                "events": [{"step": "start", "retry_after_sec": 3600}],
+            }, now=now)
+
+            self.assertGreaterEqual(state_module.state["next_fishing_time"], now + 3600)
+
+    def test_miniapp_success_ignores_recovered_retry_after_event(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 15, 8, 5, 0)
+        with state_module.use_identity(identity_id), \
+                patch.object(fishing_runtime, "save_state"), \
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"), \
+                patch.object(fishing_runtime.random, "uniform", return_value=0):
+            fishing_runtime._apply_fishing_miniapp_result({
+                "ok": True,
+                "status": "settled",
+                "settled_count": 1,
+                "data": {"catches": []},
+                "events": [{"step": "start", "retry_after_sec": 3600}],
+            }, now=now)
+
+            self.assertLess(state_module.state["next_fishing_time"], now + 3600)
+
     async def test_miniapp_failure_backs_off_without_old_followup_chain(self):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 7, 6, 8, 50, 0)

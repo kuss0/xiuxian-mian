@@ -444,6 +444,48 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, attempts)
         sleep_mock.assert_not_awaited()
 
+    async def test_battle_retry_after_is_preserved_in_runtime_result(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**_kwargs):
+            return SimpleNamespace(
+                joined=True,
+                status="joined",
+                session_token="qyz_SESSION",
+                safe_summary=lambda: {"joined": True, "status": "joined"},
+            )
+
+        def fake_battle(_receipt, **_kwargs):
+            return {
+                "ok": False,
+                "status": "rate_limited",
+                "error": "HTTP 429",
+                "retry_after_sec": 120,
+                "data": {},
+            }
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11],
+                event,
+                opened_at=time.time(),
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+            )
+
+        battle = next(item for item in result["results"] if item["phase"] == "battle")
+        self.assertEqual("rate_limited", battle["status"])
+        self.assertEqual(120, battle["retry_after_sec"])
+
     async def test_partial_join_failure_does_not_report_event_as_settled(self):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],

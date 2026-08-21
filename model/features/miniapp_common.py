@@ -87,14 +87,30 @@ def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=Non
 
 
 class _MiniAppSessionPool:
-    """Keep one HTTP session per adapter/identity on its configured route."""
+    """Keep route-specific sessions while serializing one identity's requests."""
 
     def __init__(self):
         self._lock = threading.RLock()
         self._entries = {}
+        self._request_locks = {}
 
     @staticmethod
-    def _key(adapter_key, identity_id):
+    def _proxy_fingerprint(proxies):
+        return tuple(sorted(
+            (str(key), str(value))
+            for key, value in dict(proxies or {}).items()
+        ))
+
+    @classmethod
+    def _key(cls, adapter_key, identity_id, proxies=None):
+        return (
+            str(adapter_key or "miniapp"),
+            int(identity_id or 0),
+            cls._proxy_fingerprint(proxies),
+        )
+
+    @staticmethod
+    def _lock_key(adapter_key, identity_id):
         return str(adapter_key or "miniapp"), int(identity_id or 0)
 
     @staticmethod
@@ -109,21 +125,26 @@ class _MiniAppSessionPool:
         return session
 
     def acquire(self, adapter_key, identity_id, proxies):
-        key = self._key(adapter_key, identity_id)
+        key = self._key(adapter_key, identity_id, proxies)
+        lock_key = self._lock_key(adapter_key, identity_id)
         with self._lock:
+            request_lock = self._request_locks.get(lock_key)
+            if request_lock is None:
+                request_lock = threading.Lock()
+                self._request_locks[lock_key] = request_lock
             entry = self._entries.get(key)
             if entry is None:
                 route = "config_proxy" if proxies else "direct"
                 entry = {
                     "route": route,
                     "session": self._new_session(route, proxies),
-                    "request_lock": threading.Lock(),
+                    "request_lock": request_lock,
                 }
                 self._entries[key] = entry
             return entry["session"], str(entry["route"]), entry["request_lock"]
 
-    def is_current(self, adapter_key, identity_id, session, request_lock):
-        key = self._key(adapter_key, identity_id)
+    def is_current(self, adapter_key, identity_id, session, request_lock, proxies):
+        key = self._key(adapter_key, identity_id, proxies)
         with self._lock:
             entry = self._entries.get(key)
             return bool(
@@ -133,7 +154,7 @@ class _MiniAppSessionPool:
             )
 
     def invalidate(self, adapter_key, identity_id, session, proxies, *, request_lock=None):
-        key = self._key(adapter_key, identity_id)
+        key = self._key(adapter_key, identity_id, proxies)
         old_session = None
         with self._lock:
             entry = self._entries.get(key)
@@ -147,7 +168,10 @@ class _MiniAppSessionPool:
                 # Keep the per-identity lock across route replacement. This
                 # prevents a waiting caller from using the new session while
                 # the failed caller is still unwinding the old one.
-                "request_lock": request_lock or threading.Lock(),
+                "request_lock": request_lock or self._request_locks.setdefault(
+                    self._lock_key(adapter_key, identity_id),
+                    threading.Lock(),
+                ),
             }
         if old_session is not None:
             try:
@@ -169,6 +193,15 @@ class _MiniAppSessionPool:
                 entry = self._entries.pop(key, None)
                 if isinstance(entry, dict) and entry.get("session") is not None:
                     sessions.append(entry["session"])
+            active_lock_keys = {(key[0], key[1]) for key in self._entries}
+            lock_keys = [
+                key for key in self._request_locks
+                if (not adapter_key or key[0] == adapter_key)
+                and (identity_id is None or key[1] == identity_id)
+                and key not in active_lock_keys
+            ]
+            for key in lock_keys:
+                self._request_locks.pop(key, None)
         for session in sessions:
             try:
                 session.close()
@@ -213,6 +246,7 @@ def build_pooled_miniapp_transport(
                 identity_id,
                 session,
                 request_lock,
+                effective_proxies,
             ):
                 break
             request_lock.release()

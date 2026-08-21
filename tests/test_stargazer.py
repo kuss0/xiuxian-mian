@@ -170,6 +170,26 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
         self.assertIn("安抚 8 座", audit_mock.await_args.args[0])
 
+    async def test_miniapp_failure_honors_server_retry_after(self):
+        now = 1000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        result = {
+            "ok": False,
+            "status": "rate_limited",
+            "error": "HTTP 429",
+            "events": [{"step": "start", "retry_after_sec": 3600}],
+        }
+
+        with state_module.use_identity(identity_id), \
+                patch.object(stargazer, "send_audit_log", new=AsyncMock(return_value=True)), \
+                patch.object(stargazer, "save_state"), \
+                patch.object(stargazer.random, "uniform", return_value=0):
+            handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice="天雷星")
+
+        self.assertTrue(handled)
+        self.assertGreaterEqual(state_module.state["stargazer_followup_due_at"], now + 3600)
+
     async def test_miniapp_entry_without_manual_auth_pauses_legacy_chain_without_http(self):
         now = 1000.0
         identity_id = 3756719391

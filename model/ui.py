@@ -95,7 +95,7 @@ from .features import miniapp_command_catalog
 from .inventory_delta import build_inventory_freshness_snapshot
 from .miniapp_state import get_miniapp_state_snapshot, record_miniapp_state
 from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
-from .webapp_core import get_miniapp_global_rate_limit_snapshot
+from .webapp_core import get_miniapp_global_rate_limit_snapshot, miniapp_retry_after_sec
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import (
@@ -7240,6 +7240,11 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             if _is_cave_public_entry_token_failure(message):
                 token_failure_count += 1
             result_extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+            retry_after_sec = miniapp_retry_after_sec(result)
+            if retry_after_sec > 0:
+                result_extra = dict(result_extra)
+                result_extra["retry_after_sec"] = retry_after_sec
+                result["extra"] = result_extra
             skip_after_token_failure = bool(
                 token_failure_count
                 and result.get("ok")
@@ -8256,7 +8261,7 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
         if isinstance(extra, dict) and float(extra.get("retry_after_sec", 0) or 0) > 0:
             retry_sec = max(30, min(24 * 3600, float(extra.get("retry_after_sec") or 0)))
         if action in {"deep_status", "deep_settle"} and not ok:
-            retry_sec = 30 * 60
+            retry_sec = max(retry_sec, 30 * 60)
         _cave_public_background_retry_at[(retry_action, int(identity_id))] = finished_at + retry_sec
         circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
         _cave_public_background_state.update({
@@ -8422,20 +8427,25 @@ async def _run_tree_public_daily_worker(identity_id, entry_urls, *, day_key, op_
         final_result = {"ok": False, "message": f"{type(exc).__name__}: {exc}", "extra": {}}
 
     error = str(final_result.get("message") or "洞府落云灵树入口执行失败")
+    retry_after_sec = miniapp_retry_after_sec(final_result)
+    phase = "retry_pending" if retry_after_sec > 0 else "blocked"
+    recorded_at = time.time()
     record_miniapp_state(
         identity_id,
         "tree",
         {
             "kind": "daily",
             "day_key": day_key,
-            "phase": "blocked",
+            "phase": phase,
             "completed_today": False,
             "command_msg_id": 0,
             "error": error,
+            "retry_after_sec": retry_after_sec,
+            "retry_at": recorded_at + retry_after_sec if retry_after_sec > 0 else 0.0,
         },
         source="tree_daily_scheduler",
         source_id=op_id,
-        now=time.time(),
+        now=recorded_at,
         outputs=("daily_counter", "score_policy", "rewards"),
         replaces_commands=(".灵树",),
     )
@@ -8527,6 +8537,14 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
                     command_msg_id=int(daily_state.get("command_msg_id", 0) or 0),
                 )
         tree_phase = str(daily_state.get("phase") or "")
+        if tree_phase == "retry_pending":
+            retry_at = float(daily_state.get("retry_at", 0) or 0)
+            if retry_at <= 0:
+                retry_at = float(daily_state.get("_record_updated_at", 0) or 0) + float(
+                    daily_state.get("retry_after_sec", 0) or 0
+                )
+            if retry_at > float(now):
+                continue
         legacy_entry_unknown = (
             tree_phase == "unknown"
             and str(daily_state.get("error") or "").strip() == "入口命令无回包"

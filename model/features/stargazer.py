@@ -17,7 +17,7 @@ from ..persistence import save_state
 from ..runtime import console_log, send_audit_log
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
-from ..webapp_core import MiniAppCaptureStore
+from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
 from .miniapp_common import append_business_capture
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_deltas, apply_storage_bag_item_text_delta
@@ -358,6 +358,7 @@ async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
     else:
         delay = STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC + random.uniform(30, 90)
         audit_text = "❌ 观星台 MiniApp 处理失败"
+    delay = max(delay, miniapp_retry_after_sec(result))
     _queue_stargazer_followup_action(now, "panel", delay)
     state["stargazer_last_action"] = "miniapp_error"
     save_state()

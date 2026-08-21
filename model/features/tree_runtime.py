@@ -19,7 +19,7 @@ from ..state import (
     use_identity,
 )
 from ..timing import get_day_key
-from ..webapp_core import MiniAppCaptureStore
+from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
 from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
 from .tree_miniapp import (
     extract_tree_miniapp_launch,
@@ -45,6 +45,8 @@ _COORDINATOR = {
     "finished_at": 0.0,
     "result": {},
     "error": "",
+    "retry_after_sec": 0.0,
+    "retry_at": 0.0,
 }
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_]{3,64})")
 
@@ -223,7 +225,9 @@ def get_tree_miniapp_coordinator_snapshot():
 
 def _set_coordinator(phase, *, auth=None, result=None, error="", now=None):
     auth = dict(auth or {})
+    result = dict(result or {})
     now = float(now or time.time())
+    retry_after_sec = miniapp_retry_after_sec(result) if phase == "retry_pending" else 0.0
     _COORDINATOR.update({
         "phase": str(phase or "idle"),
         "identity_id": _identity_id(auth.get("identity_id")),
@@ -231,14 +235,16 @@ def _set_coordinator(phase, *, auth=None, result=None, error="", now=None):
         "op_id": str(auth.get("op_id") or ""),
         "command_msg_id": max(0, int(auth.get("command_msg_id") or 0)),
         "error": str(error or ""),
+        "retry_after_sec": retry_after_sec,
+        "retry_at": now + retry_after_sec if retry_after_sec > 0 else 0.0,
     })
     if phase in {"entry_pending", "running"}:
         _COORDINATOR["started_at"] = now
         _COORDINATOR["finished_at"] = 0.0
         _COORDINATOR["result"] = {}
-    elif phase in {"completed", "blocked", "unknown"}:
+    elif phase in {"completed", "blocked", "unknown", "retry_pending"}:
         _COORDINATOR["finished_at"] = now
-        _COORDINATOR["result"] = dict(result or {})
+        _COORDINATOR["result"] = result
 
 
 def _entry_mentions_identity(text, identity_id):
@@ -452,6 +458,8 @@ def _record_tree_daily_result(auth, result, phase, *, now=None):
         return
     result = dict(result or {})
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    now = float(now or time.time())
+    retry_after_sec = miniapp_retry_after_sec(result) if phase == "retry_pending" else 0.0
     record_miniapp_state(
         int(auth.get("identity_id") or 0),
         "tree",
@@ -466,6 +474,8 @@ def _record_tree_daily_result(auth, result, phase, *, now=None):
             "errors": list(data.get("errors") or ()),
             "status": str(result.get("status") or ""),
             "error": str(result.get("error") or ""),
+            "retry_after_sec": retry_after_sec,
+            "retry_at": now + retry_after_sec if retry_after_sec > 0 else 0.0,
         },
         source="tree_daily_runtime",
         source_id=f"tree_daily:{auth.get('identity_id')}:{auth.get('day_key')}:{auth.get('op_id')}",
@@ -570,11 +580,14 @@ async def handle_tree_miniapp_entry(
         _record_tree_business_capture(capture_sink, result, source=capture_source, now=now)
         result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
         result_phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
+        if not dict(result or {}).get("ok") and miniapp_retry_after_sec(result) > 0:
+            result_phase = "retry_pending"
         _set_coordinator(
-            result_phase if result_phase in {"completed", "blocked", "unknown"} else "blocked",
+            result_phase if result_phase in {"completed", "blocked", "unknown", "retry_pending"} else "blocked",
             auth=auth,
             result=result,
             error=str(dict(result or {}).get("error") or ""),
+            now=now,
         )
         _record_tree_daily_result(auth, result, result_phase, now=time.time())
         summary = html.escape(_format_tree_summary(result), quote=False)
@@ -637,13 +650,16 @@ async def run_tree_miniapp_daily_direct(
         _record_tree_business_capture(capture_sink, result, source=capture_source, now=now)
         result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
         phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
-        if phase not in {"completed", "blocked", "unknown"}:
+        if not dict(result or {}).get("ok") and miniapp_retry_after_sec(result) > 0:
+            phase = "retry_pending"
+        if phase not in {"completed", "blocked", "unknown", "retry_pending"}:
             phase = "blocked"
         _set_coordinator(
             phase,
             auth=auth,
             result=result,
             error=str(dict(result or {}).get("error") or ""),
+            now=now,
         )
         _record_tree_daily_result(auth, result, phase, now=time.time())
         await send_audit_log(

@@ -20,7 +20,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
-from ..webapp_core import MiniAppCaptureStore
+from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
 from ..state import (
     get_current_identity_id,
     get_global_enabled,
@@ -1000,6 +1000,7 @@ def _miniapp_failure_backoff(now):
 
 def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     result = dict(result or {})
+    retry_after_sec = miniapp_retry_after_sec(result)
     ok = bool(result.get("ok"))
     status = str(result.get("status") or "").strip()
     completed_ok = ok or status == "daily_limit"
@@ -1104,6 +1105,11 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
             updates["next_fishing_time"] = float(now + random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC))
     else:
         updates["next_fishing_time"] = _miniapp_failure_backoff(now)
+    if retry_after_sec > 0 and (not completed_ok or status in partial_statuses):
+        updates["next_fishing_time"] = max(
+            float(updates.get("next_fishing_time", 0) or 0),
+            float(now) + retry_after_sec,
+        )
     _apply_updates(updates)
     catch_counts = _miniapp_catch_counts(catches)
     if catch_counts:

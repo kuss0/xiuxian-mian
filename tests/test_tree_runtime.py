@@ -412,6 +412,36 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
         retry = tree_runtime.prepare_tree_miniapp_daily_run(1002, enabled=True, now=1_700_000_002.0)
         self.assertTrue(retry["ok"])
 
+    async def test_direct_daily_retry_after_enters_retry_pending(self):
+        now = 1_700_000_000.0
+        flow_result = {
+            "ok": False,
+            "status": "rate_limited",
+            "error": "HTTP 429",
+            "data": {"phase": "blocked"},
+            "events": [{"step": "start", "retry_after_sec": 3600}],
+        }
+        with patch.object(
+            tree_runtime,
+            "run_tree_miniapp_daily_production_flow",
+            new=AsyncMock(return_value=flow_result),
+        ), patch.object(tree_runtime, "send_audit_log", new=AsyncMock()), \
+                patch.object(tree_runtime, "record_miniapp_state"):
+            result = await tree_runtime.run_tree_miniapp_daily_direct(
+                1002,
+                token="tree_SECRET999",
+                webview_url="https://t.me/fanrenxiuxian_bot?startapp=tree_SECRET999",
+                day_key="2026-07-14",
+                op_id="tree_daily:2026-07-14:1002",
+                now=now,
+            )
+
+        self.assertFalse(result["ok"])
+        snapshot = tree_runtime.get_tree_miniapp_coordinator_snapshot()
+        self.assertEqual("retry_pending", snapshot["phase"])
+        self.assertEqual(3600, snapshot["retry_after_sec"])
+        self.assertEqual(now + 3600, snapshot["retry_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1783,6 +1783,7 @@ async def _run_world_boss_miniapp_automation(
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "retry_after_sec": max(0.0, _coerce_float(item.get("retry_after_sec"), 0)),
             "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
             "updated_at": time.time(),
         }
@@ -1825,6 +1826,7 @@ async def _run_world_boss_miniapp_automation(
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "retry_after_sec": max(0.0, _coerce_float(item.get("retry_after_sec"), 0)),
             "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
         }
         for item in (result.get("results") or [])
@@ -1869,6 +1871,9 @@ async def _run_world_boss_miniapp_automation(
         if item.get("phase") != "battle" and item.get("ok"):
             continue
         detail = f"{_identity_label(item['identity_id'])}:{item.get('status') or ('ok' if item.get('ok') else 'failed')}"
+        retry_after_sec = max(0.0, _coerce_float(item.get("retry_after_sec"), 0))
+        if retry_after_sec > 0:
+            detail += f"｜限流等待{retry_after_sec:g}秒"
         summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
         hits = max(
             _coerce_int(summary.get("realtime_hit_count"), 0),

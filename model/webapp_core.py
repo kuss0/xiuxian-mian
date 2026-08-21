@@ -1004,6 +1004,48 @@ class MiniAppHttpResult:
         return summary
 
 
+def miniapp_retry_after_sec(value):
+    """Return the server wait hint carried by a result or flow summary.
+
+    Flow adapters intentionally keep their own result shapes. This helper lets
+    runtimes consume the shared HTTP hint without making every adapter expose
+    the ``MiniAppHttpResult`` object directly.
+    """
+    maximum = 0.0
+    pending = [value]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, MiniAppHttpResult):
+            candidates = (current.retry_after_sec,)
+        elif isinstance(current, dict):
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            candidates = (current.get("retry_after_sec"),)
+            pending.extend(
+                current.get(key)
+                for key in ("events", "result", "extra")
+                if current.get(key) is not None
+            )
+        elif isinstance(current, (list, tuple)):
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            candidates = ()
+            pending.extend(current)
+        else:
+            candidates = ()
+        for raw_value in candidates:
+            try:
+                maximum = max(maximum, float(raw_value or 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return min(MAX_MINIAPP_RETRY_AFTER_SEC, max(0.0, maximum))
+
+
 @dataclass(frozen=True)
 class MiniAppFlowEvent:
     step_key: str

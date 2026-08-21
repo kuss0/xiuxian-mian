@@ -410,6 +410,31 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         run_mock.assert_awaited_once_with(1001, "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999")
         send_mock.assert_not_awaited()
 
+    async def test_cave_public_entry_promotes_nested_retry_after_to_extra(self):
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
+                    "ok": False,
+                    "message": "洞府天机试炼限流",
+                    "extra": {
+                        "result": {
+                            "events": [{"step": "start", "retry_after_sec": 3600}],
+                        },
+                    },
+                })) as run_mock, \
+                patch.object(ui, "send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, extra = await ui.ui_run_cave_public_entry(
+                1001,
+                "trial",
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("限流", message)
+        self.assertEqual(3600, extra["retry_after_sec"])
+        run_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
+
     async def test_cave_public_entry_fate_cards_uses_persisted_explicit_choice_without_sending_command(self):
         state_module._meta_state["miniapp_auto_config"] = {
             "cave_public_fate_cards_enabled": False,
@@ -1539,6 +1564,66 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual({"started": False, "reason": "disabled"}, result)
         send_mock.assert_not_awaited()
+
+    async def test_tree_daily_scheduler_waits_for_retry_after_before_retrying(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "tree_daily_enabled_identity_ids": [1001],
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+        }
+        now = datetime(2026, 7, 7, 2, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_coordinator_snapshot", return_value={"phase": "idle"}), \
+                patch.object(ui, "check_tree_miniapp_eligibility", return_value=(True, "")), \
+                patch.object(ui, "_tree_daily_state_for_identity", return_value={
+                    "kind": "daily",
+                    "day_key": "2026-07-07",
+                    "phase": "retry_pending",
+                    "retry_after_sec": 3600,
+                    "retry_at": now + 3600,
+                }), \
+                patch.object(ui, "_fire_and_forget") as fire_mock:
+            result = await ui._run_tree_miniapp_daily_scheduler(
+                now,
+                ui.normalize_miniapp_auto_config(),
+            )
+
+        self.assertEqual({"started": False, "reason": "tree_done_or_ineligible"}, result)
+        fire_mock.assert_not_called()
+
+    async def test_tree_daily_scheduler_retries_after_retry_after_deadline(self):
+        state_module._meta_state["miniapp_auto_config"] = {
+            "tree_daily_enabled_identity_ids": [1001],
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+        }
+        now = datetime(2026, 7, 7, 2, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        scheduled = []
+
+        def capture_task(coro):
+            scheduled.append(coro)
+            coro.close()
+
+        with patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "get_tree_miniapp_coordinator_snapshot", return_value={"phase": "idle"}), \
+                patch.object(ui, "check_tree_miniapp_eligibility", return_value=(True, "")), \
+                patch.object(ui, "_tree_daily_state_for_identity", return_value={
+                    "kind": "daily",
+                    "day_key": "2026-07-07",
+                    "phase": "retry_pending",
+                    "retry_after_sec": 3600,
+                    "retry_at": now - 1,
+                }), \
+                patch.object(ui, "get_tree_miniapp_score_config", return_value={"jump": {}, "fly": {}}), \
+                patch.object(ui, "_fire_and_forget", side_effect=capture_task) as fire_mock, \
+                patch.object(ui, "record_miniapp_state") as record_mock:
+            result = await ui._run_tree_miniapp_daily_scheduler(
+                now,
+                ui.normalize_miniapp_auto_config(),
+            )
+
+        self.assertTrue(result["started"])
+        fire_mock.assert_called_once()
+        self.assertEqual("running", record_mock.call_args.args[2]["phase"])
+        self.assertEqual(1, len(scheduled))
 
     async def test_tree_daily_scheduler_migrates_legacy_entry_unknown_to_public_entry(self):
         state_module._meta_state["miniapp_auto_config"] = {

@@ -13,7 +13,7 @@ from ..persistence import save_state
 from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
 from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, is_cave_public_identity_available, set_miniapp_auto_config, state, use_identity
 from ..timing import get_day_key
-from ..webapp_core import MiniAppCaptureStore
+from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
 from .small_world import (
     SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
@@ -85,6 +85,14 @@ CAVE_PUBLIC_ENTRY_RETRY_MAX_SEC = 24 * 60 * 60
 _MANUAL_AUTH_UNTIL = {}
 _RUN_LOCKS = {}
 _PUBLIC_ENTRY_LOCKS = {}
+
+
+def _miniapp_result_extra(extra=None, *results):
+    merged = dict(extra or {})
+    retry_after_sec = max((miniapp_retry_after_sec(result) for result in results), default=0.0)
+    if retry_after_sec > 0:
+        merged["retry_after_sec"] = retry_after_sec
+    return merged
 
 
 def _cave_public_entry_urls(value):
@@ -2568,7 +2576,7 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
         if not session.get("ok"):
             message = f"洞府寻宝身份读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
         capture_sink = _capture_store(now)
         capture_source = f"cave_public_treasure:{identity_id}"
         result = await run_cave_treasure_miniapp_production_flow(
@@ -2601,7 +2609,7 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
         return {
             "ok": bool(result.get("ok")),
             "message": message,
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "inventory_record_key": inventory_record.get("record_key", ""),
                 "state_record_key": state_record.get("record_key", ""),
                 "games_used": _parse_int(state.get("games_used"), 0),
@@ -2617,7 +2625,7 @@ async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
                         and _parse_int(state.get("games_used"), 0) >= _parse_int(state.get("games_limit"), 0)
                     )
                 ),
-            },
+            }, result),
         }
 
 
@@ -2648,7 +2656,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         if not session.get("ok"):
             message = f"洞府天机试炼入口读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
         dwelling_init_data = session.get("init_data") or ""
         selected_player_id = session.get("player_id")
         cave_result = dict(session.get("result") or {})
@@ -2658,7 +2666,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         if not cave_result.get("ok"):
             message = f"洞府天机试炼入口读取失败：{cave_result.get('error') or cave_result.get('status') or 'unknown'}"
             await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, cave_result)}
         external_app = _find_trial_external_app_in_cave_payload(raw)
         if not external_app or not external_app.get("available"):
             message = "洞府天机试炼入口读取完成，但外府试炼入口不可用"
@@ -2679,7 +2687,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             if not external_result.get("ok"):
                 message = f"洞府天机试炼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-                return {"ok": False, "message": message, "extra": {}}
+                return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
             launch = _find_trial_launch_in_cave_payload(external_result.get("data") or {})
         elif external_app.get("url"):
             launch = _find_trial_launch_in_cave_payload(external_app)
@@ -2712,12 +2720,12 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         return {
             "ok": completed_ok,
             "message": message,
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "trial_title": launch.get("title", ""),
                 "settled_count": settled_count,
                 "gains": gains,
                 "rewards": rewards,
-            },
+            }, result),
         }
 
 
@@ -3061,7 +3069,7 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
         if not session.get("ok"):
             message = f"洞府琉璃问心塔身份读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
         init_data = session.get("init_data") or ""
         selected_player_id = session.get("player_id")
         cave_result = dict(session.get("result") or {})
@@ -3088,7 +3096,7 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
             if not external_result.get("ok"):
                 message = f"洞府琉璃问心塔动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-                return {"ok": False, "message": message, "extra": {}}
+                return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
             launch = _find_tower_launch_in_cave_payload(external_result.get("data") or {})
         elif external_app.get("url"):
             launch = _find_tower_launch_in_cave_payload(external_app)
@@ -3154,13 +3162,13 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
         return {
             "ok": bool(result.get("ok")),
             "message": message,
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "status": result.get("status") or "",
                 "state": tower_state,
                 "replay": replay,
                 "gains": gains,
                 "rewards": rewards,
-            },
+            }, result),
         }
 
 
@@ -3192,7 +3200,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
         if not session.get("ok"):
             message = f"洞府钓鱼身份读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
 
         dwelling_init_data = str(session.get("init_data") or "")
         selected_player_id = session.get("player_id")
@@ -3240,7 +3248,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             if not external_result.get("ok"):
                 message = f"洞府钓鱼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-                return {"ok": False, "message": message, "extra": {}}
+                return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
             launch = extract_fishing_miniapp_launch_from_dwelling_payload(external_result.get("data") or {})
         elif external_app.get("url"):
             launch = extract_fishing_miniapp_launch_from_dwelling_payload({
@@ -3296,12 +3304,12 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             return {
                 "ok": True,
                 "message": message,
-                "extra": {
+                "extra": _miniapp_result_extra({
                     "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
                     "player_id": selected_player_id,
                     "skipped": "bait_missing",
                     "terminal_skip": True,
-                },
+                }, result),
             }
         with use_identity(identity_id):
             summary = _apply_fishing_miniapp_result(result, time.time())
@@ -3320,11 +3328,11 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
         return {
             "ok": completed_ok,
             "message": message,
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
                 "player_id": selected_player_id,
                 "daily_exhausted": str(result.get("status") or "").strip() == "daily_limit",
-            },
+            }, result),
         }
 
 
@@ -3716,7 +3724,11 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             include_details=True,
         )
         if not session.get("ok"):
-            return {"ok": False, "message": f"洞府观星台身份读取失败：{session.get('error') or 'unknown'}", "extra": {}}
+            return {
+                "ok": False,
+                "message": f"洞府观星台身份读取失败：{session.get('error') or 'unknown'}",
+                "extra": _miniapp_result_extra({}, session),
+            }
         init_data = session.get("init_data") or ""
         selected_player_id = session.get("player_id")
         cave_result = dict(session.get("result") or {})
@@ -3751,7 +3763,7 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
                 return {
                     "ok": False,
                     "message": f"洞府观星台动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}",
-                    "extra": {},
+                    "extra": _miniapp_result_extra({}, external_result),
                 }
             launch = _find_stargazer_launch_in_cave_payload(external_result.get("data") or {})
         elif external_app.get("url"):
@@ -3790,11 +3802,11 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
         return {
             "ok": bool(handled and result.get("ok")),
             "message": f"洞府观星台：{result.get('status') or ('完成' if handled else '未处理')}",
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "title": launch.get("title", ""),
                 "action_counts": dict(result_data.get("action_counts") or {}),
                 "rewards": dict(result_data.get("item_deltas") or {}),
-            },
+            }, result),
         }
 
 
@@ -3832,7 +3844,11 @@ async def run_cave_public_tree(
             include_details=True,
         )
         if not session.get("ok"):
-            return {"ok": False, "message": f"洞府灵树身份读取失败：{session.get('error') or 'unknown'}", "extra": {}}
+            return {
+                "ok": False,
+                "message": f"洞府灵树身份读取失败：{session.get('error') or 'unknown'}",
+                "extra": _miniapp_result_extra({}, session),
+            }
         cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
         external_app = _find_tree_external_app_in_cave_payload(cave_data.get("raw") or {})
@@ -3854,7 +3870,7 @@ async def run_cave_public_tree(
                 return {
                     "ok": False,
                     "message": f"洞府落云灵树动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}",
-                    "extra": {},
+                    "extra": _miniapp_result_extra({}, external_result),
                 }
             launch = _find_tree_launch_in_cave_payload(external_result.get("data") or {})
         elif external_app.get("url"):
@@ -3874,7 +3890,7 @@ async def run_cave_public_tree(
         return {
             "ok": bool(result.get("ok")),
             "message": f"洞府落云灵树：{result.get('status') or ('完成' if result.get('ok') else '未完成')}",
-            "extra": {"title": launch.get("title", ""), "result": result},
+            "extra": _miniapp_result_extra({"title": launch.get("title", ""), "result": result}, result),
         }
 
 
@@ -3914,7 +3930,7 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
                 now=now,
             )
             await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
         if action == "settle":
             preflight = _cave_public_deep_settle_preflight(identity_id, session, now=now)
             if not preflight.get("send"):
@@ -3994,7 +4010,14 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
                     recheck = "｜30 分钟后改查状态"
             message = f"洞府闭关 {action} 完成：{handled}｜阶段 {phase}{recheck}"
         await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=240)
-        return {"ok": bool(result.get("ok")), "message": message, "extra": {"record_key": record.get("record_key", ""), "sync": sync_result}}
+        return {
+            "ok": bool(result.get("ok")),
+            "message": message,
+            "extra": _miniapp_result_extra(
+                {"record_key": record.get("record_key", ""), "sync": sync_result},
+                result,
+            ),
+        }
 
 
 async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0, require_identity_match=False):

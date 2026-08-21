@@ -21,6 +21,8 @@ from ..webapp_core import (
     MiniAppRequestPolicy,
     build_miniapp_http_request,
     execute_miniapp_http_request,
+    MAX_MINIAPP_INLINE_RETRY_AFTER_SEC,
+    miniapp_retry_after_sec,
     sanitize_webapp_secret_text,
 )
 from .miniapp_common import append_http_event as _append_http_event
@@ -95,6 +97,7 @@ WORLD_BOSS_ERROR_TYPES = (
     "boss_token_used",
     "boss_token_expired",
     "boss_hit_outside_window",
+    "rate_limited",
 )
 
 _VERIFICATION_KEYS = (
@@ -268,6 +271,7 @@ class WorldBossJoinReceipt:
     session_token: str = field(default="", repr=False)
     join_remaining_sec: float = 0.0
     join_until_ms: int = 0
+    retry_after_sec: float = 0.0
     error: str = ""
 
     def safe_summary(self):
@@ -278,6 +282,7 @@ class WorldBossJoinReceipt:
             "identity_id": int(self.identity_id or 0),
             "account_id": int(self.account_id or 0),
             "calibrated": bool(self.calibrated),
+            "retry_after_sec": float(self.retry_after_sec or 0),
             "terminal": bool(self.terminal),
             "needs_identity_selection": bool(self.needs_identity_selection),
             "verification_required": bool(self.verification_required),
@@ -1036,6 +1041,7 @@ def build_world_boss_proof(
 
 
 def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
+    retry_after_sec = miniapp_retry_after_sec({"events": events or ()})
     return {
         "ok": bool(ok),
         "status": str(status or "failed"),
@@ -1043,6 +1049,7 @@ def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
         "data": dict(data or {}),
         "events": list(events or ()),
         "proof": dict(proof or {}),
+        **({"retry_after_sec": retry_after_sec} if retry_after_sec > 0 else {}),
     }
 
 
@@ -1434,7 +1441,7 @@ def _world_boss_counter_damage(challenge):
 
 
 def _failed_join_receipt(result, *, player_id=None, identity_id=0, account_id=0, calibrated=False):
-    status = classify_world_boss_miniapp_error(result.error)
+    status = "rate_limited" if int(result.status_code or 0) == 429 else classify_world_boss_miniapp_error(result.error)
     return WorldBossJoinReceipt(
         False,
         status,
@@ -1443,6 +1450,7 @@ def _failed_join_receipt(result, *, player_id=None, identity_id=0, account_id=0,
         account_id=_int_value(account_id),
         calibrated=bool(calibrated),
         terminal=is_terminal_world_boss_miniapp_error(status),
+        retry_after_sec=float(result.retry_after_sec or 0),
         error=str(result.error or status),
     )
 
@@ -1538,6 +1546,13 @@ def join_world_boss_miniapp_lab(
     )
     _append_http_event(events, "start", start_result)
     if not start_result.ok:
+        if int(start_result.status_code or 0) == 429 or float(start_result.retry_after_sec or 0) > 0:
+            return _failed_join_receipt(
+                start_result,
+                player_id=player_id,
+                identity_id=identity_id,
+                account_id=account_id,
+            )
         if bool(start_result.retryable) or start_result.error_type == "transient":
             return reconcile_world_boss_join_state_lab(
                 token=token,
@@ -1697,6 +1712,15 @@ def run_world_boss_joined_battle_lab_flow(
         if not state_result.ok:
             status = classify_world_boss_miniapp_error(state_result.error)
             retryable_wait_error = status == "boss_battle_not_started" or state_result.error_type == "transient"
+            retry_after_sec = float(state_result.retry_after_sec or 0)
+            if retry_after_sec > MAX_MINIAPP_INLINE_RETRY_AFTER_SEC:
+                return _flow_result(
+                    False,
+                    "rate_limited",
+                    error=state_result.error or "world boss start polling rate limited",
+                    data=state_result.data,
+                    events=events,
+                )
             if int(state_result.status_code or 0) == 429:
                 consecutive_429 += 1
                 if consecutive_429 > WORLD_BOSS_START_MAX_CONSECUTIVE_429:
@@ -1720,6 +1744,15 @@ def run_world_boss_joined_battle_lab_flow(
                     if int(state_result.status_code or 0) == 429
                     else WORLD_BOSS_START_RECONNECT_SEC
                 )
+                reconnect_delay = max(reconnect_delay, retry_after_sec)
+                if float(clock()) + reconnect_delay > wait_deadline:
+                    return _flow_result(
+                        False,
+                        "rate_limited" if int(state_result.status_code or 0) == 429 or retry_after_sec > 0 else status,
+                        error=state_result.error or "world boss start polling wait exceeds battle window",
+                        data=state_result.data,
+                        events=events,
+                    )
                 sleeper(reconnect_delay)
                 continue
             return _flow_result(False, status, error=state_result.error, data=state_result.data, events=events)
