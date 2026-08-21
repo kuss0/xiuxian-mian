@@ -18,7 +18,10 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
-from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
+from .miniapp_common import (
+    append_http_event as _append_http_event,
+    build_pooled_miniapp_transport,
+)
 
 
 TRIAL_MINIAPP_GAME_KEY = "trial"
@@ -130,9 +133,6 @@ async def request_trial_miniapp_init_data(identity_id, *, token, webview_url="",
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
     return init_data
-
-
-_requests_transport = build_miniapp_transport(timeout=TRIAL_MINIAPP_HTTP_TIMEOUT)
 
 
 def build_trial_miniapp_flow_plan():
@@ -1178,7 +1178,11 @@ async def run_trial_miniapp_production_flow(
             "token": token,
             "init_data": init_data,
             "player_id": player_id,
-            "transport": transport or _requests_transport,
+            "transport": transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=TRIAL_MINIAPP_HTTP_TIMEOUT,
+            ),
             "adapter": adapter,
             "sleeper": sleeper or time.sleep,
             "capture_sink": capture_sink,

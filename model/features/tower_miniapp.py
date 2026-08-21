@@ -12,7 +12,7 @@ from ..webapp_core import (
     execute_miniapp_http_request,
     sanitize_webapp_secret_text,
 )
-from .miniapp_common import build_miniapp_transport
+from .miniapp_common import build_pooled_miniapp_transport
 
 
 TOWER_MINIAPP_GAME_KEY = "tower"
@@ -180,9 +180,6 @@ def format_tower_delta(value):
         return "+0"
 
 
-_requests_transport = build_miniapp_transport(timeout=TOWER_MINIAPP_HTTP_TIMEOUT)
-
-
 def _http_event(step, result):
     return {
         "step": step,
@@ -292,14 +289,18 @@ async def run_tower_miniapp_production_flow(
     capture_sink=None,
     capture_source="",
 ):
-    del identity_id
+    adapter = adapter or build_tower_miniapp_adapter()
     try:
         return await asyncio.to_thread(
             run_tower_miniapp_lab_flow,
             token=token,
             init_data=init_data,
-            transport=transport or _requests_transport,
-            adapter=adapter or build_tower_miniapp_adapter(),
+            transport=transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=TOWER_MINIAPP_HTTP_TIMEOUT,
+            ),
+            adapter=adapter,
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
             capture_source=capture_source,

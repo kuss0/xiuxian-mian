@@ -2411,12 +2411,13 @@ def _text_matches_current_identity(text):
     return False
 
 
-def _parse_wait_due_at(raw_text, now):
+def _parse_wait_due_at(raw_text, now, *, coarse_minute_buffer=False):
     text = str(raw_text or "").strip()
     if not text or "可施展" in text or "可用" in text:
         return 0.0
     if has_wait_time(text):
-        return float(now + parse_wait_time(text) + CD_BUFFER_SEC)
+        minute_buffer = 60 if coarse_minute_buffer and "秒" not in text else 0
+        return float(now + parse_wait_time(text) + CD_BUFFER_SEC + minute_buffer)
     return 0.0
 
 
@@ -2868,7 +2869,11 @@ def _parse_status_panel(text, now):
         "affinity": int(affinity_match.group(1)) if affinity_match else 0,
         "oath": oath_match.group(1).strip() if oath_match else "",
         "dream_due_at": _parse_wait_due_at(dream_match.group(1), now) if dream_match else 0.0,
-        "tianji_due_at": _parse_wait_due_at(tianji_match.group(1), now) if tianji_match else 0.0,
+        "tianji_due_at": _parse_wait_due_at(
+            tianji_match.group(1),
+            now,
+            coarse_minute_buffer=True,
+        ) if tianji_match else 0.0,
         "heart_due_at": _parse_wait_due_at(heart_match.group(1), now) if heart_match else 0.0,
         "tianji_chain": tianji_chain,
         "tianji_chain_due_at": tianji_chain_due_at,

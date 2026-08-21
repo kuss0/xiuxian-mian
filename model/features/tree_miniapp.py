@@ -27,7 +27,11 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
-from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
+from .miniapp_common import (
+    append_http_event as _append_http_event,
+    build_miniapp_transport,
+    build_pooled_miniapp_transport,
+)
 
 
 TREE_MINIAPP_GAME_KEY = "tree"
@@ -1537,7 +1541,11 @@ async def run_tree_miniapp_start_production_flow(
             run_tree_miniapp_start_lab_flow,
             token=token,
             init_data=init_data,
-            transport=transport or _requests_transport,
+            transport=transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=TREE_MINIAPP_HTTP_TIMEOUT,
+            ),
             adapter=adapter,
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
@@ -1573,7 +1581,11 @@ async def run_tree_miniapp_game_production_flow(
             init_data=init_data,
             mode=mode,
             submit=submit,
-            transport=transport or _requests_transport,
+            transport=transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=TREE_MINIAPP_HTTP_TIMEOUT,
+            ),
             adapter=adapter,
             rng=rng,
             sleeper=sleeper or time.sleep,
@@ -1613,7 +1625,11 @@ async def run_tree_miniapp_daily_production_flow(
             run_tree_miniapp_daily_lab_flow,
             token=token,
             init_data=init_data,
-            transport=transport or _requests_transport,
+            transport=transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=TREE_MINIAPP_HTTP_TIMEOUT,
+            ),
             adapter=adapter,
             rng=rng,
             sleeper=sleeper or time.sleep,

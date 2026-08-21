@@ -421,7 +421,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(2, result["data"]["result"]["target_window_count"])
         self.assertEqual(2, result["data"]["result"]["window_skip_count"])
         self.assertFalse(result["data"]["result"]["full_window_run"])
-        self.assertGreaterEqual(finish_proofs[0]["durationMs"], 7200)
+        self.assertEqual(8200, finish_proofs[0]["durationMs"])
 
     def test_explicit_proof_duration_cannot_undercut_server_minimum(self):
         proof = world_boss_miniapp.build_world_boss_proof(
@@ -435,7 +435,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
             duration_ms=67500,
         )
 
-        self.assertEqual(75000, proof["durationMs"])
+        self.assertEqual(76000, proof["durationMs"])
 
     def test_dead_proof_may_settle_before_normal_minimum(self):
         proof = world_boss_miniapp.build_world_boss_proof(

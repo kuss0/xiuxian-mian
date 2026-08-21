@@ -11,9 +11,14 @@ Before this module each adapter defined its own `_requests_transport`,
 transport had to be applied in seven places and was in practice applied in one.
 """
 
+import atexit
+import threading
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import ConnectTimeout, RequestException
 
 from ..config import TG_REQUESTS_PROXIES
 from ..state import get_current_identity_id
@@ -80,6 +85,171 @@ def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=Non
         )
 
     return _transport
+
+
+class _MiniAppSessionPool:
+    """Keep one HTTP session per adapter/identity and route direct-first."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._entries = {}
+
+    @staticmethod
+    def _key(adapter_key, identity_id):
+        return str(adapter_key or "miniapp"), int(identity_id or 0)
+
+    @staticmethod
+    def _new_session(route, proxies):
+        session = requests.Session()
+        session.trust_env = False
+        adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=0)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        if route == "config_proxy" and proxies:
+            session.proxies.update(proxies)
+        return session
+
+    def acquire(self, adapter_key, identity_id, proxies):
+        key = self._key(adapter_key, identity_id)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = {
+                    "route": "direct",
+                    "session": self._new_session("direct", proxies),
+                    "request_lock": threading.Lock(),
+                }
+                self._entries[key] = entry
+            return entry["session"], str(entry["route"]), entry["request_lock"]
+
+    def is_current(self, adapter_key, identity_id, session, request_lock):
+        key = self._key(adapter_key, identity_id)
+        with self._lock:
+            entry = self._entries.get(key)
+            return bool(
+                isinstance(entry, dict)
+                and entry.get("session") is session
+                and entry.get("request_lock") is request_lock
+            )
+
+    def invalidate(self, adapter_key, identity_id, session, proxies, *, prefer_proxy=False, request_lock=None):
+        key = self._key(adapter_key, identity_id)
+        old_session = None
+        with self._lock:
+            entry = self._entries.get(key)
+            if not isinstance(entry, dict) or entry.get("session") is not session:
+                return
+            old_session = entry.get("session")
+            route = "config_proxy" if prefer_proxy and proxies else str(entry.get("route") or "direct")
+            self._entries[key] = {
+                "route": route,
+                "session": self._new_session(route, proxies),
+                # Keep the per-identity lock across route replacement. This
+                # prevents a waiting caller from using the new session while
+                # the failed caller is still unwinding the old one.
+                "request_lock": request_lock or threading.Lock(),
+            }
+        if old_session is not None:
+            try:
+                old_session.close()
+            except Exception:
+                pass
+
+    def close(self, adapter_key=None, identity_id=None):
+        adapter_key = str(adapter_key or "")
+        identity_id = None if identity_id is None else int(identity_id or 0)
+        sessions = []
+        with self._lock:
+            keys = [
+                key for key in self._entries
+                if (not adapter_key or key[0] == adapter_key)
+                and (identity_id is None or key[1] == identity_id)
+            ]
+            for key in keys:
+                entry = self._entries.pop(key, None)
+                if isinstance(entry, dict) and entry.get("session") is not None:
+                    sessions.append(entry["session"])
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                pass
+        return len(sessions)
+
+
+_MINIAPP_SESSION_POOL = _MiniAppSessionPool()
+
+
+def build_pooled_miniapp_transport(
+    *,
+    adapter_key,
+    identity_id=0,
+    timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT,
+    proxies=None,
+):
+    """Build a production transport with bounded session reuse.
+
+    The first route is direct. A connection-level failure replaces the stale
+    session and moves that adapter/identity pair to the configured proxy route
+    for the next retry. All retries still pass through the global MiniApp
+    limiter in ``execute_miniapp_http_request``.
+    """
+    effective_proxies = dict(
+        (TG_REQUESTS_PROXIES or {}) if proxies is None else (proxies or {})
+    )
+    adapter_key = str(adapter_key or "miniapp")
+    identity_id = int(identity_id or 0)
+
+    def _transport(request):
+        while True:
+            session, route, request_lock = _MINIAPP_SESSION_POOL.acquire(
+                adapter_key,
+                identity_id,
+                effective_proxies,
+            )
+            request_lock.acquire()
+            if _MINIAPP_SESSION_POOL.is_current(
+                adapter_key,
+                identity_id,
+                session,
+                request_lock,
+            ):
+                break
+            request_lock.release()
+        try:
+            try:
+                return session.request(
+                    str(request.get("method") or "POST"),
+                    request["url"],
+                    json=request.get("payload") or {},
+                    headers={
+                        "User-Agent": MINIAPP_DEFAULT_USER_AGENT,
+                        "Content-Type": "application/json",
+                        **dict(request.get("headers") or {}),
+                    },
+                    timeout=timeout,
+                )
+            except RequestException as exc:
+                _MINIAPP_SESSION_POOL.invalidate(
+                    adapter_key,
+                    identity_id,
+                    session,
+                    effective_proxies,
+                    prefer_proxy=route == "direct" and isinstance(exc, (RequestsConnectionError, ConnectTimeout)),
+                    request_lock=request_lock,
+                )
+                raise
+        finally:
+            request_lock.release()
+
+    return _transport
+
+
+def close_pooled_miniapp_sessions(*, adapter_key=None, identity_id=None):
+    return _MINIAPP_SESSION_POOL.close(adapter_key=adapter_key, identity_id=identity_id)
+
+
+atexit.register(close_pooled_miniapp_sessions)
 
 
 def append_http_event(events, step, result):
@@ -150,4 +320,6 @@ __all__ = [
     "append_business_capture",
     "append_http_event",
     "build_miniapp_transport",
+    "build_pooled_miniapp_transport",
+    "close_pooled_miniapp_sessions",
 ]

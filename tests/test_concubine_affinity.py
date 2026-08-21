@@ -1508,6 +1508,18 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 20, state_module.state["next_concubine_time"])
             self.assertEqual(now + 3600, state_module.state["concubine_heart_due_at"])
 
+    def test_status_panel_minute_cooldown_keeps_rounding_margin(self):
+        now = 1_700_000_000.0
+
+        self.assertEqual(
+            now + 199 * 60 + 65,
+            concubine._parse_wait_due_at("199分钟", now, coarse_minute_buffer=True),
+        )
+        self.assertEqual(
+            now + 199 * 60 + 30 + 5,
+            concubine._parse_wait_due_at("199分钟30秒", now, coarse_minute_buffer=True),
+        )
+
     async def test_status_snapshot_does_not_regress_future_tianji_cooldown(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

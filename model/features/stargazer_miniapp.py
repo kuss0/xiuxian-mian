@@ -19,7 +19,10 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
-from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
+from .miniapp_common import (
+    append_http_event as _append_http_event,
+    build_pooled_miniapp_transport,
+)
 from ..timing import has_wait_time, parse_wait_time
 
 
@@ -106,11 +109,6 @@ async def request_stargazer_miniapp_init_data(identity_id, *, token, webview_url
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
     return init_data
-
-
-_requests_transport = build_miniapp_transport(timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT)
-
-
 
 
 def extract_stargazer_miniapp_launch(event, *, message_text=""):
@@ -554,7 +552,11 @@ async def run_stargazer_miniapp_production_flow(
             init_data=init_data,
             player_id=player_id,
             star_choice=star_choice,
-            transport=transport or _requests_transport,
+            transport=transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT,
+            ),
             adapter=adapter,
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,

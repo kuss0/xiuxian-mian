@@ -80,6 +80,7 @@ WORLD_BOSS_START_MAX_CONSECUTIVE_429 = 3
 WORLD_BOSS_AUTO_START_DELAY_SEC = 0.28
 WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC = 1.25
 WORLD_BOSS_FINISH_GRACE_MS = 2200
+WORLD_BOSS_MIN_DURATION_MARGIN_MS = 1000
 WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS = 2200
 WORLD_BOSS_EXPIRY_HIT_MARGIN_MS = 500
 
@@ -1002,7 +1003,10 @@ def build_world_boss_proof(
     payloads = [dict(item or {}) for item in hit_payloads or ()]
     if dead is None:
         dead = _latest_value(payloads, ("dead", "isDead"), challenge.get("dead", False))
-    minimum_duration_ms = 0 if dead else max(0, _int_value(challenge.get("minDurationMs"), 0))
+    minimum_duration_ms = 0 if dead else max(
+        0,
+        _int_value(challenge.get("minDurationMs"), 0) + WORLD_BOSS_MIN_DURATION_MARGIN_MS,
+    )
     maximum_duration_ms = max(0, _int_value(challenge.get("maxDurationMs"), 0))
     expiry_ms = _world_boss_challenge_expiry_ms(challenge)
     if maximum_duration_ms:
@@ -2143,7 +2147,10 @@ def run_world_boss_joined_battle_lab_flow(
     challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
     minimum_finish_ms = min(
         challenge_duration_ms,
-        max(0, _int_value(challenge.get("minDurationMs"), 0)),
+        max(
+            0,
+            _int_value(challenge.get("minDurationMs"), 0) + WORLD_BOSS_MIN_DURATION_MARGIN_MS,
+        ),
     )
     if expiry_finish_target_ms:
         minimum_finish_ms = min(minimum_finish_ms, expiry_finish_target_ms)

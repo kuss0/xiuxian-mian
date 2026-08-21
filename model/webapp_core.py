@@ -7,6 +7,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urljoin, urlparse
 
@@ -981,6 +982,7 @@ class MiniAppHttpResult:
     error: str = ""
     error_type: str = ""
     retryable: bool = False
+    retry_after_sec: float = 0.0
     attempts: int = 1
 
     def safe_summary(self):
@@ -993,6 +995,8 @@ class MiniAppHttpResult:
         }
         if self.error:
             summary["error"] = sanitize_webapp_secret_text(self.error)
+        if self.retry_after_sec > 0:
+            summary["retry_after_sec"] = float(self.retry_after_sec)
         if isinstance(self.data, dict):
             summary["data_keys"] = sorted(str(key) for key in self.data)
         return summary
@@ -1105,7 +1109,7 @@ def _capture_body_digest(value):
 
 
 def _response_status_and_body(response):
-    if isinstance(response, tuple) and len(response) == 2:
+    if isinstance(response, tuple) and len(response) >= 2:
         return int(response[0] or 0), response[1]
     if isinstance(response, dict):
         if "status_code" in response:
@@ -1122,6 +1126,29 @@ def _response_status_and_body(response):
     return status_code, getattr(response, "text", "")
 
 
+def _response_retry_after_sec(response, *, now=None):
+    headers = None
+    if isinstance(response, tuple) and len(response) >= 3:
+        headers = response[2]
+    elif isinstance(response, dict):
+        headers = response.get("headers")
+    else:
+        headers = getattr(response, "headers", None)
+    if not hasattr(headers, "get"):
+        return 0.0
+    raw_value = headers.get("Retry-After") or headers.get("retry-after")
+    if raw_value in (None, ""):
+        return 0.0
+    try:
+        return max(0.0, float(str(raw_value).strip()))
+    except (TypeError, ValueError):
+        try:
+            due_at = parsedate_to_datetime(str(raw_value).strip()).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return max(0.0, due_at - float(time.time() if now is None else now))
+
+
 def _coerce_json_body(body):
     if isinstance(body, dict):
         return body, ""
@@ -1136,7 +1163,7 @@ def _coerce_json_body(body):
     return {}, "non_json"
 
 
-def classify_miniapp_http_response(status_code, body, *, attempts=1):
+def classify_miniapp_http_response(status_code, body, *, attempts=1, retry_after_sec=0.0):
     status_code = int(status_code or 0)
     data, parse_error = _coerce_json_body(body)
     if parse_error:
@@ -1146,6 +1173,7 @@ def classify_miniapp_http_response(status_code, body, *, attempts=1):
             error=f"HTTP {status_code} returned non JSON",
             error_type="transient",
             retryable=True,
+            retry_after_sec=retry_after_sec,
             attempts=attempts,
         )
     if 200 <= status_code < 300 and data.get("ok") is True:
@@ -1160,6 +1188,7 @@ def classify_miniapp_http_response(status_code, body, *, attempts=1):
         error=sanitize_webapp_secret_text(reason),
         error_type="transient" if retryable else "app",
         retryable=retryable,
+        retry_after_sec=retry_after_sec if retryable else 0.0,
         attempts=attempts,
     )
 
@@ -1400,7 +1429,12 @@ def execute_miniapp_http_request(
             response = transport(request)
             status_code, body = _response_status_and_body(response)
             response_for_capture = (status_code, body)
-            result = classify_miniapp_http_response(status_code, body, attempts=attempt)
+            result = classify_miniapp_http_response(
+                status_code,
+                body,
+                attempts=attempt,
+                retry_after_sec=_response_retry_after_sec(response),
+            )
         except Exception as exc:
             result = MiniAppHttpResult(
                 ok=False,
@@ -1429,7 +1463,7 @@ def execute_miniapp_http_request(
         if result.ok or not result.retryable or attempt >= attempts_total:
             return result
         if sleeper is not None:
-            sleeper(delays[attempt - 1])
+            sleeper(max(delays[attempt - 1], float(result.retry_after_sec or 0)))
     return last_result or MiniAppHttpResult(ok=False, error="miniapp request not executed", error_type="transient", retryable=True)
 
 

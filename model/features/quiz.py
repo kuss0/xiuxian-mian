@@ -40,7 +40,7 @@ RE_QUIZ_RESULT_WRONG = re.compile(
     re.S,
 )
 RE_QUIZ_RESULT_TIMEOUT = re.compile(
-    rf"【(?:考校结束[·・•]超时|{QUIZ_RESULT_TITLE_PATTERN}[·・•]超时)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
+    rf"【(?:考校结束[·・•]超时|{QUIZ_RESULT_TITLE_PATTERN}[·・•](?:超时|题面失效))】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
     re.S,
 )
 RE_PUNCT_ONLY = re.compile(r"[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+")

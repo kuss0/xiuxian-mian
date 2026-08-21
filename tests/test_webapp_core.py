@@ -4,12 +4,15 @@ import hmac
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote, urlencode
+
+import requests
 
 from model import webapp_core
 from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_common, miniapp_registry, spirit_beast_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
@@ -732,6 +735,39 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("app", result.error_type)
         self.assertEqual(1, len(requests))
 
+    def test_execute_miniapp_http_request_respects_retry_after_header(self):
+        calls = []
+        sleeps = []
+
+        def rate_limited_then_ok(_request):
+            calls.append(1)
+            if len(calls) == 1:
+                return {
+                    "status_code": 429,
+                    "json": {"ok": False, "error": "rate_limit"},
+                    "headers": {"Retry-After": "7"},
+                }
+            return 200, {"ok": True}
+
+        request = fishing_miniapp.build_fishing_miniapp_request("start", token="fish_T", init_data="init")
+        result = webapp_core.execute_miniapp_http_request(
+            request,
+            rate_limited_then_ok,
+            backoff_sec=(1,),
+            sleeper=sleeps.append,
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual([7.0], sleeps)
+
+        limited = webapp_core.classify_miniapp_http_response(
+            429,
+            {"ok": False, "error": "rate_limit"},
+            retry_after_sec=7,
+        )
+        self.assertEqual(7, limited.retry_after_sec)
+        self.assertEqual(7.0, limited.safe_summary()["retry_after_sec"])
+
     def test_shared_transport_reuses_session_when_supplied(self):
         calls = []
 
@@ -769,6 +805,189 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("text/plain", seen["headers"]["Content-Type"])
         self.assertEqual("1", seen["headers"]["X-Trace"])
         self.assertEqual(miniapp_common.MINIAPP_DEFAULT_USER_AGENT, seen["headers"]["User-Agent"])
+
+    def test_pooled_transport_reuses_session_per_identity(self):
+        sessions = []
+
+        class _FakeSession:
+            def __init__(self):
+                self.proxies = {}
+                self.closed = False
+                self.calls = []
+
+            def mount(self, *_args):
+                return None
+
+            def request(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+            def close(self):
+                self.closed = True
+
+        def session_factory():
+            session = _FakeSession()
+            sessions.append(session)
+            return session
+
+        miniapp_common.close_pooled_miniapp_sessions()
+        with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
+            transport = miniapp_common.build_pooled_miniapp_transport(
+                adapter_key="trial",
+                identity_id=11,
+                proxies={},
+            )
+            transport({"method": "POST", "url": "https://example.invalid/one"})
+            transport({"method": "POST", "url": "https://example.invalid/two"})
+
+        self.assertEqual(1, len(sessions))
+        self.assertEqual(2, len(sessions[0].calls))
+        self.assertEqual(1, miniapp_common.close_pooled_miniapp_sessions(adapter_key="trial", identity_id=11))
+        self.assertTrue(sessions[0].closed)
+
+    def test_pooled_transport_falls_back_to_config_proxy_after_connection_failure(self):
+        sessions = []
+
+        class _FakeSession:
+            def __init__(self):
+                self.proxies = {}
+                self.closed = False
+
+            def mount(self, *_args):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                if len(sessions) == 1:
+                    raise requests.exceptions.ConnectionError("direct unavailable")
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+            def close(self):
+                self.closed = True
+
+        def session_factory():
+            session = _FakeSession()
+            sessions.append(session)
+            return session
+
+        proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+        miniapp_common.close_pooled_miniapp_sessions()
+        with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
+            transport = miniapp_common.build_pooled_miniapp_transport(
+                adapter_key="fishing",
+                identity_id=22,
+                proxies=proxies,
+            )
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                transport({"method": "POST", "url": "https://example.invalid/start"})
+            result = transport({"method": "POST", "url": "https://example.invalid/start"})
+
+        self.assertEqual(200, result.status_code)
+        self.assertEqual(2, len(sessions))
+        self.assertTrue(sessions[0].closed)
+        self.assertEqual(proxies, sessions[1].proxies)
+        miniapp_common.close_pooled_miniapp_sessions()
+
+    def test_pooled_transport_read_timeout_rebuilds_without_proxy_switch(self):
+        sessions = []
+
+        class _FakeSession:
+            def __init__(self):
+                self.proxies = {}
+
+            def mount(self, *_args):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                if len(sessions) == 1:
+                    raise requests.exceptions.ReadTimeout("slow response")
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+            def close(self):
+                return None
+
+        def session_factory():
+            session = _FakeSession()
+            sessions.append(session)
+            return session
+
+        proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+        miniapp_common.close_pooled_miniapp_sessions()
+        with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
+            transport = miniapp_common.build_pooled_miniapp_transport(
+                adapter_key="trial",
+                identity_id=33,
+                proxies=proxies,
+            )
+            with self.assertRaises(requests.exceptions.ReadTimeout):
+                transport({"method": "POST", "url": "https://example.invalid/start"})
+            result = transport({"method": "POST", "url": "https://example.invalid/start"})
+
+        self.assertEqual(200, result.status_code)
+        self.assertEqual({}, sessions[1].proxies)
+        miniapp_common.close_pooled_miniapp_sessions()
+
+    def test_pooled_transport_waiter_uses_replacement_session_after_failure(self):
+        sessions = []
+        first_started = threading.Event()
+        release_first = threading.Event()
+        errors = []
+        results = []
+
+        class _FakeSession:
+            def __init__(self, index):
+                self.index = index
+                self.proxies = {}
+                self.calls = 0
+
+            def mount(self, *_args):
+                return None
+
+            def request(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.index == 0:
+                    first_started.set()
+                    release_first.wait(timeout=2)
+                    raise requests.exceptions.ConnectionError("direct unavailable")
+                return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+            def close(self):
+                return None
+
+        def session_factory():
+            session = _FakeSession(len(sessions))
+            sessions.append(session)
+            return session
+
+        def call_transport(transport):
+            try:
+                results.append(transport({"method": "POST", "url": "https://example.invalid/start"}))
+            except Exception as exc:
+                errors.append(exc)
+
+        miniapp_common.close_pooled_miniapp_sessions()
+        with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
+            transport = miniapp_common.build_pooled_miniapp_transport(
+                adapter_key="fishing",
+                identity_id=44,
+                proxies={"https": "http://127.0.0.1:7890"},
+            )
+            first = threading.Thread(target=call_transport, args=(transport,))
+            second = threading.Thread(target=call_transport, args=(transport,))
+            first.start()
+            self.assertTrue(first_started.wait(timeout=1))
+            second.start()
+            release_first.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(1, len(errors))
+        self.assertEqual(1, len(results))
+        self.assertEqual(200, results[0].status_code)
+        self.assertEqual(1, sessions[0].calls)
+        self.assertEqual(1, sessions[1].calls)
+        miniapp_common.close_pooled_miniapp_sessions()
 
     def test_shared_append_http_event_sanitizes_and_keeps_schema(self):
         events = []

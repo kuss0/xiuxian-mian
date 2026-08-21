@@ -19,7 +19,10 @@ from ..webapp_core import (
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
-from .miniapp_common import append_http_event as _append_http_event, build_miniapp_transport
+from .miniapp_common import (
+    append_http_event as _append_http_event,
+    build_pooled_miniapp_transport,
+)
 
 
 FISHING_MINIAPP_GAME_KEY = "fishing"
@@ -237,9 +240,6 @@ async def request_fishing_miniapp_init_data(identity_id, *, token, webview_url="
     return init_data
 
 
-_requests_transport = build_miniapp_transport(timeout=FISHING_MINIAPP_HTTP_TIMEOUT)
-
-
 async def run_fishing_miniapp_production_flow(
     identity_id,
     *,
@@ -269,7 +269,11 @@ async def run_fishing_miniapp_production_flow(
             run_fishing_miniapp_loop_lab_flow,
             token=token,
             init_data=init_data,
-            transport=transport or _requests_transport,
+            transport=transport or build_pooled_miniapp_transport(
+                adapter_key=adapter.game_key,
+                identity_id=identity_id,
+                timeout=FISHING_MINIAPP_HTTP_TIMEOUT,
+            ),
             adapter=adapter,
             sleeper=sleeper or time.sleep,
             max_rounds=max_rounds,
@@ -299,7 +303,6 @@ async def run_fishing_miniapp_from_cave_entry_production_flow(
 ):
     try:
         from .cave_treasure_miniapp import (
-            _requests_transport as cave_requests_transport,
             build_cave_treasure_miniapp_adapter,
             build_cave_treasure_miniapp_request,
             request_cave_treasure_miniapp_init_data,
@@ -323,7 +326,11 @@ async def run_fishing_miniapp_from_cave_entry_production_flow(
         start_result = await asyncio.to_thread(
             execute_miniapp_http_request,
             start_request,
-            cave_transport or cave_requests_transport,
+            cave_transport or build_pooled_miniapp_transport(
+                adapter_key=cave_adapter.game_key,
+                identity_id=identity_id,
+                timeout=FISHING_MINIAPP_HTTP_TIMEOUT,
+            ),
             sleeper=sleeper or time.sleep,
             capture_sink=capture_sink,
             capture_source=capture_source,

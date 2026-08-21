@@ -64,11 +64,15 @@ class QuizResultParsingTests(unittest.TestCase):
                 correct = quiz._parse_quiz_result(f"【{title}·答对】\n@WalterWA2000 的答案 C 完全正确！")
                 wrong = quiz._parse_quiz_result(f"【{title}·答错】\n@WalterWA2000 的答案 A 错了（正确答案：C）")
                 timeout = quiz.RE_QUIZ_RESULT_TIMEOUT.search(f"【{title}·超时】\n@WalterWA2000 未在时间内作答")
+                invalidated = quiz.RE_QUIZ_RESULT_TIMEOUT.search(
+                    f"【{title}·题面失效】\n@WalterWA2000 本轮题面已经失效"
+                )
                 self.assertEqual("correct", correct["status"])
                 self.assertEqual("C", correct["correct_answer"])
                 self.assertEqual("wrong", wrong["status"])
                 self.assertEqual("C", wrong["correct_answer"])
                 self.assertIsNotNone(timeout)
+                self.assertIsNotNone(invalidated)
 
 
 class QuizAiVoteTests(unittest.TestCase):
