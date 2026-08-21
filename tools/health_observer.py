@@ -1589,7 +1589,13 @@ def build_module_summary(
     *,
     limit: int = 120,
     global_paused: bool = False,
+    suppressed_next_modules=(),
 ) -> list[dict[str, object]]:
+    suppressed_next_module_keys = {
+        str(module_key or "").strip()
+        for module_key in suppressed_next_modules
+        if str(module_key or "").strip()
+    }
     identities = fetch_table_rows_by_identity(conn, "identities")
     runtime_rows = fetch_table_rows_by_identity(conn, "identity_runtime_state")
     timer_rows = fetch_table_rows_by_identity(conn, "identity_timers")
@@ -1703,6 +1709,7 @@ def build_module_summary(
                     lag_without_anchor = (
                         enabled
                         and not global_paused
+                        and module_key not in suppressed_next_module_keys
                         and monitors_next_lag(field_name)
                         and overdue_sec > NEXT_LAG_WARN_SEC
                         and not pending
@@ -1827,6 +1834,12 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
             cave_entry_blocked = bool(
                 str(miniapp_config.get("cave_public_entry_token_blocked_signature") or "").strip()
             )
+            cave_blocked_modules = set()
+            if cave_entry_blocked:
+                if boolish(miniapp_config.get("cave_public_deep_status_enabled")):
+                    cave_blocked_modules.add("deep_retreat")
+                if boolish(miniapp_config.get("cave_public_yuanying_enabled")):
+                    cave_blocked_modules.add("yuanying")
             channel_send_as_health = parse_json_dict(meta_state.get("channel_send_as_health"))
             account_target_memberships = parse_json_dict(meta_state.get("account_target_memberships"))
             world_boss_miniapp_health = analyze_world_boss_miniapp_health(
@@ -2008,7 +2021,13 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "phase": "reply_wait",
                         "overdue_sec": int(now - tower_due),
                     })
-            full_module_summary = build_module_summary(conn, now, limit=1000, global_paused=scheduling_suppressed)
+            full_module_summary = build_module_summary(
+                conn,
+                now,
+                limit=1000,
+                global_paused=scheduling_suppressed,
+                suppressed_next_modules=cave_blocked_modules,
+            )
             module_pending_total, module_pending_samples = summarize_module_pending(full_module_summary)
             module_summary = full_module_summary[:120]
     except sqlite3.Error as exc:
