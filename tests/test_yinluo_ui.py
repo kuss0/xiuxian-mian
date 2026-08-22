@@ -27,6 +27,7 @@ def test_yinluo_module_card_keeps_main_switch_and_action_panel_hook():
     assert "enhanceYinluoCard(identity)" in yinluo_script
     assert "/api/yinluo-action" in yinluo_script
     assert "observed.sha_known" in yinluo_script
+    assert "convert_sha_threshold" in yinluo_script
     assert ": '未知'" in yinluo_script
 
     for action in ("banner", "daily_sacrifice", "blood_forest", "demon_summon", "collect", "refine", "convert"):

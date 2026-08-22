@@ -50,6 +50,8 @@ YINLUO_DEMON_SUMMON_MIN_REALM = "结丹初期"
 YINLUO_CONVERT_OBSERVED_CD_SEC = 60 * 60
 YINLUO_CONVERT_MIN_AMOUNT = 1000
 YINLUO_CONVERT_MAX_AMOUNT = 50000
+YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT = 5000
+YINLUO_CONVERT_SHA_THRESHOLD_MAX = 350000000
 YINLUO_SOOTHE_XIUWEI_COST = 50
 YINLUO_PHASEFUL_RISK_RETRY_SEC = 2 * 60
 
@@ -96,6 +98,7 @@ def _default_yinluo_auto_config():
         "demon_summon": True,
         "convert": False,
         "convert_amount": 0,
+        "convert_sha_threshold": YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT,
         "refine_targets": [],
     }
 
@@ -345,6 +348,12 @@ def normalize_yinluo_auto_config(value=None):
             config[key] = bool(raw.get(key))
     amount = _safe_int(raw.get("convert_amount", 0))
     config["convert_amount"] = amount if YINLUO_CONVERT_MIN_AMOUNT <= amount <= YINLUO_CONVERT_MAX_AMOUNT else 0
+    threshold = _safe_int(raw.get("convert_sha_threshold", YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT), default=-1)
+    config["convert_sha_threshold"] = (
+        threshold
+        if 0 <= threshold <= YINLUO_CONVERT_SHA_THRESHOLD_MAX
+        else YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT
+    )
     targets = _split_refine_targets(raw.get("refine_targets"))
     if targets:
         config["refine_targets"] = targets
@@ -1466,18 +1475,15 @@ def _build_auto_convert_arg(observed, now=None):
     next_time = float(observed.get("next_convert_time", 0) or 0)
     if next_time > now:
         return "", f"化功为煞仍在冷却中，{fmt_remaining(next_time)} 后再试。"
-    if not list(observed.get("empty_slot_numbers") or []):
-        return "", "缺少空闲槽，不自动化煞。"
-    stocks = observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}
-    if not stocks or not _has_known_sha_pool(observed):
-        return "", "缺少魂魄储备或煞气池记录，不自动化煞。"
+    if not _has_known_sha_pool(observed):
+        return "", "缺少煞气池记录，不自动化煞。"
     sha_current = int(observed.get("sha_current", 0) or 0)
-    for target in _auto_refine_targets(observed):
-        if int(stocks.get(target, 0) or 0) <= 0:
-            continue
-        if sha_current < _estimate_refine_sha_cost(target):
-            return str(amount), ""
-    return "", "当前煞气足够或没有可炼化目标。"
+    threshold = int(_auto_config(observed).get("convert_sha_threshold", 0) or 0)
+    if threshold <= 0:
+        return "", "自动补煞阈值为 0，暂不自动化煞。"
+    if sha_current < threshold:
+        return str(amount), ""
+    return "", "当前煞气未低于自动补煞阈值。"
 
 
 def _phaseful_risk_block(action, command="", family="", now=None):
@@ -1965,7 +1971,11 @@ async def run_yinluo_scheduler(now):
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
-        return
+        # A low, known sha pool is a higher-priority recovery action than an
+        # old wait derived from blood-forest or demon-summon cooldowns.
+        auto_convert_amount, _convert_reason = _build_auto_convert_arg(observed, now=now)
+        if not auto_convert_amount:
+            return
     observed = _apply_collect_blockers(observed, now=now)
     state["yinluo_observation"] = observed
 
@@ -2282,6 +2292,11 @@ def set_yinluo_auto_config(updates):
         if amount not in (0,) and not (YINLUO_CONVERT_MIN_AMOUNT <= amount <= YINLUO_CONVERT_MAX_AMOUNT):
             return False, f"自动化煞数量需为 0 或 {YINLUO_CONVERT_MIN_AMOUNT}-{YINLUO_CONVERT_MAX_AMOUNT}。", get_yinluo_ui_state()
         next_config["convert_amount"] = max(0, amount)
+    if "convert_sha_threshold" in updates:
+        threshold = _safe_int(updates.get("convert_sha_threshold", 0), default=-1)
+        if not (0 <= threshold <= YINLUO_CONVERT_SHA_THRESHOLD_MAX):
+            return False, f"自动补煞阈值需在 0-{YINLUO_CONVERT_SHA_THRESHOLD_MAX} 之间。", get_yinluo_ui_state()
+        next_config["convert_sha_threshold"] = threshold
     if "refine_targets" in updates:
         targets = _split_refine_targets(updates.get("refine_targets"))
         next_config["refine_targets"] = targets

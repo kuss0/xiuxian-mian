@@ -24,6 +24,43 @@ def real_text(sample_id):
 
 
 class YinluoParserTests(unittest.TestCase):
+    def test_default_auto_config_has_conservative_convert_threshold(self):
+        config = yinluo.normalize_yinluo_auto_config({})
+
+        self.assertEqual(yinluo.YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT, config["convert_sha_threshold"])
+
+    def test_auto_convert_threshold_zero_disables_and_equal_threshold_waits(self):
+        base = {
+            "last_observed_at": 1_780_000_000.0,
+            "sha_current": 5000,
+            "sha_max": 350000,
+            "next_convert_time": 0,
+            "auto_config": {
+                "convert": True,
+                "convert_amount": 10000,
+                "convert_sha_threshold": 5000,
+            },
+        }
+
+        amount, reason = yinluo._build_auto_convert_arg(base, now=1_780_000_001.0)
+        self.assertEqual("", amount)
+        self.assertIn("未低于", reason)
+
+        disabled = copy.deepcopy(base)
+        disabled["auto_config"]["convert_sha_threshold"] = 0
+        amount, reason = yinluo._build_auto_convert_arg(disabled, now=1_780_000_001.0)
+        self.assertEqual("", amount)
+        self.assertIn("阈值为 0", reason)
+
+    def test_auto_config_rejects_invalid_convert_threshold(self):
+        config = yinluo.normalize_yinluo_auto_config({"convert_sha_threshold": -1})
+        self.assertEqual(yinluo.YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT, config["convert_sha_threshold"])
+
+        config = yinluo.normalize_yinluo_auto_config({
+            "convert_sha_threshold": yinluo.YINLUO_CONVERT_SHA_THRESHOLD_MAX + 1,
+        })
+        self.assertEqual(yinluo.YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT, config["convert_sha_threshold"])
+
     def test_banner_panel_parses_core_fields_and_slots(self):
         parsed = yinluo.parse_yinluo_text(
             real_text("yinluo.banner.basic"),
@@ -1074,7 +1111,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, observed["refining_slots"])
         self.assertEqual(now + yinluo.YINLUO_AUTO_CALIBRATE_RETRY_SEC, observed["auto_next_time"])
 
-    async def test_scheduler_auto_converts_only_when_enabled_and_refine_needs_sha(self):
+    async def test_scheduler_auto_converts_when_sha_is_below_threshold_without_stock(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -1085,7 +1122,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "empty_slots": 1,
             "empty_slot_numbers": [3],
             "ready_slots": 0,
-            "soul_stocks": {"凶兽戾魄": 1},
+            "soul_stocks": {},
             "next_blood_forest_time": now + 3600,
             "next_demon_summon_time": now + 3600,
             "next_convert_time": 0,
@@ -1096,6 +1133,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "demon_summon": False,
                 "convert": True,
                 "convert_amount": 10000,
+                "convert_sha_threshold": 5000,
                 "refine_targets": ["凶兽戾魄"],
             },
             "auto_next_time": now - 1,
@@ -1105,6 +1143,34 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".化功为煞 10000", send_mock.await_args.args[0])
         self.assertEqual("convert", observed["auto_last_action"])
         self.assertGreater(observed["next_convert_time"], now)
+
+    async def test_scheduler_low_sha_preempts_stale_auto_wait(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "灭法幡",
+            "sha_current": 3000,
+            "sha_max": 350000,
+            "next_convert_time": 0,
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": True,
+                "convert_amount": 10000,
+                "convert_sha_threshold": 5000,
+                "refine_targets": ["凶兽戾魄"],
+            },
+            "auto_next_time": now + 3600,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".化功为煞 10000", send_mock.await_args.args[0])
+        self.assertEqual("convert", observed["auto_last_action"])
 
     async def test_scheduler_blocks_auto_convert_when_known_xiuwei_is_insufficient(self):
         now = 1_780_000_000.0
@@ -1919,6 +1985,7 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
                     "demon_summon": True,
                     "convert": True,
                     "convert_amount": 10000,
+                    "convert_sha_threshold": 5000,
                     "refine_targets": ["凶兽戾魄", "妖兽精魄"],
                 },
             })
@@ -1931,11 +1998,13 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
                     "demon_summon": True,
                     "convert": True,
                     "convert_amount": 10000,
+                    "convert_sha_threshold": 5000,
                     "refine_targets": "凶兽戾魄 妖兽精魄",
                 })
 
             self.assertTrue(ok, message)
             self.assertEqual(10000, ui_state["auto_config"]["convert_amount"])
+            self.assertEqual(5000, ui_state["auto_config"]["convert_sha_threshold"])
             self.assertEqual(before, state_module.state["yinluo_observation"])
             save_mock.assert_not_called()
 
@@ -2023,6 +2092,7 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
                     "demon_summon": True,
                     "convert": False,
                     "convert_amount": 0,
+                    "convert_sha_threshold": 5000,
                     "refine_targets": [],
                 },
             }
@@ -2031,6 +2101,7 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
                     "collect": False,
                     "convert": True,
                     "convert_amount": 10000,
+                    "convert_sha_threshold": 9000,
                     "refine_targets": "凶兽戾魄 妖兽精魄",
                 })
             observed = state_module.state["yinluo_observation"]
@@ -2043,6 +2114,7 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(observed["auto_config"]["collect"])
         self.assertTrue(observed["auto_config"]["convert"])
         self.assertEqual(10000, observed["auto_config"]["convert_amount"])
+        self.assertEqual(9000, observed["auto_config"]["convert_sha_threshold"])
         self.assertEqual(["凶兽戾魄", "妖兽精魄"], observed["auto_config"]["refine_targets"])
 
     async def test_ui_updates_yinluo_auto_config_for_available_identity(self):
@@ -2057,6 +2129,7 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
                 "demon_summon": True,
                 "convert": True,
                 "convert_amount": 10000,
+                "convert_sha_threshold": 9000,
                 "refine_targets": "凶兽戾魄 妖兽精魄",
             })
 
@@ -2066,6 +2139,7 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(config["collect"])
         self.assertTrue(config["convert"])
         self.assertEqual(10000, config["convert_amount"])
+        self.assertEqual(9000, config["convert_sha_threshold"])
         self.assertEqual(["凶兽戾魄", "妖兽精魄"], config["refine_targets"])
 
 

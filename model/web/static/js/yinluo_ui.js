@@ -3,6 +3,7 @@
     identity_id: null,
     collect_slot: '',
     convert_amount: '',
+    convert_sha_threshold: '',
     refine_slot: '',
     refine_target: '',
     auto_refine_targets: ''
@@ -58,6 +59,9 @@
     yinluoDraft.identity_id = identityId || null;
     yinluoDraft.collect_slot = '';
     yinluoDraft.convert_amount = config && config.convert_amount ? String(config.convert_amount) : '';
+    yinluoDraft.convert_sha_threshold = config && config.convert_sha_threshold != null
+      ? String(config.convert_sha_threshold)
+      : '5000';
     yinluoDraft.refine_slot = '';
     const targets = Array.isArray(config && config.refine_targets) ? config.refine_targets : [];
     yinluoDraft.refine_target = targets[0] || '';
@@ -136,9 +140,10 @@
       renderAutoToggle('demon_summon', '召魔', config),
       renderAutoToggle('convert', '化煞', config),
       '</div>',
-      '<div class="yinluo-action-row yinluo-action-row-combo">',
+      '<div class="yinluo-action-row yinluo-action-row-combo yinluo-action-row-policy">',
       '<label class="yinluo-field yinluo-field-wide"><span>目标</span><input class="text-input yinluo-target-input" type="text" value="' + esc(yinluoDraft.auto_refine_targets) + '" placeholder="例如 凶兽戾魄" data-yinluo-draft="auto_refine_targets" /></label>',
       '<label class="yinluo-field"><span>化煞</span><input class="text-input yinluo-amount-input" type="number" min="0" max="50000" step="1000" inputmode="numeric" value="' + esc(yinluoDraft.convert_amount) + '" data-yinluo-draft="convert_amount" /></label>',
+      '<label class="yinluo-field"><span>保底</span><input class="text-input yinluo-amount-input" type="number" min="0" max="350000000" step="1000" inputmode="numeric" value="' + esc(yinluoDraft.convert_sha_threshold) + '" data-yinluo-draft="convert_sha_threshold" /></label>',
       '<button type="button" class="btn btn-secondary" data-yinluo-config-save="1">保存策略</button>',
       '</div>',
       '</div>',
@@ -216,12 +221,16 @@
       demon_summon: true,
       convert: false,
       convert_amount: 0,
+      convert_sha_threshold: 5000,
       refine_targets: ''
     }, getYinluoConfig(selectedIdentity()));
     if (changedKey) {
       config[changedKey] = !!enabled;
     }
     config.convert_amount = Number(String(yinluoDraft.convert_amount || config.convert_amount || 0).trim()) || 0;
+    config.convert_sha_threshold = Number(String(
+      yinluoDraft.convert_sha_threshold || config.convert_sha_threshold || 0
+    ).trim()) || 0;
     config.refine_targets = String(yinluoDraft.auto_refine_targets || '').trim();
     return config;
   }
@@ -293,6 +302,7 @@
       return;
     }
     updateDraft(document.querySelector('[data-yinluo-draft="convert_amount"]'));
+    updateDraft(document.querySelector('[data-yinluo-draft="convert_sha_threshold"]'));
     updateDraft(document.querySelector('[data-yinluo-draft="auto_refine_targets"]'));
     submitYinluoConfig(configPayload(input.getAttribute('data-yinluo-auto-key'), input.checked), input);
   });
