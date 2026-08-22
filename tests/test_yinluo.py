@@ -246,6 +246,12 @@ class YinluoParserTests(unittest.TestCase):
     def test_recent_convert_and_refine_text_parse(self):
         now = 1_781_341_000.0
         pending = yinluo.parse_yinluo_text("你开始运转魔功，试图将 1000 点修为凝练为纯粹的煞气...", now=now)
+        failed = yinluo.parse_yinluo_text(
+            "【转化失败·反噬】\n"
+            "魔功失控，你消耗的 10000 点修为尽数逸散！\n"
+            "你受到了【煞气反噬】，15分钟内闭关修炼收益将大幅降低！",
+            now=now,
+        )
         success = yinluo.parse_yinluo_text("【转化成功】\n你成功将 1000 点修为炼化，煞气池增加了 200 点！", now=now)
         cooldown = yinluo.parse_yinluo_text("你刚施展过此术，经脉尚在恢复，请在 59分钟50秒 后再试。", now=now)
         invalid = yinluo.parse_yinluo_text("每次转化的修为需在 1000 至 50000 点之间。", now=now)
@@ -254,6 +260,10 @@ class YinluoParserTests(unittest.TestCase):
         refine_missing = yinluo.parse_yinluo_text("你的魂魄袋中没有【凶兽精魄】。", now=now)
 
         self.assertEqual("pending", pending["result"])
+        self.assertEqual("化功为煞", failed["action"])
+        self.assertEqual("failed", failed["result"])
+        self.assertEqual(10000, failed["last_convert_amount"])
+        self.assertEqual(10000, failed["last_backlash_loss"])
         self.assertEqual("化功为煞", success["action"])
         self.assertEqual(1000, success["last_convert_amount"])
         self.assertEqual(200, success["last_sha_gain"])
@@ -1543,6 +1553,37 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual(2300, observed["sha_current"])
         self.assertEqual(now + yinluo.YINLUO_CONVERT_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, observed["next_convert_time"])
         self.assertEqual(2000, profile["xiuwei_current"])
+
+    def test_apply_convert_backlash_closes_pending_and_deducts_xiuwei_once(self):
+        now = 1_779_450_000.0
+        send_as_id = self._prepare_identity()
+        text = (
+            "【转化失败·反噬】\n"
+            "魔功失控，你消耗的 10000 点修为尽数逸散！\n"
+            "你受到了【煞气反噬】，15分钟内闭关修炼收益将大幅降低！"
+        )
+
+        state_module.update_send_as_profile(send_as_id, xiuwei_current=12000, xiuwei_max=50000)
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "last_action": "化功为煞",
+                "last_result": "pending",
+                "banner_owner": "缘初子",
+                "sha_current": 300,
+                "sha_max": 15000,
+                "auto_next_time": now + 60,
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now))
+            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now + 30))
+            observed = state_module.state["yinluo_observation"]
+            profile = state_module.get_send_as_profile(send_as_id)
+
+        self.assertEqual("failed", observed["last_result"])
+        self.assertIn("反噬", observed["last_error"])
+        self.assertEqual(300, observed["sha_current"])
+        self.assertEqual(2000, profile["xiuwei_current"])
+        self.assertGreaterEqual(observed["auto_next_time"], now + yinluo.YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC)
 
     def test_apply_refine_success_is_idempotent_after_auto_sent_marker(self):
         now = 1_779_450_000.0

@@ -74,6 +74,7 @@ RE_BLOOD_EXTRA_SOUL = re.compile(r"额外拘来\s*(?P<count>\d+)\s*缕【(?P<nam
 RE_DEMON_BACKLASH = re.compile(r"修为暴跌了\s*(?P<loss>\d+)\s*点")
 RE_BONUS_GAIN = re.compile(r"因【阴罗宗】灵脉加持，你额外获得了\s*(?P<gain>\d+)\s*点修为")
 RE_CONVERT_AMOUNT = re.compile(r"成功将\s*(?P<amount>\d+)\s*点修为炼化")
+RE_CONVERT_BACKLASH_AMOUNT = re.compile(r"(?:消耗的|消耗了)\s*(?P<amount>\d+)\s*点修为")
 RE_CONVERT_LIMIT = re.compile(r"每次转化的修为需在\s*(?P<min>\d+)\s*至\s*(?P<max>\d+)\s*点之间")
 RE_REFINE_SUCCESS = re.compile(r"一缕【(?P<name>[^】]+)】被强行打入(?P<slot>\d+)号炼化槽")
 RE_REFINE_SHA_SHORTAGE = re.compile(r"炼化需要消耗\s*(?P<cost>\d+)\s*点煞气")
@@ -584,6 +585,9 @@ def looks_like_yinluo_text(text):
         return True
     if "安抚" in raw_text and "幡灵" in raw_text:
         return True
+    if "【转化失败·反噬】" in raw_text or ("魔功失控" in raw_text and "煞气反噬" in raw_text):
+        return True
+
     if "你开始运转魔功" in raw_text and "煞气" in raw_text:
         return True
     if "刚施展过此术" in raw_text and "经脉尚在恢复" in raw_text:
@@ -841,6 +845,18 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "next_blood_forest_time": _wait_until(raw_text, now),
         }
 
+    if "【转化失败·反噬】" in raw_text or ("魔功失控" in raw_text and "煞气反噬" in raw_text):
+        amount_match = RE_CONVERT_BACKLASH_AMOUNT.search(raw_text)
+        amount = int(amount_match.group("amount") or 0) if amount_match else 0
+        return {
+            "action": "化功为煞",
+            "result": "failed",
+            "summary": "化功为煞失败，遭煞气反噬",
+            "last_error": "化功为煞失败：煞气反噬",
+            "last_convert_amount": amount,
+            "last_backlash_loss": amount,
+            "convert_result_key": _yinluo_result_key("convert", raw_text, event_context),
+        }
     if "你开始运转魔功" in raw_text and "煞气" in raw_text:
         return {
             "action": "化功为煞",
@@ -1054,7 +1070,7 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
     daily_sacrifice_result_key = str(parsed.get("daily_sacrifice_result_key") or "")
     convert_already_accounted = (
         parsed.get("action") == "化功为煞"
-        and parsed.get("result") == "success"
+        and parsed.get("result") in {"success", "failed"}
         and convert_result_key
         and convert_result_key == str(previous_observed.get("last_convert_result_key") or "")
     )
@@ -1125,12 +1141,17 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
         observed["auto_refine_pending"] = {}
         observed["auto_calibrate_reason"] = ""
         observed = _apply_collect_blockers(observed, now=now)
-    if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") == "success":
+    if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") in {"success", "failed"}:
         gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
         should_apply_gain = (
             (parsed.get("action") != "化功为煞" or not convert_already_accounted)
             and (parsed.get("action") != "每日献祭" or not daily_sacrifice_already_accounted)
         )
+        if parsed.get("action") == "化功为煞" and parsed.get("result") == "failed":
+            observed["auto_next_time"] = max(
+                float(observed.get("auto_next_time", 0) or 0),
+                now + YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC,
+            )
         if should_apply_gain and gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
             observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
             if int(observed.get("sha_max", 0) or 0) > 0:
@@ -1216,7 +1237,9 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
     if parsed.get("action") == "血洗山林" and parsed.get("result") == "success":
         observed = _adjust_soul_stock(observed, parsed.get("last_soul_name"), parsed.get("last_soul_gain"))
         observed = _adjust_soul_stock(observed, parsed.get("last_extra_soul_name"), parsed.get("last_extra_soul_gain"))
-    if (
+    if parsed.get("action") == "化功为煞" and parsed.get("result") == "failed":
+        observed["auto_last_error"] = parsed.get("last_error") or parsed.get("summary") or "化功为煞失败"
+    elif (
         parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul", "slot_busy"}
     ) or (
         parsed.get("action") == "收取精华" and parsed.get("result") == "empty"
@@ -1228,6 +1251,11 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     elif any(float(observed.get(key, 0) or 0) > now for key in ("next_blood_forest_time", "next_demon_summon_time")):
         observed["auto_next_time"] = _yinluo_next_after_action(observed, now)
+    elif observed.get("last_action") == "化功为煞" and observed.get("last_result") == "failed":
+        observed["auto_next_time"] = max(
+            float(observed.get("auto_next_time", 0) or 0),
+            now + YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC,
+        )
     elif observed.get("last_action") in {"阴罗幡", "召唤魔影", "血洗山林", "收取精华", "囚禁魂魄", "安抚幡灵", "每日献祭"}:
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     else:
