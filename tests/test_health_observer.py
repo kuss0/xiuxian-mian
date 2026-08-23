@@ -631,6 +631,27 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(health_observer.is_hard_journal_line(line))
         self.assertFalse(health_observer.is_warn_journal_line(line))
 
+    def test_trial_daily_limit_is_expected_terminal_capture(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now,
+                    "adapter_key": "trial",
+                    "source": "cave_public_trial:301299112",
+                    "step_key": "start",
+                    "ok": False,
+                    "error": "trial_daily_limit",
+                    "status_code": 409,
+                }
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["expected_terminal_count"])
+        self.assertEqual(0, result["warning_count"])
+        self.assertEqual([], result["alerts"])
+
     def test_journal_match_ignores_reload_disconnected_traceback_block(self):
         lines = [
             "Jun 30 08:55:07 pve python[3618640]: Traceback (most recent call last):",

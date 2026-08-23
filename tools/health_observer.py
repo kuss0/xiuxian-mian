@@ -127,6 +127,7 @@ MINIAPP_EXPECTED_TERMINAL_ERRORS = {
     "hunt_daily_limit",
     "no_remaining",
     "today_exhausted",
+    "trial_daily_limit",
     "trial_daily_limit_reached",
 }
 MINIAPP_CRITICAL_ERROR_MARKERS = (
