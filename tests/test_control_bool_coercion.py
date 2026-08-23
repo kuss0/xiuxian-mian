@@ -67,6 +67,22 @@ class ControlBoolCoercionTests(unittest.TestCase):
         self.assertIn("全局暂停", message)
         self.assertEqual("high", audit_mock.await_args.kwargs["priority"])
 
+    def test_manual_resume_is_rejected_while_bot_health_pause_is_active(self):
+        state_module.set_global_enabled(False)
+        state_module.set_global_pause_source("bot_health_monitor")
+        with (
+            patch.object(control, "should_pause_for_bot_health", return_value=True),
+            patch.object(control, "save_state") as save_mock,
+            patch.object(control, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="ui"))
+
+        self.assertFalse(ok)
+        self.assertIn("健康暂停中", message)
+        self.assertFalse(state_module.get_global_enabled())
+        save_mock.assert_not_called()
+        audit_mock.assert_not_awaited()
+
     def test_global_resume_resets_safety_watchdog_marker(self):
         state_module.set_global_enabled(False)
         state_module.ensure_identity_registered(990313)

@@ -244,10 +244,8 @@ class AppSchedulerContractTests(unittest.TestCase):
         ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
 
         self.assertLess(_index(ordinary, "run_tianxing_scheduler"), _index(ordinary, "run_wild_training_scheduler"))
-        self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_small_world_scheduler"))
+        self.assertNotIn("run_small_world_scheduler", ordinary)
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_mulan_scheduler"))
-        self.assertLess(_index(ordinary, "run_mulan_scheduler"), _index(ordinary, "run_small_world_scheduler"))
-        self.assertLess(_index(ordinary, "run_small_world_scheduler"), _index(ordinary, "run_explore_rift_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_wendao_scheduler"))
         self.assertLess(_index(ordinary, "run_wendao_scheduler"), _index(ordinary, "run_checkin_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_checkin_scheduler"))
@@ -261,6 +259,14 @@ class AppSchedulerContractTests(unittest.TestCase):
             ),
             ordinary[-4:],
         )
+
+    def test_small_world_uses_only_its_dedicated_scheduler_loop(self):
+        contract = app.get_identity_scheduler_order_contract()
+        bridge = app.get_scheduler_manifest_bridge_contract()
+
+        self.assertNotIn("run_small_world_scheduler", contract["ordinary"])
+        self.assertIn("run_small_world_scheduler", bridge)
+        self.assertEqual(("小世界",), bridge["run_small_world_scheduler"]["manifest_names"])
 
     def test_global_scheduler_order_starts_with_current_runtime_sequence(self):
         self.assertEqual(

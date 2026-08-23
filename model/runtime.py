@@ -2149,10 +2149,9 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=Non
     if not target_ids:
         return None, None, 0, None
 
-    for path in _recent_sent_message_log_paths():
-        if not os.path.exists(path):
-            continue
-        for line in reversed(_read_recent_message_log_tail(path)):
+    def _match_lines(lines, *, reverse=False):
+        iterable = reversed(lines) if reverse else lines
+        for line in iterable or ():
             try:
                 payload = json.loads(line)
             except Exception:
@@ -2174,9 +2173,32 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=Non
             except (TypeError, ValueError):
                 identity_id = 0
             if identity_id not in target_ids or not has_identity(identity_id):
-                return None, None, 0, None
+                # A message id can be reused across chats and an old log can
+                # contain a sender no longer loaded in the current process.
+                # Keep searching instead of turning that unrelated row into a
+                # false negative for the requested route.
+                continue
             family = str(payload.get("family") or "").strip() or resolve_reply_family(payload.get("text") or "")
             return identity_id, family or None, msg_id, "sent_message_log"
+        return None
+
+    paths = [path for path in _recent_sent_message_log_paths() if os.path.exists(path)]
+    for path in paths:
+        matched = _match_lines(_read_recent_message_log_tail(path), reverse=True)
+        if matched:
+            return matched
+
+    # A busy game log can push a real command out of the hot tail before its
+    # bot reply arrives. This is a cold, read-only recovery path: scan the
+    # recent daily files fully before declaring the reply owner unknown.
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                matched = _match_lines(handle)
+        except OSError:
+            continue
+        if matched:
+            return matched
     return None, None, 0, None
 
 

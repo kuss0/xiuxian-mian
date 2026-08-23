@@ -123,7 +123,6 @@ from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.wanxin import handle_wanxin_reply, run_wanxin_global_cleanup_scheduler, run_wanxin_phaseful_cleanup_scheduler, run_wanxin_scheduler
 from .features.world_boss import (
-    calibrate_world_boss_rotation_from_inventory,
     handle_world_boss_broadcast,
     handle_world_boss_reply,
     run_world_boss_scheduler,
@@ -568,7 +567,6 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_yinluo_scheduler,
     run_mulan_scheduler,
     run_wanxin_scheduler,
-    run_small_world_scheduler,
     run_explore_rift_scheduler,
     run_wendao_scheduler,
     run_duel_scheduler,
@@ -3796,15 +3794,6 @@ async def bootstrap():
         except Exception:
             print(f"hydrate_identity_profile failed: {send_as_id}")
         enforce_identity_module_availability(send_as_id, persist=False)
-
-    rotation_calibrated = calibrate_world_boss_rotation_from_inventory()
-    if rotation_calibrated:
-        details = "、".join(
-            f"账户 {item['account_id']}:{','.join(str(identity_id) for identity_id in item['identity_ids'])}"
-            for item in rotation_calibrated
-        )
-        console_log(f"🗡 世界 Boss 轮换历史已由本地储物袋校准：{details}")
-        save_state()
 
     try:
         await asyncio.wait_for(discover_cave_public_entry_from_history(), timeout=20)

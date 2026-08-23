@@ -623,6 +623,14 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_maintenance_stop_probe_is_not_hard_health_error(self):
+        line = (
+            "Aug 24 00:06:03 pve health_observer error: "
+            "xiuxian.service not running: deactivating/stop-sigterm"
+        )
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertFalse(health_observer.is_warn_journal_line(line))
+
     def test_journal_match_ignores_reload_disconnected_traceback_block(self):
         lines = [
             "Jun 30 08:55:07 pve python[3618640]: Traceback (most recent call last):",

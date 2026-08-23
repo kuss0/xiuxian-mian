@@ -276,6 +276,7 @@ from .runtime import (
     is_retired_miniapp_group_command,
     get_low_priority_audit_pending_counts,
     console_log,
+    should_pause_for_bot_health,
     issue_ui_login_token,
     reply_log_group_message,
     send_audit_log,
@@ -5693,6 +5694,16 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
     enabled = _coerce_control_bool(enabled)
     normalized_source = str(source or "").strip()
     previous_pause_source = get_global_pause_source()
+    if enabled and normalized_source in {"ui", "log_group"} and should_pause_for_bot_health():
+        # A manual resume must not override an active health pause. Before this
+        # guard, the UI could briefly enable scheduling and the main loop would
+        # immediately disable it again on the next health tick.
+        console_log(
+            "🩺 拒绝手动恢复：天尊健康探测仍未完成，等待自动恢复。",
+            scope="global",
+            limit=220,
+        )
+        return False, "天尊健康暂停中，等待自动探测恢复"
     if get_global_enabled() == enabled:
         if not enabled:
             if normalized_source and get_global_pause_source() != normalized_source:

@@ -83,6 +83,35 @@ class RuntimeReplyContextTests(unittest.TestCase):
         self.assertEqual(second_identity, context["send_as_id"])
         self.assertEqual("world_boss_status", context["family"])
 
+    def test_reply_context_cold_recovers_sent_message_outside_hot_tail(self):
+        identity_id = self._register_identity(991201)
+        payload = {
+            "event_type": "sent",
+            "message_id": 7001,
+            "chat_id": -1001680975844,
+            "sender_id": identity_id,
+            "text": ".小世界",
+            "family": "small_world_query",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            day = runtime.datetime.now(runtime.TZ_LOCAL).strftime("%Y-%m-%d")
+            path = Path(tmpdir) / f"{day}.log"
+            filler = {"event_type": "message", "message_id": 9000, "text": "filler"}
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False) + "\n"
+                + (json.dumps(filler) + "\n") * 12000,
+                encoding="utf-8",
+            )
+            context = runtime.get_reply_context(
+                reply_to_msg_id=7001,
+                chat_id=-1001680975844,
+            )
+
+        self.assertEqual(identity_id, context["send_as_id"])
+        self.assertEqual("small_world_query", context["family"])
+        self.assertEqual("sent_message_log", context["matched_via"])
+
     def test_sent_message_chat_lookup_filters_same_message_id_by_identity(self):
         first_identity = self._register_identity(991201)
         second_identity = self._register_identity(991202)
