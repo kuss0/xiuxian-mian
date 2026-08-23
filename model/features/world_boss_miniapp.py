@@ -44,6 +44,10 @@ WORLD_BOSS_MINIAPP_ENDPOINTS = {
 WORLD_BOSS_MINIAPP_WS_PATH_PREFIX = "/ws/miniapp/xianxia-world-boss/"
 WORLD_BOSS_MINIAPP_WS_STATE_PATH = f"{WORLD_BOSS_MINIAPP_WS_PATH_PREFIX}state"
 WORLD_BOSS_MINIAPP_START_PARAM_PATTERN = r"qyz_[A-Za-z0-9_-]{4,160}"
+# The public dwelling entry represents a channel identity as a Telegram-style
+# negative player id.  Keep this protocol detail local to the MiniApp adapter;
+# the rest of the runtime must continue using the positive local identity id.
+WORLD_BOSS_CHANNEL_PLAYER_ID_OFFSET = 1_000_000_000_000
 NANGONGQUE_MINIAPP_GAME_KEY = "world_boss_nangongque"
 NANGONGQUE_MINIAPP_LABEL = "南宫阙世界 Boss"
 NANGONGQUE_MINIAPP_API_PATH_PREFIX = "/api/miniapp/xianxia-nangongque-boss/"
@@ -97,6 +101,7 @@ WORLD_BOSS_ERROR_TYPES = (
     "boss_token_used",
     "boss_token_expired",
     "boss_hit_outside_window",
+    "boss_client_clock_mismatch",
     "rate_limited",
 )
 
@@ -314,6 +319,29 @@ def build_world_boss_miniapp_adapter(
         default_enabled=False,
         manual_only=True,
     )
+
+
+def world_boss_player_id_for_identity(identity_id, *, account_id=0):
+    """Return the server-side playerId for one local identity.
+
+    Personal identities use their positive account/player id.  A channel
+    identity is a send-as identity attached to a different login account and
+    must use the public MiniApp's negative Telegram-style encoding.
+    """
+
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        identity_id = 0
+    try:
+        account_id = int(account_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        account_id = 0
+    if identity_id <= 0:
+        return identity_id
+    if account_id > 0 and identity_id != account_id:
+        return -(WORLD_BOSS_CHANNEL_PLAYER_ID_OFFSET + identity_id)
+    return identity_id
 
 
 def build_nangongque_miniapp_adapter(
@@ -2119,6 +2147,26 @@ def run_world_boss_joined_battle_lab_flow(
                     })
                     break
                 continue
+            if status == "boss_client_clock_mismatch":
+                # The server has rejected the local battle clock. Remaining
+                # local windows are no longer trustworthy, so stop mutations
+                # and settle once using the evidence already accepted.
+                processed_window_ids.add(action["windowId"])
+                server_hit_summary["rejected_window_count"] += 1
+                client_stats["combo"] = 0
+                player_hp = max(0, player_hp - _world_boss_counter_damage(challenge))
+                events.append({
+                    "step": "server_clock_rejected_window",
+                    "ok": True,
+                    "windowId": action["windowId"],
+                    "error": status,
+                    "player_hp": player_hp,
+                    "stop_mutations": True,
+                })
+                if player_hp <= 0:
+                    dead = True
+                    death_elapsed_ms = release_elapsed_ms
+                break
             return _flow_result(False, status, error=hit_result.error, data=hit_result.data, events=events)
         hit_data = hit_result.data if isinstance(hit_result.data, dict) else {}
         if _verification_required(hit_data):

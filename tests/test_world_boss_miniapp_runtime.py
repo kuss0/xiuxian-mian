@@ -8,6 +8,50 @@ from model.features import world_boss_miniapp_runtime
 
 
 class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_channel_identity_uses_public_negative_player_id_on_join(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(
+                text="进入战场",
+                url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123",
+            )]],
+        )
+        seen = []
+
+        async def init_data_provider(_identity_id, _launch):
+            return "query_id=identity&hash=secret"
+
+        def fake_join(**kwargs):
+            seen.append(kwargs["player_id"])
+            return SimpleNamespace(
+                joined=True,
+                status="joined",
+                session_token="qyz_SESSION",
+                safe_summary=lambda: {
+                    "joined": True,
+                    "status": "joined",
+                    "player_id": str(kwargs["player_id"]),
+                },
+            )
+
+        def fake_battle(_receipt, **_kwargs):
+            return {"ok": True, "status": "settled", "data": {"result": {"score": 1}}}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=301299112),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [3504367852],
+                event,
+                opened_at=time.time(),
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([-1003504367852], seen)
+
     async def test_realtime_feed_decodes_state_and_answers_ping(self):
         sent = []
         received_url = []
@@ -363,6 +407,36 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if item["phase"] == "battle"
         ))
 
+    async def test_channel_join_uses_negative_public_player_id(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
+        )
+        join_payloads = []
+
+        async def init_data_provider(_identity_id, _launch):
+            return "query_id=channel&hash=secret"
+
+        def fake_join(**kwargs):
+            join_payloads.append(dict(kwargs))
+            return SimpleNamespace(joined=True, safe_summary=lambda: {"joined": True, "status": "joined"})
+
+        def fake_battle(_receipt, **_kwargs):
+            return {"ok": True, "status": "settled", "data": {"result": {}}, "error": ""}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=301299112),
+        ):
+            await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [3504367852],
+                event,
+                init_data_provider=init_data_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertEqual(-(1_000_000_000_000 + 3504367852), join_payloads[0]["player_id"])
+
     async def test_token_registration_delay_retries_only_confirmed_missing_token(self):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SECRET123")]],
@@ -573,15 +647,15 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual({11: 2, 22: 4}, received)
+        self.assertEqual({11: 0, 22: 2}, received)
         summaries = {
             item["identity_id"]: item["summary"]
             for item in result["results"]
             if item["phase"] == "battle"
         }
-        self.assertEqual(2, summaries[11]["finish_reserve_window_count"])
+        self.assertEqual(0, summaries[11]["finish_reserve_window_count"])
         self.assertEqual(0, summaries[11]["identity_extra_window_skip_count"])
-        self.assertEqual(2, summaries[22]["finish_reserve_window_count"])
+        self.assertEqual(0, summaries[22]["finish_reserve_window_count"])
         self.assertEqual(2, summaries[22]["identity_extra_window_skip_count"])
 
     async def test_parallel_battles_share_one_terminal_stop_event(self):

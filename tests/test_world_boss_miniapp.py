@@ -21,6 +21,22 @@ class FakeClock:
 
 
 class WorldBossMiniAppTests(unittest.TestCase):
+    def test_world_boss_player_id_encoding_keeps_personal_and_encodes_channel(self):
+        self.assertEqual(
+            8659059191,
+            world_boss_miniapp.world_boss_player_id_for_identity(
+                8659059191,
+                account_id=8659059191,
+            ),
+        )
+        self.assertEqual(
+            -1003504367852,
+            world_boss_miniapp.world_boss_player_id_for_identity(
+                3504367852,
+                account_id=301299112,
+            ),
+        )
+
     def test_build_websocket_url_uses_same_origin_ticket_fallback(self):
         urls = world_boss_miniapp.build_world_boss_websocket_urls({"ticket": "ws-secret"})
 
@@ -561,6 +577,61 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(2, summary["planned_window_count"])
         self.assertEqual(1, summary["rejected_window_count"])
         self.assertFalse(summary["full_window_run"])
+
+    def test_client_clock_mismatch_stops_remaining_hits_and_settles_once(self):
+        calls = []
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-clock-mismatch",
+                        "durationMs": 5200,
+                        "maxDurationMs": 7000,
+                        "playerHp": 10000,
+                        "windows": [
+                            {"id": "w1", "centerMs": 1200, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
+                            {"id": "w3", "centerMs": 4400, "hitMs": 620, "perfectMs": 210},
+                        ],
+                    },
+                }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 500}
+            if endpoint == "hit" and request["payload"]["windowId"] == "w1":
+                return 200, {"ok": True, "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100}}
+            if endpoint == "hit":
+                return 409, {"ok": False, "error": "boss_client_clock_mismatch"}
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 50, "hits": 1, "perfects": 1, "damageYi": 100}}
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_CLOCK_MISMATCH",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            rng=random.Random(9),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("settled", result["status"])
+        self.assertEqual(["start", "begin", "hit", "hit", "finish"], calls)
+        self.assertTrue(any(
+            event["step"] == "server_clock_rejected_window"
+            for event in result["events"]
+        ))
+        summary = result["data"]["result"]
+        self.assertEqual(1, summary["accepted_hit_count"])
+        self.assertEqual(1, summary["rejected_window_count"])
 
     def test_strict_error_classification(self):
         for error_type in world_boss_miniapp.WORLD_BOSS_ERROR_TYPES:

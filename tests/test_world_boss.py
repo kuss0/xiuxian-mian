@@ -1513,7 +1513,41 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account_id, rejection["account_id"])
         self.assertEqual(now + world_boss.WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC, rejection["suppress_until"])
 
-    def test_rotation_calibrates_legacy_empty_state_from_cached_inventory(self):
+    def test_rotation_ignores_legacy_identity_rejection_protocol_records(self):
+        now = 1_786_900_000.0
+        account_id = 301299112
+        first_id = 3504367852
+        second_id = 3581351795
+        self._register(first_id, label="吧唧甲", world_boss_enabled=False)
+        self._register(second_id, label="吧唧乙", world_boss_enabled=False)
+        state_module.set_identity_account(first_id, account_id)
+        state_module.set_identity_account(second_id, account_id)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "world_boss_rotation_account_ids": [account_id],
+            "world_boss_rotation_target_reward": "斩青元者",
+        }
+        state_module.set_world_boss_rotation_state({
+            "target_reward": "斩青元者",
+            "identity_rejections": {
+                str(first_id): {
+                    "identity_id": first_id,
+                    "account_id": account_id,
+                    "status": "boss_identity_invalid",
+                    "reason": "old positive playerId protocol",
+                    "rejected_at": now,
+                    "suppress_until": now + world_boss.WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC,
+                    "protocol_version": 1,
+                },
+            },
+        })
+
+        with patch.object(world_boss.time, "time", return_value=now):
+            selected = world_boss.select_world_boss_miniapp_entry_identities()
+
+        self.assertEqual(first_id, selected[0])
+        self.assertEqual({}, world_boss._normalized_rotation_state()["identity_rejections"])
+
+    def test_rotation_does_not_calibrate_legacy_empty_state_from_cached_inventory(self):
         account_id = 301299112
         first_id = 3504367852
         second_id = 3581351795
@@ -1532,13 +1566,9 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         selected = world_boss.select_world_boss_miniapp_entry_identities()
 
-        self.assertEqual(second_id, selected[0])
+        self.assertEqual(first_id, selected[0])
         rotation_state = state_module.get_world_boss_rotation_state()
-        self.assertEqual([account_id], rotation_state["inventory_calibrated_account_ids"])
-        self.assertEqual(
-            [first_id],
-            rotation_state["accounts"][str(account_id)]["completed_identity_ids"],
-        )
+        self.assertEqual({}, rotation_state)
 
     def test_rotation_keeps_legacy_account_uncalibrated_until_cache_is_complete(self):
         account_id = 301299112

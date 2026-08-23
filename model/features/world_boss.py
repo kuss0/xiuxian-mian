@@ -31,7 +31,6 @@ from ..state import (
     is_cave_public_identity_available,
     get_miniapp_auto_config,
     get_send_as_profile,
-    get_storage_bag_records,
     get_world_boss_run_state,
     get_world_boss_rotation_state,
     set_world_boss_run_state,
@@ -94,6 +93,7 @@ WORLD_BOSS_ROTATION_REWARD_ALIASES = {
 WORLD_BOSS_MINIAPP_BATTLE_PRIORITY_GAP_SEC = 0.25
 WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC = 7 * 24 * 3600
 WORLD_BOSS_IDENTITY_REJECTION_STATUSES = {"boss_identity_invalid"}
+WORLD_BOSS_IDENTITY_REJECTION_PROTOCOL_VERSION = 2
 WORLD_BOSS_LOCAL_USERNAME_ALIASES = {
     8659059191: ("WalterWA2000", "wa2000"),
     301299112: ("jfdffdddd",),
@@ -1046,6 +1046,11 @@ def _normalized_rotation_state():
             identity_id = _coerce_int(raw_identity_id, 0)
             if identity_id <= 0 or not isinstance(raw_record, dict):
                 continue
+            if _coerce_int(raw_record.get("protocol_version"), 0) != WORLD_BOSS_IDENTITY_REJECTION_PROTOCOL_VERSION:
+                # Historical 403s were recorded before channel identities used
+                # the public MiniApp playerId encoding. Do not keep suppressing
+                # those identities after the wire protocol changes.
+                continue
             rejected_at = _coerce_float(raw_record.get("rejected_at"), 0)
             suppress_until = _coerce_float(raw_record.get("suppress_until"), 0)
             if suppress_until <= 0 and rejected_at > 0:
@@ -1059,6 +1064,7 @@ def _normalized_rotation_state():
                 "reason": _short_text(raw_record.get("reason") or "boss_identity_invalid", 120),
                 "rejected_at": rejected_at,
                 "suppress_until": suppress_until,
+                "protocol_version": _coerce_int(raw_record.get("protocol_version"), 0),
             }
     return {
         "accounts": dict(accounts or {}) if isinstance(accounts, dict) else {},
@@ -1089,6 +1095,7 @@ def _record_world_boss_identity_rejection(identity_id, status, reason="", now=No
         "reason": _short_text(reason or status, 120),
         "rejected_at": now,
         "suppress_until": now + WORLD_BOSS_IDENTITY_REJECTION_TTL_SEC,
+        "protocol_version": WORLD_BOSS_IDENTITY_REJECTION_PROTOCOL_VERSION,
     }
     set_world_boss_rotation_state(rotation_state)
     mark_dirty()
@@ -1166,72 +1173,6 @@ def get_world_boss_rotation_account_record(account_id):
     return _rotation_account_record(account_id)
 
 
-def _storage_record_owns_rotation_reward(record, target_reward):
-    if not isinstance(record, dict):
-        return False
-    items = record.get("items")
-    if not isinstance(items, dict):
-        return False
-    target_reward = _normalize_rotation_target_reward(target_reward)
-    for item_name, raw_count in items.items():
-        if _normalize_rotation_target_reward(item_name) != target_reward:
-            continue
-        if _coerce_int(raw_count, 0) > 0:
-            return True
-    return False
-
-
-def calibrate_world_boss_rotation_from_inventory():
-    """Seed legacy rotation ledgers from already-cached inventory evidence."""
-    config = _rotation_config()
-    if not config["account_ids"]:
-        return []
-    rotation_state = _normalized_rotation_state()
-    calibrated_account_ids = set(rotation_state.get("inventory_calibrated_account_ids") or ())
-    storage_records = get_storage_bag_records() or {}
-    calibrated = []
-    changed = False
-    for account_id in config["account_ids"]:
-        if account_id in calibrated_account_ids:
-            continue
-        record = _rotation_account_record(account_id)
-        candidate_ids = list(record.get("identity_ids") or ())
-        if not candidate_ids or any(
-            not isinstance(storage_records.get(str(identity_id)), dict)
-            for identity_id in candidate_ids
-        ):
-            continue
-        completed_ids = set(record.get("completed_identity_ids") or ())
-        owned_ids = [
-            identity_id
-            for identity_id in candidate_ids
-            if _storage_record_owns_rotation_reward(
-                storage_records.get(str(identity_id)),
-                config["target_reward"],
-            )
-        ]
-        if owned_ids:
-            completed_ids.update(owned_ids)
-            record["completed_identity_ids"] = sorted(completed_ids)
-            record["current_identity_id"] = next(
-                (identity_id for identity_id in record.get("identity_ids") or () if identity_id not in completed_ids),
-                0,
-            )
-            rotation_state["accounts"][str(account_id)] = record
-            calibrated.append({
-                "account_id": account_id,
-                "identity_ids": sorted(owned_ids),
-            })
-        calibrated_account_ids.add(account_id)
-        changed = True
-    if changed:
-        rotation_state["inventory_calibrated_account_ids"] = sorted(calibrated_account_ids)
-        rotation_state["target_reward"] = config["target_reward"]
-        set_world_boss_rotation_state(rotation_state)
-        mark_dirty()
-    return calibrated
-
-
 def _save_rotation_account_record(record, *, conclusion_key=""):
     rotation_state = _normalized_rotation_state()
     account_id = int(record.get("account_id") or 0)
@@ -1250,7 +1191,6 @@ def _rotation_identity_for_account(account_id):
 
 def select_world_boss_miniapp_entry_identities(limit=WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT):
     """Pick at most one world-boss MiniApp entry identity per login account."""
-    calibrate_world_boss_rotation_from_inventory()
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -1722,10 +1662,6 @@ def _world_boss_miniapp_auto_config():
         account_limit = max(1, min(WORLD_BOSS_MINIAPP_ACCOUNT_LIMIT, int(raw.get("world_boss_auto_account_limit", 1) or 1)))
     except (TypeError, ValueError, OverflowError):
         account_limit = 1
-    try:
-        account_gap_sec = max(1.0, min(15.0, float(raw.get("world_boss_auto_account_gap_sec", 3) or 3)))
-    except (TypeError, ValueError, OverflowError):
-        account_gap_sec = 3.0
     excluded_ids = raw.get("world_boss_auto_excluded_identity_ids") or []
     if not isinstance(excluded_ids, (list, tuple, set)):
         excluded_ids = []
@@ -1748,7 +1684,9 @@ def _world_boss_miniapp_auto_config():
     return {
         "enabled": bool(raw.get("world_boss_auto_enabled")),
         "account_limit": account_limit,
-        "account_gap_sec": account_gap_sec,
+        # Compatibility-only field. Entry is intentionally parallel; battle
+        # launch spacing is controlled by battle_priority_gap_sec.
+        "account_gap_sec": 0,
         "excluded_identity_ids": {
             _coerce_int(identity_id, 0)
             for identity_id in excluded_ids
@@ -1984,14 +1922,20 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
                 event,
                 text,
                 now,
-                auto_config["account_gap_sec"],
+                0,
                 auto_config["window_skip_by_identity"],
             )
-            message = (
-                f"🗡 真仙试锋小程序（MiniApp）自动参与已启动：{'、'.join(_identity_label(identity_id) for identity_id in auto_identity_ids)}"
-                f"\n{len(auto_identity_ids)} 个登录账户并行入场并各自运行战斗时间线；单账户内部请求保持串行。"
-                f"统一预留尾部 {WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS} 个窗口用于提前结算。"
-            ) if started else "🗡 真仙试锋 MiniApp 已有事件任务运行，本次广播仅去重记录。"
+            if started:
+                message = (
+                    f"🗡 真仙试锋小程序（MiniApp）自动参与已启动：{'、'.join(_identity_label(identity_id) for identity_id in auto_identity_ids)}"
+                    f"\n{len(auto_identity_ids)} 个登录账户并行入场并各自运行战斗时间线；单账户内部请求保持串行。"
+                )
+                if WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS:
+                    message += (
+                        f"统一预留尾部 {WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS} 个窗口用于提前结算。"
+                    )
+            else:
+                message = "🗡 真仙试锋 MiniApp 已有事件任务运行，本次广播仅去重记录。"
         elif auto_config["enabled"] and not launch:
             run_state["miniapp_auto_status"] = "entry_missing"
             message = "🗡 真仙试锋已开打，但广播中未提取到有效 MiniApp 入口，已保守停止自动参与。"
@@ -2897,7 +2841,6 @@ def get_world_boss_status_text():
 
 
 __all__ = [
-    "calibrate_world_boss_rotation_from_inventory",
     "choose_world_boss_action",
     "clear_world_boss_identity_state",
     "get_world_boss_rotation_account_record",
