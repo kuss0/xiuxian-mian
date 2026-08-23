@@ -150,6 +150,115 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wanxin_moon_seal", action_guard.resolve_action_key(".同参封魂"))
         self.assertEqual("wanxin_moon_join", action_guard.resolve_action_key(".月下合参"))
 
+    def test_topic_level_reply_recovery_binds_unique_visit_command(self):
+        sent_at = 1_800_000_005.0
+        now = sent_at + 60
+        observed = wanxin.normalize_wanxin_observation({
+            "pending": {
+                "action": "visit",
+                "family": "wanxin_visit",
+                "msg_id": 11919613,
+                "send_as_id": 301299112,
+                "sent_at": sent_at,
+                "reply_due_at": now,
+            },
+        })
+        entries = [
+            {
+                "ts": "2026-08-24 00:05:05 UTC+8",
+                "event_type": "sent",
+                "message_id": 11919613,
+                "chat_id": -1001680975844,
+                "sender_id": 301299112,
+                "topic_id": 7310786,
+                "reply_to_msg_id": 0,
+                "text": ".探望南宫婉",
+            },
+            {
+                "ts": "2026-08-24 00:05:08 UTC+8",
+                "event_type": "message",
+                "message_id": 11919615,
+                "chat_id": -1001680975844,
+                "sender_id": 8944702077,
+                "sender_username": "hantianzun24_bot",
+                "sender_is_bot": True,
+                "topic_id": 0,
+                "reply_to_msg_id": 7310786,
+                "text": "【探望南宫婉】\n你以月殿旧令稳住她的神魂，南宫婉短暂醒转片刻。",
+            },
+        ]
+        with (
+            patch.object(wanxin, "_iter_message_log_entries_between", return_value=iter((item, sent_at + index * 3) for index, item in enumerate(entries))),
+        ):
+            replies = wanxin._topic_level_wanxin_replies(
+                observed,
+                "visit",
+                11919613,
+                now,
+                -1001680975844,
+            )
+
+        self.assertEqual([11919615], [item["message_id"] for item in replies])
+
+    def test_topic_level_reply_recovery_rejects_later_duplicate_command(self):
+        sent_at = 1_800_000_005.0
+        now = sent_at + 180
+        observed = wanxin.normalize_wanxin_observation({
+            "pending": {
+                "action": "visit",
+                "family": "wanxin_visit",
+                "msg_id": 11919613,
+                "send_as_id": 301299112,
+                "sent_at": sent_at,
+                "reply_due_at": now,
+            },
+        })
+        entries = [
+            {
+                "ts": "2026-08-24 00:05:05 UTC+8",
+                "event_type": "sent",
+                "message_id": 11919613,
+                "chat_id": -1001680975844,
+                "sender_id": 301299112,
+                "topic_id": 7310786,
+                "text": ".探望南宫婉",
+            },
+            {
+                "ts": "2026-08-24 00:06:10 UTC+8",
+                "event_type": "sent",
+                "message_id": 11919852,
+                "chat_id": -1001680975844,
+                "sender_id": 301299112,
+                "topic_id": 7310786,
+                "text": ".探望南宫婉",
+            },
+            {
+                "ts": "2026-08-24 00:06:14 UTC+8",
+                "event_type": "message",
+                "message_id": 11919854,
+                "chat_id": -1001680975844,
+                "sender_id": 8964348409,
+                "sender_username": "hantianzun22_bot",
+                "sender_is_bot": True,
+                "reply_to_msg_id": 7310786,
+                "text": "今日已探望过南宫婉。她神魂尚需静养。",
+            },
+        ]
+        with patch.object(
+            wanxin,
+            "_iter_message_log_entries_between",
+            return_value=iter((item, sent_at + index * 65) for index, item in enumerate(entries)),
+        ):
+            replies = wanxin._topic_level_wanxin_replies(
+                observed,
+                "visit",
+                11919613,
+                now,
+                -1001680975844,
+            )
+
+        self.assertEqual([], replies)
+
     def test_parse_real_moon_actions_and_safe_defaults(self):
         panel = wanxin.parse_wanxin_text(
             "【月影同参】\n侍妾：【南宫婉·月影】（随行中）\n情缘：142\n共鸣：已觉醒"
@@ -176,6 +285,11 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config["moon_greet_enabled"])
         self.assertFalse(config["moon_seal_enabled"])
         self.assertFalse(config["moon_join_enabled"])
+
+    def test_parse_visit_already_variant_is_wanxin_text(self):
+        text = "今日已探望过南宫婉。她神魂尚需静养，频繁惊扰反而不妥。"
+        self.assertTrue(wanxin.looks_like_wanxin_text(text))
+        self.assertEqual("visit_already", wanxin.parse_wanxin_text(text)["type"])
 
     async def test_moon_panel_syncs_shared_affinity_for_voyage_gate(self):
         identity_id = self._prepare_identity()

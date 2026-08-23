@@ -525,6 +525,7 @@ def looks_like_wanxin_text(text):
         "剥离咒源失败",
         "咒源尚未辨明",
         "探望南宫婉",
+        "探望过南宫婉",
         "护持神魂",
         "月殿余咒",
         "阴罗咒源",
@@ -1251,6 +1252,80 @@ def _is_wanxin_reply_log_entry(entry):
     return looks_like_wanxin_text(str((entry or {}).get("text") or "").strip())
 
 
+def _topic_level_wanxin_replies(observed, action, msg_id, now, chat_id):
+    """Recover Wanxin replies posted against a topic root instead of the command.
+
+    Some game shards reply to the forum topic root.  Bind such a reply only
+    when the command is the unique latest same-identity action before the
+    official bot message; otherwise leave the pending action unresolved.
+    """
+    msg_id = _safe_int(msg_id, 0)
+    send_as_id = _safe_int((observed.get("pending") or {}).get("send_as_id"), 0)
+    sent_at = _safe_float((observed.get("pending") or {}).get("sent_at"), 0)
+    chat_id = _safe_int(chat_id, 0)
+    if msg_id <= 0 or send_as_id <= 0 or sent_at <= 0 or chat_id == 0:
+        return []
+    command = str(WANXIN_ACTION_COMMANDS.get(action) or "").strip()
+    if not command:
+        return []
+    command_norm = command.replace("。", ".", 1)
+    start_ts = max(0.0, sent_at - 30)
+    end_ts = max(float(now or 0), sent_at) + 30
+    topic_id = _safe_int((observed.get("pending") or {}).get("reply_to_msg_id"), 0)
+    commands = {}
+    entries = []
+    for entry, entry_ts in _iter_message_log_entries_between(start_ts, end_ts):
+        if _safe_int(entry.get("chat_id"), 0) != chat_id:
+            continue
+        entry_id = _safe_int(entry.get("message_id"), 0)
+        if entry_id == msg_id and topic_id <= 0:
+            topic_id = _safe_int(entry.get("topic_id"), 0) or _safe_int(entry.get("reply_to_msg_id"), 0)
+        if (
+            entry_id > 0
+            and _safe_int(entry.get("sender_id"), 0) == send_as_id
+            and str(entry.get("text") or "").strip().replace("。", ".", 1) == command_norm
+            and str(entry.get("event_type") or "") in {"sent", "message"}
+        ):
+            previous = commands.get(entry_id)
+            if previous is None or entry_ts < previous:
+                commands[entry_id] = entry_ts
+        entries.append((entry, entry_ts))
+    if topic_id <= 0 or commands.get(msg_id, sent_at) < sent_at - 1:
+        return []
+
+    candidates = []
+    for entry, entry_ts in entries:
+        if entry_ts < sent_at or entry_ts > end_ts:
+            continue
+        if str(entry.get("event_type") or "") not in {"message", "edit"}:
+            continue
+        if _safe_int(entry.get("reply_to_msg_id"), 0) != topic_id:
+            continue
+        if not _is_wanxin_reply_log_entry(entry):
+            continue
+        sender_id = _safe_int(entry.get("sender_id"), 0)
+        if sender_id == send_as_id:
+            continue
+        sender_username = str(entry.get("sender_username") or "").strip().casefold()
+        if not bool(entry.get("sender_is_bot")) and not sender_username.endswith("_bot"):
+            continue
+        prior = [
+            (command_id, command_ts)
+            for command_id, command_ts in commands.items()
+            if command_ts <= entry_ts + 0.001
+        ]
+        if not prior:
+            continue
+        latest_command_id, latest_command_ts = max(prior, key=lambda item: (item[1], item[0]))
+        if latest_command_id != msg_id or latest_command_ts < sent_at - 1:
+            continue
+        item = dict(entry)
+        item["ts_epoch"] = entry_ts
+        candidates.append(item)
+    candidates.sort(key=lambda item: (float(item.get("ts_epoch") or 0), _safe_int(item.get("message_id"), 0)))
+    return candidates
+
+
 async def _recover_wanxin_pending_from_message_log(observed, now):
     pending = observed.get("pending") if isinstance(observed.get("pending"), dict) else {}
     if not pending:
@@ -1270,6 +1345,13 @@ async def _recover_wanxin_pending_from_message_log(observed, now):
         chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_is_wanxin_reply_log_entry,
     )
+    if not replies:
+        chat_id = get_sent_message_chat_id(
+            msg_id,
+            default=get_game_group_id(),
+            send_as_id=_safe_int((pending or {}).get("send_as_id"), get_current_identity_id()),
+        )
+        replies = _topic_level_wanxin_replies(observed, action, msg_id, now, chat_id)
     if not replies:
         return False
     command = WANXIN_ACTION_COMMANDS.get(action, "")
