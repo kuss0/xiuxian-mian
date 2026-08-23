@@ -142,7 +142,7 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "data-world-boss-window-skip" in script
     assert "window_skip_by_identity" in script
     assert "额外少出手" in script
-    assert "world_boss_auto_finish_reserve_windows" in script
+    assert "仅按身份配置少出手" in script
     assert 'data-cave-public-switch="fate_cards"' in script
     assert 'data-cave-public-fate-choice="1"' in script
     assert 'data-cave-public-action="fate_cards"' in script

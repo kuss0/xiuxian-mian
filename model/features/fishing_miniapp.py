@@ -1253,7 +1253,14 @@ def run_fishing_miniapp_loop_lab_flow(
                 "last_status": last_status,
                 **loop_gains,
             }
-            return _flow_result(settled_count > 0, last_status or "failed", error=last_error, data=data, events=events)
+            partial_not_ready = settled_count > 0 and last_status == "not_ready"
+            return _flow_result(
+                settled_count > 0,
+                "partial_not_ready" if partial_not_ready else (last_status or "failed"),
+                error="" if partial_not_ready else last_error,
+                data=data,
+                events=events,
+            )
 
         settled_count += 1
         if index >= max_rounds - 1:

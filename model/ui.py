@@ -414,11 +414,25 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave1_last_run_at": 0,
     "trial_daily_wave1_last_result": "",
     "trial_daily_wave1_last_status": "",
+    "trial_daily_wave1_last_progress_day": "",
+    "trial_daily_wave1_last_cursor": 0,
+    "trial_daily_wave1_last_completed": 0,
+    "trial_daily_wave1_last_succeeded": 0,
+    "trial_daily_wave1_last_failed": 0,
+    "trial_daily_wave1_last_steps": [],
+    "trial_daily_wave1_last_outcomes": {},
     "trial_daily_wave2_last_run_day": "",
     "trial_daily_wave2_last_batch_id": "",
     "trial_daily_wave2_last_run_at": 0,
     "trial_daily_wave2_last_result": "",
     "trial_daily_wave2_last_status": "",
+    "trial_daily_wave2_last_progress_day": "",
+    "trial_daily_wave2_last_cursor": 0,
+    "trial_daily_wave2_last_completed": 0,
+    "trial_daily_wave2_last_succeeded": 0,
+    "trial_daily_wave2_last_failed": 0,
+    "trial_daily_wave2_last_steps": [],
+    "trial_daily_wave2_last_outcomes": {},
     "cave_public_small_world_enabled": True,
     "cave_public_small_world_harvest_enabled": True,
     "cave_public_deep_status_enabled": True,
@@ -444,6 +458,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_delay_sec": 20,
     "world_boss_auto_enabled": False,
     "world_boss_auto_account_limit": 1,
+    # Compatibility-only setting. Runtime entry remains parallel.
     "world_boss_auto_account_gap_sec": 3,
     "world_boss_auto_excluded_identity_ids": [],
     "world_boss_auto_finish_reserve_windows": WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS,
@@ -661,17 +676,49 @@ def normalize_miniapp_auto_config(config=None):
         "trial_daily_wave1_last_batch_id",
         "trial_daily_wave1_last_result",
         "trial_daily_wave1_last_status",
+        "trial_daily_wave1_last_progress_day",
         "trial_daily_wave2_last_run_day",
         "trial_daily_wave2_last_batch_id",
         "trial_daily_wave2_last_result",
         "trial_daily_wave2_last_status",
+        "trial_daily_wave2_last_progress_day",
     ):
         result[key] = str(result.get(key) or "")
-    for key in ("trial_daily_last_run_at", "trial_daily_wave1_last_run_at", "trial_daily_wave2_last_run_at"):
+    for key in (
+        "trial_daily_last_run_at",
+        "trial_daily_wave1_last_run_at",
+        "trial_daily_wave2_last_run_at",
+        "trial_daily_wave1_last_cursor",
+        "trial_daily_wave1_last_completed",
+        "trial_daily_wave1_last_succeeded",
+        "trial_daily_wave1_last_failed",
+        "trial_daily_wave2_last_cursor",
+        "trial_daily_wave2_last_completed",
+        "trial_daily_wave2_last_succeeded",
+        "trial_daily_wave2_last_failed",
+    ):
         try:
-            result[key] = float(result.get(key, 0) or 0)
+            result[key] = int(result.get(key, 0) or 0) if key.endswith(("_cursor", "_completed", "_succeeded", "_failed")) else float(result.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
-            result[key] = 0
+            result[key] = 0 if key.endswith(("_cursor", "_completed", "_succeeded", "_failed")) else 0.0
+    for key in ("trial_daily_wave1_last_steps", "trial_daily_wave2_last_steps"):
+        raw_steps = result.get(key)
+        if not isinstance(raw_steps, (list, tuple)):
+            raw_steps = []
+        steps = []
+        for item in raw_steps:
+            if not isinstance(item, dict):
+                continue
+            try:
+                identity_id = int(item.get("identity_id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                identity_id = 0
+            action = str(item.get("action") or "").strip().lower()
+            if identity_id > 0 and action:
+                steps.append({"identity_id": identity_id, "action": action})
+        result[key] = steps
+    for key in ("trial_daily_wave1_last_outcomes", "trial_daily_wave2_last_outcomes"):
+        result[key] = result.get(key) if isinstance(result.get(key), dict) else {}
     legacy_run_day = result["trial_daily_last_run_day"]
     had_wave1_day = bool(result["trial_daily_wave1_last_run_day"])
     had_wave2_day = bool(result["trial_daily_wave2_last_run_day"])
@@ -745,6 +792,24 @@ def _trial_daily_wave_for_now(config, local_now):
     return None
 
 
+def _trial_daily_retry_wave_for_today(config, today):
+    today = str(today or "").strip()
+    for wave in TRIAL_DAILY_BATCH_WAVES:
+        wave_key = str(wave["key"])
+        if (
+            str(config.get(f"trial_daily_{wave_key}_last_status") or "") == "retry_pending"
+            and str(config.get(f"trial_daily_{wave_key}_last_progress_day") or "") == today
+            and str(config.get(f"trial_daily_{wave_key}_last_run_day") or "") != today
+        ):
+            return {
+                **wave,
+                "done_today": False,
+                "last_status": "retry_pending",
+                "resume_pending": True,
+            }
+    return None
+
+
 def _split_trial_daily_identity_ids(identity_ids, wave_key):
     ids = list(identity_ids or [])
     if not ids:
@@ -771,6 +836,10 @@ def get_miniapp_auto_config_snapshot(now=None):
             "last_batch_id": config.get(f"trial_daily_{wave_key}_last_batch_id") or "",
             "last_result": config.get(f"trial_daily_{wave_key}_last_result") or "",
             "last_status": config.get(f"trial_daily_{wave_key}_last_status") or "",
+            "last_cursor": int(config.get(f"trial_daily_{wave_key}_last_cursor", 0) or 0),
+            "last_completed": int(config.get(f"trial_daily_{wave_key}_last_completed", 0) or 0),
+            "last_succeeded": int(config.get(f"trial_daily_{wave_key}_last_succeeded", 0) or 0),
+            "last_failed": int(config.get(f"trial_daily_{wave_key}_last_failed", 0) or 0),
         })
     all_done = all(item["done_today"] for item in wave_states)
     safe_config = dict(config)
@@ -7466,6 +7535,11 @@ def _is_cave_public_upstream_failure(message):
     )
 
 
+def _is_cave_public_batch_pause(message):
+    text = str(message or "").strip()
+    return "全局暂停来源不允许洞府公共入口 MiniApp HTTP" in text
+
+
 def _open_cave_public_upstream_circuit(message, now=None, duration_sec=None):
     opened_at = float(now or time.time())
     try:
@@ -7829,7 +7903,21 @@ def _normalize_trial_daily_batch_context(context):
     }
 
 
-def _persist_trial_daily_batch_state(context, *, batch_id, status, result, now=None, completed=False):
+def _persist_trial_daily_batch_state(
+    context,
+    *,
+    batch_id,
+    status,
+    result,
+    now=None,
+    completed=False,
+    cursor=None,
+    completed_count=None,
+    succeeded=None,
+    failed=None,
+    steps=None,
+    outcomes=None,
+):
     context = _normalize_trial_daily_batch_context(context)
     if not context:
         return False
@@ -7843,6 +7931,23 @@ def _persist_trial_daily_batch_state(context, *, batch_id, status, result, now=N
     config[f"trial_daily_{wave_key}_last_run_at"] = changed_at
     config[f"trial_daily_{wave_key}_last_result"] = str(result or "")[:500]
     config[f"trial_daily_{wave_key}_last_status"] = status
+    prefix = f"trial_daily_{wave_key}_last_"
+    config[f"{prefix}progress_day"] = context["day_key"]
+    if cursor is not None:
+        config[f"{prefix}cursor"] = max(0, int(cursor or 0))
+    if completed_count is not None:
+        config[f"{prefix}completed"] = max(0, int(completed_count or 0))
+    if succeeded is not None:
+        config[f"{prefix}succeeded"] = max(0, int(succeeded or 0))
+    if failed is not None:
+        config[f"{prefix}failed"] = max(0, int(failed or 0))
+    if steps is not None:
+        config[f"{prefix}steps"] = [
+            {"identity_id": int(identity_id), "action": str(action)}
+            for identity_id, action in steps
+        ]
+    if outcomes is not None:
+        config[f"{prefix}outcomes"] = dict(outcomes or {})
     config["trial_daily_last_batch_id"] = str(batch_id or "")
     config["trial_daily_last_run_at"] = changed_at
     config["trial_daily_last_result"] = str(result or "")[:500]
@@ -7850,9 +7955,62 @@ def _persist_trial_daily_batch_state(context, *, batch_id, status, result, now=N
     if completed:
         config[f"trial_daily_{wave_key}_last_run_day"] = context["day_key"]
         config["trial_daily_last_run_day"] = context["day_key"]
+        config[f"{prefix}cursor"] = 0
+        config[f"{prefix}completed"] = 0
+        config[f"{prefix}succeeded"] = 0
+        config[f"{prefix}failed"] = 0
+        config[f"{prefix}steps"] = []
+        config[f"{prefix}outcomes"] = {}
     set_miniapp_auto_config(config)
     save_state()
     return True
+
+
+def _trial_daily_batch_resume_state(context):
+    """Return a same-day paused trial prefix that is safe to resume."""
+    context = _normalize_trial_daily_batch_context(context)
+    if not context:
+        return {}
+    config = normalize_miniapp_auto_config()
+    wave_key = context["wave_key"]
+    prefix = f"trial_daily_{wave_key}_last_"
+    if config.get(f"{prefix}status") != "retry_pending":
+        return {}
+    if str(config.get(f"{prefix}progress_day") or "") != context["day_key"]:
+        return {}
+    raw_steps = config.get(f"{prefix}steps")
+    if not isinstance(raw_steps, (list, tuple)):
+        return {}
+    steps = []
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            return {}
+        try:
+            identity_id = int(item.get("identity_id") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        action = str(item.get("action") or "").strip().lower()
+        if identity_id <= 0 or not action:
+            return {}
+        steps.append((identity_id, action))
+    if not steps:
+        return {}
+    try:
+        cursor = max(0, min(len(steps), int(config.get(f"{prefix}cursor") or 0)))
+    except (TypeError, ValueError, OverflowError):
+        cursor = 0
+    outcomes = config.get(f"{prefix}outcomes")
+    if not isinstance(outcomes, dict):
+        outcomes = {}
+    return {
+        "batch_id": str(config.get(f"{prefix}batch_id") or ""),
+        "steps": steps,
+        "cursor": cursor,
+        "completed": max(0, int(config.get(f"{prefix}completed") or cursor)),
+        "succeeded": max(0, int(config.get(f"{prefix}succeeded") or 0)),
+        "failed": max(0, int(config.get(f"{prefix}failed") or 0)),
+        "outcomes": outcomes,
+    }
 
 
 async def _run_cave_public_entry_batch(
@@ -7863,19 +8021,34 @@ async def _run_cave_public_entry_batch(
     delay_sec,
     *,
     trial_daily_context=None,
+    resume_cursor=0,
+    initial_completed=0,
+    initial_succeeded=0,
+    initial_failed=0,
+    initial_outcomes=None,
+    steps_override=None,
 ):
     trial_daily_context = _normalize_trial_daily_batch_context(trial_daily_context)
-    steps = _build_cave_public_batch_steps(identity_ids, actions)
+    steps = list(steps_override or _build_cave_public_batch_steps(identity_ids, actions))
     total = len(steps)
+    try:
+        resume_cursor = max(0, min(total, int(resume_cursor or 0)))
+    except (TypeError, ValueError, OverflowError):
+        resume_cursor = 0
+    completed = max(0, min(total, int(initial_completed or resume_cursor)))
+    succeeded = max(0, int(initial_succeeded or 0))
+    failed = max(0, int(initial_failed or 0))
+    outcomes = dict(initial_outcomes or {}) if isinstance(initial_outcomes, dict) else {}
+    next_cursor = resume_cursor
     _set_cave_public_batch_state(
         running=True,
         batch_id=batch_id,
         started_at=time.time(),
         finished_at=0,
         total=total,
-        completed=0,
-        succeeded=0,
-        failed=0,
+        completed=completed,
+        succeeded=succeeded,
+        failed=failed,
         current="",
         last_result="",
         delay_sec=delay_sec,
@@ -7894,27 +8067,65 @@ async def _run_cave_public_entry_batch(
             status="completed",
             result="本批无可执行步骤",
             completed=True,
+            cursor=total,
+            completed_count=total,
+            succeeded=0,
+            failed=0,
+            steps=steps,
         )
         await send_audit_log("🧩 洞府公共入口串行批次结束：无可执行步骤。", scope="global", priority="low", limit=220)
         return
 
     try:
-        succeeded = 0
-        failed = 0
-        outcomes = {}
         repeated_fail_key = ""
         repeated_fail_count = 0
-        for index, (identity_id, action) in enumerate(steps, start=1):
+        failed_steps = []
+        for index, (identity_id, action) in enumerate(steps[resume_cursor:], start=resume_cursor + 1):
+            next_cursor = index - 1
             display = get_identity_display_name(identity_id)
             current = f"{index}/{total} {display} {action}"
             _set_cave_public_batch_state(current=current)
             ok, message, extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
+            if not ok and _is_cave_public_batch_pause(message):
+                retry_result = f"全局暂停，已完成 {completed}/{total}，等待恢复：{display} {action}"
+                _set_cave_public_batch_state(
+                    running=False,
+                    finished_at=time.time(),
+                    completed=completed,
+                    succeeded=succeeded,
+                    failed=failed,
+                    current="",
+                    last_result=retry_result,
+                )
+                _persist_trial_daily_batch_state(
+                    trial_daily_context,
+                    batch_id=batch_id,
+                    status="retry_pending",
+                    result=retry_result,
+                    cursor=next_cursor,
+                    completed_count=completed,
+                    succeeded=succeeded,
+                    failed=failed,
+                    steps=steps,
+                    outcomes=outcomes,
+                )
+                await send_audit_log(
+                    f"⏸️ 洞府公共入口批次遇到全局暂停，已完成 {completed}/{total}；"
+                    "当前步骤未计失败，恢复后从该步骤继续。",
+                    scope="global",
+                    priority="normal",
+                    limit=300,
+                )
+                return
             _record_cave_public_batch_outcome(outcomes, action, ok, extra)
             result_text = f"{display} {action}: {'ok' if ok else 'fail'} {message}"
             if ok:
                 succeeded += 1
             else:
                 failed += 1
+                failed_steps.append((identity_id, action))
+            completed = index
+            next_cursor = index
             _set_cave_public_batch_state(
                 completed=index,
                 succeeded=succeeded,
@@ -7941,6 +8152,12 @@ async def _run_cave_public_entry_batch(
                     batch_id=batch_id,
                     status="retry_pending",
                     result=retry_result,
+                    cursor=next_cursor,
+                    completed_count=completed,
+                    succeeded=succeeded,
+                    failed=failed,
+                    steps=steps,
+                    outcomes=outcomes,
                 )
                 await send_audit_log(
                     f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止；"
@@ -7976,6 +8193,12 @@ async def _run_cave_public_entry_batch(
                     batch_id=batch_id,
                     status="retry_pending",
                     result=retry_result,
+                    cursor=next_cursor,
+                    completed_count=completed,
+                    succeeded=succeeded,
+                    failed=failed,
+                    steps=steps,
+                    outcomes=outcomes,
                 )
                 await send_audit_log(
                     f"🧯 洞府天机试炼连续 {repeated_fail_count} 个身份返回外府入口不可用，"
@@ -7995,6 +8218,12 @@ async def _run_cave_public_entry_batch(
             batch_id=batch_id,
             status="retry_pending",
             result=message,
+            cursor=next_cursor,
+            completed_count=completed,
+            succeeded=succeeded,
+            failed=failed,
+            steps=steps,
+            outcomes=outcomes,
         )
         await send_audit_log(
             f"🧩 洞府公共入口串行批次中止：batch={batch_id}｜{message}",
@@ -8006,12 +8235,41 @@ async def _run_cave_public_entry_batch(
 
     _set_cave_public_batch_state(running=False, finished_at=time.time(), current="")
     completion_result = f"完整执行 {total}/{total}，成功 {succeeded}，失败 {failed}"
+    if trial_daily_context and failed_steps:
+        retry_result = f"{completion_result}；未标记完成，下次仅重试失败步骤 {len(failed_steps)} 个"
+        _set_cave_public_batch_state(last_result=retry_result)
+        _persist_trial_daily_batch_state(
+            trial_daily_context,
+            batch_id=batch_id,
+            status="retry_pending",
+            result=retry_result,
+            cursor=0,
+            completed_count=0,
+            succeeded=0,
+            failed=0,
+            steps=failed_steps,
+            outcomes={},
+        )
+        await send_audit_log(
+            f"🧩 洞府天机试炼批次未标记完成：{completion_result}；"
+            f"下次仅重试失败步骤 {len(failed_steps)} 个，已成功步骤不重跑。",
+            scope="global",
+            priority="normal",
+            limit=320,
+        )
+        return
     _persist_trial_daily_batch_state(
         trial_daily_context,
         batch_id=batch_id,
         status="completed",
         result=completion_result,
         completed=True,
+        cursor=total,
+        completed_count=total,
+        succeeded=succeeded,
+        failed=failed,
+        steps=steps,
+        outcomes=outcomes,
     )
     await send_audit_log(
         f"🧩 洞府公共入口串行批次完成：batch={batch_id}｜完成 {total}/{total}｜成功 {succeeded}｜失败 {failed}。",
@@ -8052,7 +8310,11 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
     steps = _build_cave_public_batch_steps(identity_ids, actions)
     if not steps:
         return False, "没有匹配本批动作的启用身份", {}
-    batch_id = f"cave_public_{int(time.time())}_{len(steps)}"
+    resume_state = _trial_daily_batch_resume_state(trial_daily_context)
+    if resume_state:
+        steps = list(resume_state["steps"])
+        identity_ids = sorted({identity_id for identity_id, _action in steps})
+    batch_id = str(resume_state.get("batch_id") or "") or f"cave_public_{int(time.time())}_{len(steps)}"
     account_identity_ids = _cave_public_batch_identity_ids_for_action("", identity_ids)
     # Claim the batch before creating the background task. Without this, two quick UI
     # clicks can both observe `running=False` and start concurrent HTTP batches.
@@ -8077,6 +8339,12 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
             actions,
             delay_sec,
             trial_daily_context=trial_daily_context,
+            resume_cursor=resume_state.get("cursor", 0),
+            initial_completed=resume_state.get("completed", 0),
+            initial_succeeded=resume_state.get("succeeded", 0),
+            initial_failed=resume_state.get("failed", 0),
+            initial_outcomes=resume_state.get("outcomes") or {},
+            steps_override=resume_state.get("steps") or None,
         ))
     except Exception as exc:
         message = f"创建洞府公共入口批次失败：{type(exc).__name__}: {exc}"
@@ -8088,6 +8356,16 @@ async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=
         "account_count": len(account_identity_ids),
         "actions": actions,
         "delay_sec": delay_sec,
+        "resumed": bool(resume_state),
+        "resume_cursor": int(resume_state.get("cursor", 0) or 0),
+        "batch_steps": [
+            {"identity_id": int(identity_id), "action": str(action)}
+            for identity_id, action in steps
+        ],
+        "completed": int(resume_state.get("completed", 0) or 0),
+        "succeeded": int(resume_state.get("succeeded", 0) or 0),
+        "failed": int(resume_state.get("failed", 0) or 0),
+        "outcomes": dict(resume_state.get("outcomes") or {}),
     }
 
 
@@ -8741,6 +9019,8 @@ async def run_miniapp_daily_scheduler(now):
         return tree_daily
 
     active_wave = dict(config.get("trial_daily_active_wave") or {})
+    if not active_wave:
+        active_wave = _trial_daily_retry_wave_for_today(raw_config, str(config.get("today") or "")) or {}
     wave_key = str(active_wave.get("key") or "").strip()
     wave_label = str(active_wave.get("label") or "").strip() or "批次"
     trial_ready = bool(
@@ -8781,6 +9061,16 @@ async def run_miniapp_daily_scheduler(now):
             status="running",
             result=f"{wave_label}已启动 {len(identity_ids)} 个身份",
             now=now,
+            cursor=int(extra.get("resume_cursor", 0) or 0),
+            completed_count=int(extra.get("completed", 0) or 0),
+            succeeded=int(extra.get("succeeded", 0) or 0),
+            failed=int(extra.get("failed", 0) or 0),
+            steps=[
+                (int(item.get("identity_id") or 0), str(item.get("action") or ""))
+                for item in (extra.get("batch_steps") or [])
+                if isinstance(item, dict)
+            ],
+            outcomes=extra.get("outcomes") or {},
         )
         return {"started": True, "batch_id": batch_id, "count": len(identity_ids), "wave": wave_key}
 

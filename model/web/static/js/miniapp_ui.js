@@ -431,7 +431,7 @@
     }).join('') : '<span class="miniapp-empty">暂无可轮换账户</span>';
     return ''
       + '<section class="miniapp-score-config" data-world-boss-auto="1">'
-      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行｜固定预留尾窗 ' + esc(automation.world_boss_auto_finish_reserve_windows || 2) + '</span></div>'
+      + '<div class="miniapp-score-title"><strong>世界 Boss 自动化</strong><span>全局优先｜账户并行｜仅按身份配置少出手</span></div>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-world-boss-enabled="1"' + (automation.world_boss_auto_enabled ? ' checked' : '') + '><span>自动参与</span></label>'
       + '<label><span>登录账户上限</span><input type="number" min="1" max="4" step="1" data-world-boss-account-limit="1" value="' + esc(automation.world_boss_auto_account_limit || 1) + '"></label>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'

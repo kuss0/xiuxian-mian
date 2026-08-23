@@ -735,8 +735,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             self.assertEqual(3, state_module.state["fishing_daily_count"])
-            self.assertIn("MiniApp not_ready", state_module.state["fishing_last_error"])
-            self.assertEqual(now + fishing_runtime.FISHING_MINIAPP_FAILURE_BACKOFF_SEC, state_module.state["next_fishing_time"])
+            self.assertIn("下一竿未就绪", state_module.state["fishing_last_result"])
+            self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertEqual(now + fishing_runtime.FISHING_POST_ROD_DELAY_MIN_SEC, state_module.state["next_fishing_time"])
 
     async def test_miniapp_daily_limit_after_chained_rounds_calibrates_to_full(self):
         identity_id = self._prepare_identity()

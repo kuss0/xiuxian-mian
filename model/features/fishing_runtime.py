@@ -627,6 +627,10 @@ def _format_miniapp_result_summary(result):
         return "未持有鱼竿，今日跳过"
     settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
     round_prefix = f"{settled_count}竿｜" if settled_count > 1 else ""
+    if status == "partial_not_ready":
+        material_text, _has_material = _miniapp_material_summary(data)
+        detail = f"{round_prefix}{material_text}" if material_text else f"{round_prefix}已完成结算"
+        return f"MiniApp 已完成本轮｜{detail}｜下一竿未就绪，停止本轮"
     if result.get("ok"):
         material_text, _has_material = _miniapp_material_summary(data)
         if material_text:
@@ -1005,6 +1009,10 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     status = str(result.get("status") or "").strip()
     completed_ok = ok or status == "daily_limit"
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    settled_hint = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
+    if ok and status == "not_ready" and settled_hint > 0:
+        status = "partial_not_ready"
+        result["status"] = status
     if status == "no_rod":
         updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
         updates.update({
@@ -1027,7 +1035,7 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
     updates["fishing_last_result"] = _format_miniapp_result_summary(result)
     updates["fishing_last_error"] = "" if completed_ok else updates["fishing_last_result"]
     partial_statuses = {"next_failed", "next_unavailable", "not_ready"}
-    settled_statuses = {"settled", "finish_submitted", "daily_limit"}
+    settled_statuses = {"settled", "finish_submitted", "daily_limit", "partial_not_ready"}
     error_text = str(result.get("error") or data.get("next_error") or "").strip()
     missing_bait_error = status == "next_failed" and "bait_missing" in error_text
     if ok and status in partial_statuses:
@@ -1102,7 +1110,12 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
             else:
                 updates["next_fishing_time"] = _miniapp_failure_backoff(now)
         else:
-            updates["next_fishing_time"] = float(now + random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC))
+            updates["next_fishing_time"] = float(
+                now + max(
+                    FISHING_POST_ROD_DELAY_MIN_SEC,
+                    random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC),
+                )
+            )
     else:
         updates["next_fishing_time"] = _miniapp_failure_backoff(now)
     if retry_after_sec > 0 and (not completed_ok or status in partial_statuses):
