@@ -70,10 +70,24 @@ _MINIAPP_EXPECTED_TERMINAL_ERRORS = {
     "trial": frozenset({
         "daily_limit",
         "limit_reached",
+        "trial_daily_limit",
         "no_remaining",
         "today_exhausted",
         "剩余 0",
         "次数已尽",
+    }),
+    "world_boss": frozenset({
+        "boss_event_closed",
+    }),
+}
+
+# These are expected business diagnostics for a finished World Boss window.
+# They should remain visible without being counted as generic application
+# failures. Identity and token errors intentionally remain in error_counts.
+_MINIAPP_EXPECTED_DIAGNOSTICS = {
+    "world_boss": frozenset({
+        "boss_hit_outside_window",
+        "boss_client_clock_mismatch",
     }),
 }
 
@@ -142,19 +156,24 @@ def _event_explanations(
     end: float,
     previous_faith: int,
     current_faith: int,
+    *,
+    indexed_rows: list[dict[str, Any]] | None = None,
+    identity_aliases: set[str] | None = None,
 ) -> dict[str, Any]:
     explanations: list[str] = []
     events: list[dict[str, Any]] = []
     event_keys: set[tuple[Any, ...]] = set()
     expected_faith = previous_faith
     has_faith_evidence = False
-    identity_aliases = {
-        str(row.get("sender_username") or "").lstrip("@").lower()
-        for row in rows
-        if row.get("event_type") in {"sent", "message"}
-        and int(row.get("sender_id") or 0) == identity_id
-        and row.get("sender_username")
-    }
+    if identity_aliases is None:
+        identity_aliases = {
+            str(row.get("sender_username") or "").lstrip("@").lower()
+            for row in rows
+            if row.get("event_type") in {"sent", "message"}
+            and int(row.get("sender_id") or 0) == identity_id
+            and row.get("sender_username")
+        }
+    candidate_rows = indexed_rows if indexed_rows is not None else rows
 
     def add_event(row: dict[str, Any], kind: str, **values: Any) -> None:
         event = {
@@ -169,7 +188,7 @@ def _event_explanations(
         event_keys.add(key)
         events.append(event)
 
-    for row in rows:
+    for row in candidate_rows:
         ts = _parse_ts(row.get("ts"))
         if not start < ts <= end:
             continue
@@ -258,6 +277,48 @@ def build_small_world_evidence(
             continue
         roots[message_id] = row
 
+    identity_aliases_by_id: dict[int, set[str]] = defaultdict(set)
+    for row in rows:
+        if row.get("event_type") not in {"sent", "message"} or not row.get("sender_username"):
+            continue
+        try:
+            sender_id = int(row.get("sender_id") or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if sender_id:
+            identity_aliases_by_id[sender_id].add(
+                str(row.get("sender_username") or "").lstrip("@").lower()
+            )
+
+    # Build the same reply/broadcast candidate set once. The previous path
+    # rescanned every message for every panel delta, which made a multi-day
+    # report scale quadratically with the log volume.
+    indexed_events: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.get("event_type") == "sent" or not row.get("sender_is_bot"):
+            continue
+        try:
+            reply_to = int(row.get("reply_to_msg_id") or 0)
+        except (TypeError, ValueError, OverflowError):
+            reply_to = 0
+        root = roots.get(reply_to)
+        if root is not None:
+            try:
+                root_identity_id = int(root.get("sender_id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                root_identity_id = 0
+            if root_identity_id:
+                indexed_events[root_identity_id].append(row)
+
+        if row.get("event_type") not in {"message", "edit"}:
+            continue
+        lowered = str(row.get("text") or "").lower()
+        if not lowered:
+            continue
+        for candidate_identity_id, aliases in identity_aliases_by_id.items():
+            if any(f"@{alias}" in lowered for alias in aliases):
+                indexed_events[candidate_identity_id].append(row)
+
     panels: list[dict[str, Any]] = []
     for row in rows:
         if row.get("event_type") not in {"message", "edit"} or not row.get("sender_is_bot"):
@@ -301,6 +362,8 @@ def build_small_world_evidence(
                 current["ts"],
                 previous["faith"],
                 current["faith"],
+                indexed_rows=indexed_events.get(identity_id, []),
+                identity_aliases=identity_aliases_by_id.get(identity_id, set()),
             )
             status = "explained" if evidence["matched"] else (
                 "partially_explained" if evidence["has_faith_evidence"] else "unexplained"
@@ -375,6 +438,14 @@ def _expected_miniapp_terminal_error(record: dict[str, Any]) -> str:
     return ""
 
 
+def _expected_miniapp_diagnostic(record: dict[str, Any]) -> str:
+    adapter_key = str(record.get("adapter_key") or "").strip().lower()
+    error = str(record.get("error") or "").strip().lower()
+    if error and error in _MINIAPP_EXPECTED_DIAGNOSTICS.get(adapter_key, ()):
+        return error
+    return ""
+
+
 def build_miniapp_rate_evidence(
     capture_dir: Path | None = None,
     *,
@@ -429,11 +500,14 @@ def build_miniapp_rate_evidence(
             })
 
     terminal_counts: Counter[str] = Counter()
+    diagnostic_counts: Counter[str] = Counter()
     error_counts: Counter[str] = Counter()
     for row in records:
         terminal_error = _expected_miniapp_terminal_error(row)
         if terminal_error:
             terminal_counts[terminal_error] += 1
+        elif (diagnostic := _expected_miniapp_diagnostic(row)):
+            diagnostic_counts[diagnostic] += 1
         elif row["error_type"]:
             error_counts[row["error_type"]] += 1
     return {
@@ -453,6 +527,7 @@ def build_miniapp_rate_evidence(
             for item in saturation_windows
         ],
         "terminal_counts": dict(sorted(terminal_counts.items())),
+        "diagnostic_counts": dict(sorted(diagnostic_counts.items())),
         "error_counts": dict(sorted(error_counts.items())),
         "status": "saturated" if saturation_windows else "below_limit",
     }
@@ -483,7 +558,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"miniapp rate: records={rate['records']} "
             f"max={rate['max_window_count']}/{rate['limit']} status={rate['status']} "
-            f"terminals={rate['terminal_counts']} errors={rate['error_counts']}"
+            f"terminals={rate['terminal_counts']} "
+            f"diagnostics={rate['diagnostic_counts']} errors={rate['error_counts']}"
         )
     return 0
 

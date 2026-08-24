@@ -111,6 +111,23 @@ def test_small_world_report_preserves_partial_disaster_and_theft_evidence():
     assert result["events"][1]["incense_delta"] == -6550
 
 
+def test_small_world_report_indexes_reply_and_broadcast_evidence_per_identity():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        rows = [
+            {"ts": "2026-07-18 10:00:00 UTC+8", "event_type": "sent", "message_id": 10, "sender_id": 101, "sender_username": "old_name", "text": ".小世界"},
+            {"ts": "2026-07-18 10:00:01 UTC+8", "event_type": "message", "message_id": 11, "sender_is_bot": True, "reply_to_msg_id": 10, "text": "【甲的小世界】\n🙏 信仰: 98 / 100"},
+            {"ts": "2026-07-18 10:01:00 UTC+8", "event_type": "sent", "message_id": 12, "sender_id": 101, "sender_username": "new_name", "text": ".小世界"},
+            {"ts": "2026-07-18 10:01:01 UTC+8", "event_type": "message", "message_id": 13, "sender_is_bot": True, "reply_to_msg_id": 12, "text": "【甲的小世界】\n🙏 信仰: 85 / 100"},
+            {"ts": "2026-07-18 10:00:30 UTC+8", "event_type": "message", "message_id": 14, "sender_is_bot": True, "reply_to_msg_id": 0, "text": "道友 @old_name 遭遇天灾！信仰 -13 点"},
+        ]
+        _write_jsonl(root / "2026-07-18.log", rows)
+        result = report.build_small_world_evidence(root, day="2026-07-18", days=1)
+
+    assert result["summary"] == {"explained": 1, "partially_explained": 0, "unexplained": 0}
+    assert result["deltas"][0]["expected_faith"] == 85
+
+
 def test_small_world_report_parses_spaced_absolute_faith_reply():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -175,6 +192,15 @@ def test_miniapp_rate_report_separates_declared_business_terminal_errors():
                 "error_type": "app",
             },
             {
+                "created_at": base + 1.5,
+                "method": "POST",
+                "adapter_key": "trial",
+                "step_key": "next",
+                "ok": False,
+                "error": "trial_daily_limit",
+                "error_type": "app",
+            },
+            {
                 "created_at": base + 2,
                 "method": "POST",
                 "adapter_key": "fishing",
@@ -198,9 +224,63 @@ def test_miniapp_rate_report_separates_declared_business_terminal_errors():
 
     assert result["terminal_counts"] == {
         "fishing_daily_limit_reached": 1,
+        "trial_daily_limit": 1,
         "today_exhausted": 1,
     }
     assert result["error_counts"] == {"app": 2}
+
+
+def test_miniapp_rate_report_separates_world_boss_business_diagnostics():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        base = datetime(2026, 7, 18, 10, 0, 0, tzinfo=TZ_LOCAL).timestamp()
+        rows = [
+            {
+                "created_at": base,
+                "method": "POST",
+                "adapter_key": "world_boss",
+                "step_key": "hit",
+                "ok": False,
+                "error": "boss_event_closed",
+                "error_type": "app",
+            },
+            {
+                "created_at": base + 1,
+                "method": "POST",
+                "adapter_key": "world_boss",
+                "step_key": "hit",
+                "ok": False,
+                "error": "boss_hit_outside_window",
+                "error_type": "app",
+            },
+            {
+                "created_at": base + 2,
+                "method": "POST",
+                "adapter_key": "world_boss",
+                "step_key": "hit",
+                "ok": False,
+                "error": "boss_client_clock_mismatch",
+                "error_type": "app",
+            },
+            {
+                "created_at": base + 3,
+                "method": "POST",
+                "adapter_key": "world_boss",
+                "step_key": "start",
+                "ok": False,
+                "error": "boss_identity_invalid",
+                "error_type": "app",
+            },
+        ]
+        _write_jsonl(root / "world_boss-2026-07-18.jsonl", rows)
+        result = report.build_miniapp_rate_evidence(root, day="2026-07-18", days=1)
+
+    assert result["diagnostic_counts"] == {
+        "boss_client_clock_mismatch": 1,
+        "boss_hit_outside_window": 1,
+    }
+    assert result["terminal_counts"] == {"boss_event_closed": 1}
+    assert result["error_counts"] == {"app": 1}
 
 
 def test_miniapp_rate_default_day_honors_requested_lookback():
