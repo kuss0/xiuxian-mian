@@ -1,4 +1,4 @@
-/* Double-track UI skin. Scoped to /new so the legacy console remains untouched. */
+/* Current console skin. Loaded after the shared base and fixup styles. */
 body.ui-new {
   --new-bg: #0b0d10;
   --new-panel: #15181d;

@@ -176,7 +176,7 @@ class UiDocumentRouteTests(unittest.TestCase):
 
     def test_static_assets_do_not_require_a_session(self):
         """静态资源不含账号数据，匿名可读；这条边界不能在重构中收紧或放宽。"""
-        for path, loader in (("/static/app.js", "_load_ui_static_asset"), ("/static-new/x.js", "_load_new_static_asset")):
+        for path, loader in (("/static/app.js", "_load_ui_static_asset"), ("/static/css/ui_skin.css", "_load_ui_static_asset")):
             with self.subTest(path=path):
                 with patch.object(ui, loader, return_value=(b"body", "application/javascript")) as load_mock, \
                         patch.object(ui, "_write_response") as write_mock:
@@ -198,7 +198,7 @@ class UiDocumentRouteTests(unittest.TestCase):
         self.assertIn("404", write_mock.call_args.args[1])
 
     def test_non_get_on_document_routes_is_rejected(self):
-        for path in ("/favicon.png", "/static/app.js", "/static-new/app.js", "/", "/new"):
+        for path in ("/favicon.png", "/static/app.js", "/static/css/ui_skin.css", "/", "/new"):
             with self.subTest(path=path):
                 with patch.object(ui, "_write_method_not_allowed") as not_allowed:
                     handled = self._serve(path=path, method="POST")

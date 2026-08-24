@@ -7,9 +7,9 @@
 <link rel='icon' href='/favicon.png' type='image/png' />
 <link rel='stylesheet' href='/static/css/app.css' />
 <link rel='stylesheet' href='/static/css/ui_fixes.css' />
-{{new_ui_css_link}}
+<link rel='stylesheet' href='/static/css/ui_skin.css' />
 </head>
-<body class='{{ui_body_class}}'>
+<body class='ui-new'>
 <div id='flash' class='flash hidden'>
 </div>
 <header class='topbar app-topbar'>
@@ -28,7 +28,6 @@
 </div>
 <div class='topbar-spacer'></div>
 <div class='topbar-actions'>
-{{ui_mode_link}}
 <button type='button' class='topbar-btn' data-open-logs='1' title='日志'>日志</button>
 <button type='button' class='topbar-btn' data-open-passive-inbox='1' title='消息盒子'>消息盒子</button>
 <button type='button' class='topbar-btn' data-open-runtime-health='1' title='运行健康'>健康</button>

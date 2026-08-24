@@ -336,8 +336,6 @@ UI_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(UI_PROJECT_ROOT, "data", "storage_
 UI_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 UI_TEMPLATE_DIR = os.path.join(UI_WEB_DIR, "pages")
 UI_STATIC_DIR = os.path.join(UI_WEB_DIR, "static")
-UI_WEB_NEW_DIR = os.path.join(os.path.dirname(__file__), "web_new")
-UI_NEW_STATIC_DIR = os.path.join(UI_WEB_NEW_DIR, "static")
 UI_STATIC_CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -5361,24 +5359,19 @@ def _load_ui_static_asset(asset_path):
     return _load_static_asset_from(UI_STATIC_DIR, asset_path)
 
 
-def _load_new_static_asset(asset_path):
-    return _load_static_asset_from(UI_NEW_STATIC_DIR, asset_path)
-
-
 def _ui_static_asset_version():
     latest = 0
-    for static_dir in (UI_STATIC_DIR, UI_NEW_STATIC_DIR):
-        try:
-            for root, _dirs, files in os.walk(static_dir):
-                for file_name in files:
-                    if not file_name.endswith((".js", ".css")):
-                        continue
-                    try:
-                        latest = max(latest, int(os.path.getmtime(os.path.join(root, file_name))))
-                    except OSError:
-                        continue
-        except OSError:
-            continue
+    try:
+        for root, _dirs, files in os.walk(UI_STATIC_DIR):
+            for file_name in files:
+                if not file_name.endswith((".js", ".css")):
+                    continue
+                try:
+                    latest = max(latest, int(os.path.getmtime(os.path.join(root, file_name))))
+                except OSError:
+                    continue
+    except OSError:
+        pass
     return str(latest or int(time.time()))
 
 
@@ -5467,7 +5460,7 @@ def _render_login_page(message=""):
     )
 
 
-def render_ui_page(message="", selected_send_as_id=None, session_token=None, variant="new"):
+def render_ui_page(message="", selected_send_as_id=None, session_token=None):
     snapshot = get_ui_snapshot(session_token=session_token)
     selected_id = _resolve_selected_send_as_id(snapshot, selected_send_as_id)
     boot_data = json.dumps(
@@ -5478,8 +5471,6 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None, var
         },
         ensure_ascii=False,
     ).replace("</", "<\\/")
-    is_new_variant = True
-    ui_mode_link = ""
     return _render_ui_template(
         "index.html",
         {
@@ -5487,9 +5478,6 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None, var
             "ui_auto_refresh_sec": html_escape(str(UI_AUTO_REFRESH_SEC)),
             "poll_interval_ms": int(UI_AUTO_REFRESH_SEC) * 1000,
             "asset_version": html_escape(_ui_static_asset_version()),
-            "new_ui_css_link": "<link rel='stylesheet' href='/static-new/css/app.css' />" if is_new_variant else "",
-            "ui_body_class": "ui-new" if is_new_variant else "ui-legacy",
-            "ui_mode_link": ui_mode_link,
         },
     )
 
@@ -9432,7 +9420,7 @@ def _serve_ui_document_route(writer, *, method, path, query, session, session_co
                 _write_response(writer, "HTTP/1.1 200 OK", favicon_fp.read(), content_type="image/png")
         return True
 
-    for prefix, loader in (("/static/", _load_ui_static_asset), ("/static-new/", _load_new_static_asset)):
+    for prefix, loader in (("/static/", _load_ui_static_asset),):
         if not path.startswith(prefix):
             continue
         if method != "GET":
@@ -9464,7 +9452,6 @@ def _serve_ui_document_route(writer, *, method, path, query, session, session_co
                 render_ui_page(
                     selected_send_as_id=query.get("send_as_id", [""])[0],
                     session_token=(session or {}).get("session_token"),
-                    variant="new",
                 ),
                 content_type="text/html; charset=utf-8",
                 extra_headers=auth_headers,

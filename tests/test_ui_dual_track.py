@@ -63,7 +63,7 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "href='/?send_as_id=1001'" not in body
     assert "/static/css/app.css" in body
     assert "/static/css/ui_fixes.css" in body
-    assert "/static-new/css/app.css" in body
+    assert "/static/css/ui_skin.css" in body
     assert "/static/js/module_cards_ui.js" in body
     assert "/static/js/ui_write_guard.js" in body
     assert "/static/js/storage_bag_ui.js" in body
@@ -89,26 +89,26 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "当前身份的自动化模块" not in body
 
 
-def test_legacy_variant_parameter_keeps_new_single_track_ui():
+def test_render_ui_has_one_fixed_skin():
     with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
-        body = ui.render_ui_page(variant="legacy")
+        body = ui.render_ui_page()
 
     assert "class='ui-new'" in body
     assert "class='ui-legacy'" not in body
     assert "ui-mode-entry" not in body
-    assert "/static-new/css/app.css" in body
+    assert "/static/css/ui_skin.css" in body
 
 
 def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
-        body = ui.render_ui_page(variant="new")
+        body = ui.render_ui_page()
 
     assert "class='ui-new'" in body
     assert "ui-mode-entry" not in body
     assert "href='/?send_as_id=1001'" not in body
     assert "id='passive-inbox-modal'" in body
     assert "data-open-passive-inbox='1'" in body
-    assert "/static-new/css/app.css" in body
+    assert "/static/css/ui_skin.css" in body
     assert body.index("/static/js/app.js") < body.index("/static/js/ui_write_guard.js") < body.index("/static/js/module_cards_ui.js") < body.index("/static/js/fishing_ui.js")
     assert "/static/js/dungeon_ui.js" in body
     assert "data-open-dungeon='1'" in body
@@ -343,7 +343,7 @@ def test_legacy_stargazer_sync_ui_is_absent():
 
 def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     css = (PROJECT_ROOT / "model/web/static/css/ui_fixes.css").read_text(encoding="utf-8")
-    new_css = (PROJECT_ROOT / "model/web_new/static/css/app.css").read_text(encoding="utf-8")
+    new_css = (PROJECT_ROOT / "model/web/static/css/ui_skin.css").read_text(encoding="utf-8")
 
     assert "grid-auto-rows: minmax(260px, 260px);" in css
     assert "max-height: none;" in css
@@ -410,8 +410,8 @@ def test_ui_write_guard_blocks_stale_silent_refresh_snapshots():
 
 
 def test_new_static_asset_loader_serves_css_and_blocks_traversal():
-    css_body, css_type = ui._load_new_static_asset("css/app.css")
-    traversal_body, traversal_type = ui._load_new_static_asset("../web/static/js/app.js")
+    css_body, css_type = ui._load_ui_static_asset("css/ui_skin.css")
+    traversal_body, traversal_type = ui._load_ui_static_asset("../web/static/js/app.js")
 
     assert css_body is not None
     assert css_type == "text/css; charset=utf-8"
