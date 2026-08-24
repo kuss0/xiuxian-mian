@@ -31,7 +31,7 @@
 <button type='button' class='topbar-btn' data-open-logs='1' title='日志'>日志</button>
 <button type='button' class='topbar-btn' data-open-passive-inbox='1' title='消息盒子'>消息盒子</button>
 <button type='button' class='topbar-btn' data-open-runtime-health='1' title='运行健康'>健康</button>
-<button type='button' class='topbar-btn' data-open-miniapp='1' title='MiniApp合集'>合集</button>
+<button type='button' class='topbar-btn' data-open-miniapp='1' data-focus-miniapp='1' title='MiniApp控制台'>MiniApp</button>
 <button type='button' class='topbar-btn' data-open-basic-config='1' title='基础配置'>配置</button>
 <button type='button' class='topbar-btn' data-open-dungeon='1' title='副本'>副本</button>
 <button type='button' class='topbar-btn' data-open-storage-bag='1' title='储物袋'>储物袋</button>
@@ -61,9 +61,26 @@
 <main class='main app-main'>
 <div class='main-inner'>
 <section id='summary-panel'></section>
+<section class='miniapp-home-section'>
+<div class='section-head-row miniapp-home-head'>
+<div>
+<h2>MiniApp 控制台</h2>
+<div class='section-subtitle'>当前身份的入口、玩法状态和自动化配置</div>
+</div>
+<div class='miniapp-home-actions'>
+<button type='button' class='btn btn-secondary btn-compact' data-focus-miniapp='1' title='定位到 MiniApp 控制台'>定位控制台</button>
+<button type='button' class='btn btn-secondary btn-compact' data-miniapp-home-refresh='1' title='刷新 MiniApp 状态'>刷新</button>
+</div>
+</div>
+<div id='miniapp-home-body' class='miniapp-home-body'><div class='miniapp-empty'>加载 MiniApp 状态中</div></div>
+</section>
+<details class='compat-module-section'>
+<summary>兼容模块与未迁移功能</summary>
+<div class='compat-module-note'>已迁移玩法以首页 MiniApp 控制台为准；这里保留群内命令、宗门专属和仍在过渡中的旧模块。</div>
 <section class='card module-section-card'>
 <div id='module-grid' class='module-grid'></div>
 </section>
+</details>
 </div>
 </main>
 </div>
@@ -78,7 +95,7 @@
 </div>    <div id='runtime-health-modal-body'></div>  </div>
 </div>
 <div id='miniapp-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide miniapp-modal-card'>    <div class='modal-header'>
-<h3 class='modal-title'>MiniApp合集</h3>
+<h3 class='modal-title'>MiniApp 兼容视图</h3>
 <button class='icon-btn' type='button' data-close-modal='miniapp'>×</button>
 </div>    <div id='miniapp-modal-body'></div>  </div>
 </div>
@@ -285,6 +302,7 @@
 <script src='/static/js/passive_inbox_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/runtime_health_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/miniapp_ui.js?v={{asset_version}}'></script>
+<script src='/static/js/miniapp_home_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/queue_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/official_schedule_ui.js?v={{asset_version}}'></script>
 <script src='/static/js/wild_training_ui.js?v={{asset_version}}'></script>

@@ -393,7 +393,7 @@ MINIAPP_UI_GROUPS = {
     "cave_treasure": {"key": "miniapp", "label": "MiniApp合集"},
     "fishing": {"key": "miniapp", "label": "MiniApp合集"},
     "trial": {"key": "miniapp", "label": "MiniApp合集"},
-    "tree": {"key": "sect", "label": "宗门玩法"},
+    "tree": {"key": "miniapp", "label": "MiniApp合集"},
     "world_boss": {"key": "miniapp", "label": "MiniApp合集"},
 }
 MINIAPP_AUTO_CONFIG_DEFAULT = {

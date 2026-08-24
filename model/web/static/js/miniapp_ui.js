@@ -1,10 +1,23 @@
 (function () {
   var currentMiniAppSnapshot = null;
-  var activeMiniAppTab = 'overview';
+  var activeMiniAppTab = 'entry';
   var miniAppTabs = ['overview', 'entry', 'status', 'diagnostics'];
   // The public URL contains a short-lived token. Keep it only in this page's
   // memory so status refreshes do not discard it, but never persist it.
   var cavePublicUrlDraft = '';
+
+  function defaultMiniAppTarget() {
+    var modal = document.getElementById('miniapp-modal');
+    return modal && modal.classList.contains('show') ? 'miniapp-modal-body' : 'miniapp-home-body';
+  }
+
+  function activeMiniAppRoot() {
+    return document.getElementById(defaultMiniAppTarget()) || document;
+  }
+
+  function activeMiniAppQuery(selector) {
+    return activeMiniAppRoot().querySelector(selector);
+  }
 
   function esc(value) {
     if (typeof escapeHtml === 'function') return escapeHtml(value);
@@ -192,6 +205,30 @@
       + '</section>';
   }
 
+  function renderMiniAppCoverage(adapters) {
+    adapters = Array.isArray(adapters) ? adapters : [];
+    if (!adapters.length) return '<div class="miniapp-empty">暂无已登记玩法</div>';
+    return ''
+      + '<section class="miniapp-coverage" data-miniapp-coverage="1">'
+      + '<div class="miniapp-section-head"><strong>已登记 MiniApp</strong><span>' + esc(adapters.length) + ' 个玩法适配器</span></div>'
+      + '<div class="miniapp-coverage-grid">'
+      + adapters.map(function (adapter) {
+        var endpointCount = Array.isArray(adapter.endpoint_keys) ? adapter.endpoint_keys.length : 0;
+        return ''
+          + '<article class="miniapp-coverage-item">'
+          + '<div class="miniapp-coverage-head"><strong>' + esc(adapter.label || adapter.game_key || '-') + '</strong><span>' + esc(adapter.game_key || '-') + '</span></div>'
+          + '<div class="miniapp-item-meta">'
+          + badge(adapter.ui_group_label || 'MiniApp合集', adapter.ui_group === 'sect' ? 'neutral' : 'ok')
+          + badge(adapter.manual_only ? '手动优先' : '允许调度', adapter.manual_only ? 'ok' : 'warn')
+          + badge(adapter.default_enabled ? '默认开' : '默认关', adapter.default_enabled ? 'warn' : 'neutral')
+          + badge('接口 ' + endpointCount, 'neutral')
+          + '</div>'
+          + '</article>';
+      }).join('')
+      + '</div>'
+      + '</section>';
+  }
+
   function targetScoreValue(config, mode) {
     var item = (config && config[mode]) || {};
     var range = Array.isArray(item.target_score_range) ? item.target_score_range : [];
@@ -237,7 +274,7 @@
   }
 
   function renderCaptureSummary(summary) {
-    var panel = document.getElementById('miniapp-capture-panel');
+    var panel = activeMiniAppQuery('#miniapp-capture-panel');
     if (!panel) return;
     if (!summary || !summary.game_key) {
       panel.innerHTML = '<div class="miniapp-empty">暂无协议摘要</div>';
@@ -353,13 +390,14 @@
       : '<span class="miniapp-empty">暂无已开启登天阶的身份</span>';
     return ''
       + '<section class="miniapp-score-config miniapp-cave-public" data-cave-public-entry="1">'
-      + '<div class="miniapp-score-title"><strong>洞府公共入口</strong><span>独立开关｜候选入口串行兜底</span></div>'
+      + '<div class="miniapp-score-title"><strong>公共入口</strong><span>独立开关｜候选入口串行兜底</span></div>'
       + '<label><span>公共 URL 候选</span><textarea data-cave-public-url="1" rows="3" placeholder="' + (automation.cave_public_entry_url_configured ? '已配置 ' + esc(automation.cave_public_entry_url_count || 1) + ' 个，可留空沿用；每行一个入口' : '粘贴洞府公共入口，每行一个') + '" autocomplete="off">' + esc(cavePublicUrlDraft) + '</textarea></label>'
       + '<label><span>动作间隔</span><input type="number" min="10" max="120" step="5" data-cave-public-delay="1" value="' + esc(automation.cave_public_delay_sec || 20) + '"></label>'
       + '<div class="miniapp-item-actions">'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-config-save="1">保存设置</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-batch-run="1"' + (running ? ' disabled' : '') + '>串行跑启用项</button>'
       + '</div>'
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动化动作</strong><span>保存后由调度串行执行</span></div>'
       + '<div class="miniapp-cave-switches">'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="small_world"' + (automation.cave_public_small_world_enabled ? ' checked' : '') + '><span>小世界</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="small_world_harvest"' + (automation.cave_public_small_world_harvest_enabled ? ' checked' : '') + '><span>香火收割 8h</span></label>'
@@ -387,6 +425,7 @@
       + (failed ? badge('失败 ' + failed, 'warn') : '')
       + (result ? '<span>' + esc(result) + '</span>' : '')
       + '</div>'
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>快速执行</strong><span>只执行当前选择的身份</span></div>'
       + '<div class="miniapp-item-actions miniapp-cave-single-actions">'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world">小世界处理</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="small_world_harvest">收割香火</button>'
@@ -396,6 +435,7 @@
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="fishing">频道钓鱼</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="stargazer">观星台</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tree">落云灵树</button>'
+      + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tower">琉璃问心塔</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yuanying">元婴状态/出窍</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="tianti_status">天阶状态</button>'
       + '<button type="button" class="btn btn-secondary btn-compact" data-cave-public-action="yinluo_status">阴罗幡状态</button>'
@@ -437,14 +477,13 @@
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>自动账户</strong><span>取消勾选则保留手动</span></div>'
       + '<div class="miniapp-cave-switches">' + candidateHtml + '</div>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>身份轮换</strong><span>获得目标称号或确认第一名后推进</span></div>'
-      + '<label><span>目标奖励</span><input type="text" data-world-boss-rotation-reward="1" value="' + esc(automation.world_boss_rotation_target_reward || '斩青元者') + '"></label>'
       + '<div class="miniapp-cave-switches">' + rotationHtml + '</div>'
       + '<div class="miniapp-item-actions miniapp-form-actions"><button type="button" class="btn btn-secondary btn-compact" data-world-boss-config-save="1">保存设置</button></div>'
       + '</section>';
   }
 
-  function renderMiniAppStatus(snapshot) {
-    var body = document.getElementById('miniapp-modal-body');
+  function renderMiniAppStatus(snapshot, targetId) {
+    var body = document.getElementById(targetId || defaultMiniAppTarget());
     if (!body) return;
     var miniapp = (snapshot && snapshot.miniapp) || {};
     currentMiniAppSnapshot = miniapp;
@@ -485,7 +524,14 @@
       : (caveBatch.batch_id ? '最近 ' + Number(caveBatch.completed || 0) + '/' + Number(caveBatch.total || 0) : '未运行');
     body.innerHTML = ''
       + '<div class="miniapp-toolbar">'
+      + '<div class="miniapp-toolbar-main">'
       + '<div id="miniapp-status-line" class="form-label form-label-inline">身份：' + esc(selectedIdentityId() || '未选择') + '</div>'
+      + '<div class="miniapp-toolbar-meta">'
+      + badge('适配器 ' + adapters.length, 'neutral')
+      + badge('入口 ' + (automation.cave_public_entry_url_count || 0), automation.cave_public_entry_url_configured ? 'ok' : 'warn')
+      + badge('请求 ' + (globalRate.request_count || 0) + '/' + (globalRate.limit || 90), globalRate.priority_active ? 'warn' : 'neutral')
+      + '</div>'
+      + '</div>'
       + '<div class="miniapp-toolbar-actions">' + batchButtons
       + '<button type="button" class="btn btn-secondary btn-compact" data-miniapp-refresh="1">刷新</button></div>'
       + '</div>'
@@ -506,11 +552,12 @@
       + badge(policy.raw_start_token_persisted ? 'token落盘' : 'token不落盘', policy.raw_start_token_persisted ? 'warn' : 'ok')
       + badge('全局请求 ' + esc(globalRate.request_count || 0) + '/' + esc(globalRate.limit || 90) + '·60s', globalRate.priority_active ? 'warn' : 'neutral')
       + '</div>'
-      + renderWorldBossControls(automation)
-      + renderTreeScoreControls(scoreControls)
+      + renderMiniAppCoverage(adapters)
       + '</section>'
       + '<section class="miniapp-view" data-miniapp-view="entry" hidden>'
       + renderCavePublicControls(automation, caveBatch)
+      + renderWorldBossControls(automation)
+      + renderTreeScoreControls(scoreControls)
       + '</section>'
       + '<section class="miniapp-view" data-miniapp-view="status" hidden>'
       + '<div class="miniapp-section-head"><strong>当前身份玩法状态</strong><span>' + esc(stateRecords.record_count || 0) + ' 条</span></div>'
@@ -528,8 +575,9 @@
     activateMiniAppTab(activeMiniAppTab);
   }
 
-  async function refreshMiniAppStatus() {
-    var body = document.getElementById('miniapp-modal-body');
+  async function refreshMiniAppStatus(targetId) {
+    targetId = targetId || defaultMiniAppTarget();
+    var body = document.getElementById(targetId);
     if (body) body.innerHTML = '<div class="miniapp-empty">加载中</div>';
     try {
       var identity = selectedIdentityId();
@@ -537,7 +585,7 @@
       var response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
       var data = await parseResponse(response);
       if (!data) return;
-      renderMiniAppStatus(data);
+      renderMiniAppStatus(data, targetId);
     } catch (error) {
       if (body) body.innerHTML = '<div class="miniapp-empty miniapp-error">' + esc((error && error.message) || '加载失败') + '</div>';
     }
@@ -547,13 +595,31 @@
     var modal = document.getElementById('miniapp-modal');
     if (!modal) return;
     modal.classList.add('show');
-    refreshMiniAppStatus();
+    refreshMiniAppStatus('miniapp-modal-body');
   }
 
   function closeMiniAppModal() {
     var modal = document.getElementById('miniapp-modal');
     if (modal) modal.classList.remove('show');
   }
+
+  async function refreshMiniAppHome() {
+    var home = document.getElementById('miniapp-home-body');
+    if (!home) return;
+    home.innerHTML = '<div class="miniapp-empty">加载 MiniApp 状态中</div>';
+    try {
+      var identity = selectedIdentityId();
+      var url = '/api/miniapp-status' + (identity ? '?send_as_id=' + encodeURIComponent(identity) : '');
+      var response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      var data = await parseResponse(response);
+      if (data) renderMiniAppStatus(data, 'miniapp-home-body');
+    } catch (error) {
+      home.innerHTML = '<div class="miniapp-empty miniapp-error">' + esc((error && error.message) || '加载失败') + '</div>';
+    }
+  }
+
+  window.refreshMiniAppStatus = refreshMiniAppStatus;
+  window.refreshMiniAppHome = refreshMiniAppHome;
 
   async function runEntryProbe(gameKey, button) {
     var sendAsId = selectedIdentityId();
@@ -620,7 +686,7 @@
       flash('请选择身份', true);
       return;
     }
-    var panel = document.querySelector('[data-miniapp-score-config="tree"]');
+    var panel = activeMiniAppQuery('[data-miniapp-score-config="tree"]');
     if (!panel) return;
     var jumpInput = panel.querySelector('[data-tree-score-input="jump"]');
     var flyInput = panel.querySelector('[data-tree-score-input="fly"]');
@@ -647,7 +713,7 @@
       flash('请选择身份', true);
       return;
     }
-    var panel = document.querySelector('[data-miniapp-score-config="tree"]');
+    var panel = activeMiniAppQuery('[data-miniapp-score-config="tree"]');
     var enabledInput = panel && panel.querySelector('[data-tree-auto-enabled="1"]');
     if (button) button.disabled = true;
     try {
@@ -672,7 +738,7 @@
       return;
     }
     var action = button && button.getAttribute('data-cave-public-action');
-    var panel = document.querySelector('[data-cave-public-entry="1"]');
+    var panel = activeMiniAppQuery('[data-cave-public-entry="1"]');
     var input = panel && panel.querySelector('[data-cave-public-url="1"]');
     var publicUrl = input ? input.value : '';
     cavePublicUrlDraft = publicUrl;
@@ -750,7 +816,7 @@
   }
 
   async function saveCavePublicConfig(button) {
-    var panel = document.querySelector('[data-cave-public-entry="1"]');
+    var panel = activeMiniAppQuery('[data-cave-public-entry="1"]');
     if (!panel) return;
     if (button) button.disabled = true;
     try {
@@ -766,7 +832,7 @@
   }
 
   async function saveWorldBossConfig(button) {
-    var panel = document.querySelector('[data-world-boss-auto="1"]');
+    var panel = activeMiniAppQuery('[data-world-boss-auto="1"]');
     if (!panel) return;
     if (button) button.disabled = true;
     try {
@@ -799,7 +865,7 @@
   }
 
   async function runCavePublicBatch(button) {
-    var panel = document.querySelector('[data-cave-public-entry="1"]');
+    var panel = activeMiniAppQuery('[data-cave-public-entry="1"]');
     var input = panel && panel.querySelector('[data-cave-public-url="1"]');
     var publicUrl = input ? input.value : '';
     cavePublicUrlDraft = publicUrl;
@@ -836,7 +902,7 @@
   async function loadCaptureSummary(gameKey, button) {
     if (!gameKey) return;
     if (button) button.disabled = true;
-    var panel = document.getElementById('miniapp-capture-panel');
+    var panel = activeMiniAppQuery('#miniapp-capture-panel');
     if (panel) panel.innerHTML = '<div class="miniapp-empty">读取协议摘要中</div>';
     try {
       var response = await fetch('/api/miniapp-capture-summary?game_key=' + encodeURIComponent(gameKey) + '&limit=200', {
@@ -853,6 +919,9 @@
   }
 
   document.addEventListener('click', function (event) {
+    if (event.target.closest('[data-focus-miniapp]')) {
+      return;
+    }
     if (event.target.closest('[data-open-miniapp]')) {
       openMiniAppModal();
       return;

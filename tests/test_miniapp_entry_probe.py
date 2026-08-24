@@ -2054,7 +2054,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(adapters["cave_treasure"]["manual_only"])
         self.assertEqual("miniapp", adapters["cave_treasure"]["ui_group"])
         self.assertEqual("sect", adapters["stargazer"]["ui_group"])
-        self.assertEqual("sect", adapters["tree"]["ui_group"])
+        self.assertEqual("miniapp", adapters["tree"]["ui_group"])
         self.assertEqual(".钓鱼", probe_commands["fishing"])
         self.assertEqual(".灵树", probe_commands["tree"])
         self.assertEqual(".观星台", manual_run_commands["stargazer"])

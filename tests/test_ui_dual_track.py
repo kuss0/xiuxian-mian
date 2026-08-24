@@ -85,6 +85,11 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "sidebar-global" not in body
     assert body.index("id='global-switch-container'") < body.index("data-open-logs='1'")
     assert "id='module-grid'" in body
+    assert "id='miniapp-home-body'" in body
+    assert "class='compat-module-section'" in body
+    assert body.index("id='miniapp-home-body'") < body.index("id='module-grid'")
+    assert "/static/js/miniapp_home_ui.js" in body
+    assert "data-focus-miniapp='1'" in body
     assert "模块详情" not in body
     assert "当前身份的自动化模块" not in body
 
@@ -134,18 +139,32 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "data-miniapp-tab" in script
     assert "data-miniapp-view" in script
     assert "renderMiniAppStateRecords" in script
+    assert "renderMiniAppCoverage" in script
+    assert "data-miniapp-coverage" in script
+    assert "function activeMiniAppRoot()" in script
+    assert "function activeMiniAppQuery(selector)" in script
+    assert "miniapp-toolbar-meta" in script
+    assert "适配器 " in script
+    assert "已登记 MiniApp" in script
+    assert "renderWorldBossControls(automation)" in script
+    assert "renderTreeScoreControls(scoreControls)" in script
     assert "miniapp.state_records" in script
     assert "运行概览" in script
     assert "公共入口" in script
     assert "玩法状态" in script
     assert "诊断" in script
     assert "data-world-boss-window-skip" in script
+    assert "var activeMiniAppTab = 'entry'" in script
+    assert "自动化动作" in script
+    assert "快速执行" in script
+    assert script.count('data-world-boss-rotation-reward="1"') == 1
     assert "window_skip_by_identity" in script
     assert "额外少出手" in script
     assert "仅按身份配置少出手" in script
     assert 'data-cave-public-switch="fate_cards"' in script
     assert 'data-cave-public-fate-choice="1"' in script
     assert 'data-cave-public-action="fate_cards"' in script
+    assert 'data-cave-public-action="tower"' in script
     assert "fate_cards_choice_key" in script
     assert 'data-cave-public-action="tianti_status"' in script
     assert script.count('data-cave-public-action="yuanying"') == 1
@@ -153,6 +172,16 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "external_entry_not_automated" in script
     assert "自动上线" not in script
     assert "已上线" not in script
+
+
+def test_miniapp_home_ui_promotes_console_and_refreshes_on_identity_change():
+    script = (PROJECT_ROOT / "model/web/static/js/miniapp_home_ui.js").read_text(encoding="utf-8")
+
+    assert "miniapp-home-body" in script or "refreshMiniAppHome" in script
+    assert "data-miniapp-home-refresh" in script
+    assert "data-select-identity" in script
+    assert "identity-select-mobile" in script
+    assert "setInterval" in script
 
 
 def test_runtime_health_snapshot_merges_live_bot_and_module_pending_state(tmp_path):

@@ -246,7 +246,12 @@ async def _run_smoke(port: int) -> list[CheckResult]:
         _add(
             results,
             "authenticated root renders boot data and dungeon entry",
-            status == 200 and "CHAOGU_BOOT_DATA" in text and "data-open-dungeon='1'" in text and "/static/js/dungeon_ui.js" in text,
+            status == 200
+            and "CHAOGU_BOOT_DATA" in text
+            and "data-open-dungeon='1'" in text
+            and "/static/js/dungeon_ui.js" in text
+            and "id='miniapp-home-body'" in text
+            and "/static/js/miniapp_home_ui.js" in text,
             f"status={status}",
         )
 
@@ -266,6 +271,14 @@ async def _run_smoke(port: int) -> list[CheckResult]:
             results,
             "miniapp javascript is served",
             status == 200 and "/api/miniapp-status" in text and "/api/miniapp-manual-run" in text,
+            f"status={status}",
+        )
+
+        status, _headers, text = await _request(port, "GET", "/static/js/miniapp_home_ui.js", cookie=cookie)
+        _add(
+            results,
+            "miniapp home javascript is served",
+            status == 200 and "refreshMiniAppHome" in text and "data-miniapp-home-refresh" in text,
             f"status={status}",
         )
 
