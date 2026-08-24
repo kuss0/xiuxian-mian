@@ -1931,6 +1931,8 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("部分 1｜失败 0", run_state["last_result"])
         self.assertIn("部分 1｜失败 0", audit_mock.await_args.args[0])
         self.assertIn("命中12/16", audit_mock.await_args.args[0])
+        self.assertIn("质量分未结算", audit_mock.await_args.args[0])
+        self.assertNotIn("质量分0", audit_mock.await_args.args[0])
 
     async def test_miniapp_rate_limit_wait_is_kept_in_run_state_and_audit(self):
         now = 1_784_500_200.0

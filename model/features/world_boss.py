@@ -1826,11 +1826,14 @@ async def _run_world_boss_miniapp_automation(
             _coerce_float(summary.get("realtime_damage_yi"), 0),
             _coerce_float(summary.get("accepted_damage_yi"), 0),
         )
-        score = _coerce_int(summary.get("score"), 0)
+        raw_score = summary.get("score")
+        score_available = raw_score not in (None, "")
+        score = _coerce_int(raw_score, 0)
         if hits or perfects or damage or score:
             planned = _coerce_int(summary.get("planned_window_count"), 0)
             hit_text = f"{hits}/{planned}" if planned > 0 else str(hits)
-            detail += f"｜命中{hit_text} 完美{perfects} 伤害{damage:g}亿 质量分{score}"
+            score_text = str(score) if score_available else "未结算"
+            detail += f"｜命中{hit_text} 完美{perfects} 伤害{damage:g}亿 质量分{score_text}"
             rejected = _coerce_int(summary.get("rejected_window_count"), 0)
             if rejected:
                 detail += f" 窗口拒绝{rejected}"
