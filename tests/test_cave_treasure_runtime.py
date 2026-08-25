@@ -2398,6 +2398,214 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         meditation_mock.assert_not_awaited()
         audit_mock.assert_not_awaited()
 
+    async def test_public_fate_cards_force_exits_then_starts_deep_retreat(self):
+        now = 1_700_000_500.0
+        fate_state = {
+            "challenge_date": "2026-07-29",
+            "has_drawn": True,
+            "has_ai_reading": True,
+            "choice_key": "accept",
+            "questions": [{"key": "cultivation"}],
+            "choices": [{"key": "accept"}],
+            "quest": {"status": "active", "can_settle": False, "progress": 0, "target": 30},
+        }
+
+        def session(deep_state):
+            return {
+                "ok": True,
+                "init_data": "query_id=dwelling&hash=SECRET",
+                "player_id": 1001,
+                "result": {
+                    "ok": True,
+                    "data": {
+                        "overview": {
+                            "meditation": {"can_settle": False, "projected_gain": 0},
+                            "deep_seclusion": deep_state,
+                        },
+                        "raw": {"externalApps": [{
+                            "key": "fate_cards",
+                            "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
+                            "available": True,
+                        }]},
+                    },
+                },
+            }
+
+        initial_session = session({"active": False, "completed": False, "can_force_exit": True, "can_start": False})
+        after_force_session = session({"active": False, "completed": False, "can_force_exit": False, "can_start": True})
+        after_start_session = session({
+            "active": True,
+            "completed": False,
+            "can_force_exit": False,
+            "can_start": False,
+            "can_settle": False,
+            "remaining_seconds": 28_800,
+            "end_ms": int((now + 28_800) * 1000),
+        })
+        deep_mock = AsyncMock(side_effect=[
+            {"ok": True, "status": "force", "sent": True, "sync": {"handled": True}},
+            {"ok": True, "status": "start", "sent": True, "sync": {"handled": True}},
+        ])
+        with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(side_effect=[
+                    initial_session, after_force_session, after_start_session,
+                ])), \
+                patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_fate_cards(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                choice_key="accept",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("启动深度闭关", result["message"])
+        self.assertTrue(result["extra"]["deep_retreat"]["active"])
+        self.assertEqual(["force", "start"], [call.kwargs["action"] for call in deep_mock.await_args_list])
+
+    async def test_public_fate_cards_waits_for_running_deep_retreat_without_restarting(self):
+        now = 1_700_000_500.0
+        fate_state = {
+            "challenge_date": "2026-07-29",
+            "has_drawn": True,
+            "has_ai_reading": True,
+            "choice_key": "accept",
+            "questions": [{"key": "cultivation"}],
+            "choices": [{"key": "accept"}],
+            "quest": {"status": "active", "can_settle": False, "progress": 12, "target": 30},
+        }
+        session = {
+            "ok": True,
+            "init_data": "query_id=dwelling&hash=SECRET",
+            "player_id": 1001,
+            "result": {
+                "ok": True,
+                "data": {
+                    "overview": {
+                        "meditation": {"can_settle": False, "projected_gain": 0},
+                        "deep_seclusion": {
+                            "active": True,
+                            "completed": False,
+                            "can_force_exit": False,
+                            "can_start": False,
+                            "can_settle": False,
+                            "remaining_seconds": 120,
+                        },
+                    },
+                    "raw": {"externalApps": [{
+                        "key": "fate_cards",
+                        "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
+                        "available": True,
+                    }]},
+                },
+            },
+        }
+        deep_mock = AsyncMock()
+        with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
+                patch.object(cave_treasure_runtime, "console_log"):
+            result = await cave_treasure_runtime.run_cave_public_fate_cards(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                choice_key="accept",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("深度闭关进行中", result["message"])
+        self.assertGreaterEqual(result["extra"]["retry_after_sec"], 120)
+        deep_mock.assert_not_awaited()
+
+    async def test_public_fate_cards_settles_deep_retreat_then_returns_to_quest(self):
+        now = 1_700_000_500.0
+        fate_state = {
+            "challenge_date": "2026-07-29",
+            "has_drawn": True,
+            "has_ai_reading": True,
+            "choice_key": "accept",
+            "questions": [{"key": "cultivation"}],
+            "choices": [{"key": "accept"}],
+            "quest": {"status": "active", "can_settle": False, "progress": 12, "target": 30},
+        }
+        ready_state = {
+            **fate_state,
+            "quest": {"status": "active", "can_settle": True, "progress": 30, "target": 30},
+        }
+
+        def session(*, meditation=False, deep_active=True, deep_settle=False):
+            return {
+                "ok": True,
+                "init_data": "query_id=dwelling&hash=SECRET",
+                "player_id": 1001,
+                "result": {
+                    "ok": True,
+                    "data": {
+                        "overview": {
+                            "meditation": {"can_settle": meditation, "projected_gain": 18 if meditation else 0},
+                            "deep_seclusion": {
+                                "active": deep_active,
+                                "completed": deep_settle,
+                                "can_force_exit": False,
+                                "can_start": False,
+                                "can_settle": deep_settle,
+                                "remaining_seconds": 0 if deep_settle else 0,
+                            },
+                        },
+                        "raw": {"externalApps": [{
+                            "key": "fate_cards",
+                            "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
+                            "available": True,
+                        }]},
+                    },
+                },
+            }
+
+        deep_mock = AsyncMock(return_value={"ok": True, "status": "settled", "sent": True, "sync": {"handled": True}})
+        meditation_mock = AsyncMock(return_value={"ok": True, "status": "settled", "data": {"actionResult": {"cultivationGain": 18}}})
+        reconcile_mock = AsyncMock(return_value={
+            "ok": True,
+            "state": {**ready_state, "quest": {**ready_state["quest"], "status": "settled", "can_settle": False}},
+            "action_result": {"data": {"reward": {"天机残痕": 2}}},
+        })
+        with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(side_effect=[
+                    session(deep_active=True, deep_settle=True),
+                    session(meditation=True, deep_active=False),
+                    session(meditation=False, deep_active=False),
+                ])), \
+                patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(side_effect=[
+                    {"ok": True, "data": {"state": fate_state}},
+                    {"ok": True, "data": {"state": fate_state}},
+                    {"ok": True, "data": {"state": ready_state}},
+                ])), \
+                patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
+                patch.object(cave_treasure_runtime, "run_cave_meditation_settle_production_flow", new=meditation_mock), \
+                patch.object(cave_treasure_runtime, "_run_fate_cards_action_and_reconcile", new=reconcile_mock), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+            result = await cave_treasure_runtime.run_cave_public_fate_cards(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                choice_key="accept",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["extra"]["daily_exhausted"])
+        deep_mock.assert_awaited_once()
+        meditation_mock.assert_awaited_once()
+        reconcile_mock.assert_awaited_once()
+
     def test_fate_cards_state_accumulates_same_day_resource_gains(self):
         previous = {
             "7538826434:fate_cards": {

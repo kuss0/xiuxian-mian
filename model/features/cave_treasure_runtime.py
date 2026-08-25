@@ -1421,7 +1421,7 @@ def _fate_cards_retry_after_sec(fate_state):
     return FATE_CARDS_WAIT_RETRY_SEC
 
 
-def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=None, meditation=None):
+def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=None, meditation=None, deep_retreat=None):
     fate_state = dict(fate_state or {})
     quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
     challenge_date = str(fate_state.get("challenge_date") or "")
@@ -1475,6 +1475,7 @@ def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=Non
         },
         "reward": dict(reward or {}),
         "meditation": dict(meditation or {}),
+        "deep_retreat": dict(deep_retreat or {}),
         "gains": cumulative_gains,
     }
     source_id = (
@@ -1530,6 +1531,114 @@ async def _run_fate_cards_action_and_reconcile(
         "probe_result": probe_result,
         "state": fate_state,
         "error": "" if confirmed else str(action_result.get("error") or probe_result.get("error") or f"{action}_not_confirmed"),
+    }
+
+
+def _cave_public_deep_retry_after(deep_state, *, now):
+    deep_state = dict(deep_state or {})
+    end_ms = _parse_int(deep_state.get("end_ms"), 0)
+    if end_ms > int(float(now) * 1000):
+        return max(60, min(12 * 3600, end_ms / 1000.0 - float(now) + deep_retreat.CD_BUFFER_SEC))
+    remaining = _parse_int(deep_state.get("remaining_seconds"), 0)
+    if remaining > 0:
+        return max(60, min(12 * 3600, remaining + deep_retreat.CD_BUFFER_SEC))
+    return CAVE_DEEP_STATUS_RECHECK_SEC
+
+
+async def _run_cave_public_deep_action_locked(
+    identity_id,
+    *,
+    token,
+    webview_url,
+    action,
+    session=None,
+    cave_overview=None,
+    init_data="",
+    now,
+    capture_sink=None,
+    capture_source="",
+):
+    """Run one deep-seclusion action while the caller owns the public-entry lock.
+
+    The fate-cards chain and the standalone deep-retreat UI share the same
+    identity lock.  This helper deliberately does not acquire that lock again,
+    and performs authoritative dashboard gates for force/start before sending.
+    """
+    action = str(action or "").strip()
+    deep_state = {}
+    if isinstance(cave_overview, dict):
+        deep_state = dict(cave_overview.get("deep_seclusion") or {})
+
+    if action == "force" and deep_state.get("can_force_exit") is not True:
+        return {
+            "ok": True,
+            "status": "preflight_skip",
+            "sent": False,
+            "reason": "can_force_exit_false",
+            "data": {"deep_seclusion": deep_state},
+            "sync": {"handled": True, "ready": False, "reason": "can_force_exit_false", "phase": ""},
+        }
+    if action == "start" and deep_state.get("can_start") is not True:
+        return {
+            "ok": True,
+            "status": "preflight_skip",
+            "sent": False,
+            "reason": "can_start_false",
+            "data": {"deep_seclusion": deep_state},
+            "sync": {"handled": True, "ready": False, "reason": "can_start_false", "phase": ""},
+        }
+
+    if action == "settle" and isinstance(session, dict):
+        preflight = _cave_public_deep_settle_preflight(identity_id, session, now=now)
+        if not preflight.get("send"):
+            snapshot = dict(preflight.get("snapshot") or {})
+            return {
+                "ok": True,
+                "status": "preflight_skip",
+                "sent": False,
+                "reason": str(preflight.get("reason") or "snapshot_missing"),
+                "data": {"deep_seclusion": snapshot},
+                "sync": {
+                    "handled": True,
+                    "ready": False,
+                    "reason": str(preflight.get("reason") or "snapshot_missing"),
+                    "phase": str(preflight.get("phase") or "launching"),
+                    "remaining_seconds": snapshot.get("remaining_seconds"),
+                    "end_ms": snapshot.get("end_ms"),
+                },
+            }
+
+    result = await run_cave_deep_seclusion_action_production_flow(
+        identity_id,
+        token=token,
+        webview_url=webview_url,
+        action=action,
+        init_data=init_data,
+        capture_sink=capture_sink,
+        capture_source=f"{capture_source}:deep_{action}",
+    )
+    sync_result = await sync_cave_deep_seclusion_action_result(
+        identity_id,
+        action,
+        result.get("data") or {},
+        now=now,
+    )
+    record = _record_cave_deep_retreat_state(
+        identity_id,
+        action,
+        result,
+        sync_result,
+        now=now,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "status": str(result.get("status") or ""),
+        "sent": True,
+        "result": result,
+        "sync": sync_result,
+        "record": record,
+        "data": dict(result.get("data") or {}),
+        "error": result.get("error") or "",
     }
 
 
@@ -3034,7 +3143,34 @@ async def run_cave_public_fate_cards(
                 capture_source=f"{capture_source}:{source_suffix}",
             )
 
-        probe_result = await probe("fate_start")
+        async def refresh_dwelling(source_suffix):
+            nonlocal session, dwelling_init_data, selected_player_id, cave_result, cave_data, cave_raw, cave_overview
+            refreshed = await _load_cave_public_identity_session(
+                identity_id,
+                token,
+                webview_url,
+                now=now,
+                capture_source=f"{capture_source}:{source_suffix}",
+                include_details=True,
+            )
+            if not refreshed.get("ok"):
+                return refreshed
+            session = refreshed
+            dwelling_init_data = str(session.get("init_data") or "")
+            selected_player_id = session.get("player_id")
+            cave_result = dict(session.get("result") or {})
+            cave_data = dict(cave_result.get("data") or {})
+            cave_raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
+            cave_overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
+            return refreshed
+
+        async def refresh_fate(source_suffix):
+            nonlocal fate_state
+            refreshed = await probe(source_suffix)
+            fate_state = _fate_cards_state_from_result(refreshed) or fate_state
+            return refreshed
+
+        probe_result = await refresh_fate("fate_start")
         fate_state = _fate_cards_state_from_result(probe_result)
         if not probe_result.get("ok") or not fate_state:
             message = f"天机命脉状态读取失败：{probe_result.get('error') or 'unknown'}"
@@ -3127,48 +3263,238 @@ async def run_cave_public_fate_cards(
             }
 
         meditation_summary = {}
+        deep_summary = {}
         gains = {}
         reward = {}
-        if not quest.get("can_settle") and current_choice == "accept":
-            meditation = cave_overview.get("meditation") if isinstance(cave_overview.get("meditation"), dict) else {}
-            if not meditation.get("can_settle"):
-                retry_after = _fate_cards_retry_after_sec(fate_state)
-                record = _record_fate_cards_state(identity_id, fate_state, now=now, status="waiting_meditation")
-                message = "天机命脉已承命，静室暂无可结算修为"
-                console_log(message, scope="identity", limit=220)
-                return {
-                    "ok": True,
-                    "message": message,
-                    "extra": {"retry_after_sec": retry_after, "record_key": record.get("record_key", "")},
-                }
-            meditation_result = await run_cave_meditation_settle_production_flow(
-                identity_id,
-                token=token,
-                webview_url=webview_url,
-                init_data=dwelling_init_data,
-                capture_sink=capture_sink,
-                capture_source=f"{capture_source}:meditation",
-            )
-            med_rewards, med_gains = _collect_materials(meditation_result.get("data") or {})
-            gains.update(med_gains)
-            meditation_summary = {
-                "ok": bool(meditation_result.get("ok")),
-                "gains": med_gains,
-                "rewards": med_rewards,
-            }
-            probe_result = await probe("after_meditation")
-            fate_state = _fate_cards_state_from_result(probe_result) or fate_state
+        deep_actions_sent = set()
+        for _step in range(6):
             quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
-            if not meditation_result.get("ok") and not quest.get("can_settle"):
-                message = f"天机命脉静室结算未确认：{meditation_result.get('error') or 'unknown'}"
-                _record_fate_cards_state(
+            if quest.get("can_settle"):
+                break
+            if current_choice != "accept":
+                break
+
+            meditation = cave_overview.get("meditation") if isinstance(cave_overview.get("meditation"), dict) else {}
+            if meditation.get("can_settle") and "meditation" not in deep_actions_sent:
+                deep_actions_sent.add("meditation")
+                meditation_result = await run_cave_meditation_settle_production_flow(
+                    identity_id,
+                    token=token,
+                    webview_url=webview_url,
+                    init_data=dwelling_init_data,
+                    capture_sink=capture_sink,
+                    capture_source=f"{capture_source}:meditation",
+                )
+                med_rewards, med_gains = _collect_materials(meditation_result.get("data") or {})
+                gains.update(med_gains)
+                meditation_summary = {
+                    "ok": bool(meditation_result.get("ok")),
+                    "gains": med_gains,
+                    "rewards": med_rewards,
+                }
+                refreshed = await refresh_dwelling("after_meditation_dwelling")
+                if not refreshed.get("ok"):
+                    message = f"天机命脉静室结算后洞府回读失败：{refreshed.get('error') or 'unknown'}"
+                    _record_fate_cards_state(
+                        identity_id,
+                        fate_state,
+                        now=now,
+                        status="meditation_reconcile_failed",
+                        meditation=meditation_summary,
+                        deep_retreat=deep_summary,
+                    )
+                    return {"ok": False, "message": message, "extra": {"gains": gains}}
+                probe_result = await refresh_fate("after_meditation")
+                quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
+                if not meditation_result.get("ok") and not quest.get("can_settle"):
+                    message = f"天机命脉静室结算未确认：{meditation_result.get('error') or 'unknown'}"
+                    _record_fate_cards_state(
+                        identity_id,
+                        fate_state,
+                        now=now,
+                        status="meditation_unknown",
+                        meditation=meditation_summary,
+                        deep_retreat=deep_summary,
+                    )
+                    return {"ok": False, "message": message, "extra": {"gains": gains}}
+                continue
+
+            deep = cave_overview.get("deep_seclusion") if isinstance(cave_overview.get("deep_seclusion"), dict) else {}
+            if deep.get("active"):
+                if (deep.get("can_settle") or deep.get("completed")) and "deep_settle" not in deep_actions_sent:
+                    deep_actions_sent.add("deep_settle")
+                    deep_result = await _run_cave_public_deep_action_locked(
+                        identity_id,
+                        token=token,
+                        webview_url=webview_url,
+                        action="settle",
+                        session=session,
+                        cave_overview=cave_overview,
+                        init_data=dwelling_init_data,
+                        now=now,
+                        capture_sink=capture_sink,
+                        capture_source=capture_source,
+                    )
+                    deep_summary = {
+                        "action": "settle",
+                        "ok": bool(deep_result.get("ok")),
+                        "sent": bool(deep_result.get("sent")),
+                        "reason": str(deep_result.get("reason") or ""),
+                    }
+                    if not deep_result.get("ok"):
+                        message = f"天机命脉深度闭关结算未确认：{deep_result.get('error') or 'unknown'}"
+                        _record_fate_cards_state(
+                            identity_id,
+                            fate_state,
+                            now=now,
+                            status="deep_settle_unknown",
+                            meditation=meditation_summary,
+                            deep_retreat=deep_summary,
+                        )
+                        return {"ok": False, "message": message, "extra": {"gains": gains}}
+                    refreshed = await refresh_dwelling("after_deep_settle_dwelling")
+                    if not refreshed.get("ok"):
+                        message = f"天机命脉深度闭关后洞府回读失败：{refreshed.get('error') or 'unknown'}"
+                        return {"ok": False, "message": message, "extra": {"gains": gains}}
+                    probe_result = await refresh_fate("after_deep_settle")
+                    continue
+
+                retry_after = _cave_public_deep_retry_after(deep, now=now)
+                record = _record_fate_cards_state(
                     identity_id,
                     fate_state,
                     now=now,
-                    status="meditation_unknown",
+                    status="waiting_deep_retreat",
                     meditation=meditation_summary,
+                    deep_retreat={
+                        "action": "wait",
+                        "active": True,
+                        "remaining_seconds": _parse_int(deep.get("remaining_seconds"), 0),
+                        "end_ms": _parse_int(deep.get("end_ms"), 0),
+                    },
                 )
-                return {"ok": False, "message": message, "extra": {"gains": gains}}
+                message = "天机命脉已承命，深度闭关进行中，完成后回洞府继续结算"
+                console_log(message, scope="identity", limit=240)
+                return {
+                    "ok": True,
+                    "message": message,
+                    "extra": {
+                        "retry_after_sec": retry_after,
+                        "record_key": record.get("record_key", ""),
+                        "deep_retreat": deep,
+                        "gains": gains,
+                    },
+                }
+
+            if deep.get("can_force_exit") and "deep_force" not in deep_actions_sent:
+                deep_actions_sent.add("deep_force")
+                deep_result = await _run_cave_public_deep_action_locked(
+                    identity_id,
+                    token=token,
+                    webview_url=webview_url,
+                    action="force",
+                    cave_overview=cave_overview,
+                    init_data=dwelling_init_data,
+                    now=now,
+                    capture_sink=capture_sink,
+                    capture_source=capture_source,
+                )
+                deep_summary = {
+                    "action": "force",
+                    "ok": bool(deep_result.get("ok")),
+                    "sent": bool(deep_result.get("sent")),
+                    "reason": str(deep_result.get("reason") or ""),
+                }
+                if not deep_result.get("ok") or not deep_result.get("sent"):
+                    message = f"天机命脉强行出关未确认：{deep_result.get('error') or deep_result.get('reason') or 'unknown'}"
+                    _record_fate_cards_state(
+                        identity_id,
+                        fate_state,
+                        now=now,
+                        status="deep_force_unknown",
+                        meditation=meditation_summary,
+                        deep_retreat=deep_summary,
+                    )
+                    return {"ok": False, "message": message, "extra": {"gains": gains}}
+                refreshed = await refresh_dwelling("after_deep_force_dwelling")
+                if not refreshed.get("ok"):
+                    message = f"天机命脉强行出关后洞府回读失败：{refreshed.get('error') or 'unknown'}"
+                    return {"ok": False, "message": message, "extra": {"gains": gains}}
+                continue
+
+            if deep.get("can_start") and "deep_start" not in deep_actions_sent:
+                deep_actions_sent.add("deep_start")
+                deep_result = await _run_cave_public_deep_action_locked(
+                    identity_id,
+                    token=token,
+                    webview_url=webview_url,
+                    action="start",
+                    cave_overview=cave_overview,
+                    init_data=dwelling_init_data,
+                    now=now,
+                    capture_sink=capture_sink,
+                    capture_source=capture_source,
+                )
+                deep_summary = {
+                    "action": "start",
+                    "ok": bool(deep_result.get("ok")),
+                    "sent": bool(deep_result.get("sent")),
+                    "reason": str(deep_result.get("reason") or ""),
+                }
+                if not deep_result.get("ok") or not deep_result.get("sent"):
+                    message = f"天机命脉深度闭关启动未确认：{deep_result.get('error') or deep_result.get('reason') or 'unknown'}"
+                    _record_fate_cards_state(
+                        identity_id,
+                        fate_state,
+                        now=now,
+                        status="deep_start_unknown",
+                        meditation=meditation_summary,
+                        deep_retreat=deep_summary,
+                    )
+                    return {"ok": False, "message": message, "extra": {"gains": gains}}
+                refreshed = await refresh_dwelling("after_deep_start_dwelling")
+                if not refreshed.get("ok"):
+                    message = f"天机命脉深度闭关启动后洞府回读失败：{refreshed.get('error') or 'unknown'}"
+                    return {"ok": False, "message": message, "extra": {"gains": gains}}
+                deep = cave_overview.get("deep_seclusion") if isinstance(cave_overview.get("deep_seclusion"), dict) else {}
+                retry_after = _cave_public_deep_retry_after(deep, now=now)
+                record = _record_fate_cards_state(
+                    identity_id,
+                    fate_state,
+                    now=now,
+                    status="waiting_deep_retreat",
+                    meditation=meditation_summary,
+                    deep_retreat=deep_summary,
+                )
+                message = "天机命脉已承命，已启动深度闭关，完成后回洞府继续结算"
+                console_log(message, scope="identity", limit=240)
+                return {
+                    "ok": True,
+                    "message": message,
+                    "extra": {
+                        "retry_after_sec": retry_after,
+                        "record_key": record.get("record_key", ""),
+                        "deep_retreat": deep,
+                        "gains": gains,
+                    },
+                }
+
+            retry_after = _fate_cards_retry_after_sec(fate_state)
+            record = _record_fate_cards_state(
+                identity_id,
+                fate_state,
+                now=now,
+                status="waiting_meditation",
+                meditation=meditation_summary,
+                deep_retreat=deep_summary,
+            )
+            message = "天机命脉已承命，静室暂无可结算修为，且深度闭关暂不可接续"
+            console_log(message, scope="identity", limit=240)
+            return {
+                "ok": True,
+                "message": message,
+                "extra": {"retry_after_sec": retry_after, "record_key": record.get("record_key", ""), "gains": gains},
+            }
 
         if not quest.get("can_settle"):
             retry_after = _fate_cards_retry_after_sec(fate_state)
@@ -3178,6 +3504,7 @@ async def run_cave_public_fate_cards(
                 now=now,
                 status="waiting_quest",
                 meditation=meditation_summary,
+                deep_retreat=deep_summary,
             )
             message = "天机命脉任务进行中，等待服务端完成条件"
             console_log(message, scope="identity", limit=220)
@@ -3209,6 +3536,7 @@ async def run_cave_public_fate_cards(
                 status="settle_unknown",
                 reward=reward,
                 meditation=meditation_summary,
+                deep_retreat=deep_summary,
             )
             return {"ok": False, "message": message, "extra": {"gains": gains}}
 
@@ -3221,6 +3549,7 @@ async def run_cave_public_fate_cards(
             status="settled",
             reward=reward,
             meditation=meditation_summary,
+            deep_retreat=deep_summary,
         )
         record_state = (record.get("record") or {}).get("state") if isinstance(record.get("record"), dict) else {}
         cumulative_gains = record_state.get("gains") if isinstance(record_state.get("gains"), dict) else gains
