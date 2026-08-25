@@ -8,6 +8,44 @@ from model.features import world_boss_miniapp_runtime
 
 
 class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_history_refresh_adopts_newer_official_rotating_bot_entry(self):
+        official_sender = SimpleNamespace(username="hantianzun23_bot", bot=True)
+        newer = SimpleNamespace(
+            id=20,
+            date=SimpleNamespace(timestamp=lambda: 20.0),
+            raw_text="真仙试锋已开启",
+            sender=official_sender,
+            sender_id=90023,
+            buttons=[[SimpleNamespace(
+                text="进入战场",
+                url="https://t.me/hantianzun23_bot?startapp=qyz_NEW456",
+            )]],
+        )
+
+        class FakeClient:
+            async def get_messages(self, chat_id, limit):
+                self.chat_id = chat_id
+                self.limit = limit
+                return [newer]
+
+        event = SimpleNamespace(
+            id=10,
+            date=SimpleNamespace(timestamp=lambda: 10.0),
+            chat_id=-1001,
+            client=FakeClient(),
+            buttons=[[SimpleNamespace(
+                text="进入战场",
+                url="https://t.me/hantianzun22_bot?startapp=qyz_OLD123",
+            )]],
+        )
+        launch = await world_boss_miniapp_runtime.refresh_world_boss_miniapp_launch_from_history(
+            event,
+            previous_launch={"token": "qyz_OLD123"},
+        )
+
+        self.assertEqual("qyz_NEW456", launch["token"])
+        self.assertEqual("hantianzun23_bot", launch["bot_username"])
+
     async def test_channel_identity_uses_public_negative_player_id_on_join(self):
         event = SimpleNamespace(
             buttons=[[SimpleNamespace(
@@ -480,6 +518,162 @@ class WorldBossMiniAppRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(3, attempts)
+        self.assertEqual([call(1.0), call(2.0)], sleep_mock.await_args_list)
+
+    async def test_token_failure_refreshes_launch_and_init_data_once(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_OLD123")]],
+        )
+        seen_tokens = []
+        seen_launches = []
+        refresh_calls = []
+
+        async def init_data_provider(identity_id, launch):
+            seen_launches.append((identity_id, launch["token"]))
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            seen_tokens.append(kwargs["token"])
+            joined = kwargs["token"] == "qyz_NEW456"
+            return SimpleNamespace(
+                joined=joined,
+                status="joined" if joined else "boss_token_missing",
+                session_token="qyz_SESSION" if joined else "",
+                safe_summary=lambda: {
+                    "joined": joined,
+                    "status": "joined" if joined else "boss_token_missing",
+                },
+            )
+
+        async def refresh_provider(current_launch, reason, identity_id, refresh_index):
+            refresh_calls.append((current_launch["token"], reason, identity_id, refresh_index))
+            return {
+                "token": "qyz_NEW456",
+                "webview_url": "https://t.me/hantianzun22_bot?startapp=qyz_NEW456",
+                "bot_username": "hantianzun22_bot",
+                "safe_summary": {"start_param": {"kind": "qyz"}},
+            }
+
+        def fake_battle(_receipt, **_kwargs):
+            return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11],
+                event,
+                opened_at=time.time(),
+                init_data_provider=init_data_provider,
+                launch_refresh_provider=refresh_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["qyz_OLD123", "qyz_NEW456"], seen_tokens)
+        self.assertEqual([(11, "qyz_OLD123"), (11, "qyz_NEW456")], seen_launches)
+        self.assertEqual([("qyz_OLD123", "boss_token_missing", 11, 1)], refresh_calls)
+        join = next(item for item in result["results"] if item["phase"] == "join")
+        self.assertTrue(join["launch_refreshed"])
+        self.assertEqual(1, result["launch_refresh_count"])
+
+    async def test_canary_token_failure_stops_remaining_identities(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_OLD123")]],
+        )
+        join_ids = []
+        refresh_calls = []
+
+        async def init_data_provider(identity_id, _launch):
+            return f"query_id={identity_id}&hash=secret"
+
+        def fake_join(**kwargs):
+            join_ids.append(kwargs["identity_id"])
+            return SimpleNamespace(
+                joined=False,
+                status="boss_token_missing",
+                safe_summary=lambda: {"joined": False, "status": "boss_token_missing"},
+            )
+
+        async def refresh_provider(*_args):
+            refresh_calls.append(True)
+            return {}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+            patch.object(world_boss_miniapp_runtime.asyncio, "sleep", new=AsyncMock()),
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11, 22, 33],
+                event,
+                init_data_provider=init_data_provider,
+                launch_refresh_provider=refresh_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual([11, 11, 11, 11], join_ids)
+        self.assertEqual([True], refresh_calls)
+        self.assertEqual(0, result["joined_count"])
+        self.assertEqual(1, len(result["results"]))
+        self.assertEqual("boss_token_missing", result["results"][0]["status"])
+
+    async def test_token_failure_reenters_webview_when_no_new_card_is_available(self):
+        event = SimpleNamespace(
+            buttons=[[SimpleNamespace(text="进入战场", url="https://t.me/hantianzun22_bot?startapp=qyz_SAME123")]],
+        )
+        join_attempts = 0
+        init_data_attempts = 0
+        refresh_attempts = 0
+
+        async def init_data_provider(identity_id, _launch):
+            nonlocal init_data_attempts
+            init_data_attempts += 1
+            return f"query_id={identity_id}-{init_data_attempts}&hash=secret"
+
+        def fake_join(**_kwargs):
+            nonlocal join_attempts
+            join_attempts += 1
+            joined = join_attempts == 3
+            return SimpleNamespace(
+                joined=joined,
+                status="joined" if joined else "boss_token_missing",
+                session_token="qyz_SESSION" if joined else "",
+                safe_summary=lambda: {
+                    "joined": joined,
+                    "status": "joined" if joined else "boss_token_missing",
+                },
+            )
+
+        async def refresh_provider(*_args):
+            nonlocal refresh_attempts
+            refresh_attempts += 1
+            return {}
+
+        def fake_battle(_receipt, **_kwargs):
+            return {"ok": True, "status": "settled", "data": {"result": {"score": 100}}}
+
+        with (
+            patch.object(world_boss_miniapp_runtime, "join_world_boss_miniapp_lab", side_effect=fake_join),
+            patch.object(world_boss_miniapp_runtime, "run_world_boss_joined_battle_lab_flow", side_effect=fake_battle),
+            patch.object(world_boss_miniapp_runtime, "get_identity_account", return_value=100),
+            patch.object(world_boss_miniapp_runtime.asyncio, "sleep", new=AsyncMock()) as sleep_mock,
+        ):
+            result = await world_boss_miniapp_runtime.run_world_boss_miniapp_event(
+                [11],
+                event,
+                init_data_provider=init_data_provider,
+                launch_refresh_provider=refresh_provider,
+                transport=lambda _request: None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(3, join_attempts)
+        self.assertEqual(3, init_data_attempts)
+        self.assertEqual(1, refresh_attempts)
         self.assertEqual([call(1.0), call(2.0)], sleep_mock.await_args_list)
 
     async def test_non_token_join_failure_is_not_retried(self):

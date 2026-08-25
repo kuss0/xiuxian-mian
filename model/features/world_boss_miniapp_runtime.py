@@ -50,6 +50,10 @@ WORLD_BOSS_MINIAPP_WS_CONNECT_TIMEOUT_SEC = 8.0
 WORLD_BOSS_MINIAPP_WS_MESSAGE_TIMEOUT_SEC = 5.0
 WORLD_BOSS_MINIAPP_WS_RECONNECT_SEC = 5.0
 WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC = (1.0, 2.0, 3.0)
+# A token failure is an entry/protocol signal, not a reason to keep replaying
+# the same request.  At most one fresh official card is adopted per event.
+WORLD_BOSS_LAUNCH_REFRESH_LIMIT = 1
+WORLD_BOSS_TOKEN_REFRESH_STATUSES = {"boss_token_missing", "boss_token_expired"}
 # Do not silently reduce a participant's score.  Any deliberate low-profile
 # behavior belongs in the per-identity window_skip_by_identity setting.
 WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS = 0
@@ -281,6 +285,88 @@ def extract_world_boss_miniapp_launch(event, *, message_text=""):
     return {}
 
 
+def _world_boss_message_timestamp(message):
+    message_at = getattr(message, "date", None)
+    try:
+        return float(message_at.timestamp()) if message_at is not None else 0.0
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+async def refresh_world_boss_miniapp_launch_from_history(
+    event,
+    *,
+    message_text="",
+    previous_launch=None,
+    per_chat_limit=80,
+):
+    """Read a bounded recent window and adopt a newer official boss card.
+
+    This is a Telegram read only recovery path.  It deliberately does not
+    send a game command or trust a card from an arbitrary sender.  The caller
+    still owns the one-refresh limit and compares the returned token with the
+    failed launch before retrying.
+    """
+
+    client = getattr(event, "client", None)
+    chat_id = getattr(event, "chat_id", None)
+    if client is None or chat_id is None:
+        return {}
+    messages = []
+    try:
+        messages = await client.get_messages(
+            chat_id,
+            limit=max(1, min(120, int(per_chat_limit or 80))),
+        )
+    except Exception:
+        return {}
+    candidates = [event, *(messages or ())]
+    previous_token = str((previous_launch or {}).get("token") or "").strip()
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            _world_boss_message_timestamp(item[1]),
+            int(getattr(item[1], "id", 0) or 0),
+            item[0],
+        ),
+        reverse=True,
+    )
+    for _index, message in ranked:
+        sender = getattr(message, "sender", None)
+        if sender is None:
+            getter = getattr(message, "get_sender", None)
+            if getter is not None:
+                try:
+                    sender = await getter()
+                except Exception:
+                    sender = None
+        if sender is not None:
+            try:
+                setattr(message, "sender", sender)
+            except Exception:
+                pass
+        username = str(
+            getattr(sender, "username", "")
+            or getattr(message, "sender_username", "")
+            or ""
+        ).strip().lstrip("@").casefold()
+        if getattr(sender, "bot", False) and (
+            username == "fanrenxiuxian_bot"
+            or re.fullmatch(r"hantianzun\d+_bot", username, flags=re.IGNORECASE)
+        ):
+            try:
+                setattr(message, "_xiuxian_sender_is_game_bot", True)
+            except Exception:
+                pass
+        launch = extract_world_boss_miniapp_launch(
+            message,
+            message_text=str(getattr(message, "raw_text", "") or message_text or ""),
+        )
+        if launch and str(launch.get("token") or "").strip() != previous_token:
+            return launch
+    return {}
+
+
 async def request_world_boss_miniapp_init_data(identity_id, launch):
     launch = dict(launch or {})
     adapter = build_world_boss_miniapp_adapter()
@@ -364,21 +450,36 @@ async def run_world_boss_miniapp_event(
     init_data_provider=None,
     progress_callback=None,
     window_skip_by_identity=None,
+    launch_refresh_provider=None,
 ):
-    """Join accounts in parallel, then run one serial timeline per account.
+    """Probe admission with one account, then run serial timelines in parallel.
 
     ``account_gap_sec`` remains as a compatibility argument for older callers;
     account-level staggering is intentionally not applied because the event
     window requires parallel entry.  The effective battle launch spacing is
-    controlled by ``battle_priority_gap_sec``.
+    controlled by ``battle_priority_gap_sec``.  A confirmed token failure may
+    invoke ``launch_refresh_provider`` once for the whole event.  The provider
+    must return a new safe launch mapping or an empty mapping; the old token is
+    never retried after a refresh attempt was available.
     """
 
     now = float(opened_at or time.time())
     launch = extract_world_boss_miniapp_launch(event, message_text=message_text)
     if not launch:
         return {"ok": False, "status": "entry_missing", "joined_count": 0, "results": []}
+    initial_launch_token = str(launch.get("token") or "").strip()
     shared_transport = transport
     init_data_provider = init_data_provider or request_world_boss_miniapp_init_data
+    if launch_refresh_provider is None and getattr(event, "client", None) is not None:
+        async def launch_refresh_provider(current_launch, reason, identity_id, refresh_index):
+            return await refresh_world_boss_miniapp_launch_from_history(
+                event,
+                message_text=message_text,
+                previous_launch=current_launch,
+            )
+
+    launch_state = {"launch": dict(launch), "refresh_count": 0}
+    launch_refresh_lock = asyncio.Lock()
     capture_sink = _capture_store(now)
     raw_window_skips = window_skip_by_identity if isinstance(window_skip_by_identity, dict) else {}
     try:
@@ -394,6 +495,41 @@ async def run_world_boss_miniapp_event(
             identity_extra = 0
         total = min(32, WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS + identity_extra)
         return total, identity_extra
+
+    async def current_launch_after_token_failure(failed_launch, reason, identity_id):
+        """Return a newer launch, or ``None`` when the old token is terminal."""
+
+        if launch_refresh_provider is None:
+            return dict(launch_state["launch"])
+        failed_token = str((failed_launch or {}).get("token") or "").strip()
+        async with launch_refresh_lock:
+            current = dict(launch_state["launch"] or {})
+            current_token = str(current.get("token") or "").strip()
+            if current_token and current_token != failed_token:
+                return current
+            if int(launch_state["refresh_count"] or 0) >= WORLD_BOSS_LAUNCH_REFRESH_LIMIT:
+                return None
+            refresh_index = int(launch_state["refresh_count"] or 0) + 1
+            launch_state["refresh_count"] = refresh_index
+            try:
+                refreshed = launch_refresh_provider(
+                    dict(failed_launch or {}),
+                    str(reason or "boss token failed"),
+                    int(identity_id or 0),
+                    refresh_index,
+                )
+                if inspect.isawaitable(refreshed):
+                    refreshed = await refreshed
+            except Exception:
+                refreshed = None
+            if not isinstance(refreshed, dict):
+                return None
+            refreshed = dict(refreshed)
+            refreshed_token = str(refreshed.get("token") or "").strip()
+            if not refreshed_token or refreshed_token == failed_token:
+                return None
+            launch_state["launch"] = refreshed
+            return dict(refreshed)
 
     async def join_one(raw_identity_id):
         identity_id = int(raw_identity_id or 0)
@@ -418,17 +554,20 @@ async def run_world_boss_miniapp_event(
                 return _requests_transport(request, session=session)
 
         try:
-            init_data = await init_data_provider(identity_id, launch)
             account_id = get_identity_account(identity_id)
             player_id = world_boss_player_id_for_identity(
                 identity_id,
                 account_id=account_id,
             )
             receipt = None
-            for attempt in range(len(WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC) + 1):
+            init_data = ""
+            launch_snapshot = dict(launch_state["launch"] or {})
+            attempt = 0
+            while True:
+                init_data = await init_data_provider(identity_id, launch_snapshot)
                 receipt = await asyncio.to_thread(
                     join_world_boss_miniapp_lab,
-                    token=launch["token"],
+                    token=launch_snapshot["token"],
                     init_data=init_data,
                     player_id=player_id,
                     identity_id=identity_id,
@@ -437,14 +576,38 @@ async def run_world_boss_miniapp_event(
                     capture_sink=capture_sink,
                     capture_source=f"world_boss:join:{identity_id}",
                 )
-                if receipt.joined or str(receipt.status or "") != "boss_token_missing":
+                receipt_status = str(getattr(receipt, "status", "") or "")
+                if receipt.joined or receipt_status not in WORLD_BOSS_TOKEN_REFRESH_STATUSES:
                     break
+                if launch_refresh_provider is not None:
+                    refreshed_launch = await current_launch_after_token_failure(
+                        launch_snapshot,
+                        receipt_status,
+                        identity_id,
+                    )
+                    if refreshed_launch is not None:
+                        launch_snapshot = refreshed_launch
+                        attempt = 0
+                        continue
+                    # The public card may still be current while Telegram's
+                    # WebView session is stale. Re-enter the same MiniApp a
+                    # bounded number of times so initData is regenerated,
+                    # without replaying the token indefinitely.
+                    if attempt >= len(WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC):
+                        break
+                    retry_delay = WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC[attempt]
+                    if time.time() + retry_delay - now > WORLD_BOSS_JOIN_WINDOW_SEC:
+                        break
+                    await asyncio.sleep(retry_delay)
+                    attempt += 1
+                    continue
                 if attempt >= len(WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC):
                     break
                 retry_delay = WORLD_BOSS_TOKEN_READY_RETRY_DELAYS_SEC[attempt]
                 if time.time() + retry_delay - now > WORLD_BOSS_JOIN_WINDOW_SEC:
                     break
                 await asyncio.sleep(retry_delay)
+                attempt += 1
         except Exception as exc:
             if session is not None:
                 session.close()
@@ -462,6 +625,8 @@ async def run_world_boss_miniapp_event(
             "identity_id": identity_id,
             "phase": "join",
             "ok": bool(receipt.joined),
+            "launch_refreshed": str(launch_snapshot.get("token") or "").strip() != initial_launch_token,
+            "launch_refresh_count": int(launch_state["refresh_count"] or 0),
             **receipt.safe_summary(),
         }
         if receipt.joined:
@@ -474,6 +639,7 @@ async def run_world_boss_miniapp_event(
                 session,
                 total_window_skip,
                 identity_extra_window_skip,
+                launch_snapshot,
             ), join_result
         if session is not None:
             session.close()
@@ -489,11 +655,12 @@ async def run_world_boss_miniapp_event(
             session,
             window_skip_count,
             identity_extra_window_skip,
+            launch_snapshot,
         ) = context
         launch_delay_sec = float(priority_index) * battle_priority_gap_sec
         if launch_delay_sec > 0:
             await asyncio.sleep(launch_delay_sec)
-        battle_token = getattr(receipt, "session_token", "") or launch["token"]
+        battle_token = getattr(receipt, "session_token", "") or launch_snapshot["token"]
         realtime_feed = None
         realtime_summary = {"available": _websocket_connect is not None, "started": False}
         try:
@@ -516,7 +683,7 @@ async def run_world_boss_miniapp_event(
                     run_world_boss_joined_battle_lab_flow,
                     receipt,
                     token=battle_token,
-                    entry_token=launch["token"],
+                    entry_token=launch_snapshot["token"],
                     init_data=init_data,
                     transport=identity_transport,
                     capture_sink=capture_sink,
@@ -572,7 +739,25 @@ async def run_world_boss_miniapp_event(
     stop_event = threading.Event()
     begin_miniapp_priority_window(priority_owner)
     try:
-        joined = await asyncio.gather(*(join_one(identity_id) for identity_id in (identity_ids or ())))
+        normalized_identity_ids = []
+        for raw_identity_id in identity_ids or ():
+            try:
+                identity_id = int(raw_identity_id or 0)
+            except (TypeError, ValueError, OverflowError):
+                identity_id = 0
+            if identity_id > 0 and identity_id not in normalized_identity_ids:
+                normalized_identity_ids.append(identity_id)
+        joined = []
+        if normalized_identity_ids:
+            canary = await join_one(normalized_identity_ids[0])
+            joined.append(canary)
+            canary_status = str((canary[1] or {}).get("status") or "")
+            canary_blocks_remaining = canary[0] is None and canary_status in WORLD_BOSS_TOKEN_REFRESH_STATUSES
+            if not canary_blocks_remaining:
+                joined.extend(await asyncio.gather(*(
+                    join_one(identity_id)
+                    for identity_id in normalized_identity_ids[1:]
+                )))
         contexts = [context for context, _result in joined if context is not None]
         results = [result for _context, result in joined if result is not None]
         results.extend(await asyncio.gather(*(
@@ -598,14 +783,17 @@ async def run_world_boss_miniapp_event(
         "ok": all_joined_settled,
         "status": "settled" if all_joined_settled else "partial",
         "joined_count": len(contexts),
+        "launch_refresh_count": int(launch_state["refresh_count"] or 0),
         "results": results,
-        "entry": launch.get("safe_summary") or {},
+        "entry": (launch_state["launch"] or {}).get("safe_summary") or {},
     }
 
 
 __all__ = [
     "WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS",
+    "WORLD_BOSS_LAUNCH_REFRESH_LIMIT",
     "extract_world_boss_miniapp_launch",
+    "refresh_world_boss_miniapp_launch_from_history",
     "request_world_boss_miniapp_init_data",
     "run_world_boss_miniapp_event",
 ]

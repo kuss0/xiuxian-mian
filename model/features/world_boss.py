@@ -179,6 +179,7 @@ def _blank_run_state(now=None):
         "miniapp_auto_status": "",
         "miniapp_auto_started_at": 0,
         "miniapp_auto_finished_at": 0,
+        "miniapp_auto_launch_refresh_count": 0,
         "miniapp_auto_progress": [],
         "miniapp_auto_results": [],
         "miniapp_conclusion_evidence": {},
@@ -241,7 +242,7 @@ def _normalize_run_state(raw=None, now=None):
         "miniapp_auto_finished_at",
     ):
         record[key] = max(0.0, _coerce_float(record.get(key), 0))
-    for key in ("hp_percent", "fanhun", "break_progress", "moya", "zhen", "last_status_msg_id", "last_summary_log_total", "participants"):
+    for key in ("hp_percent", "fanhun", "break_progress", "moya", "zhen", "last_status_msg_id", "last_summary_log_total", "participants", "miniapp_auto_launch_refresh_count"):
         record[key] = _coerce_int(record.get(key), -1 if key in {"hp_percent", "fanhun", "break_progress", "moya", "zhen"} else 0)
     record["summary"] = _normalize_summary(record.get("summary"))
     raw_entry_ids = record.get("miniapp_entry_identity_ids") or []
@@ -275,6 +276,8 @@ def _normalize_run_state(raw=None, now=None):
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "launch_refreshed": bool(item.get("launch_refreshed")),
+            "launch_refresh_count": _coerce_int(item.get("launch_refresh_count"), 0),
             "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
             "updated_at": max(0.0, _coerce_float(item.get("updated_at"), 0)),
         }
@@ -1721,6 +1724,8 @@ async def _run_world_boss_miniapp_automation(
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "launch_refreshed": bool(item.get("launch_refreshed")),
+            "launch_refresh_count": _coerce_int(item.get("launch_refresh_count"), 0),
             "retry_after_sec": max(0.0, _coerce_float(item.get("retry_after_sec"), 0)),
             "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
             "updated_at": time.time(),
@@ -1757,6 +1762,10 @@ async def _run_world_boss_miniapp_automation(
         return
     run_state["miniapp_auto_status"] = str(result.get("status") or "failed")
     run_state["miniapp_auto_finished_at"] = time.time()
+    run_state["miniapp_auto_launch_refresh_count"] = max(
+        0,
+        _coerce_int(result.get("launch_refresh_count"), 0),
+    )
     run_state["miniapp_auto_results"] = [
         {
             "identity_id": _coerce_int(item.get("identity_id"), 0),
@@ -1764,6 +1773,8 @@ async def _run_world_boss_miniapp_automation(
             "ok": bool(item.get("ok")),
             "status": str(item.get("status") or ""),
             "error": _short_text(item.get("error") or "", 120),
+            "launch_refreshed": bool(item.get("launch_refreshed")),
+            "launch_refresh_count": _coerce_int(item.get("launch_refresh_count"), 0),
             "retry_after_sec": max(0.0, _coerce_float(item.get("retry_after_sec"), 0)),
             "summary": dict(item.get("summary") or {}) if isinstance(item.get("summary"), dict) else {},
         }
@@ -1803,12 +1814,18 @@ async def _run_world_boss_miniapp_automation(
     run_state["last_result"] = (
         f"MiniApp 入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}"
     )
+    if run_state["miniapp_auto_launch_refresh_count"]:
+        run_state["last_result"] += f"｜入口刷新 {run_state['miniapp_auto_launch_refresh_count']} 次"
+    if joined_count < len(identity_ids) and failed and not settled:
+        run_state["last_result"] += "｜入场探针未通过，未放行后续身份"
     _set_run_state(run_state)
     detail_parts = []
     for item in run_state["miniapp_auto_results"]:
         if item.get("phase") != "battle" and item.get("ok"):
             continue
         detail = f"{_identity_label(item['identity_id'])}:{item.get('status') or ('ok' if item.get('ok') else 'failed')}"
+        if item.get("launch_refreshed"):
+            detail += "｜已刷新入口"
         retry_after_sec = max(0.0, _coerce_float(item.get("retry_after_sec"), 0))
         if retry_after_sec > 0:
             detail += f"｜限流等待{retry_after_sec:g}秒"
@@ -1848,8 +1865,13 @@ async def _run_world_boss_miniapp_automation(
                 detail += f" 主动少出手{skipped}"
         detail_parts.append(detail)
     details = "、".join(detail_parts) or "无明细"
+    gate_detail = ""
+    if run_state["miniapp_auto_launch_refresh_count"]:
+        gate_detail += f"｜入口刷新 {run_state['miniapp_auto_launch_refresh_count']} 次"
+    if joined_count < len(identity_ids) and failed and not settled:
+        gate_detail += "｜探针未通过，后续身份未放行"
     await send_audit_log(
-        f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}\n{details}",
+        f"🗡 真仙试锋 MiniApp 合并结果：入场 {joined_count}｜结算 {len(settled)}｜部分 {len(partial)}｜失败 {len(failed)}{gate_detail}\n{details}",
         scope="global",
         priority="high" if failed else "medium",
         limit=420,
@@ -1907,6 +1929,7 @@ async def _notify_world_boss_open_only(parsed, now, current_msg_id=0, *, event=N
     run_state["miniapp_auto_status"] = "disabled"
     run_state["miniapp_auto_started_at"] = 0
     run_state["miniapp_auto_finished_at"] = 0
+    run_state["miniapp_auto_launch_refresh_count"] = 0
     run_state["miniapp_auto_progress"] = []
     run_state["miniapp_auto_results"] = []
     run_state["miniapp_conclusion_evidence"] = {}
