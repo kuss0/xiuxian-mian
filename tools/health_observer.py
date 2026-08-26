@@ -42,7 +42,7 @@ WARN_PATTERN = re.compile(
 )
 PASSIVE_OBSERVATION_CONTEXT_PATTERN = re.compile(r"红包候选观察(?:｜|\|)", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
-    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:|Network is unreachable|Max retries exceeded|ConnectionError|ProxyError|Read timed out)|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved|health_observer error: xiuxian\.service not running: deactivating/stop-sigterm",
+    r"already fused:|探寻裂缝结果：遭遇风暴|listener sidecar degraded: no connected accounts failed=.*listener session 未独立授权|answerCallbackQuery failed:.*query is too old and response timeout expired|log bot callback poll failed:.*(?:ConnectionResetError|HTTP 429|HTTP 502|timeout:|Network is unreachable|Max retries exceeded|ConnectionError|ProxyError|Read timed out)|Telegram is having internal issues (?:PersistentTimestampOutdatedError|HistoryGetFailedError)|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved|health_observer error: xiuxian\.service not running: deactivating/stop-sigterm",
     re.I,
 )
 TRANSIENT_TELEGRAM_CONTEXT_PATTERN = re.compile(

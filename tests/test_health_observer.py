@@ -681,6 +681,16 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(health_observer.is_hard_journal_line(line))
 
+    def test_channel_difference_history_failure_is_not_health_alert(self):
+        line = (
+            "Aug 26 22:07:35 pve python[869176]: Telegram is having internal issues "
+            "HistoryGetFailedError: Fetching of history failed "
+            "(caused by GetChannelDifferenceRequest)"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertFalse(health_observer.is_warn_journal_line(line))
+
     def test_interdc_call_error_is_transient_warning_not_hard(self):
         line = (
             "Jul 25 01:45:13 pve python[2654567]: Telegram is having internal issues "
