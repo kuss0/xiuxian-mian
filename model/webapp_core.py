@@ -129,7 +129,7 @@ def get_miniapp_global_rate_limit_snapshot():
 
 
 RE_SENSITIVE_QUERY_ASSIGNMENT = re.compile(
-    r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|sessionToken|session_token|ticket|wsTicket|ws_ticket|startapp|start_param)=([^&#\s]+)",
+    r"(?P<key>tgWebAppData|initData|query_id|hash|user|signature|token|sessionToken|session_token|ticket|chargeTicket|charge_ticket|wsTicket|ws_ticket|startapp|start_param)=([^&#\s]+)",
     re.IGNORECASE,
 )
 RE_MINIAPP_START_TOKEN = re.compile(

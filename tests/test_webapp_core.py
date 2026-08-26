@@ -603,7 +603,8 @@ class WebAppCoreTests(unittest.TestCase):
     def test_sanitize_webapp_secret_text_redacts_start_tokens(self):
         text = (
             "failed initData=query_id%3Dabc&hash=secret token=fish_SECRET999 "
-            "sessionToken=session-secret ticket=ws-secret wsTicket=ws-secret-2 "
+            "sessionToken=session-secret ticket=ws-secret chargeTicket=charge-secret "
+            "charge_ticket=charge-secret-2 wsTicket=ws-secret-2 "
             "ws_ticket=ws-secret-3 startapp=farm_SECRET888 next=df_SECRET777 tree_SECRET666"
         )
         sanitized = webapp_core.sanitize_webapp_secret_text(text)
@@ -612,6 +613,8 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertIn("token=<redacted>", sanitized)
         self.assertIn("sessionToken=<redacted>", sanitized)
         self.assertIn("ticket=<redacted>", sanitized)
+        self.assertIn("chargeTicket=<redacted>", sanitized)
+        self.assertIn("charge_ticket=<redacted>", sanitized)
         self.assertIn("wsTicket=<redacted>", sanitized)
         self.assertIn("ws_ticket=<redacted>", sanitized)
         self.assertIn("startapp=<redacted>", sanitized)
