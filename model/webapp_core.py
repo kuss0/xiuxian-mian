@@ -23,6 +23,8 @@ SENSITIVE_WEBAPP_QUERY_KEYS = {
     "sessionToken",
     "session_token",
     "ticket",
+    "chargeTicket",
+    "charge_ticket",
     "wsTicket",
     "ws_ticket",
 }
@@ -157,6 +159,8 @@ SENSITIVE_MINIAPP_EVENT_KEYWORDS = (
     "sessiontoken",
     "session_token",
     "ticket",
+    "chargeticket",
+    "charge_ticket",
     "wsticket",
     "ws_ticket",
     "startapp",

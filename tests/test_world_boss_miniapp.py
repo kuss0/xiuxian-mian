@@ -320,6 +320,130 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertNotIn("VERY_SECRET", serialized)
         self.assertNotIn("query_id=secret", serialized)
 
+    def test_dynamic_window_and_charge_requests_keep_tickets_out_of_summaries(self):
+        window = world_boss_miniapp.build_world_boss_miniapp_request(
+            "window",
+            token="qyz_SECRET_TOKEN",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            challenge_id="challenge-1",
+            after_window_id="window-0",
+        )
+        charge = world_boss_miniapp.build_world_boss_miniapp_request(
+            "charge_start",
+            token="qyz_SECRET_TOKEN",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            challenge_id="challenge-1",
+            window_id="window-1",
+        )
+        hit = world_boss_miniapp.build_world_boss_miniapp_request(
+            "hit",
+            token="qyz_SECRET_TOKEN",
+            init_data="query_id=secret&hash=VERY_SECRET",
+            challenge_id="challenge-1",
+            window_id="window-1",
+            charge_ticket="CHARGE_SECRET",
+            elapsed_ms=1200,
+            hold_ms=1200,
+        )
+
+        self.assertEqual(
+            {"token", "initData", "challengeId", "afterWindowId"},
+            set(window["payload"]),
+        )
+        self.assertEqual(
+            {"token", "initData", "challengeId", "windowId"},
+            set(charge["payload"]),
+        )
+        self.assertEqual(
+            {"token", "initData", "challengeId", "windowId", "chargeTicket", "elapsedMs", "holdMs"},
+            set(hit["payload"]),
+        )
+        self.assertNotIn("CHARGE_SECRET", json.dumps(hit["safe_summary"], ensure_ascii=False))
+        self.assertIn("chargeTicket", hit["safe_summary"]["secret_keys"])
+
+    def test_dynamic_protocol_reveals_windows_and_charges_before_each_hit(self):
+        calls = []
+        payloads = []
+        call_times = []
+        charge_tickets = {"w1": "ticket-w1", "w2": "ticket-w2"}
+        clock = FakeClock()
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            payloads.append(dict(request["payload"]))
+            call_times.append(clock.clock())
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 1, "actionsRemaining": 1},
+                    "player": {"maxHp": 1000},
+                    "challenge": {
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-dynamic",
+                        "windowCount": 2,
+                        "durationMs": 4200,
+                        "maxDurationMs": 6000,
+                        "windows": [],
+                        "attacks": [{"opaque": 1}, {"opaque": 2}],
+                    },
+                }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 0}
+            if endpoint == "window":
+                if len([item for item in calls if item == "window"]) == 1:
+                    self.assertEqual("", payloads[-1]["afterWindowId"])
+                    return 200, {
+                        "ok": True,
+                        "window": {"id": "w1", "centerMs": 1500, "hitMs": 620, "perfectMs": 210},
+                        "windowCount": 2,
+                        "done": False,
+                    }
+                self.assertEqual("w1", payloads[-1]["afterWindowId"])
+                return 200, {
+                    "ok": True,
+                    "window": {"id": "w2", "centerMs": 2800, "hitMs": 620, "perfectMs": 210},
+                    "windowCount": 2,
+                    "done": True,
+                }
+            if endpoint == "charge_start":
+                window_id = payloads[-1]["windowId"]
+                return 200, {"ok": True, "chargeTicket": charge_tickets[window_id]}
+            if endpoint == "hit":
+                window_id = payloads[-1]["windowId"]
+                self.assertEqual(charge_tickets[window_id], payloads[-1]["chargeTicket"])
+                return 200, {
+                    "ok": True,
+                    "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 100, "hits": 2, "perfects": 2}}
+            self.fail(endpoint)
+
+        result = world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_DYNAMIC",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            rng=random.Random(9),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            ["start", "begin", "window", "window", "charge_start", "hit", "charge_start", "hit", "finish"],
+            calls,
+        )
+        self.assertEqual("", payloads[2]["afterWindowId"])
+        self.assertEqual("w1", payloads[3]["afterWindowId"])
+        self.assertEqual("ticket-w1", payloads[5]["chargeTicket"])
+        self.assertEqual("ticket-w2", payloads[7]["chargeTicket"])
+        self.assertLess(call_times[4], call_times[5])
+        self.assertLess(call_times[6], call_times[7])
+        self.assertEqual(2, result["data"]["result"]["accepted_hit_count"])
+        self.assertTrue(any(event["step"] == "window_reveal_complete" for event in result["events"]))
+
     def test_new_single_battle_protocol_calls_begin_before_hits(self):
         calls = []
         clock = FakeClock()

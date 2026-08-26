@@ -38,6 +38,8 @@ WORLD_BOSS_MINIAPP_ENDPOINTS = {
     "state": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}state",
     "ws_ticket": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}ws-ticket",
     "begin": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}begin",
+    "window": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}window",
+    "charge_start": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}charge-start",
     "hit": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}hit",
     "finish": f"{WORLD_BOSS_MINIAPP_API_PATH_PREFIX}finish",
 }
@@ -89,6 +91,9 @@ WORLD_BOSS_FINISH_GRACE_MS = 2200
 WORLD_BOSS_MIN_DURATION_MARGIN_MS = 1000
 WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS = 2200
 WORLD_BOSS_EXPIRY_HIT_MARGIN_MS = 500
+WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC = 0.36
+WORLD_BOSS_WINDOW_REVEAL_MAX_REQUESTS = 96
+WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC = 45.0
 
 WORLD_BOSS_ERROR_TYPES = (
     "boss_token_missing",
@@ -98,6 +103,10 @@ WORLD_BOSS_ERROR_TYPES = (
     "boss_action_limit",
     "boss_not_enough_participants",
     "boss_battle_not_started",
+    "boss_window_not_ready",
+    "boss_challenge_expired",
+    "boss_charge_not_ready",
+    "boss_charge_ticket_invalid",
     "boss_token_used",
     "boss_token_expired",
     "boss_hit_outside_window",
@@ -414,6 +423,12 @@ def build_world_boss_miniapp_flow_plan():
                 note="calibrate the server battle clock before starting the local timeline",
             ),
             MiniAppFlowStep(
+                key="window",
+                endpoint="window",
+                required_payload_keys=("token", "initData", "challengeId", "afterWindowId"),
+                note="reveal one server-authoritative timing window at a time until done",
+            ),
+            MiniAppFlowStep(
                 key="plan",
                 endpoint="local_window_plan",
                 method="LOCAL",
@@ -422,9 +437,15 @@ def build_world_boss_miniapp_flow_plan():
                 note="schedule conservative actions at server window centers",
             ),
             MiniAppFlowStep(
+                key="charge_start",
+                endpoint="charge_start",
+                required_payload_keys=("token", "initData", "challengeId", "windowId"),
+                note="start one charge and receive its one-time ticket before the hold interval",
+            ),
+            MiniAppFlowStep(
                 key="hit",
                 endpoint="hit",
-                required_payload_keys=("token", "initData", "challengeId", "windowId", "elapsedMs", "holdMs"),
+                required_payload_keys=("token", "initData", "challengeId", "windowId", "chargeTicket", "elapsedMs", "holdMs"),
                 note="one request per real window; no retry after uncertain mutation",
             ),
             MiniAppFlowStep(
@@ -484,6 +505,8 @@ def build_world_boss_miniapp_request(
     player_id=None,
     challenge_id="",
     window_id="",
+    after_window_id="",
+    charge_ticket="",
     elapsed_ms=None,
     hold_ms=None,
     boss_proof=None,
@@ -499,6 +522,16 @@ def build_world_boss_miniapp_request(
         payload["playerId"] = player_id
     elif endpoint == "begin":
         payload["challengeId"] = str(challenge_id or "").strip()
+    elif endpoint == "window":
+        payload.update({
+            "challengeId": str(challenge_id or "").strip(),
+            "afterWindowId": str(after_window_id or "").strip(),
+        })
+    elif endpoint == "charge_start":
+        payload.update({
+            "challengeId": str(challenge_id or "").strip(),
+            "windowId": str(window_id or "").strip(),
+        })
     elif endpoint == "hit":
         payload.update({
             "challengeId": str(challenge_id or "").strip(),
@@ -506,6 +539,8 @@ def build_world_boss_miniapp_request(
             "elapsedMs": _int_value(elapsed_ms),
             "holdMs": _int_value(hold_ms),
         })
+        if str(charge_ticket or "").strip():
+            payload["chargeTicket"] = str(charge_ticket or "").strip()
     elif endpoint == "finish":
         payload["bossProof"] = dict(boss_proof or {})
 
@@ -671,6 +706,192 @@ def _challenge_from_payload(data):
     if data.get("challengeId") and isinstance(data.get("windows"), list):
         return data
     return {}
+
+
+def _world_boss_window_from_payload(data):
+    """Return the single server-authoritative window in a reveal response."""
+
+    return _mapping_from_payload(data, ("window",))
+
+
+def _world_boss_window_count_from_payload(data, default=0):
+    for mapping in _nested_mappings(data):
+        for key in ("windowCount", "window_count", "totalWindows", "total_windows"):
+            if mapping.get(key) not in (None, ""):
+                return max(0, _int_value(mapping.get(key), default))
+    return max(0, _int_value(default, 0))
+
+
+def _world_boss_done_from_payload(data):
+    for mapping in _nested_mappings(data):
+        for key in ("done", "complete", "completed", "allWindowsRevealed"):
+            if mapping.get(key) is True:
+                return True
+    return False
+
+
+def _world_boss_window_id(window):
+    window = dict(window or {})
+    return str(window.get("windowId") or window.get("id") or "").strip()
+
+
+def _world_boss_charge_ticket_from_payload(data):
+    for mapping in _nested_mappings(data):
+        for key in ("chargeTicket", "charge_ticket"):
+            value = str(mapping.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _append_unique_world_boss_window(challenge, window):
+    """Append one official window without allowing duplicate reveal records."""
+
+    if not isinstance(window, dict):
+        return False
+    window_id = _world_boss_window_id(window)
+    if not window_id:
+        return False
+    windows = challenge.setdefault("windows", [])
+    if not isinstance(windows, list):
+        windows = []
+        challenge["windows"] = windows
+    if any(_world_boss_window_id(item) == window_id for item in windows if isinstance(item, dict)):
+        return False
+    windows.append(dict(window))
+    return True
+
+
+def reveal_world_boss_windows(
+    challenge,
+    *,
+    token,
+    init_data,
+    transport,
+    adapter=None,
+    sleeper=None,
+    clock=None,
+    capture_sink=None,
+    capture_source="",
+    events=None,
+    timeout_sec=WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC,
+):
+    """Reveal the server-owned timing windows through the official endpoint.
+
+    ``start`` intentionally returns only the opaque attack count on the current
+    MiniApp.  The timing data is disclosed one window at a time after ``begin``;
+    falling back to that attack count would fabricate timings and produces zero
+    contribution.  This helper performs only read-like reveal requests and
+    stops at the server's explicit ``done`` marker (or a matching count).
+    """
+
+    adapter = adapter or build_world_boss_miniapp_adapter()
+    sleeper = sleeper or time.sleep
+    clock = clock or time.monotonic
+    events = events if events is not None else []
+    challenge = dict(challenge or {})
+    challenge["windows"] = [
+        dict(item) for item in (challenge.get("windows") or ()) if isinstance(item, dict)
+    ]
+    challenge_id = str(challenge.get("challengeId") or "").strip()
+    if not challenge_id:
+        return _flow_result(False, "not_ready", error="challengeId missing", events=events)
+
+    expected_count = max(
+        _world_boss_window_count_from_payload(challenge),
+        len(challenge.get("attacks") or ()) if isinstance(challenge.get("attacks"), list) else 0,
+    )
+    deadline = float(clock()) + max(1.0, float(timeout_sec or WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC))
+    request_count = 0
+    last_request_at = None
+    done = len(challenge["windows"]) >= expected_count > 0
+    while not done and request_count < WORLD_BOSS_WINDOW_REVEAL_MAX_REQUESTS:
+        if float(clock()) >= deadline:
+            break
+        if last_request_at is not None:
+            interval_wait = WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC - (float(clock()) - last_request_at)
+            if interval_wait > 0:
+                sleeper(min(interval_wait, max(0.0, deadline - float(clock()))))
+        windows = challenge["windows"]
+        after_window_id = _world_boss_window_id(windows[-1]) if windows else ""
+        request = build_world_boss_miniapp_request(
+            "window",
+            token=token,
+            init_data=init_data,
+            challenge_id=challenge_id,
+            after_window_id=after_window_id,
+            adapter=adapter,
+        )
+        result = execute_miniapp_http_request(
+            request,
+            transport,
+            backoff_sec=(),
+            sleeper=sleeper,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            step_key="window",
+        )
+        last_request_at = float(clock())
+        request_count += 1
+        _append_http_event(events, "window", result)
+        if not result.ok:
+            status = classify_world_boss_miniapp_error(result.error)
+            if status in {"boss_window_not_ready", "boss_battle_not_started"}:
+                sleeper(min(
+                    WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC,
+                    max(0.0, deadline - float(clock())),
+                ))
+                continue
+            return _flow_result(False, status, error=result.error, data=result.data, events=events)
+
+        data = result.data if isinstance(result.data, dict) else {}
+        window = _world_boss_window_from_payload(data)
+        added = _append_unique_world_boss_window(challenge, window)
+        reported_count = _world_boss_window_count_from_payload(data, expected_count)
+        if reported_count:
+            expected_count = max(expected_count, reported_count)
+            challenge["windowCount"] = reported_count
+        done = _world_boss_done_from_payload(data) or bool(
+            expected_count > 0 and len(challenge["windows"]) >= expected_count
+        )
+        events.append({
+            "step": "window_reveal",
+            "ok": True,
+            "window_id": _world_boss_window_id(window),
+            "added": bool(added),
+            "window_count": len(challenge["windows"]),
+            "expected_window_count": expected_count,
+            "done": bool(done),
+        })
+        if not done and not added:
+            sleeper(min(
+                WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC,
+                max(0.0, deadline - float(clock())),
+            ))
+
+    if not challenge["windows"]:
+        return _flow_result(
+            False,
+            "not_ready",
+            error="world boss timing windows were not revealed",
+            events=events,
+        )
+    if expected_count > 0 and len(challenge["windows"]) < expected_count:
+        return _flow_result(
+            False,
+            "not_ready",
+            error="world boss timing windows incomplete",
+            data={"window_count": len(challenge["windows"]), "expected_window_count": expected_count},
+            events=events,
+        )
+    events.append({
+        "step": "window_reveal_complete",
+        "ok": True,
+        "window_count": len(challenge["windows"]),
+        "expected_window_count": expected_count,
+        "request_count": request_count,
+    })
+    return _flow_result(True, "windows_revealed", data={"challenge": challenge}, events=events)
 
 
 def _error_from_payload(data):
@@ -982,7 +1203,18 @@ def _nested_mappings(data):
     if not isinstance(data, dict):
         return
     yield data
-    for key in ("result", "state", "battle", "player", "stats", "clientStats", "boss"):
+    for key in (
+        "result",
+        "state",
+        "battle",
+        "data",
+        "player",
+        "stats",
+        "clientStats",
+        "boss",
+        "window",
+        "charge",
+    ):
         nested = data.get(key)
         if isinstance(nested, dict):
             yield from _nested_mappings(nested)
@@ -1911,6 +2143,30 @@ def run_world_boss_joined_battle_lab_flow(
         })
         if wait_ms > 0:
             sleeper(wait_ms / 1000.0)
+    dynamic_window_protocol = bool(
+        not (challenge.get("windows") or ())
+        and (
+            isinstance(challenge.get("attacks"), list)
+            or str(challenge.get("mode") or "").strip().lower().startswith("qyz_focus_burst")
+        )
+    )
+    if dynamic_window_protocol:
+        reveal_result = reveal_world_boss_windows(
+            challenge,
+            token=current_token,
+            init_data=init_data,
+            transport=transport,
+            adapter=adapter,
+            sleeper=sleeper,
+            clock=clock,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            events=events,
+        )
+        if not reveal_result["ok"]:
+            return reveal_result
+        challenge = dict((reveal_result.get("data") or {}).get("challenge") or challenge)
+    requires_charge_ticket = dynamic_window_protocol
     try:
         full_plan = build_world_boss_action_plan(challenge, rng=rng)
     except ValueError as exc:
@@ -2064,8 +2320,76 @@ def run_world_boss_joined_battle_lab_flow(
             process_missed_windows(max(0, int((float(clock()) - timeline_origin) * 1000)))
             if dead:
                 break
-        if hold_ms:
-            sleeper(hold_ms / 1000.0)
+        charge_ticket = ""
+        charge_request_started_elapsed_ms = None
+        if requires_charge_ticket:
+            # The ticket is issued at pointer-down.  The previous ordering
+            # waited through the whole hold interval first, which made the
+            # one-time ticket arrive at pointer-up and invalidated the hit.
+            charge_request_started_elapsed_ms = max(
+                0,
+                int((float(clock()) - timeline_origin) * 1000),
+            )
+            charge_request = build_world_boss_miniapp_request(
+                "charge_start",
+                token=current_token,
+                init_data=init_data,
+                challenge_id=action["challengeId"],
+                window_id=action["windowId"],
+                adapter=adapter,
+            )
+            charge_result = execute_miniapp_http_request(
+                charge_request,
+                transport,
+                sleeper=sleeper,
+                backoff_sec=(),
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key="charge_start",
+            )
+            _append_http_event(events, "charge_start", charge_result)
+            if not charge_result.ok:
+                status = classify_world_boss_miniapp_error(charge_result.error)
+                if status == "boss_event_closed":
+                    return reconcile_closed_event()
+                return _flow_result(
+                    False,
+                    status,
+                    error=charge_result.error or "world boss charge start failed",
+                    data=charge_result.data,
+                    events=events,
+                )
+            charge_data = charge_result.data if isinstance(charge_result.data, dict) else {}
+            if _verification_required(charge_data):
+                return _flow_result(False, "verification_required", error="xianxia-verify required", events=events)
+            charge_ticket = _world_boss_charge_ticket_from_payload(charge_data)
+            if not charge_ticket:
+                return _flow_result(
+                    False,
+                    "not_ready",
+                    error="world boss charge ticket missing",
+                    events=events,
+                )
+            events.append({
+                "step": "charge_start_business",
+                "ok": True,
+                "window_id": action["windowId"],
+                "has_charge_ticket": True,
+                "charge_start_elapsed_ms": charge_request_started_elapsed_ms,
+            })
+        if requires_charge_ticket:
+            # The HTTP round trip is part of the real press interval.  Keep
+            # the remaining local hold bounded instead of blindly adding the
+            # request latency on top of the configured 0.52-1.25s interval.
+            charge_request_rtt_ms = max(
+                0,
+                int(round((float(clock()) - (timeline_origin + charge_request_started_elapsed_ms / 1000.0)) * 1000)),
+            )
+            remaining_hold_ms = max(0, hold_ms - charge_request_rtt_ms)
+        else:
+            remaining_hold_ms = hold_ms
+        if remaining_hold_ms:
+            sleeper(remaining_hold_ms / 1000.0)
         release_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
         process_missed_windows(release_elapsed_ms)
         if dead or action["windowId"] in processed_window_ids:
@@ -2082,6 +2406,7 @@ def run_world_boss_joined_battle_lab_flow(
             "windowId": action["windowId"],
             "wait_before_charge_ms": wait_before_charge_ms,
             "hold_ms": hold_ms,
+            "remaining_hold_ms": remaining_hold_ms,
             "release_elapsed_ms": release_elapsed_ms,
             "release_lead_ms": release_lead_ms,
         })
@@ -2091,6 +2416,7 @@ def run_world_boss_joined_battle_lab_flow(
             init_data=init_data,
             challenge_id=action["challengeId"],
             window_id=action["windowId"],
+            charge_ticket=charge_ticket,
             elapsed_ms=executed_action["elapsedMs"],
             hold_ms=executed_action["holdMs"],
             adapter=adapter,
