@@ -2182,6 +2182,71 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["deep_retreat_phase"] = "launching"
         self.assertEqual("deep_status", ui._cave_public_background_deep_action(1001, now))
 
+    async def test_fate_cards_daily_summary_waits_for_every_settled_identity(self):
+        now = datetime(2026, 7, 29, 12, 0, tzinfo=ui.TZ_LOCAL).timestamp()
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_fate_cards_enabled": True,
+        }
+        state_module._meta_state["miniapp_state_records"] = {
+            "1001:fate_cards": {
+                "state": {"challenge_date": "2026-07-29", "status": "settled", "gains": {"修为": 36}},
+            },
+            "1002:fate_cards": {
+                "state": {"challenge_date": "2026-07-29", "status": "waiting_quest", "gains": {"修为": 18}},
+            },
+        }
+        audit_mock = AsyncMock()
+        with patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                patch.object(ui, "send_audit_log", new=audit_mock), \
+                patch.object(ui, "save_state"):
+            self.assertFalse(await ui.maybe_send_cave_public_fate_cards_daily_summary(now))
+
+        audit_mock.assert_not_awaited()
+
+    async def test_fate_cards_daily_summary_is_short_and_idempotent(self):
+        now = datetime(2026, 7, 29, 12, 0, tzinfo=ui.TZ_LOCAL).timestamp()
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_fate_cards_enabled": True,
+        }
+        state_module._meta_state["miniapp_state_records"] = {
+            "1001:fate_cards": {
+                "state": {"challenge_date": "2026-07-29", "status": "settled", "gains": {"修为": 36, "天机残痕": 2}},
+            },
+            "1002:fate_cards": {
+                "state": {"challenge_date": "2026-07-29", "status": "settled", "gains": {"修为": 42, "天机残痕": 1}},
+            },
+        }
+        audit_mock = AsyncMock(return_value=True)
+        with patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                patch.object(ui, "send_audit_log", new=audit_mock), \
+                patch.object(ui, "save_state"):
+            self.assertTrue(await ui.maybe_send_cave_public_fate_cards_daily_summary(now))
+            self.assertFalse(await ui.maybe_send_cave_public_fate_cards_daily_summary(now))
+
+        audit_mock.assert_awaited_once()
+        message = audit_mock.await_args.args[0]
+        self.assertIn("天机命脉日报｜2/2完成", message)
+        self.assertIn("修为+78", message)
+        self.assertIn("天机残痕+3", message)
+        self.assertLessEqual(len(message), 420)
+        config = ui.normalize_miniapp_auto_config()
+        self.assertEqual("2026-07-29", config["cave_public_fate_cards_last_report_day"])
+        self.assertTrue(config["cave_public_fate_cards_last_report_signature"])
+
+    async def test_miniapp_scheduler_flushes_ready_fate_cards_summary_before_actions(self):
+        now = datetime(2026, 7, 29, 12, 0, tzinfo=ui.TZ_LOCAL).timestamp()
+        summary_mock = AsyncMock(return_value=True)
+        tree_mock = AsyncMock()
+        with patch.object(ui, "maybe_send_cave_public_fate_cards_daily_summary", new=summary_mock), \
+                patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=tree_mock):
+            result = await ui.run_miniapp_daily_scheduler(now)
+
+        self.assertEqual({"started": True, "kind": "fate_cards_daily_summary"}, result)
+        summary_mock.assert_awaited_once_with(now)
+        tree_mock.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

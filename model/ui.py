@@ -374,6 +374,7 @@ CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC = 30 * 60
 # short-lived marker as a second guard; the persisted miniapp state remains the
 # restart-safe source of truth.
 _cave_public_background_daily_done = set()
+_cave_public_fate_cards_report_lock = asyncio.Lock()
 TREE_MINIAPP_ENTRY_PENDING_TIMEOUT_SEC = 10 * 60
 MINIAPP_ENTRY_PROBE_COMMANDS = {
     "cave_treasure": ".洞府",
@@ -439,6 +440,9 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_trial_enabled": True,
     "cave_public_fate_cards_enabled": False,
     "cave_public_fate_cards_choice_key": "accept",
+    "cave_public_fate_cards_last_report_day": "",
+    "cave_public_fate_cards_last_report_signature": "",
+    "cave_public_fate_cards_last_report_at": 0,
     "cave_public_fishing_enabled": False,
     "cave_public_fishing_identity_ids": [],
     "cave_public_stargazer_enabled": False,
@@ -552,6 +556,18 @@ def normalize_miniapp_auto_config(config=None):
     result["cave_public_delay_sec"] = max(10, min(120, result["cave_public_delay_sec"]))
     fate_choice = str(result.get("cave_public_fate_cards_choice_key") or "accept").strip().lower()
     result["cave_public_fate_cards_choice_key"] = fate_choice if fate_choice in {"accept", "hide"} else "accept"
+    result["cave_public_fate_cards_last_report_day"] = str(
+        result.get("cave_public_fate_cards_last_report_day") or ""
+    ).strip()
+    result["cave_public_fate_cards_last_report_signature"] = str(
+        result.get("cave_public_fate_cards_last_report_signature") or ""
+    ).strip()
+    try:
+        result["cave_public_fate_cards_last_report_at"] = float(
+            result.get("cave_public_fate_cards_last_report_at") or 0
+        )
+    except (TypeError, ValueError, OverflowError):
+        result["cave_public_fate_cards_last_report_at"] = 0.0
     urls = _cave_public_entry_urls_from_config(result)
     result["cave_public_entry_url"] = urls[0] if urls else ""
     result["cave_public_entry_urls"] = urls
@@ -7430,6 +7446,8 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 extra["entry_index"] = index
                 extra["entry_attempts"] = attempted
                 extra["entry_canary"] = canary
+                if normalized_action in {"fate_cards", "fate", "tianji_fate"}:
+                    await maybe_send_cave_public_fate_cards_daily_summary()
                 return bool(result.get("ok")), message, extra
             if _is_cave_public_upstream_failure(message):
                 _open_cave_public_upstream_circuit(message)
@@ -7719,6 +7737,135 @@ def _format_cave_public_batch_outcomes(summary):
             parts.append("奖励:" + "、".join(f"{name}x{amount}" for name, amount in sorted(rewards.items())))
         lines.append(f"- {labels[action]}：" + "｜".join(parts))
     return lines
+
+
+def _fate_cards_report_amount(value):
+    try:
+        amount = int(float(str(value or 0).replace(",", "")))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return amount
+
+
+def _fate_cards_report_gains(record_state):
+    record_state = dict(record_state or {})
+    raw_gains = record_state.get("gains")
+    if isinstance(raw_gains, dict) and raw_gains:
+        sources = (raw_gains,)
+    else:
+        sources = []
+        for key in ("meditation", "reward"):
+            nested = record_state.get(key)
+            if isinstance(nested, dict):
+                nested_gains = nested.get("gains") if key == "meditation" else nested
+                if isinstance(nested_gains, dict):
+                    sources.append(nested_gains)
+    result = {}
+    aliases = {
+        "cultivation": "修为",
+        "cultivationgain": "修为",
+        "tracebalance": "天机残痕",
+    }
+    for source in sources:
+        for raw_name, raw_amount in source.items():
+            amount = _fate_cards_report_amount(raw_amount)
+            if amount <= 0:
+                continue
+            normalized_name = str(raw_name or "").strip()
+            name = aliases.get(re.sub(r"[^A-Za-z0-9]", "", normalized_name).lower(), normalized_name)
+            if name:
+                result[name] = int(result.get(name, 0) or 0) + amount
+    return result
+
+
+def _format_fate_cards_report_gains(gains):
+    gains = {
+        str(name or "").strip(): _fate_cards_report_amount(amount)
+        for name, amount in dict(gains or {}).items()
+        if str(name or "").strip() and _fate_cards_report_amount(amount) > 0
+    }
+    preferred = ("修为", "天机残痕", "法则碎片·暗", "灵石")
+    names = [name for name in preferred if name in gains]
+    names.extend(sorted(name for name in gains if name not in names))
+    parts = [f"{name}+{gains[name]}" for name in names[:6]]
+    if len(names) > 6:
+        parts.append(f"其他{len(names) - 6}项")
+    return "｜".join(parts) or "奖励已入账"
+
+
+def _build_fate_cards_daily_report(now):
+    day_key = get_day_key(now)
+    identity_ids = _cave_public_batch_identity_ids_for_action(
+        "fate_cards",
+        _normalize_cave_public_batch_identity_ids({}),
+    )
+    if not identity_ids:
+        return {"ready": False, "reason": "no_identity"}
+
+    records = get_miniapp_state_records()
+    gains = {}
+    for identity_id in identity_ids:
+        record = records.get(f"{int(identity_id)}:fate_cards")
+        record_state = record.get("state") if isinstance(record, dict) else None
+        if not isinstance(record_state, dict):
+            return {"ready": False, "reason": "record_missing", "identity_id": int(identity_id)}
+        if str(record_state.get("challenge_date") or "").strip() != day_key:
+            return {"ready": False, "reason": "challenge_incomplete", "identity_id": int(identity_id)}
+        if str(record_state.get("status") or "").strip().lower() != "settled":
+            return {"ready": False, "reason": "not_settled", "identity_id": int(identity_id)}
+        for name, amount in _fate_cards_report_gains(record_state).items():
+            gains[name] = int(gains.get(name, 0) or 0) + amount
+
+    signature_payload = {
+        "day": day_key,
+        "identity_ids": sorted(int(identity_id) for identity_id in identity_ids),
+        "gains": gains,
+    }
+    signature = hashlib.sha256(
+        json.dumps(signature_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "ready": True,
+        "day_key": day_key,
+        "identity_ids": identity_ids,
+        "gains": gains,
+        "signature": signature,
+        "message": (
+            f"🔭 天机命脉日报｜{len(identity_ids)}/{len(identity_ids)}完成\n"
+            f"获得：{_format_fate_cards_report_gains(gains)}"
+        ),
+    }
+
+
+async def maybe_send_cave_public_fate_cards_daily_summary(now=None):
+    """Send one short log-group report after every public fate-card identity settles."""
+    now = float(now or time.time())
+    async with _cave_public_fate_cards_report_lock:
+        config = normalize_miniapp_auto_config()
+        if not config.get("cave_public_fate_cards_enabled"):
+            return False
+        day_key = get_day_key(now)
+        if str(config.get("cave_public_fate_cards_last_report_day") or "").strip() == day_key:
+            return False
+        report = _build_fate_cards_daily_report(now)
+        if not report.get("ready"):
+            return False
+        if not await send_audit_log(
+            report["message"],
+            scope="global",
+            priority="normal",
+            limit=420,
+        ):
+            return False
+        persisted = dict(get_miniapp_auto_config() or {})
+        persisted.update({
+            "cave_public_fate_cards_last_report_day": day_key,
+            "cave_public_fate_cards_last_report_signature": report["signature"],
+            "cave_public_fate_cards_last_report_at": now,
+        })
+        set_miniapp_auto_config(persisted)
+        save_state()
+        return True
 
 
 async def ui_set_cave_public_config(payload=None):
@@ -8964,6 +9111,8 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
 async def run_miniapp_daily_scheduler(now):
     raw_config = normalize_miniapp_auto_config()
     config = get_miniapp_auto_config_snapshot(now)
+    if await maybe_send_cave_public_fate_cards_daily_summary(now):
+        return {"started": True, "kind": "fate_cards_daily_summary"}
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
     public_entry_urls = list(raw_config.get("cave_public_entry_urls") or [])

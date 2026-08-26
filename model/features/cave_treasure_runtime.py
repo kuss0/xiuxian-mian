@@ -3557,7 +3557,6 @@ async def run_cave_public_fate_cards(
             f"{name}+{amount}" for name, amount in sorted(cumulative_gains.items()) if _parse_int(amount, 0) > 0
         ) or "奖励已入账"
         message = f"天机命脉完成：{material}"
-        await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
         return {
             "ok": True,
             "message": message,
