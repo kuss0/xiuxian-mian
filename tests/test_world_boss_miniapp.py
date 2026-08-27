@@ -444,6 +444,57 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(2, result["data"]["result"]["accepted_hit_count"])
         self.assertTrue(any(event["step"] == "window_reveal_complete" for event in result["events"]))
 
+    def test_dynamic_window_reveal_waits_through_slow_server_disclosure(self):
+        clock = FakeClock()
+        calls = []
+        reveal_count = 0
+
+        def transport(request):
+            nonlocal reveal_count
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint != "window":
+                self.fail(endpoint)
+            reveal_count += 1
+            if reveal_count in {1, 2, 3, 5}:
+                return 200, {"ok": True, "ready": False, "window": None, "windowCount": 3}
+            if reveal_count == 4:
+                return 200, {
+                    "ok": True,
+                    "window": {"id": "w1", "centerMs": 1800, "hitMs": 620, "perfectMs": 210},
+                    "windowCount": 3,
+                }
+            if reveal_count == 6:
+                return 200, {
+                    "ok": True,
+                    "window": {"id": "w2", "centerMs": 3600, "hitMs": 620, "perfectMs": 210},
+                    "windowCount": 3,
+                }
+            return 200, {
+                "ok": True,
+                "window": {"id": "w3", "centerMs": 5400, "hitMs": 620, "perfectMs": 210},
+                "windowCount": 3,
+                "done": True,
+            }
+
+        result = world_boss_miniapp.reveal_world_boss_windows(
+            {"challengeId": "challenge-slow-reveal", "windows": []},
+            token="qyz_SLOW_REVEAL",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            timeout_sec=40,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(7, len(calls))
+        self.assertEqual(["w1", "w2", "w3"], [
+            item["id"] for item in result["data"]["challenge"]["windows"]
+        ])
+        self.assertGreaterEqual(clock.now, 30.0)
+        self.assertTrue(any(event["step"] == "window_reveal_complete" for event in result["events"]))
+
     def test_new_single_battle_protocol_calls_begin_before_hits(self):
         calls = []
         clock = FakeClock()

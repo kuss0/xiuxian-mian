@@ -91,9 +91,14 @@ WORLD_BOSS_FINISH_GRACE_MS = 2200
 WORLD_BOSS_MIN_DURATION_MARGIN_MS = 1000
 WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS = 2200
 WORLD_BOSS_EXPIRY_HIT_MARGIN_MS = 500
-WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC = 0.36
-WORLD_BOSS_WINDOW_REVEAL_MAX_REQUESTS = 96
-WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC = 45.0
+# The endpoint reveals windows on the server's cadence.  Polling faster than
+# that only burns the shared 90 requests/minute budget and delays the later
+# charge/hit mutations behind the global limiter.
+WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC = 5.0
+WORLD_BOSS_WINDOW_REVEAL_MAX_REQUESTS = 64
+# Four identities may share the global limiter; allow a few reveal rounds to
+# wait for a slot without treating limiter wait as a protocol failure.
+WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC = 180.0
 
 WORLD_BOSS_ERROR_TYPES = (
     "boss_token_missing",
@@ -730,6 +735,19 @@ def _world_boss_done_from_payload(data):
     return False
 
 
+def _world_boss_window_reveal_wait_sec(data):
+    """Use an explicit server wait hint without trusting arbitrary values."""
+
+    for mapping in _nested_mappings(data):
+        for key in ("nextWindowInMs", "next_window_in_ms", "nextInMs", "next_in_ms"):
+            if mapping.get(key) in (None, ""):
+                continue
+            delay_ms = _float_value(mapping.get(key), 0.0)
+            if delay_ms > 0:
+                return min(15.0, max(WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC, delay_ms / 1000.0))
+    return WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC
+
+
 def _world_boss_window_id(window):
     window = dict(window or {})
     return str(window.get("windowId") or window.get("id") or "").strip()
@@ -783,6 +801,9 @@ def reveal_world_boss_windows(
     falling back to that attack count would fabricate timings and produces zero
     contribution.  This helper performs only read-like reveal requests and
     stops at the server's explicit ``done`` marker (or a matching count).
+    Empty successful responses are normal while the next server window is
+    being prepared, so they are polled at the server cadence rather than
+    treated as an immediate failure.
     """
 
     adapter = adapter or build_world_boss_miniapp_adapter()
@@ -864,8 +885,9 @@ def reveal_world_boss_windows(
             "done": bool(done),
         })
         if not done and not added:
+            reveal_wait_sec = _world_boss_window_reveal_wait_sec(data)
             sleeper(min(
-                WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC,
+                reveal_wait_sec,
                 max(0.0, deadline - float(clock())),
             ))
 
