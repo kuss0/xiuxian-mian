@@ -795,6 +795,32 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.clear()
             ui._cave_public_background_state.update(background_snapshot)
 
+    async def test_cave_public_entry_stops_candidate_fallback_on_shared_rate_limit(self):
+        run_mock = AsyncMock(return_value={
+            "ok": False,
+            "message": "洞府天机命脉动态入口获取失败：external_action_rate_limited",
+            "extra": {
+                "retry_after_sec": 45,
+                "shared_rate_limit": True,
+                "shared_retry_after_sec": 45,
+            },
+        })
+        public_urls = (
+            "https://t.me/hantianzun21_bot?startapp=df_SECRET111\n"
+            "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222"
+        )
+        with patch.object(ui, "get_identity_ids", return_value=[1001]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                patch.object(ui, "run_cave_public_fate_cards", new=run_mock):
+            ok, message, extra = await ui.ui_run_cave_public_entry(1001, "fate_cards", public_urls)
+
+        self.assertFalse(ok)
+        self.assertIn("external_action_rate_limited", message)
+        self.assertEqual(0, extra["entry_index"])
+        self.assertEqual(1, len(extra["entry_attempts"]))
+        self.assertTrue(extra["shared_rate_limit"])
+        run_mock.assert_awaited_once()
+
     async def test_cave_public_entry_run_does_not_fallback_for_business_completion(self):
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \

@@ -7426,6 +7426,16 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 result_extra = dict(result_extra)
                 result_extra["retry_after_sec"] = retry_after_sec
                 result["extra"] = result_extra
+            if result_extra.get("shared_rate_limit"):
+                # A 429 from the shared public-entry action is scoped to the
+                # gateway, not to this identity or one candidate URL. Trying
+                # the remaining URLs only repeats the rejected request and can
+                # hide the server's retry hint behind token noise.
+                extra = dict(result_extra)
+                extra["entry_index"] = index
+                extra["entry_attempts"] = attempted
+                extra["entry_canary"] = canary
+                return False, message, extra
             skip_after_token_failure = bool(
                 token_failure_count
                 and result.get("ok")
