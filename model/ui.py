@@ -8785,11 +8785,22 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
             retry_sec = max(retry_sec, 30 * 60)
         _cave_public_background_retry_at[(retry_action, int(identity_id))] = finished_at + retry_sec
         circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
+        shared_retry_sec = 0.0
+        if isinstance(extra, dict) and extra.get("shared_rate_limit"):
+            try:
+                shared_retry_sec = max(30.0, min(24 * 3600, float(extra.get("shared_retry_after_sec") or 0)))
+            except (TypeError, ValueError, OverflowError):
+                shared_retry_sec = 0.0
+        shared_retry_at = finished_at + shared_retry_sec if shared_retry_sec > 0 else 0.0
         _cave_public_background_state.update({
             "running": False,
-            "next_run_at": max(finished_at + delay_sec, circuit_open_until),
+            "next_run_at": max(finished_at + delay_sec, circuit_open_until, shared_retry_at),
             "last_action": f"{identity_id}:{action}",
-            "last_result": str(message or "")[:240],
+            "last_result": (
+                f"{str(message or '')[:180]}｜共享入口限流，{int(shared_retry_sec)}s 后继续"
+                if shared_retry_sec > 0
+                else str(message or "")[:240]
+            ),
         })
     console_log(
         f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"

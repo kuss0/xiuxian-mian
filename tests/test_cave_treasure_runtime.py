@@ -984,6 +984,24 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("trial_SECRET999", trial_mock.await_args.kwargs["token"])
         self.assertEqual(1001, trial_mock.await_args.kwargs["player_id"])
 
+    def test_miniapp_result_extra_marks_shared_external_rate_limit(self):
+        result = {
+            "ok": False,
+            "error": "external_action_rate_limited",
+            "events": [{
+                "step": "external",
+                "status_code": 429,
+                "retry_after_sec": 45,
+                "shared_rate_limit": True,
+            }],
+        }
+
+        extra = cave_treasure_runtime._miniapp_result_extra({}, result)
+
+        self.assertTrue(extra["shared_rate_limit"])
+        self.assertEqual(45.0, extra["retry_after_sec"])
+        self.assertEqual(45.0, extra["shared_retry_after_sec"])
+
     async def test_public_entry_trial_stops_when_selected_player_mismatches(self):
         cave_start = {
             "ok": True,

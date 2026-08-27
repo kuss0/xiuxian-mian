@@ -95,6 +95,23 @@ def _miniapp_result_extra(extra=None, *results):
     retry_after_sec = max((miniapp_retry_after_sec(result) for result in results), default=0.0)
     if retry_after_sec > 0:
         merged["retry_after_sec"] = retry_after_sec
+    shared_rate_limited = False
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if str(result.get("error") or "").strip().lower() == "external_action_rate_limited":
+            shared_rate_limited = True
+            break
+        for event in result.get("events") or ():
+            if isinstance(event, dict) and event.get("shared_rate_limit"):
+                shared_rate_limited = True
+                break
+        if shared_rate_limited:
+            break
+    if shared_rate_limited:
+        merged["shared_rate_limit"] = True
+        if retry_after_sec > 0:
+            merged["shared_retry_after_sec"] = retry_after_sec
     return merged
 
 
@@ -3113,7 +3130,7 @@ async def run_cave_public_fate_cards(
             if not external_result.get("ok"):
                 message = f"洞府天机命脉动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-                return {"ok": False, "message": message, "extra": {}}
+                return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
             launch = _find_fate_cards_launch_in_cave_payload(external_result.get("data") or {})
         elif external_app.get("url"):
             launch = _find_fate_cards_launch_in_cave_payload(external_app)

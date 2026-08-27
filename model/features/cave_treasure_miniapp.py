@@ -2072,8 +2072,25 @@ async def run_cave_external_action_production_flow(
             step_key=f"external:{normalize_cave_external_action(action)}",
         )
         if not result.ok:
-            return _flow_result(False, "failed", error=result.error, data=result.data, events=[{"step": "external", "ok": False}])
-        return _flow_result(True, "ok", data=result.data, events=[{"step": "external", "ok": True}])
+            return _flow_result(
+                False,
+                "failed",
+                error=result.error,
+                data=result.data,
+                events=[{
+                    "step": "external",
+                    "ok": False,
+                    "status_code": int(result.status_code or 0),
+                    "retry_after_sec": float(result.retry_after_sec or 0),
+                    "shared_rate_limit": int(result.status_code or 0) == 429,
+                }],
+            )
+        return _flow_result(
+            True,
+            "ok",
+            data=result.data,
+            events=[{"step": "external", "ok": True, "status_code": int(result.status_code or 0)}],
+        )
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 

@@ -1007,6 +1007,38 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_retry_at.clear()
             ui._cave_public_background_retry_at.update(retry_snapshot)
 
+    async def test_cave_public_background_pauses_shared_entry_after_rate_limit(self):
+        background_snapshot = dict(ui._cave_public_background_state)
+        retry_snapshot = dict(ui._cave_public_background_retry_at)
+        try:
+            ui._cave_public_background_state.update({
+                "running": True,
+                "next_run_at": 0,
+                "circuit_open_until": 0,
+            })
+            ui._cave_public_background_retry_at.clear()
+            with patch.object(ui, "ui_run_cave_public_entry", new=AsyncMock(return_value=(
+                False,
+                "洞府天机命脉动态入口获取失败：external_action_rate_limited",
+                {
+                    "retry_after_sec": 45,
+                    "shared_rate_limit": True,
+                    "shared_retry_after_sec": 45,
+                },
+            ))), patch.object(ui, "console_log"):
+                started_at = time.time()
+                await ui._execute_cave_public_background_action(1001, "fate_cards", 20)
+
+            self.assertFalse(ui._cave_public_background_state["running"])
+            self.assertGreaterEqual(ui._cave_public_background_state["next_run_at"], started_at + 44)
+            self.assertIn("共享入口限流", ui._cave_public_background_state["last_result"])
+            self.assertIn(("fate_cards", 1001), ui._cave_public_background_retry_at)
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(background_snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retry_snapshot)
+
     async def test_cave_public_background_scheduler_holds_all_actions_while_circuit_open(self):
         background_snapshot = dict(ui._cave_public_background_state)
         try:
