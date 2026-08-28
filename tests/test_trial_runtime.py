@@ -134,6 +134,26 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         audit_text = "\n".join(str(call.args[0]) for call in audit_mock.await_args_list)
         self.assertIn("全局暂停", audit_text)
 
+    async def test_trial_batch_does_not_count_partial_result_as_success(self):
+        with patch.object(trial_runtime.asyncio, "create_task", side_effect=lambda coro: coro.close()):
+            batch_id = trial_runtime.start_trial_miniapp_batch_run([1001], now=1_700_000_000.0)
+        trial_runtime.note_trial_batch_send_result(batch_id, 1001, ok=True, msg_id=11)
+        trial_runtime._record_trial_batch_result(batch_id, 1001, {
+            "ok": True,
+            "status": "partial",
+            "error": "Connection reset by peer",
+            "data": {"settled_count": 2, "traceGain": 8},
+        })
+
+        with patch.object(trial_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+            finalized = await trial_runtime.finalize_trial_batch_run(batch_id)
+
+        self.assertTrue(finalized)
+        text = str(audit_mock.await_args.args[0])
+        self.assertIn("天机试炼批量结果｜0/1 成功", text)
+        self.assertIn("失败：", text)
+        self.assertIn("Connection reset", text)
+
     async def test_trial_result_reports_game_materials_not_technical_fields(self):
         trial_runtime.authorize_trial_miniapp_manual_run(1001, now=1_700_000_000.0)
         flow_result = {

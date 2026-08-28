@@ -309,6 +309,18 @@ def _trial_batch_materials(result):
     return rewards, gains
 
 
+def _trial_result_completed_ok(result):
+    """Return whether a trial result completed its requested flow.
+
+    The loop keeps ``ok=True`` for ``partial`` so already settled rounds can
+    still be reported and recorded. That status must not be treated as a
+    fully completed identity in batch summaries or alert prioritization.
+    """
+    result = dict(result or {})
+    status = str(result.get("status") or "").strip().lower()
+    return (bool(result.get("ok")) and status != "partial") or status == "daily_limit"
+
+
 def _merge_counts(target, source):
     for name, amount in (source or {}).items():
         if not name:
@@ -359,7 +371,7 @@ async def finalize_trial_batch_run(batch_id, *, reason="complete"):
             else:
                 failed.append((identity_id, send.get("error") or "未发送"))
             continue
-        if result.get("ok"):
+        if _trial_result_completed_ok(result):
             ok_ids.append(identity_id)
             rewards, gains = _trial_batch_materials(result)
             _merge_counts(total_rewards, rewards)
@@ -447,7 +459,7 @@ async def handle_trial_miniapp_entry(event, text, now, reply_to=None, matched_fa
             _record_trial_batch_result(batch_id, identity_id, dict(result or {}))
             await maybe_finalize_trial_batch_run(batch_id)
             return True
-        priority = "low" if dict(result or {}).get("ok") else "normal"
+        priority = "low" if _trial_result_completed_ok(result) else "normal"
         await send_audit_log(f"🧪 天机试炼结果｜{safe_summary}", scope="identity", priority=priority, limit=220)
         return True
 

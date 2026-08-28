@@ -1002,6 +1002,20 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(45.0, extra["retry_after_sec"])
         self.assertEqual(45.0, extra["shared_retry_after_sec"])
 
+    def test_partial_trial_result_is_not_full_completion(self):
+        self.assertFalse(cave_treasure_runtime._trial_result_completed_ok({
+            "ok": True,
+            "status": "partial",
+        }))
+        self.assertTrue(cave_treasure_runtime._trial_result_completed_ok({
+            "ok": True,
+            "status": "settled",
+        }))
+        self.assertTrue(cave_treasure_runtime._trial_result_completed_ok({
+            "ok": False,
+            "status": "daily_limit",
+        }))
+
     async def test_public_entry_trial_stops_when_selected_player_mismatches(self):
         cave_start = {
             "ok": True,

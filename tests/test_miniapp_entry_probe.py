@@ -1056,7 +1056,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 await ui._execute_cave_public_background_action(1001, "fate_cards", 20)
 
             self.assertFalse(ui._cave_public_background_state["running"])
-            self.assertGreaterEqual(ui._cave_public_background_state["next_run_at"], started_at + 44)
+            self.assertGreaterEqual(ui._cave_public_background_state["next_run_at"], started_at + 299)
             self.assertIn("共享入口限流", ui._cave_public_background_state["last_result"])
             self.assertIn(("fate_cards", 1001), ui._cave_public_background_retry_at)
         finally:

@@ -41,7 +41,7 @@ from .cave_treasure_miniapp import (
     run_cave_treasure_miniapp_production_flow,
 )
 from .trial_miniapp import build_trial_launch_args
-from .trial_runtime import _format_trial_summary, _record_trial_business_capture, _trial_batch_materials, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
+from .trial_runtime import _format_trial_summary, _record_trial_business_capture, _trial_batch_materials, _trial_result_completed_ok, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
@@ -3036,7 +3036,7 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         _record_trial_business_capture(capture_sink, result, source=capture_source, now=now)
         summary = _format_trial_summary(result)
         message = f"洞府天机试炼公共入口：{summary}"
-        completed_ok = bool(result.get("ok")) or str(result.get("status") or "") == "daily_limit"
+        completed_ok = _trial_result_completed_ok(result)
         rewards, gains = _trial_batch_materials(result)
         settled_count = _parse_int(
             result.get("settled_count") or (result.get("data") or {}).get("settled_count"),

@@ -369,6 +369,7 @@ _ui_state_get_cache = {"expires_at": 0.0, "snapshot": None}
 UI_STATE_GET_CACHE_SEC = 5.0
 CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC = 10 * 60
 CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC = 30 * 60
+CAVE_PUBLIC_SHARED_RATE_LIMIT_FLOOR_SEC = 5 * 60
 # A successful MiniApp response is authoritative for the current process even
 # if a concurrent state snapshot save temporarily races with it. Keep this
 # short-lived marker as a second guard; the persisted miniapp state remains the
@@ -8798,7 +8799,10 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
         shared_retry_sec = 0.0
         if isinstance(extra, dict) and extra.get("shared_rate_limit"):
             try:
-                shared_retry_sec = max(30.0, min(24 * 3600, float(extra.get("shared_retry_after_sec") or 0)))
+                shared_retry_sec = max(
+                    CAVE_PUBLIC_SHARED_RATE_LIMIT_FLOOR_SEC,
+                    min(24 * 3600, float(extra.get("shared_retry_after_sec") or 0)),
+                )
             except (TypeError, ValueError, OverflowError):
                 shared_retry_sec = 0.0
         shared_retry_at = finished_at + shared_retry_sec if shared_retry_sec > 0 else 0.0
