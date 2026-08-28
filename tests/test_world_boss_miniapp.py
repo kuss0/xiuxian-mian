@@ -432,14 +432,14 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(
-            ["start", "begin", "window", "window", "charge_start", "hit", "charge_start", "hit", "finish"],
+            ["start", "begin", "window", "charge_start", "hit", "window", "charge_start", "hit", "finish"],
             calls,
         )
         self.assertEqual("", payloads[2]["afterWindowId"])
-        self.assertEqual("w1", payloads[3]["afterWindowId"])
-        self.assertEqual("ticket-w1", payloads[5]["chargeTicket"])
+        self.assertEqual("w1", payloads[5]["afterWindowId"])
+        self.assertEqual("ticket-w1", payloads[4]["chargeTicket"])
         self.assertEqual("ticket-w2", payloads[7]["chargeTicket"])
-        self.assertLess(call_times[4], call_times[5])
+        self.assertLess(call_times[3], call_times[4])
         self.assertLess(call_times[6], call_times[7])
         self.assertEqual(2, result["data"]["result"]["accepted_hit_count"])
         self.assertTrue(any(event["step"] == "window_reveal_complete" for event in result["events"]))

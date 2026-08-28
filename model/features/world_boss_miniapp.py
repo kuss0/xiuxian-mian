@@ -793,6 +793,7 @@ def reveal_world_boss_windows(
     capture_source="",
     events=None,
     timeout_sec=WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC,
+    target_window_count=None,
 ):
     """Reveal the server-owned timing windows through the official endpoint.
 
@@ -822,10 +823,16 @@ def reveal_world_boss_windows(
         _world_boss_window_count_from_payload(challenge),
         len(challenge.get("attacks") or ()) if isinstance(challenge.get("attacks"), list) else 0,
     )
+    requested_target_count = _int_value(target_window_count, 0)
+    if requested_target_count > 0:
+        requested_target_count = max(requested_target_count, len(challenge["windows"]))
     deadline = float(clock()) + max(1.0, float(timeout_sec or WORLD_BOSS_WINDOW_REVEAL_TIMEOUT_SEC))
     request_count = 0
     last_request_at = None
-    done = len(challenge["windows"]) >= expected_count > 0
+    done = bool(
+        requested_target_count > 0
+        and len(challenge["windows"]) >= requested_target_count
+    ) or len(challenge["windows"]) >= expected_count > 0
     while not done and request_count < WORLD_BOSS_WINDOW_REVEAL_MAX_REQUESTS:
         if float(clock()) >= deadline:
             break
@@ -873,6 +880,9 @@ def reveal_world_boss_windows(
             expected_count = max(expected_count, reported_count)
             challenge["windowCount"] = reported_count
         done = _world_boss_done_from_payload(data) or bool(
+            requested_target_count > 0
+            and len(challenge["windows"]) >= requested_target_count
+        ) or bool(
             expected_count > 0 and len(challenge["windows"]) >= expected_count
         )
         events.append({
@@ -898,7 +908,7 @@ def reveal_world_boss_windows(
             error="world boss timing windows were not revealed",
             events=events,
         )
-    if expected_count > 0 and len(challenge["windows"]) < expected_count:
+    if requested_target_count <= 0 and expected_count > 0 and len(challenge["windows"]) < expected_count:
         return _flow_result(
             False,
             "not_ready",
@@ -2172,6 +2182,9 @@ def run_world_boss_joined_battle_lab_flow(
             or str(challenge.get("mode") or "").strip().lower().startswith("qyz_focus_burst")
         )
     )
+    requested_window_skip = max(0, _int_value(window_skip_count, 0))
+    dynamic_expected_window_count = 0
+    dynamic_target_window_count = 0
     if dynamic_window_protocol:
         reveal_result = reveal_world_boss_windows(
             challenge,
@@ -2184,20 +2197,36 @@ def run_world_boss_joined_battle_lab_flow(
             capture_sink=capture_sink,
             capture_source=capture_source,
             events=events,
+            target_window_count=1,
         )
         if not reveal_result["ok"]:
             return reveal_result
         challenge = dict((reveal_result.get("data") or {}).get("challenge") or challenge)
+        dynamic_expected_window_count = max(
+            _world_boss_window_count_from_payload(challenge),
+            len(challenge.get("attacks") or ()) if isinstance(challenge.get("attacks"), list) else 0,
+            len(challenge.get("windows") or ()),
+        )
+        dynamic_target_window_count = max(
+            1,
+            dynamic_expected_window_count - requested_window_skip,
+        )
     requires_charge_ticket = dynamic_window_protocol
     try:
         full_plan = build_world_boss_action_plan(challenge, rng=rng)
     except ValueError as exc:
         return _flow_result(False, "not_ready", error=exc, events=events)
-    plan = filter_world_boss_action_plan(full_plan, initial_elapsed_ms)
+    if dynamic_window_protocol:
+        # Dynamic windows are streamed: reveal one, execute it, then reveal the
+        # next one. Prefetching the whole list lets the server-side windows
+        # expire before the first charge request.
+        plan = list(full_plan)
+    else:
+        plan = filter_world_boss_action_plan(full_plan, initial_elapsed_ms)
     challenge_expiry_ms = _world_boss_challenge_expiry_ms(challenge)
     expiry_finish_target_ms = 0
     expiry_trimmed_window_count = 0
-    if challenge_expiry_ms:
+    if challenge_expiry_ms and not dynamic_window_protocol:
         expiry_finish_target_ms = max(
             1_000,
             challenge_expiry_ms - WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS,
@@ -2213,18 +2242,28 @@ def run_world_boss_joined_battle_lab_flow(
             if _int_value(action.get("elapsedMs"), 0) <= expiry_hit_cutoff_ms
         ]
         expiry_trimmed_window_count = untrimmed_count - len(plan)
-    requested_window_skip = max(0, _int_value(window_skip_count, 0))
-    effective_window_skip = min(requested_window_skip, max(0, len(plan) - 1))
-    effective_plan = (
-        plan[:-effective_window_skip]
-        if effective_window_skip
-        else list(plan)
-    )
+    if dynamic_window_protocol:
+        effective_window_skip = min(
+            requested_window_skip,
+            max(0, dynamic_expected_window_count - 1),
+        )
+        effective_plan = list(plan)
+    else:
+        effective_window_skip = min(requested_window_skip, max(0, len(plan) - 1))
+        effective_plan = (
+            plan[:-effective_window_skip]
+            if effective_window_skip
+            else list(plan)
+        )
     events.append({
         "step": "plan",
         "ok": True,
         "window_count": len(effective_plan),
-        "full_window_count": len(plan),
+        "full_window_count": (
+            dynamic_expected_window_count
+            if dynamic_window_protocol
+            else len(plan)
+        ),
         "window_skip_count": effective_window_skip,
         "expired_window_count": len(full_plan) - len(plan),
         "expiry_trimmed_window_count": expiry_trimmed_window_count,
@@ -2247,8 +2286,16 @@ def run_world_boss_joined_battle_lab_flow(
         "accepted_hit_count": 0,
         "accepted_perfect_count": 0,
         "accepted_damage_yi": 0.0,
-        "planned_window_count": len(full_plan),
-        "target_window_count": len(effective_plan),
+        "planned_window_count": (
+            dynamic_expected_window_count
+            if dynamic_window_protocol
+            else len(full_plan)
+        ),
+        "target_window_count": (
+            dynamic_target_window_count
+            if dynamic_window_protocol
+            else len(effective_plan)
+        ),
         "window_skip_count": effective_window_skip,
         "rejected_window_count": 0,
         "action_limit": None,
@@ -2305,18 +2352,95 @@ def run_world_boss_joined_battle_lab_flow(
                 })
                 break
 
+    def append_next_dynamic_action():
+        """Reveal exactly one later window after the previous hit completes."""
+
+        nonlocal challenge, dynamic_expected_window_count, dynamic_target_window_count
+        if not dynamic_window_protocol or len(effective_plan) >= dynamic_target_window_count:
+            return True
+        existing_count = len(challenge.get("windows") or ())
+        reveal_result = reveal_world_boss_windows(
+            challenge,
+            token=current_token,
+            init_data=init_data,
+            transport=transport,
+            adapter=adapter,
+            sleeper=sleeper,
+            clock=clock,
+            capture_sink=capture_sink,
+            capture_source=capture_source,
+            events=events,
+            target_window_count=existing_count + 1,
+        )
+        if not reveal_result["ok"]:
+            events.append({
+                "step": "dynamic_window_stream_stop",
+                "ok": False,
+                "error": reveal_result.get("error") or reveal_result.get("status") or "window reveal failed",
+            })
+            return False
+        next_challenge = dict((reveal_result.get("data") or {}).get("challenge") or challenge)
+        next_windows = list(next_challenge.get("windows") or ())
+        if len(next_windows) <= existing_count:
+            events.append({
+                "step": "dynamic_window_stream_stop",
+                "ok": False,
+                "error": "next timing window was not revealed",
+            })
+            return False
+        try:
+            next_plan = build_world_boss_action_plan(
+                {
+                    "challengeId": next_challenge.get("challengeId") or challenge.get("challengeId"),
+                    "windows": [next_windows[-1]],
+                },
+                rng=rng,
+            )
+        except ValueError as exc:
+            events.append({
+                "step": "dynamic_window_stream_stop",
+                "ok": False,
+                "error": str(exc),
+            })
+            return False
+        challenge = next_challenge
+        dynamic_expected_window_count = max(
+            dynamic_expected_window_count,
+            _world_boss_window_count_from_payload(challenge),
+            len(challenge.get("attacks") or ()) if isinstance(challenge.get("attacks"), list) else 0,
+            len(next_windows),
+        )
+        dynamic_target_window_count = max(
+            dynamic_target_window_count,
+            max(1, dynamic_expected_window_count - requested_window_skip),
+        )
+        server_hit_summary["planned_window_count"] = dynamic_expected_window_count
+        server_hit_summary["target_window_count"] = dynamic_target_window_count
+        next_action = dict(next_plan[0])
+        full_plan.append(next_action)
+        plan.append(next_action)
+        effective_plan.append(next_action)
+        return True
+
     process_missed_windows(initial_elapsed_ms)
     recent_hit_rtt_ms = [round_trip_ms] if single_battle_protocol and round_trip_ms > 0 else []
-    for action_index, action in enumerate(effective_plan):
+    action_index = 0
+    while action_index < len(effective_plan):
         if dead:
             break
         if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
             return reconcile_closed_event()
-        action = dict(action)
+        action = dict(effective_plan[action_index])
         release_lead_ms = _adaptive_world_boss_release_lead_ms(
             action,
             recent_hit_rtt_ms,
-            final_window=action_index == len(plan) - 1,
+            final_window=(
+                action_index == len(plan) - 1
+                and (
+                    not dynamic_window_protocol
+                    or len(effective_plan) >= dynamic_target_window_count
+                )
+            ),
         )
         action["elapsedMs"] = max(0, _int_value(action.get("centerMs")) - release_lead_ms)
         action["chargeStartMs"] = max(0, action["elapsedMs"] - _int_value(action.get("holdMs")))
@@ -2333,6 +2457,9 @@ def run_world_boss_joined_battle_lab_flow(
                 "windowId": action["windowId"],
                 "current_elapsed_ms": current_elapsed_ms,
             })
+            if dynamic_window_protocol and not append_next_dynamic_action():
+                break
+            action_index += 1
             continue
         hold_ms = min(int(action["holdMs"]), available_charge_ms, WORLD_BOSS_PERFECT_HOLD_MAX_MS)
         charge_start_ms = int(action["elapsedMs"]) - hold_ms
@@ -2415,6 +2542,9 @@ def run_world_boss_joined_battle_lab_flow(
         release_elapsed_ms = max(0, int((float(clock()) - timeline_origin) * 1000))
         process_missed_windows(release_elapsed_ms)
         if dead or action["windowId"] in processed_window_ids:
+            if not dead and dynamic_window_protocol and not append_next_dynamic_action():
+                break
+            action_index += 1
             continue
         executed_action = {
             **action,
@@ -2494,6 +2624,9 @@ def run_world_boss_joined_battle_lab_flow(
                         "elapsed_ms": death_elapsed_ms,
                     })
                     break
+                if dynamic_window_protocol and not append_next_dynamic_action():
+                    break
+                action_index += 1
                 continue
             if status == "boss_client_clock_mismatch":
                 # The server has rejected the local battle clock. Remaining
@@ -2572,6 +2705,9 @@ def run_world_boss_joined_battle_lab_flow(
                 "action_limit": hit_business.get("action_limit"),
             })
             break
+        if dynamic_window_protocol and not append_next_dynamic_action():
+            break
+        action_index += 1
 
     challenge_duration_ms = _world_boss_challenge_duration_ms(challenge)
     minimum_finish_ms = min(
