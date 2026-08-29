@@ -446,6 +446,7 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
     def test_dynamic_window_reveal_waits_through_slow_server_disclosure(self):
         clock = FakeClock()
+        started_at = clock.now
         calls = []
         reveal_count = 0
 
@@ -492,7 +493,15 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(["w1", "w2", "w3"], [
             item["id"] for item in result["data"]["challenge"]["windows"]
         ])
-        self.assertGreaterEqual(clock.now, 30.0)
+        # FakeClock starts at 100.0, so the old "assertGreaterEqual(clock.now, 30.0)"
+        # was vacuous -- it could never fail and never checked the pacing at all.
+        # Measure the elapsed span instead, against the constant, so the assertion
+        # stays honest if the interval is retuned.
+        elapsed = clock.now - started_at
+        self.assertGreaterEqual(
+            elapsed,
+            6 * world_boss_miniapp.WORLD_BOSS_WINDOW_REVEAL_MIN_INTERVAL_SEC,
+        )
         self.assertTrue(any(event["step"] == "window_reveal_complete" for event in result["events"]))
 
     def test_new_single_battle_protocol_calls_begin_before_hits(self):
@@ -1919,3 +1928,124 @@ class WorldBossMiniAppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorldBossTimelineAnchorTests(unittest.TestCase):
+    """Regression cover for the 2026-08-29 boss_window_expired failure.
+
+    timeline_origin used to be computed *after* reveal_world_boss_windows(), so
+    every second spent revealing windows was erased from the local battle clock.
+    current_elapsed_ms restarted near zero while the server clock kept running,
+    which made the skip_expired_window guard read already-closed windows as still
+    open and sent charge-start against them -> HTTP 409 boss_window_expired.
+
+    Evidence: data/messages/miniapp-captures/world_boss-2026-08-29.jsonl
+        window(ready=false) -> 5.1s gap -> window(w_...) -> charge_start 409
+    """
+
+    def _run_flow(self, calls, clock, first_window_center_ms, charged=None):
+        reveal_count = 0
+        charged = charged if charged is not None else []
+
+        def transport(request):
+            nonlocal reveal_count
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "boss": {"roomStatus": "battle", "actionLimit": 2, "actionsRemaining": 2},
+                    "challenge": {
+                        # No inline windows -> dynamic (reveal-one-at-a-time) protocol.
+                        "mode": "qyz_focus_burst_v2",
+                        "challengeId": "challenge-anchor-drift",
+                        "durationMs": 30000,
+                        "maxDurationMs": 40000,
+                        "playerHp": 10000,
+                    },
+                }
+            if endpoint == "begin":
+                return 200, {"ok": True, "startsInMs": 0}
+            if endpoint == "window":
+                reveal_count += 1
+                if reveal_count == 1:
+                    # Server: battle running, first window not open yet.  This is the
+                    # answer that used to cost a blind 5s and produce the drift.
+                    return 200, {"ok": True, "ready": False, "window": None, "windowCount": 2}
+                if reveal_count == 2:
+                    return 200, {
+                        "ok": True,
+                        "window": {
+                            "id": "w_expired",
+                            "centerMs": first_window_center_ms,
+                            "hitMs": 620,
+                            "perfectMs": 210,
+                        },
+                        "windowCount": 2,
+                    }
+                return 200, {
+                    "ok": True,
+                    "window": {"id": "w_live", "centerMs": 20000, "hitMs": 620, "perfectMs": 210},
+                    "windowCount": 2,
+                    "done": True,
+                }
+            if endpoint == "charge_start":
+                charged.append(request["payload"]["windowId"])
+                return 200, {"ok": True, "chargeTicket": "ticket-anchor"}
+            if endpoint == "hit":
+                return 200, {
+                    "ok": True,
+                    "hit": {"attemptConsumed": True, "perfect": True, "damageYi": 100},
+                    "boss": {"actionLimit": 2, "actionsUsed": 1, "actionsRemaining": 1},
+                }
+            if endpoint == "finish":
+                return 200, {"ok": True, "result": {"score": 50, "hits": 1, "perfects": 1}}
+            self.fail(endpoint)
+
+        return world_boss_miniapp.run_world_boss_joined_battle_lab_flow(
+            world_boss_miniapp.WorldBossJoinReceipt(True, "joined", player_id="77"),
+            token="qyz_ANCHOR",
+            init_data="query_id=x&hash=y",
+            transport=transport,
+            sleeper=clock.sleep,
+            clock=clock.clock,
+            rng=random.Random(9),
+        )
+
+    def test_reveal_time_counts_against_the_battle_clock(self):
+        """A window that expired while we were revealing must be skipped, not charged."""
+        calls = []
+        charged = []
+        clock = FakeClock()
+        # centerMs must sit in [PERFECT_HOLD_MIN_MS, PERFECT_HOLD_MIN_MS + reveal_cost)
+        # for this test to discriminate:
+        #   without the anchor fix -> current_elapsed ~0   -> available 1200ms >= 520 -> charges
+        #   with the anchor fix    -> current_elapsed ~1000 -> available  200ms <  520 -> skips
+        # A smaller value (e.g. 500) would fall below the 520ms hold floor and get
+        # skipped either way, which is how the first draft of this test passed
+        # against the reverted fix and proved nothing.
+        result = self._run_flow(calls, clock, first_window_center_ms=1200, charged=charged)
+
+        self.assertTrue(result["ok"])
+        skipped = [event for event in result["events"] if event["step"] == "skip_expired_window"]
+        self.assertTrue(skipped, "expired window was not skipped -- timeline drift is back")
+        self.assertEqual("w_expired", skipped[0]["windowId"])
+        # The whole point: never charge a window the server has already retired.
+        self.assertNotIn("w_expired", charged, "charge-start was sent for the stale window")
+        # And the live window still gets played, so the fix does not just bail out.
+        self.assertEqual(["w_live"], charged)
+        self.assertIn("hit", calls)
+        self.assertEqual(1, calls.count("finish"))
+
+    def test_timeline_anchor_event_is_emitted_before_reveal(self):
+        calls = []
+        clock = FakeClock()
+        result = self._run_flow(calls, clock, first_window_center_ms=20000)
+
+        self.assertTrue(result["ok"])
+        steps = [event["step"] for event in result["events"]]
+        self.assertIn("timeline_anchor", steps)
+        anchor = next(e for e in result["events"] if e["step"] == "timeline_anchor")
+        self.assertTrue(anchor["anchored_before_reveal"])
+        # Anchor must precede the first window reveal, otherwise the drift returns.
+        self.assertLess(steps.index("timeline_anchor"), steps.index("window_reveal"))

@@ -91,10 +91,18 @@ WORLD_BOSS_FINISH_GRACE_MS = 2200
 WORLD_BOSS_MIN_DURATION_MARGIN_MS = 1000
 WORLD_BOSS_EXPIRY_FINISH_MARGIN_MS = 2200
 WORLD_BOSS_EXPIRY_HIT_MARGIN_MS = 500
-# The endpoint reveals windows on the server's cadence.  Polling faster than
-# that only burns the shared 90 requests/minute budget and delays the later
-# charge/hit mutations behind the global limiter.
-WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC = 5.0
+# Floor for reveal polling.
+#
+# This used to be WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC = 5.0, applied as the floor
+# for *every* reveal wait.  A server "not ready yet" answer therefore cost a blind
+# 5 seconds even when the next window was milliseconds away, and that wait is pure
+# drift against the server battle clock (see the timeline anchor comment in
+# run_world_boss_joined_battle_lab_flow).
+#
+# Polling faster than the server's cadence only burns the shared 90 requests/minute
+# budget, so this stays a real floor -- 1.0s means <=60 req/min even when polling
+# continuously, and the global limiter still gates the loop above that.
+WORLD_BOSS_WINDOW_REVEAL_MIN_INTERVAL_SEC = 1.0
 WORLD_BOSS_WINDOW_REVEAL_MAX_REQUESTS = 64
 # Four identities may share the global limiter; allow a few reveal rounds to
 # wait for a slot without treating limiter wait as a protocol failure.
@@ -744,8 +752,8 @@ def _world_boss_window_reveal_wait_sec(data):
                 continue
             delay_ms = _float_value(mapping.get(key), 0.0)
             if delay_ms > 0:
-                return min(15.0, max(WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC, delay_ms / 1000.0))
-    return WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC
+                return min(15.0, max(WORLD_BOSS_WINDOW_REVEAL_MIN_INTERVAL_SEC, delay_ms / 1000.0))
+    return WORLD_BOSS_WINDOW_REVEAL_MIN_INTERVAL_SEC
 
 
 def _world_boss_window_id(window):
@@ -837,7 +845,7 @@ def reveal_world_boss_windows(
         if float(clock()) >= deadline:
             break
         if last_request_at is not None:
-            interval_wait = WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC - (float(clock()) - last_request_at)
+            interval_wait = WORLD_BOSS_WINDOW_REVEAL_MIN_INTERVAL_SEC - (float(clock()) - last_request_at)
             if interval_wait > 0:
                 sleeper(min(interval_wait, max(0.0, deadline - float(clock()))))
         windows = challenge["windows"]
@@ -866,7 +874,7 @@ def reveal_world_boss_windows(
             status = classify_world_boss_miniapp_error(result.error)
             if status in {"boss_window_not_ready", "boss_battle_not_started"}:
                 sleeper(min(
-                    WORLD_BOSS_WINDOW_REVEAL_INTERVAL_SEC,
+                    WORLD_BOSS_WINDOW_REVEAL_MIN_INTERVAL_SEC,
                     max(0.0, deadline - float(clock())),
                 ))
                 continue
@@ -2114,6 +2122,10 @@ def run_world_boss_joined_battle_lab_flow(
         if server_elapsed_ms:
             break
     initial_elapsed_ms = 0
+    # Set as soon as the server battle clock is known (see the begin block below).
+    # Stays None when this protocol has no begin step; the fallback right before
+    # the hit loop anchors it then.
+    timeline_origin = None
     current_room_status = _world_boss_room_status(state_data)
     auto_start_delay = (
         WORLD_BOSS_SPAWN_AUTO_START_DELAY_SEC
@@ -2175,6 +2187,23 @@ def run_world_boss_joined_battle_lab_flow(
         })
         if wait_ms > 0:
             sleeper(wait_ms / 1000.0)
+        # Anchor the local battle clock here, before any window reveal.
+        #
+        # The origin used to be computed after reveal_world_boss_windows().  Every
+        # second spent revealing windows was therefore erased from the local
+        # timeline: the server battle clock kept running while current_elapsed_ms
+        # restarted from initial_elapsed_ms.  With the 5s reveal poll that drift
+        # reached ~5s, which made the "skip_expired_window" guard read every
+        # already-closed window as still open, so charge-start was sent against a
+        # window the server had retired -> HTTP 409 boss_window_expired
+        # (observed 2026-08-29 13:41, capture world_boss-2026-08-29.jsonl).
+        timeline_origin = float(clock()) - (float(initial_elapsed_ms) / 1000.0)
+        events.append({
+            "step": "timeline_anchor",
+            "ok": True,
+            "initial_elapsed_ms": initial_elapsed_ms,
+            "anchored_before_reveal": True,
+        })
     dynamic_window_protocol = bool(
         not (challenge.get("windows") or ())
         and (
@@ -2273,7 +2302,9 @@ def run_world_boss_joined_battle_lab_flow(
         "server_elapsed_ms_ignored": server_elapsed_ms,
     })
 
-    timeline_origin = float(clock()) - (float(initial_elapsed_ms) / 1000.0)
+    if timeline_origin is None:
+        # No begin step ran (static-window protocols), so nothing has elapsed yet.
+        timeline_origin = float(clock()) - (float(initial_elapsed_ms) / 1000.0)
     hit_payloads = []
     executed_actions = []
     processed_window_ids = set()
