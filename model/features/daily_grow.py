@@ -34,10 +34,10 @@ DAILY_GROW_ENABLED = True
 # jfdffdddd —— 按要求排除。
 DAILY_GROW_EXCLUDED_ACCOUNT_IDS = frozenset({301299112})
 
-# 试发阶段：先只放行一个账号，人工确认消息真的落在「闲聊」里之后，
-# 再把这里改成 frozenset() —— 空集表示"除排除项外的全部实体账号"。
-# 这样话题号猜错的代价是一条消息，而不是每天 4 条发错地方。
-DAILY_GROW_ACCOUNT_ALLOWLIST = frozenset({8613500668})
+# 空集 = 除排除项外的全部实体账号。收窄成具体账号可用于试发。
+# 落点已于 2026-09-02 用 xianxia9527 单号试发确认（msg=107880，闲聊分组无误），
+# 随后开放全部四个账号。
+DAILY_GROW_ACCOUNT_ALLOWLIST = frozenset()
 
 # 摊开在白天，别让几个号在同一分钟一起冒出来。
 DAILY_GROW_WINDOW_START_HOUR = 10

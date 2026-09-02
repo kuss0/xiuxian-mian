@@ -28,9 +28,26 @@ class DailyGrowTargetTests(unittest.TestCase):
         self.assertNotIn(301299112, targets)
         self.assertEqual([7538826434, 8574677796, 8613500668, 8659059191], targets)
 
-    def test_allowlist_narrows_to_the_trial_account(self):
-        with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS):
+    def test_allowlist_narrows_the_target_set(self):
+        """白名单是试发用的收窄器。显式指定，不依赖当前部署值。"""
+        with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS), patch.object(
+            daily_grow, "DAILY_GROW_ACCOUNT_ALLOWLIST", frozenset({8613500668})
+        ):
             self.assertEqual([8613500668], daily_grow.target_account_ids())
+
+    def test_allowlist_never_overrides_the_exclusion(self):
+        """就算把 jfdffdddd 写进白名单也不能发 —— 排除优先。"""
+        with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS), patch.object(
+            daily_grow, "DAILY_GROW_ACCOUNT_ALLOWLIST", frozenset({301299112})
+        ):
+            self.assertEqual([], daily_grow.target_account_ids())
+
+    def test_current_deployment_targets_all_four_real_accounts(self):
+        with patch.object(daily_grow, "get_accounts", return_value=ACCOUNTS):
+            self.assertEqual(
+                [7538826434, 8574677796, 8613500668, 8659059191],
+                daily_grow.target_account_ids(),
+            )
 
     def test_due_time_is_stable_within_a_day_and_inside_the_window(self):
         now = time.time()
@@ -65,6 +82,8 @@ class DailyGrowSchedulerTests(unittest.IsolatedAsyncioTestCase):
         # 把发送时刻推到过去，确保已到点
         with patch.object(daily_grow, "DAILY_GROW_ENABLED", True), patch.object(
             daily_grow, "get_accounts", return_value=ACCOUNTS
+        ), patch.object(
+            daily_grow, "DAILY_GROW_ACCOUNT_ALLOWLIST", frozenset({8613500668})
         ), patch.object(
             daily_grow, "account_due_ts", return_value=now - 3600
         ), patch.object(
