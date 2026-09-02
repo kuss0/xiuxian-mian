@@ -58,6 +58,7 @@ from .state import (
     get_replica_dispatch_participant_identity_ids,
     get_replica_kind_configs,
     get_replica_listener_account_id,
+    get_daily_grow_last_sent,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
@@ -111,6 +112,7 @@ from .state import (
     set_replica_dispatch_participant_identity_ids,
     set_replica_kind_configs,
     set_replica_listener_account_id,
+    set_daily_grow_last_sent,
     set_replica_listener_account_map,
     set_replica_participant_identity_ids,
     set_replica_query_aggregator_config,
@@ -2371,6 +2373,13 @@ _META_STATE_CODEC = {
         get_replica_listener_account_id,
         lambda value: str(value),
         lambda value: set_replica_listener_account_id(_decode_meta_int(value, 0)),
+    ),
+    # 没注册进这张表的 key 根本不落盘 —— 每日 grow 的记账丢过一次，
+    # 重启后当天会重发。
+    "daily_grow_last_sent": (
+        get_daily_grow_last_sent,
+        _encode_meta_json,
+        lambda value: set_daily_grow_last_sent(_decode_meta_json(value, {})),
     ),
     "replica_listener_account_map": (
         get_replica_listener_account_map,

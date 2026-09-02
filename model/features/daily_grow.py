@@ -51,6 +51,16 @@ def _today_key(now):
     return time.strftime("%Y-%m-%d", time.localtime(float(now)))
 
 
+def within_send_window(now):
+    """窗口既是下界也是上界。
+
+    只判"是否已过发送时刻"会让 22:00 之后所有已到点的账号继续合格，
+    于是深夜里每 7 分钟接着发一个 —— 2026-09-02 22:12 真出过这一幕。
+    """
+    hour = time.localtime(float(now)).tm_hour
+    return DAILY_GROW_WINDOW_START_HOUR <= hour < DAILY_GROW_WINDOW_END_HOUR
+
+
 def target_account_ids():
     """今天该发的实体账号，已排除 jfdffdddd 并按试发白名单收窄。"""
     account_ids = []
@@ -106,6 +116,8 @@ async def run_daily_grow_scheduler(now=None):
     if not DAILY_GROW_ENABLED:
         return False
     now = float(now or time.time())
+    if not within_send_window(now):
+        return False
     if now - _last_send_ts < DAILY_GROW_MIN_GAP_SEC:
         return False
 
@@ -141,4 +153,5 @@ __all__ = [
     "account_due_ts",
     "run_daily_grow_scheduler",
     "target_account_ids",
+    "within_send_window",
 ]

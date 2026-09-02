@@ -66,6 +66,53 @@ class DailyGrowTargetTests(unittest.TestCase):
         self.assertEqual(len(due), len({int(ts // 60) for ts in due}))
 
 
+class DailyGrowWindowTests(unittest.TestCase):
+    """窗口回归：2026-09-02 22:12/22:18 真的在窗口外发过。"""
+
+    def _at(self, hour, minute=0):
+        lt = time.localtime()
+        return time.mktime((
+            lt.tm_year, lt.tm_mon, lt.tm_mday, hour, minute, 0,
+            lt.tm_wday, lt.tm_yday, lt.tm_isdst,
+        ))
+
+    def test_window_rejects_after_end_hour(self):
+        self.assertFalse(daily_grow.within_send_window(self._at(22, 12)))
+        self.assertFalse(daily_grow.within_send_window(self._at(23, 59)))
+        self.assertFalse(daily_grow.within_send_window(self._at(2, 0)))
+
+    def test_window_rejects_before_start_hour(self):
+        self.assertFalse(daily_grow.within_send_window(self._at(9, 59)))
+
+    def test_window_accepts_inside(self):
+        self.assertTrue(daily_grow.within_send_window(self._at(10, 0)))
+        self.assertTrue(daily_grow.within_send_window(self._at(21, 59)))
+
+
+class DailyGrowPersistenceTests(unittest.TestCase):
+    def test_last_sent_is_registered_for_persistence(self):
+        """没注册进 _META_STATE_CODEC 的 key 不落盘，重启后当天会重发。"""
+        from model import persistence
+
+        self.assertIn("daily_grow_last_sent", persistence._META_STATE_CODEC)
+        getter, encoder, decoder = persistence._META_STATE_CODEC["daily_grow_last_sent"]
+        self.assertEqual({"8613500668": "2026-09-02"}, decoder_roundtrip(encoder, decoder))
+
+
+def decoder_roundtrip(encoder, decoder):
+    from model import state
+
+    original = state.get_daily_grow_last_sent()
+    try:
+        state.set_daily_grow_last_sent({"8613500668": "2026-09-02"})
+        blob = encoder(state.get_daily_grow_last_sent())
+        state.set_daily_grow_last_sent({})
+        decoder(blob)
+        return state.get_daily_grow_last_sent()
+    finally:
+        state.set_daily_grow_last_sent(original)
+
+
 class DailyGrowSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         daily_grow._last_send_ts = 0.0
@@ -78,7 +125,11 @@ class DailyGrowSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def _run_once(self, *, last_sent=None, offline=False, ok=True):
-        now = time.time()
+        lt = time.localtime()
+        now = time.mktime((
+            lt.tm_year, lt.tm_mon, lt.tm_mday, 15, 0, 0,
+            lt.tm_wday, lt.tm_yday, lt.tm_isdst,
+        ))
         # 把发送时刻推到过去，确保已到点
         with patch.object(daily_grow, "DAILY_GROW_ENABLED", True), patch.object(
             daily_grow, "get_accounts", return_value=ACCOUNTS
