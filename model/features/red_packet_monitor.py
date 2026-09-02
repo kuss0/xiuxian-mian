@@ -10,8 +10,11 @@ from ..runtime import console_log, send_audit_log, send_log_bot_notification
 RED_PACKET_MONITOR_CHAT_USERNAME = "ja_netfilter_group"
 RED_PACKET_MONITOR_TOPIC_ID = 458347
 RED_PACKET_NOTIFICATION_CHAT_ID = -1004412426741
+# 份数是可选的：`.发红包 20` 和 `.发红包 10 5` 都是真实用法，历史消息里各占一半。
+# 不填时由 BOT 决定最终份数（≥20 LDC 默认 10 份，<20 LDC 上限 5 份），
+# 所以这里只把它记成"未指定"，不猜具体值 —— 权威份数一律以发包播报卡片为准。
 RE_RED_PACKET_COMMAND = re.compile(
-    r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)\s+(?P<count>\d+)\s*$"
+    r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)(?:\s+(?P<count>\d+))?\s*$"
 )
 RE_RED_PACKET_CREATED = re.compile(
     r"红包.*?(?P<amount>\d+(?:\.\d+)?)\s*LDC\s*/\s*"
@@ -42,9 +45,10 @@ def parse_red_packet_command(text):
     match = RE_RED_PACKET_COMMAND.match(normalized_text)
     if not match:
         return None
+    raw_count = match.group("count")
     return {
         "amount": float(match.group("amount")),
-        "count": int(match.group("count")),
+        "count": int(raw_count) if raw_count is not None else None,
     }
 
 
@@ -100,10 +104,11 @@ def _remember_pending_command(chat_id, message_id, parsed, now):
     if not parsed or parsed["amount"] < _RED_PACKET_ALERT_THRESHOLD:
         return
     key = (int(chat_id or 0), int(message_id or 0))
+    raw_count = parsed.get("count")
     _PENDING_COMMANDS[key] = {
         "created_at": float(now),
         "amount": float(parsed["amount"]),
-        "count": int(parsed["count"]),
+        "count": int(raw_count) if raw_count is not None else None,
         "topic_id": 0,
     }
     while len(_PENDING_COMMANDS) > _PENDING_COMMAND_LIMIT:
@@ -111,13 +116,14 @@ def _remember_pending_command(chat_id, message_id, parsed, now):
 
 
 def _claim_pending_created_packet(chat_id, message_id, parsed, now):
+    # 只比金额。份数由 BOT 定夺（不填时按金额取默认值，填了也可能被上限截断），
+    # 拿命令里的份数去比对播报卡片会在这些情况下静默失配。
     _prune_pending_commands(now)
     amount = float(parsed["amount"])
-    count = int(parsed["count"])
     for command_key, item in list(_PENDING_COMMANDS.items()):
         if command_key[0] != int(chat_id or 0):
             continue
-        if item["amount"] != amount or item["count"] != count:
+        if item["amount"] != amount:
             continue
         if int(command_key[1]) >= int(message_id or 0):
             continue
@@ -151,13 +157,12 @@ def _remember_pending_created(chat_id, message_id, sender_id, topic_id, parsed, 
 def _claim_pending_command_for_created(chat_id, command_message_id, parsed, now):
     _prune_pending_commands(now)
     amount = float(parsed["amount"])
-    count = int(parsed["count"])
     for packet_key, item in list(_PENDING_CREATED.items()):
         if packet_key[0] != int(chat_id or 0):
             continue
         if packet_key[1] <= int(command_message_id or 0):
             continue
-        if item["amount"] != amount or item["count"] != count:
+        if item["amount"] != amount:
             continue
         _PENDING_CREATED.pop(packet_key, None)
         if packet_key in _ALERTED_PACKETS:
@@ -169,16 +174,34 @@ def _claim_pending_command_for_created(chat_id, command_message_id, parsed, now)
             "message_id": packet_key[1],
             "sender_id": int(item.get("sender_id", 0) or 0),
             "topic_id": int(item.get("topic_id", 0) or 0),
+            # 播报卡片才是权威：命令里的份数可能缺省或被 BOT 截断
+            "parsed": {"amount": item["amount"], "count": item["count"]},
         }
     return None
 
 
 def _event_topic_id(event):
+    """话题 ID。直接发进话题的消息只有 reply_to_msg_id，没有 reply_to_top_id。
+
+    Telethon 对 forum 群有两种形态：回复话题内某条消息时
+    `reply_to_top_id` = 话题 ID、`reply_to_msg_id` = 被回复的消息；
+    而**直接发进话题**时 `reply_to_top_id` 为空、话题 ID 落在 `reply_to_msg_id`。
+    只读前者会漏掉后一种 —— 发包播报卡片正是这种，实测 362 条里有 354 条，
+    于是红包提醒从未触发过。写法对齐 join_dungeon._get_topic_id。
+    """
     message = getattr(event, "message", None)
     reply_to = getattr(message, "reply_to", None)
     if reply_to is None:
         return 0
-    return int(getattr(reply_to, "reply_to_top_id", 0) or 0)
+    top_id = int(getattr(reply_to, "reply_to_top_id", 0) or 0)
+    if top_id > 0:
+        return top_id
+    reply_to_msg_id = int(getattr(reply_to, "reply_to_msg_id", 0) or 0)
+    if reply_to_msg_id == RED_PACKET_MONITOR_TOPIC_ID:
+        return reply_to_msg_id
+    if bool(getattr(reply_to, "forum_topic", False)):
+        return reply_to_msg_id
+    return 0
 
 
 def _red_packet_message_url(topic_id, message_id):
@@ -284,7 +307,7 @@ async def observe_red_packet_candidate(event, *, event_type="message"):
                 int(matched_created.get("topic_id", 0) or 0),
                 int(matched_created.get("message_id", 0) or 0),
                 int(matched_created.get("sender_id", 0) or 0),
-                parsed,
+                matched_created.get("parsed") or parsed,
             )
     created = parse_red_packet_created(text)
     created_status = ""
