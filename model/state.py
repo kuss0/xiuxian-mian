@@ -2796,6 +2796,18 @@ def get_accounts():
     return accounts if isinstance(accounts, dict) else {}
 
 
+def get_daily_grow_last_sent():
+    """{账号ID字符串: 'YYYY-MM-DD'}，用来保证重启后当天不重发。"""
+    sent = _meta_state.get("daily_grow_last_sent") or {}
+    return dict(sent) if isinstance(sent, dict) else {}
+
+
+def set_daily_grow_last_sent(sent_map):
+    _meta_state["daily_grow_last_sent"] = {
+        str(key): str(value) for key, value in dict(sent_map or {}).items()
+    }
+
+
 def set_accounts(accounts):
     _meta_state["accounts"] = dict(accounts or {})
 

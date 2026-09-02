@@ -285,6 +285,8 @@ class AppSchedulerContractTests(unittest.TestCase):
                 "huanglong_conscription",
                 "luoyun_cd_reminder",
                 "wanxin_cleanup",
+                # 额外功能（非修仙玩法），排在修仙调度之后
+                "daily_grow",
             ),
             app.get_global_scheduler_order_contract(),
         )

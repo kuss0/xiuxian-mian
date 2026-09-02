@@ -200,6 +200,7 @@ from .features.wild_training import (
     reconcile_wild_training_daily_reset_spread,
     run_wild_training_scheduler,
 )
+from .features.daily_grow import run_daily_grow_scheduler
 from .features.red_packet_monitor import observe_red_packet_candidate
 from .persistence import (
     flush_if_dirty,
@@ -597,10 +598,13 @@ _GLOBAL_SCHEDULERS = (
     ("huanglong_conscription", run_huanglong_conscription_scheduler),
     ("luoyun_cd_reminder", run_luoyun_cd_reminder_scheduler),
     ("wanxin_cleanup", run_wanxin_global_cleanup_scheduler),
+    ("daily_grow", run_daily_grow_scheduler),
 )
 
 _SCHEDULER_MANIFEST_BRIDGE = {
     "channel_send_as_health": {"manifest_names": (), "helper": True},
+    # 额外功能，不属于修仙模块清单，所以 manifest_names 为空。
+    "daily_grow": {"manifest_names": (), "helper": True},
     "delayed_actions": {"manifest_names": (), "helper": True},
     "guanxing_monitor": {"manifest_names": ("观星监控",), "helper": False},
     "guanxing": {"manifest_names": ("观星",), "helper": False},
