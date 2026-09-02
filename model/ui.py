@@ -4419,9 +4419,19 @@ def get_replica_config_snapshot():
 
 
 def ui_set_replica_config(payload):
+    # 缺省字段一律保留当前值。这个端点会被"只改一项"的 partial POST 调用，
+    # 而早期实现里 group_ids / participant_identity_ids 和两个 map 缺省时会被
+    # 当成空值写回，静默清空唯一的监听群和全部参与身份，接口还返回 ok。
+    # dispatch_* 系列一直带存在性检查，这里把其余字段对齐成同一套语义。
     payload = payload if isinstance(payload, dict) else {}
-    group_ids = _normalize_ui_int_list(payload.get("group_ids"), allow_negative=True)
-    listener_input = payload.get("listener_account_map") if isinstance(payload.get("listener_account_map"), dict) else {}
+    group_input_present = "group_ids" in payload
+    group_ids = (
+        _normalize_ui_int_list(payload.get("group_ids"), allow_negative=True)
+        if group_input_present
+        else get_replica_group_ids()
+    )
+    listener_input_present = isinstance(payload.get("listener_account_map"), dict)
+    listener_input = payload.get("listener_account_map") if listener_input_present else get_replica_listener_account_map()
     listener_map = {}
     for group_id in group_ids:
         try:
@@ -4448,14 +4458,20 @@ def ui_set_replica_config(payload):
         if account_id > 0:
             dispatch_listener_map[str(group_id)] = account_id
 
-    participant_ids = _normalize_ui_int_list(payload.get("participant_identity_ids"))
+    participant_input_present = "participant_identity_ids" in payload
+    participant_ids = (
+        _normalize_ui_int_list(payload.get("participant_identity_ids"))
+        if participant_input_present
+        else get_replica_participant_identity_ids()
+    )
     dispatch_participant_input_present = "dispatch_participant_identity_ids" in payload
     dispatch_participant_ids = (
         _normalize_ui_int_list(payload.get("dispatch_participant_identity_ids"))
         if dispatch_participant_input_present
         else get_replica_dispatch_participant_identity_ids()
     )
-    match_input = payload.get("virtual_hall_match_enabled_map") if isinstance(payload.get("virtual_hall_match_enabled_map"), dict) else {}
+    match_input_present = isinstance(payload.get("virtual_hall_match_enabled_map"), dict)
+    match_input = payload.get("virtual_hall_match_enabled_map") if match_input_present else get_replica_virtual_hall_match_enabled_map()
     match_map = {
         str(group_id): _coerce_ui_bool(match_input.get(str(group_id), match_input.get(group_id)))
         for group_id in group_ids

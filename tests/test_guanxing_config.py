@@ -319,6 +319,48 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertEqual({"-100888": 9002}, state_module.get_replica_dispatch_listener_account_map())
         self.assertEqual([9002001], state_module.get_replica_dispatch_participant_identity_ids())
 
+    def test_replica_config_preserves_local_fields_when_omitted(self):
+        """FINDINGS F1 的回归：只改一项的 partial POST 不得清空其余字段。
+
+        dispatch_* 系列一直有存在性检查，group_ids / participant_identity_ids
+        和两个 map 却没有，缺省会被当成空值写回，静默清掉唯一的监听群和
+        全部参与身份，接口还返回 ok。修复后四者与 dispatch 语义一致。
+        """
+        state_module.set_replica_group_ids([-100777])
+        state_module.set_replica_listener_account_map({"-100777": 9001})
+        state_module.ensure_identity_registered(9004001)
+        state_module.ensure_identity_registered(9004002)
+        state_module.set_replica_participant_identity_ids([9004001, 9004002])
+        state_module.set_replica_virtual_hall_match_enabled_map({"-100777": True})
+
+        # 只想改 kind_configs，其余字段一概不提交
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config({"kind_configs": {}})
+
+        self.assertTrue(ok, message)
+        self.assertEqual([-100777], state_module.get_replica_group_ids())
+        self.assertEqual({"-100777": 9001}, state_module.get_replica_listener_account_map())
+        self.assertEqual([9004001, 9004002], state_module.get_replica_participant_identity_ids())
+        self.assertEqual({"-100777": True}, state_module.get_replica_virtual_hall_match_enabled_map())
+
+    def test_replica_config_still_allows_explicit_clearing(self):
+        """保留当前值只针对"字段缺省"，显式传空列表仍必须真的清空。"""
+        state_module.set_replica_group_ids([-100777])
+        state_module.set_replica_listener_account_map({"-100777": 9001})
+        state_module.ensure_identity_registered(9005001)
+        state_module.set_replica_participant_identity_ids([9005001])
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config({
+                "group_ids": [],
+                "participant_identity_ids": [],
+            })
+
+        self.assertTrue(ok, message)
+        self.assertEqual([], state_module.get_replica_group_ids())
+        self.assertEqual([], state_module.get_replica_participant_identity_ids())
+        self.assertEqual({}, state_module.get_replica_listener_account_map())
+
     def test_replica_config_saves_dispatch_participants_separately(self):
         for identity_id in (9003001, 9003002, 9003003):
             state_module.ensure_identity_registered(identity_id)
