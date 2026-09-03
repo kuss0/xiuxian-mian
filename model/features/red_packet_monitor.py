@@ -4,6 +4,7 @@ import time
 import unicodedata
 from collections import OrderedDict
 
+from ..forum_topic import event_topic_id
 from ..runtime import console_log, send_audit_log, send_log_bot_notification
 
 
@@ -16,6 +17,11 @@ RED_PACKET_NOTIFICATION_CHAT_ID = -1004412426741
 RE_RED_PACKET_COMMAND = re.compile(
     r"^\s*\.发红包\s+(?P<amount>\d+(?:\.\d+)?)(?:\s+(?P<count>\d+))?\s*$"
 )
+# 必须先认标记再取数字。旧写法用 `红包.*?` 起头，惰性匹配会从
+# 「【LDC 红包已过期】…未抢：348.81 LDC / 1 份」一路扫到尾部并当成新包挂进待配对表
+# （2026-09-03 02:20 实际发生）。之后若有人恰好发同额红包，就会弹出指向已过期消息的告警。
+# 全量历史核对：252 条真发包卡片都带这个标记，误匹配的 8 条全是过期播报。
+RE_RED_PACKET_CREATED_MARKER = re.compile(r"【\s*LDC\s*红包\s*】")
 RE_RED_PACKET_CREATED = re.compile(
     r"红包.*?(?P<amount>\d+(?:\.\d+)?)\s*LDC\s*/\s*"
     r"(?P<count>\d+)\s*(?:份|个)"
@@ -54,6 +60,8 @@ def parse_red_packet_command(text):
 
 def parse_red_packet_created(text):
     normalized_text = _normalize_red_packet_text(text)
+    if not RE_RED_PACKET_CREATED_MARKER.search(normalized_text):
+        return None
     match = RE_RED_PACKET_CREATED.search(normalized_text)
     if not match:
         return None
@@ -181,27 +189,8 @@ def _claim_pending_command_for_created(chat_id, command_message_id, parsed, now)
 
 
 def _event_topic_id(event):
-    """话题 ID。直接发进话题的消息只有 reply_to_msg_id，没有 reply_to_top_id。
-
-    Telethon 对 forum 群有两种形态：回复话题内某条消息时
-    `reply_to_top_id` = 话题 ID、`reply_to_msg_id` = 被回复的消息；
-    而**直接发进话题**时 `reply_to_top_id` 为空、话题 ID 落在 `reply_to_msg_id`。
-    只读前者会漏掉后一种 —— 发包播报卡片正是这种，实测 362 条里有 354 条，
-    于是红包提醒从未触发过。写法对齐 join_dungeon._get_topic_id。
-    """
-    message = getattr(event, "message", None)
-    reply_to = getattr(message, "reply_to", None)
-    if reply_to is None:
-        return 0
-    top_id = int(getattr(reply_to, "reply_to_top_id", 0) or 0)
-    if top_id > 0:
-        return top_id
-    reply_to_msg_id = int(getattr(reply_to, "reply_to_msg_id", 0) or 0)
-    if reply_to_msg_id == RED_PACKET_MONITOR_TOPIC_ID:
-        return reply_to_msg_id
-    if bool(getattr(reply_to, "forum_topic", False)):
-        return reply_to_msg_id
-    return 0
+    """话题号解析已收敛到 model/forum_topic.py，这里只提供本模块的已知话题号。"""
+    return event_topic_id(event, known_topic_ids=(RED_PACKET_MONITOR_TOPIC_ID,))
 
 
 def _red_packet_message_url(topic_id, message_id):
@@ -357,5 +346,6 @@ __all__ = [
     "observe_red_packet_candidate",
     "parse_red_packet_command",
     "parse_red_packet_created",
+    "RE_RED_PACKET_CREATED_MARKER",
     "drain_red_packet_alert_tasks",
 ]

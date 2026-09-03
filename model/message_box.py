@@ -6,6 +6,8 @@ import tempfile
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
+
+from .forum_topic import resolve_topic_id
 from types import SimpleNamespace
 
 from .verified_event import VerifiedGameEvent, clean_event_type, delivery_kind_for_event_type
@@ -46,12 +48,8 @@ def _event_reply_to_msg_id(event):
 
 
 def _event_topic_id(event):
-    reply_header = _event_reply_header(event)
-    return (
-        _safe_int(getattr(reply_header, "reply_to_top_id", 0))
-        or _safe_int(getattr(reply_header, "forum_topic_id", 0))
-        or 0
-    )
+    """话题号解析收敛在 model/forum_topic.py，别在这里再写一套。"""
+    return resolve_topic_id(_event_reply_header(event))
 
 
 @dataclass(frozen=True)

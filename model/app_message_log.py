@@ -6,6 +6,8 @@ import sqlite3
 import time
 import traceback
 from datetime import datetime
+
+from .forum_topic import resolve_topic_id
 from datetime import timedelta
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -141,7 +143,9 @@ def _build_message_log_payload(event, *, event_type="message"):
     now = datetime.now(TZ_LOCAL)
     reply_header = getattr(event, "reply_to", None)
     reply_to_msg_id = int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
-    topic_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0)
+    # 只读 reply_to_top_id 会把"直接发进话题"的消息记成 topic_id=0；
+    # 下游 wanxin / storage_bag / concubine 因此各自打了回落补丁。见 model/forum_topic.py。
+    topic_id = resolve_topic_id(reply_header)
     sender = getattr(event, "sender", None)
     payload = {
         "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),

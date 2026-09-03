@@ -53,6 +53,27 @@ class RedPacketMonitorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(red_packet_monitor.parse_red_packet_created("红包已抢完"))
 
+    def test_expired_card_is_not_a_new_packet(self):
+        """2026-09-03 02:20 实录：过期播报曾被当成新红包挂进待配对表。"""
+        self.assertIsNone(
+            red_packet_monitor.parse_red_packet_created(
+                "⌛ 【LDC 红包已过期】\n"
+                "发包者：@yyyyy0123210\n"
+                "总额：2000.00 LDC\n"
+                "已抢：1651.19 LDC / 9 人\n"
+                "未抢：348.81 LDC / 1 份"
+            )
+        )
+
+    def test_other_ldc_cards_are_not_new_packets(self):
+        for text in (
+            "🧧 【LDC 红包榜 · 本月】 发包榜 1. @a｜2000.00 LDC｜1 包",
+            "🧧 【LDC 讨红包到账】 @a 给 @b 打发了 2.00 LDC / 1 份",
+            "🧧 【LDC 定向红包已到账】 100.00 LDC / 5 份",
+        ):
+            with self.subTest(text=text[:24]):
+                self.assertIsNone(red_packet_monitor.parse_red_packet_created(text))
+
     def test_parse_multiline_created_card(self):
         self.assertEqual(
             {"amount": 500.0, "count": 10},
