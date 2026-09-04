@@ -3391,7 +3391,7 @@ async def run_cave_public_fate_cards(
                     },
                 )
                 message = "天机命脉已承命，深度闭关进行中，完成后回洞府继续结算"
-                console_log(message, scope="identity", limit=240)
+                console_log(message, scope="identity", send_as_id=identity_id, limit=240)
                 return {
                     "ok": True,
                     "message": message,
@@ -3484,7 +3484,7 @@ async def run_cave_public_fate_cards(
                     deep_retreat=deep_summary,
                 )
                 message = "天机命脉已承命，已启动深度闭关，完成后回洞府继续结算"
-                console_log(message, scope="identity", limit=240)
+                console_log(message, scope="identity", send_as_id=identity_id, limit=240)
                 return {
                     "ok": True,
                     "message": message,
@@ -3506,7 +3506,7 @@ async def run_cave_public_fate_cards(
                 deep_retreat=deep_summary,
             )
             message = "天机命脉已承命，静室暂无可结算修为，且深度闭关暂不可接续"
-            console_log(message, scope="identity", limit=240)
+            console_log(message, scope="identity", send_as_id=identity_id, limit=240)
             return {
                 "ok": True,
                 "message": message,
@@ -3524,7 +3524,7 @@ async def run_cave_public_fate_cards(
                 deep_retreat=deep_summary,
             )
             message = "天机命脉任务进行中，等待服务端完成条件"
-            console_log(message, scope="identity", limit=220)
+            console_log(message, scope="identity", send_as_id=identity_id, limit=220)
             return {
                 "ok": True,
                 "message": message,
@@ -4207,7 +4207,9 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
                 first_line = re.sub(r"\s+", " ", message.splitlines()[0] if message else "").strip()[:120]
                 console_log(
                     f"📖 {final_message}｜reason={sync_result.get('reason') or 'unknown'}"
-                    f"｜first_line={first_line or '-'}"
+                    f"｜first_line={first_line or '-'}",
+                    scope="identity",
+                    send_as_id=identity_id,
                 )
                 await send_audit_log(
                     f"📖 {final_message}",

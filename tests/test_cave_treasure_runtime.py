@@ -2100,7 +2100,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
                 patch.object(yinluo, "save_state", return_value=True), \
-                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
+                patch.object(cave_treasure_runtime, "console_log") as console_mock:
             response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
                 1001,
                 "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -2111,6 +2112,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["ok"])
         self.assertIn("未匹配现有解析器", response["message"])
         self.assertEqual({}, state_module.state.get("yinluo_observation"))
+        console_mock.assert_called_once()
+        self.assertEqual(1001, console_mock.call_args.kwargs["send_as_id"])
 
     async def test_public_tianjige_concubine_status_replays_idle_panel(self):
         now = 1_700_000_500.0
@@ -2416,7 +2419,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
                 patch.object(cave_treasure_runtime, "run_cave_meditation_settle_production_flow", new=meditation_mock), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=audit_mock), \
-                patch.object(cave_treasure_runtime, "console_log"):
+                patch.object(cave_treasure_runtime, "console_log") as console_mock:
             result = await cave_treasure_runtime.run_cave_public_fate_cards(
                 1001,
                 "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -2429,6 +2432,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("静室暂无", result["message"])
         meditation_mock.assert_not_awaited()
         audit_mock.assert_not_awaited()
+        console_mock.assert_called_once()
+        self.assertEqual(1001, console_mock.call_args.kwargs["send_as_id"])
 
     async def test_public_fate_cards_force_exits_then_starts_deep_retreat(self):
         now = 1_700_000_500.0
@@ -2486,7 +2491,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
                 patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
                 patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
-                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
+                patch.object(cave_treasure_runtime, "console_log") as console_mock:
             result = await cave_treasure_runtime.run_cave_public_fate_cards(
                 1001,
                 "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -2498,6 +2504,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("启动深度闭关", result["message"])
         self.assertTrue(result["extra"]["deep_retreat"]["active"])
         self.assertEqual(["force", "start"], [call.kwargs["action"] for call in deep_mock.await_args_list])
+        console_mock.assert_called_once()
+        self.assertEqual(1001, console_mock.call_args.kwargs["send_as_id"])
 
     async def test_public_fate_cards_waits_for_running_deep_retreat_without_restarting(self):
         now = 1_700_000_500.0
@@ -2544,7 +2552,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
                 patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
-                patch.object(cave_treasure_runtime, "console_log"):
+                patch.object(cave_treasure_runtime, "console_log") as console_mock:
             result = await cave_treasure_runtime.run_cave_public_fate_cards(
                 1001,
                 "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
@@ -2556,6 +2564,53 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("深度闭关进行中", result["message"])
         self.assertGreaterEqual(result["extra"]["retry_after_sec"], 120)
         deep_mock.assert_not_awaited()
+        console_mock.assert_called_once()
+        self.assertEqual(1001, console_mock.call_args.kwargs["send_as_id"])
+
+    async def test_public_fate_cards_waiting_quest_console_log_is_identity_bound(self):
+        now = 1_700_000_500.0
+        fate_state = {
+            "challenge_date": "2026-07-29",
+            "has_drawn": True,
+            "has_ai_reading": True,
+            "choice_key": "hide",
+            "questions": [{"key": "cultivation"}],
+            "choices": [{"key": "hide"}],
+            "quest": {"status": "active", "can_settle": False, "progress": 0, "target": 30},
+        }
+        session = {
+            "ok": True,
+            "init_data": "query_id=dwelling&hash=SECRET",
+            "player_id": 1001,
+            "result": {
+                "ok": True,
+                "data": {
+                    "raw": {"externalApps": [{
+                        "key": "fate_cards",
+                        "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
+                        "available": True,
+                    }]},
+                },
+            },
+        }
+        with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
+                patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
+                patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
+                patch.object(cave_treasure_runtime, "console_log") as console_mock:
+            result = await cave_treasure_runtime.run_cave_public_fate_cards(
+                1001,
+                "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                choice_key="hide",
+                now=now,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("任务进行中", result["message"])
+        console_mock.assert_called_once()
+        self.assertEqual(1001, console_mock.call_args.kwargs["send_as_id"])
 
     async def test_public_fate_cards_settles_deep_retreat_then_returns_to_quest(self):
         now = 1_700_000_500.0
