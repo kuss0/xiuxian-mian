@@ -136,6 +136,37 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(0, result["warning_count"])
         self.assertEqual([], result["alerts"])
 
+    def test_miniapp_capture_health_ignores_recovered_rate_limit(self):
+        now = 1_780_500_000.0
+        source = "cave_public_fate_cards:3852827410:external"
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now - 180,
+                    "adapter_key": "cave_treasure",
+                    "source": source,
+                    "step_key": "external:fate_cards",
+                    "status_code": 429,
+                    "ok": False,
+                    "error_type": "transient",
+                    "error": "external_action_rate_limited",
+                },
+                {
+                    "created_at": now - 120,
+                    "adapter_key": "cave_treasure",
+                    "source": source,
+                    "step_key": "external:fate_cards",
+                    "status_code": 200,
+                    "ok": True,
+                },
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["recovered_transient_count"])
+        self.assertEqual(0, result["critical_count"])
+        self.assertEqual([], result["alerts"])
+
     def test_read_recent_miniapp_capture_events_uses_sanitized_http_rows_only(self):
         now = 1_780_500_000.0
         day_key = datetime.fromtimestamp(now).strftime("%Y-%m-%d")

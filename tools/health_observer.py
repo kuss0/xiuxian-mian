@@ -1337,14 +1337,10 @@ def analyze_miniapp_capture_health(
         if is_manual_verification_error(error_key):
             manual_verification.append(item)
             continue
-        if status_code == 429 or "http 429" in error_key or any(
-            marker in error_key for marker in MINIAPP_CRITICAL_ERROR_MARKERS
-        ):
-            critical.append(item)
-            continue
         is_transient = (
             str(item.get("error_type") or "").strip().lower() == "transient"
             or status_code >= 500
+            or status_code == 429
             or "timed out" in error_key
             or "timeout" in error_key
         )
@@ -1358,6 +1354,11 @@ def analyze_miniapp_capture_health(
             if latest_success_by_key.get(key, 0.0) > created_at:
                 recovered_transient.append(item)
                 continue
+        if status_code == 429 or "http 429" in error_key or any(
+            marker in error_key for marker in MINIAPP_CRITICAL_ERROR_MARKERS
+        ):
+            critical.append(item)
+            continue
         warning.append(item)
 
     def sample(item: dict[str, object]) -> dict[str, object]:
