@@ -805,10 +805,17 @@ def observe_phaseful_identity_message(
 register_game_command_sent_observer(observe_phaseful_identity_message)
 
 
-def has_phaseful_summary_block(now=None):
+def has_phaseful_summary_block(now=None, *, ignore_enabled_keys=()):
     if now is None:
         now = time.time()
+    ignored_enabled_keys = {
+        str(key or "").strip()
+        for key in (ignore_enabled_keys or ())
+        if str(key or "").strip()
+    }
     for spec in _REGISTERED_SPECS:
+        if spec.enabled_key in ignored_enabled_keys:
+            continue
         if not state.get(spec.enabled_key):
             continue
         phase = _phase(spec)

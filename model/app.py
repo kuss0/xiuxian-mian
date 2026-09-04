@@ -369,6 +369,13 @@ DUE_TIANXING_DIAG_INTERVAL_SEC = 180
 _due_tianxing_last_diag_at = 0.0
 
 
+def _has_tianxing_phaseful_summary_block(now):
+    """Deep-retreat lifecycle must not gate Tianxing route effects."""
+    if state.get("tianxing_enabled"):
+        return has_phaseful_summary_block(now, ignore_enabled_keys=("deep_retreat_enabled",))
+    return has_phaseful_summary_block(now)
+
+
 async def run_channel_send_as_health_scheduler(now):
     record = dict(get_channel_send_as_health())
     now = float(now or time.time())
@@ -2257,9 +2264,12 @@ async def _run_identity_schedulers(now):
             enforce_identity_module_availability(identity_id)
             for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
                 await scheduler(time.time())
-            if has_phaseful_summary_block(time.time()):
+            phaseful_blocked = has_phaseful_summary_block(time.time())
+            if phaseful_blocked:
                 for scheduler in _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS:
                     await scheduler(time.time())
+                if state.get("tianxing_enabled") and not _has_tianxing_phaseful_summary_block(time.time()):
+                    await run_tianxing_scheduler(time.time())
                 continue
             for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
                 await scheduler(time.time())
@@ -2279,7 +2289,11 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             scheduler_now = max(float(now or 0), identity_now)
             if is_identity_weak(identity_id, scheduler_now):
                 continue
-            if has_phaseful_summary_block(scheduler_now):
+            if (
+                has_phaseful_summary_block(scheduler_now)
+                if not state.get("tianxing_enabled")
+                else _has_tianxing_phaseful_summary_block(scheduler_now)
+            ):
                 continue
             if not state.get("wild_training_enabled"):
                 continue
@@ -2405,7 +2419,11 @@ async def _run_due_explore_rift_schedulers(now, *, limit=DUE_EXPLORE_RIFT_MAX_PE
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
-            if has_phaseful_summary_block(scheduler_now):
+            if (
+                has_phaseful_summary_block(scheduler_now)
+                if not state.get("tianxing_enabled")
+                else _has_tianxing_phaseful_summary_block(scheduler_now)
+            ):
                 continue
             if not state.get("explore_rift_enabled"):
                 continue
@@ -2719,7 +2737,7 @@ async def _run_tianxing_daily_bootstrap_identity_schedulers(now, *, limit=TIANXI
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
-            if has_phaseful_summary_block(scheduler_now):
+            if _has_tianxing_phaseful_summary_block(scheduler_now):
                 continue
             result = await run_tianxing_daily_bootstrap_scheduler(scheduler_now)
             if (result or {}).get("active") and (result or {}).get("command"):
@@ -2737,7 +2755,7 @@ async def _run_tianxing_timeline_followup_identity_schedulers(now, *, limit=TIAN
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
-            if has_phaseful_summary_block(scheduler_now):
+            if _has_tianxing_phaseful_summary_block(scheduler_now):
                 continue
             if not has_tianxing_timeline_due_work(scheduler_now):
                 continue
@@ -2890,7 +2908,7 @@ async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
             if not state.get("tianxing_enabled"):
                 continue
             downstream_prepare_windows = _tianxing_downstream_prepare_windows(scheduler_now)
-            if has_phaseful_summary_block(scheduler_now) and not downstream_prepare_windows:
+            if _has_tianxing_phaseful_summary_block(scheduler_now) and not downstream_prepare_windows:
                 continue
             due_info = _tianxing_fast_due_info(scheduler_now)
             due_at = float(due_info.get("due_at", 0.0) or 0.0)

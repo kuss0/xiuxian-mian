@@ -442,6 +442,39 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         first.assert_awaited_once_with(120.0)
         second.assert_awaited_once_with(130.0)
 
+    async def test_identity_scheduler_keeps_tianxing_when_deep_retreat_queue_blocks_ordinary_work(self):
+        identity_id = 301299113
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["tianxing_enabled"] = True
+
+        tianxing_mock = AsyncMock()
+        ordinary_mock = AsyncMock()
+
+        def fake_phaseful_block(_now, **kwargs):
+            return not kwargs.get("ignore_enabled_keys")
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "enforce_identity_module_availability"),
+            patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock()),
+            patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", ()),
+            patch.object(app, "_PHASEFUL_BLOCK_CLEANUP_SCHEDULERS", ()),
+            patch.object(app, "run_tianxing_scheduler", new=tianxing_mock),
+            patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (tianxing_mock, ordinary_mock)),
+            patch.object(app, "has_phaseful_summary_block", side_effect=fake_phaseful_block),
+            patch.object(app.time, "time", return_value=130.0),
+        ):
+            await app._run_identity_schedulers(100.0)
+
+        tianxing_mock.assert_awaited_once_with(130.0)
+        ordinary_mock.assert_not_awaited()
+
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
@@ -774,6 +807,31 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(identity_id, now)], seen)
+
+    async def test_due_explore_rift_fast_scan_ignores_deep_retreat_queue(self):
+        identity_id = 991777
+        now = 1_700_000_001.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 0
+            state_module.state["explore_rift_pending_result_msg_id"] = 0
+            state_module.state["next_explore_rift_time"] = now - 1
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "run_explore_rift_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_explore_rift_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
 
     async def test_due_explore_rift_fast_scan_skips_prepare_before_retry_time(self):
         identity_id = 991779
@@ -1470,6 +1528,32 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             await app._run_due_tianxing_schedulers(now, limit=1)
 
         timeline_mock.assert_awaited_once_with(now, windows=windows)
+
+    async def test_tianxing_timeline_followup_ignores_deep_retreat_queue(self):
+        identity_id = 991848
+        now = 1_700_000_002.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["tianxing_enabled"] = True
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_tianxing_timeline_due_work", return_value=True),
+            patch.object(
+                app,
+                "run_tianxing_timeline_followup_scheduler",
+                new=AsyncMock(return_value={"active": True}),
+            ) as followup_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_tianxing_timeline_followup_identity_schedulers(now, limit=1)
+
+        followup_mock.assert_awaited_once_with(now)
 
     async def test_due_tianxing_fast_scan_keeps_phaseful_block_for_routine_auto_work(self):
         identity_id = 991847
