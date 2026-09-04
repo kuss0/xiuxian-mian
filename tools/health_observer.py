@@ -130,6 +130,13 @@ MINIAPP_EXPECTED_TERMINAL_ERRORS = {
     "trial_daily_limit",
     "trial_daily_limit_reached",
 }
+MINIAPP_MANUAL_VERIFICATION_MARKERS = (
+    "turnstile",
+    "verification_required",
+    "needs_verification",
+    "captcha_required",
+    "xianxia-verify",
+)
 MINIAPP_CRITICAL_ERROR_MARKERS = (
     "anti_cheat",
     "duration_too_short",
@@ -1087,6 +1094,11 @@ def short_value(value: object, limit: int = 120) -> str:
     return text[: max(0, limit - 1)] + "…"
 
 
+def is_manual_verification_error(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text) and any(marker in text for marker in MINIAPP_MANUAL_VERIFICATION_MARKERS)
+
+
 def parse_json_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return value
@@ -1148,6 +1160,12 @@ def analyze_world_boss_miniapp_health(
         if not bool(item.get("ok"))
         or str(item.get("status") or "").strip().lower() in failure_statuses
     ]
+    manual_verification = [
+        item
+        for item in partial_or_failed
+        if is_manual_verification_error(item.get("error"))
+        or is_manual_verification_error(item.get("status"))
+    ]
     event_closed_partials = []
     for item in partial_or_failed:
         summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
@@ -1162,7 +1180,9 @@ def analyze_world_boss_miniapp_health(
     other_failures = [
         item
         for item in partial_or_failed
-        if item not in duration_failures and item not in event_closed_partials
+        if item not in duration_failures
+        and item not in event_closed_partials
+        and item not in manual_verification
     ]
     run_status = str(state.get("miniapp_auto_status") or "").strip().lower()
     alerts: list[dict[str, object]] = []
@@ -1181,6 +1201,15 @@ def analyze_world_boss_miniapp_health(
                 f"recent world boss MiniApp partial/failed identities: {len(other_failures)}",
                 count=len(other_failures),
                 sample=[result_sample(item) for item in other_failures[:8]],
+            )
+        )
+    if recent and manual_verification:
+        alerts.append(
+            business_alert(
+                f"recent world boss MiniApp manual verification required: {len(manual_verification)}",
+                severity="info",
+                count=len(manual_verification),
+                sample=[result_sample(item) for item in manual_verification[:8]],
             )
         )
     if recent and event_closed_partials:
@@ -1212,6 +1241,7 @@ def analyze_world_boss_miniapp_health(
         "duration_failure_count": len(duration_failures),
         "partial_or_failed_count": len(partial_or_failed),
         "event_closed_partial_count": len(event_closed_partials),
+        "manual_verification_count": len(manual_verification),
         "actionable_failure_count": len(duration_failures) + len(other_failures),
         "alerts": alerts,
     }
@@ -1293,6 +1323,7 @@ def analyze_miniapp_capture_health(
             positive_epoch(item.get("created_at") or item.get("_epoch")),
         )
     expected_terminal = []
+    manual_verification = []
     critical = []
     warning = []
     recovered_transient = []
@@ -1302,6 +1333,9 @@ def analyze_miniapp_capture_health(
         status_code = positive_int(item.get("status_code"))
         if error_key in MINIAPP_EXPECTED_TERMINAL_ERRORS:
             expected_terminal.append(item)
+            continue
+        if is_manual_verification_error(error_key):
+            manual_verification.append(item)
             continue
         if status_code == 429 or "http 429" in error_key or any(
             marker in error_key for marker in MINIAPP_CRITICAL_ERROR_MARKERS
@@ -1356,12 +1390,22 @@ def analyze_miniapp_capture_health(
                 sample=[sample(item) for item in warning[:8]],
             )
         )
+    if manual_verification:
+        alerts.append(
+            business_alert(
+                f"recent MiniApp manual verification required: {len(manual_verification)}",
+                severity="info",
+                count=len(manual_verification),
+                sample=[sample(item) for item in manual_verification[:8]],
+            )
+        )
     return {
         "available": bool(recent),
         "window_sec": max(0, int(window_sec)),
         "record_count": len(recent),
         "failure_count": len(failures),
         "expected_terminal_count": len(expected_terminal),
+        "manual_verification_count": len(manual_verification),
         "recovered_transient_count": len(recovered_transient),
         "critical_count": len(critical),
         "warning_count": len(warning),

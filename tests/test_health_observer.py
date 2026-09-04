@@ -11,6 +11,31 @@ from tools import health_observer
 
 
 class HealthObserverTests(unittest.TestCase):
+    def test_miniapp_capture_health_classifies_manual_verification_as_info(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_miniapp_capture_health(
+            [
+                {
+                    "created_at": now - 30,
+                    "adapter_key": "tree",
+                    "source": "tree:4319360789",
+                    "step_key": "jump:run_start",
+                    "status_code": 403,
+                    "ok": False,
+                    "error_type": "app",
+                    "error": "turnstile_failed",
+                }
+            ],
+            now,
+        )
+
+        self.assertEqual(1, result["failure_count"])
+        self.assertEqual(1, result["manual_verification_count"])
+        self.assertEqual(0, result["critical_count"])
+        self.assertEqual(0, result["warning_count"])
+        self.assertEqual("info", result["alerts"][0]["severity"])
+        self.assertIn("manual verification", result["alerts"][0]["message"])
+
     def test_miniapp_capture_health_reports_recent_proof_failure_as_error(self):
         now = 1_780_500_000.0
         result = health_observer.analyze_miniapp_capture_health(
@@ -174,6 +199,32 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(1, result["duration_failure_count"])
         self.assertEqual("error", result["alerts"][0]["severity"])
         self.assertEqual(301299112, result["alerts"][0]["sample"][0]["identity_id"])
+
+    def test_world_boss_health_classifies_manual_verification_as_info(self):
+        now = 1_780_500_000.0
+        result = health_observer.analyze_world_boss_miniapp_health(
+            {
+                "event_key": "2026-07-30:test",
+                "miniapp_auto_status": "partial",
+                "miniapp_auto_finished_at": now - 60,
+                "miniapp_auto_results": [
+                    {
+                        "identity_id": 8659059191,
+                        "phase": "battle",
+                        "ok": False,
+                        "status": "failed",
+                        "error": "turnstile_failed",
+                    }
+                ],
+            },
+            now,
+        )
+
+        self.assertEqual(1, result["partial_or_failed_count"])
+        self.assertEqual(1, result["manual_verification_count"])
+        self.assertEqual(0, result["actionable_failure_count"])
+        self.assertEqual("info", result["alerts"][0]["severity"])
+        self.assertIn("manual verification", result["alerts"][0]["message"])
 
     def test_world_boss_health_reports_reconciled_event_close_as_info(self):
         now = 1_780_500_000.0
