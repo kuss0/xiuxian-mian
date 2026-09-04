@@ -1320,6 +1320,47 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("SUPERSECRET", text)
         self.assertIn("<redacted>", text)
 
+    def test_tree_turnstile_failure_is_manual_verification_state(self):
+        self.assertEqual(
+            "verification_required",
+            tree_miniapp.classify_tree_miniapp_error("turnstile_failed"),
+        )
+        self.assertEqual(
+            "verification_required",
+            tree_miniapp.classify_tree_miniapp_error("Cloudflare challenge required"),
+        )
+
+    def test_tree_daily_flow_stops_at_turnstile_without_spending_a_run(self):
+        calls = []
+
+        def transport(request):
+            endpoint = request["safe_summary"]["endpoint"]
+            calls.append(endpoint)
+            if endpoint == "start":
+                return 200, {
+                    "ok": True,
+                    "council": {"daily": {
+                        "jump": {"used": 0, "limit": 1, "remaining": 1},
+                        "fly": {"used": 0, "limit": 1, "remaining": 1},
+                    }},
+                }
+            if endpoint == "run_start":
+                return 403, {"ok": False, "error": "turnstile_failed"}
+            raise AssertionError(endpoint)
+
+        result = tree_miniapp.run_tree_miniapp_daily_lab_flow(
+            token="tree_SECRET999",
+            init_data="query_id=abc&hash=VERY_SECRET",
+            transport=transport,
+            sleeper=lambda _delay: None,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("verification_required", result["status"])
+        self.assertEqual("blocked", result["data"]["phase"])
+        self.assertEqual(["start", "run_start"], calls)
+        self.assertIn("turnstile_failed", result["error"])
+
     def test_tree_game_proofs_use_low_anticheat_targets_and_replay(self):
         fly_proof, fly_summary = tree_miniapp.build_tree_fly_proof(
             {"seed": "shape-test-seed-001", "runToken": "run-token-secret"},

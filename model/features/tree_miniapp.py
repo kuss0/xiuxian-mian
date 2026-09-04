@@ -85,6 +85,15 @@ TREE_MINIAPP_STOP_ERROR_KEYWORDS = (
     "season_closed",
     "reward_claimed",
 )
+# Turnstile is a server-side human-verification gate.  Treat it as a
+# manual-intervention state so the daily flow does not retry or spend another
+# jump/fly attempt after the gate is presented.
+TREE_MINIAPP_VERIFICATION_ERROR_MARKERS = (
+    "turnstile",
+    "cloudflare challenge",
+    "cloudflare_challenge",
+    "cf_challenge",
+)
 
 
 def build_tree_miniapp_adapter(
@@ -872,6 +881,8 @@ def parse_tree_miniapp_state(data):
 def classify_tree_miniapp_error(error):
     raw = str(error or "").strip()
     lowered = raw.lower()
+    if any(marker in lowered for marker in TREE_MINIAPP_VERIFICATION_ERROR_MARKERS):
+        return "verification_required"
     if any(keyword in lowered for keyword in TREE_MINIAPP_STOP_ERROR_KEYWORDS):
         return "daily_limit"
     return "failed"
