@@ -145,8 +145,6 @@ CONCUBINE_HEART_PANEL_MAX_AGE_SEC = CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
 CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 30
 CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC = 120
 CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT = 1
-CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MIN_SEC = 30
-CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MAX_SEC = 90
 CONCUBINE_HEART_GLOBAL_START_GAP_SEC = 5 * 60
 CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC = 60
 CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
@@ -422,11 +420,12 @@ def _close_heart_chain_without_settlement(now, reason, *, detail=""):
 
 
 async def _handle_heart_anchor_lost(now, raw_text, *, reply_to=None, current_msg_id=0):
-    _close_heart_action_guard(now, "heart_anchor_lost")
-    state["concubine_heart_last_error"] = "心劫锚点已散，已停止旧 prompt 并转状态校准"
-    state["concubine_heart_due_at"] = float(now)
-    _set_phase("idle")
-    _clear_pending_msg_ids()
+    retry_at = _close_heart_chain_without_settlement(
+        now,
+        "heart_anchor_lost",
+        detail="游戏已接收心劫抉择但返回锚点散失，按本次可能已消费处理",
+    )
+    state["concubine_heart_last_error"] = "心劫锚点已散，按本次已消费进入长冷却"
     _record_concubine_event(
         "共历心劫锚点散失",
         kind="changed",
@@ -436,18 +435,10 @@ async def _handle_heart_anchor_lost(now, raw_text, *, reply_to=None, current_msg
         reply_to=reply_to,
         current_msg_id=current_msg_id,
         matched_text=raw_text,
-        detail="旧 prompt 已清理，准备读取侍妾面板冷却",
-        decision="heart_anchor_lost_status_calibration",
+        detail=f"旧 prompt 已清理，禁止重新引动｜due_at={fmt_abs_ts(retry_at)}",
+        decision="heart_anchor_lost_consumed_cooldown",
         workflow_status="failed",
     )
-    if await _send_status_command(now):
-        return True
-    if float(state.get("next_concubine_time", 0) or 0) <= float(now):
-        _schedule_after(
-            now,
-            CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MIN_SEC,
-            CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MAX_SEC,
-        )
     save_state()
     return True
 
