@@ -81,6 +81,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R27 | High | Fast-due queues execute invalidated identities; Tianxing continues after an invalidating preparation; late errors overwrite new cooldowns or crash again while entering a deleted identity | Fixed in candidate for wild training, rift, concubine, Tianxing and queued timeline follow-up; retain scan-time ownership, recheck at task dispatch and after preparation, and compare business snapshots before failure backoff; per-module internal await boundaries still require review |
 | R28 | High | Passive teaching treats the real success suffix as an already-done reply, stops at 1/3, and consumes the third-success dedupe key before direct cleanup/notification; a cleanup await can notify for a replaced role | Fixed in candidate; share one teaching result handler, prefer success over the already-done substring, use explicit server counts without rewinding on older replies, and validate owners after cleanup/passive awaits; real wording, delivery order and SQLite reload tests pass |
 | R29 | High | HTTP capture construction/storage errors escape after a MiniApp response was received, losing a confirmed result; capture construction also runs when no sink exists | Fixed in candidate; build and emit HTTP captures inside one diagnostic-only exception boundary, log only the exception class, and leave the original HTTP result/budget/retry policy intact; an actual tower-flow replay retains its reward result after capture failure |
+| R30 | High | Business-capture construction escapes the diagnostic boundary; World Boss business-capture write errors interrupt an accepted hit or completed settlement | Fixed in candidate; isolate construction/redaction/storage in both business-capture helpers, retain cancellation propagation and secret-free error-class warnings; complete battle replays preserve accepted hits, the final result and the exact request sequence |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -508,6 +509,26 @@ five monitor/control-only contracts need separate behavioral verification.
   an endpoint-level idempotence contract. Per-flow budget wiring, runtime
   mutation/reentry behavior, and session lifecycle/capacity need review before
   the MiniApp matrix row can be signed off. R29 does not change these policies.
+- R07 probes repeated after R29: isolated `checkin` and `rift` processes still
+  report `safe=false` and exit 1 under `--assert-safe`. Each first worker saves
+  after dispatch with no pending receipt; the reloaded worker sends again.
+  This is current failing evidence, not a passing test or an approved recovery
+  design. No production state or Telegram transport was used.
+- R30 reproducer: 10 failures before the fix, comprising nine diagnostic
+  exception escapes and one missing diagnostic warning. Failures cover detail
+  conversion, timestamps, redaction, callable/append sinks, and a full World
+  Boss flow with storage errors after accepted hits and final settlement.
+  Both business-capture helpers now isolate construction and storage errors;
+  warnings contain only exception classes, and cancellation still propagates.
+  All five existing business-field whitelists and normal redaction remain
+  intact. Successful and HTTP-failed settlements match the no-fault baseline
+  and issue exactly `start -> hit -> finish` without capture-driven retries.
+- R30 focused capture/protocol suites: 251 passed, 14 subtests passed. Full
+  suite: 3985 passed, 852 subtests passed, 60.63 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r30-business-capture-20260908.xml`. Full Ruff and diff
+  checks pass. No production, skill, switches, services or remote branches
+  were changed. R07, MiniApp request retry semantics and the remaining full
+  acceptance matrix are still open; World Boss remains disabled.
 
 ## Deployment Constraint
 

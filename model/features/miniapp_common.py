@@ -12,6 +12,7 @@ transport had to be applied in seven places and was in practice applied in one.
 """
 
 import atexit
+import logging
 import threading
 import time
 
@@ -321,31 +322,34 @@ def append_business_capture(capture_sink, *, adapter_key, detail, source="", cre
     """
     if capture_sink is None:
         return {}
-    adapter_key = str(adapter_key or "").strip()
-    if adapter_key not in MINIAPP_BUSINESS_CAPTURE_ADAPTERS:
-        return {}
-    raw_detail = dict(detail or {})
-    business = {
-        key: raw_detail[key]
-        for key in MINIAPP_BUSINESS_CAPTURE_KEYS
-        if key in raw_detail
-    }
-    record = safe_miniapp_event_detail({
-        "adapter_key": adapter_key,
-        "step_key": f"business:{adapter_key}",
-        "ok": True,
-        "created_at": float(created_at if created_at is not None else time.time()),
-        "source": sanitize_webapp_secret_text(source, limit=120),
-        "business": business,
-    })
     try:
+        adapter_key = str(adapter_key or "").strip()
+        if adapter_key not in MINIAPP_BUSINESS_CAPTURE_ADAPTERS:
+            return {}
+        raw_detail = dict(detail or {})
+        business = {
+            key: raw_detail[key]
+            for key in MINIAPP_BUSINESS_CAPTURE_KEYS
+            if key in raw_detail
+        }
+        record = safe_miniapp_event_detail({
+            "adapter_key": adapter_key,
+            "step_key": f"business:{adapter_key}",
+            "ok": True,
+            "created_at": float(created_at if created_at is not None else time.time()),
+            "source": sanitize_webapp_secret_text(source, limit=120),
+            "business": business,
+        })
         if hasattr(capture_sink, "append"):
             capture_sink.append(record)
         else:
             capture_sink(record)
-    except Exception:
+    except Exception as exc:
         # Capture is diagnostic/accounting plumbing and must never turn a
         # confirmed game settlement into a failed business action.
+        logging.getLogger(__name__).warning(
+            "MiniApp business capture failed (%s); business result preserved", type(exc).__name__,
+        )
         return {}
     return record
 

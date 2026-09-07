@@ -8,6 +8,7 @@ command handling.
 from __future__ import annotations
 
 import json
+import logging
 import random
 import time
 from dataclasses import dataclass, field
@@ -1358,18 +1359,24 @@ def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
 def _append_business_capture(capture_sink, *, source, step, summary):
     if capture_sink is None:
         return
-    record = {
-        "adapter_key": WORLD_BOSS_MINIAPP_GAME_KEY,
-        "step_key": f"{step}_business",
-        "endpoint": step,
-        "created_at": time.time(),
-        "source": sanitize_webapp_secret_text(source, limit=120),
-        "business": dict(summary or {}),
-    }
-    if hasattr(capture_sink, "append"):
-        capture_sink.append(record)
-    else:
-        capture_sink(record)
+    try:
+        record = {
+            "adapter_key": WORLD_BOSS_MINIAPP_GAME_KEY,
+            "step_key": f"{step}_business",
+            "endpoint": step,
+            "created_at": time.time(),
+            "source": sanitize_webapp_secret_text(source, limit=120),
+            "business": dict(summary or {}),
+        }
+        if hasattr(capture_sink, "append"):
+            capture_sink.append(record)
+        else:
+            capture_sink(record)
+    except Exception as exc:
+        # A diagnostic failure must not discard an accepted hit or settlement.
+        logging.getLogger(__name__).warning(
+            "MiniApp business capture failed (%s); business result preserved", type(exc).__name__,
+        )
 
 
 def _world_boss_room_state(data):
