@@ -69,6 +69,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R15 | High | Tianji quiz scheduler writes an old pending-map snapshot after awaits, deleting newly queued prompts, restoring cleared work, and sending cancelled later items | Fixed in candidate; per-entry ownership is rechecked before dispatch and after awaited work; three interleaving regressions pass |
 | R16 | High | Second-soul warnings are discarded after a status panel sets the same phase, and warning callbacks enter a deleted identity after awaited logging or sending | Fixed in candidate; panel-first warnings acquire an exact route, legacy anchors gain a chat without resending, and both deletion boundaries are tested |
 | R17 | High | Checkin/sect-teaching send receipts overwrite an early result's next step or update a removed/disabled identity; repeated success increments teaching twice and cleanup loses concurrently added work | Fixed in candidate for the reproduced interleavings; send-return ownership checks, shared persisted completion keys and chat-scoped incremental cleanup are covered by new tests |
+| R18 | High | Judgement rewrites stale pending snapshots, requeues prompts after disable/deletion, and uses pre-refresh button coordinates; account fallback can choose the wrong channel identity | Reproduced and fixed in candidate; exact terminal anchors precede unique-name broadcast matching, original-chat sends and current-entry updates are tested; queued transport cancellation and unknown outcomes remain under R07/scheduling review |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -248,6 +249,25 @@ five monitor/control-only contracts need separate behavioral verification.
   added during a deletion is retained. The new route/lifecycle tests reproduced
   eight failing cases before the first fix; subsequent tests reproduced the
   passive-first followup gap and both checkin send-return races before repair.
+- R11 judgement/R18 candidate: 3871 passed, 609 subtests passed, 58.92 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r18-judgement-20260907.xml`; Ruff and diff checks
+  pass. Focused judgement tests passed 54 tests and 10 subtests. The first
+  boundary run reproduced six failures; additional ownership/lifecycle tests
+  reproduced eight more before their fixes.
+- Judgement pending writes now retain newly queued work and cannot restore
+  removed entries after a send or MiniApp result. Prompt identity resolution
+  rechecks module state, identity existence, and MiniApp terminal evidence.
+  Button dispatch rechecks state after RPC-slot acquisition, after fetch, and
+  between clicks, and derives positions from the fetched original-chat message.
+  Tests also reject fetches returning a different message or chat.
+- Exact sender identity takes precedence over account ownership; a shared
+  account without an exact identity cannot select its first channel. Log
+  fallback requires a known chat. Explicit terminal anchors outrank target-name
+  ambiguity; name-only broadcasts require one current candidate, and stale or
+  conflicting explicit replies cannot clear work. Real unthreaded success
+  broadcasts remain supported. This does not certify the existing retry policy
+  for unknown sends or mutation replay; those remain open in the full matrix.
+  Production, live switches, services, skill and remote branches are unchanged.
 
 ## Deployment Constraint
 
@@ -267,10 +287,12 @@ and cleanup code during a code-only rollback.
    `reply_to` has no explicit target chat. The shared pending/history contract
    is now tested end-to-end; it does not prove every module's ownership rules.
    Jiyin/quiz/Tianji routing, second-soul heart-demon broadcasts and the
-   checkin/teaching followup route are covered; remaining second-soul scalar
-   reply guards, Nanlong, judgement and wrapped send calls still require
+   checkin/teaching followup and judgement routes are covered; remaining
+   second-soul scalar reply guards, Nanlong and wrapped send calls still require
    review. Initial follow-through found Nanlong replies still omit an explicit
-   target chat. Its result broadcasts also ignore the event's chat/root. These
+   target chat. Real Nanlong samples show old-group prompts and new-group
+   unthreaded results, so broadcast attribution must allow that route while
+   requiring the exact identity, current operation and fresh evidence. These
    paths need reproducers and fixes before R11 can close.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the

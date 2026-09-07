@@ -276,6 +276,8 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(identity_id, resolved)
 
     async def test_click_button_sequence_with_identity_client(self):
+        self._prepare_identity()
+        state_module.state["tiandao_judgement_enabled"] = True
         clicked = []
 
         class Message:
@@ -689,7 +691,7 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
                 "terminal_key": "-100:321:rpt_ABCD12",
             }
         }
-        event = SimpleNamespace(reply_to=SimpleNamespace(reply_to_msg_id=321))
+        event = SimpleNamespace(chat_id=-100, reply_to=SimpleNamespace(reply_to_msg_id=321))
 
         with patch.object(tiandao_judgement, "save_state"):
             handled = await tiandao_judgement.handle_tiandao_judgement_punishment(
@@ -913,6 +915,7 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
             ".自证 ABCD 20",
             track=False,
             reply_to=10,
+            target_chat_id=1,
             send_as_id=identity_id,
             priority="p0",
             source_module="天道审判",

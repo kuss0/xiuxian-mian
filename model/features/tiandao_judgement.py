@@ -13,6 +13,7 @@ from ..runtime import _get_identity_client_with_account as _runtime_get_identity
 from ..runtime import account_rpc_slot, console_log, get_reply_context, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_game_group_topic_id,
     get_identity_account,
     get_identity_display_name,
     get_identity_ids,
@@ -486,50 +487,62 @@ def _normalize_button_text(text):
     return str(text or "").strip()
 
 
+def _tiandao_judgement_can_run(identity_id):
+    return bool(state.get("tiandao_judgement_enabled")) and int(identity_id or 0) in get_identity_ids()
+
+
 async def _click_tiandao_judgement_buttons(event, identity_id, sequence):
+    if not _tiandao_judgement_can_run(identity_id):
+        return False, "模块已关闭或身份已移除"
     message = _get_event_message(event)
     if message is None:
         return False, "消息对象为空"
-    buttons = getattr(message, "buttons", None) or []
-    if not buttons:
-        return False, "消息没有按钮"
-
-    available = []
-    for row_index, row in enumerate(buttons):
-        for col_index, button in enumerate(row or []):
-            text = _normalize_button_text(getattr(button, "text", ""))
-            if text:
-                available.append((text, row_index, col_index))
-
-    click_positions = []
-    used_positions = set()
-    for expected_text in sequence:
-        expected_text = _normalize_button_text(expected_text)
-        matched_position = None
-        for text, row_index, col_index in available:
-            position = (row_index, col_index)
-            if position in used_positions:
-                continue
-            if text == expected_text:
-                matched_position = position
-                break
-        if matched_position is None:
-            return False, f"未找到按钮：{expected_text}"
-        used_positions.add(matched_position)
-        click_positions.append(matched_position)
-
+    message_id = int(getattr(message, "id", 0) or 0)
+    chat_id = int(getattr(message, "chat_id", 0) or getattr(event, "chat_id", 0) or 0)
+    if message_id <= 0 or not chat_id:
+        return False, "缺少原题消息或所在群"
     account_id, client = _get_identity_client_for_rpc(identity_id)
     if client is None:
         return False, "身份客户端不可用"
-    message_id = int(getattr(message, "id", 0) or 0)
-    chat_id = getattr(message, "chat_id", None) or getattr(event, "chat_id", None)
     async with account_rpc_slot(account_id=account_id, client_obj=client):
-        if message_id > 0 and chat_id:
-            message = await client.get_messages(chat_id, ids=message_id)
-            if message is None:
-                return False, f"无法重新获取消息：{message_id}"
+        if not _tiandao_judgement_can_run(identity_id):
+            return False, "模块已关闭或身份已移除"
+        message = await client.get_messages(chat_id, ids=message_id)
+        if not _tiandao_judgement_can_run(identity_id):
+            return False, "模块已关闭或身份已移除"
+        if message is None:
+            return False, f"无法重新获取消息：{message_id}"
+        if int(getattr(message, "id", 0) or 0) != message_id or int(getattr(message, "chat_id", 0) or 0) != chat_id:
+            return False, "重新获取的消息不属于原题"
+
+        buttons = getattr(message, "buttons", None) or []
+        if not buttons:
+            return False, "消息没有按钮"
+        available = []
+        for row_index, row in enumerate(buttons):
+            for col_index, button in enumerate(row or []):
+                text = _normalize_button_text(getattr(button, "text", ""))
+                if text:
+                    available.append((text, row_index, col_index))
+
+        click_positions = []
+        used_positions = set()
+        for expected_text in sequence:
+            expected_text = _normalize_button_text(expected_text)
+            matched_position = None
+            for text, row_index, col_index in available:
+                position = (row_index, col_index)
+                if position not in used_positions and text == expected_text:
+                    matched_position = position
+                    break
+            if matched_position is None:
+                return False, f"未找到按钮：{expected_text}"
+            used_positions.add(matched_position)
+            click_positions.append(matched_position)
 
         for row_index, col_index in click_positions:
+            if not _tiandao_judgement_can_run(identity_id):
+                return False, "模块已关闭或身份已移除"
             await message.click(row_index, col_index)
             await asyncio.sleep(random.uniform(TIANDAO_JUDGEMENT_BUTTON_CLICK_DELAY_MIN_SEC, TIANDAO_JUDGEMENT_BUTTON_CLICK_DELAY_MAX_SEC))
     return True, ""
@@ -542,7 +555,9 @@ async def _handle_tiandao_button_sequence_prompt(text, now, event):
 
     target = parsed.get("target") or "被回复身份"
     identity_id = await _resolve_tiandao_identity_id(parsed.get("target"), event)
-    if identity_id is None or int(identity_id or 0) <= 0:
+    if not state.get("tiandao_judgement_enabled"):
+        return True
+    if identity_id is None or int(identity_id or 0) not in get_identity_ids():
         await send_audit_log(f"⚖️ 天道阵列验证未匹配身份：{mono(target)}", scope="global", limit=260)
         return True
 
@@ -631,8 +646,10 @@ async def _handle_tiandao_miniapp_prompt(text, now, event):
 
     target = parsed.get("target") or "被回复身份"
     identity_context = await _resolve_tiandao_identity_context(parsed.get("target"), event)
+    if not state.get("tiandao_judgement_enabled") or _is_miniapp_terminal_event(terminal_key, now):
+        return True
     identity_id = int((identity_context or {}).get("identity_id") or 0)
-    if identity_id is None or int(identity_id or 0) <= 0:
+    if identity_id not in get_identity_ids():
         _mark_miniapp_terminal_event(terminal_key, now)
         external_sender_id = int((identity_context or {}).get("external_sender_id") or 0)
         matched_via = str((identity_context or {}).get("matched_via") or "")
@@ -674,6 +691,16 @@ def _get_pending_map():
 def _set_pending_map(pending):
     state["tiandao_judgement_pending"] = dict(pending or {})
     save_state()
+
+
+def _store_current_pending(pending_key, item, *, remove=False):
+    pending = _get_pending_map()
+    if pending_key not in pending or pending.get(pending_key) is not item:
+        return False
+    if remove:
+        pending.pop(pending_key)
+    _set_pending_map(pending)
+    return True
 
 
 def _get_event_pending_key(event, parsed):
@@ -738,7 +765,7 @@ def _message_log_names(limit=3):
 def _find_message_log_entry_by_msg_id(msg_id, *, chat_id=0, limit_files=3):
     msg_id = int(msg_id or 0)
     chat_id = int(chat_id or 0)
-    if msg_id <= 0:
+    if msg_id <= 0 or not chat_id:
         return None
     needle = str(msg_id)
     for name in _message_log_names(limit_files):
@@ -754,7 +781,7 @@ def _find_message_log_entry_by_msg_id(msg_id, *, chat_id=0, limit_files=3):
                         continue
                     if int((payload or {}).get("message_id", 0) or 0) != msg_id:
                         continue
-                    if chat_id and int((payload or {}).get("chat_id", 0) or 0) != chat_id:
+                    if int((payload or {}).get("chat_id", 0) or 0) != chat_id:
                         continue
                     return payload
         except OSError:
@@ -782,13 +809,13 @@ def _normalize_sender_candidates(sender_id):
 
 
 def _find_identity_id_by_sender_id(sender_id):
-    candidates = _normalize_sender_candidates(sender_id)
-    for identity_id in get_identity_ids():
-        identity_id = int(identity_id)
-        for candidate in candidates:
-            if candidate == identity_id or candidate == int(get_identity_account(identity_id) or 0):
-                return identity_id
-    return None
+    candidates = set(_normalize_sender_candidates(sender_id))
+    identity_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    exact = identity_ids & candidates
+    if exact:
+        return next(iter(exact)) if len(exact) == 1 else None
+    matches = [identity_id for identity_id in identity_ids if int(get_identity_account(identity_id) or 0) in candidates]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _find_identity_id_by_message_sender(message):
@@ -804,18 +831,26 @@ async def _find_reply_identity_context(event):
     if event is None:
         return {"identity_id": None, "matched_via": "no_event", "external_sender_id": 0}
     reply_header_msg_id = _get_event_reply_header_msg_id(event)
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    if chat_id and reply_header_msg_id and reply_header_msg_id == get_game_group_topic_id(chat_id, default=0):
+        return {"identity_id": None, "matched_via": "topic_root", "external_sender_id": 0}
     try:
         reply_to = await event.get_reply_message()
     except Exception:
         reply_to = None
+    if reply_to is not None:
+        returned_id = int(getattr(reply_to, "id", 0) or 0)
+        returned_chat = int(getattr(reply_to, "chat_id", 0) or 0)
+        if (returned_id and reply_header_msg_id and returned_id != reply_header_msg_id) or (returned_chat and chat_id and returned_chat != chat_id):
+            reply_to = None
+    reply_context = get_reply_context(reply_to, reply_to_msg_id=reply_header_msg_id, chat_id=chat_id)
+    identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    if identity_id > 0:
+        return {"identity_id": identity_id, "matched_via": (reply_context or {}).get("matched_via") or "reply_context", "external_sender_id": 0}
     reply_sender_id = int(getattr(reply_to, "sender_id", 0) or 0) if reply_to is not None else 0
     identity_id = _find_identity_id_by_sender_id(reply_sender_id)
     if identity_id is not None:
         return {"identity_id": identity_id, "matched_via": "reply_sender", "external_sender_id": 0}
-    reply_context = get_reply_context(reply_to, reply_to_msg_id=reply_header_msg_id)
-    identity_id = int((reply_context or {}).get("send_as_id") or 0)
-    if identity_id > 0:
-        return {"identity_id": identity_id, "matched_via": (reply_context or {}).get("matched_via") or "reply_context", "external_sender_id": 0}
 
     logged_reply = _find_message_log_entry_by_msg_id(reply_header_msg_id, chat_id=getattr(event, "chat_id", 0))
     logged_sender_id = int((logged_reply or {}).get("sender_id", 0) or 0)
@@ -861,9 +896,15 @@ def _remove_identity_pending(identity_id):
         _set_pending_map(pending)
 
 
-def _pending_item_matches_tiandao_success(item, *, reply_to_msg_id=0, target=""):
-    if int(reply_to_msg_id or 0) > 0 and int((item or {}).get("msg_id", 0) or 0) == int(reply_to_msg_id or 0):
+def _pending_item_matches_tiandao_success(item, *, reply_to_msg_id=0, target="", chat_id=0, event_msg_id=0, occurred_at=0):
+    created_at = float((item or {}).get("created_at", 0) or 0)
+    if created_at and occurred_at and occurred_at + 1 < created_at:
+        return False
+    msg_id = int((item or {}).get("msg_id", 0) or 0)
+    if chat_id and int((item or {}).get("chat_id", 0) or 0) == chat_id and msg_id > 0 and msg_id in {reply_to_msg_id, event_msg_id}:
         return True
+    if reply_to_msg_id:
+        return False
     target_key = _normalize_identity_text(target)
     if not target_key:
         return False
@@ -880,25 +921,43 @@ def _clear_tiandao_pending_for_success(text, event=None, now=None):
     target_match = RE_TIANDAO_TARGET.search(str(text or ""))
     target = str(target_match.group(1) or "").strip() if target_match else ""
     reply_to_msg_id = _get_event_reply_header_msg_id(event)
-    changed = False
-    cleared_targets = []
-    for pending_key, item in list(pending.items()):
-        if not _pending_item_matches_tiandao_success(item, reply_to_msg_id=reply_to_msg_id, target=target):
-            continue
-        pending.pop(pending_key, None)
-        changed = True
-        cleared_targets.append(str((item or {}).get("target") or target or "未知对象"))
-        if str((item or {}).get("kind") or "") == "miniapp_drag":
-            token = str((item or {}).get("token") or "").strip()
-            terminal_key = str((item or {}).get("terminal_key") or _get_miniapp_terminal_key(pending_key, token))
-            _mark_miniapp_terminal_event(terminal_key, now)
-    if changed:
-        _set_pending_map(pending)
-        console_log(
-            f"⚖️ 天道验证成功回执，已清理 pending：{', '.join(cleared_targets[:3])}",
-            scope="global",
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    event_msg_id = int(getattr(event, "id", 0) or 0)
+    if chat_id and reply_to_msg_id == get_game_group_topic_id(chat_id, default=0):
+        reply_to_msg_id = 0
+    event_date = getattr(event, "edit_date", None) or getattr(event, "date", None)
+    occurred_at = float(now or time.time())
+    if event_date is not None:
+        try:
+            occurred_at = float(event_date.timestamp())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            pass
+    matches = [
+        (pending_key, item) for pending_key, item in pending.items()
+        if _pending_item_matches_tiandao_success(
+            item, reply_to_msg_id=reply_to_msg_id,
+            chat_id=chat_id, event_msg_id=event_msg_id, occurred_at=occurred_at,
         )
-    return changed
+    ]
+    if not matches and not reply_to_msg_id:
+        matches = [
+            (pending_key, item) for pending_key, item in pending.items()
+            if _pending_item_matches_tiandao_success(item, target=target, occurred_at=occurred_at)
+        ]
+    if len(matches) != 1:
+        return False
+    pending_key, item = matches[0]
+    if not _store_current_pending(pending_key, item, remove=True):
+        return False
+    if str((item or {}).get("kind") or "") == "miniapp_drag":
+        token = str((item or {}).get("token") or "").strip()
+        terminal_key = str((item or {}).get("terminal_key") or _get_miniapp_terminal_key(pending_key, token))
+        _mark_miniapp_terminal_event(terminal_key, now)
+    console_log(
+        f"⚖️ 天道验证成功回执，已清理 pending：{item.get('target') or target or '未知对象'}",
+        scope="global",
+    )
+    return True
 
 
 async def handle_tiandao_judgement_punishment(text, now, event=None):
@@ -1004,7 +1063,9 @@ async def handle_tiandao_judgement_prompt(text, now, event=None):
         return True
 
     identity_id = await _resolve_tiandao_identity_id(question.get("target"), event)
-    if identity_id is None:
+    if not state.get("tiandao_judgement_enabled"):
+        return True
+    if identity_id is None or int(identity_id or 0) not in get_identity_ids():
         await send_audit_log(
             f"⚖️ 天道审判未匹配身份：{mono(question.get('target') or '未知对象')}｜题目：{question.get('question') or '未知题目'}",
             scope="global",
@@ -1037,12 +1098,11 @@ async def _run_tiandao_judgement_scheduler_locked(now):
     if not state.get("tiandao_judgement_enabled"):
         return
 
-    pending = _get_pending_map()
-    if not pending:
-        return
-
-    changed = False
-    for pending_key, item in list(pending.items()):
+    for pending_key, item in list(_get_pending_map().items()):
+        if not state.get("tiandao_judgement_enabled"):
+            break
+        if _get_pending_map().get(pending_key) is not item:
+            continue
         item_kind = str((item or {}).get("kind") or "")
         identity_id = int((item or {}).get("identity_id", 0) or 0)
         target = str((item or {}).get("target") or "未知对象")
@@ -1056,28 +1116,26 @@ async def _run_tiandao_judgement_scheduler_locked(now):
         if item_kind == "miniapp_drag":
             terminal_key = str((item or {}).get("terminal_key") or _get_miniapp_terminal_key(pending_key, token))
             if _is_miniapp_terminal_event(terminal_key, now):
-                pending.pop(pending_key, None)
-                changed = True
+                _store_current_pending(pending_key, item, remove=True)
                 continue
             if not token or (deadline_at > 0 and now >= deadline_at):
-                pending.pop(pending_key, None)
-                changed = True
+                _store_current_pending(pending_key, item, remove=True)
                 _mark_miniapp_terminal_event(terminal_key, now)
                 await send_audit_log(f"⚖️ 天道 Mini App 验证已超时：{mono(target)}", scope="global", limit=280)
                 continue
             if due_at <= 0 or now < due_at:
                 continue
             if identity_id <= 0 or identity_id not in get_identity_ids():
-                pending.pop(pending_key, None)
-                changed = True
+                _store_current_pending(pending_key, item, remove=True)
                 _mark_miniapp_terminal_event(terminal_key, now)
                 await send_audit_log(f"⚖️ 天道 Mini App 验证未提交：{mono(target)}｜身份不存在", scope="global", limit=300)
                 continue
 
             result = await run_tiandao_miniapp_drag_verification(identity_id, token)
+            if _get_pending_map().get(pending_key) is not item:
+                continue
             if result.get("ok"):
-                pending.pop(pending_key, None)
-                changed = True
+                _store_current_pending(pending_key, item, remove=True)
                 _mark_miniapp_terminal_event(terminal_key, now)
                 miniapp_kind = str((item or {}).get("miniapp_kind") or "")
                 token_summary = summarize_tiandao_miniapp_token(token) or miniapp_kind
@@ -1091,8 +1149,7 @@ async def _run_tiandao_judgement_scheduler_locked(now):
             retry_count = int((item or {}).get("retry_count", 0) or 0) + 1
             item["retry_count"] = retry_count
             if retry_count > TIANDAO_MINIAPP_RETRY_LIMIT:
-                pending.pop(pending_key, None)
-                changed = True
+                _store_current_pending(pending_key, item, remove=True)
                 _mark_miniapp_terminal_event(terminal_key, now)
                 error = sanitize_tiandao_miniapp_error(result.get("error") or "未知错误")
                 await send_audit_log(f"⚖️ 天道 Mini App 验证失败：{mono(target)}｜{mono(error)}", scope="global", limit=360)
@@ -1104,9 +1161,8 @@ async def _run_tiandao_judgement_scheduler_locked(now):
                 if deadline_at > failed_at + 1
                 else failed_at + 1
             )
-            pending[pending_key] = item
+            _store_current_pending(pending_key, item)
             _schedule_tiandao_judgement_due_task(item["due_at"])
-            changed = True
             await send_audit_log(
                 f"⚖️ 天道 Mini App 验证提交失败，稍后重试 {retry_count}/{TIANDAO_MINIAPP_RETRY_LIMIT}：{mono(target)}",
                 scope="global",
@@ -1115,15 +1171,13 @@ async def _run_tiandao_judgement_scheduler_locked(now):
             continue
 
         if not answer or (deadline_at > 0 and now >= deadline_at):
-            pending.pop(pending_key, None)
-            changed = True
+            _store_current_pending(pending_key, item, remove=True)
             await send_audit_log(f"⚖️ 天道审判已超时：{detail}", scope="global", limit=520)
             continue
         if due_at <= 0 or now < due_at:
             continue
         if identity_id <= 0 or identity_id not in get_identity_ids():
-            pending.pop(pending_key, None)
-            changed = True
+            _store_current_pending(pending_key, item, remove=True)
             await send_audit_log(f"⚖️ 天道审判未发送：{detail}｜身份不存在", scope="global", limit=520)
             continue
 
@@ -1132,28 +1186,37 @@ async def _run_tiandao_judgement_scheduler_locked(now):
             command_prefix = CMD_TIANDAO_JUDGEMENT_PROVE
         command = f"{command_prefix} {token} {answer}" if token else f"{command_prefix} {answer}"
         reply_to_msg_id = int((item or {}).get("msg_id", 0) or 0)
+        chat_id = int((item or {}).get("chat_id", 0) or 0)
+        if reply_to_msg_id and not chat_id:
+            _store_current_pending(pending_key, item, remove=True)
+            await send_audit_log(
+                f"⚖️ 天道审判未发送：{mono(target)}｜缺少原题所在群，停止自动回复。",
+                scope="global", limit=280,
+            )
+            continue
         chain_id = f"tiandao_judgement:{pending_key}"
         msg = await send_game_command(
             command,
             track=False,
             reply_to=reply_to_msg_id or None,
+            target_chat_id=chat_id or None,
             send_as_id=identity_id,
             priority="p0",
             source_module="天道审判",
             op_id=f"{chain_id}:prove",
             chain_id=chain_id,
         )
+        if _get_pending_map().get(pending_key) is not item:
+            continue
         if msg:
-            pending.pop(pending_key, None)
-            changed = True
+            _store_current_pending(pending_key, item, remove=True)
             await send_audit_log(f"⚖️ 天道审判自证：{detail}｜{mono(command_prefix)}", scope="global", limit=520)
             continue
 
         retry_count = int((item or {}).get("retry_count", 0) or 0) + 1
         item["retry_count"] = retry_count
         if retry_count > TIANDAO_JUDGEMENT_MAX_RETRY_COUNT:
-            pending.pop(pending_key, None)
-            changed = True
+            _store_current_pending(pending_key, item, remove=True)
             await send_audit_log(
                 f"⚖️ 天道审判自证发送失败，已重试 {TIANDAO_JUDGEMENT_MAX_RETRY_COUNT} 次，停止重试：{detail}",
                 scope="global",
@@ -1167,17 +1230,13 @@ async def _run_tiandao_judgement_scheduler_locked(now):
             if deadline_at > failed_at + 1
             else failed_at + 1
         )
-        pending[pending_key] = item
+        _store_current_pending(pending_key, item)
         _schedule_tiandao_judgement_due_task(item["due_at"])
-        changed = True
         await send_audit_log(
             f"⚖️ 天道审判自证发送失败，稍后重试 {retry_count}/{TIANDAO_JUDGEMENT_MAX_RETRY_COUNT}：{detail}",
             scope="global",
             limit=520,
         )
-
-    if changed:
-        _set_pending_map(pending)
 
 
 __all__ = [
