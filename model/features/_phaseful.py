@@ -1135,7 +1135,7 @@ async def _calibrate_launching_timeout_once(spec, now, launch_command):
 
         from ..runtime import clear_pending_tasks_by_commands
 
-        clear_pending_tasks_by_commands({launch_command})
+        clear_pending_tasks_by_commands({launch_command}, send_as_id=get_current_identity_id())
         await send_audit_log(f"{spec.title} launching 超时，改用状态查询校准。")
         await _send_active_summary_query(spec, now)
         return True

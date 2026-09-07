@@ -2496,7 +2496,7 @@ def _clear_pending_tasks_by_commands_locked(commands):
     return remove_ids
 
 
-def clear_pending_tasks_by_commands(commands, send_as_id=None):
+def clear_pending_tasks_by_commands(commands, *, send_as_id):
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     removed_ids = []
     changed = False

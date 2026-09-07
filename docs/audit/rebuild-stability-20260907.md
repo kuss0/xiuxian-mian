@@ -63,7 +63,8 @@ proof that gameplay is healthy. Production files have not been changed.
 | R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Fixed in candidate; named/background/UI/login/provider task cleanup is joined, repeat cancellation is avoided, final save follows disconnect and is skipped on incomplete drain |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
 | R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Cross-identity DB overwrite, reply-chain and early-reply ownership repaired; same-identity cross-chat storage and remaining numeric-ID consumers remain open |
-| R12 | High | Second-soul and phaseful timeout cleanup call the all-identities pending-clear helper without an owner argument | Source-path confirmed; multi-identity regressions and scoped cleanup pending |
+| R12 | High | Second-soul and phaseful timeout cleanup call the all-identities pending-clear helper without an owner argument | Fixed; both callers supply the active identity, helper requires explicit scope, global World Boss cleanup is explicit |
+| R13 | Medium | A TypeError inside a sent-command observer is mistaken for a legacy signature and invokes that observer again | Source-path confirmed; once-only callback regression pending |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -147,6 +148,12 @@ five monitor/control-only contracts need separate behavioral verification.
   action guard. Identity refresh now reports accepted partial cards as handled,
   while preserving the follow-up and allowing final edits. No service restart,
   production mutation, game send, deployment or push was performed.
+- R12 candidate: 3790 passed, 579 subtests passed, 56.76 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r12-20260907.xml`; Ruff and diff checks pass. Two
+  scheduler regressions reproduced one identity clearing another's pending
+  commands. The helper now requires an explicit identity or explicit global
+  scope, and both timeout paths provide their owner. The disabled World Boss
+  path retains only its existing explicit all-identity cleanup behavior.
 
 ## Completion Gate
 

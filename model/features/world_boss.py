@@ -547,7 +547,7 @@ def _reset_all_identity_event_state(*, persist=False):
 
 
 def _clear_world_boss_pending_tasks():
-    clear_pending_tasks_by_commands(WORLD_BOSS_PENDING_COMMANDS)
+    clear_pending_tasks_by_commands(WORLD_BOSS_PENDING_COMMANDS, send_as_id=None)
 
 
 def _clear_world_boss_pending_action(identity_state):

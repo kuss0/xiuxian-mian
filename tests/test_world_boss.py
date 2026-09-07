@@ -1210,7 +1210,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             await world_boss.run_world_boss_scheduler(now)
 
         send_mock.assert_not_awaited()
-        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS)
+        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS, send_as_id=None)
         run_state = state_module.get_world_boss_run_state()
         self.assertFalse(run_state["active"])
         self.assertEqual("超时结束", run_state["last_result"])
@@ -1249,7 +1249,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             await world_boss.run_world_boss_scheduler(now)
 
         send_mock.assert_not_awaited()
-        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS)
+        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS, send_as_id=None)
         run_state = state_module.get_world_boss_run_state()
         self.assertFalse(run_state["active"])
         self.assertEqual("", run_state["event_key"])
@@ -1287,7 +1287,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             await world_boss.run_world_boss_scheduler(now)
 
         send_mock.assert_not_awaited()
-        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS)
+        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS, send_as_id=None)
         self.assertFalse(state_module.get_world_boss_run_state()["active"])
         self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
         self.assertEqual("事件已过期", identity_state["world_boss_last_error"])

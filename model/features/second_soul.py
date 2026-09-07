@@ -1078,7 +1078,7 @@ async def run_second_soul_scheduler(now):
             return
         if await _recover_second_soul_pending_from_message_log(now, phase):
             return
-        clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN})
+        clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN}, send_as_id=get_current_identity_id())
         _set_phase("idle")
         state["next_second_soul_time"] = now
         if phase == "train_pending":
