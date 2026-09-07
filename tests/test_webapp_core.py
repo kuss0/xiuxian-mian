@@ -714,11 +714,12 @@ class WebAppCoreTests(unittest.TestCase):
                 return 503, {"ok": False, "error": "gateway"}
             return 200, {"ok": True, "result": {"score": 94}}
 
-        request = fishing_miniapp.build_fishing_miniapp_request("start", token="fish_T", init_data="init")
+        request = fishing_miniapp.build_fishing_miniapp_request("result", token="fish_T", init_data="init")
         result = webapp_core.execute_miniapp_http_request(
             request,
             transient_then_ok,
             backoff_sec=(0.1, 0.2),
+            retry_safe=True,
             sleeper=sleeps.append,
         )
 
@@ -732,7 +733,7 @@ class WebAppCoreTests(unittest.TestCase):
             requests.append(request)
             return 200, {"ok": False, "error": "fishing_token_used"}
 
-        result = webapp_core.execute_miniapp_http_request(request, app_error, backoff_sec=(0.1, 0.2))
+        result = webapp_core.execute_miniapp_http_request(request, app_error, backoff_sec=(0.1, 0.2), retry_safe=True)
         self.assertFalse(result.ok)
         self.assertFalse(result.retryable)
         self.assertEqual("app", result.error_type)
@@ -753,11 +754,11 @@ class WebAppCoreTests(unittest.TestCase):
                         }
                     return 200, {"ok": True}
 
-                request = fishing_miniapp.build_fishing_miniapp_request("start", token="fish_T", init_data="init")
+                request = fishing_miniapp.build_fishing_miniapp_request("result", token="fish_T", init_data="init")
                 request["global_rate_limit"] = False
                 with patch.object(webapp_core.time, "sleep") as sleep:
                     result = webapp_core.execute_miniapp_http_request(
-                        request, transport, backoff_sec=(0.25,),
+                        request, transport, backoff_sec=(0.25,), retry_safe=True,
                     )
                 self.assertTrue(result.ok)
                 self.assertEqual(2, len(calls))
@@ -777,11 +778,12 @@ class WebAppCoreTests(unittest.TestCase):
                 }
             return 200, {"ok": True}
 
-        request = fishing_miniapp.build_fishing_miniapp_request("start", token="fish_T", init_data="init")
+        request = fishing_miniapp.build_fishing_miniapp_request("result", token="fish_T", init_data="init")
         result = webapp_core.execute_miniapp_http_request(
             request,
             rate_limited_then_ok,
             backoff_sec=(1,),
+            retry_safe=True,
             sleeper=sleeps.append,
         )
 
@@ -816,6 +818,7 @@ class WebAppCoreTests(unittest.TestCase):
             request,
             long_rate_limit,
             backoff_sec=(1,),
+            retry_safe=True,
             sleeper=sleeps.append,
         )
         self.assertFalse(limited.ok)
@@ -1425,7 +1428,7 @@ class WebAppCoreTests(unittest.TestCase):
 
     def test_capture_failure_preserves_http_retry_policy(self):
         request = fishing_miniapp.build_fishing_miniapp_request(
-            "start", token="fish_SECRET999", init_data="hash=VERY_SECRET",
+            "result", token="fish_SECRET999", init_data="hash=VERY_SECRET",
         )
         for statuses in ((503, 200), (400,)):
             with self.subTest(statuses=statuses):
@@ -1445,7 +1448,7 @@ class WebAppCoreTests(unittest.TestCase):
                 with self.assertLogs("model.webapp_core", level="WARNING"):
                     result = webapp_core.execute_miniapp_http_request(
                         request, transport, capture_sink=capture, request_budget=budget,
-                        backoff_sec=(0.1,), sleeper=delays.append,
+                        backoff_sec=(0.1,), retry_safe=True, sleeper=delays.append,
                     )
                 self.assertEqual(calls, list(statuses))
                 self.assertEqual(result.ok, statuses[-1] == 200)

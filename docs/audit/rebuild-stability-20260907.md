@@ -28,7 +28,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
-| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Pending |
+| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP retry permission and flow budget fixed in candidate; per-game retry/reentry, redirects, session lifecycle and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Pending |
@@ -82,6 +82,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R28 | High | Passive teaching treats the real success suffix as an already-done reply, stops at 1/3, and consumes the third-success dedupe key before direct cleanup/notification; a cleanup await can notify for a replaced role | Fixed in candidate; share one teaching result handler, prefer success over the already-done substring, use explicit server counts without rewinding on older replies, and validate owners after cleanup/passive awaits; real wording, delivery order and SQLite reload tests pass |
 | R29 | High | HTTP capture construction/storage errors escape after a MiniApp response was received, losing a confirmed result; capture construction also runs when no sink exists | Fixed in candidate; build and emit HTTP captures inside one diagnostic-only exception boundary, log only the exception class, and leave the original HTTP result/budget/retry policy intact; an actual tower-flow replay retains its reward result after capture failure |
 | R30 | High | Business-capture construction escapes the diagnostic boundary; World Boss business-capture write errors interrupt an accepted hit or completed settlement | Fixed in candidate; isolate construction/redaction/storage in both business-capture helpers, retain cancellation propagation and secret-free error-class warnings; complete battle replays preserve accepted hits, the final result and the exact request sequence |
+| R31 | High | Generic HTTP retries uncertain requests without a replay-safety contract; generic flow execution ignores the adapter's request budget | Fixed in candidate; default to one attempt, require explicit boolean retry safety, share one budget across flow steps/retries, and retain bounded read-only World Boss state reconciliation; per-game manual loops/reentry remain under review |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -529,6 +530,29 @@ five monitor/control-only contracts need separate behavioral verification.
   checks pass. No production, skill, switches, services or remote branches
   were changed. R07, MiniApp request retry semantics and the remaining full
   acceptance matrix are still open; World Boss remains disabled.
+- R31 pre-fix behavioral replay: 23 failures and one passing read-recovery
+  control. Unclassified start/finish/next/result requests were repeated after
+  timeouts, HTTP 503/429 or malformed JSON. Six actual game flows repeated
+  `/start` after an unknown response (five up to four calls, fate cards twice),
+  and a generic mutating flow also replayed the request four times.
+- HTTP now requires literal `retry_safe=True` before applying retry delays;
+  `retryable` continues to classify the transport failure and is not replay
+  permission. Generic flow steps default false, reject ambiguous non-boolean
+  values, and share the adapter budget across steps and retries. Tests cover
+  request limits, per-request attempts, consecutive failures, pacing, local
+  steps, dry preparation, cancellation, capture accounting and the global
+  limiter. Existing retry tests now use an explicitly replay-safe result read.
+- World Boss's read-only join-state reconciliation retains bounded retries;
+  `/start` is not implicitly classified as safe. Fate cards no longer describes
+  an unproven endpoint as idempotent or requests a blind start retry. Known
+  mutating steps keep their existing no-retry behavior. This does not certify
+  higher-level reconnect loops, automatic rescheduling after an unknown result,
+  HTTP redirects, or budget ownership in every custom game flow.
+- R31 focused suites: 307 passed, 14 subtests passed. Full suite: 4025 passed,
+  852 subtests passed, 59.65 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r31-miniapp-retry-contract-20260908.xml`. Ruff and diff
+  checks pass. The changes are offline candidates only; production, skill,
+  live configuration and services remain unchanged.
 
 ## Deployment Constraint
 

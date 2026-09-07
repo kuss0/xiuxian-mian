@@ -415,7 +415,7 @@ def run_fate_cards_start_probe(
     capture_sink=None,
     capture_source="",
 ):
-    """Execute only the idempotent-looking ``/start`` panel read."""
+    """Read the panel once; /start's replay safety is not established."""
     token = str(token or "").strip()
     init_data = str(init_data or "").strip()
     if not token:
@@ -431,7 +431,7 @@ def run_fate_cards_start_probe(
             adapter=adapter,
         ),
         transport,
-        backoff_sec=(1.0,),
+        backoff_sec=(),
         sleeper=sleeper or time.sleep,
         capture_sink=capture_sink,
         capture_source=capture_source,

@@ -529,6 +529,7 @@ class MiniAppFlowStep:
     waits_for: str = ""
     poll_until_key: str = ""
     note: str = ""
+    retry_safe: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "key", _string(self.key))
@@ -539,6 +540,8 @@ class MiniAppFlowStep:
         object.__setattr__(self, "waits_for", _string(self.waits_for))
         object.__setattr__(self, "poll_until_key", _string(self.poll_until_key))
         object.__setattr__(self, "note", sanitize_webapp_secret_text(self.note, limit=120))
+        if not isinstance(self.retry_safe, bool):
+            raise ValueError("flow step retry_safe must be a boolean")
 
     def safe_summary(self):
         return {
@@ -551,6 +554,7 @@ class MiniAppFlowStep:
             "waits_for": self.waits_for,
             "poll_until_key": self.poll_until_key,
             "note": self.note,
+            "retry_safe": self.retry_safe,
         }
 
 
@@ -1441,16 +1445,22 @@ def execute_miniapp_http_request(
     transport,
     *,
     backoff_sec=DEFAULT_MINIAPP_HTTP_BACKOFF_SEC,
+    retry_safe=False,
     sleeper=None,
     capture_sink=None,
     capture_source="",
     step_key="",
     request_budget=None,
 ):
+    """Retry transient errors only under an explicit replay-safety contract.
+
+    A retryable response describes a transport condition, not permission to
+    repeat a mutation. Endpoint names (including /start) prove no idempotence.
+    """
     if transport is None:
         raise ValueError("miniapp transport missing")
     sleep = sleeper if sleeper is not None else time.sleep
-    delays = tuple(float(delay) for delay in (backoff_sec or ()))
+    delays = tuple(float(delay) for delay in (backoff_sec or ())) if retry_safe is True else ()
     if request_budget is not None:
         max_retries = max(0, int(request_budget.policy.max_attempts_per_request) - 1)
         delays = delays[:max_retries]
@@ -1584,6 +1594,7 @@ def run_miniapp_flow_plan(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    request_budget=None,
 ):
     adapter = adapter if isinstance(adapter, MiniAppAdapter) else MiniAppAdapter(**dict(adapter or {}))
     plan = plan if isinstance(plan, MiniAppFlowPlan) else MiniAppFlowPlan(**dict(plan or {}))
@@ -1595,6 +1606,9 @@ def run_miniapp_flow_plan(
     raw_init_data = _string(init_data) or _string(getattr(init_data_session, "init_data", ""))
     if raw_init_data:
         context.setdefault("initData", raw_init_data)
+
+    if transport is not None and request_budget is None:
+        request_budget = MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper)
 
     events = []
     for step in plan.steps:
@@ -1623,10 +1637,12 @@ def run_miniapp_flow_plan(
             request,
             transport,
             backoff_sec=backoff_sec,
+            retry_safe=step.retry_safe,
             sleeper=sleeper,
             capture_sink=capture_sink,
             capture_source=capture_source or plan.adapter_key,
             step_key=step.key,
+            request_budget=request_budget,
         )
         events.append(MiniAppFlowEvent(step.key, "response", "ok" if result.ok else result.error_type or "failed", result.safe_summary()))
         if not result.ok:

@@ -1790,6 +1790,7 @@ def reconcile_world_boss_join_state_lab(
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="join_state_reconcile",
+        retry_safe=True,
     )
     _append_http_event(events, "join_state_reconcile", state_result)
     if not state_result.ok:
