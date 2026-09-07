@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 import re
 import time
 from pathlib import Path
@@ -55,7 +56,7 @@ from .fate_cards_miniapp import (
     run_fate_cards_action_production,
     run_fate_cards_start_probe_production,
 )
-from .miniapp_common import MiniAppIdentityOwner, append_business_capture, resolve_identity_id as _identity_id
+from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner, append_business_capture, resolve_identity_id as _identity_id
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
@@ -1058,6 +1059,7 @@ async def _load_cave_public_identity_session(
         init_data=init_data,
         capture_sink=_capture_store(now),
         capture_source=f"{capture_source}:initial",
+        operation_check=can_continue,
     )
     if not can_continue():
         return cancelled
@@ -1088,6 +1090,7 @@ async def _load_cave_public_identity_session(
             player_id=selected_player_id,
             capture_sink=_capture_store(now),
             capture_source=f"{capture_source}:selected",
+            operation_check=can_continue,
         )
         if not can_continue():
             return cancelled
@@ -1120,6 +1123,7 @@ async def _load_cave_public_identity_session(
         player_id=session.get("player_id"),
         capture_sink=_capture_store(now),
         capture_source=f"{capture_source}:details",
+        operation_check=can_continue,
     )
     if not can_continue():
         return cancelled
@@ -3679,6 +3683,7 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, oper
                 init_data=init_data,
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_tower_external:{identity_id}",
+                operation_check=can_continue,
             )
             if not can_continue():
                 return cancelled
@@ -3694,15 +3699,25 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, oper
             await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
             return {"ok": False, "message": message, "extra": {}}
 
-        result = await run_tower_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            init_data=init_data,
-            capture_sink=_tower_capture_store(now),
-            capture_source=f"cave_public_tower:{identity_id}",
-        )
+        cancelled_flow = None
+        try:
+            result = await run_tower_miniapp_production_flow(
+                identity_id,
+                token=launch.get("token"),
+                init_data=init_data,
+                capture_sink=_tower_capture_store(now),
+                capture_source=f"cave_public_tower:{identity_id}",
+                operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
+            if not result.get("ok"):
+                raise
         # A switch-off stops new actions, not a confirmed result for this owner.
         if not owner.is_current() or (not result.get("ok") and not can_continue()):
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
             return cancelled
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         tower_state = data.get("state") if isinstance(data.get("state"), dict) else {}
@@ -3744,14 +3759,7 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, oper
             )
         else:
             message = f"洞府琉璃问心塔失败：{result.get('error') or result.get('status') or 'unknown'}"
-        await send_audit_log(
-            f"🗼 {message}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="low" if result.get("ok") else "normal",
-            limit=280,
-        )
-        return {
+        response = {
             "ok": bool(result.get("ok")),
             "message": message,
             "extra": _miniapp_result_extra({
@@ -3762,6 +3770,21 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, oper
                 "rewards": rewards,
             }, result),
         }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        try:
+            await send_audit_log(
+                f"🗼 {message}",
+                scope="identity",
+                send_as_id=identity_id,
+                priority="low" if result.get("ok") else "normal",
+                limit=280,
+            )
+        except asyncio.CancelledError:
+            raise MiniAppFlowCancelled(response) from None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Tower notification failed (%s); result preserved", type(exc).__name__)
+        return response
 
 
 async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):

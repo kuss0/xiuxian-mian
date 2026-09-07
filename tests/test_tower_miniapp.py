@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model.features import tower_miniapp
-from model.webapp_core import validate_miniapp_flow_plan
+from model.webapp_core import MiniAppRequestBudget, validate_miniapp_flow_plan
 
 
 class TowerMiniAppTests(unittest.TestCase):
@@ -70,6 +70,49 @@ class TowerMiniAppTests(unittest.TestCase):
         self.assertEqual("done_today", result["status"])
         self.assertEqual(["start"], [item["step"] for item in result["events"]])
         self.assertEqual(1, len(requests))
+
+    def test_missing_or_invalid_challenge_flag_is_not_daily_completion(self):
+        for payload in ({}, {"error": "unavailable"}, {"state": {}}, {"state": {"canChallenge": "false"}}):
+            with self.subTest(payload=payload):
+                self.assertEqual({}, tower_miniapp.parse_tower_state(payload))
+                result = tower_miniapp.run_tower_miniapp_lab_flow(
+                    token="pagoda_TEST", init_data="fixture",
+                    transport=lambda _request: (200, {"ok": True, **payload}),
+                )
+                self.assertFalse(result["ok"])
+
+    def test_lost_challenge_response_is_not_recorded_as_done_today(self):
+        calls = []
+
+        def transport(request):
+            step = request["url"].rsplit("/", 1)[-1]
+            calls.append(step)
+            if step == "start":
+                return 200, {"ok": True, "state": {"canChallenge": True}}
+            raise TimeoutError("challenge result missing")
+
+        result = tower_miniapp.run_tower_miniapp_lab_flow(
+            token="pagoda_TEST", init_data="fixture", transport=transport, sleeper=lambda _delay: None,
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual("failed", result["status"])
+        self.assertEqual(["start", "challenge"], calls)
+
+    def test_whole_tower_run_shares_one_request_budget(self):
+        budget = MiniAppRequestBudget({"max_requests_per_run": 1, "min_interval_sec": 0})
+        calls = []
+
+        def transport(request):
+            calls.append(request["url"].rsplit("/", 1)[-1])
+            return 200, {"ok": True, "state": {"canChallenge": True}}
+
+        result = tower_miniapp.run_tower_miniapp_lab_flow(
+            token="pagoda_TEST", init_data="fixture", transport=transport, request_budget=budget,
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual("request_budget_exhausted", result["error"])
+        self.assertEqual(["start"], calls)
+        self.assertEqual(1, budget.request_count)
 
     def test_capture_write_failure_does_not_lose_completed_challenge(self):
         requests = []

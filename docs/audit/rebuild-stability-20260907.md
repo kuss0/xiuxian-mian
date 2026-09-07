@@ -24,11 +24,11 @@ proof that gameplay is healthy. Production files have not been changed.
 
 | Area | Required behavior | Evidence required | Status |
 | --- | --- | --- | --- |
-| Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown repaired; reconnect and forced-stop durability review still pending |
+| Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown and guarded tower/dwelling thread draining repaired; other flows, reconnect and forced-stop durability review still pending |
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Identity admission and Nanlong queued-operation checks repaired in candidate; no-ID crash durability and other modules' business admission still pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
-| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP retry permission, flow budget and implicit redirect denial fixed in candidate; per-game retry/reentry, session lifecycle and current-entry integration still pending |
+| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy and tower/public-entry ownership, thread draining and confirmed-result retention fixed in candidate; other per-game retry/reentry, pool lifecycle and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Pending |
@@ -86,7 +86,8 @@ proof that gameplay is healthy. Production files have not been changed.
 | R32 | High | Requests follows API redirects outside the validated route and request budget, including replaying credential-bearing POSTs; Tiandao accepts 3xx JSON as success | Fixed in candidate; disable automatic redirects in the shared/direct/pooled, World Boss and Tiandao transports, require Tiandao HTTP 2xx success, and verify real local HTTP redirect behavior without reaching the game service |
 | R33 | High | Nanlong loses results received before a send receipt, cannot adopt detached receipts, and installs old-account receipts after rebinding; using enqueue time as a result bound can claim an older trade broadcast | Fixed for reproduced interleavings in candidate; exact detached receipt adoption, immediate normal-handler replay, actual dispatch-time evidence, account ownership checks, and SQLite reload are covered; R34 covers queued invalidation, while forced-stop durability remains open |
 | R34 | High | Nanlong queued commands still dispatch after module disable, prompt replacement/clear, choice change or expiry; post-send validation arrives too late to stop the game action | Fixed for reproduced boundaries in candidate; a pure synchronous module operation check is revalidated by the existing owner checks and immediately before RPC dispatch; normal steps, recall cleanup and post-dispatch receipt controls pass |
-| R35 | High | Tower workers start and write results after identity deletion/replacement/rebinding or switch-off; public-entry awaits continue with stale owners, and tower status falls back to another identity's result | Fixed at queued worker and asynchronous public-entry/session boundaries in candidate; exact owner/account capture, schedule snapshots, guarded fallback and confirmed-result controls pass; in-thread request admission and cancellation/resource draining remain open |
+| R35 | High | Tower workers start and write results after identity deletion/replacement/rebinding or switch-off; public-entry awaits continue with stale owners, and tower status falls back to another identity's result | Fixed at queued worker and asynchronous public-entry/session boundaries in candidate; exact owner/account capture, schedule snapshots, guarded fallback and confirmed-result controls pass; R36 covers guarded tower/dwelling threads, not all other game flows |
+| R36 | High | Cancelling a tower caller releases public-entry locks while its HTTP thread continues and challenges; module switch-off also permits another in-thread action; missing challenge state is falsely accepted as daily completion, and notification faults lose confirmed completion | Fixed for tower and its dwelling start/details/external path in candidate; cooperative request checks, joined threads, result-carrying cancellation, strict server-state parsing and notification isolation pass full caller/fake-HTTP tests; forced stop and other game flows remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -667,6 +668,50 @@ five monitor/control-only contracts need separate behavioral verification.
   limiter wait. That next review remains required before MiniApp lifecycle
   acceptance. No production state, service, skill or remote branch changed.
 
+- R36 reproduced three real-thread failures with a fake Requests session:
+  cancelled callers finished and released public-entry locks before the HTTP
+  request returned, disabled operations still dispatched challenge after start,
+  and cancellation discarded an already-completed challenge's daily fact.
+  A later notification-error injection also reproduced completed gameplay
+  becoming a retry. All tests use isolated state and no external game traffic.
+- The generic HTTP kernel and pooled transport accept an optional strict
+  synchronous operation check, before and after budget/global-limiter waits
+  and after pool-lock acquisition. Invalid checks are definitely unsent and
+  cannot invoke retries; preparation faults are separate from dispatched
+  request errors. Stopping during retry backoff retains the preceding HTTP
+  evidence instead of declaring that earlier request unsent. The global
+  90/minute limiter and explicit replay-safety permission remain in place.
+- Guarded blocking flows preserve ContextVars, signal cancellation to waits
+  and future requests, and join the actual executor Future before releasing
+  their caller's locks. Repeated cancellation does not detach the thread.
+  Already-dispatched HTTP is allowed to return under its existing transport
+  timeouts, not force-killed or replayed. A result-carrying CancelledError lets
+  tower persist a confirmed result and daily fact for the same owner, then
+  propagate cancellation. This is not a persistent outbox, Attempt controller,
+  or SIGKILL recovery mechanism.
+- Tower and its public-entry start/details/external requests now use the guard.
+  Tests cover all three dwelling cancellation boundaries, start-to-challenge
+  switch-off/rebind, pool and global-priority waits, repeated cancellation,
+  notification cancellation/failure, and the complete successful
+  dwelling-start -> details -> external -> tower-start -> challenge chain.
+  The full-chain test verifies selected player IDs, unchanged initData and
+  exactly one completed tower record plus the daily scheduling fact.
+- The cancellation replay exposed a separate parser flaw: an empty HTTP result
+  became a default state with `canChallenge=false` and was treated as done.
+  Tower now requires an explicit boolean server flag; missing/malformed state,
+  a lost challenge response and budget exhaustion cannot fabricate completion.
+  Start and challenge share one request budget. Diagnostic notification errors
+  preserve the returned gameplay result and log only the exception class.
+- R36 focused verification: 121 passed, 94 subtests passed. Final full suite:
+  4119 passed, 1004 subtests passed, 64.71 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r36-miniapp-thread-lifecycle-verified-20260908.xml`.
+  Full Ruff, Python compilation and diff checks pass. One added full-chain
+  assertion initially expected an integer external `playerId`; the existing
+  builder deliberately uses a string for external and an integer for details.
+  The test now verifies those exact existing contracts; protocol code was not
+  changed to satisfy that assertion. Production, skill, switches, DB and remote
+  branches remain unchanged.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -718,13 +763,16 @@ and cleanup code during a code-only rollback.
    unknown-result rescheduling, owner invalidation during threaded flows, and
    session-pool retention/deletion/rebind behavior. R32 closes Requests' hidden
    redirect path, not the remaining runtime lifecycle or entry-refresh matrix.
-   R35 covers `tower._run_tower_worker`, public tower wrapping and shared
-   session loading at their asynchronous boundaries. Continue inside threaded
-   `run_tower_miniapp_production_flow` and the dwelling transports: the pooled
-   transport's session-generation check is not an identity/account/enablement
-   check, and cancellation must not release public-entry locks while a request
-   still runs. Reproduce at the full caller boundary before generalizing to
-   other games. Do not mistake an outer post-await check for thread admission.
+   R35/R36 cover the tower scheduler, public wrapper and guarded dwelling
+   loading/external and tower HTTP threads. Other game callers still need
+   individual admission, cancellation and result-retention tests; the optional
+   transport check does not automatically protect every caller. Pool entries
+   and locks currently remain until close/atexit and are not account-keyed;
+   review bounded retention and ownership changes before claiming isolated
+   long-term session behavior. Also inspect how
+   `probe_cave_public_entry` maps a cancelled/invalidated loader result into
+   shared entry-health backoff, rather than treating a local owner change as
+   evidence that the public entry is unhealthy. No live validation is approved.
 
 ## Completion Gate
 

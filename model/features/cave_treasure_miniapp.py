@@ -32,6 +32,7 @@ from ..webapp_core import (
 from .miniapp_common import (
     append_http_event as _append_http_event,
     build_pooled_miniapp_transport,
+    run_miniapp_blocking_flow,
 )
 
 
@@ -470,7 +471,7 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
     return init_data
 
 
-def _flow_transport(transport, identity_id=0):
+def _flow_transport(transport, identity_id=0, *, operation_check=None):
     """Pick the transport for one production flow.
 
     Caller-supplied transports (tests, lab harnesses) win. Otherwise build a
@@ -484,6 +485,7 @@ def _flow_transport(transport, identity_id=0):
         adapter_key=CAVE_TREASURE_MINIAPP_GAME_KEY,
         identity_id=identity_id,
         timeout=CAVE_TREASURE_MINIAPP_HTTP_TIMEOUT,
+        operation_check=operation_check,
     )
 
 
@@ -1653,6 +1655,7 @@ async def run_cave_dwelling_start_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -1671,14 +1674,19 @@ async def run_cave_dwelling_start_production_flow(
             payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
             adapter=adapter,
         )
-        start_result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            start_request,
-            _flow_transport(transport, identity_id),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key="dwelling_start",
+        def run(operation):
+            return execute_miniapp_http_request(
+                start_request,
+                _flow_transport(transport, identity_id, operation_check=operation.check),
+                sleeper=operation.sleep,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key="dwelling_start",
+                operation_check=operation.check,
+            )
+
+        start_result = await run_miniapp_blocking_flow(
+            run, operation_check=operation_check, sleeper=sleeper,
         )
         if not start_result.ok:
             return _flow_result(False, "failed", error=start_result.error, events=[{"step": "dwelling_start", "ok": False}])
@@ -1784,6 +1792,7 @@ async def run_cave_dwelling_snapshot_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     """Load one read-only deferred dwelling snapshot."""
 
@@ -1813,14 +1822,19 @@ async def run_cave_dwelling_snapshot_production_flow(
             payload=payload,
             adapter=adapter,
         )
-        result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            request,
-            _flow_transport(transport, identity_id),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"dwelling_{endpoint}",
+        def run(operation):
+            return execute_miniapp_http_request(
+                request,
+                _flow_transport(transport, identity_id, operation_check=operation.check),
+                sleeper=operation.sleep,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key=f"dwelling_{endpoint}",
+                operation_check=operation.check,
+            )
+
+        result = await run_miniapp_blocking_flow(
+            run, operation_check=operation_check, sleeper=sleeper,
         )
         if not result.ok:
             return _flow_result(False, "failed", error=result.error, data=result.data)
@@ -2043,6 +2057,7 @@ async def run_cave_external_action_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -2061,15 +2076,20 @@ async def run_cave_external_action_production_flow(
             init_data=init_data,
             adapter=adapter,
         )
-        result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            request,
-            _flow_transport(transport, identity_id),
-            backoff_sec=(),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"external:{normalize_cave_external_action(action)}",
+        def run(operation):
+            return execute_miniapp_http_request(
+                request,
+                _flow_transport(transport, identity_id, operation_check=operation.check),
+                backoff_sec=(),
+                sleeper=operation.sleep,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key=f"external:{normalize_cave_external_action(action)}",
+                operation_check=operation.check,
+            )
+
+        result = await run_miniapp_blocking_flow(
+            run, operation_check=operation_check, sleeper=sleeper,
         )
         if not result.ok:
             return _flow_result(

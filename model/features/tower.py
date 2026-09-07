@@ -34,7 +34,7 @@ from .cave_treasure_runtime import (
     note_cave_public_entry_token_failure,
     run_cave_public_tower,
 )
-from .miniapp_common import MiniAppIdentityOwner
+from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
 from .tower_miniapp import format_tower_delta
 
 
@@ -282,6 +282,11 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at, owner, schedule_
                     priority="normal",
                     limit=240,
                 )
+    except MiniAppFlowCancelled as exc:
+        if owner.is_current() and isinstance(exc.result, dict) and exc.result.get("ok"):
+            with use_identity(identity_id):
+                _mark_done_today(time.time())
+        raise
     except Exception as exc:
         if not can_run():
             return

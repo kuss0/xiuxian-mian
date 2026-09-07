@@ -11,11 +11,13 @@ Before this module each adapter defined its own `_requests_transport`,
 transport had to be applied in seven places and was in practice applied in one.
 """
 
+import asyncio
 import atexit
 import logging
 import threading
 import time
 from dataclasses import dataclass
+from contextvars import copy_context
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -23,7 +25,7 @@ from requests.exceptions import RequestException
 
 from ..config import TG_REQUESTS_PROXIES
 from ..state import get_current_identity_id, get_identity_account, get_identity_state, has_identity
-from ..webapp_core import safe_miniapp_event_detail, sanitize_webapp_secret_text
+from ..webapp_core import require_miniapp_operation, safe_miniapp_event_detail, sanitize_webapp_secret_text
 
 
 def resolve_identity_id(value=None):
@@ -57,6 +59,62 @@ class MiniAppIdentityOwner:
             )
         except KeyError:
             return False
+
+
+class MiniAppFlowCancelled(asyncio.CancelledError):
+    """Carry an already-returned result while preserving caller cancellation."""
+
+    def __init__(self, result=None):
+        super().__init__("MiniApp caller cancelled")
+        self.result = result
+
+
+class _MiniAppThreadOperation:
+    def __init__(self, operation_check, sleeper):
+        self.stopped = threading.Event()
+        self.operation_check = operation_check
+        self.sleeper = sleeper
+
+    def check(self):
+        if self.stopped.is_set():
+            return False
+        require_miniapp_operation(self.operation_check)
+        return True
+
+    def sleep(self, delay):
+        require_miniapp_operation(self.check)
+        if self.sleeper is not None:
+            self.sleeper(delay)
+        else:
+            deadline = time.monotonic() + max(0.0, float(delay))
+            while time.monotonic() < deadline:
+                require_miniapp_operation(self.check)
+                self.stopped.wait(min(0.1, max(0.0, deadline - time.monotonic())))
+        require_miniapp_operation(self.check)
+
+
+async def run_miniapp_blocking_flow(flow, *, operation_check=None, sleeper=None):
+    """Drain an in-flight thread before its caller releases operation locks."""
+    operation = _MiniAppThreadOperation(operation_check, sleeper)
+    # An executor Future is not an independently cancellable asyncio Task.
+    # Keep ContextVar propagation without abandoning the thread on cancellation.
+    future = asyncio.get_running_loop().run_in_executor(None, copy_context().run, flow, operation)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        operation.stopped.set()
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        try:
+            result = future.result()
+        except Exception:
+            result = None
+        raise MiniAppFlowCancelled(result) from None
 
 
 DEFAULT_MINIAPP_HTTP_TIMEOUT = (5, 20)
@@ -250,6 +308,7 @@ def build_pooled_miniapp_transport(
     identity_id=0,
     timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT,
     proxies=None,
+    operation_check=None,
 ):
     """Build a production transport with bounded session reuse.
 
@@ -266,12 +325,14 @@ def build_pooled_miniapp_transport(
 
     def _transport(request):
         while True:
+            require_miniapp_operation(operation_check)
             session, _route, request_lock = _MINIAPP_SESSION_POOL.acquire(
                 adapter_key,
                 identity_id,
                 effective_proxies,
             )
-            request_lock.acquire()
+            while not request_lock.acquire(timeout=0.1):
+                require_miniapp_operation(operation_check)
             if _MINIAPP_SESSION_POOL.is_current(
                 adapter_key,
                 identity_id,
@@ -282,6 +343,7 @@ def build_pooled_miniapp_transport(
                 break
             request_lock.release()
         try:
+            require_miniapp_operation(operation_check)
             try:
                 return session.request(
                     str(request.get("method") or "POST"),
@@ -388,9 +450,12 @@ def append_business_capture(capture_sink, *, adapter_key, detail, source="", cre
 __all__ = [
     "DEFAULT_MINIAPP_HTTP_TIMEOUT",
     "MINIAPP_DEFAULT_USER_AGENT",
+    "MiniAppFlowCancelled",
+    "MiniAppIdentityOwner",
     "append_business_capture",
     "append_http_event",
     "build_miniapp_transport",
     "build_pooled_miniapp_transport",
     "close_pooled_miniapp_sessions",
+    "run_miniapp_blocking_flow",
 ]

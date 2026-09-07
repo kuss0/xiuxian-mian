@@ -1,18 +1,17 @@
-import asyncio
 import re
-import time
 
 
 from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestBudget,
     build_miniapp_http_request,
     build_miniapp_launch_request,
     execute_miniapp_http_request,
     sanitize_webapp_secret_text,
 )
-from .miniapp_common import build_pooled_miniapp_transport
+from .miniapp_common import build_pooled_miniapp_transport, run_miniapp_blocking_flow
 
 
 TOWER_MINIAPP_GAME_KEY = "tower"
@@ -103,7 +102,7 @@ def parse_tower_state(data):
         return {}
     root = data.get("data") if isinstance(data.get("data"), dict) else data
     raw = root.get("state") if isinstance(root.get("state"), dict) else root
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict) or not isinstance(raw.get("canChallenge"), bool):
         return {}
 
     def as_int(key, default=0):
@@ -210,6 +209,8 @@ def run_tower_miniapp_lab_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
+    request_budget=None,
 ):
     adapter = adapter or build_tower_miniapp_adapter()
     token = str(token or "").strip()
@@ -220,6 +221,8 @@ def run_tower_miniapp_lab_flow(
         return _flow_result(False, "failed", error="initData missing")
 
     events = []
+    if request_budget is None:
+        request_budget = MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper)
     start_result = execute_miniapp_http_request(
         build_tower_miniapp_request("start", token=token, init_data=init_data, adapter=adapter),
         transport,
@@ -228,6 +231,8 @@ def run_tower_miniapp_lab_flow(
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="start",
+        request_budget=request_budget,
+        operation_check=operation_check,
     )
     events.append(_http_event("start", start_result))
     if not start_result.ok:
@@ -253,6 +258,8 @@ def run_tower_miniapp_lab_flow(
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="challenge",
+        request_budget=request_budget,
+        operation_check=operation_check,
     )
     events.append(_http_event("challenge", challenge_result))
     challenge_state = parse_tower_state(challenge_result.data)
@@ -288,23 +295,29 @@ async def run_tower_miniapp_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     adapter = adapter or build_tower_miniapp_adapter()
-    try:
-        return await asyncio.to_thread(
-            run_tower_miniapp_lab_flow,
+
+    def run(operation):
+        return run_tower_miniapp_lab_flow(
             token=token,
             init_data=init_data,
             transport=transport or build_pooled_miniapp_transport(
                 adapter_key=adapter.game_key,
                 identity_id=identity_id,
                 timeout=TOWER_MINIAPP_HTTP_TIMEOUT,
+                operation_check=operation.check,
             ),
             adapter=adapter,
-            sleeper=sleeper or time.sleep,
+            sleeper=operation.sleep,
             capture_sink=capture_sink,
             capture_source=capture_source,
+            operation_check=operation.check,
         )
+
+    try:
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 

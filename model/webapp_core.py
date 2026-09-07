@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -1440,6 +1441,25 @@ def _emit_miniapp_capture(capture_sink, request, response, **record_kwargs):
         logging.getLogger(__name__).warning("MiniApp capture failed (%s); HTTP result preserved", type(exc).__name__)
 
 
+class MiniAppRequestAborted(Exception):
+    """An operation was invalidated before its next HTTP dispatch."""
+
+
+def require_miniapp_operation(operation_check):
+    if operation_check is None:
+        return
+    try:
+        allowed = operation_check()
+    except MiniAppRequestAborted:
+        raise
+    except Exception as exc:
+        raise MiniAppRequestAborted("operation_check_failed") from exc
+    if allowed is not True:
+        if inspect.iscoroutine(allowed):
+            allowed.close()
+        raise MiniAppRequestAborted("operation_invalidated")
+
+
 def execute_miniapp_http_request(
     request,
     transport,
@@ -1451,6 +1471,7 @@ def execute_miniapp_http_request(
     capture_source="",
     step_key="",
     request_budget=None,
+    operation_check=None,
 ):
     """Retry transient errors only under an explicit replay-safety contract.
 
@@ -1469,34 +1490,39 @@ def execute_miniapp_http_request(
     for attempt in range(1, attempts_total + 1):
         started = time.time()
         response_for_capture = None
-        if request_budget is not None:
-            allowed, _delay, reason = request_budget.acquire()
-            if not allowed:
-                result = MiniAppHttpResult(
-                    ok=False,
-                    error=reason,
-                    error_type="request_budget",
-                    retryable=False,
-                    attempts=max(0, attempt - 1),
-                )
-                _emit_miniapp_capture(
-                    capture_sink,
-                    request,
-                    (0, {"ok": False, "error": reason}),
-                    result=result,
-                    step_key=step_key,
-                    source=capture_source,
-                    started_at=started,
-                    ended_at=time.time(),
-                    attempt=attempt,
-                )
-                return result
+        dispatch_started = False
         try:
+            require_miniapp_operation(operation_check)
+            if request_budget is not None:
+                allowed, _delay, reason = request_budget.acquire()
+                if not allowed:
+                    result = MiniAppHttpResult(
+                        ok=False,
+                        error=reason,
+                        error_type="request_budget",
+                        retryable=False,
+                        attempts=max(0, attempt - 1),
+                    )
+                    _emit_miniapp_capture(
+                        capture_sink,
+                        request,
+                        (0, {"ok": False, "error": reason}),
+                        result=result,
+                        step_key=step_key,
+                        source=capture_source,
+                        started_at=started,
+                        ended_at=time.time(),
+                        attempt=attempt,
+                    )
+                    return result
+            require_miniapp_operation(operation_check)
             if request.get("global_rate_limit", True) and not os.environ.get("PYTEST_CURRENT_TEST"):
                 _GLOBAL_MINIAPP_RATE_LIMITER.acquire(
                     priority=str(request.get("global_priority") or "").lower() == "world_boss",
                     sleeper=sleep,
                 )
+            require_miniapp_operation(operation_check)
+            dispatch_started = True
             response = transport(request)
             status_code, body = _response_status_and_body(response)
             response_for_capture = (status_code, body)
@@ -1506,13 +1532,19 @@ def execute_miniapp_http_request(
                 attempts=attempt,
                 retry_after_sec=_response_retry_after_sec(response),
             )
+        except MiniAppRequestAborted as exc:
+            result = MiniAppHttpResult(
+                ok=False, error=str(exc), error_type="operation_cancelled",
+                retryable=False, attempts=attempt - 1,
+            )
+            response_for_capture = (0, {"ok": False, "error": str(exc)})
         except Exception as exc:
             result = MiniAppHttpResult(
                 ok=False,
                 error=sanitize_webapp_secret_text(exc),
-                error_type="transient",
-                retryable=True,
-                attempts=attempt,
+                error_type="transient" if dispatch_started else "preparation",
+                retryable=dispatch_started,
+                attempts=attempt if dispatch_started else attempt - 1,
             )
             response_for_capture = (0, {"ok": False, "error": str(exc)})
         last_result = result
@@ -1533,7 +1565,11 @@ def execute_miniapp_http_request(
             return result
         if result.retry_after_sec > MAX_MINIAPP_INLINE_RETRY_AFTER_SEC:
             return result
-        sleep(max(delays[attempt - 1], float(result.retry_after_sec or 0)))
+        try:
+            sleep(max(delays[attempt - 1], float(result.retry_after_sec or 0)))
+        except MiniAppRequestAborted:
+            # Cancellation cannot erase the preceding request's uncertain outcome.
+            return result
     return last_result or MiniAppHttpResult(ok=False, error="miniapp request not executed", error_type="transient", retryable=True)
 
 
