@@ -1368,6 +1368,109 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertNotIn("fish_SECRET999", serialized)
         self.assertNotIn("VERY_SECRET", serialized)
 
+    def test_capture_failure_does_not_replace_the_confirmed_http_result(self):
+        request = fishing_miniapp.build_fishing_miniapp_request(
+            "finish", token="fish_SECRET999", init_data="hash=VERY_SECRET",
+        )
+        calls = []
+
+        def transport(_request):
+            calls.append(_request)
+            return 200, {"ok": True, "settled": True, "reward": 42}
+
+        def capture(_record):
+            raise OSError("disk full: fish_SECRET999 hash=VERY_SECRET")
+
+        with self.assertLogs("model.webapp_core", level="WARNING") as logged:
+            result = webapp_core.execute_miniapp_http_request(
+                request, transport, capture_sink=capture, backoff_sec=(), step_key="finish",
+            )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["reward"], 42)
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("OSError", "\n".join(logged.output))
+        self.assertNotIn("SECRET", "\n".join(logged.output))
+
+    def test_capture_serializer_failure_preserves_budget_denial(self):
+        request = fishing_miniapp.build_fishing_miniapp_request(
+            "finish", token="fish_SECRET999", init_data="hash=VERY_SECRET",
+        )
+        budget = webapp_core.MiniAppRequestBudget({"max_requests_per_run": 1, "min_interval_sec": 0})
+        self.assertTrue(budget.acquire()[0])
+        with (
+            patch.object(webapp_core, "build_miniapp_capture_record", side_effect=ValueError("hash=VERY_SECRET")),
+            self.assertLogs("model.webapp_core", level="WARNING"),
+            patch.object(webapp_core, "_response_status_and_body") as parse,
+        ):
+            result = webapp_core.execute_miniapp_http_request(
+                request, lambda _request: self.fail("budget denial reached transport"),
+                capture_sink=[], request_budget=budget,
+            )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_type, "request_budget")
+        self.assertEqual(result.attempts, 0)
+        parse.assert_not_called()
+
+    def test_missing_capture_sink_does_not_build_diagnostic_records(self):
+        request = fishing_miniapp.build_fishing_miniapp_request(
+            "finish", token="fish_SECRET999", init_data="hash=VERY_SECRET",
+        )
+        with patch.object(webapp_core, "build_miniapp_capture_record", side_effect=AssertionError("capture disabled")) as capture:
+            result = webapp_core.execute_miniapp_http_request(
+                request, lambda _request: (200, {"ok": True}), backoff_sec=(),
+            )
+        self.assertTrue(result.ok)
+        capture.assert_not_called()
+
+    def test_capture_failure_preserves_http_retry_policy(self):
+        request = fishing_miniapp.build_fishing_miniapp_request(
+            "start", token="fish_SECRET999", init_data="hash=VERY_SECRET",
+        )
+        for statuses in ((503, 200), (400,)):
+            with self.subTest(statuses=statuses):
+                responses = iter(statuses)
+                calls = []
+                delays = []
+                budget = webapp_core.MiniAppRequestBudget({"min_interval_sec": 0})
+
+                def transport(_request):
+                    status = next(responses)
+                    calls.append(status)
+                    return status, {"ok": status == 200, "error": "" if status == 200 else "test failure"}
+
+                def capture(_record):
+                    raise OSError("capture unavailable")
+
+                with self.assertLogs("model.webapp_core", level="WARNING"):
+                    result = webapp_core.execute_miniapp_http_request(
+                        request, transport, capture_sink=capture, request_budget=budget,
+                        backoff_sec=(0.1,), sleeper=delays.append,
+                    )
+                self.assertEqual(calls, list(statuses))
+                self.assertEqual(result.ok, statuses[-1] == 200)
+                self.assertEqual(result.status_code, statuses[-1])
+                self.assertEqual(result.attempts, len(statuses))
+                self.assertEqual(budget.request_count, len(statuses))
+                self.assertEqual(delays, [0.1] if len(statuses) == 2 else [])
+
+    def test_capture_store_write_failure_does_not_escape_http_execution(self):
+        request = fishing_miniapp.build_fishing_miniapp_request(
+            "finish", token="fish_SECRET999", init_data="hash=VERY_SECRET",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sink = webapp_core.MiniAppCaptureStore(Path(tmpdir) / "capture.jsonl", keep_memory=False)
+            with (
+                patch.object(Path, "open", side_effect=OSError("capture disk full")),
+                self.assertLogs("model.webapp_core", level="WARNING"),
+            ):
+                result = webapp_core.execute_miniapp_http_request(
+                    request, lambda _request: (200, {"ok": True, "settled": True}),
+                    capture_sink=sink, backoff_sec=(),
+                )
+            self.assertTrue(result.ok)
+            self.assertTrue(result.data["settled"])
+
     def test_miniapp_capture_store_writes_jsonl_without_raw_credentials(self):
         request = fishing_miniapp.build_fishing_miniapp_request(
             "next",

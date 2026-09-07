@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -1420,14 +1421,19 @@ def build_miniapp_capture_record(
     )
 
 
-def _emit_miniapp_capture(capture_sink, record):
+def _emit_miniapp_capture(capture_sink, request, response, **record_kwargs):
     if capture_sink is None:
         return
-    safe = record.safe_record() if hasattr(record, "safe_record") else dict(record or {})
-    if hasattr(capture_sink, "append"):
-        capture_sink.append(record if isinstance(capture_sink, MiniAppCaptureStore) else safe)
-        return
-    capture_sink(safe)
+    try:
+        record = build_miniapp_capture_record(request, response, **record_kwargs)
+        safe = record.safe_record()
+        if hasattr(capture_sink, "append"):
+            capture_sink.append(record if isinstance(capture_sink, MiniAppCaptureStore) else safe)
+        else:
+            capture_sink(safe)
+    except Exception as exc:
+        # Diagnostics cannot change an already-observed HTTP result or retry it.
+        logging.getLogger(__name__).warning("MiniApp capture failed (%s); HTTP result preserved", type(exc).__name__)
 
 
 def execute_miniapp_http_request(
@@ -1465,16 +1471,14 @@ def execute_miniapp_http_request(
                 )
                 _emit_miniapp_capture(
                     capture_sink,
-                    build_miniapp_capture_record(
-                        request,
-                        (0, {"ok": False, "error": reason}),
-                        result=result,
-                        step_key=step_key,
-                        source=capture_source,
-                        started_at=started,
-                        ended_at=time.time(),
-                        attempt=attempt,
-                    ),
+                    request,
+                    (0, {"ok": False, "error": reason}),
+                    result=result,
+                    step_key=step_key,
+                    source=capture_source,
+                    started_at=started,
+                    ended_at=time.time(),
+                    attempt=attempt,
                 )
                 return result
         try:
@@ -1506,16 +1510,14 @@ def execute_miniapp_http_request(
             request_budget.note_result(result)
         _emit_miniapp_capture(
             capture_sink,
-            build_miniapp_capture_record(
-                request,
-                response_for_capture,
-                result=result,
-                step_key=step_key,
-                source=capture_source,
-                started_at=started,
-                ended_at=time.time(),
-                attempt=attempt,
-            ),
+            request,
+            response_for_capture,
+            result=result,
+            step_key=step_key,
+            source=capture_source,
+            started_at=started,
+            ended_at=time.time(),
+            attempt=attempt,
         )
         if result.ok or not result.retryable or attempt >= attempts_total:
             return result

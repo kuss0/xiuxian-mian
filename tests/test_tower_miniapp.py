@@ -71,6 +71,33 @@ class TowerMiniAppTests(unittest.TestCase):
         self.assertEqual(["start"], [item["step"] for item in result["events"]])
         self.assertEqual(1, len(requests))
 
+    def test_capture_write_failure_does_not_lose_completed_challenge(self):
+        requests = []
+
+        def transport(request):
+            requests.append(request["url"].rsplit("/", 1)[-1])
+            if requests[-1] == "start":
+                return 200, {"ok": True, "state": {"canChallenge": True}}
+            return 200, {
+                "ok": True,
+                "state": {"canChallenge": False, "todayHighest": 8},
+                "replay": {"report": "修为增加 1,260 点，获得塔印 42 点。"},
+            }
+
+        def capture(record):
+            if record["step_key"] == "challenge":
+                raise OSError("capture storage unavailable")
+
+        with self.assertLogs("model.webapp_core", level="WARNING"):
+            result = tower_miniapp.run_tower_miniapp_lab_flow(
+                token="pagoda_SECRET999", init_data="hash=VERY_SECRET",
+                transport=transport, capture_sink=capture,
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "challenged")
+        self.assertEqual(result["data"]["gains"], {"修为": 1260, "塔印": 42})
+        self.assertEqual(requests, ["start", "challenge"])
+
     def test_parser_extracts_structured_tower_materials(self):
         gains, rewards = tower_miniapp.extract_tower_materials({
             "replay": {"report": "修为增加 12,000 点，获得塔印 8 点，获得【玄骨化焰诀】x1。"},

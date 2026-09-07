@@ -80,6 +80,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R26 | High | Ordinary, cleanup and phaseful scheduling continue into later modules after an awaited operation removes, replaces, rebinds or disables their identity | Fixed in candidate; retain the identity object and account, revalidate before later module calls and proxy reads, and stop on account-offline/global-pause changes; independent phaseful polling and continuation of unaffected roles are tested; R27 covers queued fast-due dispatch |
 | R27 | High | Fast-due queues execute invalidated identities; Tianxing continues after an invalidating preparation; late errors overwrite new cooldowns or crash again while entering a deleted identity | Fixed in candidate for wild training, rift, concubine, Tianxing and queued timeline follow-up; retain scan-time ownership, recheck at task dispatch and after preparation, and compare business snapshots before failure backoff; per-module internal await boundaries still require review |
 | R28 | High | Passive teaching treats the real success suffix as an already-done reply, stops at 1/3, and consumes the third-success dedupe key before direct cleanup/notification; a cleanup await can notify for a replaced role | Fixed in candidate; share one teaching result handler, prefer success over the already-done substring, use explicit server counts without rewinding on older replies, and validate owners after cleanup/passive awaits; real wording, delivery order and SQLite reload tests pass |
+| R29 | High | HTTP capture construction/storage errors escape after a MiniApp response was received, losing a confirmed result; capture construction also runs when no sink exists | Fixed in candidate; build and emit HTTP captures inside one diagnostic-only exception boundary, log only the exception class, and leave the original HTTP result/budget/retry policy intact; an actual tower-flow replay retains its reward result after capture failure |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -486,6 +487,27 @@ five monitor/control-only contracts need separate behavioral verification.
   SQLite reload preserves terminal count/keys and does not repeat completed
   cleanup/notification. This does not prove crash-time delivery of an audit
   notice or close R07's unknown-send gap. Production and skill remain unchanged.
+- R29 four pre-fix failures demonstrate that capture write/serialization errors
+  escaped instead of returning a confirmed HTTP result or request-budget denial.
+  A tower-flow reproducer received the successful challenge settlement but
+  raised during capture, so its caller never received the gains.
+- HTTP capture construction, redaction and append are now isolated from business
+  outcomes. No sink means no diagnostic record construction. A failed capture
+  emits only an exception-class warning, never the exception text, token or
+  payload. Real HTTP errors remain errors and retain their existing retry policy;
+  no capture failure adds a transport call or changes request-budget accounting.
+- R29 focused HTTP/protocol/tower/capture suites: 181 passed, 12 subtests passed
+  before additional on-disk failure and retry-policy cases. Full suite:
+  3965 passed, 852 subtests passed, 60.52 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r29-capture-isolation-20260908.xml`. Ruff and diff checks
+  pass. The tower replay calls only start/challenge and returns its original
+  gains even when challenge capture fails. No live MiniApp probe was issued.
+- MiniApp review remains open: most explicit mutation call sites already pass
+  `backoff_sec=()`, but this is not proof of all endpoint/reconnect semantics.
+  The generic HTTP helper and generic flow runner still permit retries without
+  an endpoint-level idempotence contract. Per-flow budget wiring, runtime
+  mutation/reentry behavior, and session lifecycle/capacity need review before
+  the MiniApp matrix row can be signed off. R29 does not change these policies.
 
 ## Deployment Constraint
 
