@@ -59,7 +59,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R05 | Medium | Cancelling `_run_account_rpc` before acquiring its account lock leaves the supplied coroutine unclosed | Fixed; coroutine lifecycle regression passes |
 | R06 | Medium | MiniApp retries omit all backoff/Retry-After waits when no custom sleeper is supplied | Fixed; default-sleeper 429/503 regressions pass; 265 MiniApp tests and 12 subtests pass |
 | R07 | High | Cancelling a caller after its shielded send RPC starts can abandon result tracking while the RPC continues | Source-path confirmed; deterministic reproducer and correction pending |
-| R08 | High | Generic pending-log recovery closes a pending task and action guard without replaying the owning business handler | Source-path confirmed; integration reproduction and correction pending |
+| R08 | High | Generic pending-log recovery closes a pending task and action guard without replaying the owning business handler | Fixed in candidate; real checkin-state regression plus ownership, failure, intermediate-ack and replay-idempotence tests pass |
 | R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Review in progress; cancellation and final-save ordering need fault tests |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
 
@@ -92,6 +92,14 @@ five monitor/control-only contracts need separate behavioral verification.
   25 send_unknown/open, and 2 queued/open rows. Open-ledger capacity is still
   a review item; these counts do not authorize business recovery or deletion.
 - No live game commands or configuration writes have been issued for this review.
+- R08 full suite: 3749 passed, 579 subtests passed, 58.60 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r08-20260907.xml`; Ruff and `git diff --check` pass.
+  Recovery now dispatches anchored official-bot evidence to business handlers,
+  preserves unresolved replies without retrying after log expiry, and cannot
+  clear sibling pending rows or a newer action guard. Intermediate replies keep
+  their pending state; per-pending replay receipts are bounded to 64 entries.
+  Receipt/edit ordering and duplicate replay are tested after in-memory dedupe
+  state is cleared. No production deployment or remote CI run has occurred.
 
 ## Completion Gate
 

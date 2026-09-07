@@ -27,6 +27,12 @@ def _claim_runtime_event(event, *, scope, ttl=120.0):
     return True
 
 
+def _release_runtime_event(event, *, scope):
+    msg_id = int(getattr(event, "id", 0) or 0)
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    _runtime_event_claims.pop(f"{scope}:{chat_id}:{msg_id}", None)
+
+
 def _claim_runtime_semantic_event(text, *, scope, ttl=120.0):
     normalized = "\n".join(
         line.strip()
@@ -119,4 +125,5 @@ __all__ = [
     "_get_event_reply_header_msg_id",
     "_has_runtime_message_consumed",
     "_mark_runtime_message_consumed",
+    "_release_runtime_event",
 ]

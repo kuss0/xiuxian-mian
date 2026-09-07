@@ -307,20 +307,27 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             }
 
         recovered_reply = {
+            "event_type": "message",
             "message_id": 232,
             "reply_to_msg_id": 231,
+            "chat_id": state_module.get_game_group_id(),
+            "sender_id": 8861328042,
+            "sender_is_bot": True,
             "text": "【元婴状态】\n元婴正在温养。",
         }
         with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_game_bot_ids", return_value=[8861328042]), \
              patch.object(runtime, "find_message_log_replies", return_value=[recovered_reply]) as recover_mock, \
+             patch.object(runtime, "_GAME_REPLY_REPLAYER", new=AsyncMock(return_value=True)) as replayer, \
              patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
              patch.object(runtime, "send_audit_log", new=AsyncMock()):
             asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
 
         recover_mock.assert_called_once()
+        replayer.assert_awaited_once()
         send_mock.assert_not_awaited()
         with state_module.use_identity(send_as_id) as identity_state:
-            self.assertEqual({}, identity_state["pending_tasks"])
+            self.assertEqual(232, identity_state["pending_tasks"][231]["reply_recovery_msg_id"])
 
     def test_pending_retry_accepts_exact_bot_reply_without_command_keywords(self):
         send_as_id = 971015
@@ -353,17 +360,19 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             return [exact_reply] if predicate and predicate(exact_reply) else []
 
         with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_game_bot_ids", return_value=[8861328042]), \
              patch.object(runtime, "find_message_log_replies", side_effect=find_replies) as replies_mock, \
+             patch.object(runtime, "_GAME_REPLY_REPLAYER", new=AsyncMock(return_value=True)), \
              patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
              patch.object(runtime, "send_audit_log", new=AsyncMock()):
             asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+            predicate = replies_mock.call_args.kwargs["predicate"]
+            self.assertTrue(predicate(exact_reply))
+            self.assertFalse(predicate({**exact_reply, "chat_id": -1009999999999}))
 
         send_mock.assert_not_awaited()
         with state_module.use_identity(send_as_id) as identity_state:
-            self.assertEqual({}, identity_state["pending_tasks"])
-        predicate = replies_mock.call_args.kwargs["predicate"]
-        self.assertTrue(predicate(exact_reply))
-        self.assertFalse(predicate({**exact_reply, "chat_id": -1009999999999}))
+            self.assertEqual(154927, identity_state["pending_tasks"][154926]["reply_recovery_msg_id"])
 
     def test_pending_retry_preserves_send_intent_metadata(self):
         send_as_id = 971005

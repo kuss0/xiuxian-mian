@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 import signal
 import time
@@ -26,6 +27,7 @@ from .app_runtime import (
     _get_event_reply_header_msg_id,
     _has_runtime_message_consumed,
     _mark_runtime_message_consumed,
+    _release_runtime_event,
 )
 from .app_replica import (
     handle_replica_button_callback,
@@ -225,6 +227,7 @@ from .verified_event import from_telegram_event, is_new_delivery
 from .runtime import (
     MAINTENANCE_PAUSE_SOURCE,
     _fire_and_forget,
+    _is_logged_game_bot_reply,
     CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
     account_rpc_slot,
     check_bot_health_timeout,
@@ -252,6 +255,7 @@ from .runtime import (
     note_game_command_observed,
     note_identity_weakness,
     register_game_command_sent_observer,
+    register_game_reply_replayer,
     resolve_reply_family,
     restore_bot_health_auto_pause,
     run_retry_scheduler,
@@ -1818,21 +1822,6 @@ def _logged_reply_event(entry, command, send_as_id):
     return event, reply_to
 
 
-def _is_logged_game_bot_reply(entry):
-    if not isinstance(entry, dict):
-        return False
-    text = str(entry.get("text") or "").strip()
-    if not text or text.startswith("."):
-        return False
-    try:
-        sender_id = int(entry.get("sender_id") or 0)
-    except (TypeError, ValueError, OverflowError):
-        sender_id = 0
-    if sender_id > 0 and sender_id in {int(bot_id) for bot_id in get_game_bot_ids()}:
-        return True
-    return entry.get("sender_is_bot") is True
-
-
 async def _replay_early_replies_after_sent(
     send_as_id,
     command,
@@ -3033,6 +3022,15 @@ def _cancel_identity_schedulers():
         _identity_scheduler_task.cancel()
 
 
+def _routed_reply_scope(reply_context, event_kind, text, *, replay=False):
+    identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    family = str((reply_context or {}).get("family") or "unknown").strip() or "unknown"
+    kind = str(event_kind or "message").strip() or "message"
+    suffix = f":{hash(str(text or ''))}" if kind == "edit" else ""
+    prefix = "routed_reply_replay" if replay else "routed_reply"
+    return f"{prefix}:{kind}:{identity_id}:{family}{suffix}"
+
+
 async def _handle_routed_reply_event(
     event,
     text,
@@ -3052,11 +3050,18 @@ async def _handle_routed_reply_event(
     if not replay:
         _remember_early_routed_reply(event, text, now, reply_to, reply_context, event_kind=event_kind)
 
-    family_scope = str(matched_family or "unknown").strip() or "unknown"
     kind_scope = str(event_kind or "message").strip() or "message"
-    edit_text_scope = f":{hash(str(text or ''))}" if kind_scope == "edit" else ""
-    claim_prefix = "routed_reply_replay" if replay else "routed_reply"
-    if not _claim_runtime_event(event, scope=f"{claim_prefix}:{kind_scope}:{routed_identity_id}:{family_scope}{edit_text_scope}"):
+    is_identity_info_waiting_reply = matched_family == "identity_info" and _is_identity_info_waiting_reply(text)
+    is_nonterminal_waiting_reply = (
+        matched_family in {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift"}
+        and is_storage_transfer_waiting_reply(text)
+    ) or is_identity_info_waiting_reply
+    claimed = _claim_runtime_event(event, scope=_routed_reply_scope(reply_context, event_kind, text, replay=replay))
+    if not claimed:
+        if replay and matched_family and _has_runtime_message_consumed(event, matched_family):
+            if not is_nonterminal_waiting_reply:
+                clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
+            return True
         return False
 
     # In multi-client mode a bot reply can be delivered to a different account
@@ -3079,12 +3084,7 @@ async def _handle_routed_reply_event(
             and int((reply_context or {}).get("send_as_id") or 0) == routed_identity_id
         )
         is_identity_info_observation = matched_family == "identity_info" and _is_identity_info_reply_observation(text)
-        is_identity_info_waiting_reply = matched_family == "identity_info" and _is_identity_info_waiting_reply(text)
-        is_nonterminal_waiting_reply = (
-            matched_family in {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift"}
-            and is_storage_transfer_waiting_reply(text)
-        ) or is_identity_info_waiting_reply
-        clear_result = None if is_nonterminal_waiting_reply else clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
+        clear_result = None if replay or is_nonterminal_waiting_reply else clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
         root_msg_id = int((reply_context or {}).get("root_msg_id") or (clear_result or {}).get("reply_to_msg_id") or 0)
         if root_msg_id <= 0:
             root_msg_id = int(getattr(reply_to, "id", 0) or 0)
@@ -3096,6 +3096,11 @@ async def _handle_routed_reply_event(
                 root_msg_id=root_msg_id,
                 chat_id=event.chat_id,
             )
+
+        if replay and already_consumed:
+            if not is_nonterminal_waiting_reply:
+                clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
+            return True
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
@@ -3309,10 +3314,14 @@ async def _handle_routed_reply_event(
             if not storage_transfer_done:
                 handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
+        if replay and handled_any and not is_nonterminal_waiting_reply:
+            clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
         if matched_family and handled_any and not already_consumed:
             if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
-                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now)
-            _mark_runtime_message_consumed(event, matched_family)
+                guard_kwargs = {"expected_msg_id": root_msg_id} if replay else {}
+                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now, **guard_kwargs)
+            if not is_nonterminal_waiting_reply:
+                _mark_runtime_message_consumed(event, matched_family)
         elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:
             if is_identity_info_observation:
                 pass
@@ -3339,7 +3348,54 @@ async def _handle_routed_reply_event(
     return handled_any
 
 
+async def _replay_pending_log_replies(send_as_id, msg_id, pending, replies, now):
+    command = str(pending.get("cmd") or "")
+    family = resolve_reply_family(command) or ""
+    handled_any = False
+    applied = dict(pending.get("reply_recovery_applied") or {})
+    for entry in sorted(replies, key=lambda row: (
+        float(row.get("ts_epoch") or now), int(row.get("message_id") or 0),
+    )):
+        event, reply_to = _logged_reply_event(entry, command, send_as_id)
+        context = get_reply_context(
+            reply_to, reply_to_msg_id=msg_id, send_as_id=send_as_id, chat_id=event.chat_id,
+        )
+        context.update({
+            "send_as_id": send_as_id,
+            "family": family or context.get("family"),
+            "reply_to_msg_id": msg_id,
+            "root_msg_id": msg_id,
+            "matched_via": "pending_log_replay",
+        })
+        event_at = float(entry.get("ts_epoch") or now)
+        event_kind = str(entry.get("event_type") or "message")
+        text_hash = hashlib.blake2s(event.raw_text.encode("utf-8"), digest_size=12).hexdigest()
+        receipt_key = f"{event_kind}:{event.id}:{text_hash}"
+        if receipt_key in applied:
+            if applied[receipt_key]:
+                clear_pending_by_reply(reply_to, send_as_id, reply_context=context, clear_family=False)
+            handled_any = True
+            continue
+        _bind_command_attempt_shadow(event, event.raw_text, event_at, context, event_kind=event_kind)
+        handled = False
+        try:
+            handled = await _handle_routed_reply_event(
+                event, event.raw_text, event_at, reply_to, context,
+                event_kind=event_kind, replay=True,
+            )
+        finally:
+            if not handled:
+                _release_runtime_event(event, scope=_routed_reply_scope(context, event_kind, event.raw_text, replay=True))
+        if handled:
+            applied[receipt_key] = msg_id not in get_identity_state(send_as_id)["pending_tasks"]
+            pending["reply_recovery_applied"] = dict(list(applied.items())[-64:])
+            mark_dirty()
+        handled_any = handled_any or handled
+    return handled_any
+
+
 register_game_command_sent_observer(_observe_sent_for_early_reply_replay)
+register_game_reply_replayer(_replay_pending_log_replies)
 
 
 @client.on(events.NewMessage())

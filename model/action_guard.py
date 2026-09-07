@@ -1241,7 +1241,7 @@ def get_timing_blocked_until(command, send_as_id=None, now=None):
     return 0.0, ""
 
 
-def close_action(action_key, send_as_id=None, reason="reply", now=None):
+def close_action(action_key, send_as_id=None, reason="reply", now=None, *, expected_msg_id=None):
     action_key = str(action_key or "").strip()
     if not action_key or not has_identity(send_as_id):
         return False
@@ -1250,6 +1250,8 @@ def close_action(action_key, send_as_id=None, reason="reply", now=None):
         sessions = _get_sessions(identity_state)
         session = sessions.get(action_key)
         if not isinstance(session, dict):
+            return False
+        if expected_msg_id is not None and int(session.get("last_msg_id") or 0) != int(expected_msg_id):
             return False
         if _has_remote_block(session, now) and str(session.get("remote_block_kind") or "") != "send_unknown":
             session["attempt"] = 0
@@ -1293,10 +1295,11 @@ def close_actions(action_keys, send_as_id=None, reason="reply", now=None):
     return closed_count
 
 
-def close_by_family(family, send_as_id=None, reason="reply", now=None):
+def close_by_family(family, send_as_id=None, reason="reply", now=None, *, expected_msg_id=None):
     closed = False
     for action_key in resolve_action_keys_for_family(family):
-        closed = close_action(action_key, send_as_id=send_as_id, reason=reason, now=now) or closed
+        kwargs = {"expected_msg_id": expected_msg_id} if expected_msg_id is not None else {}
+        closed = close_action(action_key, send_as_id=send_as_id, reason=reason, now=now, **kwargs) or closed
     return closed
 
 

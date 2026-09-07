@@ -391,6 +391,7 @@ _GAME_SEND_QUEUE_SEQ = 0
 _GAME_SEND_QUEUE_ITEMS = {}
 _GAME_COMMAND_SENT_OBSERVERS = []
 _GAME_COMMAND_PRE_SEND_GUARDS = []
+_GAME_REPLY_REPLAYER = None
 _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _GAME_SEND_BLOCK_LAST = {}
 _IDENTITY_UNBOUND_AUDIT_LAST = {}
@@ -499,6 +500,13 @@ def register_game_command_sent_observer(observer):
 def register_game_command_pre_send_guard(guard):
     if callable(guard) and guard not in _GAME_COMMAND_PRE_SEND_GUARDS:
         _GAME_COMMAND_PRE_SEND_GUARDS.append(guard)
+
+
+def register_game_reply_replayer(replayer):
+    global _GAME_REPLY_REPLAYER
+    if not callable(replayer):
+        raise TypeError("game reply replayer must be callable")
+    _GAME_REPLY_REPLAYER = replayer
 
 
 def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **metadata):
@@ -1927,7 +1935,10 @@ def _is_logged_game_bot_reply(entry):
         sender_id = 0
     if sender_id > 0 and sender_id in {int(bot_id) for bot_id in get_game_bot_ids()}:
         return True
-    return entry.get("sender_is_bot") is True
+    username = str(entry.get("sender_username") or "").strip().lstrip("@")
+    return sender_id > 0 and entry.get("sender_is_bot") is True and bool(
+        re.fullmatch(r"hantianzun\d+_bot", username, flags=re.IGNORECASE)
+    )
 
 
 def has_active_reply_dispatch(send_as_id=None, family=None):
@@ -2113,7 +2124,9 @@ def _resolve_identity_message_family(msg_id, send_as_id):
     identity_state = get_identity_state(send_as_id)
     pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
     if pending_item:
-        return resolve_reply_family(get_pending_command(pending_item)), msg_id, ""
+        pending_family = resolve_reply_family(get_pending_command(pending_item))
+        if pending_family:
+            return pending_family, msg_id, ""
 
     special_family = _get_special_tracked_message_family(identity_state, msg_id)
     if special_family:
@@ -4995,7 +5008,7 @@ def gc_my_msg_ids(now=None, send_as_id=None):
         mark_dirty()
 
 
-def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None):
+def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None, *, clear_family=True):
     if reply_context is None:
         reply_context = get_reply_context(reply_to, send_as_id=send_as_id)
 
@@ -5011,7 +5024,7 @@ def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None):
             state["pending_tasks"].pop(reply_to_msg_id, None)
             removed_ids.append(reply_to_msg_id)
 
-        if family:
+        if family and clear_family:
             family_commands = get_reply_family_commands(family)
             for msg_id, pending in list(state["pending_tasks"].items()):
                 pending_cmd = get_pending_command(pending)
@@ -5058,12 +5071,8 @@ def _is_pending_consumed(identity_state, msg_id, family):
     return False
 
 
-def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
-    """Close a timed-out pending task if the real bot reply/edit is already logged.
-
-    The retry scheduler is a generic safety net. It must not resend only because
-    the live handler missed or delayed a reply event; message-log evidence wins.
-    """
+async def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
+    """Replay logged bot evidence before deciding whether a send needs recovery."""
     try:
         identity_id = int(identity_id or 0)
         msg_id = int(msg_id or 0)
@@ -5075,6 +5084,8 @@ def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
     cmd = get_pending_command(item)
     if not cmd:
         return None
+    if float(item.get("reply_recovery_retry_at", 0) or 0) > now:
+        return {"recovery_pending": True}
     try:
         sent_at = float(item.get("sent_at", 0) or 0)
     except (TypeError, ValueError, OverflowError):
@@ -5083,46 +5094,72 @@ def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now):
         sent_at = max(0.0, now - max(300, RETRY_MAX_SEC + 60))
     lookback_sec = max(300, min(6 * 3600, int(max(0.0, now - sent_at) + 180)))
     game_group_id = int(item.get("chat_id") or get_game_group_id() or 0)
+
+    def matches(entry):
+        try:
+            return (
+                isinstance(entry, dict)
+                and str(entry.get("event_type") or "") in {"message", "edit"}
+                and int(entry.get("chat_id") or 0) == game_group_id
+                and int(entry.get("reply_to_msg_id") or 0) == msg_id
+                and int(entry.get("message_id") or 0) > 0
+                and _is_logged_game_bot_reply(entry)
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
     replies = find_message_log_replies(
         msg_id,
         now,
         lookback_sec=lookback_sec,
         lookahead_sec=30,
         chat_id=game_group_id,
-        predicate=lambda entry: (
-            str((entry or {}).get("event_type") or "") in {"message", "edit"}
-            and int((entry or {}).get("chat_id") or 0) == game_group_id
-            and (_is_logged_game_bot_reply(entry) or _message_log_reply_matches_command(cmd, entry))
-        ),
+        predicate=matches,
     )
+    replies = [entry for entry in replies if matches(entry)]
     if not replies:
+        if item.get("reply_recovery_msg_id"):
+            # The log window can expire before an unsupported reply is fixed.
+            # Previously observed evidence must continue to prohibit resending.
+            item["reply_recovery_retry_at"] = now + 60
+            mark_dirty()
+            return {"recovery_pending": True}
         return None
     reply = dict(replies[-1])
     family = resolve_reply_family(cmd)
     reply_msg_id = int(reply.get("message_id") or 0)
-    removed = False
-    with use_identity(identity_id) as identity_state:
-        current_item = identity_state.get("pending_tasks", {}).get(msg_id)
-        if current_item and get_pending_command(current_item) == cmd:
-            identity_state["pending_tasks"].pop(msg_id, None)
-            removed = True
-        if family and reply_msg_id > 0:
-            track_reply_chain_message(reply_msg_id, identity_id, family, root_msg_id=msg_id, source="message_log_recovery")
-        if removed:
-            mark_dirty()
-    if removed and family:
-        action_guard_close_by_family(family, send_as_id=identity_id, reason="message_log_reply_recovered", now=now)
-    if removed:
+    handled = False
+    error = "reply_handler_unavailable"
+    if _GAME_REPLY_REPLAYER is not None:
+        try:
+            handled = bool(await _GAME_REPLY_REPLAYER(identity_id, msg_id, item, replies, now))
+            error = "" if handled else "reply_handler_not_matched"
+        except Exception as exc:
+            error = f"reply_handler_failed:{type(exc).__name__}"
+            console_log(f"⚠️ 日志回包重放失败：{cmd[:40]}｜{error}", scope="identity", send_as_id=identity_id)
+    if has_identity(identity_id):
+        with use_identity(identity_id) as identity_state:
+            current = identity_state["pending_tasks"].get(msg_id)
+            if not handled:
+                current = identity_state["pending_tasks"].setdefault(msg_id, dict(item))
+            if current is not None and get_pending_command(current) == cmd:
+                current["reply_recovery_retry_at"] = now + 60
+                current["reply_recovery_error"] = error
+                current["reply_recovery_msg_id"] = reply_msg_id
+                mark_dirty()
+    if handled and family and reply_msg_id > 0:
+        track_reply_chain_message(reply_msg_id, identity_id, family, root_msg_id=msg_id, source="message_log_recovery", chat_id=game_group_id)
+    if handled:
         console_log(
             (
-                f"♻️ 指令 {_truncate_log_text(cmd, limit=40)} 超时前已在消息日志找到回复，"
-                f"关闭待补发（cmd_msg={msg_id}, reply_msg={reply_msg_id or 'unknown'}）。"
+                f"♻️ 指令 {_truncate_log_text(cmd, limit=40)} 已重放日志回包并推进业务状态"
+                f"（cmd_msg={msg_id}, reply_msg={reply_msg_id or 'unknown'}）。"
             ),
             scope="identity",
             send_as_id=identity_id,
             limit=220,
         )
-    return reply if removed else None
+    return {**reply, "recovery_handled": handled}
 
 
 def _refresh_identity_info_retry_tracking(identity_state, new_msg_id, now):
@@ -5171,7 +5208,7 @@ async def run_retry_scheduler(now, send_as_id=None):
 
             if now - send_time <= threshold or not has_identity(identity_id):
                 continue
-            recovered_reply = _recover_pending_reply_from_message_log(identity_id, msg_id, item, now)
+            recovered_reply = await _recover_pending_reply_from_message_log(identity_id, msg_id, item, now)
             if recovered_reply:
                 continue
             if get_bot_last_seen_at() < send_time:
@@ -5379,6 +5416,7 @@ __all__ = [
     "note_game_command_sent",
     "redeem_ui_login_token",
     "register_game_command_sent_observer",
+    "register_game_reply_replayer",
     "reply_log_group_message",
     "resolve_reply_family",
     "run_retry_scheduler",
