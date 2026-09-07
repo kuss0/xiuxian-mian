@@ -474,6 +474,109 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.run_retry_scheduler(runtime.time.time() + 5000, send_as_id=301299112)
         self.assertTrue(state_module.get_identity_state(301299112)["pending_tasks"][(123456, 910001)]["send_caller_detached"])
 
+    async def test_detached_untracked_success_keeps_no_retry_pending_and_blocks_duplicate(self):
+        client = _ControlledSendClient()
+        with self._prepared_send_context(client):
+            first = asyncio.create_task(runtime.send_game_command(".untracked_once", track=False, send_as_id=301299112))
+            await asyncio.wait_for(client.started.wait(), 1)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            duplicate = asyncio.create_task(runtime.send_game_command(".untracked_once", track=False, send_as_id=301299112))
+            client.release.set()
+            result = await asyncio.wait_for(duplicate, 1)
+            self.assertIsNone(result)
+            self.assertEqual(1, len(client.sent_requests))
+            pending = state_module.get_identity_state(301299112)["pending_tasks"].get((123456, 910001))
+            self.assertIsNotNone(pending)
+            self.assertEqual(0, pending["max_retry"])
+            self.assertTrue(pending["send_caller_detached"])
+
+    async def test_bot_silence_does_not_discard_detached_send_ownership(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        now = runtime.time.time()
+        sent_at = now - runtime.BOT_SILENCE_TIMEOUT_SEC - 1
+        identity["pending_tasks"][(123456, 910001)] = {
+            "cmd": ".uncertain_once", "sent_at": sent_at, "chat_id": 123456,
+            "retry": 0, "max_retry": 0, "timeout": 1, "send_caller_detached": True,
+        }
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=sent_at - 10),
+            patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(return_value=None)),
+            patch.object(runtime, "mark_bot_health_suspect") as suspect,
+            patch.object(runtime, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        sender.assert_not_awaited()
+        suspect.assert_called_once()
+        self.assertIn((123456, 910001), identity["pending_tasks"])
+        self.assertTrue(identity["pending_tasks"][(123456, 910001)]["send_caller_detached"])
+
+    def test_module_pending_cleanup_preserves_detached_send_evidence(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        identity["pending_tasks"] = {
+            (123456, 910001): {"cmd": ".pending_once", "send_caller_detached": True},
+            (123456, 910002): {"cmd": ".pending_once"},
+        }
+        removed = runtime.clear_pending_tasks_by_commands({".pending_once"}, send_as_id=identity_id)
+        self.assertEqual([910002], removed)
+        self.assertEqual({(123456, 910001)}, set(identity["pending_tasks"]))
+
+    async def test_retry_scheduler_does_not_expire_new_work_during_reply_recovery(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                identity_id = 301299112
+                identity = state_module.ensure_identity_registered(identity_id)
+                now = runtime.time.time()
+                key = (123456, 910001)
+                item = {"cmd": ".old_pending", "sent_at": now - runtime.BOT_SILENCE_TIMEOUT_SEC - 1, "timeout": 1}
+                identity["pending_tasks"][key] = item
+                fresh = {"cmd": ".fresh_pending", "sent_at": now + 100, "timeout": 60}
+
+                async def recover(*_args, **_kwargs):
+                    if replace:
+                        identity["pending_tasks"][key] = dict(fresh)
+                    else:
+                        item.update(fresh)
+                    return None
+
+                with (
+                    patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+                    patch.object(runtime, "get_bot_last_seen_at", return_value=0),
+                    patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(side_effect=recover)),
+                    patch.object(runtime, "mark_bot_health_suspect"),
+                    patch.object(runtime, "send_game_command", new=AsyncMock()) as sender,
+                ):
+                    await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+                sender.assert_not_awaited()
+                self.assertEqual(fresh, identity["pending_tasks"].get(key))
+
+    async def test_retry_scheduler_stops_when_identity_is_removed_during_recovery(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        now = runtime.time.time()
+        identity["pending_tasks"][(123456, 910001)] = {
+            "cmd": ".old_pending", "sent_at": now - runtime.BOT_SILENCE_TIMEOUT_SEC - 1, "timeout": 1,
+        }
+
+        async def recover(*_args, **_kwargs):
+            state_module.remove_identity(identity_id)
+            return None
+
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=0),
+            patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(side_effect=recover)),
+            patch.object(runtime, "mark_bot_health_suspect"),
+            patch.object(runtime, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        sender.assert_not_awaited()
+        self.assertFalse(state_module.has_identity(identity_id))
+
     async def test_other_account_rpc_waits_for_cancelled_senders_transport(self):
         client = _ControlledSendClient()
         read_started = asyncio.Event()

@@ -2495,6 +2495,8 @@ def _clear_pending_tasks_by_commands_locked(commands):
     families.discard(None)
     remove_ids = []
     for msg_id, pending in state.get("pending_tasks", {}).items():
+        if pending.get("send_caller_detached"):
+            continue
         pending_cmd = get_pending_command(pending)
         pending_family = resolve_reply_family(pending_cmd)
         if pending_cmd in commands or (pending_family and pending_family in families):
@@ -4387,6 +4389,7 @@ def _finalize_game_send_receipt(receipt, *, msg_id, sent_at, append_sent_log=Tru
         return receipt["message"]
     kwargs = dict(receipt["finalize_kwargs"])
     if receipt["detached"]:
+        kwargs["track"] = True
         kwargs["max_retry"] = 0
     msg = _finalize_game_command_sent(
         receipt["command"], msg_id=msg_id, sent_at=sent_at,
@@ -5385,9 +5388,13 @@ async def run_retry_scheduler(now, send_as_id=None):
     for identity_id in target_ids:
         if not has_identity(identity_id) or not get_identity_enabled(identity_id):
             continue
-        with use_identity(identity_id) as identity_state:
-            retry_items = list(identity_state["pending_tasks"].items())
+        owner_state = get_identity_state(identity_id)
+        retry_items = list(owner_state["pending_tasks"].items())
         for msg_id, item in retry_items:
+            if not has_identity(identity_id) or get_identity_state(identity_id) is not owner_state:
+                break
+            if owner_state["pending_tasks"].get(msg_id) is not item:
+                continue
             cmd = get_pending_command(item)
             if not cmd:
                 with use_identity(identity_id) as identity_state:
@@ -5410,8 +5417,13 @@ async def run_retry_scheduler(now, send_as_id=None):
 
             if now - send_time <= threshold or not has_identity(identity_id):
                 continue
+            pending_before = dict(item)
             recovered_reply = await _recover_pending_reply_from_message_log(identity_id, msg_id, item, now)
             if recovered_reply:
+                continue
+            if not has_identity(identity_id) or get_identity_state(identity_id) is not owner_state:
+                break
+            if owner_state["pending_tasks"].get(msg_id) is not item or item != pending_before:
                 continue
             if get_bot_last_seen_at() < send_time:
                 # A module reply timeout is not yet proof that the whole game bot
@@ -5425,7 +5437,11 @@ async def run_retry_scheduler(now, send_as_id=None):
                         now=now,
                     )
                     with use_identity(identity_id) as identity_state:
-                        if msg_id in identity_state["pending_tasks"]:
+                        if item.get("send_caller_detached"):
+                            item["reply_recovery_retry_at"] = now + 60
+                            item["reply_recovery_error"] = "detached_send_reply_unresolved"
+                            mark_dirty()
+                        elif msg_id in identity_state["pending_tasks"]:
                             identity_state["pending_tasks"].pop(msg_id, None)
                             mark_dirty()
                 continue

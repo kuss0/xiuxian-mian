@@ -303,6 +303,21 @@ five monitor/control-only contracts need separate behavioral verification.
   inferred, and no new retry policy or CommandAttempt authority was introduced.
   These changes are local candidate commits only; no deployment, restart,
   live command, production state change or push was performed.
+- R07 detached-result follow-up: 3900 passed, 619 subtests passed, 59.62 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r07-detached-20260907.xml`; Ruff and diff checks
+  pass. The focused send, retry, persistence and real-handler replay suite
+  passed 132 tests and 9 subtests. Six initial failing cases established the
+  untracked cancellation and stale-recovery gaps before their fixes.
+- A cancelled `track=False` caller now retains an acknowledged late send as
+  no-retry pending work. Bot-silence handling and broad module cleanup cannot
+  erase that unresolved evidence. Exact real replies still finish the business
+  transition and clear the row; SQLite save/reload preserves both the marker
+  and the later exact cleanup. Recovery awaits cannot remove replaced or
+  updated pending work or enter an identity deleted during the await.
+- This verifies acknowledged, message-keyed late sends only. It does not
+  establish crash-durable ownership before the message ID is known, and it
+  does not add an outbox or authorize Attempt recovery. Production, skill,
+  live switches, services and remote branches remain untouched.
 
 ## Deployment Constraint
 

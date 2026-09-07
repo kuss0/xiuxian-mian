@@ -185,6 +185,45 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             self.assertTrue(restored["send_caller_detached"])
             self.assertEqual({"message:43:hash": False}, restored["reply_recovery_applied"])
 
+    def test_detached_untracked_receipt_survives_reload_until_exact_reply(self):
+        from model import runtime
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")),
+            patch.object(runtime, "_reply_chain_tracker", {}),
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+        ):
+            identity_id = 990115
+            state_module.ensure_identity_registered(identity_id)
+            receipt = {
+                "command": runtime.CMD_CHECKIN,
+                "send_as_id": identity_id,
+                "detached": True,
+                "message": None,
+                "finalize_kwargs": {
+                    "send_as_id": identity_id, "track": False,
+                    "game_group_id": -1001, "max_retry": 1,
+                },
+            }
+            runtime._finalize_game_send_receipt(
+                receipt, msg_id=42, sent_at=runtime.time.time(), append_sent_log=False,
+            )
+            self.assertTrue(self._save_without_guard_backup())
+            runtime._reply_chain_tracker.clear()
+            restored = persistence._load_identity_from_db(identity_id)
+            pending = restored["pending_tasks"][(-1001, 42)]
+            self.assertTrue(pending["send_caller_detached"])
+            self.assertEqual(0, pending["max_retry"])
+            self.assertEqual([], runtime.clear_pending_tasks_by_commands(
+                {runtime.CMD_CHECKIN}, send_as_id=identity_id,
+            ))
+            context = runtime.get_reply_context(reply_to_msg_id=42, chat_id=-1001)
+            runtime.clear_pending_by_reply(reply_context=context)
+            self.assertEqual({}, restored["pending_tasks"])
+            self.assertTrue(self._save_without_guard_backup())
+            self.assertEqual({}, persistence._load_identity_from_db(identity_id)["pending_tasks"])
+
     def test_duplicate_legacy_and_scoped_reference_cannot_silently_replace_a_row(self):
         with (
             tempfile.TemporaryDirectory() as tmpdir,

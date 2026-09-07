@@ -220,6 +220,21 @@ class EarlyReplyReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(154926, identity_state["pending_tasks"])
         self.assertEqual(other, identity_state["pending_tasks"][154928])
 
+    async def test_detached_send_real_reply_completes_business_and_clears_pending(self):
+        identity_id, item, reply, now = self._pending_log_fixture()
+        item["send_caller_detached"] = True
+        with (
+            patch.object(runtime, "find_message_log_replies", return_value=[reply]),
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        identity = state_module.get_identity_state(identity_id)
+        self.assertEqual(checkin.get_checkin_day_key(reply["ts_epoch"]), identity["last_checkin_done_day"])
+        self.assertNotIn(154926, identity["pending_tasks"])
+        self.assertGreater(identity["next_checkin_time"], now)
+        sender.assert_not_awaited()
+
     async def test_real_handler_replay_clears_only_the_exact_chat_with_same_id(self):
         identity_id, item, reply, now = self._pending_log_fixture()
         identity = state_module.get_identity_state(identity_id)
