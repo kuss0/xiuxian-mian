@@ -1443,6 +1443,7 @@ def execute_miniapp_http_request(
 ):
     if transport is None:
         raise ValueError("miniapp transport missing")
+    sleep = sleeper if sleeper is not None else time.sleep
     delays = tuple(float(delay) for delay in (backoff_sec or ()))
     if request_budget is not None:
         max_retries = max(0, int(request_budget.policy.max_attempts_per_request) - 1)
@@ -1480,7 +1481,7 @@ def execute_miniapp_http_request(
             if request.get("global_rate_limit", True) and not os.environ.get("PYTEST_CURRENT_TEST"):
                 _GLOBAL_MINIAPP_RATE_LIMITER.acquire(
                     priority=str(request.get("global_priority") or "").lower() == "world_boss",
-                    sleeper=sleeper or time.sleep,
+                    sleeper=sleep,
                 )
             response = transport(request)
             status_code, body = _response_status_and_body(response)
@@ -1520,8 +1521,7 @@ def execute_miniapp_http_request(
             return result
         if result.retry_after_sec > MAX_MINIAPP_INLINE_RETRY_AFTER_SEC:
             return result
-        if sleeper is not None:
-            sleeper(max(delays[attempt - 1], float(result.retry_after_sec or 0)))
+        sleep(max(delays[attempt - 1], float(result.retry_after_sec or 0)))
     return last_result or MiniAppHttpResult(ok=False, error="miniapp request not executed", error_type="transient", retryable=True)
 
 

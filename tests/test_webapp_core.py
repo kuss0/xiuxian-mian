@@ -738,6 +738,31 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual("app", result.error_type)
         self.assertEqual(1, len(requests))
 
+    def test_default_retry_sleeper_respects_backoff_and_retry_after(self):
+        for status_code, expected_delay in ((503, 0.25), (429, 7.0)):
+            with self.subTest(status_code=status_code):
+                calls = []
+
+                def transport(_request):
+                    calls.append(1)
+                    if len(calls) == 1:
+                        return {
+                            "status_code": status_code,
+                            "json": {"ok": False, "error": "temporary"},
+                            "headers": {"Retry-After": "7"} if status_code == 429 else {},
+                        }
+                    return 200, {"ok": True}
+
+                request = fishing_miniapp.build_fishing_miniapp_request("start", token="fish_T", init_data="init")
+                request["global_rate_limit"] = False
+                with patch.object(webapp_core.time, "sleep") as sleep:
+                    result = webapp_core.execute_miniapp_http_request(
+                        request, transport, backoff_sec=(0.25,),
+                    )
+                self.assertTrue(result.ok)
+                self.assertEqual(2, len(calls))
+                sleep.assert_called_once_with(expected_delay)
+
     def test_execute_miniapp_http_request_respects_retry_after_header(self):
         calls = []
         sleeps = []
