@@ -528,8 +528,6 @@ def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **
     for observer in list(_GAME_COMMAND_SENT_OBSERVERS):
         try:
             observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id, **metadata)
-        except TypeError:
-            observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id)
         except Exception:
             traceback.print_exc()
 

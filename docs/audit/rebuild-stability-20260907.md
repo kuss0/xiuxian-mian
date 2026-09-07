@@ -64,7 +64,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
 | R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Cross-identity DB overwrite, reply-chain and early-reply ownership repaired; same-identity cross-chat storage and remaining numeric-ID consumers remain open |
 | R12 | High | Second-soul and phaseful timeout cleanup call the all-identities pending-clear helper without an owner argument | Fixed; both callers supply the active identity, helper requires explicit scope, global World Boss cleanup is explicit |
-| R13 | Medium | A TypeError inside a sent-command observer is mistaken for a legacy signature and invokes that observer again | Source-path confirmed; once-only callback regression pending |
+| R13 | Medium | A TypeError inside a sent-command observer is mistaken for a legacy signature and invokes that observer again | Fixed; removed the re-invocation fallback, verified both registered observers accept metadata, and isolated callback failures |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -154,6 +154,30 @@ five monitor/control-only contracts need separate behavioral verification.
   commands. The helper now requires an explicit identity or explicit global
   scope, and both timeout paths provide their owner. The disabled World Boss
   path retains only its existing explicit all-identity cleanup behavior.
+- R13 candidate: 3793 passed, 581 subtests passed, 56.86 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r13-20260907.xml`; Ruff and diff checks pass. The two
+  failure regressions first reproduced duplicate callback execution and an
+  exception preventing the next observer from recording the send. Removing the
+  unused signature fallback fixes both without adding another dispatch layer.
+- Latest read-only production checkpoint: `main` remains at `a41409fd`, with
+  only the user's original quiz-bank edit and untracked helper. Main service,
+  observer and watchdog are active with `NRestarts=0`; listener is inactive.
+  No production state/configuration or monitoring skill was modified.
+
+## Next Review Priorities
+
+1. R11: migrate same-identity, cross-chat pending/history storage and audit the
+   remaining numeric-ID consumers, including cleanup, follow-up routing,
+   persistence snapshots and UI records. The repaired in-memory route lookup
+   does not make the old per-identity integer-key dictionaries collision-safe.
+2. R07: establish crash-durable ownership before a send can cross the transport
+   boundary, and reconcile an outcome without a message ID. Preserve the
+   CommandAttempt shadow-only boundary; a new retry/recovery controller is not
+   approved by these fixes.
+3. Continue the full acceptance matrix: module enable/disable and authoritative
+   cooldowns, MiniApp mutation/reconnect behavior, persistence capacity, UI
+   control contracts and operations. Existing mocks and process uptime cannot
+   replace missing real-game evidence or the final integration review.
 
 ## Completion Gate
 
