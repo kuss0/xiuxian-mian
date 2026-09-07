@@ -4,6 +4,7 @@ import re
 import signal
 import time
 import traceback
+from copy import deepcopy
 from types import SimpleNamespace
 
 from telethon import events, functions
@@ -2265,14 +2266,61 @@ async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, rep
     return phaseful_summary_handled
 
 
-def _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+def _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account, *, cave_public=False):
     return (
         has_identity(identity_id)
         and get_identity_state(identity_id) is owner_state
         and get_identity_account(identity_id) == owner_account
-        and get_identity_enabled(identity_id)
+        and (
+            is_cave_public_identity_available(identity_id)
+            if cave_public else get_identity_enabled(identity_id)
+        )
         and not _is_identity_account_offline(identity_id)
         and get_global_enabled()
+    )
+
+
+_DUE_SCHEDULER_ENABLED_KEYS = {
+    "wild_training": ("wild_training_enabled",),
+    "explore_rift": ("explore_rift_enabled",),
+    "concubine": (
+        "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled",
+    ),
+    "tianxing": ("tianxing_enabled",),
+}
+_DUE_SCHEDULER_FAILURE_FIELDS = {
+    "wild_training": (
+        "next_wild_training_time", "wild_training_last_result_at", "wild_training_last_completed_at",
+    ),
+    "explore_rift": (
+        "next_explore_rift_time", "explore_rift_reply_due_at", "explore_rift_reply_to_msg_id",
+        "explore_rift_pending_result_msg_id",
+    ),
+    "concubine": ("next_concubine_time", "concubine_phase", "concubine_reply_to_msg_id"),
+    "tianxing": ("tianxing_observation", "tianxing_timeline_state"),
+}
+
+
+def _due_scheduler_owner_is_current(identity_id, owner, module):
+    owner_state, owner_account = owner
+    return (
+        _identity_scheduler_owner_is_current(
+            identity_id, owner_state, owner_account, cave_public=module == "wild_training",
+        )
+        and any(owner_state.get(key) for key in _DUE_SCHEDULER_ENABLED_KEYS[module])
+        and not is_identity_weak(identity_id, time.time())
+    )
+
+
+def _due_scheduler_failure_snapshot(owner, module):
+    return deepcopy({key: owner[0].get(key) for key in _DUE_SCHEDULER_FAILURE_FIELDS[module]})
+
+
+def _due_scheduler_failure_is_current(identity_id, owner, module, before):
+    # Results arriving during the await own their new cooldowns and reply anchors.
+    return (
+        _due_scheduler_owner_is_current(identity_id, owner, module)
+        and _due_scheduler_failure_snapshot(owner, module) == before
     )
 
 
@@ -2316,13 +2364,15 @@ async def _run_identity_schedulers(now):
 async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAINING_MAX_PER_TICK):
     global _due_wild_training_last_diag_at
     candidates = []
+    owners = {}
     for scan_index, identity_id in enumerate(get_identity_ids()):
         identity_enabled = bool(get_identity_enabled(identity_id))
         if not is_cave_public_identity_available(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owners[identity_id] = (owner_state, get_identity_account(identity_id))
             identity_now = time.time()
             scheduler_now = max(float(now or 0), identity_now)
             if is_identity_weak(identity_id, scheduler_now):
@@ -2400,26 +2450,32 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
     for _priority, _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
         if processed >= int(limit or 1):
             break
+        owner = owners[identity_id]
+        if not _due_scheduler_owner_is_current(identity_id, owner, "wild_training"):
+            continue
+        failure_before = _due_scheduler_failure_snapshot(owner, "wild_training")
+        profile = get_send_as_profile(identity_id)
+        username = str((profile or {}).get("username") or identity_id)
         try:
             await asyncio.wait_for(
-                _run_due_wild_training_candidate(identity_id, scheduler_now),
+                _run_due_wild_training_candidate(identity_id, scheduler_now, owner=owner),
                 timeout=max(1, float(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC or 0)),
             )
         except asyncio.TimeoutError:
-            with use_identity(identity_id):
-                _record_due_wild_training_candidate_failure(
-                    now=time.time(),
-                    reason=f"到期野外扫描执行超时（>{int(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
-                )
-            profile = get_send_as_profile(identity_id)
-            username = str((profile or {}).get("username") or identity_id)
+            if _due_scheduler_failure_is_current(identity_id, owner, "wild_training", failure_before):
+                with use_identity(identity_id):
+                    _record_due_wild_training_candidate_failure(
+                        now=time.time(),
+                        reason=f"到期野外扫描执行超时（>{int(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
+                    )
             console_log(f"🏞️ 到期野外扫描超时：@{username}", scope="global")
         except Exception as exc:
-            with use_identity(identity_id):
-                _record_due_wild_training_candidate_failure(
-                    now=time.time(),
-                    reason=f"到期野外扫描异常：{str(exc)[:160]}",
-                )
+            if _due_scheduler_failure_is_current(identity_id, owner, "wild_training", failure_before):
+                with use_identity(identity_id):
+                    _record_due_wild_training_candidate_failure(
+                        now=time.time(),
+                        reason=f"到期野外扫描异常：{str(exc)[:160]}",
+                    )
             print("due wild training scheduler failed:")
             print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         processed += 1
@@ -2432,7 +2488,9 @@ def _wild_training_completed_cooldown_due_at():
         return 0.0
 
 
-async def _run_due_wild_training_candidate(identity_id, scheduler_now):
+async def _run_due_wild_training_candidate(identity_id, scheduler_now, *, owner):
+    if not _due_scheduler_owner_is_current(identity_id, owner, "wild_training"):
+        return
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
         await run_wild_training_scheduler(candidate_now)
@@ -2448,12 +2506,14 @@ def _record_due_wild_training_candidate_failure(*, now, reason):
 async def _run_due_explore_rift_schedulers(now, *, limit=DUE_EXPLORE_RIFT_MAX_PER_TICK):
     global _due_explore_rift_last_diag_at
     candidates = []
+    owners = {}
     for scan_index, identity_id in enumerate(get_identity_ids()):
         if not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owners[identity_id] = (owner_state, get_identity_account(identity_id))
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
@@ -2523,34 +2583,42 @@ async def _run_due_explore_rift_schedulers(now, *, limit=DUE_EXPLORE_RIFT_MAX_PE
     for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
         if processed >= int(limit or 1):
             break
+        owner = owners[identity_id]
+        if not _due_scheduler_owner_is_current(identity_id, owner, "explore_rift"):
+            continue
+        failure_before = _due_scheduler_failure_snapshot(owner, "explore_rift")
+        profile = get_send_as_profile(identity_id)
+        username = str((profile or {}).get("username") or identity_id)
         try:
             await asyncio.wait_for(
-                _run_due_explore_rift_candidate(identity_id, scheduler_now),
+                _run_due_explore_rift_candidate(identity_id, scheduler_now, owner=owner),
                 timeout=max(1, float(DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC or 0)),
             )
         except asyncio.TimeoutError:
-            with use_identity(identity_id):
-                _record_due_explore_rift_candidate_failure(
-                    action,
-                    now=time.time(),
-                    reason=f"到期探缝扫描执行超时（>{int(DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
-                )
-            profile = get_send_as_profile(identity_id)
-            username = str((profile or {}).get("username") or identity_id)
+            if _due_scheduler_failure_is_current(identity_id, owner, "explore_rift", failure_before):
+                with use_identity(identity_id):
+                    _record_due_explore_rift_candidate_failure(
+                        action,
+                        now=time.time(),
+                        reason=f"到期探缝扫描执行超时（>{int(DUE_EXPLORE_RIFT_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
+                    )
             console_log(f"🕳 到期探缝扫描超时：@{username} {action}", scope="global")
         except Exception as exc:
-            with use_identity(identity_id):
-                _record_due_explore_rift_candidate_failure(
-                    action,
-                    now=time.time(),
-                    reason=f"到期探缝扫描异常：{str(exc)[:160]}",
-                )
+            if _due_scheduler_failure_is_current(identity_id, owner, "explore_rift", failure_before):
+                with use_identity(identity_id):
+                    _record_due_explore_rift_candidate_failure(
+                        action,
+                        now=time.time(),
+                        reason=f"到期探缝扫描异常：{str(exc)[:160]}",
+                    )
             print("due explore rift scheduler failed:")
             print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         processed += 1
 
 
-async def _run_due_explore_rift_candidate(identity_id, scheduler_now):
+async def _run_due_explore_rift_candidate(identity_id, scheduler_now, *, owner):
+    if not _due_scheduler_owner_is_current(identity_id, owner, "explore_rift"):
+        return
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
         await run_explore_rift_scheduler(candidate_now)
@@ -2569,12 +2637,14 @@ def _record_due_explore_rift_candidate_failure(action, *, now, reason):
 async def _run_due_concubine_schedulers(now, *, limit=DUE_CONCUBINE_MAX_PER_TICK):
     global _due_concubine_last_diag_at
     candidates = []
+    owners = {}
     for scan_index, identity_id in enumerate(get_identity_ids()):
         if not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owners[identity_id] = (owner_state, get_identity_account(identity_id))
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
@@ -2616,33 +2686,41 @@ async def _run_due_concubine_schedulers(now, *, limit=DUE_CONCUBINE_MAX_PER_TICK
     for _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
         if processed >= int(limit or 1):
             break
+        owner = owners[identity_id]
+        if not _due_scheduler_owner_is_current(identity_id, owner, "concubine"):
+            continue
+        failure_before = _due_scheduler_failure_snapshot(owner, "concubine")
+        profile = get_send_as_profile(identity_id)
+        username = str((profile or {}).get("username") or identity_id)
         try:
             await asyncio.wait_for(
-                _run_due_concubine_candidate(identity_id, scheduler_now),
+                _run_due_concubine_candidate(identity_id, scheduler_now, owner=owner),
                 timeout=max(1, float(DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC or 0)),
             )
         except asyncio.TimeoutError:
-            with use_identity(identity_id):
-                _record_due_concubine_candidate_failure(
-                    now=time.time(),
-                    reason=f"到期侍妾扫描执行超时（>{int(DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
-                    transient=True,
-                )
-            profile = get_send_as_profile(identity_id)
-            username = str((profile or {}).get("username") or identity_id)
+            if _due_scheduler_failure_is_current(identity_id, owner, "concubine", failure_before):
+                with use_identity(identity_id):
+                    _record_due_concubine_candidate_failure(
+                        now=time.time(),
+                        reason=f"到期侍妾扫描执行超时（>{int(DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
+                        transient=True,
+                    )
             console_log(f"🌸 到期侍妾扫描超时：@{username}", scope="global")
         except Exception as exc:
-            with use_identity(identity_id):
-                _record_due_concubine_candidate_failure(
-                    now=time.time(),
-                    reason=f"到期侍妾扫描异常：{str(exc)[:160]}",
-                )
+            if _due_scheduler_failure_is_current(identity_id, owner, "concubine", failure_before):
+                with use_identity(identity_id):
+                    _record_due_concubine_candidate_failure(
+                        now=time.time(),
+                        reason=f"到期侍妾扫描异常：{str(exc)[:160]}",
+                    )
             print("due concubine scheduler failed:")
             print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         processed += 1
 
 
-async def _run_due_concubine_candidate(identity_id, scheduler_now):
+async def _run_due_concubine_candidate(identity_id, scheduler_now, *, owner):
+    if not _due_scheduler_owner_is_current(identity_id, owner, "concubine"):
+        return
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
         with concubine_send_queue_timeout(CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC):
@@ -2787,12 +2865,14 @@ async def _run_tianxing_daily_bootstrap_identity_schedulers(now, *, limit=TIANXI
 
 async def _run_tianxing_timeline_followup_identity_schedulers(now, *, limit=TIANXING_TIMELINE_FOLLOWUP_MAX_PER_TICK):
     candidates = []
+    owners = {}
     for scan_index, identity_id in enumerate(get_identity_ids()):
         if not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owners[identity_id] = (owner_state, get_identity_account(identity_id))
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
@@ -2806,8 +2886,10 @@ async def _run_tianxing_timeline_followup_identity_schedulers(now, *, limit=TIAN
     for _scan_index, identity_id, scheduler_now in candidates:
         if processed >= int(limit or 1):
             break
+        if not _due_scheduler_owner_is_current(identity_id, owners[identity_id], "tianxing"):
+            continue
         with use_identity(identity_id):
-            result = await run_tianxing_timeline_followup_scheduler(scheduler_now)
+            result = await run_tianxing_timeline_followup_scheduler(max(scheduler_now, time.time()))
             if (result or {}).get("active"):
                 processed += 1
 
@@ -2937,12 +3019,14 @@ def _tianxing_fast_due_time(now):
 async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
     global _due_tianxing_last_diag_at
     candidates = []
+    owners = {}
     for scan_index, identity_id in enumerate(get_identity_ids()):
         if not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owners[identity_id] = (owner_state, get_identity_account(identity_id))
             scheduler_now = max(float(now or 0), time.time())
             if is_identity_weak(identity_id, scheduler_now):
                 continue
@@ -2989,44 +3073,54 @@ async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
     for _priority, _tianji_value, _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
         if processed >= int(limit or 1):
             break
+        owner = owners[identity_id]
+        if not _due_scheduler_owner_is_current(identity_id, owner, "tianxing"):
+            continue
+        failure_before = _due_scheduler_failure_snapshot(owner, "tianxing")
+        profile = get_send_as_profile(identity_id)
+        username = str((profile or {}).get("username") or identity_id)
         try:
             await asyncio.wait_for(
-                _run_due_tianxing_candidate(identity_id, scheduler_now),
+                _run_due_tianxing_candidate(identity_id, scheduler_now, owner=owner),
                 timeout=max(1, float(DUE_TIANXING_SCHEDULER_TIMEOUT_SEC or 0)),
             )
         except asyncio.TimeoutError:
-            with use_identity(identity_id):
-                observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-                observed["auto_last_action"] = "fast_due"
-                observed["auto_last_plan"] = "timeout_yield"
-                observed["auto_last_plan_at"] = float(time.time())
-                observed["auto_next_time"] = float(time.time() + 60)
-                state["tianxing_observation"] = observed
-                mark_dirty()
-            profile = get_send_as_profile(identity_id)
-            username = str((profile or {}).get("username") or identity_id)
+            if _due_scheduler_failure_is_current(identity_id, owner, "tianxing", failure_before):
+                with use_identity(identity_id):
+                    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+                    observed["auto_last_action"] = "fast_due"
+                    observed["auto_last_plan"] = "timeout_yield"
+                    observed["auto_last_plan_at"] = float(time.time())
+                    observed["auto_next_time"] = float(time.time() + 60)
+                    state["tianxing_observation"] = observed
+                    mark_dirty()
             console_log(f"🌌 到期天星扫描超时：@{username}", scope="global")
         except Exception as exc:
-            with use_identity(identity_id):
-                observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-                observed["auto_last_action"] = "fast_due"
-                observed["auto_last_error"] = f"到期天星扫描异常：{str(exc)[:160]}"
-                observed["auto_last_error_at"] = float(time.time())
-                observed["auto_next_time"] = float(time.time() + 120)
-                state["tianxing_observation"] = observed
-                mark_dirty()
+            if _due_scheduler_failure_is_current(identity_id, owner, "tianxing", failure_before):
+                with use_identity(identity_id):
+                    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+                    observed["auto_last_action"] = "fast_due"
+                    observed["auto_last_error"] = f"到期天星扫描异常：{str(exc)[:160]}"
+                    observed["auto_last_error_at"] = float(time.time())
+                    observed["auto_next_time"] = float(time.time() + 120)
+                    state["tianxing_observation"] = observed
+                    mark_dirty()
             print("due tianxing scheduler failed:")
             print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         processed += 1
 
 
-async def _run_due_tianxing_candidate(identity_id, scheduler_now):
+async def _run_due_tianxing_candidate(identity_id, scheduler_now, *, owner):
+    if not _due_scheduler_owner_is_current(identity_id, owner, "tianxing"):
+        return
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
         windows = _tianxing_downstream_prepare_windows(candidate_now)
         if windows:
             await run_tianxing_timeline_scheduler(candidate_now, windows=windows)
-        await run_tianxing_scheduler(candidate_now)
+        if not _due_scheduler_owner_is_current(identity_id, owner, "tianxing"):
+            return
+        await run_tianxing_scheduler(max(candidate_now, time.time()))
 
 
 async def _run_identity_schedulers_background(now):

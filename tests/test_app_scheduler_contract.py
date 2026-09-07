@@ -1578,7 +1578,8 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         seen = []
 
-        async def fake_candidate(identity_id, scheduler_now):
+        async def fake_candidate(identity_id, scheduler_now, *, owner):
+            self.assertIs(owner[0], state_module.get_identity_state(identity_id))
             seen.append((identity_id, scheduler_now))
 
         with (
@@ -1593,7 +1594,10 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         ):
             await app._run_due_tianxing_schedulers(now, limit=1)
 
-        candidate_mock.assert_awaited_once_with(urgent_identity_id, now)
+        candidate_mock.assert_awaited_once_with(
+            urgent_identity_id, now,
+            owner=(state_module.get_identity_state(urgent_identity_id), state_module.get_identity_account(urgent_identity_id)),
+        )
         self.assertEqual([(urgent_identity_id, now)], seen)
 
     async def test_due_tianxing_fast_scan_allows_downstream_prepare_during_phaseful_summary(self):

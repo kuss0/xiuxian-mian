@@ -27,7 +27,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown repaired; reconnect and forced-stop durability review still pending |
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
-| Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Pending |
+| Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
@@ -78,6 +78,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R24 | High | Nanlong log recovery misses unthreaded cross-group trade results, trusts player copies of result wording, and leaves a confirmed detached command pending after business completion | Fixed for reproduced cases in candidate; replay trusted incoming evidence through the existing direct/broadcast handlers, preserve source-chat boundaries, and clear only the confirmed command's exact pending key; no-ID/early-receipt recovery remains open |
 | R25 | High | A queued send uses an identity after deletion, replacement, account rebinding or disable; a deleted implicit context falls back to another role, and a pause after RPC task creation still permits dispatch | Fixed in candidate; capture the existing owner/account, revalidate after preparation and at actual dispatch, and keep a deleted active context from selecting another identity; post-dispatch receipt durability and module-switch admission remain under review |
 | R26 | High | Ordinary, cleanup and phaseful scheduling continue into later modules after an awaited operation removes, replaces, rebinds or disables their identity | Fixed in candidate; retain the identity object and account, revalidate before later module calls and proxy reads, and stop on account-offline/global-pause changes; independent phaseful polling and continuation of unaffected roles are tested; fast due scans remain under review |
+| R27 | High | Fast-due queues execute invalidated identities; Tianxing continues after an invalidating preparation; late errors overwrite new cooldowns or crash again while entering a deleted identity | Fixed in candidate for wild training, rift, concubine, Tianxing and queued timeline follow-up; retain scan-time ownership, recheck at task dispatch and after preparation, and compare business snapshots before failure backoff; per-module internal await boundaries still require review |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -440,6 +441,25 @@ five monitor/control-only contracts need separate behavioral verification.
   pass. The fast due candidate queues, awaited Tianxing follow-ups and their
   exception handlers are not covered by this fix and remain open. No skill,
   production configuration/database, service or remote branch was changed.
+- R27 reproducer: 135 failing cases before the fix, including stale candidate
+  dispatch, replacement-role timer writes, secondary KeyErrors after deletion,
+  and use of the pre-preparation time after an awaited Tianxing step.
+- Fast-due queues now retain the original state object/account and recheck
+  identity availability, the module switch, weakness and global pause before
+  dispatch. Wild training retains the existing public-entry exception for a
+  channel-health-frozen identity. Tianxing rechecks after timeline preparation
+  and refreshes its execution time. Timeline follow-up uses scan-time ownership.
+- Late timeout/error backoff only applies while both the owner and relevant
+  business cooldown/anchor snapshot are unchanged. A result or replacement
+  arriving during the await keeps its state. Genuine unchanged failures retain
+  the existing bounded backoff; caller cancellation drains the child and
+  propagates without fabricating business failure or running later candidates.
+- R27 focused scheduler suites: 85 passed, 188 subtests passed. Full suite:
+  3949 passed, 845 subtests passed, 59.85 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r27-due-owner-20260908.xml`. Ruff and diff checks pass.
+  This introduces no persisted send fence, new retry controller or Attempt
+  decision authority. R07 crash durability and module-internal ownership
+  checks remain open; no production, skill or remote changes were made.
 
 ## Deployment Constraint
 
