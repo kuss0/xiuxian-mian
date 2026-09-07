@@ -581,6 +581,20 @@ async def _handle_nanlong_send_failure(command, now, label, previous):
     return False
 
 
+def _nanlong_send_check(command):
+    expected = _capture_nanlong_operation()
+    deadline, valid = _parse_nanlong_pending_float(state.get("next_nanlong_time"))
+
+    def is_current():
+        recall = command == CMD_CONCUBINE_RECALL
+        return (
+            _nanlong_operation_is_current(expected, check_choice=not recall)
+            and (recall or (valid and time.time() < deadline))
+        )
+
+    return is_current
+
+
 async def _send_nanlong_command(command, reply_to_msg_id):
     chat_id, valid = _parse_nanlong_pending_int(state.get("nanlong_reply_chat_id", 0))
     if not valid or not chat_id or int(state.get("nanlong_reply_to_msg_id") or 0) != reply_to_msg_id:
@@ -590,6 +604,7 @@ async def _send_nanlong_command(command, reply_to_msg_id):
     return await send_game_command(
         command, track=False, reply_to=reply_to_msg_id, target_chat_id=chat_id,
         send_as_id=get_current_identity_id(),
+        operation_check=_nanlong_send_check(command),
         **_nanlong_send_intent(),
     )
 
@@ -598,14 +613,20 @@ async def _send_nanlong_place_command():
     chat_id, valid = _parse_nanlong_pending_int(state.get("nanlong_reply_chat_id", 0))
     if not valid or not chat_id or not state.get("nanlong_enabled"):
         return None
-    return await send_game_command(CMD_CONCUBINE_PLACE, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id(), **_nanlong_send_intent())
+    return await send_game_command(
+        CMD_CONCUBINE_PLACE, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id(),
+        operation_check=_nanlong_send_check(CMD_CONCUBINE_PLACE), **_nanlong_send_intent(),
+    )
 
 
 async def _send_nanlong_recall_command():
     chat_id = _get_nanlong_last_chat_id()
     if not chat_id or not state.get("nanlong_enabled"):
         return None
-    return await send_game_command(CMD_CONCUBINE_RECALL, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id(), **_nanlong_send_intent())
+    return await send_game_command(
+        CMD_CONCUBINE_RECALL, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id(),
+        operation_check=_nanlong_send_check(CMD_CONCUBINE_RECALL), **_nanlong_send_intent(),
+    )
 
 
 async def _maybe_audit_nanlong_prompt_override(previous_reply_to, previous_deadline, now, new_reply_to):

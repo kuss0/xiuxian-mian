@@ -4688,6 +4688,7 @@ async def _send_game_command_impl(
     queue_timeout=None,
     allow_maintenance_pause=False,
     target_chat_id=None,
+    operation_check=None,
 ):
     if send_as_id is None:
         send_as_id = get_active_identity_id() if has_active_identity_context() else get_current_identity_id()
@@ -4726,7 +4727,19 @@ async def _send_game_command_impl(
         elif owner_was_enabled and not get_identity_enabled(send_as_id):
             code, reason = "identity_disabled", "发送身份已关闭"
         else:
-            return True
+            if operation_check is None:
+                return True
+            # A module's read-only synchronous check stays outside the
+            # serialized intent and is repeated at the final dispatch boundary.
+            try:
+                decision = operation_check()
+                if inspect.iscoroutine(decision):
+                    decision.close()
+                if decision is True:
+                    return True
+                code, reason = "operation_changed", "发送操作已失效或校验未明确放行"
+            except Exception as exc:
+                code, reason = "operation_check_error", f"发送操作校验异常 ({type(exc).__name__})"
         _record_game_send_block(send_as_id, command, code, reason, definitely_unsent=True)
         return False
 
@@ -5128,8 +5141,9 @@ async def send_game_command(
     queue_timeout=None,
     allow_maintenance_pause=False,
     target_chat_id=None,
+    operation_check=None,
 ):
-    """Send through the legacy path while optionally recording a shadow attempt."""
+    """Send with an optional pure synchronous operation check and shadow audit."""
     shadow_identity_id = None
     if send_as_id is not None:
         try:
@@ -5179,6 +5193,7 @@ async def send_game_command(
             queue_timeout=queue_timeout,
             allow_maintenance_pause=allow_maintenance_pause,
             target_chat_id=target_chat_id,
+            operation_check=operation_check,
         )
 
 

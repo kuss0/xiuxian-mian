@@ -25,7 +25,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Area | Required behavior | Evidence required | Status |
 | --- | --- | --- | --- |
 | Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown repaired; reconnect and forced-stop durability review still pending |
-| Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Pending |
+| Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Identity admission and Nanlong queued-operation checks repaired in candidate; no-ID crash durability and other modules' business admission still pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP retry permission, flow budget and implicit redirect denial fixed in candidate; per-game retry/reentry, session lifecycle and current-entry integration still pending |
@@ -84,7 +84,8 @@ proof that gameplay is healthy. Production files have not been changed.
 | R30 | High | Business-capture construction escapes the diagnostic boundary; World Boss business-capture write errors interrupt an accepted hit or completed settlement | Fixed in candidate; isolate construction/redaction/storage in both business-capture helpers, retain cancellation propagation and secret-free error-class warnings; complete battle replays preserve accepted hits, the final result and the exact request sequence |
 | R31 | High | Generic HTTP retries uncertain requests without a replay-safety contract; generic flow execution ignores the adapter's request budget | Fixed in candidate; default to one attempt, require explicit boolean retry safety, share one budget across flow steps/retries, and retain bounded read-only World Boss state reconciliation; per-game manual loops/reentry remain under review |
 | R32 | High | Requests follows API redirects outside the validated route and request budget, including replaying credential-bearing POSTs; Tiandao accepts 3xx JSON as success | Fixed in candidate; disable automatic redirects in the shared/direct/pooled, World Boss and Tiandao transports, require Tiandao HTTP 2xx success, and verify real local HTTP redirect behavior without reaching the game service |
-| R33 | High | Nanlong loses results received before a send receipt, cannot adopt detached receipts, and installs old-account receipts after rebinding; using enqueue time as a result bound can claim an older trade broadcast | Fixed for reproduced interleavings in candidate; exact detached receipt adoption, immediate normal-handler replay, actual dispatch-time evidence, account ownership checks, and SQLite reload are covered; queued prompt invalidation and forced-stop durability remain open |
+| R33 | High | Nanlong loses results received before a send receipt, cannot adopt detached receipts, and installs old-account receipts after rebinding; using enqueue time as a result bound can claim an older trade broadcast | Fixed for reproduced interleavings in candidate; exact detached receipt adoption, immediate normal-handler replay, actual dispatch-time evidence, account ownership checks, and SQLite reload are covered; R34 covers queued invalidation, while forced-stop durability remains open |
+| R34 | High | Nanlong queued commands still dispatch after module disable, prompt replacement/clear, choice change or expiry; post-send validation arrives too late to stop the game action | Fixed for reproduced boundaries in candidate; a pure synchronous module operation check is revalidated by the existing owner checks and immediately before RPC dispatch; normal steps, recall cleanup and post-dispatch receipt controls pass |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -609,6 +610,34 @@ five monitor/control-only contracts need separate behavioral verification.
   checks pass. Production, live configuration, services, skill and remote
   branches remain unchanged. This does not close R07, queued business
   admission checks, capacity review or the whole-project acceptance matrix.
+- R34 reproduced 15 actual fake-client transport invocations for invalidated
+  Nanlong operations. Each of disable, new prompt, clear, choice change and
+  expiry was injected during entity preparation, an awaited shared guard, and
+  the gap after RPC-task creation but before dispatch. Earlier module
+  post-await checks prevented stale state writes but did not prevent the send.
+- The legacy send API now accepts an optional pure synchronous
+  `operation_check`, outside serialized intent, pending data and Attempt.
+  Existing identity-owner validation calls it at preparation/queue boundaries
+  and immediately before dispatch. Only literal `True` permits sending;
+  exceptions, non-boolean values and awaitables are definitely-unsent failures.
+  Rejected coroutine results are closed. No new persistent fence, recovery
+  controller, retry behavior or CommandAttempt control path was introduced.
+  Callers that omit the check retain existing behavior.
+- Nanlong supplies its operation snapshot, enabled flag, current choice and
+  real prompt deadline for placement/exchange/reject sends. Recall still
+  checks ownership and module enablement but does not depend on an expired
+  trade prompt or a later choice edit. The real runtime/fake-client tests also
+  prove all four normal steps can dispatch, disable blocks all four, and a
+  choice edit after dispatch does not discard the original command's receipt.
+  Unknown-send and detached-receipt behavior remains covered by R33.
+- R34 focused suites: 170 passed, 122 subtests passed. Full suite: 4079 passed,
+  910 subtests passed, 59.09 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r34-send-operation-admission-20260908.xml`. Full Ruff
+  and diff checks pass. The separate isolated SIGKILL probes for checkin and
+  rift still report `safe=false` and exit 1: the first worker saves zero
+  pending receipts after sending, and the reload worker invokes transport
+  again. R34 is not a crash-durability fix. No production state, service,
+  skill, configuration or remote branch was changed.
 
 ## Deployment Constraint
 
@@ -633,9 +662,10 @@ and cleanup code during a code-only rollback.
    Nanlong's send-in-flight reentry and unknown-send automatic retry are now
    covered by R22, and trusted cross-group unthreaded result recovery and exact
    terminal pending cleanup by R24. Result-before-receipt and late detached
-   receipt adoption are covered by R33. Its queued sends still need business
-   revalidation when the original prompt expires, changes or is cancelled;
-   replay-time versus event-time follow-up deadlines also require review.
+   receipt adoption are covered by R33, and queued operation invalidation by
+   R34. Replay-time versus event-time follow-up deadlines, cleanup after a
+   successful placement whose prompt has expired or whose choice becomes
+   reject, and ownership after post-dispatch disable still require review.
    Passing route tests does not close R07 or R11.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
@@ -660,6 +690,12 @@ and cleanup code during a code-only rollback.
    unknown-result rescheduling, owner invalidation during threaded flows, and
    session-pool retention/deletion/rebind behavior. R32 closes Requests' hidden
    redirect path, not the remaining runtime lifecycle or entry-refresh matrix.
+   Start with `tower._run_tower_worker`,
+   `cave_treasure_runtime.run_cave_public_tower` and the threaded
+   `run_tower_miniapp_production_flow`: current wrappers await work before
+   reentering identity state or recording results, and the pooled transport's
+   session-generation check is not an identity/account/enablement check.
+   Reproduce at the full caller boundary before generalizing to other games.
 
 ## Completion Gate
 

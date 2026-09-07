@@ -365,6 +365,189 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state_module.has_identity(identity_id))
         self.assertEqual({}, state_module.get_identity_state(other_id)["pending_tasks"])
 
+    async def test_nanlong_queued_operation_is_revalidated_before_transport(self):
+        from model.features import nanlong
+
+        identity_id = 301299112
+        for boundary in ("entity", "guard", "dispatch"):
+            for change in ("disabled", "new_prompt", "cleared", "choice", "expired"):
+                with self.subTest(boundary=boundary, change=change):
+                    client = _FakeClient(["ok"])
+                    prepared = changed = False
+                    clock = 1788748200.0
+                    original_resolve = client.get_input_entity
+                    original_start = runtime._start_game_send_rpc
+
+                    def change_operation():
+                        nonlocal changed, clock
+                        if changed:
+                            return
+                        changed = True
+                        if change == "disabled":
+                            identity["nanlong_enabled"] = False
+                        elif change == "new_prompt":
+                            nanlong._set_nanlong_pending(456, clock + 300, clock, chat_id=123456)
+                        elif change == "cleared":
+                            nanlong.clear_nanlong_state()
+                        elif change == "choice":
+                            state_module.set_nanlong_choice(identity_id, "exchange_gongfa")
+                        else:
+                            clock += 181
+
+                    async def resolve(entity_id):
+                        nonlocal prepared
+                        result = await original_resolve(entity_id)
+                        if entity_id == identity_id:
+                            prepared = True
+                            if boundary == "entity":
+                                change_operation()
+                        return result
+
+                    async def guard(*_args, **_kwargs):
+                        if prepared and boundary == "guard":
+                            await asyncio.sleep(0)
+                            change_operation()
+                        return True, "", ""
+
+                    def start(*args, **kwargs):
+                        result = original_start(*args, **kwargs)
+                        if boundary == "dispatch":
+                            change_operation()
+                        return result
+
+                    client.get_input_entity = resolve
+                    with (
+                        self._prepared_send_context(client),
+                        state_module.use_identity(identity_id) as identity,
+                        patch.object(nanlong, "save_state", return_value=True),
+                        patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+                        patch.object(nanlong.time, "time", side_effect=lambda: clock),
+                        patch.object(runtime, "_run_game_command_pre_send_guards", side_effect=guard),
+                        patch.object(runtime, "_start_game_send_rpc", side_effect=start),
+                    ):
+                        state_module.update_send_as_profile(identity_id, enabled=True, nanlong_choice="exchange_fabao")
+                        identity.update(nanlong_enabled=True, concubine_name="南宫婉")
+                        nanlong._set_nanlong_pending(123, clock + 180, clock, chat_id=123456)
+                        identity["nanlong_reply_due_at"] = clock
+                        await nanlong.run_nanlong_scheduler(clock)
+                        block = runtime.classify_game_send_block(identity_id, nanlong.CMD_NANLONG_EXCHANGE_FABAO)
+                    self.assertTrue(changed)
+                    self.assertEqual([], client.sent_requests)
+                    self.assertEqual("unsent", block["status"])
+                    if change == "new_prompt":
+                        self.assertEqual(456, identity["nanlong_reply_to_msg_id"])
+                    self.assertEqual(0, identity["nanlong_last_msg_id"])
+
+    async def test_nanlong_all_steps_keep_normal_dispatch_and_honor_disable(self):
+        from model.features import nanlong
+
+        identity_id = 301299112
+        commands = {
+            "exchange": nanlong.CMD_NANLONG_EXCHANGE_FABAO,
+            "place": nanlong.CMD_CONCUBINE_PLACE,
+            "reject": nanlong.CMD_NANLONG_REJECT,
+            "recall": nanlong.CMD_CONCUBINE_RECALL,
+        }
+        for step, command in commands.items():
+            for disable in (False, True):
+                with self.subTest(step=step, disable=disable):
+                    client = _FakeClient(["ok"])
+                    original_resolve = client.get_input_entity
+                    clock = 1788748200.0
+
+                    async def resolve(entity_id):
+                        result = await original_resolve(entity_id)
+                        if disable and entity_id == identity_id:
+                            identity["nanlong_enabled"] = False
+                        elif step == "recall" and entity_id == identity_id:
+                            state_module.set_nanlong_choice(identity_id, "reject")
+                        return result
+
+                    client.get_input_entity = resolve
+                    with (
+                        self._prepared_send_context(client),
+                        state_module.use_identity(identity_id) as identity,
+                        patch.object(nanlong, "save_state", return_value=True),
+                        patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+                        patch.object(nanlong.time, "time", return_value=clock),
+                        patch.object(nanlong, "_get_nanlong_cave_status", return_value=nanlong.NANLONG_CAVE_STATUS_AVAILABLE),
+                        patch.object(nanlong, "iter_message_log_entries_between", return_value=[]),
+                    ):
+                        state_module.update_send_as_profile(identity_id, enabled=True, nanlong_choice="reject" if step == "reject" else "exchange_fabao")
+                        identity.update(nanlong_enabled=True, concubine_name="墨彩环" if step == "place" else "南宫婉")
+                        nanlong._set_nanlong_pending(123, clock + 180, clock, chat_id=123456)
+                        identity["nanlong_reply_due_at"] = clock
+                        if step == "recall":
+                            identity.update(nanlong_last_chat_id=123456, nanlong_last_msg_id=124)
+                            await nanlong._send_nanlong_recall_after_trade(clock)
+                        else:
+                            await nanlong.run_nanlong_scheduler(clock)
+                    self.assertEqual([] if disable else [command], [request.message for request in client.sent_requests])
+
+    async def test_nanlong_choice_change_after_dispatch_preserves_the_actual_receipt(self):
+        from model.features import nanlong
+
+        identity_id = 301299112
+
+        class ChangeChoiceClient(_FakeClient):
+            async def __call__(self, request):
+                state_module.set_nanlong_choice(identity_id, "exchange_gongfa")
+                return await super().__call__(request)
+
+        client = ChangeChoiceClient(["ok"])
+        now = runtime.time.time()
+        with (
+            self._prepared_send_context(client),
+            state_module.use_identity(identity_id) as identity,
+            patch.object(nanlong, "save_state", return_value=True),
+            patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+            patch.object(nanlong, "iter_message_log_entries_between", return_value=[]),
+        ):
+            state_module.update_send_as_profile(identity_id, enabled=True, nanlong_choice="exchange_fabao")
+            identity.update(nanlong_enabled=True, concubine_name="南宫婉")
+            nanlong._set_nanlong_pending(123, now + 180, now, chat_id=123456)
+            identity["nanlong_reply_due_at"] = now
+            await nanlong.run_nanlong_scheduler(now)
+        self.assertEqual([nanlong.CMD_NANLONG_EXCHANGE_FABAO], [request.message for request in client.sent_requests])
+        self.assertEqual(910001, identity["nanlong_last_msg_id"])
+        self.assertEqual(nanlong.CMD_NANLONG_EXCHANGE_FABAO, identity["nanlong_last_command"])
+        self.assertEqual("exchange_gongfa", state_module.get_nanlong_choice(identity_id))
+
+    async def test_operation_check_requires_explicit_synchronous_success(self):
+        async def async_check():
+            return True
+
+        def raises():
+            raise RuntimeError("private-value")
+
+        for mode in ("true", "false", "none", "number", "dict", "async", "future", "raises"):
+            with self.subTest(mode=mode):
+                client = _FakeClient(["ok"])
+                coroutine = async_check()
+                future = asyncio.get_running_loop().create_future()
+                future.set_result(True)
+                decision = {"true": True, "false": False, "none": None, "number": 1, "dict": {}, "async": coroutine, "future": future}.get(mode)
+                with self._prepared_send_context(client):
+                    result = await runtime.send_game_command(
+                        ".operation_test", send_as_id=301299112,
+                        operation_check=raises if mode == "raises" else lambda: decision,
+                    )
+                if mode == "async":
+                    self.assertEqual(inspect.CORO_CLOSED, inspect.getcoroutinestate(coroutine))
+                coroutine.close()
+                if mode == "true":
+                    self.assertIsNotNone(result)
+                    self.assertEqual(1, len(client.sent_requests))
+                    self.assertNotIn("operation_check", vars(result))
+                    pending = state_module.get_identity_state(301299112)["pending_tasks"][(123456, 910001)]
+                    self.assertNotIn("operation_check", pending)
+                else:
+                    self.assertIsNone(result)
+                    self.assertEqual([], client.sent_requests)
+                    block = runtime.classify_game_send_block(301299112, ".operation_test")
+                    self.assertEqual("unsent", block["status"])
+                    self.assertNotIn("private-value", str(block))
+
     async def test_explicit_send_for_already_disabled_identity_keeps_existing_manual_behavior(self):
         identity_id = 301299112
         client = _FakeClient(["ok"])
