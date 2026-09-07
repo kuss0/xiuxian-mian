@@ -115,12 +115,13 @@ class JiyinTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(jiyin, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(jiyin, "save_state") as save_mock,
             ):
-                handled = await jiyin.handle_jiyin_prompt(prompt, now, SimpleNamespace(id=33001))
+                handled = await jiyin.handle_jiyin_prompt(prompt, now, SimpleNamespace(id=33001, chat_id=-1002))
 
             self.assertTrue(handled)
             send_mock.assert_not_awaited()
             save_mock.assert_called_once()
             self.assertEqual(33001, state_module.state["jiyin_reply_to_msg_id"])
+            self.assertEqual(-1002, state_module.state.get("jiyin_reply_chat_id"))
             self.assertEqual(now + 180, state_module.state["next_jiyin_time"])
             queued = delayed_actions.list_delayed_actions()
             self.assertEqual(1, len(queued))
@@ -148,10 +149,11 @@ class JiyinTests(unittest.IsolatedAsyncioTestCase):
                             "send_as_id": identity_id,
                             "track": False,
                             "reply_to": 33001,
+                            "target_chat_id": -1002,
                             "priority": "reactive",
                             "source_module": "jiyin",
                             "op_id": "jiyin_prompt_reply",
-                            "chain_id": f"jiyin:{identity_id}:33001",
+                            "chain_id": f"jiyin:{identity_id}:-1002:33001",
                         },
                     )
                 ],
@@ -169,6 +171,7 @@ class JiyinTests(unittest.IsolatedAsyncioTestCase):
             audit_mock.assert_awaited_once()
             save_mock.assert_called_once()
             self.assertEqual(0, state_module.state["jiyin_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state.get("jiyin_reply_chat_id"))
             self.assertEqual(0, state_module.state["next_jiyin_time"])
             self.assertEqual("", state_module.state["jiyin_last_error"])
             self.assertEqual([], delayed_actions.list_delayed_actions())
@@ -191,7 +194,7 @@ class JiyinTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             state_module.state["jiyin_enabled"] = True
             with patch.object(jiyin.random, "randint", return_value=20):
-                handled = await jiyin.handle_jiyin_prompt(prompt, now, SimpleNamespace(id=33002))
+                handled = await jiyin.handle_jiyin_prompt(prompt, now, SimpleNamespace(id=33002, chat_id=-1002))
             self.assertTrue(handled)
 
             async def fake_send(command, **kwargs):
@@ -212,6 +215,44 @@ class JiyinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(33002, state_module.state["jiyin_reply_to_msg_id"])
             self.assertGreater(state_module.state["next_jiyin_time"], now)
             self.assertEqual("极阴祖师延迟回复发送失败", state_module.state["jiyin_last_error"])
+
+    async def test_delayed_result_from_other_chat_does_not_clear_current_prompt(self):
+        identity_id = self._prepare_identity()
+        with state_module.use_identity(identity_id):
+            state_module.state["jiyin_reply_to_msg_id"] = 33001
+            state_module.state["jiyin_reply_chat_id"] = -1002
+            state_module.state["next_jiyin_time"] = 1_700_000_180.0
+            result = {
+                "source_module": jiyin.JIYIN_DELAYED_SOURCE_MODULE,
+                "op_id": jiyin.JIYIN_DELAYED_OP_ID,
+                "reply_to_msg_id": 33001, "target_chat_id": -1001,
+                "send_as_id": identity_id, "status": "sent",
+            }
+            with (
+                patch.object(jiyin, "send_audit_log", new=AsyncMock()) as audit,
+                patch.object(jiyin, "save_state") as save,
+            ):
+                self.assertTrue(await jiyin.handle_jiyin_delayed_action_result(result))
+            self.assertEqual(33001, state_module.state["jiyin_reply_to_msg_id"])
+            self.assertEqual(-1002, state_module.state["jiyin_reply_chat_id"])
+            audit.assert_not_awaited()
+            save.assert_not_called()
+
+    async def test_manual_choice_uses_saved_prompt_chat(self):
+        identity_id = self._prepare_identity()
+        with state_module.use_identity(identity_id):
+            state_module.state["jiyin_enabled"] = True
+            state_module.state["jiyin_reply_to_msg_id"] = 33001
+            state_module.state["jiyin_reply_chat_id"] = -1002
+            state_module.state["next_jiyin_time"] = 1_700_000_180.0
+            with (
+                patch.object(jiyin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=33002))) as sender,
+                patch.object(jiyin, "send_audit_log", new=AsyncMock()),
+                patch.object(jiyin, "save_state"),
+            ):
+                ok, _message = await jiyin.apply_jiyin_choice(jiyin.JIYIN_CHOICE_HIDE_AURA, now=1_700_000_000)
+            self.assertTrue(ok)
+            sender.assert_awaited_once_with(".收敛气息", track=False, reply_to=33001, target_chat_id=-1002)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from model import delayed_actions
 
@@ -19,6 +19,38 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         delayed_actions.reset_delayed_actions_for_tests()
+
+    async def test_reply_route_survives_snapshot_and_reload(self):
+        delayed_actions.schedule_delayed_action(
+            ".answer", 10, send_as_id=123, reply_to_msg_id=456,
+            target_chat_id=-1002, now=1,
+        )
+        snapshot = delayed_actions.snapshot_delayed_actions()
+        delayed_actions.reset_delayed_actions_for_tests()
+        delayed_actions.restore_delayed_actions(snapshot)
+        sender = AsyncMock(return_value=SimpleNamespace(id=701, chat_id=-1002))
+
+        results = await delayed_actions.drain_due_actions(11, sender)
+
+        sender.assert_awaited_once_with(
+            ".answer", send_as_id=123, track=True, reply_to=456, target_chat_id=-1002,
+        )
+        self.assertEqual(-1002, results[0]["target_chat_id"])
+        self.assertEqual("sent", results[0]["status"])
+
+    async def test_legacy_reply_without_chat_cannot_fall_back_to_primary(self):
+        delayed_actions.restore_delayed_actions({"actions": [{
+            "id": 1, "command": ".answer", "due_at": 10,
+            "send_as_id": 123, "reply_to_msg_id": 456,
+        }]})
+        sender = AsyncMock(return_value=SimpleNamespace(id=701))
+
+        results = await delayed_actions.drain_due_actions(11, sender)
+
+        sender.assert_not_awaited()
+        self.assertEqual("failed", results[0]["status"])
+        self.assertEqual(0, results[0]["attempts"])
+        self.assertIn("target_chat_id", results[0]["reason"])
 
     async def test_drain_due_actions_sends_in_due_then_id_order(self):
         sent = []
@@ -50,6 +82,7 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
             send_as_id=123,
             track=False,
             reply_to_msg_id=456,
+            target_chat_id=-1002,
             priority="retry",
             max_retry=2,
             reply_timeout=33,
@@ -68,6 +101,7 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(123, kwargs["send_as_id"])
         self.assertFalse(kwargs["track"])
         self.assertEqual(456, kwargs["reply_to"])
+        self.assertEqual(-1002, kwargs["target_chat_id"])
         self.assertEqual("retry", kwargs["priority"])
         self.assertEqual(2, kwargs["max_retry"])
         self.assertEqual(33, kwargs["reply_timeout"])
@@ -422,7 +456,14 @@ class DelayedActionsPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")
             with patch.object(persistence, "DB_FILE", db_path):
-                delayed_actions.schedule_delayed_action(".保存后恢复", 42, send_as_id=77, now=1)
+                self.state_module.ensure_identity_registered(77)
+                with self.state_module.use_identity(77):
+                    self.state_module.state["jiyin_reply_to_msg_id"] = 456
+                    self.state_module.state["jiyin_reply_chat_id"] = -1002
+                delayed_actions.schedule_delayed_action(
+                    ".保存后恢复", 42, send_as_id=77, now=1,
+                    reply_to_msg_id=456, target_chat_id=-1002,
+                )
 
                 self.assertTrue(persistence.save_state())
                 conn = persistence.get_db_conn()
@@ -438,6 +479,8 @@ class DelayedActionsPersistenceTests(unittest.TestCase):
 
         self.assertEqual([".保存后恢复"], [item["command"] for item in delayed_actions.list_delayed_actions()])
         self.assertEqual(77, delayed_actions.list_delayed_actions()[0]["send_as_id"])
+        self.assertEqual(-1002, delayed_actions.list_delayed_actions()[0]["target_chat_id"])
+        self.assertEqual(-1002, self.state_module.get_identity_state(77)["jiyin_reply_chat_id"])
 
     def test_load_state_bad_delayed_actions_payload_fails_closed(self):
         persistence = self.persistence

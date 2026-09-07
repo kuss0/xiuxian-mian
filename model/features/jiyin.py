@@ -196,8 +196,9 @@ def _match_jiyin_prompt_for_current_identity(text):
     return parsed
 
 
-def _set_jiyin_pending(reply_to_msg_id, deadline_at):
+def _set_jiyin_pending(reply_to_msg_id, deadline_at, *, chat_id=0):
     state["jiyin_reply_to_msg_id"] = int(reply_to_msg_id or 0)
+    state["jiyin_reply_chat_id"] = int(chat_id or 0)
     state["next_jiyin_time"] = float(deadline_at or 0)
     state["jiyin_last_error"] = ""
 
@@ -217,6 +218,7 @@ def _calc_jiyin_reply_due_at(now, timeout_sec):
 
 def _schedule_jiyin_delayed_reply(command, reply_to_msg_id, now, timeout_sec, *, choice="", choice_source=""):
     identity_id = get_current_identity_id()
+    chat_id = int(state.get("jiyin_reply_chat_id") or 0)
     due_at = _calc_jiyin_reply_due_at(now, timeout_sec)
     return schedule_delayed_action(
         command,
@@ -224,10 +226,11 @@ def _schedule_jiyin_delayed_reply(command, reply_to_msg_id, now, timeout_sec, *,
         send_as_id=identity_id,
         track=False,
         reply_to_msg_id=reply_to_msg_id,
+        target_chat_id=chat_id,
         priority="reactive",
         source_module=JIYIN_DELAYED_SOURCE_MODULE,
         op_id=JIYIN_DELAYED_OP_ID,
-        chain_id=f"jiyin:{identity_id}:{reply_to_msg_id}",
+        chain_id=f"jiyin:{identity_id}:{chat_id}:{reply_to_msg_id}",
         dedupe_key=_jiyin_delayed_dedupe_key(identity_id),
         max_send_attempts=1,
         retry_delay_sec=30,
@@ -242,7 +245,10 @@ def _set_jiyin_error_and_save(message):
 
 
 async def _send_jiyin_command(command, reply_to_msg_id):
-    return await send_game_command(command, track=False, reply_to=reply_to_msg_id)
+    chat_id = int(state.get("jiyin_reply_chat_id") or 0)
+    if not chat_id or int(state.get("jiyin_reply_to_msg_id") or 0) != reply_to_msg_id:
+        return None
+    return await send_game_command(command, track=False, reply_to=reply_to_msg_id, target_chat_id=chat_id)
 
 
 async def _maybe_audit_jiyin_prompt_override(previous_reply_to, previous_deadline, now, new_reply_to):
@@ -279,6 +285,7 @@ def clear_jiyin_state(*, persist=False, keep_last_error=False):
     cancel_delayed_action(dedupe_key=_jiyin_delayed_dedupe_key())
     state["next_jiyin_time"] = 0
     state["jiyin_reply_to_msg_id"] = 0
+    state["jiyin_reply_chat_id"] = 0
     if not keep_last_error:
         state["jiyin_last_error"] = ""
     if persist:
@@ -336,7 +343,7 @@ async def handle_jiyin_prompt(text, now, event):
     prev_reply_to_msg_id, prev_deadline, _ = _get_jiyin_pending_state()
     await _maybe_audit_jiyin_prompt_override(prev_reply_to_msg_id, prev_deadline, now, reply_to_msg_id)
 
-    _set_jiyin_pending(reply_to_msg_id, now + float(parsed["timeout_sec"]))
+    _set_jiyin_pending(reply_to_msg_id, now + float(parsed["timeout_sec"]), chat_id=getattr(event, "chat_id", 0))
 
     choice, choice_source, command = _resolve_effective_jiyin_command()
     if not command:
@@ -365,6 +372,11 @@ async def handle_jiyin_delayed_action_result(result):
     if pending_dirty:
         return True
     if reply_to_msg_id <= 0 or int(result.get("reply_to_msg_id") or 0) != reply_to_msg_id:
+        return True
+    if (
+        int(result.get("send_as_id") or 0) != get_current_identity_id()
+        or int(result.get("target_chat_id") or 0) != int(state.get("jiyin_reply_chat_id") or 0)
+    ):
         return True
 
     status = str(result.get("status") or "")

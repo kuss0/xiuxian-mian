@@ -91,6 +91,128 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
         status, _ = tianji_quiz.save_tianji_quiz_bank_entry(self.QUESTION, self.OPTIONS, "B")
         self.assertEqual("added", status)
 
+    def _waiting_item(self, chat_id=-100, *, now=1_700_000_000.0):
+        return {
+            "identity_id": self._register_identity(), "target": "@local_user",
+            "question": self.QUESTION, "options": self.OPTIONS, "answer": "B",
+            "chat_id": chat_id, "msg_id": 321, "sent_msg_id": 555,
+            "phase": "waiting_result", "sent_at": now - 10,
+            "due_at": now - 1, "deadline_at": now + 100,
+        }
+
+    def test_result_matches_full_chat_and_message_reference(self):
+        first, second = self._waiting_item(-100), self._waiting_item(-200)
+        state_module.state["tianji_quiz_pending"] = {"first": first, "second": second}
+        event = SimpleNamespace(chat_id=-200, reply_to=SimpleNamespace(reply_to_msg_id=555))
+        key, item, _pending = tianji_quiz._find_tianji_result_pending({"target": "@local_user"}, event)
+        self.assertEqual("second", key)
+        self.assertIs(second, item)
+
+    def test_explicit_wrong_reply_does_not_fall_back_to_target_name(self):
+        item = self._waiting_item()
+        state_module.state["tianji_quiz_pending"] = {"current": item}
+        event = SimpleNamespace(chat_id=-100, reply_to=SimpleNamespace(reply_to_msg_id=999))
+        key, found, _pending = tianji_quiz._find_tianji_result_pending({"target": "@local_user"}, event)
+        self.assertEqual("", key)
+        self.assertIsNone(found)
+
+    def test_result_without_chat_does_not_claim_a_pending_answer(self):
+        state_module.state["tianji_quiz_pending"] = {"current": self._waiting_item()}
+        event = SimpleNamespace(reply_to=SimpleNamespace(reply_to_msg_id=555))
+        key, item, _pending = tianji_quiz._find_tianji_result_pending({"target": "@local_user"}, event)
+        self.assertEqual("", key)
+        self.assertIsNone(item)
+
+    async def test_nonterminal_reply_does_not_clear_pending_answer(self):
+        item = self._waiting_item()
+        state_module.state["tianji_quiz_pending"] = {"current": item}
+        event = SimpleNamespace(chat_id=-100, reply_to=SimpleNamespace(reply_to_msg_id=555))
+        with patch.object(tianji_quiz, "save_state"), patch.object(tianji_quiz, "send_audit_log", new=AsyncMock()):
+            self.assertFalse(await tianji_quiz.handle_tianji_quiz_result_broadcast("正在验证，请稍候", event=event))
+        self.assertEqual({"current": item}, state_module.state["tianji_quiz_pending"])
+
+    async def test_unknown_chat_pending_answer_cannot_use_the_default_group(self):
+        item = {**self._waiting_item(0), "phase": "queued", "sent_msg_id": 0, "sent_at": 0}
+        state_module.state["tianji_quiz_pending"] = {"legacy": item}
+        with (
+            patch.object(tianji_quiz, "send_game_command", new=AsyncMock()) as sender,
+            patch.object(tianji_quiz, "send_audit_log", new=AsyncMock()),
+            patch.object(tianji_quiz, "save_state"),
+        ):
+            await tianji_quiz.run_tianji_quiz_scheduler(1_700_000_000)
+        sender.assert_not_awaited()
+
+    async def test_log_recovery_does_not_accept_another_players_reply(self):
+        now = 1_700_000_000
+        item = self._waiting_item(now=now)
+        entry = {
+            "chat_id": -100, "reply_to_msg_id": 555, "event_type": "message",
+            "sender_id": 9876, "sender_is_bot": False,
+            "text": "考验通过！你的气息已恢复正常。",
+        }
+        with (
+            patch.object(tianji_quiz, "iter_message_log_entries_between", return_value=iter([(entry, now - 1)])),
+            patch.object(tianji_quiz, "handle_tianji_quiz_result_broadcast", new=AsyncMock(return_value=True)) as handler,
+        ):
+            self.assertFalse(await tianji_quiz._recover_tianji_quiz_result_from_message_log(item, now))
+        handler.assert_not_awaited()
+
+    async def test_scheduler_keeps_prompts_added_during_a_send(self):
+        item = {**self._waiting_item(), "phase": "queued", "sent_msg_id": 0, "sent_at": 0}
+        other = {**self._waiting_item(-200), "phase": "queued", "sent_msg_id": 0, "sent_at": 0}
+        state_module.state["tianji_quiz_pending"] = {"current": item}
+
+        async def send(_command, **_kwargs):
+            pending = tianji_quiz._get_tianji_quiz_pending_map()
+            pending["new"] = other
+            tianji_quiz._set_tianji_quiz_pending_map(pending)
+            return SimpleNamespace(id=556, sent_at=1_700_000_000)
+
+        with (
+            patch.object(tianji_quiz, "send_game_command", new=AsyncMock(side_effect=send)),
+            patch.object(tianji_quiz, "send_audit_log", new=AsyncMock()),
+            patch.object(tianji_quiz, "save_state"),
+        ):
+            await tianji_quiz.run_tianji_quiz_scheduler(1_700_000_000)
+        self.assertIs(other, state_module.state["tianji_quiz_pending"].get("new"))
+        self.assertEqual("waiting_result", state_module.state["tianji_quiz_pending"]["current"]["phase"])
+
+    async def test_send_completion_does_not_resurrect_a_cleared_pending(self):
+        item = {**self._waiting_item(), "phase": "queued", "sent_msg_id": 0, "sent_at": 0}
+        state_module.state["tianji_quiz_pending"] = {"current": item}
+
+        async def send(_command, **_kwargs):
+            tianji_quiz._set_tianji_quiz_pending_map({})
+            return SimpleNamespace(id=556, sent_at=1_700_000_000)
+
+        with (
+            patch.object(tianji_quiz, "send_game_command", new=AsyncMock(side_effect=send)),
+            patch.object(tianji_quiz, "send_audit_log", new=AsyncMock()),
+            patch.object(tianji_quiz, "save_state"),
+        ):
+            await tianji_quiz.run_tianji_quiz_scheduler(1_700_000_000)
+        self.assertEqual({}, state_module.state["tianji_quiz_pending"])
+
+    async def test_cancelled_later_item_is_not_sent_from_the_scheduler_snapshot(self):
+        first = {**self._waiting_item(), "phase": "queued", "sent_msg_id": 0, "sent_at": 0}
+        second = {**first, "msg_id": 322}
+        state_module.state["tianji_quiz_pending"] = {"first": first, "second": second}
+
+        async def send(_command, **_kwargs):
+            pending = tianji_quiz._get_tianji_quiz_pending_map()
+            pending.pop("second", None)
+            tianji_quiz._set_tianji_quiz_pending_map(pending)
+            return SimpleNamespace(id=556, sent_at=1_700_000_000)
+
+        with (
+            patch.object(tianji_quiz, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+            patch.object(tianji_quiz, "send_audit_log", new=AsyncMock()),
+            patch.object(tianji_quiz, "save_state"),
+        ):
+            await tianji_quiz.run_tianji_quiz_scheduler(1_700_000_000)
+        sender.assert_awaited_once()
+        self.assertNotIn("second", state_module.state["tianji_quiz_pending"])
+
     def test_unknown_target_does_not_scan_whole_prompt_for_identity(self):
         self._register_identity(username="local_user")
 
@@ -207,6 +329,7 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
             "B",
             track=False,
             reply_to=321,
+            target_chat_id=-100,
             send_as_id=identity_id,
             priority="p0",
             source_module="天机考验",
@@ -238,7 +361,7 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
                 "result_due_at": 1_700_000_030.0,
             }
         }
-        event = SimpleNamespace(reply_to=SimpleNamespace(reply_to_msg_id=555))
+        event = SimpleNamespace(chat_id=-100, reply_to=SimpleNamespace(reply_to_msg_id=555))
         audit_mock = AsyncMock()
 
         with patch.object(tianji_quiz, "send_audit_log", new=audit_mock), patch.object(tianji_quiz, "save_state"):
@@ -254,6 +377,7 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("考验超时", audit_text)
 
     async def test_waiting_result_recovers_logged_reply_before_retry(self):
+        self._register_identity()
         now = 1_700_000_040.0
         state_module.state["tianji_quiz_pending"] = {
             "-100:321": {
@@ -279,6 +403,9 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
             "message_id": 556,
             "chat_id": -100,
             "reply_to_msg_id": 555,
+            "sender_id": 99,
+            "sender_is_bot": True,
+            "sender_username": "hantianzun99_bot",
             "text": "考验通过！你的气息已恢复正常。",
         }
 

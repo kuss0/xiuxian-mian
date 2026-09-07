@@ -468,7 +468,12 @@ def _set_quiz_error_and_save(message):
 
 
 async def _send_quiz_answer(answer, reply_to_msg_id):
-    return await send_game_command(f"{CMD_QUIZ_ANSWER} {answer}", track=False, reply_to=reply_to_msg_id)
+    chat_id = int(state.get("quiz_chat_id") or 0)
+    if not chat_id or int(state.get("quiz_reply_to_msg_id") or 0) != reply_to_msg_id:
+        return None
+    return await send_game_command(
+        f"{CMD_QUIZ_ANSWER} {answer}", track=False, reply_to=reply_to_msg_id, target_chat_id=chat_id,
+    )
 
 
 async def _click_quiz_answer_button(identity_id, chat_id, message_id, answer):

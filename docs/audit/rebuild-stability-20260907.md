@@ -66,6 +66,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R12 | High | Second-soul and phaseful timeout cleanup call the all-identities pending-clear helper without an owner argument | Fixed; both callers supply the active identity, helper requires explicit scope, global World Boss cleanup is explicit |
 | R13 | Medium | A TypeError inside a sent-command observer is mistaken for a legacy signature and invokes that observer again | Fixed; removed the re-invocation fallback, verified both registered observers accept metadata, and isolated callback failures |
 | R14 | High | Delta-save snapshots omit pending chat, topic and recovery metadata; a receipt-only or detached-send update can be skipped after an earlier save | Fixed; route and recovery-only edits trigger an identity write, and reload preserves the no-retry marker and replay receipts |
+| R15 | High | Tianji quiz scheduler writes an old pending-map snapshot after awaits, deleting newly queued prompts, restoring cleared work, and sending cancelled later items | Fixed in candidate; per-entry ownership is rechecked before dispatch and after awaited work; three interleaving regressions pass |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -196,6 +197,23 @@ five monitor/control-only contracts need separate behavioral verification.
   `a41409fd`, only the original quiz-bank/helper changes, main/watchdog/observer
   active with `NRestarts=0`, listener inactive. No deployment, restart, push,
   live command or skill modification has occurred.
+- R11 prompt-route/R15 candidate: 3826 passed, 584 subtests passed, 58.84
+  seconds. JUnit: `/tmp/xiuxian-rebuild-r11-prompts-20260907.xml`; Ruff and
+  diff checks pass. Delayed replies now preserve their chat through schedule,
+  persistence, reload, send and callback; legacy replies without a chat fail
+  before sending. Jiyin callbacks cannot clear another chat's same-ID prompt.
+  Quiz command fallback and Tianji answers use the original prompt chat.
+- Tianji regressions first reproduced cross-chat result binding, a wrong
+  explicit reply falling back to a target name, and nonterminal/player replies
+  ending a task. Recovery now requires official-bot evidence and terminal
+  wording in the original chat. The old recovery test was corrected to register
+  its identity; it had previously passed via the missing-identity early exit.
+  Three further failing tests established R15 before the per-entry update fix.
+- Read-only real-message sampling found second-soul warning/result edits retain
+  the warning's chat/message ID; for example, 2026-09-04 old-group message
+  `12137042` is edited from a warning to success. The result handler still
+  selects a unique local `heart_demon_pending` identity without that anchor.
+  This is a follow-through item, not verified correct behavior.
 
 ## Deployment Constraint
 
@@ -211,6 +229,8 @@ This candidate has not migrated the production database.
    guard closures without an expected root/chat, and follow-up sends whose
    `reply_to` has no explicit target chat. The shared pending/history contract
    is now tested end-to-end; it does not prove every module's ownership rules.
+   Jiyin/quiz/Tianji routing is covered; second soul, Nanlong, sect teaching,
+   judgement and remaining wrapped send calls still require review.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not

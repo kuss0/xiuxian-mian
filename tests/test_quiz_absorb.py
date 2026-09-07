@@ -143,6 +143,24 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.update(self._meta_state_snapshot)
         super().tearDown()
 
+    async def test_command_answer_keeps_the_prompt_chat(self):
+        state_module.ensure_identity_registered(10001)
+        with state_module.use_identity(10001):
+            state_module.state["quiz_reply_to_msg_id"] = 123
+            state_module.state["quiz_chat_id"] = -1002
+            with patch.object(quiz, "send_game_command", new=AsyncMock()) as sender:
+                await quiz._send_quiz_answer("C", 123)
+        sender.assert_awaited_once_with(".作答 C", track=False, reply_to=123, target_chat_id=-1002)
+
+    async def test_command_answer_without_prompt_chat_is_not_sent(self):
+        state_module.ensure_identity_registered(10001)
+        with state_module.use_identity(10001):
+            state_module.state["quiz_reply_to_msg_id"] = 123
+            state_module.state["quiz_chat_id"] = 0
+            with patch.object(quiz, "send_game_command", new=AsyncMock()) as sender:
+                self.assertIsNone(await quiz._send_quiz_answer("C", 123))
+        sender.assert_not_awaited()
+
     async def test_click_quiz_answer_button_uses_matching_button(self):
         clicked = []
 

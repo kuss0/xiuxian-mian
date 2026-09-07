@@ -16,6 +16,7 @@ class DelayedAction:
     send_as_id: int = 0
     track: bool = True
     reply_to_msg_id: int = 0
+    target_chat_id: int = 0
     priority: str = ""
     max_retry: int | None = None
     reply_timeout: float | None = None
@@ -41,6 +42,7 @@ class DelayedAction:
             "send_as_id": self.send_as_id,
             "track": self.track,
             "reply_to_msg_id": self.reply_to_msg_id,
+            "target_chat_id": self.target_chat_id,
             "priority": self.priority,
             "max_retry": self.max_retry,
             "reply_timeout": self.reply_timeout,
@@ -174,6 +176,7 @@ def _coerce_snapshot_action(item):
         send_as_id=send_as_id,
         track=_bool_flag(item.get("track"), True),
         reply_to_msg_id=_non_negative_int(item.get("reply_to_msg_id", 0), "reply_to_msg_id"),
+        target_chat_id=int(item.get("target_chat_id") or 0),
         priority=str(item.get("priority") or ""),
         max_retry=_optional_int(item.get("max_retry")),
         reply_timeout=_optional_finite_float(item.get("reply_timeout"), "reply_timeout"),
@@ -276,6 +279,7 @@ def schedule_delayed_action(
     send_as_id=0,
     track=True,
     reply_to_msg_id=0,
+    target_chat_id=0,
     priority="",
     max_retry=None,
     reply_timeout=None,
@@ -303,6 +307,7 @@ def schedule_delayed_action(
     )
     reply_timeout = _optional_finite_float(reply_timeout, "reply_timeout")
     reply_to_msg_id = _non_negative_int(reply_to_msg_id, "reply_to_msg_id")
+    target_chat_id = int(target_chat_id or 0)
     max_send_attempts = max(1, int(max_send_attempts or DEFAULT_DELAYED_ACTION_MAX_ATTEMPTS))
 
     action = _find_pending_by_dedupe_key(dedupe_key)
@@ -321,6 +326,7 @@ def schedule_delayed_action(
     action.send_as_id = int(send_as_id or 0)
     action.track = bool(track)
     action.reply_to_msg_id = reply_to_msg_id
+    action.target_chat_id = target_chat_id
     action.priority = str(priority or "")
     action.max_retry = None if max_retry is None else int(max_retry)
     action.reply_timeout = reply_timeout
@@ -366,7 +372,11 @@ def list_delayed_actions(*, include_non_pending=False):
 def _send_kwargs(action):
     kwargs = {"send_as_id": action.send_as_id, "track": bool(action.track)}
     if action.reply_to_msg_id > 0:
+        if not action.target_chat_id:
+            raise ValueError("reply requires target_chat_id")
         kwargs["reply_to"] = action.reply_to_msg_id
+    if action.target_chat_id:
+        kwargs["target_chat_id"] = action.target_chat_id
     if action.priority:
         kwargs["priority"] = action.priority
     if action.max_retry is not None:
@@ -482,6 +492,7 @@ def _result_payload(action, status, **extra):
         "command": action.command,
         "send_as_id": action.send_as_id,
         "reply_to_msg_id": action.reply_to_msg_id,
+        "target_chat_id": action.target_chat_id,
         "source_module": action.source_module,
         "op_id": action.op_id,
         "chain_id": action.chain_id,
