@@ -318,6 +318,18 @@ five monitor/control-only contracts need separate behavioral verification.
   establish crash-durable ownership before the message ID is known, and it
   does not add an outbox or authorize Attempt recovery. Production, skill,
   live switches, services and remote branches remain untouched.
+- R07 forced-stop probe now uses separate spawned processes and a temporary
+  SQLite database: `tools/lab_send_crash_probe.py --assert-safe`. A fake RPC
+  records its effect, saves state successfully, and waits without returning a
+  message ID. The parent kills that worker with SIGKILL, then a fresh process
+  loads the same database and attempts the same command through runtime.
+- Both `--command checkin` and `--command rift` reproduce a second transport
+  invocation after reload (`safe=false`, assertion exit 1). The guarded rift
+  case persisted `attempt=0` and zero pending rows. This is a reproduced open
+  safety failure, not a passing crash-safety test. The probe cannot connect to
+  Telegram and removes its isolated state when finished. The proposed durable
+  ownership design remains unimplemented and requires review independent of
+  CommandAttempt's shadow-only ledger.
 
 ## Deployment Constraint
 
