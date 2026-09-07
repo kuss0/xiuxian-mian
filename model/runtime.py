@@ -433,6 +433,10 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "send_as_peer_invalid",
     "bot_health",
     "identity_weak",
+    "identity_unavailable",
+    "identity_replaced",
+    "identity_account_changed",
+    "identity_disabled",
     "pre_send_guard",
     "action_guard",
     "supervisor_quiesce",
@@ -4430,7 +4434,7 @@ def _complete_game_send_rpc(task, receipt):
         traceback.print_exc()
 
 
-def _start_game_send_rpc(factory, *, account_id, command, **finalize_kwargs):
+def _start_game_send_rpc(factory, *, account_id, command, can_dispatch=None, **finalize_kwargs):
     owner = asyncio.current_task()
     receipt = {
         "account_id": int(account_id),
@@ -4446,6 +4450,8 @@ def _start_game_send_rpc(factory, *, account_id, command, **finalize_kwargs):
     async def dispatch():
         if receipt["cancel_before_dispatch"] or is_game_send_quiesced() or (owner is not None and owner.cancelling()):
             raise asyncio.CancelledError
+        if can_dispatch is not None and not can_dispatch():
+            return None
         receipt["started"] = True
         return await factory()
 
@@ -4567,6 +4573,7 @@ async def _game_send_allowed(
     send_intent,
     allow_maintenance_pause=False,
     target_chat_id=0,
+    owner_check=None,
 ):
     if is_game_send_quiesced():
         _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
@@ -4598,6 +4605,8 @@ async def _game_send_allowed(
         _close_guard_for_unsent_command(command, send_as_id, "account_unbound")
         await _log_identity_unbound_blocked(command, send_as_id=send_as_id)
         _record_game_send_block(send_as_id, command, "account_unbound", "身份未绑定登录账号", definitely_unsent=True)
+        return False
+    if owner_check is not None and not owner_check():
         return False
     if is_account_offline(account_id):
         reason = get_account_offline_reason(account_id) or "账号离线"
@@ -4654,7 +4663,7 @@ async def _game_send_allowed(
     ):
         _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
         return False
-    return True
+    return owner_check is None or owner_check()
 
 
 async def _send_game_command_impl(
@@ -4676,8 +4685,8 @@ async def _send_game_command_impl(
     target_chat_id=None,
 ):
     if send_as_id is None:
-        send_as_id = get_current_identity_id()
-    send_as_id = int(send_as_id)
+        send_as_id = get_active_identity_id() if has_active_identity_context() else get_current_identity_id()
+    send_as_id = int(send_as_id or 0)
     try:
         target_chat_id = int(target_chat_id or 0)
     except (TypeError, ValueError, OverflowError):
@@ -4686,6 +4695,10 @@ async def _send_game_command_impl(
     topic_id = int(get_game_group_topic_id(game_group_id) or 0)
     send_priority = _normalize_send_priority(command, priority=priority)
     account_id = int(get_identity_account(send_as_id) or 0)
+    owner_state = get_identity_state(send_as_id) if has_identity(send_as_id) else None
+    # Preserve explicit reads/probes admitted for an already-disabled identity,
+    # but invalidate work that the operator disables while it is queued.
+    owner_was_enabled = get_identity_enabled(send_as_id) if owner_state is not None else False
     send_request_started_at = 0.0
     send_task = None
     send_receipt = None
@@ -4697,6 +4710,31 @@ async def _send_game_command_impl(
         chain_id=chain_id,
         delete_policy=delete_policy,
     )
+
+    def owner_is_current():
+        if owner_state is None or not has_identity(send_as_id):
+            code, reason = "identity_unavailable", "发送身份已不存在"
+        elif get_identity_state(send_as_id) is not owner_state:
+            code, reason = "identity_replaced", "发送身份已重建"
+        elif int(get_identity_account(send_as_id) or 0) != account_id:
+            code, reason = "identity_account_changed", "发送身份已换绑账号"
+        elif owner_was_enabled and not get_identity_enabled(send_as_id):
+            code, reason = "identity_disabled", "发送身份已关闭"
+        else:
+            return True
+        _record_game_send_block(send_as_id, command, code, reason, definitely_unsent=True)
+        return False
+
+    def can_dispatch():
+        if not owner_is_current():
+            return False
+        if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE} and not _allows_maintenance_passive_trigger(
+            command, allow_maintenance_pause=allow_maintenance_pause, intent=send_intent,
+        ):
+            _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停", definitely_unsent=True)
+            return False
+        return True
+
     try:
         if not await _game_send_allowed(
             command,
@@ -4706,6 +4744,7 @@ async def _send_game_command_impl(
             send_intent=send_intent,
             allow_maintenance_pause=allow_maintenance_pause,
             target_chat_id=target_chat_id,
+            owner_check=owner_is_current,
         ):
             return None
 
@@ -4741,6 +4780,7 @@ async def _send_game_command_impl(
                 send_intent=send_intent,
                 allow_maintenance_pause=allow_maintenance_pause,
                 target_chat_id=target_chat_id,
+                owner_check=owner_is_current,
             ):
                 return None
 
@@ -4818,6 +4858,7 @@ async def _send_game_command_impl(
                                 send_intent=send_intent,
                                 allow_maintenance_pause=allow_maintenance_pause,
                                 target_chat_id=game_group_id,
+                                owner_check=owner_is_current,
                             ):
                                 return None
                             rpc_stage = "send_message"
@@ -4831,11 +4872,14 @@ async def _send_game_command_impl(
                                 reply_to=reply_to, send_priority=send_priority, track=track,
                                 reply_timeout=reply_timeout, max_retry=max_retry, send_intent=send_intent,
                                 send_started_at=send_request_started_at, game_group_id=game_group_id, topic_id=topic_id,
+                                can_dispatch=can_dispatch,
                             )
                             result = await asyncio.wait_for(
                                 asyncio.shield(send_task),
                                 timeout=GAME_SEND_RPC_TIMEOUT_SEC,
                             )
+                            if not send_receipt["started"]:
+                                return None
                             break
                         except SendAsPeerInvalidError as route_error:
                             send_request_started_at = 0.0

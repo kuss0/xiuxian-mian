@@ -250,6 +250,129 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         self.assertEqual([], client.sent_requests)
 
+    async def test_changed_identity_owner_cannot_send_after_preparation_or_dispatch_queue(self):
+        identity_id = 301299112
+        expected_codes = {
+            "removed": "identity_unavailable", "replaced": "identity_replaced",
+            "rebound": "identity_account_changed", "disabled": "identity_disabled",
+        }
+        for boundary in ("entity", "guard", "dispatch"):
+            for change, code in expected_codes.items():
+                with self.subTest(boundary=boundary, change=change):
+                    client = _FakeClient(["ok"])
+                    prepared = False
+                    changed = False
+                    original_resolve = client.get_input_entity
+                    original_start = runtime._start_game_send_rpc
+
+                    def change_owner():
+                        nonlocal changed
+                        if changed:
+                            return
+                        changed = True
+                        if change in {"removed", "replaced"}:
+                            state_module.remove_identity(identity_id)
+                            if change == "replaced":
+                                state_module.ensure_identity_registered(identity_id)
+                                state_module.set_identity_account(identity_id, 7001)
+                        elif change == "rebound":
+                            state_module.set_identity_account(identity_id, 7002)
+                        else:
+                            state_module.update_send_as_profile(identity_id, enabled=False)
+
+                    async def resolve(entity_id):
+                        nonlocal prepared
+                        result = await original_resolve(entity_id)
+                        if entity_id == identity_id:
+                            prepared = True
+                            if boundary == "entity":
+                                change_owner()
+                        return result
+
+                    async def guard(*_args, **_kwargs):
+                        if prepared and boundary == "guard":
+                            await asyncio.sleep(0)
+                            change_owner()
+                        return True, "", ""
+
+                    def start(*args, **kwargs):
+                        result = original_start(*args, **kwargs)
+                        if boundary == "dispatch":
+                            change_owner()
+                        return result
+
+                    client.get_input_entity = resolve
+                    with (
+                        self._prepared_send_context(client),
+                        patch.object(runtime, "_run_game_command_pre_send_guards", side_effect=guard),
+                        patch.object(runtime, "_start_game_send_rpc", side_effect=start),
+                    ):
+                        state_module.update_send_as_profile(identity_id, enabled=True)
+                        result = await runtime.send_game_command(".owner_boundary", send_as_id=identity_id)
+                    self.assertTrue(changed)
+                    self.assertEqual([], client.sent_requests)
+                    self.assertIsNone(result)
+                    block = runtime.classify_game_send_block(identity_id, ".owner_boundary")
+                    self.assertEqual("unsent", block["status"])
+                    self.assertEqual(code, block["code"])
+
+    async def test_deleted_implicit_identity_context_cannot_fall_back_to_another_role(self):
+        identity_id, other_id = 301299112, 301299113
+        client = _FakeClient(["ok"])
+        with self._prepared_send_context(client):
+            state_module.ensure_identity_registered(other_id)
+            state_module.set_identity_account(other_id, 7001)
+            with state_module.use_identity(identity_id):
+                state_module.remove_identity(identity_id)
+                result = await runtime.send_game_command(".deleted_context")
+        self.assertIsNone(result)
+        self.assertEqual([], client.sent_requests)
+        self.assertFalse(state_module.has_identity(identity_id))
+        self.assertEqual({}, state_module.get_identity_state(other_id)["pending_tasks"])
+
+    async def test_explicit_send_for_already_disabled_identity_keeps_existing_manual_behavior(self):
+        identity_id = 301299112
+        client = _FakeClient(["ok"])
+        with self._prepared_send_context(client):
+            state_module.update_send_as_profile(identity_id, enabled=False)
+            result = await runtime.send_game_command(".manual_owner_read", send_as_id=identity_id, track=False)
+        self.assertIsNotNone(result)
+        self.assertEqual(1, len(client.sent_requests))
+
+    async def test_identity_disabled_after_rpc_started_retains_the_real_send_receipt(self):
+        identity_id = 301299112
+        client = _ControlledSendClient()
+        with self._prepared_send_context(client):
+            task = asyncio.create_task(runtime.send_game_command(".already_dispatched", send_as_id=identity_id))
+            await asyncio.wait_for(client.started.wait(), timeout=1)
+            state_module.update_send_as_profile(identity_id, enabled=False)
+            client.release.set()
+            result = await task
+        self.assertIsNotNone(result)
+        self.assertEqual(1, len(client.sent_requests))
+        self.assertIn((123456, result.id), state_module.get_identity_state(identity_id)["pending_tasks"])
+
+    async def test_global_pause_between_rpc_task_creation_and_dispatch_is_unsent(self):
+        client = _FakeClient(["ok"])
+        enabled = True
+        original_start = runtime._start_game_send_rpc
+
+        def start(*args, **kwargs):
+            nonlocal enabled
+            result = original_start(*args, **kwargs)
+            enabled = False
+            return result
+
+        with (
+            self._prepared_send_context(client),
+            patch.object(runtime, "get_global_enabled", side_effect=lambda: enabled),
+            patch.object(runtime, "_start_game_send_rpc", side_effect=start),
+        ):
+            result = await runtime.send_game_command(".dispatch_pause", send_as_id=301299112)
+        self.assertIsNone(result)
+        self.assertEqual([], client.sent_requests)
+        self.assertEqual("global_disabled", runtime.classify_game_send_block(301299112, ".dispatch_pause")["code"])
+
     async def test_raising_send_guard_blocks_transport_as_definitely_unsent(self):
         for asynchronous in (False, True):
             with self.subTest(asynchronous=asynchronous):

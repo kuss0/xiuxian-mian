@@ -76,6 +76,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R22 | High | Nanlong can reenter while sending, retries unknown sends as failures, rearms them when a choice changes, and discards real receipts after a post-dispatch choice change | Fixed for reproduced boundaries in candidate; persist the existing pending decision before sending, retry only explicit unsent results, and keep operation ownership across option changes; early-result and late-receipt recovery remain open |
 | R23 | High | Retry timeout notifications and send receipts mutate replacement pending work; blocked retries rewrite the original send time, and an old refresh timeout clears newer or cross-chat ambiguous refresh anchors | Fixed in candidate; complete terminal cleanup before notification, recheck owner and pending snapshots after transport, keep detached receipts no-retry, persist separate retry backoff, and clear only an exact unambiguous refresh anchor |
 | R24 | High | Nanlong log recovery misses unthreaded cross-group trade results, trusts player copies of result wording, and leaves a confirmed detached command pending after business completion | Fixed for reproduced cases in candidate; replay trusted incoming evidence through the existing direct/broadcast handlers, preserve source-chat boundaries, and clear only the confirmed command's exact pending key; no-ID/early-receipt recovery remains open |
+| R25 | High | A queued send uses an identity after deletion, replacement, account rebinding or disable; a deleted implicit context falls back to another role, and a pause after RPC task creation still permits dispatch | Fixed in candidate; capture the existing owner/account, revalidate after preparation and at actual dispatch, and keep a deleted active context from selecting another identity; post-dispatch receipt durability and module-switch admission remain under review |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -401,6 +402,28 @@ five monitor/control-only contracts need separate behavioral verification.
   passes in the full suite. Save/reload preserves completed business state and
   exact detached-row removal while retaining a same-numbered row in another
   chat. Ruff and diff checks pass. No production or skill changes were made.
+- R25 initially reproduced 12 invalidated-owner sends across entity resolution,
+  an awaited guard and the RPC-task dispatch boundary, plus one implicit-role
+  fallback and one pause-after-task-creation send. Each failing case observed
+  an actual fake `SendMessageRequest`, not merely a changed log message.
+- Runtime now binds each in-memory send to its existing identity object and
+  account. Deletion, replacement, rebinding and a newly disabled identity stop
+  before dispatch as definitely unsent. The RPC task checks again before it
+  marks the transport started. A deleted active identity context is no longer
+  replaced by the first remaining identity at the send entrypoint.
+- Existing explicitly admitted commands for already-disabled identities are
+  preserved, including manual/probe use; this is not a new global module-switch
+  policy. A real receipt is still retained if disable occurs after the RPC has
+  started. The change adds no persistent send controller, does not read
+  CommandAttempt for decisions, and does not resolve the forced-stop R07 gap.
+- R25 focused runtime-send, retry, early-replay and Tianxing tests passed
+  367 tests and 29 subtests. Full integration verification follows below.
+- R25 full suite: 3940 passed, 657 subtests passed, 59.47 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r25-send-owner-20260908.xml`; Ruff and diff
+  checks pass. The isolated SIGKILL probes were also rerun for both checkin
+  and rift: each still reports `safe=false` with a second transport invocation
+  after reload and exits 1 under `--assert-safe`. That expected failure is an
+  open acceptance item, not part of the passing-suite claim.
 
 ## Deployment Constraint
 
