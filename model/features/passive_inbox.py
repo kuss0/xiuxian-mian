@@ -10,8 +10,8 @@ from ..config import STATE_DIR
 from ..action_guard import close_by_family as close_action_guard_by_family
 from ..persistence import save_state
 from ..message_keys import find_message_key
-from ..state import get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, state, use_identity
-from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait_time
+from ..state import get_identity_account, get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
+from ..timing import get_day_key, has_wait_time, parse_wait_time
 from ..verified_event import VerifiedGameEvent
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
@@ -1211,7 +1211,7 @@ def _apply_tower_passive(text, now, family):
     return False
 
 
-def _apply_checkin_passive(text, now, family, reply_context=None, *, chat_id=0):
+async def _apply_checkin_passive(text, now, family, reply_context=None, *, chat_id=0):
     raw_text = str(text or "")
     reply_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
     chat_id = int(chat_id or _context_msg_id(reply_context, "chat_id"))
@@ -1222,29 +1222,7 @@ def _apply_checkin_passive(text, now, family, reply_context=None, *, chat_id=0):
             return False
         return checkin_mod.apply_checkin_completion(now, reply_id, chat_id=chat_id)
     if family == "sect_teach":
-        if "传功玉简已记录！" not in raw_text and not checkin_mod.is_sect_teach_already_done_text(raw_text):
-            return False
-        day_key = get_checkin_day_key(now)
-        if day_key < str(state.get("checkin_teach_day") or ""):
-            return False
-        changed = False
-        if state["checkin_teach_day"] != day_key:
-            checkin_mod.reset_checkin_daily_state(now)
-            changed = True
-        if "传功玉简已记录！" in raw_text:
-            if checkin_mod.remember_sect_teach_completion(reply_id, chat_id=chat_id):
-                changed = True
-                state["last_sect_teach_msg_id"] = reply_id
-                state["last_sect_teach_chat_id"] = chat_id
-                checkin_mod.remember_checkin_cleanup_msg_id(reply_id, chat_id=chat_id)
-                if state.get("sect_teach_enabled"):
-                    checkin_mod.schedule_sect_teach_chain(now, reply_id, reply_chat_id=chat_id)
-        if checkin_mod.is_sect_teach_already_done_text(raw_text) or state["checkin_teach_count"] >= 3:
-            changed = any(state.get(key) for key in ("next_sect_teach_time", "sect_teach_reply_to_msg_id", "sect_teach_reply_chat_id")) or changed
-            state["next_sect_teach_time"] = 0
-            state["sect_teach_reply_to_msg_id"] = 0
-            state["sect_teach_reply_chat_id"] = 0
-        return changed
+        return await checkin_mod.apply_sect_teach_reply(raw_text, now, reply_id, chat_id=chat_id)
     return False
 
 
@@ -1559,7 +1537,18 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     changed = False
     changed_modules = []
     event_recorded_by_handler = False
-    with use_identity(target_id):
+    if not has_identity(target_id):
+        return False
+    with use_identity(target_id) as owner_state:
+        owner_account = get_identity_account(target_id)
+
+        def owner_is_current():
+            return (
+                has_identity(target_id)
+                and get_identity_state(target_id) is owner_state
+                and get_identity_account(target_id) == owner_account
+            )
+
         if family.startswith("tianti_") or tianti_mod.RE_TIANTI_PANEL.search(raw_text):
             module_changed = _apply_tianti_passive(raw_text, now, family, reply_context=reply_context)
             if module_changed:
@@ -1577,6 +1566,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             changed = module_changed or changed
         if family.startswith("small_world_") or small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text):
             module_changed = await _apply_small_world_passive(raw_text, now, family, reply_context)
+            if not owner_is_current():
+                return changed or module_changed
             if module_changed:
                 changed_modules.append("small_world")
             changed = module_changed or changed
@@ -1591,6 +1582,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 matched_family="concubine_heart",
                 current_msg_id=observed_msg_id,
             )
+            if not owner_is_current():
+                return changed or module_changed
             if module_changed:
                 changed_modules.append("concubine")
                 event_recorded_by_handler = int(_passive_stats.get("total", 0) or 0) > handler_passive_total_before
@@ -1615,6 +1608,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                     reply_to,
                     matched_family=matched_family,
                 )
+            if not owner_is_current():
+                return changed or module_changed
             if module_changed:
                 changed_modules.append("concubine")
             changed = module_changed or changed
@@ -1662,7 +1657,9 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tree")
             changed = module_changed or changed
         if family in {"checkin", "sect_teach"}:
-            module_changed = _apply_checkin_passive(raw_text, now, family, reply_context, chat_id=observed_chat_id)
+            module_changed = await _apply_checkin_passive(raw_text, now, family, reply_context, chat_id=observed_chat_id)
+            if not owner_is_current():
+                return changed or module_changed
             if module_changed:
                 changed_modules.append(family)
             changed = module_changed or changed

@@ -127,7 +127,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
         send_as_id, now = self._prepare_identity(send_as_id=991002)
 
         with state_module.use_identity(send_as_id):
-            changed = passive_inbox._apply_checkin_passive(
+            changed = await passive_inbox._apply_checkin_passive(
                 "散修无需点卯，速速寻一宗门拜入吧。",
                 now,
                 "checkin",

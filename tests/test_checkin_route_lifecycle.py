@@ -1,11 +1,13 @@
 import copy
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from model import control, runtime, state as state_module
 from model.features import checkin, passive_inbox
+from model.real_message_replay import get_real_message_text
 
 
 class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -157,23 +159,215 @@ class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         matched_family="sect_teach",
                     )
 
-                def passive():
-                    passive_inbox._apply_checkin_passive(
+                async def passive():
+                    await passive_inbox._apply_checkin_passive(
                         "传功玉简已记录！", self.now, "sect_teach",
                         {"reply_to_msg_id": 124, "chat_id": -1002},
                     )
 
                 with state_module.use_identity(self.identity_id):
                     if passive_first:
-                        passive()
+                        await passive()
                         await direct()
                     else:
                         await direct()
-                        passive()
+                        await passive()
                 self.assertEqual(1, self.identity["checkin_teach_count"])
                 self.assertEqual(124, self.identity["sect_teach_reply_to_msg_id"])
                 self.assertEqual(-1002, self.identity["sect_teach_reply_chat_id"])
                 self.assertGreater(self.identity["next_sect_teach_time"], self.now)
+
+    async def _passive_teach(self, text, reply_id=124):
+        return await passive_inbox._apply_checkin_passive(
+            text, self.now, "sect_teach", {"reply_to_msg_id": reply_id, "chat_id": -1002},
+        )
+
+    async def test_real_success_wording_does_not_end_teaching_at_one_of_three(self):
+        text = get_real_message_text(Path(__file__).parent / "fixtures" / "real_message_samples.json", "sect_teach.success")
+        with state_module.use_identity(self.identity_id):
+            self.assertTrue(await self._passive_teach(text))
+        self.assertEqual(self.identity["checkin_teach_count"], 1)
+        self.assertEqual(self.identity["sect_teach_reply_to_msg_id"], 124)
+        self.assertGreater(self.identity["next_sect_teach_time"], self.now)
+
+    async def test_terminal_success_cleans_and_notifies_once_in_either_delivery_order(self):
+        baseline = copy.deepcopy(self.identity)
+        for passive_first in (False, True):
+            with self.subTest(passive_first=passive_first):
+                self.identity.clear()
+                self.identity.update(copy.deepcopy(baseline))
+                self.identity.update(checkin_teach_count=2, sect_teach_completed_message_keys=[[-1002, 122], [-1002, 123]])
+                reply = SimpleNamespace(id=124, chat_id=-1002, raw_text=checkin.CMD_SECT_TEACH)
+                with (
+                    state_module.use_identity(self.identity_id),
+                    patch.object(checkin, "cleanup_checkin_chain_messages", new=AsyncMock()) as cleanup,
+                    patch.object(checkin, "_notify_sect_teach_completed", new=AsyncMock()) as notify,
+                ):
+                    if passive_first:
+                        await self._passive_teach("传功玉简已记录！")
+                    await checkin.handle_sect_teach_reply("传功玉简已记录！", self.now, reply, matched_family="sect_teach")
+                    await self._passive_teach("传功玉简已记录！")
+                    await checkin.handle_sect_teach_reply("传功玉简已记录！", self.now, reply, matched_family="sect_teach")
+                cleanup.assert_awaited_once()
+                notify.assert_awaited_once()
+                self.assertEqual(self.identity["checkin_teach_count"], 3)
+                self.assertEqual(self.identity["next_sect_teach_time"], 0)
+                self.assertEqual(self.identity["sect_teach_reply_to_msg_id"], 0)
+
+    async def test_authoritative_teach_count_does_not_rewind_or_count_old_replies_twice(self):
+        text = get_real_message_text(Path(__file__).parent / "fixtures" / "real_message_samples.json", "sect_teach.success")
+        with state_module.use_identity(self.identity_id):
+            await self._passive_teach(text.replace("1/3", "2/3"), 125)
+            self.assertEqual(self.identity["checkin_teach_count"], 2)
+            before = copy.deepcopy(self.identity)
+            await self._passive_teach(text, 124)
+            self.assertEqual(self.identity, before)
+
+    async def test_completion_does_not_notify_for_a_replaced_identity_after_cleanup(self):
+        self.identity.update(checkin_teach_count=2, sect_teach_completed_message_keys=[[-1002, 122], [-1002, 123]])
+        state_module.ensure_identity_registered(self.identity_id + 1)
+
+        async def cleanup():
+            state_module.remove_identity(self.identity_id)
+            state_module.ensure_identity_registered(self.identity_id)
+
+        with (
+            state_module.use_identity(self.identity_id),
+            patch.object(checkin, "cleanup_checkin_chain_messages", new=AsyncMock(side_effect=cleanup)),
+            patch.object(checkin, "_notify_sect_teach_completed", new=AsyncMock()) as notify,
+        ):
+            await checkin.handle_sect_teach_reply(
+                "传功玉简已记录！", self.now,
+                SimpleNamespace(id=124, chat_id=-1002, raw_text=checkin.CMD_SECT_TEACH),
+                matched_family="sect_teach",
+            )
+        notify.assert_not_awaited()
+        self.assertEqual(state_module.get_identity_state(self.identity_id)["checkin_teach_count"], 0)
+
+    async def test_passive_terminal_dispatch_does_not_continue_in_another_owner(self):
+        other_id = self.identity_id + 1
+        other = state_module.ensure_identity_registered(other_id)
+        other_before = copy.deepcopy(other)
+        for change in ("removed", "replaced", "rebound"):
+            with self.subTest(change=change):
+                state_module.remove_identity(self.identity_id)
+                owner = state_module.ensure_identity_registered(self.identity_id)
+                state_module.set_identity_account(self.identity_id, 7010)
+                owner.update(
+                    sect_teach_enabled=True,
+                    checkin_teach_day=checkin.get_checkin_day_key(self.now),
+                    checkin_teach_count=2,
+                    sect_teach_completed_message_keys=[[-1002, 122], [-1002, 123]],
+                )
+
+                async def cleanup():
+                    if change == "rebound":
+                        state_module.set_identity_account(self.identity_id, 7011)
+                    else:
+                        state_module.remove_identity(self.identity_id)
+                        if change == "replaced":
+                            state_module.ensure_identity_registered(self.identity_id)
+
+                with (
+                    patch.object(passive_inbox, "_mark_observed_passive_event", return_value=True),
+                    patch.object(passive_inbox, "_record_passive_event"),
+                    patch.object(passive_inbox, "close_action_guard_by_family") as close_guard,
+                    patch.object(checkin, "cleanup_checkin_chain_messages", new=AsyncMock(side_effect=cleanup)),
+                    patch.object(checkin, "_notify_sect_teach_completed", new=AsyncMock()) as notify,
+                ):
+                    handled = await passive_inbox.handle_passive_module_card(
+                        "传功玉简已记录！", self.now,
+                        {"send_as_id": self.identity_id, "family": "sect_teach", "root_msg_id": 124},
+                        SimpleNamespace(id=125, chat_id=-1002),
+                        event_type="message",
+                    )
+                self.assertTrue(handled)
+                close_guard.assert_not_called()
+                notify.assert_not_awaited()
+                self.assertEqual(other, other_before)
+                if change == "removed":
+                    self.assertFalse(state_module.has_identity(self.identity_id))
+                elif change == "replaced":
+                    self.assertEqual(state_module.get_identity_state(self.identity_id)["checkin_teach_count"], 0)
+
+    async def test_disabled_teaching_observes_completion_without_active_cleanup(self):
+        self.identity.update(sect_teach_enabled=False, next_sect_teach_time=0, sect_teach_reply_to_msg_id=0)
+        text = get_real_message_text(Path(__file__).parent / "fixtures" / "real_message_samples.json", "sect_teach.success")
+        with (
+            state_module.use_identity(self.identity_id),
+            patch.object(checkin, "cleanup_checkin_chain_messages", new=AsyncMock()) as cleanup,
+            patch.object(checkin, "_notify_sect_teach_completed", new=AsyncMock()) as notify,
+            patch.object(checkin, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await self._passive_teach(text.replace("1/3", "3/3"))
+        self.assertEqual(self.identity["checkin_teach_count"], 3)
+        self.assertEqual(self.identity["next_sect_teach_time"], 0)
+        cleanup.assert_not_awaited()
+        notify.assert_not_awaited()
+        sender.assert_not_awaited()
+
+    async def test_passive_small_world_dispatch_preserves_owner_after_await(self):
+        other_id = self.identity_id + 1
+        other = state_module.ensure_identity_registered(other_id)
+        before = copy.deepcopy(other)
+
+        async def apply_result(*_args, **_kwargs):
+            state_module.remove_identity(self.identity_id)
+            return True
+
+        with (
+            patch.object(passive_inbox, "_mark_observed_passive_event", return_value=True),
+            patch.object(passive_inbox, "_record_passive_event"),
+            patch.object(passive_inbox, "_apply_small_world_passive", new=AsyncMock(side_effect=apply_result)),
+            patch.object(passive_inbox, "close_action_guard_by_family") as close_guard,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                "small world observation", self.now,
+                {"send_as_id": self.identity_id, "family": "small_world_query", "root_msg_id": 124},
+                SimpleNamespace(id=125, chat_id=-1002),
+                event_type="message",
+            )
+        self.assertTrue(handled)
+        close_guard.assert_not_called()
+        self.assertEqual(other, before)
+        self.assertFalse(state_module.has_identity(self.identity_id))
+
+    async def test_already_done_reply_is_terminal_and_idempotent(self):
+        self.identity["checkin_teach_count"] = 2
+        with (
+            state_module.use_identity(self.identity_id),
+            patch.object(checkin, "cleanup_checkin_chain_messages", new=AsyncMock()) as cleanup,
+            patch.object(checkin, "_notify_sect_teach_completed", new=AsyncMock()) as notify,
+        ):
+            self.assertTrue(await self._passive_teach("今日已经传功，暂不可再次传功。"))
+            self.assertFalse(await self._passive_teach("今日已经传功，暂不可再次传功。"))
+        self.assertEqual(self.identity["checkin_teach_count"], 2)
+        self.assertEqual(self.identity["next_sect_teach_time"], 0)
+        cleanup.assert_awaited_once()
+        notify.assert_not_awaited()
+
+    async def test_cleanup_does_not_continue_after_account_rebind(self):
+        self.identity["checkin_cleanup_msg_ids"] = [[-1001, 123], [-1002, 123]]
+        self.identity["my_msg_ids"] = {(-1001, 123): self.now, (-1002, 123): self.now}
+        state_module.set_identity_account(self.identity_id, 7010)
+        before = copy.deepcopy(self.identity)
+
+        async def delete(_chat_id, _ids):
+            state_module.set_identity_account(self.identity_id, 7011)
+
+        async def run_rpc(coroutine, **_kwargs):
+            return await coroutine
+
+        client = SimpleNamespace(delete_messages=AsyncMock(side_effect=delete))
+        with (
+            state_module.use_identity(self.identity_id),
+            patch.object(checkin, "is_auto_delete_sent_messages_enabled", return_value=True),
+            patch.object(runtime, "_get_identity_client_with_account", return_value=(7010, client)),
+            patch.object(runtime, "_run_account_rpc", side_effect=run_rpc),
+        ):
+            await checkin.cleanup_checkin_chain_messages()
+        client.delete_messages.assert_awaited_once_with(-1001, [123])
+        self.assertEqual(self.identity, before)
 
     async def test_unrecognized_checkin_reply_does_not_complete_or_reschedule(self):
         self.identity["checkin_enabled"] = True
@@ -182,7 +376,7 @@ class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(text=text, passive=passive), state_module.use_identity(self.identity_id):
                     before = copy.deepcopy(self.identity)
                     if passive:
-                        handled = passive_inbox._apply_checkin_passive(
+                        handled = await passive_inbox._apply_checkin_passive(
                             text, self.now, "checkin", {"reply_to_msg_id": 123, "chat_id": -1002},
                         )
                     else:
@@ -217,13 +411,13 @@ class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.identity.update(checkin_enabled=True, next_sect_teach_time=0, sect_teach_reply_to_msg_id=0)
                 reply = SimpleNamespace(id=123, chat_id=-1002, raw_text=checkin.CMD_CHECKIN)
 
-                def passive(now):
-                    return passive_inbox._apply_checkin_passive(
+                async def passive(now):
+                    return await passive_inbox._apply_checkin_passive(
                         "点卯成功", now, "checkin", {"reply_to_msg_id": 123, "chat_id": -1002},
                     )
 
                 if passive_first:
-                    self.assertTrue(passive(self.now))
+                    self.assertTrue(await passive(self.now))
                 else:
                     await checkin.handle_checkin_reply("点卯成功", self.now, reply, matched_family="checkin")
                 due = self.identity["next_sect_teach_time"]
@@ -231,7 +425,7 @@ class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 if passive_first:
                     await checkin.handle_checkin_reply("点卯成功", self.now + 1, reply, matched_family="checkin")
                 else:
-                    self.assertFalse(passive(self.now + 1))
+                    self.assertFalse(await passive(self.now + 1))
                 self.assertEqual(due, self.identity["next_sect_teach_time"])
                 self.assertEqual(123, self.identity["sect_teach_reply_to_msg_id"])
 
@@ -266,7 +460,7 @@ class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(id=124, chat_id=-1002, raw_text=checkin.CMD_SECT_TEACH),
                 matched_family="sect_teach",
             ))
-            self.assertFalse(passive_inbox._apply_checkin_passive(
+            self.assertFalse(await passive_inbox._apply_checkin_passive(
                 text, self.now, "sect_teach", {"reply_to_msg_id": 124, "chat_id": -1002},
             ))
             self.assertEqual(before, self.identity)

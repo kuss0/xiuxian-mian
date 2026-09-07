@@ -104,6 +104,55 @@ class PersistenceDeltaLabTests(unittest.TestCase):
                 self.assertTrue(checkin.remember_sect_teach_completion(123, chat_id=-1003))
                 self.assertEqual(2, state_module.state["checkin_teach_count"])
 
+    def test_teach_terminal_reply_is_not_replayed_after_save_and_reload(self):
+        from model.features import checkin, passive_inbox
+
+        identity_id, now = 990114, 1_788_748_200.0
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            state_module.ensure_identity_registered(identity_id)
+            state_module.get_identity_state(identity_id).update({
+                "sect_teach_enabled": True,
+                "checkin_teach_day": checkin.get_checkin_day_key(now),
+                "checkin_teach_count": 2,
+                "sect_teach_completed_message_keys": [[-1002, 122], [-1002, 123]],
+                "next_sect_teach_time": now,
+                "sect_teach_reply_to_msg_id": 123,
+                "sect_teach_reply_chat_id": -1002,
+            })
+            text = "传功玉简已记录！今日已传功 3/3 次。"
+
+            async def cleanup():
+                state_module.state["checkin_cleanup_msg_ids"] = []
+
+            with (
+                state_module.use_identity(identity_id),
+                patch.object(checkin, "save_state", side_effect=self._save_without_guard_backup),
+                patch.object(checkin, "cleanup_checkin_chain_messages", new=AsyncMock(side_effect=cleanup)) as cleanup_mock,
+                patch.object(checkin, "_notify_sect_teach_completed", new=AsyncMock()) as notify,
+                patch.object(checkin, "send_game_command", new=AsyncMock()) as sender,
+            ):
+                self.assertTrue(asyncio.run(passive_inbox._apply_checkin_passive(
+                    text, now, "sect_teach", {"root_msg_id": 124, "chat_id": -1002},
+                )))
+                self.assertTrue(self._save_without_guard_backup())
+                loaded = persistence._load_identity_from_db(identity_id)
+                self.assertEqual(loaded["checkin_teach_count"], 3)
+                self.assertEqual(loaded["next_sect_teach_time"], 0)
+                self.assertEqual(loaded["checkin_cleanup_msg_ids"], [])
+                self.assertIn([-1002, 124], loaded["sect_teach_completed_message_keys"])
+                self.assertTrue(asyncio.run(checkin.handle_sect_teach_reply(
+                    text, now + 1, SimpleNamespace(id=124, chat_id=-1002, raw_text=checkin.CMD_SECT_TEACH),
+                    matched_family="sect_teach",
+                )))
+                self.assertFalse(asyncio.run(passive_inbox._apply_checkin_passive(
+                    text, now + 2, "sect_teach", {"root_msg_id": 124, "chat_id": -1002},
+                )))
+                cleanup_mock.assert_awaited_once()
+                notify.assert_awaited_once_with(send_as_id=identity_id)
+                sender.assert_not_awaited()
+
     def test_same_identity_cross_chat_pending_survives_reload_and_exact_reply_cleanup(self):
         from model import runtime
 

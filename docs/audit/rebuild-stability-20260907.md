@@ -77,8 +77,9 @@ proof that gameplay is healthy. Production files have not been changed.
 | R23 | High | Retry timeout notifications and send receipts mutate replacement pending work; blocked retries rewrite the original send time, and an old refresh timeout clears newer or cross-chat ambiguous refresh anchors | Fixed in candidate; complete terminal cleanup before notification, recheck owner and pending snapshots after transport, keep detached receipts no-retry, persist separate retry backoff, and clear only an exact unambiguous refresh anchor |
 | R24 | High | Nanlong log recovery misses unthreaded cross-group trade results, trusts player copies of result wording, and leaves a confirmed detached command pending after business completion | Fixed for reproduced cases in candidate; replay trusted incoming evidence through the existing direct/broadcast handlers, preserve source-chat boundaries, and clear only the confirmed command's exact pending key; no-ID/early-receipt recovery remains open |
 | R25 | High | A queued send uses an identity after deletion, replacement, account rebinding or disable; a deleted implicit context falls back to another role, and a pause after RPC task creation still permits dispatch | Fixed in candidate; capture the existing owner/account, revalidate after preparation and at actual dispatch, and keep a deleted active context from selecting another identity; post-dispatch receipt durability and module-switch admission remain under review |
-| R26 | High | Ordinary, cleanup and phaseful scheduling continue into later modules after an awaited operation removes, replaces, rebinds or disables their identity | Fixed in candidate; retain the identity object and account, revalidate before later module calls and proxy reads, and stop on account-offline/global-pause changes; independent phaseful polling and continuation of unaffected roles are tested; fast due scans remain under review |
+| R26 | High | Ordinary, cleanup and phaseful scheduling continue into later modules after an awaited operation removes, replaces, rebinds or disables their identity | Fixed in candidate; retain the identity object and account, revalidate before later module calls and proxy reads, and stop on account-offline/global-pause changes; independent phaseful polling and continuation of unaffected roles are tested; R27 covers queued fast-due dispatch |
 | R27 | High | Fast-due queues execute invalidated identities; Tianxing continues after an invalidating preparation; late errors overwrite new cooldowns or crash again while entering a deleted identity | Fixed in candidate for wild training, rift, concubine, Tianxing and queued timeline follow-up; retain scan-time ownership, recheck at task dispatch and after preparation, and compare business snapshots before failure backoff; per-module internal await boundaries still require review |
+| R28 | High | Passive teaching treats the real success suffix as an already-done reply, stops at 1/3, and consumes the third-success dedupe key before direct cleanup/notification; a cleanup await can notify for a replaced role | Fixed in candidate; share one teaching result handler, prefer success over the already-done substring, use explicit server counts without rewinding on older replies, and validate owners after cleanup/passive awaits; real wording, delivery order and SQLite reload tests pass |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -460,6 +461,31 @@ five monitor/control-only contracts need separate behavioral verification.
   This introduces no persisted send fence, new retry controller or Attempt
   decision authority. R07 crash durability and module-internal ownership
   checks remain open; no production, skill or remote changes were made.
+- R28 initially reproduced four failures: the real `sect_teach.success` fixture
+  stopped at 1/3 because its success suffix also matched the already-done test;
+  passive-first third success skipped both cleanup and the completion notice;
+  an explicit 2/3 counter was recorded as 1/3; cleanup could notify after the
+  identity had been replaced. The fixture is retained unchanged; 2/3 and 3/3
+  counter variations are explicit test cases, not new live captures.
+- Direct and passive delivery now share one result handler. Success has priority
+  over the overlapping already-done wording; authoritative counters advance
+  monotonically, and older replies do not requeue an earlier step. New terminal
+  success clears the chain and performs cleanup/notification once in either
+  delivery order. Disabled modules still observe facts without active cleanup,
+  notification or game sends. No new persisted completion controller was added.
+- Cleanup retains account ownership as well as the identity object. Completion
+  notification is explicitly scoped to the original identity and is skipped
+  after invalidation. The passive dispatcher rechecks ownership after awaited
+  handlers before using proxy state or closing guards; teaching and small-world
+  dispatch invalidation are covered. Other family-level guard binding remains
+  part of R11 and is not claimed complete here.
+- R28 focused replay/control/persistence suites: 105 passed, 25 subtests passed
+  before the additional small-world dispatcher regression. Full suite:
+  3959 passed, 850 subtests passed, 60.03 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r28-teach-reducer-20260908.xml`. Ruff and diff checks pass.
+  SQLite reload preserves terminal count/keys and does not repeat completed
+  cleanup/notification. This does not prove crash-time delivery of an audit
+  notice or close R07's unknown-send gap. Production and skill remain unchanged.
 
 ## Deployment Constraint
 
@@ -498,9 +524,9 @@ and cleanup code during a code-only rollback.
    cooldowns, MiniApp mutation/reconnect behavior, persistence capacity, UI
    control contracts and operations. Existing mocks and process uptime cannot
    replace missing real-game evidence or the final integration review.
-   Checkin's terminal classification and duplicate scheduling are now covered
-   by R21. Teaching terminal notification/cleanup in passive-first delivery
-   still needs review. A teaching send with no receipt and no early reply still
+   Checkin's terminal classification and duplicate scheduling are covered by
+   R21, and teaching's real wording, passive-first terminal cleanup/notification
+   and monotonic counters by R28. A teaching send with no receipt and no early reply still
    needs the R07 durable-unknown policy, not a claim that its existing timer is
    a confirmed failure.
 

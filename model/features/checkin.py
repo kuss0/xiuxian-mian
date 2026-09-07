@@ -1,4 +1,5 @@
 import random
+import re
 import time
 from datetime import datetime, timezone
 
@@ -35,6 +36,8 @@ from ..state import (
     format_window_text,
     get_current_identity_id,
     get_game_group_id,
+    get_identity_account,
+    get_identity_enabled,
     get_identity_state,
     get_module_window_hours,
     get_pending_command,
@@ -467,13 +470,15 @@ def remember_checkin_cleanup_msg_id(msg_id, *, chat_id=0):
         mark_dirty()
 
 
-def remember_sect_teach_completion(msg_id, *, chat_id=0):
+def remember_sect_teach_completion(msg_id, *, chat_id=0, reported_count=None):
     key = _checkin_message_key(msg_id, chat_id=chat_id)
     completed = state.setdefault("sect_teach_completed_message_keys", [])
     if not key or not key[0] or list(key) in completed or state["checkin_teach_count"] >= 3:
         return False
+    if reported_count is not None and not state["checkin_teach_count"] < reported_count <= 3:
+        return False
     completed.append(list(key))
-    state["checkin_teach_count"] = min(3, state["checkin_teach_count"] + 1)
+    state["checkin_teach_count"] = min(3, reported_count if reported_count is not None else state["checkin_teach_count"] + 1)
     mark_dirty()
     return True
 
@@ -481,6 +486,7 @@ def remember_sect_teach_completion(msg_id, *, chat_id=0):
 async def cleanup_checkin_chain_messages():
     identity_id = get_current_identity_id()
     identity = get_identity_state(identity_id)
+    owner_account = get_identity_account(identity_id)
     msg_ids = list(identity.get("checkin_cleanup_msg_ids", []))
     if not msg_ids:
         return
@@ -498,7 +504,11 @@ async def cleanup_checkin_chain_messages():
             if key and key[0]:
                 msg_ids_by_chat.setdefault(key[0], set()).add(key[1])
         for chat_id, routed_msg_ids in msg_ids_by_chat.items():
-            if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+            if (
+                not has_identity(identity_id)
+                or get_identity_state(identity_id) is not identity
+                or get_identity_account(identity_id) != owner_account
+            ):
                 return
             if not is_auto_delete_sent_messages_enabled():
                 break
@@ -507,23 +517,31 @@ async def cleanup_checkin_chain_messages():
                 account_id=account_id,
                 client_obj=client,
             )
-            if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+            if (
+                not has_identity(identity_id)
+                or get_identity_state(identity_id) is not identity
+                or get_identity_account(identity_id) != owner_account
+            ):
                 return
             for msg_id in routed_msg_ids:
                 pop_message_record(identity["my_msg_ids"], msg_id, chat_id=chat_id)
                 deleted_keys.add((chat_id, msg_id))
     except Exception as e:
         print(f"cleanup_checkin_chain_messages failed: {e} | msg_ids={msg_ids}")
-    if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+    if (
+        not has_identity(identity_id)
+        or get_identity_state(identity_id) is not identity
+        or get_identity_account(identity_id) != owner_account
+    ):
         return
     deleted_entries = [entry for entry, key in entries if key in deleted_keys]
     identity["checkin_cleanup_msg_ids"] = [item for item in identity["checkin_cleanup_msg_ids"] if item not in deleted_entries]
     save_state()
 
 
-async def _notify_sect_teach_completed():
+async def _notify_sect_teach_completed(*, send_as_id):
     try:
-        await send_audit_log("📘 今日传功完成", scope="identity")
+        await send_audit_log("📘 今日传功完成", scope="identity", send_as_id=send_as_id)
     except Exception as e:
         print(f"notify_sect_teach_completed failed: {e}")
 
@@ -565,43 +583,78 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
 
     if "传功玉简已记录！" not in text and not is_sect_teach_already_done_text(text):
         return False
+    await apply_sect_teach_reply(
+        text, now, int(getattr(reply_to, "id", 0) or 0),
+        chat_id=int(getattr(reply_to, "chat_id", 0) or 0),
+    )
+    return True
+
+
+async def apply_sect_teach_reply(text, now, reply_id, *, chat_id=0):
+    success = "传功玉简已记录！" in text
+    if not success and not is_sect_teach_already_done_text(text):
+        return False
     day_key = get_checkin_day_key(now)
     if day_key < str(state.get("checkin_teach_day") or ""):
-        return True
+        return False
+    changed = False
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
-    reply_id = int(getattr(reply_to, "id", 0) or 0)
-    reply_chat_id = int(getattr(reply_to, "chat_id", 0) or 0)
-    if "传功玉简已记录！" in text and not remember_sect_teach_completion(reply_id, chat_id=reply_chat_id):
-        return True
+        mark_dirty()
+        changed = True
+    count_match = re.search(r"今日已传功\s*([0-3])\s*/\s*3\s*次", text)
+    reported_count = int(count_match[1]) if count_match else None
+    if success:
+        if not remember_sect_teach_completion(reply_id, chat_id=chat_id, reported_count=reported_count):
+            return changed
+    else:
+        if reported_count is not None and reported_count > state["checkin_teach_count"]:
+            state["checkin_teach_count"] = reported_count
+            mark_dirty()
+            changed = True
+        if (
+            state["last_sect_teach_msg_id"] == reply_id
+            and state["last_sect_teach_chat_id"] == chat_id
+            and not any(state.get(key) for key in (
+                "next_sect_teach_time", "sect_teach_reply_to_msg_id", "sect_teach_reply_chat_id",
+            ))
+        ):
+            return changed
     state["last_sect_teach_msg_id"] = reply_id
-    state["last_sect_teach_chat_id"] = reply_chat_id
-    remember_checkin_cleanup_msg_id(reply_id, chat_id=reply_chat_id)
+    state["last_sect_teach_chat_id"] = chat_id
+    remember_checkin_cleanup_msg_id(reply_id, chat_id=chat_id)
     mark_dirty()
 
-    if "传功玉简已记录！" in text:
-        if state["checkin_teach_count"] < 3 and state.get("sect_teach_enabled"):
-            schedule_sect_teach_chain(now, reply_id, reply_chat_id=reply_chat_id)
-            console_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
-        else:
-            state["next_sect_teach_time"] = 0
-            state["sect_teach_reply_to_msg_id"] = 0
-            state["sect_teach_reply_chat_id"] = 0
-            save_state()
-            await cleanup_checkin_chain_messages()
-            console_log("📘 传功成功 3/3")
-            await _notify_sect_teach_completed()
+    if success and state["checkin_teach_count"] < 3:
+        if state.get("sect_teach_enabled"):
+            schedule_sect_teach_chain(now, reply_id, reply_chat_id=chat_id)
+        console_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
         return True
 
-    if is_sect_teach_already_done_text(text):
-        state["next_sect_teach_time"] = 0
-        state["sect_teach_reply_to_msg_id"] = 0
-        state["sect_teach_reply_chat_id"] = 0
-        save_state()
-        await cleanup_checkin_chain_messages()
+    state["next_sect_teach_time"] = 0
+    state["sect_teach_reply_to_msg_id"] = 0
+    state["sect_teach_reply_chat_id"] = 0
+    save_state()
+    identity_id = get_current_identity_id()
+    owner_state = get_identity_state(identity_id)
+    owner_account = get_identity_account(identity_id)
+    if not state.get("sect_teach_enabled") or not get_identity_enabled(identity_id):
+        return True
+    await cleanup_checkin_chain_messages()
+    if (
+        not has_identity(identity_id)
+        or get_identity_state(identity_id) is not owner_state
+        or get_identity_account(identity_id) != owner_account
+        or not get_identity_enabled(identity_id)
+        or not owner_state.get("sect_teach_enabled")
+        or owner_state.get("checkin_teach_day") != day_key
+    ):
+        return True
+    if success:
+        console_log("📘 传功成功 3/3")
+        await _notify_sect_teach_completed(send_as_id=identity_id)
+    else:
         console_log(f"📘 传功暂不可执行 {state['checkin_teach_count']}/3")
-        return True
-
     return True
 
 
@@ -719,6 +772,7 @@ async def run_checkin_scheduler(now):
 
 __all__ = [
     "apply_checkin_completion",
+    "apply_sect_teach_reply",
     "cleanup_checkin_chain_messages",
     "get_checkin_status_text",
     "get_sect_teach_status_text",
