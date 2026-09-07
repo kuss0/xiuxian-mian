@@ -10,20 +10,14 @@ from telethon import TelegramClient
 
 APP_DIR = os.path.dirname(__file__)
 PROJECT_ROOT_DIR = os.path.dirname(APP_DIR)
-DATA_DIR = os.path.abspath(os.environ.get("XIUXIAN_DATA_DIR") or os.path.join(PROJECT_ROOT_DIR, "data"))
-SESSION_DIR = os.path.abspath(os.environ.get("XIUXIAN_SESSION_DIR") or os.path.join(DATA_DIR, "session"))
-STATE_DIR = os.path.abspath(os.environ.get("XIUXIAN_STATE_DIR") or os.path.join(DATA_DIR, "state"))
-MESSAGES_DIR = os.path.abspath(os.environ.get("XIUXIAN_MESSAGES_DIR") or os.path.join(DATA_DIR, "messages"))
-SESSION_FILE = os.path.join(SESSION_DIR, "ai_investor_session")
 
 # ================= 从 .env 读取启动配置 =================
 def _load_dotenv():
+    if os.environ.get("XIUXIAN_TESTING") == "1":
+        return
     env_path = os.path.join(PROJECT_ROOT_DIR, ".env")
     if not os.path.exists(env_path):
-        if os.environ.get("XIUXIAN_TESTING") == "1":
-            return
         raise FileNotFoundError(f"missing .env: {env_path}")
-    testing = os.environ.get("XIUXIAN_TESTING") == "1"
     with open(env_path, "r", encoding="utf-8") as f:
         for raw_line in f:
             line = raw_line.strip()
@@ -36,12 +30,16 @@ def _load_dotenv():
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
                 value = value[1:-1]
-            if testing and key in os.environ:
-                continue
             os.environ[key] = value
 
 
 _load_dotenv()
+
+DATA_DIR = os.path.abspath(os.environ.get("XIUXIAN_DATA_DIR") or os.path.join(PROJECT_ROOT_DIR, "data"))
+SESSION_DIR = os.path.abspath(os.environ.get("XIUXIAN_SESSION_DIR") or os.path.join(DATA_DIR, "session"))
+STATE_DIR = os.path.abspath(os.environ.get("XIUXIAN_STATE_DIR") or os.path.join(DATA_DIR, "state"))
+MESSAGES_DIR = os.path.abspath(os.environ.get("XIUXIAN_MESSAGES_DIR") or os.path.join(DATA_DIR, "messages"))
+SESSION_FILE = os.path.join(SESSION_DIR, "ai_investor_session")
 
 
 def _get_env_str(key, default=""):
@@ -710,7 +708,7 @@ raw_public_base_url = (os.environ.get("CHAOGU_UI_PUBLIC_BASE_URL") or "").strip(
 if raw_public_base_url:
     UI_PUBLIC_BASE_URL = raw_public_base_url
 else:
-    detected_public_ip = _fetch_public_ip()
+    detected_public_ip = "" if os.environ.get("XIUXIAN_TESTING") == "1" else _fetch_public_ip()
     public_host = detected_public_ip or os.environ.get("CHAOGU_UI_FALLBACK_HOST", "127.0.0.1").strip() or "127.0.0.1"
     UI_PUBLIC_BASE_URL = f"http://{public_host}:{UI_PORT}"
 
