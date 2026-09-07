@@ -23,6 +23,7 @@ from ..state import (
     REALM_SORT_INDEX,
     get_current_identity_id,
     get_send_as_profile,
+    has_identity,
     infer_realm_from_xiuwei_max,
     is_module_available,
     state,
@@ -54,6 +55,7 @@ YINLUO_CONVERT_SHA_THRESHOLD_DEFAULT = 5000
 YINLUO_CONVERT_SHA_THRESHOLD_MAX = 350000000
 YINLUO_SOOTHE_XIUWEI_COST = 50
 YINLUO_PHASEFUL_RISK_RETRY_SEC = 2 * 60
+YINLUO_SHA_RECOVERY_RECHECK_SEC = 60 * 60
 
 RE_BANNER_TITLE = re.compile(r"【(?P<owner>[^】]+)的阴罗幡】")
 RE_SHA_POOL = re.compile(r"煞气池[:：]\s*(?P<current>\d+)\s*/\s*(?P<max>\d+)\s*\((?P<pct>\d+)%\)")
@@ -165,6 +167,7 @@ def _default_yinluo_observation():
         "auto_collect_pending": {},
         "auto_refine_pending": {},
         "auto_soothe_pending": {},
+        "resource_recovery_min_sha": 0,
         "auto_config": _default_yinluo_auto_config(),
         "recent": [],
     }
@@ -275,12 +278,85 @@ def normalize_yinluo_observation(value=None):
         except (TypeError, ValueError):
             observed[key] = 0
     observed["last_daily_sacrifice_day"] = str(observed.get("last_daily_sacrifice_day") or "").strip()
-    for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_soothe_count", "last_soothe_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain"):
+    for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_soothe_count", "last_soothe_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain", "resource_recovery_min_sha"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
         except (TypeError, ValueError):
             observed[key] = 0
     return observed
+
+
+def request_yinluo_sha_recovery(send_as_id, minimum_sha, *, now=None, reason=""):
+    """Record a server-authoritative sha shortage and wake the scheduler."""
+    send_as_id = _safe_int(send_as_id)
+    minimum_sha = max(1, _safe_int(minimum_sha, 1))
+    now = float(now if now is not None else time.time())
+    if send_as_id <= 0 or not has_identity(send_as_id):
+        return False
+    with use_identity(send_as_id):
+        observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+        observed["resource_recovery_min_sha"] = max(
+            minimum_sha,
+            int(observed.get("resource_recovery_min_sha", 0) or 0),
+        )
+        if _has_known_sha_pool(observed):
+            observed["sha_current"] = min(
+                int(observed.get("sha_current", 0) or 0),
+                minimum_sha - 1,
+            )
+            if int(observed.get("sha_max", 0) or 0) > 0:
+                observed["sha_percent"] = int(
+                    min(100, observed["sha_current"] * 100 / int(observed["sha_max"]))
+                )
+        observed["auto_next_time"] = now
+        observed["auto_last_action"] = "sha_recovery"
+        observed["auto_last_error"] = str(reason or f"煞气不足，至少需要 {minimum_sha} 点。")
+        state["yinluo_observation"] = observed
+        save_state()
+    return True
+
+
+def record_yinluo_sha_consumption(send_as_id, amount, *, now=None):
+    """Apply a sha delta proven by a successful external Yinluo action."""
+    send_as_id = _safe_int(send_as_id)
+    amount = max(0, _safe_int(amount))
+    now = float(now if now is not None else time.time())
+    if send_as_id <= 0 or amount <= 0 or not has_identity(send_as_id):
+        return False
+    with use_identity(send_as_id):
+        observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+        if _has_known_sha_pool(observed):
+            observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) - amount)
+            if int(observed.get("sha_max", 0) or 0) > 0:
+                observed["sha_percent"] = int(
+                    min(100, observed["sha_current"] * 100 / int(observed["sha_max"]))
+                )
+            if observed["sha_current"] < amount:
+                observed["resource_recovery_min_sha"] = max(
+                    amount,
+                    int(observed.get("resource_recovery_min_sha", 0) or 0),
+                )
+                observed["auto_next_time"] = now
+        state["yinluo_observation"] = observed
+        save_state()
+    return True
+
+
+def get_yinluo_sha_recovery_status(send_as_id):
+    send_as_id = _safe_int(send_as_id)
+    if send_as_id <= 0 or not has_identity(send_as_id):
+        return {"blocked": False, "required_sha": 0, "sha_current": 0}
+    with use_identity(send_as_id):
+        observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    required_sha = int(observed.get("resource_recovery_min_sha", 0) or 0)
+    sha_current = int(observed.get("sha_current", 0) or 0)
+    blocked = required_sha > 0 and (not _has_known_sha_pool(observed) or sha_current < required_sha)
+    return {
+        "blocked": blocked,
+        "required_sha": required_sha,
+        "sha_current": sha_current,
+        "next_time": float(observed.get("auto_next_time", 0) or 0),
+    }
 
 
 def _short_summary(text, limit=80):
@@ -1162,6 +1238,9 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
                 observed["last_convert_result_key"] = convert_result_key
         if parsed.get("action") == "每日献祭" and not daily_sacrifice_already_accounted and daily_sacrifice_result_key:
             observed["last_daily_sacrifice_result_key"] = daily_sacrifice_result_key
+    recovery_required = int(observed.get("resource_recovery_min_sha", 0) or 0)
+    if recovery_required > 0 and _has_known_sha_pool(observed) and int(observed.get("sha_current", 0) or 0) >= recovery_required:
+        observed["resource_recovery_min_sha"] = 0
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
         observed = _restore_auto_refine_pending(observed)
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "slot_busy":
@@ -1986,6 +2065,14 @@ def _set_yinluo_auto_wait(observed, now, action, next_time=None, error=""):
     save_state()
 
 
+def _daily_sacrifice_due(observed, now):
+    return bool(
+        _auto_action_enabled(observed, "daily_sacrifice")
+        and str(observed.get("last_daily_sacrifice_day") or "") != get_day_key(now)
+        and float(observed.get("next_daily_sacrifice_time", 0) or 0) <= now
+    )
+
+
 async def run_yinluo_scheduler(now):
     now = float(now if now is not None else time.time())
     if not state.get("yinluo_enabled"):
@@ -1997,12 +2084,16 @@ async def run_yinluo_scheduler(now):
         return
 
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    recovery_required = int(observed.get("resource_recovery_min_sha", 0) or 0)
+    if recovery_required > 0 and _has_known_sha_pool(observed) and int(observed.get("sha_current", 0) or 0) >= recovery_required:
+        observed["resource_recovery_min_sha"] = 0
+        recovery_required = 0
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
         # A low, known sha pool is a higher-priority recovery action than an
         # old wait derived from blood-forest or demon-summon cooldowns.
         auto_convert_amount, _convert_reason = _build_auto_convert_arg(observed, now=now)
-        if not auto_convert_amount:
+        if not auto_convert_amount and not _daily_sacrifice_due(observed, now) and recovery_required <= 0:
             return
     observed = _apply_collect_blockers(observed, now=now)
     state["yinluo_observation"] = observed
@@ -2062,7 +2153,25 @@ async def run_yinluo_scheduler(now):
         state["yinluo_observation"] = observed
         save_state()
 
-    if not _has_recent_observation(observed, now):
+    recovery_daily_due = recovery_required > 0 and _daily_sacrifice_due(observed, now)
+    recovery_convert_amount, _recovery_convert_reason = _build_auto_convert_arg(observed, now=now)
+    if recovery_daily_due:
+        plan = build_yinluo_manual_plan("daily_sacrifice", now=now)
+    elif recovery_required > 0 and recovery_convert_amount:
+        plan = build_yinluo_manual_plan("convert", recovery_convert_amount, now=now)
+    elif recovery_required > 0:
+        retry_at = float(observed.get("next_daily_sacrifice_time", 0) or 0)
+        if retry_at <= now:
+            retry_at = now + YINLUO_SHA_RECOVERY_RECHECK_SEC
+        _set_yinluo_auto_wait(
+            observed,
+            now,
+            "sha_recovery",
+            retry_at,
+            f"煞气 {int(observed.get('sha_current', 0) or 0)}/{recovery_required}，等待可用补给。",
+        )
+        return
+    elif not _has_recent_observation(observed, now):
         plan = build_yinluo_manual_plan("banner", now=now)
     elif str(observed.get("last_result") or "") == "not_member":
         plan = build_yinluo_manual_plan("banner", now=now)
@@ -2083,12 +2192,7 @@ async def run_yinluo_scheduler(now):
         if _auto_action_enabled(observed, "refine"):
             auto_refine_arg, _auto_refine_reason = _build_auto_refine_arg(observed, now=now)
         auto_convert_amount, _auto_convert_reason = _build_auto_convert_arg(observed, now=now)
-        day_key = get_day_key(now)
-        daily_sacrifice_due = (
-            _auto_action_enabled(observed, "daily_sacrifice")
-            and str(observed.get("last_daily_sacrifice_day") or "") != day_key
-            and float(observed.get("next_daily_sacrifice_time", 0) or 0) <= now
-        )
+        daily_sacrifice_due = _daily_sacrifice_due(observed, now)
         if daily_sacrifice_due:
             plan = build_yinluo_manual_plan("daily_sacrifice", now=now)
         elif auto_refine_arg:

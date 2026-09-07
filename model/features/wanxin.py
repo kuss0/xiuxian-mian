@@ -47,6 +47,11 @@ from ..state import (
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
+from .yinluo import (
+    get_yinluo_sha_recovery_status,
+    record_yinluo_sha_consumption,
+    request_yinluo_sha_recovery,
+)
 
 
 WANXIN_MODULE_NAME = "婉心封魂"
@@ -63,6 +68,7 @@ WANXIN_IDENTIFY_CD_SEC = 4 * 3600
 WANXIN_BANNER_CD_SEC = 6 * 3600
 WANXIN_STRIP_CD_SEC = 8 * 3600
 WANXIN_STRIP_RESOURCE_BACKOFF_SEC = 6 * 3600
+WANXIN_RESOURCE_RECOVERY_RETRY_SEC = 15 * 60
 WANXIN_MOON_GREET_CD_SEC = 24 * 3600
 WANXIN_MOON_SEAL_CD_SEC = 8 * 3600
 WANXIN_MOON_JOIN_CD_SEC = 24 * 3600
@@ -180,6 +186,8 @@ RE_CONTRIB_GAIN = re.compile(r"(?:咒师)?贡献\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_GAIN = re.compile(r"情缘\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_COST = re.compile(r"消耗[：:]?[^\n]*?(?P<cost>\d+)\s*情缘")
 RE_MOON_AFFINITY_VALUE = re.compile(r"情缘\s*[:：]\s*(?P<value>\d+)")
+RE_ASSIST_SHA_COST = re.compile(r"幡面煞气被削去\s*(?P<amount>\d+)\s*点")
+RE_ASSIST_SHA_REQUIRED = re.compile(r"(?P<action>借幡镇魂|剥离咒源)至少需要\s*(?P<amount>\d+)\s*点煞气")
 
 
 def _entry_ts(value):
@@ -629,6 +637,8 @@ def parse_wanxin_text(text, now=None, family=""):
         "source_gain": 0,
         "seal_down": 0,
         "moon_gain": 0,
+        "sha_cost": 0,
+        "required_sha": 0,
         "cooldown_action": "",
         "summary": "",
     }
@@ -766,10 +776,21 @@ def parse_wanxin_text(text, now=None, family=""):
             "summary": "辨认咒纹成功",
         })
         return parsed
+    shortage_match = RE_ASSIST_SHA_REQUIRED.search(raw)
+    if "阴罗幡煞气不足" in raw and shortage_match:
+        shortage_action = shortage_match.group("action")
+        parsed.update({
+            "type": "assist_banner_resource_blocked" if shortage_action == "借幡镇魂" else "assist_strip_resource_blocked",
+            "available": "yes",
+            "required_sha": _safe_int(shortage_match.group("amount"), 0),
+            "summary": f"阴罗幡煞气不足，{shortage_action}暂缓",
+        })
+        return parsed
     if "【借幡镇魂】" in raw:
         seal_match = RE_SEAL_DOWN.search(raw)
         moon_match = RE_MOON_GAIN.search(raw)
         contrib_match = RE_CONTRIB_GAIN.search(raw)
+        sha_cost_match = RE_ASSIST_SHA_COST.search(raw)
         parsed.update({
             "type": "assist_banner_success",
             "available": "yes",
@@ -777,6 +798,7 @@ def parse_wanxin_text(text, now=None, family=""):
             "seal_down": _safe_int(seal_match.group("down"), 0) if seal_match else 0,
             "moon_gain": _safe_int(moon_match.group("gain"), 0) if moon_match else 0,
             "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
+            "sha_cost": _safe_int(sha_cost_match.group("amount"), 0) if sha_cost_match else 0,
             "summary": "借幡镇魂成功",
         })
         return parsed
@@ -802,13 +824,6 @@ def parse_wanxin_text(text, now=None, family=""):
             "seal_down": _safe_int(seal_match.group("down"), 0) if seal_match else 0,
             "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
             "summary": "剥离咒源成功",
-        })
-        return parsed
-    if "阴罗幡煞气不足" in raw and "剥离咒源至少需要" in raw:
-        parsed.update({
-            "type": "assist_strip_resource_blocked",
-            "available": "yes",
-            "summary": "阴罗幡煞气不足，剥离暂缓",
         })
         return parsed
     if "咒源尚未辨明" in raw:
@@ -1613,6 +1628,18 @@ async def _send_assist_action(observed, action, now):
     if not _is_yinluo_identity(assist_send_as_id):
         _schedule_next(observed, now, 60 * 60, error=f"协助身份不是阴罗宗：{get_identity_display_name(assist_send_as_id)}")
         return False
+    recovery = get_yinluo_sha_recovery_status(assist_send_as_id)
+    if recovery.get("blocked"):
+        required_sha = int(recovery.get("required_sha", 0) or 0)
+        current_sha = int(recovery.get("sha_current", 0) or 0)
+        _set_next_time_for_action(observed, action, now + WANXIN_RESOURCE_RECOVERY_RETRY_SEC)
+        _schedule_next(
+            observed,
+            now,
+            WANXIN_RESOURCE_RECOVERY_RETRY_SEC,
+            error=f"阴罗幡补煞气中：{current_sha}/{required_sha}，本轮不发送{WANXIN_ACTION_LABELS.get(action, action)}。",
+        )
+        return False
     if not owner_username or not _commission_accept_evidence_valid(observed):
         _schedule_next(observed, now, 30 * 60, error="婉心协助缺少有效咒契或委托方")
         return False
@@ -2078,6 +2105,12 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["auto_last_error"] = "" if ptype != "assist_strip_failed" else parsed.get("summary") or "剥离咒源失败"
             if action == WANXIN_ACTION_STRIP:
                 _consume_commission(observed)
+            if action == WANXIN_ACTION_BANNER and int(parsed.get("sha_cost", 0) or 0) > 0:
+                record_yinluo_sha_consumption(
+                    int((observed.get("assist") or {}).get("send_as_id", 0) or 0),
+                    int(parsed.get("sha_cost", 0) or 0),
+                    now=now,
+                )
             _clear_pending(observed)
             _schedule_next(observed, now)
         elif ptype == "assist_strip_blocked":
@@ -2089,15 +2122,22 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["auto_last_error"] = ""
             _clear_pending(observed)
             _schedule_next(observed, now)
-        elif ptype == "assist_strip_resource_blocked":
-            observed["assist"]["next_strip_time"] = now + WANXIN_STRIP_RESOURCE_BACKOFF_SEC
-            observed["assist"]["last_action"] = WANXIN_ACTION_STRIP
+        elif ptype in {"assist_banner_resource_blocked", "assist_strip_resource_blocked"}:
+            action = WANXIN_ACTION_BANNER if ptype == "assist_banner_resource_blocked" else WANXIN_ACTION_STRIP
+            _set_next_time_for_action(observed, action, now + WANXIN_RESOURCE_RECOVERY_RETRY_SEC)
+            observed["assist"]["last_action"] = action
             observed["assist"]["last_result"] = ""
             observed["assist"]["last_error"] = parsed.get("summary") or "阴罗幡煞气不足"
             observed["auto_last_result"] = ""
             observed["auto_last_error"] = parsed.get("summary") or "阴罗幡煞气不足"
             _clear_pending(observed)
-            _schedule_next(observed, now, WANXIN_STRIP_RESOURCE_BACKOFF_SEC)
+            _schedule_next(observed, now, WANXIN_RESOURCE_RECOVERY_RETRY_SEC)
+            request_yinluo_sha_recovery(
+                int((observed.get("assist") or {}).get("send_as_id", 0) or 0),
+                int(parsed.get("required_sha", 0) or 1),
+                now=now,
+                reason=parsed.get("summary") or "阴罗幡煞气不足",
+            )
         elif ptype in {"assist_missing_target", "assist_not_yinluo"}:
             action = _matching_pending_action(observed, matched_family)
             delay = 60 * 60 if ptype == "assist_not_yinluo" else 30 * 60

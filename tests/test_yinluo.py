@@ -928,6 +928,60 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(yinluo.get_day_key(now), observed["last_daily_sacrifice_day"])
         self.assertGreater(observed["next_daily_sacrifice_time"], now)
 
+    async def test_resource_recovery_daily_sacrifice_preempts_future_auto_wait(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 79,
+            "sha_max": 15000,
+            "resource_recovery_min_sha": 80,
+            "next_daily_sacrifice_time": 0,
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "daily_sacrifice": True,
+                "refine": False,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": [],
+            },
+            "auto_next_time": now + 3600,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".每日献祭", send_mock.await_args.args[0])
+        self.assertEqual("daily_sacrifice", observed["auto_last_action"])
+
+    async def test_resource_recovery_without_available_supply_does_not_send(self):
+        now = 1_780_000_000.0
+        state_module.update_send_as_profile(self.identity_id, xiuwei_current=11, xiuwei_max=50000)
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 20,
+            "sha_max": 15000,
+            "resource_recovery_min_sha": 80,
+            "last_daily_sacrifice_day": yinluo.get_day_key(now),
+            "next_daily_sacrifice_time": now + 12 * 3600,
+            "auto_config": {
+                "daily_sacrifice": True,
+                "convert": True,
+                "convert_amount": 10000,
+                "convert_sha_threshold": 5000,
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("sha_recovery", observed["auto_last_action"])
+        self.assertIn("20/80", observed["auto_last_error"])
+        self.assertEqual(now + 12 * 3600, observed["auto_next_time"])
+
     async def test_scheduler_auto_refines_when_slot_stock_and_sha_are_known(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({

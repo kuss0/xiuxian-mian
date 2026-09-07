@@ -116,22 +116,31 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             "你的阴罗幡煞气不足，剥离咒源至少需要 120 点煞气。",
             now=1_800_000_000.0,
         )
+        banner_blocked = wanxin.parse_wanxin_text(
+            "你的阴罗幡煞气不足，借幡镇魂至少需要 80 点煞气。",
+            now=1_800_000_000.0,
+        )
 
         self.assertEqual("assist_strip_success", success["type"])
         self.assertEqual("jfdffdddd", success["target_username"])
         self.assertEqual((9, 14, 180), (success["seal_down"], success["source_gain"], success["contrib_gain"]))
         self.assertEqual("assist_strip_resource_blocked", blocked["type"])
+        self.assertEqual(("assist_banner_resource_blocked", 80), (banner_blocked["type"], banner_blocked["required_sha"]))
 
     def test_parse_commission_existing_and_assist_success(self):
         existing = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 5），不可重复发布。")
         invalid = wanxin.parse_wanxin_text("你与对方没有有效的咒契协定。需先由对方发布委托，再由你接取。")
         identify = wanxin.parse_wanxin_text("【阴罗辨咒】\n@sanshaoyedejian1 替 @jfdffdddd 锁定咒源。咒源 +20，咒师贡献 +120。")
-        banner = wanxin.parse_wanxin_text("【借幡镇魂】\n@jfdffdddd 魂封 -13，月魄 +1；咒师贡献 +100。")
+        banner = wanxin.parse_wanxin_text(
+            "【借幡镇魂】\n@xianxia9527 借阴罗幡压住封魂咒反扑，幡面煞气被削去 80 点。\n"
+            "@jfdffdddd 魂封 -13，月魄 +1；咒师贡献 +100。"
+        )
 
         self.assertEqual(("commission_existing", 5), (existing["type"], existing["commission_id"]))
         self.assertEqual("commission_invalid", invalid["type"])
         self.assertEqual(("assist_identify_success", "jfdffdddd", 20, 120), (identify["type"], identify["target_username"], identify["source_gain"], identify["contrib_gain"]))
         self.assertEqual(("assist_banner_success", "jfdffdddd", 13, 1), (banner["type"], banner["target_username"], banner["seal_down"], banner["moon_gain"]))
+        self.assertEqual(80, banner["sha_cost"])
 
     def test_action_guard_resolves_wanxin_commands(self):
         self.assertEqual("wanxin_panel", action_guard.resolve_action_key(".婉心"))
@@ -1643,7 +1652,61 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["wanxin_observation"]
             self.assertEqual(88, observed["commission"]["id"])
             self.assertTrue(observed["commission"]["accepted"])
-            self.assertEqual(now + wanxin.WANXIN_STRIP_RESOURCE_BACKOFF_SEC, observed["assist"]["next_strip_time"])
+            self.assertEqual(now + wanxin.WANXIN_RESOURCE_RECOVERY_RETRY_SEC, observed["assist"]["next_strip_time"])
+        with state_module.use_identity(helper_id):
+            helper_observed = state_module.state["yinluo_observation"]
+            self.assertEqual(120, helper_observed["resource_recovery_min_sha"])
+            self.assertEqual(now, helper_observed["auto_next_time"])
+
+    async def test_banner_resource_shortage_requests_yinluo_recovery(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_300.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "pending": {
+                    "action": "banner",
+                    "family": "wanxin_assist_banner",
+                    "msg_id": 7501,
+                    "send_as_id": helper_id,
+                    "reply_due_at": now + 60,
+                },
+                "commission": {
+                    "id": 90,
+                    "accepted": True,
+                    "accepted_at": now - 60,
+                    "owner_username": "jfdffdddd",
+                    "helper_username": "sanshaoyedejian1",
+                },
+                "assist": {"send_as_id": helper_id, "banner_enabled": True},
+            }
+        with state_module.use_identity(helper_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "sha_current": 400,
+                "sha_max": 15000,
+                "auto_next_time": now + 3600,
+            }
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "你的阴罗幡煞气不足，借幡镇魂至少需要 80 点煞气。",
+                    now,
+                    reply_to=SimpleNamespace(id=7501, raw_text=".借幡镇魂 @jfdffdddd"),
+                    matched_family="wanxin_assist_banner",
+                    result_msg_id=7502,
+                )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(90, observed["commission"]["id"])
+            self.assertEqual(now + wanxin.WANXIN_RESOURCE_RECOVERY_RETRY_SEC, observed["assist"]["next_banner_time"])
+        with state_module.use_identity(helper_id):
+            helper_observed = state_module.state["yinluo_observation"]
+            self.assertEqual(79, helper_observed["sha_current"])
+            self.assertEqual(80, helper_observed["resource_recovery_min_sha"])
+            self.assertEqual(now, helper_observed["auto_next_time"])
 
     async def test_scheduler_refuses_assist_without_real_accept_evidence(self):
         owner_id = self._prepare_identity()
