@@ -73,6 +73,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R19 | High | Nanlong omits the prompt chat, overwrites newer work after awaits, and accepts stale trade broadcasts during placement/recall; deleting an identity during send updates another identity | Reproduced and fixed for these boundaries in candidate; original route/receipt metadata is persisted, terminal transitions precede notifications, and real cross-group broadcasts still complete; pre-receipt outcome and uncertain-send review remains open |
 | R20 | High | A throwing registered pre-send guard is skipped, and a guard returning a Future is treated as allowed without awaiting its decision; decision-normalization errors are misclassified as unknown sends | Fixed in candidate; synchronous/async faults stop before transport as definitely unsent, all awaitables are awaited, and cancellation still propagates |
 | R21 | High | Passive checkin marks the day complete before classifying the reply; repeated success rewinds queued teaching; old-day replies reset current-day progress; unknown replies are treated as terminal | Reproduced and fixed in candidate; direct and passive checkin share idempotent completion, old days cannot roll back state, and unknown replies retain pending ownership |
+| R22 | High | Nanlong can reenter while sending, retries unknown sends as failures, rearms them when a choice changes, and discards real receipts after a post-dispatch choice change | Fixed for reproduced boundaries in candidate; persist the existing pending decision before sending, retry only explicit unsent results, and keep operation ownership across option changes; early-result and late-receipt recovery remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -344,6 +345,24 @@ five monitor/control-only contracts need separate behavioral verification.
   test retains unresolved ownership without resending. Save/reload preserves
   duplicate suppression. New negative samples are injected boundary cases, not
   claims of recently observed production wording. No live mutation occurred.
+- R22 Nanlong-send candidate: 3921 passed, 631 subtests passed, 57.64 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r22-nanlong-send-20260908.xml`; Ruff and diff
+  checks pass. Focused Nanlong, control and persistence tests passed 69 tests
+  and 32 subtests. Eleven initial failing cases reproduced send reentry,
+  unknown retry, option-change races, ignored save failure and false terminal
+  replies. Three additional review cases corrected the candidate's handling
+  of definitely-unsent placement, protected exchange and confirmation retry.
+- Existing Nanlong fields now record the pending decision before transport;
+  no receipt or send time is invented at that boundary. A failed save stops
+  dispatch, an unknown result remains unscheduled, and explicit unsent results
+  restore the previous receipt and confirmed protection before retrying.
+  Save/reload preserves the hold. Option changes cannot rearm an unresolved
+  send or discard a returned receipt for the current prompt. Unknown reply
+  wording no longer closes the pending result as terminal.
+- This is a Nanlong state-machine checkpoint, not a general durable outbox or
+  resolution of R07. Result-before-receipt, late detached receipt adoption and
+  recovery of unthreaded/cross-group results remain under review. Skill,
+  production, switches, services and remote branches are unchanged.
 
 ## Deployment Constraint
 
@@ -365,9 +384,10 @@ and cleanup code during a code-only rollback.
    Jiyin/quiz/Tianji routing, second-soul heart-demon broadcasts and the
    checkin/teaching, judgement and Nanlong routes are covered; remaining
    second-soul scalar reply guards and wrapped send calls still require review.
-   Nanlong's send-in-flight reentry, result-before-receipt case and unknown-send
-   automatic retry need explicit tests and reconciliation before its full
-   lifecycle is signed off. Passing route tests does not close R07 or R11.
+   Nanlong's send-in-flight reentry and unknown-send automatic retry are now
+   covered by R22. Result-before-receipt, late detached receipt adoption and
+   unthreaded result recovery still need reconciliation before its lifecycle
+   is signed off. Passing route tests does not close R07 or R11.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not

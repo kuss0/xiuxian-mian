@@ -1,9 +1,10 @@
+import asyncio
 import copy
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from model import persistence
 from model import state as state_module
@@ -190,6 +191,31 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             self.assertEqual(0, loaded["nanlong_last_sent_at"])
             self.assertEqual("-1001:123", loaded["nanlong_last_prompt_key"])
             self.assertEqual(expected["nanlong_prompt_at"], loaded["nanlong_prompt_at"])
+
+    def test_nanlong_unresolved_send_checkpoint_survives_reload_without_retry(self):
+        from model.features import nanlong
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")),
+            patch.object(nanlong, "save_state", side_effect=self._save_without_guard_backup),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            now = 1788748200.0
+            identity_id = 990117
+            state_module.ensure_identity_registered(identity_id)["nanlong_enabled"] = True
+            with state_module.use_identity(identity_id):
+                nanlong._set_nanlong_pending(123, now + 180, now, chat_id=-1001)
+                self.assertTrue(nanlong._prepare_nanlong_send(nanlong.CMD_NANLONG_EXCHANGE_FABAO, now, protected=True))
+            loaded = persistence._load_identity_from_db(identity_id)
+            with state_module.use_identity(identity_id):
+                self.assertTrue(nanlong._nanlong_send_is_unresolved())
+                asyncio.run(nanlong.run_nanlong_scheduler(now + 60))
+            sender.assert_not_awaited()
+            self.assertEqual(0, loaded["nanlong_last_msg_id"])
+            self.assertEqual(0, loaded["nanlong_reply_due_at"])
+            self.assertEqual("exchange_pending", loaded["nanlong_protect_phase"])
+            self.assertEqual(123, loaded["nanlong_reply_to_msg_id"])
 
     def test_pending_route_and_recovery_only_edits_are_not_lost_by_delta_save(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(
