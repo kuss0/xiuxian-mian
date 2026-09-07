@@ -1218,30 +1218,33 @@ def _apply_checkin_passive(text, now, family, reply_context=None, *, chat_id=0):
     if family == "checkin":
         if checkin_mod.is_no_sect_checkin_text(raw_text):
             return checkin_mod.disable_sect_modules_for_current_identity(now)
-        day_key = get_checkin_day_key(now)
-        state["last_checkin_done_day"] = day_key
-        if float(state.get("next_checkin_time", 0) or 0) <= now or get_checkin_day_key(state.get("next_checkin_time", 0) or 0) == day_key:
-            checkin_mod.schedule_next_checkin_after_completion(now, persist=False)
-        if reply_id and chat_id:
-            state["last_checkin_msg_id"] = reply_id
-            state["last_checkin_chat_id"] = chat_id
-        return "点卯成功" in raw_text or checkin_mod.is_checkin_already_done_text(raw_text) or "点卯" in raw_text
+        if not checkin_mod.is_checkin_completion_text(raw_text):
+            return False
+        return checkin_mod.apply_checkin_completion(now, reply_id, chat_id=chat_id)
     if family == "sect_teach":
+        if "传功玉简已记录！" not in raw_text and not checkin_mod.is_sect_teach_already_done_text(raw_text):
+            return False
         day_key = get_checkin_day_key(now)
+        if day_key < str(state.get("checkin_teach_day") or ""):
+            return False
+        changed = False
         if state["checkin_teach_day"] != day_key:
             checkin_mod.reset_checkin_daily_state(now)
+            changed = True
         if "传功玉简已记录！" in raw_text:
             if checkin_mod.remember_sect_teach_completion(reply_id, chat_id=chat_id):
+                changed = True
                 state["last_sect_teach_msg_id"] = reply_id
                 state["last_sect_teach_chat_id"] = chat_id
                 checkin_mod.remember_checkin_cleanup_msg_id(reply_id, chat_id=chat_id)
                 if state.get("sect_teach_enabled"):
                     checkin_mod.schedule_sect_teach_chain(now, reply_id, reply_chat_id=chat_id)
         if checkin_mod.is_sect_teach_already_done_text(raw_text) or state["checkin_teach_count"] >= 3:
+            changed = any(state.get(key) for key in ("next_sect_teach_time", "sect_teach_reply_to_msg_id", "sect_teach_reply_chat_id")) or changed
             state["next_sect_teach_time"] = 0
             state["sect_teach_reply_to_msg_id"] = 0
             state["sect_teach_reply_chat_id"] = 0
-        return "传功" in raw_text or "贡献" in raw_text or "宗门" in raw_text
+        return changed
     return False
 
 

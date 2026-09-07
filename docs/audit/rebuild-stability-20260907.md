@@ -72,6 +72,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R18 | High | Judgement rewrites stale pending snapshots, requeues prompts after disable/deletion, and uses pre-refresh button coordinates; account fallback can choose the wrong channel identity | Reproduced and fixed in candidate; exact terminal anchors precede unique-name broadcast matching, original-chat sends and current-entry updates are tested; queued transport cancellation and unknown outcomes remain under R07/scheduling review |
 | R19 | High | Nanlong omits the prompt chat, overwrites newer work after awaits, and accepts stale trade broadcasts during placement/recall; deleting an identity during send updates another identity | Reproduced and fixed for these boundaries in candidate; original route/receipt metadata is persisted, terminal transitions precede notifications, and real cross-group broadcasts still complete; pre-receipt outcome and uncertain-send review remains open |
 | R20 | High | A throwing registered pre-send guard is skipped, and a guard returning a Future is treated as allowed without awaiting its decision; decision-normalization errors are misclassified as unknown sends | Fixed in candidate; synchronous/async faults stop before transport as definitely unsent, all awaitables are awaited, and cancellation still propagates |
+| R21 | High | Passive checkin marks the day complete before classifying the reply; repeated success rewinds queued teaching; old-day replies reset current-day progress; unknown replies are treated as terminal | Reproduced and fixed in candidate; direct and passive checkin share idempotent completion, old days cannot roll back state, and unknown replies retain pending ownership |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -330,6 +331,19 @@ five monitor/control-only contracts need separate behavioral verification.
   Telegram and removes its isolated state when finished. The proposed durable
   ownership design remains unimplemented and requires review independent of
   CommandAttempt's shadow-only ledger.
+- R21 checkin-terminal candidate: 3908 passed, 625 subtests passed, 59.64
+  seconds. JUnit: `/tmp/xiuxian-rebuild-r21-checkin-terminal-20260907.xml`;
+  Ruff and diff checks pass. The focused checkin, passive identity, persistence
+  and real-handler replay suite passed 79 tests and 17 subtests. Eight initial
+  failing cases reproduced false completion, passive/direct delivery-order
+  differences, duplicate rescheduling and old-day rollback before the fix.
+- Checkin completion now has one shared state transition. Success/already-done
+  evidence can establish an exact route later, but cannot rewind an active
+  teaching chain or change its timer on duplicate delivery. Unknown checkin and
+  teaching text no longer terminates pending recovery; the real-handler replay
+  test retains unresolved ownership without resending. Save/reload preserves
+  duplicate suppression. New negative samples are injected boundary cases, not
+  claims of recently observed production wording. No live mutation occurred.
 
 ## Deployment Constraint
 
@@ -366,11 +380,11 @@ and cleanup code during a code-only rollback.
    cooldowns, MiniApp mutation/reconnect behavior, persistence capacity, UI
    control contracts and operations. Existing mocks and process uptime cannot
    replace missing real-game evidence or the final integration review.
-   Checkin's broad passive success classification and repeated checkin replies
-   scheduling teaching again need separate terminal/idempotence review; the
-   new chat-key tests do not establish those business invariants. A teaching
-   send with no receipt and no early reply still needs the R07 durable-unknown
-   policy, not a claim that its existing timer is a confirmed failure.
+   Checkin's terminal classification and duplicate scheduling are now covered
+   by R21. Teaching terminal notification/cleanup in passive-first delivery
+   still needs review. A teaching send with no receipt and no early reply still
+   needs the R07 durable-unknown policy, not a claim that its existing timer is
+   a confirmed failure.
 
 ## Completion Gate
 

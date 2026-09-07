@@ -303,28 +303,42 @@ def _clear_unavailable_checkin_modules():
 
 
 
-def _handle_checkin_day_rollover(now, reply_to=None):
+def apply_checkin_completion(now, reply_to_msg_id=0, *, chat_id=0):
     day_key = get_checkin_day_key(now)
+    if day_key < max(str(state.get("checkin_teach_day") or ""), str(state.get("last_checkin_done_day") or "")):
+        return False
+    changed = False
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
-        state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
-        state["last_checkin_chat_id"] = int(getattr(reply_to, "chat_id", 0) or 0)
-    return day_key
-
-
-
-def _mark_checkin_done_and_schedule_teach(now, status_text):
-    day_key = get_checkin_day_key(now)
-    state["last_checkin_done_day"] = day_key
-    next_ts = _schedule_checkin_next_day(now)
-    scheduled = schedule_sect_teach_chain(
-        now, state["last_checkin_msg_id"], reply_chat_id=state.get("last_checkin_chat_id", 0),
-    ) if state.get("sect_teach_enabled") else False
-    save_state()
-    console_log(f"📝 {status_text}→{fmt_abs_ts(next_ts)}")
-    if scheduled:
-        console_log(f"📘 传功已排队→{fmt_abs_ts(state['next_sect_teach_time'])}")
-    return True
+        changed = True
+    first_completion = state["last_checkin_done_day"] != day_key
+    if first_completion:
+        state["last_checkin_done_day"] = day_key
+        changed = True
+    next_ts = float(state.get("next_checkin_time", 0) or 0)
+    if first_completion or next_ts <= now or get_checkin_day_key(next_ts) == day_key:
+        _schedule_checkin_next_day(now)
+        changed = True
+    key = _checkin_message_key(reply_to_msg_id, chat_id=chat_id)
+    if key and key[1] > 0 and (
+        first_completion or not state.get("last_checkin_msg_id") or not state.get("last_checkin_chat_id")
+    ):
+        state["last_checkin_msg_id"] = key[1]
+        state["last_checkin_chat_id"] = key[0]
+        remember_checkin_cleanup_msg_id(key[1], chat_id=key[0])
+        changed = True
+    # A repeated checkin must not rewind a queued or already-started teaching chain.
+    if (
+        state.get("sect_teach_enabled") and state["checkin_teach_count"] == 0
+        and not state.get("last_sect_teach_msg_id") and not state.get("next_sect_teach_time")
+        and state.get("last_checkin_msg_id") and state.get("last_checkin_chat_id")
+    ):
+        changed = schedule_sect_teach_chain(
+            now, state["last_checkin_msg_id"], reply_chat_id=state["last_checkin_chat_id"],
+        ) or changed
+    if changed:
+        mark_dirty()
+    return changed
 
 
 
@@ -414,6 +428,10 @@ def schedule_sect_teach_chain(now, reply_to_msg_id, *, reply_chat_id=0):
 
 def is_checkin_already_done_text(text):
     return any(keyword in text for keyword in CHECKIN_DONE_HINTS)
+
+
+def is_checkin_completion_text(text):
+    return "点卯成功" in str(text or "") or is_checkin_already_done_text(str(text or ""))
 
 
 def is_sect_teach_already_done_text(text):
@@ -527,23 +545,13 @@ async def handle_checkin_reply(text, now, reply_to, matched_family=None):
     if not state["checkin_enabled"]:
         return False
 
-    state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
-    state["last_checkin_chat_id"] = int(getattr(reply_to, "chat_id", 0) or 0)
-    _handle_checkin_day_rollover(now, reply_to=reply_to)
-    remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"], chat_id=state["last_checkin_chat_id"])
-
-    next_ts = state["next_checkin_time"]
-    if next_ts <= now:
-        next_ts = schedule_next_checkin(now, persist=False)
-    mark_dirty()
-
-    if "点卯成功" in text:
-        return _mark_checkin_done_and_schedule_teach(now, "点卯成功")
-
-    if is_checkin_already_done_text(text):
-        return _mark_checkin_done_and_schedule_teach(now, "点卯已完成")
-
-    console_log(f"📝 收到点卯回复→{fmt_abs_ts(next_ts)}")
+    if not is_checkin_completion_text(text):
+        return False
+    if apply_checkin_completion(
+        now, getattr(reply_to, "id", 0), chat_id=int(getattr(reply_to, "chat_id", 0) or 0),
+    ):
+        save_state()
+        console_log(f"📝 点卯已完成→{fmt_abs_ts(state['next_checkin_time'])}")
     return True
 
 
@@ -555,7 +563,11 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
     if matched_family != "sect_teach" and CMD_SECT_TEACH not in orig_cmd:
         return False
 
+    if "传功玉简已记录！" not in text and not is_sect_teach_already_done_text(text):
+        return False
     day_key = get_checkin_day_key(now)
+    if day_key < str(state.get("checkin_teach_day") or ""):
+        return True
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
     reply_id = int(getattr(reply_to, "id", 0) or 0)
@@ -706,12 +718,14 @@ async def run_checkin_scheduler(now):
 
 
 __all__ = [
+    "apply_checkin_completion",
     "cleanup_checkin_chain_messages",
     "get_checkin_status_text",
     "get_sect_teach_status_text",
     "handle_checkin_reply",
     "handle_sect_teach_reply",
     "is_checkin_already_done_text",
+    "is_checkin_completion_text",
     "is_no_sect_checkin_text",
     "is_sect_teach_already_done_text",
     "remember_checkin_cleanup_msg_id",

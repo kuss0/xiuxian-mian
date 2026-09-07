@@ -235,6 +235,21 @@ class EarlyReplyReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(identity["next_checkin_time"], now)
         sender.assert_not_awaited()
 
+    async def test_unrecognized_checkin_log_reply_keeps_the_unresolved_command(self):
+        identity_id, item, reply, now = self._pending_log_fixture()
+        reply["text"] = "点卯尚未开放，请稍后再试。"
+        with (
+            patch.object(runtime, "find_message_log_replies", return_value=[reply]),
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        identity = state_module.get_identity_state(identity_id)
+        self.assertIn(154926, identity["pending_tasks"])
+        self.assertEqual("", identity["last_checkin_done_day"])
+        self.assertEqual("reply_handler_not_matched", item["reply_recovery_error"])
+        sender.assert_not_awaited()
+
     async def test_real_handler_replay_clears_only_the_exact_chat_with_same_id(self):
         identity_id, item, reply, now = self._pending_log_fixture()
         identity = state_module.get_identity_state(identity_id)

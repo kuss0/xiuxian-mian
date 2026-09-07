@@ -175,6 +175,102 @@ class CheckinRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(-1002, self.identity["sect_teach_reply_chat_id"])
                 self.assertGreater(self.identity["next_sect_teach_time"], self.now)
 
+    async def test_unrecognized_checkin_reply_does_not_complete_or_reschedule(self):
+        self.identity["checkin_enabled"] = True
+        for text in ("点卯尚未开放，请稍后再试。", "服务维护中，请稍后再试。"):
+            for passive in (False, True):
+                with self.subTest(text=text, passive=passive), state_module.use_identity(self.identity_id):
+                    before = copy.deepcopy(self.identity)
+                    if passive:
+                        handled = passive_inbox._apply_checkin_passive(
+                            text, self.now, "checkin", {"reply_to_msg_id": 123, "chat_id": -1002},
+                        )
+                    else:
+                        handled = await checkin.handle_checkin_reply(
+                            text, self.now,
+                            SimpleNamespace(id=123, chat_id=-1002, raw_text=checkin.CMD_CHECKIN),
+                            matched_family="checkin",
+                        )
+                    self.assertFalse(handled)
+                    self.assertEqual(before, self.identity)
+
+    async def test_checkin_duplicate_cannot_replace_a_newer_teach_step(self):
+        self.identity.update(checkin_enabled=True, next_sect_teach_time=0, sect_teach_reply_to_msg_id=0)
+        with state_module.use_identity(self.identity_id):
+            reply = SimpleNamespace(id=123, chat_id=-1002, raw_text=checkin.CMD_CHECKIN)
+            await checkin.handle_checkin_reply("点卯成功", self.now, reply, matched_family="checkin")
+            await checkin.handle_sect_teach_reply(
+                "传功玉简已记录！", self.now + 1,
+                SimpleNamespace(id=124, chat_id=-1002, raw_text=checkin.CMD_SECT_TEACH),
+                matched_family="sect_teach",
+            )
+            before = copy.deepcopy(self.identity)
+            self.assertTrue(await checkin.handle_checkin_reply("点卯成功", self.now + 2, reply, matched_family="checkin"))
+            self.assertEqual(before, self.identity)
+
+    async def test_checkin_completion_queues_teaching_once_in_either_delivery_order(self):
+        baseline = copy.deepcopy(self.identity)
+        for passive_first in (False, True):
+            with self.subTest(passive_first=passive_first), state_module.use_identity(self.identity_id):
+                self.identity.clear()
+                self.identity.update(copy.deepcopy(baseline))
+                self.identity.update(checkin_enabled=True, next_sect_teach_time=0, sect_teach_reply_to_msg_id=0)
+                reply = SimpleNamespace(id=123, chat_id=-1002, raw_text=checkin.CMD_CHECKIN)
+
+                def passive(now):
+                    return passive_inbox._apply_checkin_passive(
+                        "点卯成功", now, "checkin", {"reply_to_msg_id": 123, "chat_id": -1002},
+                    )
+
+                if passive_first:
+                    self.assertTrue(passive(self.now))
+                else:
+                    await checkin.handle_checkin_reply("点卯成功", self.now, reply, matched_family="checkin")
+                due = self.identity["next_sect_teach_time"]
+                self.assertGreater(due, self.now)
+                if passive_first:
+                    await checkin.handle_checkin_reply("点卯成功", self.now + 1, reply, matched_family="checkin")
+                else:
+                    self.assertFalse(passive(self.now + 1))
+                self.assertEqual(due, self.identity["next_sect_teach_time"])
+                self.assertEqual(123, self.identity["sect_teach_reply_to_msg_id"])
+
+    async def test_old_day_completion_cannot_roll_back_todays_teaching(self):
+        self.identity.update(checkin_enabled=True, checkin_teach_count=1)
+        with state_module.use_identity(self.identity_id):
+            before = copy.deepcopy(self.identity)
+            await checkin.handle_checkin_reply(
+                "点卯成功", self.now - 86400,
+                SimpleNamespace(id=120, chat_id=-1002, raw_text=checkin.CMD_CHECKIN),
+                matched_family="checkin",
+            )
+            self.assertEqual(before, self.identity)
+
+    def test_completion_without_route_can_gain_an_exact_anchor_once(self):
+        self.identity.update(next_sect_teach_time=0, sect_teach_reply_to_msg_id=0, sect_teach_reply_chat_id=0)
+        with state_module.use_identity(self.identity_id):
+            self.assertTrue(checkin.apply_checkin_completion(self.now))
+            self.assertEqual(0, self.identity["next_sect_teach_time"])
+            self.assertTrue(checkin.apply_checkin_completion(self.now + 1, 123, chat_id=-1002))
+            self.assertGreater(self.identity["next_sect_teach_time"], self.now)
+            before = copy.deepcopy(self.identity)
+            self.assertFalse(checkin.apply_checkin_completion(self.now + 2, 123, chat_id=-1002))
+            self.assertEqual(before, self.identity)
+
+    async def test_unrecognized_teach_reply_is_not_terminal(self):
+        text = "宗门传功暂未开放，请稍后再试。"
+        with state_module.use_identity(self.identity_id):
+            before = copy.deepcopy(self.identity)
+            self.assertFalse(await checkin.handle_sect_teach_reply(
+                text, self.now,
+                SimpleNamespace(id=124, chat_id=-1002, raw_text=checkin.CMD_SECT_TEACH),
+                matched_family="sect_teach",
+            ))
+            self.assertFalse(passive_inbox._apply_checkin_passive(
+                text, self.now, "sect_teach", {"reply_to_msg_id": 124, "chat_id": -1002},
+            ))
+            self.assertEqual(before, self.identity)
+
     async def test_checkin_early_success_wins_over_late_transport_failure(self):
         self.identity.update(checkin_enabled=True, sect_teach_enabled=False, next_checkin_time=self.now)
         expected = {}

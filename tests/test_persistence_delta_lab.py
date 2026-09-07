@@ -133,6 +133,32 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1002)
             self.assertEqual((identity_id, "checkin"), (context["send_as_id"], context["family"]))
 
+    def test_duplicate_checkin_after_reload_cannot_requeue_teaching(self):
+        from model.features import checkin
+
+        now = 1788748200.0
+        day_key = checkin.get_checkin_day_key(now)
+        expected = {
+            "checkin_enabled": True, "sect_teach_enabled": True,
+            "last_checkin_done_day": day_key, "checkin_teach_day": day_key,
+            "next_checkin_time": now + 86400, "next_sect_teach_time": now + 20,
+            "last_checkin_msg_id": 123, "last_checkin_chat_id": -1001,
+            "last_sect_teach_msg_id": 124, "last_sect_teach_chat_id": -1001,
+            "sect_teach_reply_to_msg_id": 124, "sect_teach_reply_chat_id": -1001,
+            "checkin_teach_count": 1,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            identity_id = 990116
+            state_module.ensure_identity_registered(identity_id).update(expected)
+            self.assertTrue(self._save_without_guard_backup())
+            restored = persistence._load_identity_from_db(identity_id)
+            with state_module.use_identity(identity_id):
+                self.assertFalse(checkin.apply_checkin_completion(now + 1, 123, chat_id=-1001))
+            for key, value in expected.items():
+                self.assertEqual(value, restored[key], key)
+
     def test_nanlong_routes_and_prompt_receipt_survive_delta_save_and_reload(self):
         from model.features import nanlong
 
