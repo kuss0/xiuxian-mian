@@ -1218,6 +1218,8 @@ def _disable_second_soul_module_state():
     state["second_soul_phase"] = "idle"
     state["next_second_soul_time"] = 0
     state["second_soul_heart_demon_msg_id"] = 0
+    state["second_soul_heart_demon_chat_id"] = 0
+    state["second_soul_heart_demon_choice_msg_id"] = 0
     state["second_soul_heart_demon_deadline"] = 0
     state["second_soul_heart_demon_notified"] = False
     state["second_soul_status_msg_id"] = 0

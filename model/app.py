@@ -2182,9 +2182,11 @@ async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="second_soul_return"):
         await handle_second_soul_return_broadcast(text, now)
     if _claim_runtime_event(event, scope="second_soul_heart_demon_warning"):
-        await handle_second_soul_heart_demon_warning_broadcast(text, now, event.id)
+        await handle_second_soul_heart_demon_warning_broadcast(
+            text, now, event.id, event_chat_id=getattr(event, "chat_id", 0),
+        )
     if _claim_runtime_event(event, scope="second_soul_choice_result"):
-        await handle_second_soul_choice_result_broadcast(text, now)
+        await handle_second_soul_choice_result_broadcast(text, now, event=event)
     if _claim_runtime_event(event, scope="second_soul_recovery"):
         await handle_second_soul_recovery_broadcast(text, now)
 

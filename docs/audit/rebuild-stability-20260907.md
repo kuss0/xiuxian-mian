@@ -67,6 +67,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R13 | Medium | A TypeError inside a sent-command observer is mistaken for a legacy signature and invokes that observer again | Fixed; removed the re-invocation fallback, verified both registered observers accept metadata, and isolated callback failures |
 | R14 | High | Delta-save snapshots omit pending chat, topic and recovery metadata; a receipt-only or detached-send update can be skipped after an earlier save | Fixed; route and recovery-only edits trigger an identity write, and reload preserves the no-retry marker and replay receipts |
 | R15 | High | Tianji quiz scheduler writes an old pending-map snapshot after awaits, deleting newly queued prompts, restoring cleared work, and sending cancelled later items | Fixed in candidate; per-entry ownership is rechecked before dispatch and after awaited work; three interleaving regressions pass |
+| R16 | High | Second-soul warnings are discarded after a status panel sets the same phase, and warning callbacks enter a deleted identity after awaited logging or sending | Fixed in candidate; panel-first warnings acquire an exact route, legacy anchors gain a chat without resending, and both deletion boundaries are tested |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -211,9 +212,23 @@ five monitor/control-only contracts need separate behavioral verification.
   Three further failing tests established R15 before the per-entry update fix.
 - Read-only real-message sampling found second-soul warning/result edits retain
   the warning's chat/message ID; for example, 2026-09-04 old-group message
-  `12137042` is edited from a warning to success. The result handler still
-  selects a unique local `heart_demon_pending` identity without that anchor.
-  This is a follow-through item, not verified correct behavior.
+  `12137042` is edited from a warning to success. The baseline selected a unique
+  local `heart_demon_pending` identity without that anchor; the shared topic
+  reply header (`7310786`) did not identify the owner.
+- R11 second-soul/R16 candidate: 3836 passed, 591 subtests passed, 57.27
+  seconds. JUnit: `/tmp/xiuxian-rebuild-r11-second-soul-20260907.xml`; Ruff
+  and diff checks pass. The targeted second-soul, persistence, early-replay and
+  UI suite passed 79 tests and 10 subtests. No live probes, production changes,
+  deployment, push or skill changes occurred in this checkpoint.
+- Second-soul terminal edits now require the warning/choice chat and message
+  ID, persisted across reload. The app-dispatch regression rejects another
+  user's same-topic result and another chat's same-ID result. Missing chat
+  evidence cannot fall back to the primary group. Username matching uses exact
+  case-insensitive mentions instead of prefixes. Panel-first warnings can
+  establish their route; legacy warning state is enriched without resending.
+  Early completion cannot be overwritten by a late send receipt, and deletion
+  during either await cannot recreate or enter the removed identity. The new
+  identity-deletion, username and panel-order tests failed before their fixes.
 
 ## Deployment Constraint
 
@@ -229,8 +244,11 @@ This candidate has not migrated the production database.
    guard closures without an expected root/chat, and follow-up sends whose
    `reply_to` has no explicit target chat. The shared pending/history contract
    is now tested end-to-end; it does not prove every module's ownership rules.
-   Jiyin/quiz/Tianji routing is covered; second soul, Nanlong, sect teaching,
-   judgement and remaining wrapped send calls still require review.
+   Jiyin/quiz/Tianji routing and second-soul heart-demon broadcasts are covered;
+   remaining second-soul scalar reply guards, Nanlong, sect teaching, judgement
+   and wrapped send calls still require review. Initial follow-through found
+   Nanlong and sect-teaching replies still omit an explicit target chat; these
+   paths need reproducers and fixes before R11 can close.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not

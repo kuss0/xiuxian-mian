@@ -2,6 +2,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from model import persistence
@@ -49,6 +50,30 @@ class PersistenceDeltaLabTests(unittest.TestCase):
     def _save_without_guard_backup(self):
         with patch.object(persistence, "_write_live_guard_backup"):
             return persistence.save_state()
+
+    def test_heart_demon_chat_and_choice_anchors_survive_reload(self):
+        from model.features import second_soul
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            for identity_id, chat_id in ((990111, -1001), (990112, -1002)):
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    state_module.state["second_soul_enabled"] = True
+                    state_module.state["second_soul_phase"] = "heart_demon_pending"
+                    state_module.state["second_soul_heart_demon_msg_id"] = 123
+                    state_module.state["second_soul_heart_demon_chat_id"] = chat_id
+                    state_module.state["second_soul_heart_demon_choice_msg_id"] = 124
+            self.assertTrue(self._save_without_guard_backup())
+            for identity_id in (990111, 990112):
+                persistence._load_identity_from_db(identity_id)
+            self.assertEqual((990112, [990112]), second_soul._match_heart_demon_identity(
+                SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+            ))
+            self.assertEqual((990111, [990111]), second_soul._match_heart_demon_identity(
+                SimpleNamespace(id=125, chat_id=-1001, reply_to_msg_id=124),
+            ))
 
     def test_same_identity_cross_chat_pending_survives_reload_and_exact_reply_cleanup(self):
         from model import runtime

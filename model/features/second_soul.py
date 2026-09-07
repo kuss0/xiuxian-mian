@@ -48,7 +48,7 @@ from ..identity_levels import parse_second_soul_level_text, update_identity_leve
 from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, classify_game_send_block, console_log, get_sent_message_chat_id, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
 
@@ -85,6 +85,8 @@ def _set_phase(new_phase):
 
 def _clear_heart_demon():
     state["second_soul_heart_demon_msg_id"] = 0
+    state["second_soul_heart_demon_chat_id"] = 0
+    state["second_soul_heart_demon_choice_msg_id"] = 0
     state["second_soul_heart_demon_deadline"] = 0.0
     state["second_soul_heart_demon_notified"] = False
 
@@ -699,34 +701,50 @@ def _match_identity_by_at_username(text):
     """从 broadcast 文本里提取 @username，匹配到 enabled 的 identity。
     返回 (target_id, matched_ids)。target_id 仅在唯一匹配时非 None。
     """
-    compact = RE_WHITESPACE.sub("", text or "")
+    mentions = {username.casefold() for username in RE_AT_USERNAME.findall(text or "")}
+    if not mentions:
+        return None, []
     matched_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state.get("second_soul_enabled", False):
                 continue
             tags = get_send_as_tags(identity_id) or []
-            compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags if tag}
-            if any(tag and tag in compact for tag in compact_tags):
+            usernames = {tag[1:].casefold() for tag in tags if RE_AT_USERNAME.fullmatch(tag)}
+            if mentions & usernames:
                 matched_ids.append(identity_id)
     target = matched_ids[0] if len(matched_ids) == 1 else None
     return target, matched_ids
 
 
-def _match_identity_by_phase(target_phase):
-    """通过本地 phase 唯一性匹配身份（用于无 @username 的 broadcast，比如心魔结算）。"""
+def _match_heart_demon_identity(event):
+    """Terminal edits retain the warning ID, not the shared topic reply header."""
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    reply_id = int(
+        getattr(event, "reply_to_msg_id", 0)
+        or getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0
+    )
+    message_ids = {int(getattr(event, "id", 0) or 0), reply_id} - {0}
+    if not chat_id or not message_ids:
+        return None, []
     matched_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state.get("second_soul_enabled", False):
                 continue
-            if _phase() == target_phase:
+            if _phase() != "heart_demon_pending" or int(state.get("second_soul_heart_demon_chat_id") or 0) != chat_id:
+                continue
+            anchors = {
+                int(state.get("second_soul_heart_demon_msg_id") or 0),
+                int(state.get("second_soul_heart_demon_choice_msg_id") or 0),
+            } - {0}
+            if anchors & message_ids:
                 matched_ids.append(identity_id)
     target = matched_ids[0] if len(matched_ids) == 1 else None
     return target, matched_ids
 
 
-async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id):
+async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id, *, event_chat_id=0):
     """处理【天道警示·心魔试炼】broadcast。含 @username。
     event_msg_id 是这条警示自己的 msg_id（用于以后回复 .抉择）。
     """
@@ -734,6 +752,8 @@ async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_
         return False
     if "第二元神" not in text:
         return False
+    event_msg_id = int(event_msg_id or 0)
+    event_chat_id = int(event_chat_id or 0)
 
     target_id, matched = _match_identity_by_at_username(text)
     if target_id is None:
@@ -748,35 +768,70 @@ async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_
     should_send_choice = False
     with use_identity(target_id):
         if _phase() == "heart_demon_pending":
-            # 已经标记过（可能广播重复），不重复通知
-            return True
+            existing_msg_id = int(state.get("second_soul_heart_demon_msg_id") or 0)
+            if existing_msg_id:
+                # Old state may lack a chat but may already have sent a choice.
+                if existing_msg_id == event_msg_id and event_chat_id and not state.get("second_soul_heart_demon_chat_id"):
+                    state["second_soul_heart_demon_chat_id"] = event_chat_id
+                    save_state()
+                return True
+            if state.get("second_soul_heart_demon_choice_msg_id"):
+                return True
         _set_phase("heart_demon_pending")
-        state["second_soul_heart_demon_msg_id"] = int(event_msg_id or 0)
+        state["second_soul_heart_demon_msg_id"] = event_msg_id
+        state["second_soul_heart_demon_chat_id"] = event_chat_id
+        state["second_soul_heart_demon_choice_msg_id"] = 0
         state["second_soul_heart_demon_deadline"] = now + SECOND_SOUL_HEART_DEMON_DEADLINE_SEC
         state["second_soul_heart_demon_notified"] = True
         _clear_pending_msg_ids()
+        should_send_choice = event_msg_id > 0 and bool(event_chat_id) and bool(state.get("second_soul_auto_choice_enabled", True))
+        missing_anchor = not event_chat_id or event_msg_id <= 0
+        if missing_anchor:
+            state["second_soul_last_error"] = "心魔警示缺少原始群或消息 ID，未自动抉择"
         save_state()
-        should_send_choice = int(event_msg_id or 0) > 0 and bool(state.get("second_soul_auto_choice_enabled", True))
         choice_command = _choice_command()
         choice_label = _choice_label()
         await send_audit_log(
             (
                 f"🔥 第二元神心魔试炼来袭，自动回复警示消息 {event_msg_id}：\n  {choice_command}"
                 if should_send_choice
-                else f"🔥 第二元神心魔试炼来袭，自动抉择已关闭，请人工回复警示消息 {event_msg_id}。"
+                else (
+                    "⚠️ 第二元神心魔警示缺少原始群或消息 ID，未自动抉择。"
+                    if missing_anchor else f"🔥 第二元神心魔试炼来袭，自动抉择已关闭，请人工回复警示消息 {event_msg_id}。"
+                )
             ),
             scope="identity", send_as_id=target_id, limit=280,
         )
     if should_send_choice:
+        if not has_identity(target_id):
+            return True
+        with use_identity(target_id):
+            if (
+                not state.get("second_soul_enabled") or not state.get("second_soul_auto_choice_enabled", True)
+                or _phase() != "heart_demon_pending"
+                or int(state.get("second_soul_heart_demon_msg_id") or 0) != event_msg_id
+                or int(state.get("second_soul_heart_demon_chat_id") or 0) != event_chat_id
+            ):
+                return True
         msg = await send_game_command(
             choice_command,
             track=False,
             reply_to=int(event_msg_id or 0),
+            target_chat_id=event_chat_id,
             send_as_id=target_id,
             priority="reactive",
         )
+        if not has_identity(target_id):
+            return True
         with use_identity(target_id):
+            if (
+                _phase() != "heart_demon_pending"
+                or int(state.get("second_soul_heart_demon_msg_id") or 0) != event_msg_id
+                or int(state.get("second_soul_heart_demon_chat_id") or 0) != event_chat_id
+            ):
+                return True
             if msg:
+                state["second_soul_heart_demon_choice_msg_id"] = int(getattr(msg, "id", 0) or 0)
                 state["second_soul_last_error"] = ""
                 save_state()
                 await send_audit_log(
@@ -793,8 +848,8 @@ async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_
     return True
 
 
-async def handle_second_soul_choice_result_broadcast(text, now):
-    """处理心魔结算结果 broadcast。无 @username，靠 phase 唯一性匹配。
+async def handle_second_soul_choice_result_broadcast(text, now, event=None):
+    """处理心魔结算结果，使用原警示/抉择消息的群与 ID 归属。
     覆盖：稳扎稳打·成功 / 破而后立·成功 / 破而后立·失败
     """
     is_stable_success = "【稳扎稳打·成功】" in text
@@ -803,12 +858,12 @@ async def handle_second_soul_choice_result_broadcast(text, now):
     if not (is_stable_success or is_break_success or is_break_fail):
         return False
 
-    target_id, matched = _match_identity_by_phase("heart_demon_pending")
+    target_id, matched = _match_heart_demon_identity(event)
     if target_id is None:
         if len(matched) > 1:
             names = ", ".join(mono(get_identity_display_name(i)) for i in matched)
             await send_audit_log(
-                f"⚠️ 心魔结算 broadcast 命中多个 heart_demon_pending 身份，跳过自动归属：{names}",
+                f"⚠️ 心魔结算锚点命中多个身份，跳过自动归属：{names}",
                 scope="global", limit=280,
             )
         return False

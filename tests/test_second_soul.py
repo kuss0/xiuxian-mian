@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
+from model import app
 from model import ui
 from model.config import (
     CMD_SECOND_SOUL_CHOICE_STABLE,
@@ -76,8 +77,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
         ):
-            handled = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id)
-            handled_duplicate = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now + 1, event_msg_id)
+            handled = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id, event_chat_id=-1002)
+            handled_duplicate = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now + 1, event_msg_id, event_chat_id=-1002)
 
         self.assertTrue(handled)
         self.assertTrue(handled_duplicate)
@@ -85,12 +86,15 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             CMD_SECOND_SOUL_CHOICE_STABLE,
             track=False,
             reply_to=event_msg_id,
+            target_chat_id=-1002,
             send_as_id=send_as_id,
             priority="reactive",
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("heart_demon_pending", state_module.state["second_soul_phase"])
             self.assertEqual(event_msg_id, state_module.state["second_soul_heart_demon_msg_id"])
+            self.assertEqual(-1002, state_module.state["second_soul_heart_demon_chat_id"])
+            self.assertEqual(1, state_module.state["second_soul_heart_demon_choice_msg_id"])
 
     async def test_stable_choice_result_enters_train_queue(self):
         send_as_id = 8659059192
@@ -100,6 +104,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "heart_demon_pending"
             state_module.state["second_soul_heart_demon_msg_id"] = 123
+            state_module.state["second_soul_heart_demon_chat_id"] = -1002
 
         with (
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
@@ -108,6 +113,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             handled = await second_soul.handle_second_soul_choice_result_broadcast(
                 "【稳扎稳打·成功】\n你稳固道心，成功渡过心魔试炼。",
                 now,
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
             )
 
         self.assertTrue(handled)
@@ -115,6 +121,70 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
             self.assertEqual(0, state_module.state["second_soul_heart_demon_msg_id"])
             self.assertEqual(now, state_module.state["next_second_soul_time"])
+
+    def test_broadcast_username_matching_is_exact_and_case_insensitive(self):
+        for identity_id, username in ((990927, "SoulUser"), (990928, "SoulUser1")):
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username=username)
+            state_module.get_identity_state(identity_id)["second_soul_enabled"] = True
+        for username in ("SoulUser1", "souluser1"):
+            with self.subTest(username=username):
+                self.assertEqual((990928, [990928]), second_soul._match_identity_by_at_username(
+                    f"【天道警示·心魔试炼】\n道友 @{username} 的第二元神在修炼中遭遇心魔。",
+                ))
+        self.assertEqual((None, []), second_soul._match_identity_by_at_username("@SoulUser12 的第二元神归位。"))
+
+    async def test_panel_before_warning_still_captures_and_uses_the_warning_anchor(self):
+        identity_id = 990929
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="PanelSoul")
+        state_module.get_identity_state(identity_id)["second_soul_enabled"] = True
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=124))) as sender,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+        ):
+            with state_module.use_identity(identity_id):
+                self.assertTrue(await second_soul.handle_second_soul_status_reply(
+                    "【你的第二元神：金之元神】\n状态: 心魔试炼中", 2000,
+                    reply_to=SimpleNamespace(id=10, chat_id=-1002, raw_text=CMD_SECOND_SOUL_STATUS),
+                    matched_family="second_soul_status",
+                ))
+            await second_soul.handle_second_soul_heart_demon_warning_broadcast(
+                "【天道警示·心魔试炼】\n道友 @PanelSoul 的第二元神在修炼中遭遇心魔。",
+                2001, 123, event_chat_id=-1002,
+            )
+            sender.assert_awaited_once_with(
+                CMD_SECOND_SOUL_CHOICE_STABLE, track=False, reply_to=123,
+                target_chat_id=-1002, send_as_id=identity_id, priority="reactive",
+            )
+            self.assertTrue(await second_soul.handle_second_soul_choice_result_broadcast(
+                "【稳扎稳打·成功】\n成功化解了心魔。", 2002,
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+            ))
+        self.assertEqual("ready_to_train", state_module.get_identity_state(identity_id)["second_soul_phase"])
+
+    async def test_legacy_warning_can_gain_a_chat_anchor_without_resending(self):
+        identity_id = 990930
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="LegacySoul")
+        identity = state_module.get_identity_state(identity_id)
+        identity["second_soul_enabled"] = True
+        identity["second_soul_phase"] = "heart_demon_pending"
+        identity["second_soul_heart_demon_msg_id"] = 123
+        identity["second_soul_heart_demon_deadline"] = 2100
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock()) as sender,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+        ):
+            await second_soul.handle_second_soul_heart_demon_warning_broadcast(
+                "【天道警示·心魔试炼】\n道友 @LegacySoul 的第二元神在修炼中遭遇心魔。",
+                2000, 123, event_chat_id=-1002,
+            )
+        sender.assert_not_awaited()
+        self.assertEqual(-1002, identity["second_soul_heart_demon_chat_id"])
+        self.assertEqual(2100, identity["second_soul_heart_demon_deadline"])
 
     async def test_heart_demon_warning_respects_disabled_auto_choice(self):
         send_as_id = 8659059193
@@ -133,7 +203,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
         ):
-            handled = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id)
+            handled = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id, event_chat_id=-1002)
 
         self.assertTrue(handled)
         send_mock.assert_not_awaited()
@@ -157,16 +227,154 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
         ):
-            handled = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id)
+            handled = await second_soul.handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_id, event_chat_id=-1002)
 
         self.assertTrue(handled)
         send_mock.assert_awaited_once_with(
             ".抉择 强行突破",
             track=False,
             reply_to=event_msg_id,
+            target_chat_id=-1002,
             send_as_id=send_as_id,
             priority="reactive",
         )
+
+    async def test_unrelated_result_cannot_claim_the_only_waiting_identity(self):
+        identity_id = 990921
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "heart_demon_pending"
+            state_module.state["second_soul_heart_demon_msg_id"] = 12137042
+            state_module.state["second_soul_heart_demon_chat_id"] = -1001680975844
+        text = "【稳扎稳打·成功】\n你选择了稳固道心，成功化解了心魔。第二元神获得了 5337 点经验。\n主魂获得了 70177 点修为。"
+        for chat_id, msg_id in ((-1001680975844, 12138357), (-1002, 12137042), (0, 12137042)):
+            with (
+                self.subTest(chat_id=chat_id, msg_id=msg_id),
+                patch.object(app, "_claim_runtime_event", return_value=True),
+                patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+                patch.object(second_soul, "save_state"),
+            ):
+                identity = state_module.get_identity_state(identity_id)
+                identity["second_soul_phase"] = "heart_demon_pending"
+                identity["second_soul_heart_demon_msg_id"] = 12137042
+                identity["second_soul_heart_demon_chat_id"] = -1001680975844
+                await app._dispatch_second_soul_broadcast_fallbacks(
+                    SimpleNamespace(id=msg_id, chat_id=chat_id, reply_to_msg_id=7310786), text, 2000,
+                )
+                self.assertEqual("heart_demon_pending", state_module.get_identity_state(identity_id)["second_soul_phase"])
+
+    async def test_terminal_edit_selects_exact_identity_among_waiting_roles(self):
+        for identity_id, chat_id in ((990921, -1001), (990922, -1002)):
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["second_soul_enabled"] = True
+                state_module.state["second_soul_phase"] = "heart_demon_pending"
+                state_module.state["second_soul_heart_demon_msg_id"] = 123
+                state_module.state["second_soul_heart_demon_chat_id"] = chat_id
+        with (
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+        ):
+            self.assertTrue(await second_soul.handle_second_soul_choice_result_broadcast(
+                "【稳扎稳打·成功】\n你稳固道心，成功渡过心魔试炼。", 2000,
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+            ))
+        self.assertEqual("heart_demon_pending", state_module.get_identity_state(990921)["second_soul_phase"])
+        self.assertEqual("ready_to_train", state_module.get_identity_state(990922)["second_soul_phase"])
+
+    async def test_warning_without_chat_cannot_send_a_choice_to_primary(self):
+        identity_id = 990923
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="MissingChatSoul")
+        with state_module.use_identity(identity_id):
+            state_module.state["second_soul_enabled"] = True
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock()) as sender,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+        ):
+            self.assertTrue(await second_soul.handle_second_soul_heart_demon_warning_broadcast(
+                "【天道警示·心魔试炼】\n道友 @MissingChatSoul 的第二元神在修炼中遭遇心魔。", 2000, 123,
+            ))
+        sender.assert_not_awaited()
+
+    async def test_toggle_off_during_warning_audit_prevents_choice_send(self):
+        identity_id = 990924
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="PauseSoul")
+        with state_module.use_identity(identity_id):
+            state_module.state["second_soul_enabled"] = True
+
+        async def disable(*_args, **_kwargs):
+            state_module.get_identity_state(identity_id)["second_soul_enabled"] = False
+
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock()) as sender,
+            patch.object(second_soul, "send_audit_log", new=AsyncMock(side_effect=disable)),
+            patch.object(second_soul, "save_state"),
+        ):
+            await second_soul.handle_second_soul_heart_demon_warning_broadcast(
+                "【天道警示·心魔试炼】\n道友 @PauseSoul 的第二元神在修炼中遭遇心魔。", 2000, 123, event_chat_id=-1002,
+            )
+        sender.assert_not_awaited()
+
+    async def test_terminal_edit_during_send_preserves_the_completed_state(self):
+        identity_id = 990925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="EarlySoul")
+        with state_module.use_identity(identity_id):
+            state_module.state["second_soul_enabled"] = True
+
+        async def send(*_args, **_kwargs):
+            await second_soul.handle_second_soul_choice_result_broadcast(
+                "【稳扎稳打·成功】\n成功化解了心魔。", 2001,
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+            )
+            return SimpleNamespace(id=124, chat_id=-1002)
+
+        with (
+            patch.object(second_soul, "send_game_command", new=AsyncMock(side_effect=send)),
+            patch.object(second_soul, "send_audit_log", new=AsyncMock()),
+            patch.object(second_soul, "save_state"),
+        ):
+            await second_soul.handle_second_soul_heart_demon_warning_broadcast(
+                "【天道警示·心魔试炼】\n道友 @EarlySoul 的第二元神在修炼中遭遇心魔。", 2000, 123, event_chat_id=-1002,
+            )
+        identity = state_module.get_identity_state(identity_id)
+        self.assertEqual("ready_to_train", identity["second_soul_phase"])
+        self.assertEqual(0, identity["second_soul_heart_demon_choice_msg_id"])
+
+    async def test_removed_identity_during_await_is_not_recreated_or_reused(self):
+        identity_id = 990926
+        for boundary in ("audit", "send"):
+            with self.subTest(boundary=boundary):
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="RemovedSoul")
+                state_module.get_identity_state(identity_id)["second_soul_enabled"] = True
+
+                async def audit(*_args, **_kwargs):
+                    if boundary == "audit":
+                        state_module.remove_identity(identity_id)
+
+                async def send(*_args, **_kwargs):
+                    state_module.remove_identity(identity_id)
+                    return SimpleNamespace(id=124, chat_id=-1002)
+
+                with (
+                    patch.object(second_soul, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+                    patch.object(second_soul, "send_audit_log", new=AsyncMock(side_effect=audit)),
+                    patch.object(second_soul, "save_state"),
+                ):
+                    await second_soul.handle_second_soul_heart_demon_warning_broadcast(
+                        "【天道警示·心魔试炼】\n道友 @RemovedSoul 的第二元神在修炼中遭遇心魔。",
+                        2000, 123, event_chat_id=-1002,
+                    )
+                self.assertFalse(state_module.has_identity(identity_id))
+                if boundary == "audit":
+                    sender.assert_not_awaited()
+                else:
+                    sender.assert_awaited_once()
 
     async def test_return_broadcast_high_moran_sends_single_purge_and_dedupes(self):
         send_as_id = 8659059195
