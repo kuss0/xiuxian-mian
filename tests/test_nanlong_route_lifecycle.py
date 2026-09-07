@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 import tempfile
@@ -8,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from model import message_log_recovery, state as state_module
+from model import message_log_recovery, runtime, state as state_module
 from model.features import nanlong
 
 
@@ -35,6 +36,9 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patcher = patch.object(nanlong, target, **kwargs)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = patch.object(runtime, "_reply_chain_tracker", {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -73,14 +77,17 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "backup_group_ids": list(groups[1:]),
         })
         with tempfile.TemporaryDirectory(prefix="nanlong-recovery-") as directory:
-            for entry, timestamp in entries:
+            def append_entry(entry, timestamp):
                 local_time = datetime.fromtimestamp(timestamp, message_log_recovery.TZ_LOCAL)
                 payload = {"ts": local_time.strftime("%Y-%m-%d %H:%M:%S UTC+8"), **entry}
                 path = Path(directory) / f"{local_time.date().isoformat()}.log"
                 with path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+            for entry, timestamp in entries:
+                append_entry(entry, timestamp)
             with patch.object(message_log_recovery, "MESSAGES_DIR", directory):
-                yield
+                yield append_entry
 
     def result_entry(self, *, chat_id=-1002, reply_id=0, text=None, **overrides):
         return {
@@ -282,6 +289,318 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await nanlong.run_nanlong_scheduler(self.now)
         self.assertEqual(124, self.identity["nanlong_last_msg_id"])
         self.assertEqual(nanlong.CMD_NANLONG_EXCHANGE_FABAO, self.identity["nanlong_last_command"])
+
+    async def test_early_unthreaded_trade_result_is_replayed_as_receipt_arrives(self):
+        await self.seed_prompt()
+
+        async def send(command, **kwargs):
+            handled = await nanlong.handle_nanlong_result_broadcast(
+                self.trade_text, self.now + 1, self.event(900, -1002, at=self.now + 1),
+            )
+            self.assertFalse(handled)
+            return self.finalize_receipt(command, kwargs, detached=False)
+
+        with (
+            self.logged_results([(self.result_entry(), self.now + 1)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(self.now)
+        sender.assert_awaited_once()
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+        self.assertEqual(0, self.identity["nanlong_reply_to_msg_id"])
+        self.assertEqual("", self.identity["nanlong_last_error"])
+
+    async def test_rebind_while_sending_cannot_install_receipt_on_new_account(self):
+        await self.seed_prompt()
+        state_module.set_identity_account(self.identity_id, 7101)
+
+        async def send(*_args, **_kwargs):
+            state_module.set_identity_account(self.identity_id, 7102)
+            return SimpleNamespace(id=124, chat_id=-1001, sent_at=self.now + 1)
+
+        with state_module.use_identity(self.identity_id), patch.object(
+            nanlong, "send_game_command", new=AsyncMock(side_effect=send),
+        ):
+            await nanlong.run_nanlong_scheduler(self.now)
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    def finalize_receipt(self, command, kwargs, *, msg_id=124, sent_at=None, send_started_at=None, detached=True):
+        receipt = {
+            "message": None, "detached": detached, "send_as_id": self.identity_id,
+            "command": command,
+            "finalize_kwargs": {
+                "send_as_id": self.identity_id, "reply_to": kwargs.get("reply_to"), "track": False,
+                "game_group_id": kwargs["target_chat_id"], "topic_id": 0,
+                "send_started_at": self.now if send_started_at is None else send_started_at,
+                "send_intent": {key: kwargs.get(key, "") for key in ("source_module", "chain_id", "op_id")},
+            },
+        }
+        with (
+            patch.object(runtime, "_append_sent_message_log"),
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+            patch.object(runtime, "note_game_command_sent"),
+        ):
+            return runtime._finalize_game_send_receipt(
+                receipt, msg_id=msg_id, sent_at=self.now + 10 if sent_at is None else sent_at,
+            )
+
+    async def seed_detached_exchange(self, *, step="exchange", cancelled=False):
+        await self.seed_prompt()
+        state_module.set_identity_account(self.identity_id, 7101)
+        if step in {"place", "recall"}:
+            self.identity["concubine_name"] = "墨彩环"
+        if step == "recall":
+            self.seed_exchange(protected=True)
+        elif step == "reject":
+            state_module.set_nanlong_choice(self.identity_id, "reject")
+        with (
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "_get_nanlong_cave_status", return_value=nanlong.NANLONG_CAVE_STATUS_AVAILABLE),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(
+                return_value=None, side_effect=asyncio.CancelledError if cancelled else None,
+            )) as sender,
+            patch.object(nanlong, "classify_game_send_block", return_value={"status": "unknown"}),
+        ):
+            action = (
+                nanlong._send_nanlong_recall_after_trade(self.now) if step == "recall"
+                else nanlong.run_nanlong_scheduler(self.now)
+            )
+            if cancelled:
+                with self.assertRaises(asyncio.CancelledError):
+                    await action
+            else:
+                await action
+        self.finalize_receipt(sender.call_args.args[0], sender.call_args.kwargs)
+        return self.identity["pending_tasks"][(-1001, 124)]
+
+    async def test_unthreaded_result_before_actual_dispatch_cannot_close_queued_exchange(self):
+        for detached in (False, True):
+            with self.subTest(detached=detached):
+                with state_module.use_identity(self.identity_id):
+                    nanlong.clear_nanlong_state()
+                self.identity["nanlong_last_prompt_key"] = ""
+                await self.seed_prompt()
+
+                async def send(command, **kwargs):
+                    msg = self.finalize_receipt(
+                        command, kwargs, sent_at=self.now + 20,
+                        send_started_at=self.now + 10, detached=detached,
+                    )
+                    return None if detached else msg
+
+                with (
+                    self.logged_results([(self.result_entry(), self.now + 5)]),
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong.time, "time", return_value=self.now),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+                    patch.object(nanlong, "classify_game_send_block", return_value={"status": "unknown"}),
+                ):
+                    await nanlong.run_nanlong_scheduler(self.now)
+                    await nanlong.run_nanlong_scheduler(self.now + 21)
+                sender.assert_awaited_once()
+                self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                self.assertEqual(123, self.identity["nanlong_reply_to_msg_id"])
+                self.assertEqual(self.now + 10, self.identity["nanlong_last_sent_at"])
+
+    async def test_complete_protected_chain_replays_each_early_reply_once(self):
+        await self.seed_prompt()
+        self.identity["concubine_name"] = "墨彩环"
+        clock = self.now
+        commands = []
+        results = []
+        place_text = "你已将道侣【墨彩环】安置在洞府的藏娇阁中。"
+        recall_text = "你已将道侣【墨彩环】从藏娇阁中召回。"
+
+        async def send(command, **kwargs):
+            nonlocal clock
+            commands.append(command)
+            msg_id = 123 + len(commands)
+            dispatched_at = clock
+            clock += 1
+            text = {nanlong.CMD_CONCUBINE_PLACE: place_text, nanlong.CMD_CONCUBINE_RECALL: recall_text}.get(command, self.trade_text)
+            direct = command != nanlong.CMD_NANLONG_EXCHANGE_FABAO
+            entry = self.result_entry(
+                message_id=900 + msg_id, chat_id=-1001 if direct else -1002,
+                reply_id=msg_id if direct else 0, text=text,
+            )
+            append_entry(entry, clock)
+            results.append((entry, clock))
+            if direct:
+                handled = await nanlong.handle_nanlong_reply(
+                    text, clock, SimpleNamespace(id=msg_id, chat_id=-1001), matched_family="nanlong",
+                )
+            else:
+                handled = await nanlong.handle_nanlong_result_broadcast(text, clock, self.event(900 + msg_id, -1002, at=clock))
+            self.assertFalse(handled)
+            clock += 5
+            return self.finalize_receipt(
+                command, kwargs, msg_id=msg_id, sent_at=clock, send_started_at=dispatched_at, detached=False,
+            )
+
+        with (
+            self.logged_results([]) as append_entry,
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", side_effect=lambda: clock),
+            patch.object(nanlong, "_get_nanlong_cave_status", return_value=nanlong.NANLONG_CAVE_STATUS_AVAILABLE),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(clock)
+            for entry, timestamp in results:
+                append_entry(dict(entry, event_type="edit"), timestamp + 1)
+            await nanlong.run_nanlong_scheduler(clock + 100)
+        self.assertEqual([nanlong.CMD_CONCUBINE_PLACE, nanlong.CMD_NANLONG_EXCHANGE_FABAO, nanlong.CMD_CONCUBINE_RECALL], commands)
+        self.assertEqual(3, sender.await_count)
+        self.assertEqual(0, self.identity["nanlong_reply_to_msg_id"])
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+        self.assertEqual("", self.identity["nanlong_protect_phase"])
+        self.assertEqual("", self.identity["nanlong_last_error"])
+
+    async def test_detached_place_and_recall_recover_direct_results(self):
+        baseline = copy.deepcopy(self.identity)
+        for step in ("place", "recall"):
+            for cancelled in (False, True):
+                with self.subTest(step=step, cancelled=cancelled):
+                    self.identity.clear()
+                    self.identity.update(copy.deepcopy(baseline))
+                    await self.seed_detached_exchange(step=step, cancelled=cancelled)
+                    text = "你已将道侣【墨彩环】安置在洞府的藏娇阁中。" if step == "place" else "你已将道侣【墨彩环】从藏娇阁中召回。"
+                    entries = [(self.result_entry(chat_id=-1001, reply_id=124, text=text), self.now + 1)]
+                    with (
+                        self.logged_results(entries),
+                        state_module.use_identity(self.identity_id),
+                        patch.object(nanlong.time, "time", return_value=self.now + 11),
+                        patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                            id=125, chat_id=-1001, sent_at=self.now + 12,
+                        ))) as sender,
+                    ):
+                        await nanlong.run_nanlong_scheduler(self.now + 11)
+                        await nanlong.run_nanlong_scheduler(self.now + 13)
+                    if step == "place":
+                        sender.assert_awaited_once()
+                        self.assertEqual(nanlong.CMD_NANLONG_EXCHANGE_FABAO, sender.call_args.args[0])
+                        self.assertEqual("exchange_pending", self.identity["nanlong_protect_phase"])
+                    else:
+                        sender.assert_not_awaited()
+                        self.assertEqual("", self.identity["nanlong_protect_phase"])
+                    self.assertNotIn((-1001, 124), self.identity["pending_tasks"])
+
+    async def test_cancelled_exchange_is_reconciled_by_direct_reply_without_resend(self):
+        await self.seed_detached_exchange(cancelled=True)
+        with state_module.use_identity(self.identity_id), patch.object(
+            nanlong, "send_game_command", new=AsyncMock(),
+        ) as sender:
+            self.assertTrue(await nanlong.handle_nanlong_reply(
+                self.trade_text, self.now + 11, SimpleNamespace(id=124, chat_id=-1001), matched_family="nanlong",
+            ))
+            self.assertFalse(await nanlong.handle_nanlong_reply(
+                self.trade_text, self.now + 12, SimpleNamespace(id=124, chat_id=-1001), matched_family="nanlong",
+            ))
+        sender.assert_not_awaited()
+        self.assertNotIn((-1001, 124), self.identity["pending_tasks"])
+        self.assertEqual(0, self.identity["nanlong_reply_to_msg_id"])
+
+    async def test_disabled_or_cleared_operation_cannot_adopt_a_detached_receipt(self):
+        baseline = copy.deepcopy(self.identity)
+        for change in ("module_disabled", "identity_disabled", "cleared"):
+            with self.subTest(change=change):
+                self.identity.clear()
+                self.identity.update(copy.deepcopy(baseline))
+                await self.seed_detached_exchange()
+                with state_module.use_identity(self.identity_id):
+                    if change == "module_disabled":
+                        self.identity["nanlong_enabled"] = False
+                    elif change == "identity_disabled":
+                        state_module.update_send_as_profile(self.identity_id, enabled=False)
+                    else:
+                        nanlong.clear_nanlong_state(persist=True)
+                    with patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender:
+                        await nanlong.run_nanlong_scheduler(self.now + 11)
+                sender.assert_not_awaited()
+                self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+                self.assertIn((-1001, 124), self.identity["pending_tasks"])
+                state_module.update_send_as_profile(self.identity_id, enabled=True)
+
+    async def test_detached_reject_receipt_closes_once_without_retry(self):
+        await self.seed_detached_exchange(step="reject")
+        with state_module.use_identity(self.identity_id), patch.object(
+            nanlong, "send_game_command", new=AsyncMock(),
+        ) as sender:
+            await nanlong.run_nanlong_scheduler(self.now + 11)
+            await nanlong.run_nanlong_scheduler(self.now + 100)
+        sender.assert_not_awaited()
+        self.assertEqual(0, self.identity["nanlong_reply_to_msg_id"])
+        self.assertNotIn((-1001, 124), self.identity["pending_tasks"])
+
+    async def test_detached_receipt_recovers_earlier_cross_group_result_without_send(self):
+        await self.seed_detached_exchange()
+        self.identity["pending_tasks"][(-1002, 124)] = {"cmd": ".unrelated", "chat_id": -1002}
+        with (
+            self.logged_results([(self.result_entry(), self.now + 1)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(self.now + 11)
+        sender.assert_not_awaited()
+        self.assertNotIn((-1001, 124), self.identity["pending_tasks"])
+        self.assertIn((-1002, 124), self.identity["pending_tasks"])
+        self.assertEqual(0, self.identity["nanlong_reply_to_msg_id"])
+
+    async def test_detached_receipt_without_result_is_never_confirmation_retried(self):
+        baseline = copy.deepcopy(self.identity)
+        for step in ("exchange", "place", "recall"):
+            with self.subTest(step=step):
+                self.identity.clear()
+                self.identity.update(copy.deepcopy(baseline))
+                await self.seed_detached_exchange(step=step)
+                with (
+                    self.logged_results([]),
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                    patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit,
+                ):
+                    await nanlong.run_nanlong_scheduler(self.now + 11)
+                    self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                    await nanlong.apply_nanlong_choice("exchange_gongfa", self.now + 71)
+                    for offset in (71, 140, 210):
+                        await nanlong.run_nanlong_scheduler(self.now + offset)
+                sender.assert_not_awaited()
+                audit.assert_awaited_once()
+                self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                self.assertIn((-1001, 124), self.identity["pending_tasks"])
+                self.assertIn("待核对", self.identity["nanlong_last_error"])
+
+    async def test_detached_receipt_must_match_original_owner_prompt_step_and_attempt(self):
+        baseline = copy.deepcopy(self.identity)
+        cases = (
+            {"source_module": "concubine"}, {"chain_id": "old-prompt"},
+            {"op_id": "old-attempt"}, {"reply_to_msg_id": 456},
+            {"cmd": nanlong.CMD_NANLONG_EXCHANGE_GONGFA},
+            {"sent_at": self.now - 10}, {"sent_at": self.now + 1000},
+            {"send_started_at": self.now - 10}, {"send_started_at": self.now + 1000},
+            {"send_started_at": "nan"},
+            {"send_caller_detached": "true"}, {"chat_id": -1002},
+            {"account_id": 7102}, {"duplicate": True},
+        )
+        for change in cases:
+            with self.subTest(change=change):
+                self.identity.clear()
+                self.identity.update(copy.deepcopy(baseline))
+                item = await self.seed_detached_exchange()
+                if "account_id" in change:
+                    state_module.set_identity_account(self.identity_id, change["account_id"])
+                elif "duplicate" in change:
+                    self.identity["pending_tasks"][(-1001, 125)] = dict(item)
+                else:
+                    item.update(change)
+                with state_module.use_identity(self.identity_id), patch.object(
+                    nanlong, "send_game_command", new=AsyncMock(),
+                ) as sender:
+                    await nanlong.run_nanlong_scheduler(self.now + 11)
+                sender.assert_not_awaited()
+                self.assertEqual(0, self.identity["nanlong_last_msg_id"])
 
     async def test_unknown_reply_is_not_treated_as_a_terminal_result(self):
         for phase, command in (("", nanlong.CMD_NANLONG_EXCHANGE_FABAO), ("place_pending", nanlong.CMD_CONCUBINE_PLACE), ("recall_pending", nanlong.CMD_CONCUBINE_RECALL)):
@@ -587,6 +906,22 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(self.identity_id), patch.object(nanlong, "send_audit_log", new=AsyncMock(side_effect=audit)):
             await nanlong.handle_nanlong_result_broadcast(self.trade_text, self.now, self.event(900, -1002))
         self.assertEqual(456, self.identity["nanlong_reply_to_msg_id"])
+
+    async def test_account_rebind_during_result_notification_stops_followup_audit(self):
+        self.seed_exchange()
+        state_module.set_identity_account(self.identity_id, 7101)
+        text = "【天机异闻·南陇侯的交易】@NanlongRoute 完成交易，南陇侯赐予【测试丹方】。"
+
+        async def audit(*_args, **_kwargs):
+            state_module.set_identity_account(self.identity_id, 7102)
+
+        with state_module.use_identity(self.identity_id), patch.object(
+            nanlong, "send_audit_log", new=AsyncMock(side_effect=audit),
+        ) as audit_mock:
+            self.assertTrue(await nanlong.handle_nanlong_result_broadcast(text, self.now, self.event(900, -1002)))
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+        self.assertEqual(7102, state_module.get_identity_account(self.identity_id))
 
     async def test_duplicate_trade_result_during_reward_audit_cannot_send_recall_twice(self):
         self.seed_exchange(protected=True)

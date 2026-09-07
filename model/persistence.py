@@ -221,7 +221,7 @@ PENDING_TASK_PERSISTED_COLUMNS = (
 )
 PENDING_TASK_RECOVERY_KEYS = (
     "reply_recovery_retry_at", "reply_recovery_error", "reply_recovery_msg_id",
-    "reply_recovery_applied", "send_caller_detached",
+    "reply_recovery_applied", "send_caller_detached", "send_started_at",
 )
 
 

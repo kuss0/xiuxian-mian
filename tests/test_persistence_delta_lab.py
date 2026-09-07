@@ -17,6 +17,11 @@ def _mutating_statements(statements):
 
 class PersistenceDeltaLabTests(unittest.TestCase):
     def setUp(self):
+        from model import runtime
+
+        health_patcher = patch.object(runtime, "_bot_waiting_since", 0.0)
+        health_patcher.start()
+        self.addCleanup(health_patcher.stop)
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._db_conn_snapshot = persistence._db_conn
         self._db_initialized_snapshot = persistence._db_initialized
@@ -306,6 +311,62 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             self.assertTrue(loaded["pending_tasks"][(-1002, 124)]["send_caller_detached"])
             sender.assert_not_awaited()
 
+    def test_nanlong_detached_receipt_is_adopted_once_after_sqlite_reload(self):
+        from model import runtime
+        from model.features import nanlong
+
+        identity_id, now = 990119, 1788748200.0
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")),
+            patch.object(nanlong, "save_state", side_effect=self._save_without_guard_backup),
+            patch.object(nanlong.time, "time", return_value=now),
+            patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+            patch.object(runtime, "_reply_chain_tracker", {}),
+            patch.object(runtime, "_append_sent_message_log"),
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+        ):
+            identity = state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="NanlongReload", enabled=True)
+            state_module.set_identity_account(identity_id, 7101)
+            identity.update(nanlong_enabled=True, concubine_name="南宫婉")
+            with state_module.use_identity(identity_id):
+                nanlong._set_nanlong_pending(123, now + 180, now, chat_id=-1001)
+                self.assertTrue(nanlong._prepare_nanlong_send(nanlong.CMD_NANLONG_EXCHANGE_FABAO, now))
+                intent = nanlong._nanlong_send_intent()
+            runtime._finalize_game_send_receipt({
+                "message": None, "detached": True, "send_as_id": identity_id,
+                "command": nanlong.CMD_NANLONG_EXCHANGE_FABAO,
+                "finalize_kwargs": {
+                    "send_as_id": identity_id, "reply_to": 123, "track": False,
+                    "game_group_id": -1001, "topic_id": 0, "send_intent": intent,
+                    "send_started_at": now + 2,
+                },
+            }, msg_id=124, sent_at=now + 10)
+            self.assertTrue(self._save_without_guard_backup())
+            restored = persistence._load_identity_from_db(identity_id)
+            self.assertEqual(now, restored["nanlong_last_sent_at"])
+            self.assertEqual(0, restored["nanlong_last_msg_id"])
+            pending = restored["pending_tasks"][(-1001, 124)]
+            self.assertEqual(intent["op_id"], pending["op_id"])
+            self.assertTrue(pending["send_caller_detached"])
+            self.assertEqual(0, pending["max_retry"])
+            self.assertEqual(now + 2, pending["send_started_at"])
+            runtime._reply_chain_tracker.clear()
+            text = "【天机异闻·南陇侯的交易】@NanlongReload 已完成交易。"
+            reply = SimpleNamespace(id=124, chat_id=-1001)
+            with state_module.use_identity(identity_id):
+                self.assertTrue(asyncio.run(nanlong.handle_nanlong_reply(text, now + 11, reply, matched_family="nanlong")))
+            restored = persistence._load_identity_from_db(identity_id)
+            self.assertEqual(0, restored["nanlong_last_msg_id"])
+            self.assertEqual("-1001:123", restored["nanlong_last_prompt_key"])
+            self.assertNotIn((-1001, 124), restored["pending_tasks"])
+            with state_module.use_identity(identity_id):
+                self.assertFalse(asyncio.run(nanlong.handle_nanlong_reply(text, now + 12, reply, matched_family="nanlong")))
+                asyncio.run(nanlong.run_nanlong_scheduler(now + 120))
+            sender.assert_not_awaited()
+
     def test_pending_route_and_recovery_only_edits_are_not_lost_by_delta_save(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(
             persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
@@ -315,7 +376,7 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             pending = {"cmd": ".test", "sent_at": 100, "timeout": 10, "chat_id": -1001}
             state_module.get_identity_state(identity_id)["pending_tasks"][(-1001, 42)] = pending
             self.assertTrue(self._save_without_guard_backup())
-            for field, value in (("topic_id", 77), ("send_caller_detached", True), ("reply_recovery_retry_at", 10700), ("reply_recovery_applied", {"message:43:hash": False})):
+            for field, value in (("topic_id", 77), ("send_caller_detached", True), ("send_started_at", 99), ("reply_recovery_retry_at", 10700), ("reply_recovery_applied", {"message:43:hash": False})):
                 with self.subTest(field=field):
                     pending[field] = value
                     with patch.object(persistence, "upsert_identity_to_db", wraps=persistence.upsert_identity_to_db) as upsert:
@@ -324,6 +385,7 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             restored = persistence._load_identity_from_db(identity_id)["pending_tasks"][(-1001, 42)]
             self.assertEqual(77, restored["topic_id"])
             self.assertTrue(restored["send_caller_detached"])
+            self.assertEqual(99, restored["send_started_at"])
             self.assertEqual(10700, restored["reply_recovery_retry_at"])
             self.assertEqual({"message:43:hash": False}, restored["reply_recovery_applied"])
 

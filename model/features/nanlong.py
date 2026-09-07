@@ -16,6 +16,8 @@ from ..config import (
     RE_WHITESPACE,
 )
 from ..message_log_recovery import iter_message_log_entries_between
+from ..message_keys import message_key_parts
+from ..module_manifest import get_module_name_for_reply_family
 from ..persistence import mark_dirty, save_state
 from ..runtime import _is_logged_game_bot_reply, classify_game_send_block, clear_pending_by_reply, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
@@ -23,6 +25,7 @@ from ..state import (
     get_game_group_ids,
     get_game_group_topic_id,
     get_identity_enabled,
+    get_identity_account,
     get_identity_ids,
     get_identity_state,
     get_nanlong_choice,
@@ -290,14 +293,15 @@ def _get_nanlong_protect_phase():
 def _capture_nanlong_operation():
     identity_id = get_current_identity_id()
     identity = get_identity_state(identity_id)
-    return identity_id, identity, tuple(identity.get(key) for key in _NANLONG_OPERATION_KEYS), get_nanlong_choice(identity_id)
+    return identity_id, identity, tuple(identity.get(key) for key in _NANLONG_OPERATION_KEYS), get_nanlong_choice(identity_id), get_identity_account(identity_id)
 
 
 def _nanlong_operation_is_current(expected, *, check_choice=True):
-    identity_id, identity, values, choice = expected
+    identity_id, identity, values, choice, account_id = expected
     return (
         has_identity(identity_id)
         and get_identity_state(identity_id) is identity
+        and get_identity_account(identity_id) == account_id
         and get_identity_enabled(identity_id)
         and bool(identity.get("nanlong_enabled"))
         and values == tuple(identity.get(key) for key in _NANLONG_OPERATION_KEYS)
@@ -451,7 +455,7 @@ def _nanlong_send_is_unresolved():
     )
 
 
-def _prepare_nanlong_send(command, now, *, protected=False):
+def _prepare_nanlong_send(command, now, *, protected=False, retry_count=0):
     if _nanlong_send_is_unresolved():
         return False
     chat_id, valid = (
@@ -463,9 +467,12 @@ def _prepare_nanlong_send(command, now, *, protected=False):
     before = {key: state.get(key) for key in _NANLONG_OPERATION_KEYS}
     state["nanlong_reply_due_at"] = 0
     state["nanlong_last_msg_id"] = 0
-    state["nanlong_last_sent_at"] = 0
+    # Identify the local attempt while the send is unresolved. A confirmed
+    # receipt replaces this bound with dispatch time; this is not sent evidence.
+    state["nanlong_last_sent_at"] = time.time()
     state["nanlong_last_chat_id"] = chat_id
     state["nanlong_last_command"] = command
+    state["nanlong_retry_count"] = max(0, int(retry_count or 0))
     state["nanlong_protect_phase"] = (
         NANLONG_PROTECT_PLACE_PENDING if command == CMD_CONCUBINE_PLACE else
         NANLONG_PROTECT_RECALL_PENDING if command == CMD_CONCUBINE_RECALL else
@@ -480,6 +487,83 @@ def _prepare_nanlong_send(command, now, *, protected=False):
         mark_dirty()
         return False
     return before
+
+
+def _nanlong_send_intent():
+    identity_id = get_current_identity_id()
+    prompt_key = str(state.get("nanlong_last_prompt_key") or "")
+    started_at, valid = _parse_nanlong_pending_float(state.get("nanlong_last_sent_at"))
+    retry_count, retry_valid = _parse_nanlong_pending_int(state.get("nanlong_retry_count"))
+    if not prompt_key or not valid or started_at <= 0 or not retry_valid:
+        return {}
+    chain_id = f"nanlong:{identity_id}:{get_identity_account(identity_id)}:{prompt_key}"
+    return {
+        "source_module": get_module_name_for_reply_family("nanlong"), "chain_id": chain_id,
+        "op_id": f"{chain_id}:{state.get('nanlong_last_command')}:{retry_count}:{started_at}",
+    }
+
+
+def _nanlong_detached_receipts(now):
+    intent = _nanlong_send_intent()
+    if not intent.get("op_id"):
+        return []
+    command = str(state.get("nanlong_last_command") or "")
+    started_at, valid = _parse_nanlong_pending_float(state.get("nanlong_last_sent_at"))
+    chat_id = _get_nanlong_last_chat_id()
+    last_msg_id, msg_valid = _parse_nanlong_pending_int(state.get("nanlong_last_msg_id"))
+    if not valid or not msg_valid or not chat_id:
+        return []
+    matches = []
+    for key, item in state.get("pending_tasks", {}).items():
+        if not isinstance(item, dict) or item.get("send_caller_detached") is not True:
+            continue
+        # After adoption, the exact chat/message owns the receipt, and the
+        # time bound can have advanced from enqueue time to actual dispatch.
+        if item.get("cmd") != command or any(
+            item.get(key) != value for key, value in intent.items()
+            if key != "op_id" or not last_msg_id
+        ):
+            continue
+        try:
+            item_chat, item_id = message_key_parts(key, item)
+            reply_to = int(item.get("reply_to_msg_id") or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        sent_at, sent_valid = _parse_nanlong_pending_float(item.get("sent_at"))
+        dispatched_at, dispatch_valid = _parse_nanlong_pending_float(item.get("send_started_at"))
+        if item_chat != chat_id or (last_msg_id and item_id != last_msg_id):
+            continue
+        if not sent_valid or not started_at <= sent_at <= now + NANLONG_LOG_REPLAY_LOOKAHEAD_SEC:
+            continue
+        if not dispatch_valid or (dispatched_at and not started_at <= dispatched_at <= sent_at):
+            continue
+        if command in NANLONG_CHOICE_COMMANDS.values() and reply_to != int(state.get("nanlong_reply_to_msg_id") or 0):
+            continue
+        matches.append(SimpleNamespace(id=item_id, chat_id=item_chat, sent_at=sent_at, send_started_at=dispatched_at))
+    return matches
+
+
+def _adopt_nanlong_detached_receipt(now):
+    if not _nanlong_send_is_unresolved() or not _nanlong_operation_is_current(_capture_nanlong_operation()):
+        return False
+    matches = _nanlong_detached_receipts(now)
+    if len(matches) != 1:
+        return False
+    command = state.get("nanlong_last_command")
+    retry_count = int(state.get("nanlong_retry_count") or 0)
+    if command == CMD_CONCUBINE_PLACE:
+        _set_nanlong_waiting_for_place(matches[0])
+    elif command == CMD_CONCUBINE_RECALL:
+        _set_nanlong_waiting_for_recall(matches[0], retry_count=retry_count)
+    elif command in NANLONG_CHOICE_COMMANDS.values():
+        _set_nanlong_waiting_for_exchange(
+            matches[0], command, retry_count=retry_count,
+            protected=_get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING,
+        )
+    else:
+        return False
+    save_state()
+    return True
 
 
 async def _handle_nanlong_send_failure(command, now, label, previous):
@@ -506,6 +590,7 @@ async def _send_nanlong_command(command, reply_to_msg_id):
     return await send_game_command(
         command, track=False, reply_to=reply_to_msg_id, target_chat_id=chat_id,
         send_as_id=get_current_identity_id(),
+        **_nanlong_send_intent(),
     )
 
 
@@ -513,14 +598,14 @@ async def _send_nanlong_place_command():
     chat_id, valid = _parse_nanlong_pending_int(state.get("nanlong_reply_chat_id", 0))
     if not valid or not chat_id or not state.get("nanlong_enabled"):
         return None
-    return await send_game_command(CMD_CONCUBINE_PLACE, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id())
+    return await send_game_command(CMD_CONCUBINE_PLACE, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id(), **_nanlong_send_intent())
 
 
 async def _send_nanlong_recall_command():
     chat_id = _get_nanlong_last_chat_id()
     if not chat_id or not state.get("nanlong_enabled"):
         return None
-    return await send_game_command(CMD_CONCUBINE_RECALL, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id())
+    return await send_game_command(CMD_CONCUBINE_RECALL, track=False, target_chat_id=chat_id, send_as_id=get_current_identity_id(), **_nanlong_send_intent())
 
 
 async def _maybe_audit_nanlong_prompt_override(previous_reply_to, previous_deadline, now, new_reply_to):
@@ -545,6 +630,11 @@ async def _finalize_nanlong_success(audit_text):
     await send_audit_log(audit_text)
 
 
+def _nanlong_dispatch_time_bound(sent_msg, sent_at):
+    started_at, valid = _parse_nanlong_pending_float(getattr(sent_msg, "send_started_at", 0))
+    return started_at if valid and 0 < started_at <= sent_at else sent_at
+
+
 def _set_nanlong_waiting_for_place(sent_msg):
     sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time())
     msg_id = int(getattr(sent_msg, "id", 0) or 0)
@@ -552,7 +642,7 @@ def _set_nanlong_waiting_for_place(sent_msg):
     state["nanlong_place_msg_id"] = msg_id
     state["nanlong_last_msg_id"] = msg_id
     state["nanlong_last_chat_id"] = int(getattr(sent_msg, "chat_id", 0) or state.get("nanlong_reply_chat_id") or 0)
-    state["nanlong_last_sent_at"] = sent_at
+    state["nanlong_last_sent_at"] = _nanlong_dispatch_time_bound(sent_msg, sent_at)
     state["nanlong_last_command"] = CMD_CONCUBINE_PLACE
     state["nanlong_retry_count"] = 0
     state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
@@ -565,7 +655,7 @@ def _set_nanlong_waiting_for_exchange(sent_msg, command, *, retry_count=0, prote
     state["nanlong_protect_phase"] = NANLONG_PROTECT_EXCHANGE_PENDING if protected and command in {CMD_NANLONG_EXCHANGE_FABAO, CMD_NANLONG_EXCHANGE_GONGFA} else ""
     state["nanlong_last_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
     state["nanlong_last_chat_id"] = int(getattr(sent_msg, "chat_id", 0) or state.get("nanlong_reply_chat_id") or 0)
-    state["nanlong_last_sent_at"] = sent_at
+    state["nanlong_last_sent_at"] = _nanlong_dispatch_time_bound(sent_msg, sent_at)
     state["nanlong_last_command"] = command
     state["nanlong_retry_count"] = max(0, int(retry_count or 0))
     state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
@@ -580,7 +670,7 @@ def _set_nanlong_waiting_for_recall(sent_msg, *, retry_count=0):
     state["nanlong_recall_msg_id"] = msg_id
     state["nanlong_last_msg_id"] = msg_id
     state["nanlong_last_chat_id"] = int(getattr(sent_msg, "chat_id", 0) or state.get("nanlong_last_chat_id") or 0)
-    state["nanlong_last_sent_at"] = sent_at
+    state["nanlong_last_sent_at"] = _nanlong_dispatch_time_bound(sent_msg, sent_at)
     state["nanlong_last_command"] = CMD_CONCUBINE_RECALL
     state["nanlong_retry_count"] = max(0, int(retry_count or 0))
     state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
@@ -609,7 +699,7 @@ async def _send_nanlong_exchange_command(command, reply_to_msg_id, now, *, retry
     expected = _capture_nanlong_operation()
     if not _nanlong_operation_is_current(expected):
         return False
-    previous = _prepare_nanlong_send(command, now, protected=protected)
+    previous = _prepare_nanlong_send(command, now, protected=protected, retry_count=retry_count)
     if not previous:
         return False
     expected = _capture_nanlong_operation()
@@ -618,9 +708,11 @@ async def _send_nanlong_exchange_command(command, reply_to_msg_id, now, *, retry
         return False
     if not sent_msg:
         return await _handle_nanlong_send_failure(command, time.time(), "南陇侯自动回复", previous)
-    _set_nanlong_waiting_for_exchange(sent_msg, command, retry_count=retry_count, protected=protected)
+    sent_at = _set_nanlong_waiting_for_exchange(sent_msg, command, retry_count=retry_count, protected=protected)
     save_state()
-    if audit_retry:
+    expected = _capture_nanlong_operation()
+    await _recover_nanlong_pending_reply_from_log(max(now, sent_at))
+    if audit_retry and _nanlong_operation_is_current(expected, check_choice=False):
         await send_audit_log(f"🤝 南陇侯自动选择重发 {retry_count}/{NANLONG_CONFIRM_RETRY_LIMIT}：{command}，等待确认")
     return True
 
@@ -631,7 +723,7 @@ async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
         return False
     _clear_nanlong_prompt_anchor()
     state["nanlong_protect_phase"] = NANLONG_PROTECT_RECALL_PENDING
-    previous = _prepare_nanlong_send(CMD_CONCUBINE_RECALL, now)
+    previous = _prepare_nanlong_send(CMD_CONCUBINE_RECALL, now, retry_count=retry_count)
     if not previous:
         return False
     expected = _capture_nanlong_operation()
@@ -640,8 +732,12 @@ async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
         return False
     if not sent_msg:
         return await _handle_nanlong_send_failure(CMD_CONCUBINE_RECALL, time.time(), "南陇侯侍妾召回", previous)
-    _set_nanlong_waiting_for_recall(sent_msg, retry_count=retry_count)
+    sent_at = _set_nanlong_waiting_for_recall(sent_msg, retry_count=retry_count)
     save_state()
+    expected = _capture_nanlong_operation()
+    await _recover_nanlong_pending_reply_from_log(max(now, sent_at))
+    if not _nanlong_operation_is_current(expected, check_choice=False):
+        return True
     if retry_count:
         await send_audit_log(f"🤝 南陇侯侍妾召回重发 {retry_count}/{NANLONG_CONFIRM_RETRY_LIMIT}，等待确认。")
     else:
@@ -652,17 +748,18 @@ async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
 async def _handle_nanlong_trade_confirmed(text, now, audit_text):
     identity_id = get_current_identity_id()
     identity = get_identity_state(identity_id)
+    account_id = get_identity_account(identity_id)
     _clear_nanlong_reply_pending()
     partner_name = str(state.get("concubine_name") or "").strip()
     permanent_moon_partner = partner_name == "南宫婉" or partner_name.startswith("南宫婉·")
     if not permanent_moon_partner and _get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING and _is_nanlong_trade_success_reply(text):
         handled = await _send_nanlong_recall_after_trade(now)
-        if has_identity(identity_id) and get_identity_state(identity_id) is identity:
+        if has_identity(identity_id) and get_identity_state(identity_id) is identity and get_identity_account(identity_id) == account_id:
             await _send_nanlong_reward_audit(text)
         return handled
     clear_nanlong_state(persist=True)
     await _send_nanlong_reward_audit(text)
-    if has_identity(identity_id) and get_identity_state(identity_id) is identity:
+    if has_identity(identity_id) and get_identity_state(identity_id) is identity and get_identity_account(identity_id) == account_id:
         await send_audit_log(audit_text)
     return True
 
@@ -762,7 +859,7 @@ async def apply_nanlong_choice(choice, now=None):
         save_state()
         return True, f"已保存南陇侯选择：{get_nanlong_choice_label(normalized_choice)}"
 
-    if _nanlong_send_is_unresolved():
+    if _nanlong_send_is_unresolved() or _nanlong_detached_receipts(now):
         save_state()
         return True, f"已保存南陇侯选择：{get_nanlong_choice_label(normalized_choice)}，本次发送结果待确认，未重新排队"
     if reply_due_at <= now:
@@ -803,11 +900,27 @@ async def run_nanlong_scheduler(now):
     reply_to_msg_id, next_nanlong_time, reply_due_at, pending_valid = _get_nanlong_pending_state()
     if not pending_valid:
         return
+    adopted = _adopt_nanlong_detached_receipt(now)
+    if adopted:
+        if state.get("nanlong_last_command") == CMD_NANLONG_REJECT:
+            await _finalize_nanlong_success(f"🤝 南陇侯自动选择：{NANLONG_CHOICE_LABELS[NANLONG_CHOICE_REJECT]}")
+            return
+        reply_to_msg_id, next_nanlong_time, reply_due_at, pending_valid = _get_nanlong_pending_state()
     phase = _get_nanlong_protect_phase()
-    if reply_due_at > 0 and now >= reply_due_at:
+    if adopted or (reply_due_at > 0 and now >= reply_due_at):
         expected = _capture_nanlong_operation()
         if await _recover_nanlong_pending_reply_from_log(now) or not _nanlong_operation_is_current(expected):
             return
+    if _nanlong_detached_receipts(now):
+        if reply_due_at > 0 and now >= reply_due_at:
+            error = "南陇侯迟到发送回执已登记，结果待核对，不自动重发"
+            notify = state.get("nanlong_last_error") != error
+            state["nanlong_reply_due_at"] = now + NANLONG_CONFIRM_RETRY_DELAY_SEC
+            state["nanlong_last_error"] = error
+            save_state()
+            if notify:
+                await send_audit_log(f"⚠️ {error}。")
+        return
     if phase == NANLONG_PROTECT_RECALL_PENDING:
         if reply_due_at <= 0 or now < reply_due_at:
             return
@@ -885,8 +998,9 @@ async def run_nanlong_scheduler(now):
         if not sent_msg:
             await _handle_nanlong_send_failure(CMD_CONCUBINE_PLACE, time.time(), "南陇侯侍妾安置", previous)
             return
-        _set_nanlong_waiting_for_place(sent_msg)
+        sent_at = _set_nanlong_waiting_for_place(sent_msg)
         save_state()
+        await _recover_nanlong_pending_reply_from_log(max(now, sent_at))
         return
 
     if not requires_confirmation:
@@ -919,6 +1033,7 @@ async def handle_nanlong_reply(text, now, reply_to, matched_family=None):
         return False
     if matched_family != "nanlong":
         return False
+    _adopt_nanlong_detached_receipt(now)
     if not state.get("nanlong_last_msg_id"):
         return False
     if not _is_reply_to_nanlong_last_msg(reply_to):
@@ -967,6 +1082,7 @@ async def handle_nanlong_result_broadcast(text, now, event):
         return False
     if not _is_nanlong_success_reply(text):
         return False
+    _adopt_nanlong_detached_receipt(now)
     if not state.get("nanlong_last_msg_id"):
         return False
     if str(state.get("nanlong_last_command") or "") not in {CMD_NANLONG_EXCHANGE_FABAO, CMD_NANLONG_EXCHANGE_GONGFA}:

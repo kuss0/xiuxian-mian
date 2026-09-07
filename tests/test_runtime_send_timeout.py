@@ -171,6 +171,41 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("supervisor_quiesce", block["code"])
         self.assertEqual("unsent", block["status"])
 
+    def test_receipt_exposes_dispatch_time_without_replacing_receipt_time(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        with (
+            patch.object(runtime, "_append_sent_message_log"),
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+            patch.object(runtime, "_reply_chain_tracker", {}),
+            patch.object(runtime, "note_game_command_sent"),
+        ):
+            msg = runtime._finalize_game_command_sent(
+                ".timing_test", msg_id=123, sent_at=110, send_started_at=100,
+                send_as_id=identity_id, game_group_id=-1001, reply_timeout=60,
+            )
+        self.assertEqual(110, msg.sent_at)
+        self.assertEqual(100, msg.send_started_at)
+        pending = identity["pending_tasks"][(-1001, 123)]
+        self.assertEqual(110, pending["sent_at"])
+        self.assertEqual(100, pending["send_started_at"])
+        self.assertEqual(60, pending["timeout"])
+
+    async def test_rpc_records_dispatch_time_when_it_actually_starts(self):
+        state_module.ensure_identity_registered(301299112)
+
+        async def transport():
+            return SimpleNamespace(id=123)
+
+        with patch.object(runtime.time, "time", return_value=100):
+            task, receipt = runtime._start_game_send_rpc(
+                transport, account_id=7001, command=".timing_test", send_as_id=301299112,
+                send_started_at=90, send_intent={},
+            )
+            await task
+        self.assertTrue(receipt["started"])
+        self.assertEqual(100, receipt["finalize_kwargs"]["send_started_at"])
+
     def _prepared_send_context(self, client):
         send_as_id = 301299112
         state_module.ensure_identity_registered(send_as_id)

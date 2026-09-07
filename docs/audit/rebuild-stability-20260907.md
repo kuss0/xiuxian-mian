@@ -84,6 +84,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R30 | High | Business-capture construction escapes the diagnostic boundary; World Boss business-capture write errors interrupt an accepted hit or completed settlement | Fixed in candidate; isolate construction/redaction/storage in both business-capture helpers, retain cancellation propagation and secret-free error-class warnings; complete battle replays preserve accepted hits, the final result and the exact request sequence |
 | R31 | High | Generic HTTP retries uncertain requests without a replay-safety contract; generic flow execution ignores the adapter's request budget | Fixed in candidate; default to one attempt, require explicit boolean retry safety, share one budget across flow steps/retries, and retain bounded read-only World Boss state reconciliation; per-game manual loops/reentry remain under review |
 | R32 | High | Requests follows API redirects outside the validated route and request budget, including replaying credential-bearing POSTs; Tiandao accepts 3xx JSON as success | Fixed in candidate; disable automatic redirects in the shared/direct/pooled, World Boss and Tiandao transports, require Tiandao HTTP 2xx success, and verify real local HTTP redirect behavior without reaching the game service |
+| R33 | High | Nanlong loses results received before a send receipt, cannot adopt detached receipts, and installs old-account receipts after rebinding; using enqueue time as a result bound can claim an older trade broadcast | Fixed for reproduced interleavings in candidate; exact detached receipt adoption, immediate normal-handler replay, actual dispatch-time evidence, account ownership checks, and SQLite reload are covered; queued prompt invalidation and forced-stop durability remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -571,6 +572,43 @@ five monitor/control-only contracts need separate behavioral verification.
   `/tmp/xiuxian-rebuild-r32-miniapp-redirects-20260908.xml`. Full Ruff and diff
   checks pass. No production request, configuration change, deployment,
   service restart, push or skill edit was performed.
+- R33 initially reproduced four failures: an unthreaded result preceding its
+  normal receipt remained pending, a detached receipt was not adopted, a late
+  receipt without a result could not enter an explicit no-resend wait, and
+  an account rebind during sending still installed the former account's receipt.
+  The expanded time-bound review then reproduced two additional failures:
+  ordinary and detached paths both accepted an older trade broadcast received
+  after enqueue but before the command actually started sending.
+- Nanlong sends now attach existing source/chain/op metadata containing the
+  identity, account, original prompt, command, retry round and local attempt
+  timestamp. Only one exact matching detached pending receipt can be adopted;
+  missing metadata, conflicting ownership/routes/timestamps and duplicate
+  candidates are not guessed. After adoption, the exact chat/message reference
+  owns that receipt. A receipt without a result stays no-resend and emits one
+  warning while bounded log checks continue; changing the choice cannot rearm it.
+- Runtime already receives a send-start timestamp; it now records the actual
+  RPC dispatch instant and exposes it on the returned receipt and existing
+  pending recovery JSON. The receipt's `sent_at`, retry deadlines and business
+  CD calculations are unchanged. No new table, sending fence, outbox or
+  CommandAttempt control path was added. Nanlong uses dispatch time to reject
+  pre-send broadcasts while retaining genuine results earlier than the receipt.
+  Legacy receipts lacking dispatch evidence use the conservative receipt-time
+  bound, not the earlier enqueue timestamp.
+- The complete protected `place -> exchange -> recall` chain is replayed with
+  a real temporary message log: each result arrives before its receipt, each
+  command occurs once, and duplicate edits do not restart the chain. Separate
+  tests cover late place/recall/reject receipts, caller cancellation, exact
+  cleanup, module disable/clear, account rebinding during receipt/notification,
+  one-warning no-resend waits, and a real SQLite save/reload/adopt/complete/reload
+  cycle. Simulated timestamps in receipt tests are isolated from the process's
+  Bot-health clock; the first combined run exposed that test-state leak, which
+  was corrected without relaxing production health or send guards.
+- R33 focused lifecycle/persistence/runtime suites: 166 passed, 91 subtests
+  passed. Full suite: 4075 passed, 879 subtests passed, 60.10 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r33-nanlong-receipts-20260908.xml`. Full Ruff and diff
+  checks pass. Production, live configuration, services, skill and remote
+  branches remain unchanged. This does not close R07, queued business
+  admission checks, capacity review or the whole-project acceptance matrix.
 
 ## Deployment Constraint
 
@@ -595,8 +633,10 @@ and cleanup code during a code-only rollback.
    Nanlong's send-in-flight reentry and unknown-send automatic retry are now
    covered by R22, and trusted cross-group unthreaded result recovery and exact
    terminal pending cleanup by R24. Result-before-receipt and late detached
-   receipt adoption still need reconciliation before its lifecycle is signed
-   off. Passing route tests does not close R07 or R11.
+   receipt adoption are covered by R33. Its queued sends still need business
+   revalidation when the original prompt expires, changes or is cancelled;
+   replay-time versus event-time follow-up deadlines also require review.
+   Passing route tests does not close R07 or R11.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not

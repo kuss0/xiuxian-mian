@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -238,7 +238,8 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now + 20)
 
-            send_mock.assert_awaited_once_with(".安置侍妾", track=False, target_chat_id=-100, send_as_id=identity_id)
+            send_mock.assert_awaited_once_with(".安置侍妾", track=False, target_chat_id=-100, send_as_id=identity_id,
+                                              source_module="南陇侯", chain_id=f"nanlong:{identity_id}:0:-100:8801", op_id=ANY)
             audit_mock.assert_not_awaited()
             self.assertEqual(2, save_mock.call_count)
             self.assertEqual(9901, state_module.state["nanlong_last_msg_id"])
@@ -265,7 +266,8 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=8801, target_chat_id=-100, send_as_id=identity_id)
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=8801, target_chat_id=-100, send_as_id=identity_id,
+                                              source_module="南陇侯", chain_id=f"nanlong:{identity_id}:0:-100:8801", op_id=ANY)
             audit_mock.assert_not_awaited()
             self.assertEqual(2, save_mock.call_count)
             self.assertEqual(9902, state_module.state["nanlong_last_msg_id"])
@@ -289,7 +291,8 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".召回侍妾", track=False, target_chat_id=-100, send_as_id=identity_id)
+            send_mock.assert_awaited_once_with(".召回侍妾", track=False, target_chat_id=-100, send_as_id=identity_id,
+                                              source_module="南陇侯", chain_id=f"nanlong:{identity_id}:0:-100:8801", op_id=ANY)
             audit_mock.assert_awaited_once_with("🤝 南陇侯交易结果已确认，已发送侍妾召回。")
             self.assertEqual(2, save_mock.call_count)
             self.assertEqual("recall_pending", state_module.state["nanlong_protect_phase"])
@@ -356,7 +359,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now)
 
-            recovery_mock.assert_called_once()
+            self.assertEqual(2, recovery_mock.call_count)  # Placement replay, then the new exchange receipt.
             send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_not_awaited()
             self.assertEqual(2, save_mock.call_count)

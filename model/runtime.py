@@ -4319,7 +4319,10 @@ def _finalize_game_command_sent(
         )
     chat_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
     key = message_key(msg_id, chat_id)
-    msg = SimpleNamespace(id=msg_id, chat_id=chat_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
+    msg = SimpleNamespace(
+        id=msg_id, chat_id=chat_id, sent_at=sent_at,
+        send_started_at=float(send_started_at or 0), recovered_from_message_log=bool(recovered),
+    )
     if not has_identity(send_as_id):
         note_shadow_attempt_sent(msg_id, sent_at=sent_at)
         return msg
@@ -4342,6 +4345,7 @@ def _finalize_game_command_sent(
             pending_item = {
                 "cmd": command,
                 "sent_at": sent_at,
+                "send_started_at": msg.send_started_at,
                 "retry": 0,
                 "timeout": timeout,
                 "reply_to_msg_id": int(reply_to or 0),
@@ -4453,6 +4457,7 @@ def _start_game_send_rpc(factory, *, account_id, command, can_dispatch=None, **f
         if can_dispatch is not None and not can_dispatch():
             return None
         receipt["started"] = True
+        receipt["finalize_kwargs"]["send_started_at"] = time.time()
         return await factory()
 
     async def run():
