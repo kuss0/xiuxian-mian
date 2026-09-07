@@ -66,6 +66,9 @@ def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=Non
     The returned callable is synchronous by design — callers hand it to
     `execute_miniapp_http_request`, which they in turn dispatch through
     `asyncio.to_thread`, so the event loop is never blocked.
+
+    API redirects stay visible to the caller; following them can replay a POST
+    or forward initData beyond the validated origin without another budget check.
     """
     effective_proxies = TG_REQUESTS_PROXIES if proxies is None else proxies
 
@@ -82,6 +85,7 @@ def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=Non
             },
             proxies=effective_proxies,
             timeout=timeout,
+            allow_redirects=False,
         )
 
     return _transport
@@ -263,6 +267,7 @@ def build_pooled_miniapp_transport(
                         **dict(request.get("headers") or {}),
                     },
                     timeout=timeout,
+                    allow_redirects=False,
                 )
             except RequestException as exc:
                 _MINIAPP_SESSION_POOL.invalidate(

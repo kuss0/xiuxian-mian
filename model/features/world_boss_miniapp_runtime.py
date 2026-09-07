@@ -422,6 +422,7 @@ def _requests_transport(request, *, session=None):
         },
         proxies=TG_REQUESTS_PROXIES,
         timeout=WORLD_BOSS_MINIAPP_HTTP_TIMEOUT,
+        allow_redirects=False,
     )
 
 

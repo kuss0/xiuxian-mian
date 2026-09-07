@@ -172,12 +172,13 @@ def _post_miniapp_json(path, payload):
         headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"},
         proxies=TG_REQUESTS_PROXIES,
         timeout=_MINIAPP_HTTP_TIMEOUT,
+        allow_redirects=False,
     )
     try:
         data = response.json()
     except ValueError as exc:
         raise TiandaoMiniappError(f"HTTP {response.status_code} 返回非 JSON") from exc
-    if not response.ok or not data.get("ok"):
+    if not 200 <= response.status_code < 300 or not data.get("ok"):
         error = data.get("error") or data.get("message") or f"HTTP {response.status_code}"
         raise TiandaoMiniappError(str(error))
     return data

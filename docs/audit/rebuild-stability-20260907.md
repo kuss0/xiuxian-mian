@@ -28,7 +28,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
-| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP retry permission and flow budget fixed in candidate; per-game retry/reentry, redirects, session lifecycle and current-entry integration still pending |
+| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP retry permission, flow budget and implicit redirect denial fixed in candidate; per-game retry/reentry, session lifecycle and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Pending |
@@ -83,6 +83,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R29 | High | HTTP capture construction/storage errors escape after a MiniApp response was received, losing a confirmed result; capture construction also runs when no sink exists | Fixed in candidate; build and emit HTTP captures inside one diagnostic-only exception boundary, log only the exception class, and leave the original HTTP result/budget/retry policy intact; an actual tower-flow replay retains its reward result after capture failure |
 | R30 | High | Business-capture construction escapes the diagnostic boundary; World Boss business-capture write errors interrupt an accepted hit or completed settlement | Fixed in candidate; isolate construction/redaction/storage in both business-capture helpers, retain cancellation propagation and secret-free error-class warnings; complete battle replays preserve accepted hits, the final result and the exact request sequence |
 | R31 | High | Generic HTTP retries uncertain requests without a replay-safety contract; generic flow execution ignores the adapter's request budget | Fixed in candidate; default to one attempt, require explicit boolean retry safety, share one budget across flow steps/retries, and retain bounded read-only World Boss state reconciliation; per-game manual loops/reentry remain under review |
+| R32 | High | Requests follows API redirects outside the validated route and request budget, including replaying credential-bearing POSTs; Tiandao accepts 3xx JSON as success | Fixed in candidate; disable automatic redirects in the shared/direct/pooled, World Boss and Tiandao transports, require Tiandao HTTP 2xx success, and verify real local HTTP redirect behavior without reaching the game service |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -553,6 +554,23 @@ five monitor/control-only contracts need separate behavioral verification.
   `/tmp/xiuxian-rebuild-r31-miniapp-retry-contract-20260908.xml`. Ruff and diff
   checks pass. The changes are offline candidates only; production, skill,
   live configuration and services remain unchanged.
+- R32 local HTTP reproducer: 30 redirect cases failed before the fix and five
+  ordinary-success controls passed. Direct, supplied-session, pooled, World
+  Boss and Tiandao transports followed 302/307/308 redirects, including to a
+  hostname outside the adapter's allowlist; 307/308 preserve the POST payload.
+  The hidden requests bypass the caller's rate/budget accounting. Tiandao's
+  `Response.ok` check also treats 3xx JSON with `ok=true` as success.
+- All four MiniApp Requests call sites now disable implicit redirects. The
+  original 3xx reaches the protocol failure path; no new hop is attempted, no
+  token/initData is forwarded, and no redirect is claimed as a settlement.
+  Both same-origin and other-host redirects are covered, with exactly one
+  observed POST per invocation. Tests use a loopback-only HTTP server and
+  close its worker, sockets and isolated session pool after each case.
+- R32 focused transport/core/runtime/routing suites: 225 passed, 24 subtests
+  passed. Full suite: 4060 passed, 852 subtests passed, 61.11 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r32-miniapp-redirects-20260908.xml`. Full Ruff and diff
+  checks pass. No production request, configuration change, deployment,
+  service restart, push or skill edit was performed.
 
 ## Deployment Constraint
 
@@ -596,6 +614,12 @@ and cleanup code during a code-only rollback.
    and monotonic counters by R28. A teaching send with no receipt and no early reply still
    needs the R07 durable-unknown policy, not a claim that its existing timer is
    a confirmed failure.
+4. MiniApp follow-through: R31 covers only the generic HTTP/flow runner, not
+   every custom game loop. Most custom flows still lack a shared per-run
+   budget; Nangongque constructs a new budget for each request. Review
+   unknown-result rescheduling, owner invalidation during threaded flows, and
+   session-pool retention/deletion/rebind behavior. R32 closes Requests' hidden
+   redirect path, not the remaining runtime lifecycle or entry-refresh matrix.
 
 ## Completion Gate
 
