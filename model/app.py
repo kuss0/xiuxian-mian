@@ -291,6 +291,7 @@ from .state import (
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
+    has_identity,
     get_send_as_profile,
     is_cave_public_identity_available,
     set_channel_send_as_health,
@@ -2264,29 +2265,51 @@ async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, rep
     return phaseful_summary_handled
 
 
+def _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+    return (
+        has_identity(identity_id)
+        and get_identity_state(identity_id) is owner_state
+        and get_identity_account(identity_id) == owner_account
+        and get_identity_enabled(identity_id)
+        and not _is_identity_account_offline(identity_id)
+        and get_global_enabled()
+    )
+
+
 async def _run_identity_schedulers(now):
     await _run_phaseful_identity_schedulers(now)
 
     for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owner_account = get_identity_account(identity_id)
             identity_now = time.time()
             if is_identity_weak(identity_id, identity_now):
                 continue
             enforce_identity_module_availability(identity_id)
             for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
+                if not _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+                    break
                 await scheduler(time.time())
+            if not _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+                continue
             phaseful_blocked = has_phaseful_summary_block(time.time())
             if phaseful_blocked:
                 for scheduler in _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS:
+                    if not _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+                        break
                     await scheduler(time.time())
+                if not _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+                    continue
                 if state.get("tianxing_enabled") and not _has_tianxing_phaseful_summary_block(time.time()):
                     await run_tianxing_scheduler(time.time())
                 continue
             for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
+                if not _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+                    break
                 await scheduler(time.time())
 
 
@@ -2656,16 +2679,19 @@ def _clear_due_concubine_transient_error_if_stable(now, next_time):
 
 async def _run_phaseful_identity_schedulers(now):
     for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
             continue
-        with use_identity(identity_id):
+        with use_identity(identity_id) as owner_state:
+            owner_account = get_identity_account(identity_id)
             identity_now = time.time()
             scheduler_now = max(float(now or 0), identity_now)
             if is_identity_weak(identity_id, scheduler_now):
                 continue
             for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
+                if not _identity_scheduler_owner_is_current(identity_id, owner_state, owner_account):
+                    break
                 await scheduler(scheduler_now)
 
 

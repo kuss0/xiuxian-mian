@@ -420,13 +420,13 @@ class AppSchedulerContractTests(unittest.TestCase):
 
 class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_identity_scheduler_refreshes_now_before_each_module(self):
+        state_module.ensure_identity_registered(301299112)
         first = AsyncMock()
         second = AsyncMock()
         with (
             patch.object(app, "get_identity_ids", return_value=[301299112]),
             patch.object(app, "get_identity_enabled", return_value=True),
             patch.object(app, "_is_identity_account_offline", return_value=False),
-            patch.object(app, "use_identity", side_effect=lambda _identity_id: nullcontext()),
             patch.object(app, "is_identity_weak", return_value=False),
             patch.object(app, "enforce_identity_module_availability"),
             patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock()),
@@ -441,6 +441,100 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         block_mock.assert_called_once_with(110.0)
         first.assert_awaited_once_with(120.0)
         second.assert_awaited_once_with(130.0)
+
+    async def test_identity_scheduler_stops_remaining_modules_when_owner_changes(self):
+        identity_id, other_id = 991785, 991786
+        phaseful_runner = app._run_phaseful_identity_schedulers
+        for phase in ("phaseful", "cleanup", "ordinary", "standalone_phaseful"):
+            for change in ("removed", "replaced", "rebound", "disabled", "offline", "global_paused"):
+                with self.subTest(phase=phase, change=change):
+                    state_module.state["global_enabled"] = True
+                    state_module.remove_identity(identity_id)
+                    state_module.ensure_identity_registered(identity_id)
+                    state_module.set_identity_account(identity_id, 7001)
+                    state_module.update_send_as_profile(identity_id, enabled=True)
+                    state_module.ensure_identity_registered(other_id)
+                    state_module.get_identity_state(identity_id)["tianxing_enabled"] = True
+                    original_state = state_module.get_identity_state(identity_id)
+                    account_offline = False
+
+                    async def first(_now):
+                        nonlocal account_offline
+                        await asyncio.sleep(0)
+                        if change in {"removed", "replaced"}:
+                            state_module.remove_identity(identity_id)
+                            if change == "replaced":
+                                state_module.ensure_identity_registered(identity_id)
+                                state_module.set_identity_account(identity_id, 7001)
+                        elif change == "rebound":
+                            state_module.set_identity_account(identity_id, 7002)
+                        elif change == "disabled":
+                            state_module.update_send_as_profile(identity_id, enabled=False)
+                        elif change == "offline":
+                            account_offline = True
+                        else:
+                            state_module.state["global_enabled"] = False
+
+                    second = AsyncMock()
+                    ordinary = AsyncMock()
+                    tianxing = AsyncMock()
+                    with (
+                        patch.object(app, "get_identity_ids", return_value=[identity_id]),
+                        patch.object(app, "_is_identity_account_offline", side_effect=lambda _identity_id: account_offline),
+                        patch.object(app, "is_identity_weak", return_value=False),
+                        patch.object(app, "enforce_identity_module_availability"),
+                        patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock()),
+                        patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", (first, second) if phase in {"phaseful", "standalone_phaseful"} else ()),
+                        patch.object(app, "_PHASEFUL_BLOCK_CLEANUP_SCHEDULERS", (first, second) if phase == "cleanup" else ()),
+                        patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (first, second) if phase == "ordinary" else (ordinary,)),
+                        patch.object(app, "has_phaseful_summary_block", return_value=phase == "cleanup"),
+                        patch.object(app, "_has_tianxing_phaseful_summary_block", return_value=False),
+                        patch.object(app, "run_tianxing_scheduler", new=tianxing),
+                    ):
+                        runner = phaseful_runner if phase == "standalone_phaseful" else app._run_identity_schedulers
+                        await runner(1_700_000_000.0)
+                    second.assert_not_awaited()
+                    ordinary.assert_not_awaited()
+                    tianxing.assert_not_awaited()
+                    if change == "removed":
+                        self.assertFalse(state_module.has_identity(identity_id))
+                    if change == "replaced":
+                        self.assertIsNot(original_state, state_module.get_identity_state(identity_id))
+
+    async def test_identity_scheduler_continues_other_roles_after_current_role_removed(self):
+        identity_id, other_id = 991785, 991786
+        state_module.ensure_identity_registered(identity_id)
+        other_state = state_module.ensure_identity_registered(other_id)
+        first_roles = []
+        second_roles = []
+
+        async def first(_now):
+            current = state_module.get_current_identity_id()
+            first_roles.append(current)
+            await asyncio.sleep(0)
+            if current == identity_id:
+                state_module.remove_identity(identity_id)
+
+        async def second(_now):
+            second_roles.append(state_module.get_current_identity_id())
+            state_module.state["next_checkin_time"] = 12345.0
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id, other_id]),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "enforce_identity_module_availability"),
+            patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock()),
+            patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", ()),
+            patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (first, second)),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+        ):
+            await app._run_identity_schedulers(1_700_000_000.0)
+
+        self.assertEqual(first_roles, [identity_id, other_id])
+        self.assertEqual(second_roles, [other_id])
+        self.assertEqual(other_state["next_checkin_time"], 12345.0)
+        self.assertFalse(state_module.has_identity(identity_id))
 
     async def test_identity_scheduler_keeps_tianxing_when_deep_retreat_queue_blocks_ordinary_work(self):
         identity_id = 301299113

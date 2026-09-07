@@ -77,6 +77,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R23 | High | Retry timeout notifications and send receipts mutate replacement pending work; blocked retries rewrite the original send time, and an old refresh timeout clears newer or cross-chat ambiguous refresh anchors | Fixed in candidate; complete terminal cleanup before notification, recheck owner and pending snapshots after transport, keep detached receipts no-retry, persist separate retry backoff, and clear only an exact unambiguous refresh anchor |
 | R24 | High | Nanlong log recovery misses unthreaded cross-group trade results, trusts player copies of result wording, and leaves a confirmed detached command pending after business completion | Fixed for reproduced cases in candidate; replay trusted incoming evidence through the existing direct/broadcast handlers, preserve source-chat boundaries, and clear only the confirmed command's exact pending key; no-ID/early-receipt recovery remains open |
 | R25 | High | A queued send uses an identity after deletion, replacement, account rebinding or disable; a deleted implicit context falls back to another role, and a pause after RPC task creation still permits dispatch | Fixed in candidate; capture the existing owner/account, revalidate after preparation and at actual dispatch, and keep a deleted active context from selecting another identity; post-dispatch receipt durability and module-switch admission remain under review |
+| R26 | High | Ordinary, cleanup and phaseful scheduling continue into later modules after an awaited operation removes, replaces, rebinds or disables their identity | Fixed in candidate; retain the identity object and account, revalidate before later module calls and proxy reads, and stop on account-offline/global-pause changes; independent phaseful polling and continuation of unaffected roles are tested; fast due scans remain under review |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -424,6 +425,21 @@ five monitor/control-only contracts need separate behavioral verification.
   and rift: each still reports `safe=false` with a second transport invocation
   after reload and exits 1 under `--assert-safe`. That expected failure is an
   open acceptance item, not part of the passing-suite claim.
+- R26 reproduction failed all 12 original identity-change scenarios across the
+  phaseful, cleanup and ordinary passes. The transport guard alone was not
+  sufficient: later module code was still invoked with an invalid identity
+  context and could update the first remaining role through `StateProxy`.
+- Both the normal identity pass and the independent phaseful pass now retain
+  the original state object/account and revalidate before subsequent scheduler
+  calls. Deletion, replacement, rebinding, disable, account-offline and global
+  pause stop the affected work without preventing unaffected roles from running.
+  The existing deep-retreat/Tianxing exception is unchanged.
+- R26 focused scheduler contracts: 78 passed, 24 subtests passed. Full suite:
+  3942 passed, 681 subtests passed, 58.99 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r26-scheduler-owner-20260908.xml`. Ruff and diff checks
+  pass. The fast due candidate queues, awaited Tianxing follow-ups and their
+  exception handlers are not covered by this fix and remain open. No skill,
+  production configuration/database, service or remote branch was changed.
 
 ## Deployment Constraint
 
