@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import inspect
 import json
 import sys
 import tempfile
@@ -137,6 +138,101 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         block = runtime.classify_game_send_block(send_as_id, ".观星台")
         self.assertEqual("supervisor_quiesce", block["code"])
         self.assertEqual("unsent", block["status"])
+
+    def _prepared_send_context(self, client):
+        send_as_id = 301299112
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, 7001)
+        stack = ExitStack()
+        for patcher in (
+            patch.object(runtime, "get_registered_client", return_value=client),
+            patch.object(runtime, "is_account_offline", return_value=False),
+            patch.object(runtime, "get_game_group_id", return_value=123456),
+            patch.object(runtime, "get_game_group_ids", return_value=[123456]),
+            patch.object(runtime, "get_game_topic_id", return_value=0),
+            patch.object(runtime, "get_global_enabled", return_value=True),
+            patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+            patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+            patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+            patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+            patch.object(runtime, "is_identity_weak", return_value=False),
+            patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+            patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            patch.object(runtime, "_append_sent_message_log"),
+            patch.object(runtime, "action_guard_note_sent"),
+            patch.object(runtime, "mark_dirty"),
+            patch.object(runtime, "note_game_command_sent"),
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+        ):
+            stack.enter_context(patcher)
+        return stack
+
+    async def test_stop_and_pause_during_preparation_prevent_the_actual_send(self):
+        for stopping in ("quiesce", "pause"):
+            with self.subTest(stopping=stopping):
+                runtime.set_game_send_quiesced(False)
+                enabled = [True]
+                client = _FakeClient(["ok"])
+                original_resolve = client.get_input_entity
+
+                async def resolve(entity_id):
+                    result = await original_resolve(entity_id)
+                    if entity_id == 301299112:
+                        if stopping == "quiesce":
+                            runtime.set_game_send_quiesced(True)
+                        else:
+                            enabled[0] = False
+                    return result
+
+                client.get_input_entity = resolve
+                with self._prepared_send_context(client), patch.object(
+                    runtime, "get_global_enabled", side_effect=lambda: enabled[0],
+                ):
+                    result = await runtime.send_game_command(".boundary_test", send_as_id=301299112)
+
+                self.assertIsNone(result)
+                self.assertEqual([], client.sent_requests)
+                block = runtime.classify_game_send_block(301299112, ".boundary_test")
+                self.assertEqual("unsent", block["status"])
+                self.assertEqual("supervisor_quiesce" if stopping == "quiesce" else "global_disabled", block["code"])
+
+    async def test_route_protection_is_rechecked_after_entity_resolution(self):
+        client = _FakeClient(["ok"])
+        prepared = [False]
+        original_resolve = client.get_input_entity
+
+        async def resolve(entity_id):
+            result = await original_resolve(entity_id)
+            if entity_id == 301299112:
+                prepared[0] = True
+            return result
+
+        async def guard(*_args, **_kwargs):
+            return (False, "protection consumed", "pre_send_guard") if prepared[0] else (True, "", "")
+
+        client.get_input_entity = resolve
+        with self._prepared_send_context(client), patch.object(
+            runtime, "_run_game_command_pre_send_guards", side_effect=guard,
+        ):
+            result = await runtime.send_game_command(".boundary_test", send_as_id=301299112)
+        self.assertIsNone(result)
+        self.assertEqual([], client.sent_requests)
+
+    async def test_cancel_while_waiting_account_lock_closes_unstarted_coroutine(self):
+        async def operation():
+            self.fail("cancelled queued operation must not run")
+
+        operation_coro = operation()
+        async with runtime.account_rpc_slot(account_id=7001):
+            task = asyncio.create_task(runtime._run_account_rpc(operation_coro, account_id=7001))
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        try:
+            self.assertEqual(inspect.CORO_CLOSED, inspect.getcoroutinestate(operation_coro))
+        finally:
+            operation_coro.close()
 
     async def test_unbound_identity_never_falls_back_to_another_account(self):
         send_as_id = 301299112

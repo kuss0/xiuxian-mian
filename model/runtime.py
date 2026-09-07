@@ -321,10 +321,16 @@ async def account_rpc_slot(account_id=0, client_obj=None):
 
 
 async def _run_account_rpc(awaitable, *, account_id=0, client_obj=None, timeout=None):
-    async with account_rpc_slot(account_id=account_id, client_obj=client_obj):
-        if timeout is None:
-            return await awaitable
-        return await asyncio.wait_for(awaitable, timeout=timeout)
+    started = False
+    try:
+        async with account_rpc_slot(account_id=account_id, client_obj=client_obj):
+            started = True
+            if timeout is None:
+                return await awaitable
+            return await asyncio.wait_for(awaitable, timeout=timeout)
+    finally:
+        if not started and asyncio.iscoroutine(awaitable):
+            awaitable.close()
 
 
 # ============== 全局发送通道（防多号同步特征 + GM 检测） ==============
@@ -4364,6 +4370,99 @@ async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
     return True
 
 
+async def _game_send_allowed(
+    command,
+    *,
+    send_as_id,
+    account_id,
+    send_priority,
+    send_intent,
+    allow_maintenance_pause=False,
+    target_chat_id=0,
+):
+    if is_game_send_quiesced():
+        _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
+        return False
+    maintenance_allowed = _allows_maintenance_passive_trigger(
+        command, allow_maintenance_pause=allow_maintenance_pause, intent=send_intent,
+    )
+    if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE} and not maintenance_allowed:
+        _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
+        return False
+    recovery_hold_until = _global_recovery_hold_until_for_priority(send_priority)
+    if recovery_hold_until > 0:
+        await _log_global_recovery_hold_blocked_send(command, send_as_id=send_as_id, until=recovery_hold_until)
+        _record_game_send_block(
+            send_as_id, command, "global_recovery_cooldown",
+            f"自动恢复冷却至 {fmt_abs_ts(recovery_hold_until)}",
+        )
+        return False
+    if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
+        _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
+        return False
+    if account_id <= 0:
+        _close_guard_for_unsent_command(command, send_as_id, "account_unbound")
+        await _log_identity_unbound_blocked(command, send_as_id=send_as_id)
+        _record_game_send_block(send_as_id, command, "account_unbound", "身份未绑定登录账号", definitely_unsent=True)
+        return False
+    if is_account_offline(account_id):
+        reason = get_account_offline_reason(account_id) or "账号离线"
+        await _log_account_offline_blocked(command, send_as_id=send_as_id, account_id=account_id, reason=reason)
+        _record_game_send_block(send_as_id, command, "account_offline", reason)
+        return False
+    if await _account_target_group_blocks_send(
+        command, send_as_id=send_as_id, account_id=account_id, target_chat_id=target_chat_id,
+    ):
+        return False
+    flood_until = _account_flood_wait_until(account_id)
+    if flood_until > 0:
+        await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
+        _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
+        return False
+    if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
+        await _log_weakness_blocked(command, send_as_id=send_as_id)
+        _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
+        return False
+    _refresh_bot_health_timeout_before_send()
+    if _bot_health_blocks_send(send_priority):
+        await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+        _record_game_send_block(send_as_id, command, "bot_health", "Bot 健康暂停")
+        return False
+    allowed, reason, code = await _run_game_command_pre_send_guards(
+        command, send_as_id=send_as_id, priority=send_priority, intent=send_intent,
+    )
+    if not allowed:
+        guard_key = (int(send_as_id or 0), code, str(command or "").strip())
+        now = time.time()
+        if now - float(_GAME_PRE_SEND_GUARD_BLOCK_LAST.get(guard_key, 0) or 0) >= 300:
+            _GAME_PRE_SEND_GUARD_BLOCK_LAST[guard_key] = now
+            await send_audit_log(
+                f"🧭 路线保护拦截：{_truncate_log_text(command, limit=32)}｜{reason}",
+                scope="identity", send_as_id=send_as_id, limit=260,
+            )
+        _record_game_send_block(send_as_id, command, code or "pre_send_guard", reason, definitely_unsent=True)
+        return False
+    allowed, reason = action_guard_before_send(command, send_as_id=send_as_id)
+    if not allowed:
+        if action_guard_should_log_block(command, send_as_id=send_as_id):
+            await send_audit_log(
+                f"🧯 安全锁拦截：{_truncate_log_text(command, limit=32)}｜{reason}",
+                scope="identity", send_as_id=send_as_id, limit=260,
+            )
+        _record_game_send_block(send_as_id, command, "action_guard", reason)
+        return False
+    # A registered async guard may have yielded while the operator stopped work.
+    if is_game_send_quiesced():
+        _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
+        return False
+    if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE} and not _allows_maintenance_passive_trigger(
+        command, allow_maintenance_pause=allow_maintenance_pause, intent=send_intent,
+    ):
+        _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
+        return False
+    return True
+
+
 async def _send_game_command_impl(
     command,
     track=True,
@@ -4402,122 +4501,16 @@ async def _send_game_command_impl(
         chain_id=chain_id,
         delete_policy=delete_policy,
     )
-    maintenance_passive_trigger_allowed = _allows_maintenance_passive_trigger(
-        command,
-        allow_maintenance_pause=allow_maintenance_pause,
-        intent=send_intent,
-    )
-
     try:
-        if is_game_send_quiesced():
-            _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
-            return None
-        if (
-            not get_global_enabled()
-            and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}
-            and not maintenance_passive_trigger_allowed
-        ):
-            _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
-            return None
-
-        recovery_hold_until = _global_recovery_hold_until_for_priority(send_priority)
-        if recovery_hold_until > 0:
-            await _log_global_recovery_hold_blocked_send(command, send_as_id=send_as_id, until=recovery_hold_until)
-            _record_game_send_block(
-                send_as_id,
-                command,
-                "global_recovery_cooldown",
-                f"自动恢复冷却至 {fmt_abs_ts(recovery_hold_until)}",
-            )
-            return None
-
-        if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
-            _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
-            return None
-
-        if account_id <= 0:
-            _close_guard_for_unsent_command(command, send_as_id, "account_unbound")
-            await _log_identity_unbound_blocked(command, send_as_id=send_as_id)
-            _record_game_send_block(
-                send_as_id,
-                command,
-                "account_unbound",
-                "身份未绑定登录账号",
-                definitely_unsent=True,
-            )
-            return None
-
-        if account_id and is_account_offline(account_id):
-            await _log_account_offline_blocked(
-                command,
-                send_as_id=send_as_id,
-                account_id=account_id,
-                reason=get_account_offline_reason(account_id) or "账号离线",
-            )
-            _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
-            return None
-
-        if await _account_target_group_blocks_send(
+        if not await _game_send_allowed(
             command,
             send_as_id=send_as_id,
             account_id=account_id,
+            send_priority=send_priority,
+            send_intent=send_intent,
+            allow_maintenance_pause=allow_maintenance_pause,
             target_chat_id=target_chat_id,
         ):
-            return None
-
-        flood_until = _account_flood_wait_until(account_id)
-        if flood_until > 0:
-            await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
-            _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
-            return None
-
-        if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
-            await _log_weakness_blocked(command, send_as_id=send_as_id)
-            _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
-            return None
-
-        _refresh_bot_health_timeout_before_send()
-        if _bot_health_blocks_send(send_priority):
-            await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
-            _record_game_send_block(send_as_id, command, "bot_health", "Bot 健康暂停")
-            return None
-
-        pre_guard_allowed, pre_guard_reason, pre_guard_code = await _run_game_command_pre_send_guards(
-            command,
-            send_as_id=send_as_id,
-            priority=send_priority,
-            intent=send_intent,
-        )
-        if not pre_guard_allowed:
-            guard_key = (int(send_as_id or 0), pre_guard_code, str(command or "").strip())
-            now = time.time()
-            if now - float(_GAME_PRE_SEND_GUARD_BLOCK_LAST.get(guard_key, 0) or 0) >= 300:
-                _GAME_PRE_SEND_GUARD_BLOCK_LAST[guard_key] = now
-                await send_audit_log(
-                    f"🧭 路线保护拦截：{_truncate_log_text(command, limit=32)}｜{pre_guard_reason}",
-                    scope="identity",
-                    send_as_id=send_as_id,
-                    limit=260,
-                )
-            _record_game_send_block(
-                send_as_id,
-                command,
-                pre_guard_code or "pre_send_guard",
-                pre_guard_reason,
-                definitely_unsent=True,
-            )
-            return None
-
-        guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
-        if not guard_allowed:
-            if action_guard_should_log_block(command, send_as_id=send_as_id):
-                await send_audit_log(
-                    f"🧯 安全锁拦截：{_truncate_log_text(command, limit=32)}｜{guard_reason}",
-                    scope="identity",
-                    send_as_id=send_as_id,
-                    limit=260,
-                )
-            _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
             return None
 
         active_client = get_registered_client(account_id)
@@ -4544,99 +4537,15 @@ async def _send_game_command_impl(
             queue_timeout=queue_timeout,
         )
         async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=effective_queue_timeout):
-            maintenance_passive_trigger_allowed = _allows_maintenance_passive_trigger(
-                command,
-                allow_maintenance_pause=allow_maintenance_pause,
-                intent=send_intent,
-            )
-            if (
-                not get_global_enabled()
-                and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}
-                and not maintenance_passive_trigger_allowed
-            ):
-                _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
-                return None
-
-            recovery_hold_until = _global_recovery_hold_until_for_priority(send_priority)
-            if recovery_hold_until > 0:
-                await _log_global_recovery_hold_blocked_send(command, send_as_id=send_as_id, until=recovery_hold_until)
-                _record_game_send_block(
-                    send_as_id,
-                    command,
-                    "global_recovery_cooldown",
-                    f"自动恢复冷却至 {fmt_abs_ts(recovery_hold_until)}",
-                )
-                return None
-
-            if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
-                _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
-                return None
-
-            _refresh_bot_health_timeout_before_send()
-            if account_id and is_account_offline(account_id):
-                await _log_account_offline_blocked(
-                    command,
-                    send_as_id=send_as_id,
-                    account_id=account_id,
-                    reason=get_account_offline_reason(account_id) or "账号离线",
-                )
-                _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
-                return None
-            if await _account_target_group_blocks_send(
+            if not await _game_send_allowed(
                 command,
                 send_as_id=send_as_id,
                 account_id=account_id,
+                send_priority=send_priority,
+                send_intent=send_intent,
+                allow_maintenance_pause=allow_maintenance_pause,
                 target_chat_id=target_chat_id,
             ):
-                return None
-            flood_until = _account_flood_wait_until(account_id)
-            if flood_until > 0:
-                await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
-                _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
-                return None
-            if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
-                await _log_weakness_blocked(command, send_as_id=send_as_id)
-                _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
-                return None
-            if _bot_health_blocks_send(send_priority):
-                await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
-                _record_game_send_block(send_as_id, command, "bot_health", "Bot 健康暂停")
-                return None
-            pre_guard_allowed, pre_guard_reason, pre_guard_code = await _run_game_command_pre_send_guards(
-                command,
-                send_as_id=send_as_id,
-                priority=send_priority,
-                intent=send_intent,
-            )
-            if not pre_guard_allowed:
-                guard_key = (int(send_as_id or 0), pre_guard_code, str(command or "").strip())
-                now = time.time()
-                if now - float(_GAME_PRE_SEND_GUARD_BLOCK_LAST.get(guard_key, 0) or 0) >= 300:
-                    _GAME_PRE_SEND_GUARD_BLOCK_LAST[guard_key] = now
-                    await send_audit_log(
-                        f"🧭 路线保护拦截：{_truncate_log_text(command, limit=32)}｜{pre_guard_reason}",
-                        scope="identity",
-                        send_as_id=send_as_id,
-                        limit=260,
-                    )
-                _record_game_send_block(
-                    send_as_id,
-                    command,
-                    pre_guard_code or "pre_send_guard",
-                    pre_guard_reason,
-                    definitely_unsent=True,
-                )
-                return None
-            guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
-            if not guard_allowed:
-                if action_guard_should_log_block(command, send_as_id=send_as_id):
-                    await send_audit_log(
-                        f"🧯 安全锁拦截：{_truncate_log_text(command, limit=32)}｜{guard_reason}",
-                        scope="identity",
-                        send_as_id=send_as_id,
-                        limit=260,
-                    )
-                _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
                 return None
 
             rpc_stage = "prepare"
@@ -4705,6 +4614,16 @@ async def _send_game_command_impl(
                                 peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
                             rpc_stage = "resolve_send_as"
                             send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                            if not await _game_send_allowed(
+                                command,
+                                send_as_id=send_as_id,
+                                account_id=account_id,
+                                send_priority=send_priority,
+                                send_intent=send_intent,
+                                allow_maintenance_pause=allow_maintenance_pause,
+                                target_chat_id=game_group_id,
+                            ):
+                                return None
                             rpc_stage = "send_message"
                             send_request_started_at = time.time()
                             send_task = asyncio.create_task(
