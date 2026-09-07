@@ -1,3 +1,4 @@
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -7,11 +8,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model.features import cave_treasure_runtime
+from model import state as state_module
 
 
 class CaveTowerRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.saved_meta = copy.deepcopy(state_module._meta_state)
+        state_module.ensure_identity_registered(8659059191)
         cave_treasure_runtime._PUBLIC_ENTRY_LOCKS.clear()
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(self.saved_meta)
 
     def test_finds_pagoda_external_app_and_launch(self):
         payload = {
@@ -93,4 +101,3 @@ class CaveTowerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("pagoda_SECRET999", tower_mock.await_args.kwargs["token"])
         self.assertEqual("dwelling_init_data", tower_mock.await_args.kwargs["init_data"])
         self.assertEqual(8, result["extra"]["replay"]["cleared_count"])
-

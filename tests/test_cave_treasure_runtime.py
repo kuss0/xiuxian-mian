@@ -1017,6 +1017,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         }))
 
     async def test_public_entry_trial_stops_when_selected_player_mismatches(self):
+        state_module.ensure_identity_registered(2001)
         cave_start = {
             "ok": True,
             "status": "ok",

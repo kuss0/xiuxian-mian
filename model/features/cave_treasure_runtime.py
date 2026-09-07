@@ -55,7 +55,7 @@ from .fate_cards_miniapp import (
     run_fate_cards_action_production,
     run_fate_cards_start_probe_production,
 )
-from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
+from .miniapp_common import MiniAppIdentityOwner, append_business_capture, resolve_identity_id as _identity_id
 from .fishing_runtime import (
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
@@ -1023,7 +1023,21 @@ async def _load_cave_public_identity_session(
     now,
     capture_source,
     include_details=False,
+    operation_check=None,
 ):
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    cancelled = {"ok": False, "status": "cancelled", "error": "洞府公共入口操作已失效"}
+
+    def can_continue():
+        return (
+            owner is not None
+            and owner.is_current()
+            and is_cave_public_identity_available(identity_id)
+            and (operation_check is None or operation_check() is True)
+        )
+
+    if not can_continue():
+        return cancelled
     try:
         init_data = await request_cave_treasure_miniapp_init_data(
             identity_id,
@@ -1031,8 +1045,12 @@ async def _load_cave_public_identity_session(
             webview_url=webview_url,
         )
     except Exception as exc:
+        if not can_continue():
+            return cancelled
         return {"ok": False, "error": f"会话初始化失败：{type(exc).__name__}: {exc}"}
 
+    if not can_continue():
+        return cancelled
     initial_result = await run_cave_dwelling_start_production_flow(
         identity_id,
         token=token,
@@ -1041,6 +1059,8 @@ async def _load_cave_public_identity_session(
         capture_sink=_capture_store(now),
         capture_source=f"{capture_source}:initial",
     )
+    if not can_continue():
+        return cancelled
     if not initial_result.get("ok"):
         return {
             "ok": False,
@@ -1069,6 +1089,8 @@ async def _load_cave_public_identity_session(
             capture_sink=_capture_store(now),
             capture_source=f"{capture_source}:selected",
         )
+        if not can_continue():
+            return cancelled
         if not selected_result.get("ok"):
             return {
                 "ok": False,
@@ -1099,6 +1121,8 @@ async def _load_cave_public_identity_session(
         capture_sink=_capture_store(now),
         capture_source=f"{capture_source}:details",
     )
+    if not can_continue():
+        return cancelled
     if not details_result.get("ok"):
         return {
             "ok": False,
@@ -3586,16 +3610,29 @@ async def run_cave_public_fate_cards(
         }
 
 
-async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
+async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, operation_check=None):
     """Run one identity's daily tower challenge through the dwelling entry."""
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if identity_id <= 0 or owner is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
+    cancelled = {"ok": False, "message": "洞府闯塔操作已取消或身份已变更", "extra": {"status": "cancelled"}}
+
+    def can_continue():
+        return (
+            owner.is_current()
+            and is_cave_public_identity_available(identity_id)
+            and _public_entry_allowed()
+            and (operation_check is None or operation_check() is True)
+        )
+
+    if not can_continue():
+        return cancelled
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
@@ -3603,6 +3640,8 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
+        if not can_continue():
+            return cancelled
         session = await _load_cave_public_identity_session(
             identity_id,
             token,
@@ -3610,7 +3649,10 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
             now=now,
             capture_source=f"cave_public_tower_start:{identity_id}",
             include_details=True,
+            operation_check=can_continue,
         )
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             message = f"洞府琉璃问心塔身份读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
@@ -3638,6 +3680,8 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_tower_external:{identity_id}",
             )
+            if not can_continue():
+                return cancelled
             if not external_result.get("ok"):
                 message = f"洞府琉璃问心塔动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🗼 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
@@ -3657,6 +3701,9 @@ async def run_cave_public_tower(identity_id, public_entry_url, *, now=None):
             capture_sink=_tower_capture_store(now),
             capture_source=f"cave_public_tower:{identity_id}",
         )
+        # A switch-off stops new actions, not a confirmed result for this owner.
+        if not owner.is_current() or (not result.get("ok") and not can_continue()):
+            return cancelled
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         tower_state = data.get("state") if isinstance(data.get("state"), dict) else {}
         replay = data.get("replay") if isinstance(data.get("replay"), dict) else {}

@@ -16,20 +16,25 @@ from ..miniapp_state import get_miniapp_state_snapshot
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, track_background_task
 from ..state import (
+    get_active_identity_id,
     get_current_identity_id,
     format_window_text,
     get_miniapp_auto_config,
     get_module_window_hours,
+    has_active_identity_context,
+    is_cave_public_identity_available,
     state,
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 from .cave_treasure_runtime import (
+    _public_entry_allowed,
     get_cave_public_entry_gate,
     is_cave_public_entry_token_failure,
     note_cave_public_entry_token_failure,
     run_cave_public_tower,
 )
+from .miniapp_common import MiniAppIdentityOwner
 from .tower_miniapp import format_tower_delta
 
 
@@ -146,11 +151,13 @@ def _set_failure_retry(now, *, entry_missing=False):
 def _latest_tower_record():
     snapshot = get_miniapp_state_snapshot(game_key="tower")
     rows = snapshot.get("rows") or []
-    current_identity = int(get_current_identity_id() or 0)
+    current_identity = int((
+        get_active_identity_id() if has_active_identity_context() else get_current_identity_id()
+    ) or 0)
     for row in rows:
         if current_identity and int(row.get("identity_id", 0) or 0) == current_identity:
             return row.get("state") or {}
-    return rows[-1].get("state") if rows else {}
+    return {}
 
 
 def get_tower_status_text():
@@ -193,10 +200,38 @@ def _normalize_tower_schedule(now):
     return next_ts, False
 
 
-async def _run_tower_worker(identity_id, urls, *, scheduled_at):
+def _tower_owner_allowed(owner):
+    return bool(
+        owner is not None
+        and owner.is_current()
+        and is_cave_public_identity_available(owner.identity_id)
+        and _public_entry_allowed()
+        and owner.identity.get("tower_enabled")
+    )
+
+
+def _tower_schedule_snapshot(identity):
+    return tuple(identity.get(key) for key in (
+        "last_tower_day", "next_tower_time", "last_tower_command_sent_at", "tower_retry_count",
+    ))
+
+
+async def _run_tower_worker(identity_id, urls, *, scheduled_at, owner, schedule_snapshot):
     global _TOWER_LAST_RUN_AT, _TOWER_UPSTREAM_CIRCUIT_UNTIL, _TOWER_PREFERRED_ENTRY_INDEX
+
+    def can_run():
+        return (
+            _tower_owner_allowed(owner)
+            and _tower_schedule_snapshot(owner.identity) == schedule_snapshot
+            and owner.identity.get("last_tower_day") != get_day_key()
+        )
+
     try:
+        if not can_run():
+            return
         async with _tower_run_lock():
+            if not can_run():
+                return
             now = time.time()
             if now < _TOWER_UPSTREAM_CIRCUIT_UNTIL:
                 with use_identity(identity_id):
@@ -205,10 +240,21 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at):
             gap = now - _TOWER_LAST_RUN_AT
             if gap < TOWER_MINIAPP_MIN_GAP_SEC:
                 await asyncio.sleep(TOWER_MINIAPP_MIN_GAP_SEC - gap)
+            if not can_run():
+                return
             ordered = _ordered_entry_urls(urls)
             result = {"ok": False, "message": "无公共入口", "extra": {}}
             for offset, url in enumerate(ordered[:3]):
-                result = await run_cave_public_tower(identity_id, url, now=time.time())
+                if not can_run():
+                    return
+                try:
+                    result = await run_cave_public_tower(
+                        identity_id, url, now=time.time(), operation_check=can_run,
+                    )
+                finally:
+                    _TOWER_LAST_RUN_AT = time.time()
+                if not owner.is_current() or (not result.get("ok") and not can_run()):
+                    return
                 if result.get("ok") or not _is_entry_health_failure(result.get("message")):
                     if result.get("ok"):
                         _TOWER_PREFERRED_ENTRY_INDEX = (int(_TOWER_PREFERRED_ENTRY_INDEX or 0) + offset) % max(1, len(urls))
@@ -218,12 +264,15 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at):
                     break
             if is_cave_public_entry_token_failure(result.get("message")):
                 note_cave_public_entry_token_failure(urls, result.get("message"))
-            _TOWER_LAST_RUN_AT = time.time()
+        if not owner.is_current():
+            return
         with use_identity(identity_id):
             if result.get("ok"):
                 next_ts = _mark_done_today(time.time())
                 console_log(f"🗼 闯塔 MiniApp 完成，下一次→{fmt_abs_ts(next_ts)}", scope="identity", limit=220)
             else:
+                if not can_run():
+                    return
                 entry_missing = "公共入口" in str(result.get("message") or "")
                 next_ts = _set_failure_retry(time.time(), entry_missing=entry_missing)
                 await send_audit_log(
@@ -234,20 +283,29 @@ async def _run_tower_worker(identity_id, urls, *, scheduled_at):
                     limit=240,
                 )
     except Exception as exc:
+        if not can_run():
+            return
         with use_identity(identity_id):
             next_ts = _set_failure_retry(time.time())
-        console_log(f"⚠️ 闯塔 MiniApp 后台异常：{type(exc).__name__}: {exc}，延后至 {fmt_abs_ts(next_ts)}", scope="identity", limit=240)
+            console_log(f"⚠️ 闯塔 MiniApp 后台异常：{type(exc).__name__}: {exc}，延后至 {fmt_abs_ts(next_ts)}", scope="identity", limit=240)
 
 
 def _launch_tower_worker(identity_id, urls, *, scheduled_at):
     identity_id = int(identity_id or 0)
     if identity_id <= 0 or identity_id in _TOWER_TASKS:
         return False
-    task = track_background_task(asyncio.create_task(_run_tower_worker(identity_id, list(urls), scheduled_at=scheduled_at)))
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if not _tower_owner_allowed(owner):
+        return False
+    task = track_background_task(asyncio.create_task(_run_tower_worker(
+        identity_id, list(urls), scheduled_at=scheduled_at, owner=owner,
+        schedule_snapshot=_tower_schedule_snapshot(owner.identity),
+    )))
     _TOWER_TASKS[identity_id] = task
 
     def _done(done_task):
-        _TOWER_TASKS.pop(identity_id, None)
+        if _TOWER_TASKS.get(identity_id) is done_task:
+            _TOWER_TASKS.pop(identity_id, None)
         try:
             done_task.result()
         except asyncio.CancelledError:
@@ -263,10 +321,12 @@ async def run_tower_scheduler(now):
     """Queue one serialized MiniApp run when the legacy tower window is due."""
     if not state.get("tower_enabled"):
         return
+    identity_id = int(get_current_identity_id() or 0)
+    if identity_id in _TOWER_TASKS or not _tower_owner_allowed(MiniAppIdentityOwner.capture(identity_id)):
+        return
     next_ts, should_return = _normalize_tower_schedule(float(now or time.time()))
     if should_return or float(now or time.time()) < next_ts:
         return
-    identity_id = int(get_current_identity_id() or 0)
     urls = _configured_entry_urls()
     if not urls:
         next_retry = _set_failure_retry(float(now or time.time()), entry_missing=True)

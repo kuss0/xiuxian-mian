@@ -86,6 +86,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R32 | High | Requests follows API redirects outside the validated route and request budget, including replaying credential-bearing POSTs; Tiandao accepts 3xx JSON as success | Fixed in candidate; disable automatic redirects in the shared/direct/pooled, World Boss and Tiandao transports, require Tiandao HTTP 2xx success, and verify real local HTTP redirect behavior without reaching the game service |
 | R33 | High | Nanlong loses results received before a send receipt, cannot adopt detached receipts, and installs old-account receipts after rebinding; using enqueue time as a result bound can claim an older trade broadcast | Fixed for reproduced interleavings in candidate; exact detached receipt adoption, immediate normal-handler replay, actual dispatch-time evidence, account ownership checks, and SQLite reload are covered; R34 covers queued invalidation, while forced-stop durability remains open |
 | R34 | High | Nanlong queued commands still dispatch after module disable, prompt replacement/clear, choice change or expiry; post-send validation arrives too late to stop the game action | Fixed for reproduced boundaries in candidate; a pure synchronous module operation check is revalidated by the existing owner checks and immediately before RPC dispatch; normal steps, recall cleanup and post-dispatch receipt controls pass |
+| R35 | High | Tower workers start and write results after identity deletion/replacement/rebinding or switch-off; public-entry awaits continue with stale owners, and tower status falls back to another identity's result | Fixed at queued worker and asynchronous public-entry/session boundaries in candidate; exact owner/account capture, schedule snapshots, guarded fallback and confirmed-result controls pass; in-thread request admission and cancellation/resource draining remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -639,6 +640,33 @@ five monitor/control-only contracts need separate behavioral verification.
   again. R34 is not a crash-durability fix. No production state, service,
   skill, configuration or remote branch was changed.
 
+- R35's initial worker reproducer failed in 19 owner-invalidating interleavings
+  and one cross-identity status case. Resetting the frozen-clock rate-limit
+  fixture removed accidental five-second waits without removing any failure.
+  Another 30 public-entry/session interleavings reproduced continued requests,
+  stale result writes or notifications after deletion, replacement or rebind.
+- Tower tasks now capture the identity object, account and existing scheduling
+  fields before task creation. They recheck after lock/gap waits, before entry
+  fallback and before failure backoff. A later timer edit or passive completion
+  invalidates the old operation; another scheduler tick cannot renew a running
+  task's lease. The shared public-entry loader rechecks ownership after initData,
+  initial/selected start and details, before caching a directory. Tower's public
+  wrapper rechecks between flows and before recording results. These are
+  in-memory checks, not a persistent send fence or an Attempt controller.
+- Automatic tower calls supply an operation check; explicit manual calls do
+  not depend on `tower_enabled`. Channel-send-only freezes and the existing
+  Tianzun-maintenance exception still permit MiniApps. A confirmed result for
+  the same owner is retained after switch-off/pause; a replaced or rebound
+  identity never receives it. Status no longer borrows another identity's row,
+  including when the explicit identity context was deleted.
+- R35 focused suites: 144 passed, 92 subtests passed. Full suite: 4094 passed,
+  997 subtests passed, 59.20 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r35-tower-owner-20260908.xml`. This does not establish
+  in-thread cancellation safety: the existing `asyncio.to_thread` flow can
+  still outlive its awaiting caller or a switch change during a pooled/global
+  limiter wait. That next review remains required before MiniApp lifecycle
+  acceptance. No production state, service, skill or remote branch changed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -690,12 +718,13 @@ and cleanup code during a code-only rollback.
    unknown-result rescheduling, owner invalidation during threaded flows, and
    session-pool retention/deletion/rebind behavior. R32 closes Requests' hidden
    redirect path, not the remaining runtime lifecycle or entry-refresh matrix.
-   Start with `tower._run_tower_worker`,
-   `cave_treasure_runtime.run_cave_public_tower` and the threaded
-   `run_tower_miniapp_production_flow`: current wrappers await work before
-   reentering identity state or recording results, and the pooled transport's
-   session-generation check is not an identity/account/enablement check.
-   Reproduce at the full caller boundary before generalizing to other games.
+   R35 covers `tower._run_tower_worker`, public tower wrapping and shared
+   session loading at their asynchronous boundaries. Continue inside threaded
+   `run_tower_miniapp_production_flow` and the dwelling transports: the pooled
+   transport's session-generation check is not an identity/account/enablement
+   check, and cancellation must not release public-entry locks while a request
+   still runs. Reproduce at the full caller boundary before generalizing to
+   other games. Do not mistake an outer post-await check for thread admission.
 
 ## Completion Gate
 

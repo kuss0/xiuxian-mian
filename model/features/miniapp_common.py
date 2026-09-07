@@ -15,13 +15,14 @@ import atexit
 import logging
 import threading
 import time
+from dataclasses import dataclass
 
 import requests
 from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException
 
 from ..config import TG_REQUESTS_PROXIES
-from ..state import get_current_identity_id
+from ..state import get_current_identity_id, get_identity_account, get_identity_state, has_identity
 from ..webapp_core import safe_miniapp_event_detail, sanitize_webapp_secret_text
 
 
@@ -31,6 +32,31 @@ def resolve_identity_id(value=None):
         return int(value if value is not None else get_current_identity_id() or 0)
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+@dataclass(frozen=True, eq=False)
+class MiniAppIdentityOwner:
+    """Retain the identity object and account across asynchronous boundaries."""
+
+    identity_id: int
+    identity: dict
+    account_id: int
+
+    @classmethod
+    def capture(cls, identity_id):
+        if not has_identity(identity_id):
+            return None
+        return cls(int(identity_id), get_identity_state(identity_id), get_identity_account(identity_id))
+
+    def is_current(self):
+        try:
+            return (
+                has_identity(self.identity_id)
+                and get_identity_state(self.identity_id) is self.identity
+                and get_identity_account(self.identity_id) == self.account_id
+            )
+        except KeyError:
+            return False
 
 
 DEFAULT_MINIAPP_HTTP_TIMEOUT = (5, 20)

@@ -35,7 +35,7 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.update(self.snapshot)
 
     def _prepare_identity(self, identity_id):
-        state_module.ensure_identity_registered(identity_id)
+        state_module.ensure_identity_registered(identity_id)["tower_enabled"] = True
         state_module.update_send_as_profile(identity_id, username="TowerUser")
 
     async def test_due_scheduler_queues_miniapp_worker_without_game_command(self):
@@ -94,11 +94,12 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(tower, "send_audit_log", new=AsyncMock()), \
                 patch.object(tower, "save_state"), \
                 patch.object(tower, "console_log"):
-            await tower._run_tower_worker(
+            self.assertTrue(tower._launch_tower_worker(
                 identity_id,
                 ["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"],
                 scheduled_at=now,
-            )
+            ))
+            await tower._TOWER_TASKS[identity_id]
 
         run_mock.assert_awaited_once()
         with state_module.use_identity(identity_id):
@@ -116,11 +117,12 @@ class TowerSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(tower, "send_audit_log", new=AsyncMock()), \
                 patch.object(tower, "save_state"), \
                 patch.object(tower, "console_log"):
-            await tower._run_tower_worker(
+            self.assertTrue(tower._launch_tower_worker(
                 identity_id,
                 ["https://t.me/fanrenxiuxian_bot?startapp=df_TEST"],
                 scheduled_at=now,
-            )
+            ))
+            await tower._TOWER_TASKS[identity_id]
 
         with state_module.use_identity(identity_id):
             self.assertEqual("", state_module.state["last_tower_day"])
