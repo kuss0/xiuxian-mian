@@ -1,0 +1,15 @@
+# Validated runtime dependency set. Update together with the regression suite.
+Telethon==1.43.1
+requests[socks]==2.33.1
+segno==1.6.6
+websockets==15.0.1
+
+# Transitive dependencies are pinned for repeatable recovery installs.
+certifi==2026.2.25
+charset-normalizer==3.4.7
+idna==3.11
+pyaes==1.6.1
+pyasn1==0.6.3
+PySocks==1.7.1
+rsa==4.9.1
+urllib3==2.6.3

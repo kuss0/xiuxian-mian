@@ -63,16 +63,15 @@
 
 建议 Python 3.11 以上。当前线上目录使用仓库内 `.venv`。
 
-最小依赖：
+运行依赖已锁定版本，恢复部署时使用：
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install --upgrade pip
-pip install telethon segno "requests[socks]" "websockets>=15,<16"
+python -m pip install -r requirements.txt
 ```
 
-仓库暂时没有锁定依赖文件。升级依赖前先跑测试，不要在生产目录里临时试包。
+测试环境安装 `requirements-dev.txt`。当前验证环境为 Python 3.13；升级依赖应先在隔离环境跑完整测试，再更新依赖文件。不要在生产目录里临时试包。
 
 ## 配置
 
@@ -155,6 +154,7 @@ UI 登录链接有有效期，浏览器会话也会超时。它是运维入口�
 
 ```bash
 .venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check model tools tests xiuxian.py
 .venv/bin/python -m py_compile xiuxian.py model/*.py model/features/*.py
 .venv/bin/python tools/ui_http_smoke.py
 .venv/bin/python tools/safety_watchdog.py --once --dry-run

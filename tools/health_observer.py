@@ -8,7 +8,6 @@ It never sends Telegram/game commands and never calls Tianjige APIs.
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import hashlib
 import json
 import os

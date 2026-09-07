@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Catch broken execution paths without imposing a repository-wide style rewrite.
+select = ["F821", "F822", "F823", "F811"]
