@@ -36,6 +36,9 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             state_module.state["nanlong_enabled"] = True
             state_module.state["nanlong_reply_to_msg_id"] = 22027
+            state_module.state["nanlong_reply_chat_id"] = -100
+            state_module.state["nanlong_last_chat_id"] = -100
+            state_module.state["nanlong_last_sent_at"] = now - 1
             state_module.state["next_nanlong_time"] = now + 60
             state_module.state["nanlong_reply_due_at"] = now - 1
         return identity_id
@@ -205,7 +208,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(nanlong, "save_state") as save_mock,
                 patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
             ):
-                handled = await nanlong.handle_nanlong_prompt(prompt_text, now, SimpleNamespace(id=8801))
+                handled = await nanlong.handle_nanlong_prompt(prompt_text, now, SimpleNamespace(id=8801, chat_id=-100))
 
             self.assertTrue(handled)
             self.assertEqual(8801, state_module.state["nanlong_reply_to_msg_id"])
@@ -235,7 +238,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now + 20)
 
-            send_mock.assert_awaited_once_with(".安置侍妾", track=False)
+            send_mock.assert_awaited_once_with(".安置侍妾", track=False, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_not_awaited()
             save_mock.assert_called_once()
             self.assertEqual(9901, state_module.state["nanlong_last_msg_id"])
@@ -257,12 +260,12 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 handled = await nanlong.handle_nanlong_reply(
                     "你已将道侣【墨彩环】安置在洞府的藏娇阁中。",
                     now + 21,
-                    SimpleNamespace(id=9901, raw_text=".安置侍妾"),
+                    SimpleNamespace(id=9901, chat_id=-100, raw_text=".安置侍妾"),
                     matched_family="nanlong",
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=8801)
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=8801, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_not_awaited()
             save_mock.assert_called_once()
             self.assertEqual(9902, state_module.state["nanlong_last_msg_id"])
@@ -286,7 +289,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".召回侍妾", track=False)
+            send_mock.assert_awaited_once_with(".召回侍妾", track=False, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_awaited_once_with("🤝 南陇侯交易结果已确认，已发送侍妾召回。")
             save_mock.assert_called_once()
             self.assertEqual("recall_pending", state_module.state["nanlong_protect_phase"])
@@ -300,7 +303,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 handled = await nanlong.handle_nanlong_reply(
                     "你已将【墨彩环】从藏娇阁中召回，随你一同历练。",
                     now + 92,
-                    SimpleNamespace(id=9903, raw_text=".召回侍妾"),
+                    SimpleNamespace(id=9903, chat_id=-100, raw_text=".召回侍妾"),
                     matched_family="nanlong",
                 )
 
@@ -350,7 +353,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 await nanlong.run_nanlong_scheduler(now)
 
             recovery_mock.assert_called_once()
-            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027)
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_not_awaited()
             save_mock.assert_called_once()
             self.assertEqual(9902, state_module.state["nanlong_last_msg_id"])
@@ -380,7 +383,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".交换 功法", track=False, reply_to=22027)
+            send_mock.assert_awaited_once_with(".交换 功法", track=False, reply_to=22027, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_awaited_once()
             self.assertIn("本地洞府为空", audit_mock.await_args.args[0])
             save_mock.assert_called_once()
@@ -412,7 +415,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027)
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_awaited_once()
             self.assertIn("未读到本地洞府缓存", audit_mock.await_args.args[0])
             save_mock.assert_called_once()
@@ -444,7 +447,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027)
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027, target_chat_id=-100, send_as_id=identity_id)
             audit_mock.assert_awaited_once()
             save_mock.assert_called_once()
             self.assertEqual("", state_module.state["nanlong_protect_phase"])
@@ -471,7 +474,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 handled = await nanlong.handle_nanlong_reply(
                     "你已将道侣【墨彩环】安置在洞府的藏娇阁中。",
                     now + 1,
-                    SimpleNamespace(id=9988, raw_text=".安置侍妾"),
+                    SimpleNamespace(id=9988, chat_id=-100, raw_text=".安置侍妾"),
                     matched_family="nanlong",
                 )
 
@@ -492,6 +495,9 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             state_module.state["nanlong_enabled"] = True
             state_module.state["nanlong_last_msg_id"] = 10226520
+            state_module.state["nanlong_last_chat_id"] = -100
+            state_module.state["nanlong_last_sent_at"] = now - 1
+            state_module.state["nanlong_last_command"] = nanlong.CMD_NANLONG_EXCHANGE_FABAO
             state_module.state["nanlong_reply_to_msg_id"] = 10226510
             state_module.state["next_nanlong_time"] = now + 60
             state_module.state["nanlong_reply_due_at"] = now + 30
@@ -534,6 +540,8 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["next_nanlong_time"] = now + 300
             state_module.state["nanlong_reply_due_at"] = now + 60
             state_module.state["nanlong_last_msg_id"] = 10672294
+            state_module.state["nanlong_last_chat_id"] = -100
+            state_module.state["nanlong_last_sent_at"] = now - 1
             state_module.state["nanlong_last_command"] = ".交换 功法"
             state_module.state["nanlong_protect_phase"] = "exchange_pending"
 
@@ -552,7 +560,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".召回侍妾", track=False)
+            send_mock.assert_awaited_once_with(".召回侍妾", track=False, target_chat_id=-100, send_as_id=identity_id)
             self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["next_nanlong_time"])
             self.assertEqual("recall_pending", state_module.state["nanlong_protect_phase"])
@@ -568,7 +576,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await nanlong.run_nanlong_scheduler(now + 62)
 
-            send_mock.assert_awaited_once_with(".召回侍妾", track=False)
+            send_mock.assert_awaited_once_with(".召回侍妾", track=False, target_chat_id=-100, send_as_id=identity_id)
             self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["next_nanlong_time"])
             self.assertEqual("recall_pending", state_module.state["nanlong_protect_phase"])

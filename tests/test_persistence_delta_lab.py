@@ -133,6 +133,38 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1002)
             self.assertEqual((identity_id, "checkin"), (context["send_as_id"], context["family"]))
 
+    def test_nanlong_routes_and_prompt_receipt_survive_delta_save_and_reload(self):
+        from model.features import nanlong
+
+        expected = {
+            "nanlong_reply_to_msg_id": 123, "nanlong_reply_chat_id": -1001,
+            "nanlong_prompt_at": 1700000000.0, "nanlong_last_prompt_key": "-1001:123",
+            "nanlong_last_msg_id": 124, "nanlong_last_chat_id": -1001,
+            "nanlong_last_sent_at": 1700000001.0,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            identity_id = 990114
+            identity = state_module.ensure_identity_registered(identity_id)
+            identity.update(expected)
+            self.assertTrue(self._save_without_guard_backup())
+            identity["nanlong_last_chat_id"] = -1002
+            expected["nanlong_last_chat_id"] = -1002
+            self.assertTrue(self._save_without_guard_backup())
+            loaded = persistence._load_identity_from_db(identity_id)
+            for key, value in expected.items():
+                self.assertEqual(value, loaded[key], key)
+            with state_module.use_identity(identity_id):
+                nanlong.clear_nanlong_state()
+            self.assertTrue(self._save_without_guard_backup())
+            loaded = persistence._load_identity_from_db(identity_id)
+            self.assertEqual(0, loaded["nanlong_reply_chat_id"])
+            self.assertEqual(0, loaded["nanlong_last_chat_id"])
+            self.assertEqual(0, loaded["nanlong_last_sent_at"])
+            self.assertEqual("-1001:123", loaded["nanlong_last_prompt_key"])
+            self.assertEqual(expected["nanlong_prompt_at"], loaded["nanlong_prompt_at"])
+
     def test_pending_route_and_recovery_only_edits_are_not_lost_by_delta_save(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(
             persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
