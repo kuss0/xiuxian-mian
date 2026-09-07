@@ -528,6 +528,8 @@ def normalize_miniapp_auto_config(config=None):
     raw = dict(config or get_miniapp_auto_config() or {})
     result = dict(MINIAPP_AUTO_CONFIG_DEFAULT)
     result.update({key: raw.get(key, default) for key, default in MINIAPP_AUTO_CONFIG_DEFAULT.items()})
+    # Runtime deadline, not an editable switch. Preserve it across config saves.
+    result["cave_public_shared_retry_at"] = _cave_public_shared_retry_at(raw)
     result["trial_daily_enabled"] = bool(result.get("trial_daily_enabled"))
     if "trial_daily_scheduler_confirmed" in raw:
         result["trial_daily_scheduler_confirmed"] = bool(result.get("trial_daily_scheduler_confirmed"))
@@ -7361,6 +7363,9 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
         return False, "身份不存在", {}
     if not is_cave_public_identity_available(identity_id):
         return False, "身份已停用", {}
+    shared_hold = _cave_public_shared_hold(time.time())
+    if shared_hold:
+        return False, "洞府公共入口共享限流，等待服务端冷却", shared_hold
     using_config_urls = not bool(str(public_entry_url or "").strip())
     if public_entry_url:
         candidate_urls = _normalize_cave_public_entry_urls_value(public_entry_url)
@@ -7449,6 +7454,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
                 # the remaining URLs only repeats the rejected request and can
                 # hide the server's retry hint behind token noise.
                 extra = dict(result_extra)
+                extra["shared_retry_at"] = _remember_cave_public_shared_limit(extra, time.time())
                 extra["entry_index"] = index
                 extra["entry_attempts"] = attempted
                 extra["entry_canary"] = canary
@@ -7597,8 +7603,46 @@ def _close_cave_public_upstream_circuit():
     _cave_public_background_state.update({
         "circuit_open_until": 0,
         "circuit_reason": "",
-        "next_run_at": min(next_run_at, now + 60) if next_run_at > 0 else 0,
+        "next_run_at": max(
+            _cave_public_shared_retry_at(),
+            min(next_run_at, now + 60) if next_run_at > 0 else 0,
+        ),
     })
+
+
+def _cave_public_shared_retry_at(config=None):
+    config = get_miniapp_auto_config() if config is None else config
+    try:
+        deadline = float(config.get("cave_public_shared_retry_at", 0) or 0)
+        return deadline if 0 < deadline < float("inf") else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _cave_public_shared_hold(now):
+    deadline = _cave_public_shared_retry_at()
+    if now >= deadline:
+        return {}
+    return {
+        "shared_rate_limit": True,
+        "shared_retry_at": deadline,
+        "retry_at": deadline,
+        "retry_after_sec": deadline - now,
+        "shared_retry_after_sec": deadline - now,
+    }
+
+
+def _remember_cave_public_shared_limit(extra, now):
+    # A successful request/circuit recovery cannot cancel a server rate limit.
+    wait = max(CAVE_PUBLIC_SHARED_RATE_LIMIT_FLOOR_SEC, miniapp_retry_after_sec({
+        "retry_after_sec": extra.get("shared_retry_after_sec"), "extra": extra,
+    }))
+    deadline = max(_cave_public_shared_retry_at(), now + wait)
+    config = dict(get_miniapp_auto_config())
+    config["cave_public_shared_retry_at"] = deadline
+    set_miniapp_auto_config(config)
+    save_state()
+    return deadline
 
 
 def _normalize_cave_public_batch_delay(value):
@@ -8248,8 +8292,10 @@ async def _run_cave_public_entry_batch(
             current = f"{index}/{total} {display} {action}"
             _set_cave_public_batch_state(current=current)
             ok, message, extra = await ui_run_cave_public_entry(identity_id, action, public_entry_url)
-            if not ok and _is_cave_public_batch_pause(message):
-                retry_result = f"全局暂停，已完成 {completed}/{total}，等待恢复：{display} {action}"
+            shared_pause = isinstance(extra, dict) and extra.get("shared_rate_limit")
+            if not ok and (_is_cave_public_batch_pause(message) or shared_pause):
+                pause_reason = "共享入口限流" if shared_pause else "全局暂停"
+                retry_result = f"{pause_reason}，已完成 {completed}/{total}，等待恢复：{display} {action}"
                 _set_cave_public_batch_state(
                     running=False,
                     finished_at=time.time(),
@@ -8272,7 +8318,7 @@ async def _run_cave_public_entry_batch(
                     outcomes=outcomes,
                 )
                 await send_audit_log(
-                    f"⏸️ 洞府公共入口批次遇到全局暂停，已完成 {completed}/{total}；"
+                    f"⏸️ 洞府公共入口批次遇到{pause_reason}，已完成 {completed}/{total}；"
                     "当前步骤未计失败，恢复后从该步骤继续。",
                     scope="global",
                     priority="normal",
@@ -8451,6 +8497,9 @@ async def _run_cave_public_entry_batch(
 
 async def ui_start_cave_public_entry_batch(payload=None, *, trial_daily_context=None):
     payload = dict(payload or {})
+    shared_hold = _cave_public_shared_hold(time.time())
+    if shared_hold:
+        return False, "洞府公共入口共享限流，等待服务端冷却", shared_hold
     if _cave_public_batch_state.get("running"):
         return False, "已有洞府公共入口串行批次正在运行", dict(_cave_public_batch_state)
     if _cave_public_background_state.get("running") or _cave_public_ui_run_lock.locked():
@@ -8821,7 +8870,9 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
                 )
             except (TypeError, ValueError, OverflowError):
                 shared_retry_sec = 0.0
-        shared_retry_at = finished_at + shared_retry_sec if shared_retry_sec > 0 else 0.0
+        if shared_retry_sec > 0 and not extra.get("shared_retry_at"):
+            _remember_cave_public_shared_limit(extra, finished_at)
+        shared_retry_at = _cave_public_shared_retry_at()
         _cave_public_background_state.update({
             "running": False,
             "next_run_at": max(finished_at + delay_sec, circuit_open_until, shared_retry_at),
@@ -8843,6 +8894,9 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
 
 async def _run_cave_public_background_scheduler(now, config):
     now = float(now or time.time())
+    shared_hold = _cave_public_shared_hold(now)
+    if shared_hold:
+        return {"started": False, "reason": "shared_rate_limit", **shared_hold}
     public_entry_urls = _cave_public_entry_urls_from_config(config)
     if not public_entry_urls:
         return {"started": False, "reason": "public_entry_url_missing"}
@@ -9156,6 +9210,9 @@ async def run_miniapp_daily_scheduler(now):
         return {"started": True, "kind": "fate_cards_daily_summary"}
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
+    shared_hold = _cave_public_shared_hold(float(now))
+    if shared_hold:
+        return {"started": False, "reason": "shared_rate_limit", **shared_hold}
     public_entry_urls = list(raw_config.get("cave_public_entry_urls") or [])
     entry_gate = get_cave_public_entry_gate(public_entry_urls, now=now)
     if entry_gate.get("blocked") and entry_gate.get("canary_due"):

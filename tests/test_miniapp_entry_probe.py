@@ -1089,6 +1089,80 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.clear()
             ui._cave_public_background_state.update(background_snapshot)
 
+    async def test_shared_limit_survives_success_and_background_worker(self):
+        snapshot = dict(ui._cave_public_background_state)
+        retries = dict(ui._cave_public_background_retry_at)
+        now = 1_700_000_000.0
+        try:
+            with patch.object(ui, "save_state", return_value=True):
+                deadline = ui._remember_cave_public_shared_limit({"retry_after_sec": 1302}, now)
+            with patch.object(ui.time, "time", return_value=now + 60):
+                ui._close_cave_public_upstream_circuit()
+                self.assertEqual(deadline, ui._cave_public_background_state["next_run_at"])
+                with patch.object(ui, "ui_run_cave_public_entry", new=AsyncMock(return_value=(True, "完成", {}))), \
+                        patch.object(ui, "console_log"):
+                    await ui._execute_cave_public_background_action(1002, "deep_status", 20)
+            self.assertEqual(deadline, ui._cave_public_background_state["next_run_at"])
+            ui._cave_public_background_state.clear()  # Simulate lost process-local state.
+            config = ui.normalize_miniapp_auto_config()
+            ui.set_miniapp_auto_config(config)
+            self.assertEqual(deadline, ui._cave_public_shared_retry_at())
+            with patch.object(ui, "_fire_and_forget") as fire:
+                result = await ui._run_cave_public_background_scheduler(deadline - 50, config)
+            self.assertEqual("shared_rate_limit", result["reason"])
+            fire.assert_not_called()
+            self.assertEqual({}, ui._cave_public_shared_hold(deadline))
+        finally:
+            ui._cave_public_background_state.clear()
+            ui._cave_public_background_state.update(snapshot)
+            ui._cave_public_background_retry_at.clear()
+            ui._cave_public_background_retry_at.update(retries)
+
+    async def test_shared_limit_blocks_other_identity_ui_batch_and_daily_scheduler(self):
+        now = time.time()
+        state_module._meta_state["miniapp_auto_config"] = {"cave_public_shared_retry_at": now + 1302}
+        with patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True), \
+                patch.object(ui, "run_cave_public_trial", new=AsyncMock()) as trial, \
+                patch.object(ui, "prepare_cave_public_entry_attempt") as entry, \
+                patch.object(ui, "get_miniapp_auto_config_snapshot", return_value={}), \
+                patch.object(ui, "maybe_send_cave_public_fate_cards_daily_summary", new=AsyncMock(return_value=False)), \
+                patch.object(ui, "get_global_enabled", return_value=True), \
+                patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=AsyncMock()) as tree:
+            ok, _, extra = await ui.ui_run_cave_public_entry(1002, "trial", "https://t.me/test_bot?startapp=df_test")
+            self.assertFalse(ok)
+            self.assertTrue(extra["shared_rate_limit"])
+            batch_ok, _, _ = await ui.ui_start_cave_public_entry_batch({})
+            self.assertFalse(batch_ok)
+            result = await ui.run_miniapp_daily_scheduler(now)
+            self.assertEqual("shared_rate_limit", result["reason"])
+            trial.assert_not_awaited()
+            tree.assert_not_awaited()
+            entry.assert_not_called()
+
+    async def test_shared_limit_does_not_consume_or_skip_batch_step(self):
+        snapshot = dict(ui._cave_public_batch_state)
+        context = {"wave_key": "wave1", "wave_label": "第一批", "day_key": "2026-09-05"}
+        try:
+            with patch.object(ui, "ui_run_cave_public_entry", new=AsyncMock(side_effect=[
+                (True, "完成", {"settled_count": 1}),
+                (False, "限流", {"shared_rate_limit": True, "retry_after_sec": 1302}),
+            ])) as run, patch.object(ui, "send_audit_log", new=AsyncMock()), \
+                    patch.object(ui, "save_state", return_value=True):
+                await ui._run_cave_public_entry_batch(
+                    "shared-limit-test", "", [1001, 1002, 1003], ["trial"], 0,
+                    trial_daily_context=context,
+                )
+            self.assertEqual(2, run.await_count)
+            config = ui.normalize_miniapp_auto_config()
+            self.assertEqual("retry_pending", config["trial_daily_wave1_last_status"])
+            self.assertEqual(1, config["trial_daily_wave1_last_cursor"])
+            self.assertEqual(1, config["trial_daily_wave1_last_succeeded"])
+            self.assertEqual(0, config["trial_daily_wave1_last_failed"])
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(snapshot)
+
     async def test_cave_public_success_closes_upstream_circuit(self):
         background_snapshot = dict(ui._cave_public_background_state)
         try:
