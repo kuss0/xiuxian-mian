@@ -300,10 +300,10 @@ def request_yinluo_sha_recovery(send_as_id, minimum_sha, *, now=None, reason="")
             int(observed.get("resource_recovery_min_sha", 0) or 0),
         )
         if _has_known_sha_pool(observed):
-            observed["sha_current"] = min(
-                int(observed.get("sha_current", 0) or 0),
-                minimum_sha - 1,
-            )
+            # The rejection only proves the pool is below the requirement.
+            # Use zero as a conservative lower bound until a gain/panel reply
+            # supplies an authoritative value.
+            observed["sha_current"] = 0
             if int(observed.get("sha_max", 0) or 0) > 0:
                 observed["sha_percent"] = int(
                     min(100, observed["sha_current"] * 100 / int(observed["sha_max"]))

@@ -125,6 +125,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("jfdffdddd", success["target_username"])
         self.assertEqual((9, 14, 180), (success["seal_down"], success["source_gain"], success["contrib_gain"]))
         self.assertEqual("assist_strip_resource_blocked", blocked["type"])
+        self.assertEqual(wanxin.WANXIN_STRIP_SHA_COST, success["sha_cost"])
         self.assertEqual(("assist_banner_resource_blocked", 80), (banner_blocked["type"], banner_blocked["required_sha"]))
 
     def test_parse_commission_existing_and_assist_success(self):
@@ -141,6 +142,12 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(("assist_identify_success", "jfdffdddd", 20, 120), (identify["type"], identify["target_username"], identify["source_gain"], identify["contrib_gain"]))
         self.assertEqual(("assist_banner_success", "jfdffdddd", 13, 1), (banner["type"], banner["target_username"], banner["seal_down"], banner["moon_gain"]))
         self.assertEqual(80, banner["sha_cost"])
+
+        failed = wanxin.parse_wanxin_text(
+            "【剥离咒源失败】\n封魂咒骤然反扑，阴罗幡煞气被吞去 120 点，"
+            "@xianxia9527 修为折损 500，@jfdffdddd 魂封 +4。"
+        )
+        self.assertEqual(("assist_strip_failed", 120), (failed["type"], failed["sha_cost"]))
 
     def test_action_guard_resolves_wanxin_commands(self):
         self.assertEqual("wanxin_panel", action_guard.resolve_action_key(".婉心"))
@@ -1704,9 +1711,79 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + wanxin.WANXIN_RESOURCE_RECOVERY_RETRY_SEC, observed["assist"]["next_banner_time"])
         with state_module.use_identity(helper_id):
             helper_observed = state_module.state["yinluo_observation"]
-            self.assertEqual(79, helper_observed["sha_current"])
+            self.assertEqual(0, helper_observed["sha_current"])
             self.assertEqual(80, helper_observed["resource_recovery_min_sha"])
             self.assertEqual(now, helper_observed["auto_next_time"])
+
+    async def test_assist_sha_cost_is_idempotent_for_duplicate_reply(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_300.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "pending": {
+                    "action": "banner",
+                    "family": "wanxin_assist_banner",
+                    "msg_id": 7601,
+                    "send_as_id": helper_id,
+                    "reply_due_at": now + 60,
+                },
+                "commission": {
+                    "id": 91,
+                    "accepted": True,
+                    "owner_username": "jfdffdddd",
+                    "helper_username": "sanshaoyedejian1",
+                },
+                "assist": {"send_as_id": helper_id, "banner_enabled": True},
+            }
+        with state_module.use_identity(helper_id):
+            state_module.state["yinluo_observation"] = {"sha_current": 400, "sha_max": 15000}
+
+        reply = (
+            "【借幡镇魂】\n@sanshaoyedejian1 借阴罗幡压住封魂咒反扑，幡面煞气被削去 80 点。\n"
+            "@jfdffdddd 魂封 -13，月魄 +1；咒师贡献 +100。"
+        )
+        for reply_now in (now, now + 1):
+            with state_module.use_identity(helper_id):
+                with patch.object(wanxin, "save_state"):
+                    handled = await wanxin.handle_wanxin_reply(
+                        reply,
+                        reply_now,
+                        reply_to=SimpleNamespace(id=7601, raw_text=".借幡镇魂 @jfdffdddd"),
+                        matched_family="wanxin_assist_banner",
+                        result_msg_id=7602,
+                    )
+            self.assertTrue(handled)
+
+        with state_module.use_identity(helper_id):
+            self.assertEqual(320, state_module.state["yinluo_observation"]["sha_current"])
+
+    def test_recovered_assist_success_records_sha_cost(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_300.0
+        with state_module.use_identity(owner_id):
+            observed = wanxin.normalize_wanxin_observation({
+                "commission": {"id": 92, "accepted": True, "owner_username": "jfdffdddd"},
+                "assist": {"send_as_id": helper_id},
+            })
+        with state_module.use_identity(helper_id):
+            state_module.state["yinluo_observation"] = {"sha_current": 400, "sha_max": 15000}
+
+        entries = [({
+            "event_type": "message",
+            "message_id": 7702,
+            "text": (
+                "【借幡镇魂】\n@sanshaoyedejian1 借阴罗幡压住封魂咒反扑，幡面煞气被削去 80 点。\n"
+                "@jfdffdddd 魂封 -13，月魄 +1；咒师贡献 +100。"
+            ),
+        }, now)]
+        with state_module.use_identity(owner_id):
+            with patch.object(wanxin, "_iter_message_log_entries_between", return_value=entries):
+                self.assertTrue(wanxin._recover_recent_assist_success_from_log(observed, wanxin.WANXIN_ACTION_BANNER, now))
+        with state_module.use_identity(helper_id):
+            self.assertEqual(320, state_module.state["yinluo_observation"]["sha_current"])
 
     async def test_scheduler_refuses_assist_without_real_accept_evidence(self):
         owner_id = self._prepare_identity()

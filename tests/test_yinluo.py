@@ -594,6 +594,28 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("阴罗宗", send_mock.await_args.kwargs["source_module"])
         self.assertEqual("banner", observed["auto_last_action"])
 
+    def test_server_shortage_uses_conservative_zero_until_recalibrated(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_observation"] = {
+                "sha_current": 400,
+                "sha_max": 15000,
+                "auto_next_time": now + 3600,
+            }
+            with patch.object(yinluo, "save_state"):
+                changed = yinluo.request_yinluo_sha_recovery(
+                    self.identity_id,
+                    80,
+                    now=now,
+                    reason="借幡镇魂煞气不足",
+                )
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(0, observed["sha_current"])
+        self.assertEqual(80, observed["resource_recovery_min_sha"])
+        self.assertEqual(now, observed["auto_next_time"])
+
     async def test_scheduler_collects_one_ready_slot_and_keeps_remaining_hint(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({

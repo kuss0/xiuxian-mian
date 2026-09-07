@@ -69,6 +69,8 @@ WANXIN_BANNER_CD_SEC = 6 * 3600
 WANXIN_STRIP_CD_SEC = 8 * 3600
 WANXIN_STRIP_RESOURCE_BACKOFF_SEC = 6 * 3600
 WANXIN_RESOURCE_RECOVERY_RETRY_SEC = 15 * 60
+WANXIN_BANNER_SHA_COST = 80
+WANXIN_STRIP_SHA_COST = 120
 WANXIN_MOON_GREET_CD_SEC = 24 * 3600
 WANXIN_MOON_SEAL_CD_SEC = 8 * 3600
 WANXIN_MOON_JOIN_CD_SEC = 24 * 3600
@@ -186,7 +188,7 @@ RE_CONTRIB_GAIN = re.compile(r"(?:咒师)?贡献\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_GAIN = re.compile(r"情缘\s*\+(?P<gain>\d+)")
 RE_MOON_AFFINITY_COST = re.compile(r"消耗[：:]?[^\n]*?(?P<cost>\d+)\s*情缘")
 RE_MOON_AFFINITY_VALUE = re.compile(r"情缘\s*[:：]\s*(?P<value>\d+)")
-RE_ASSIST_SHA_COST = re.compile(r"幡面煞气被削去\s*(?P<amount>\d+)\s*点")
+RE_ASSIST_SHA_COST = re.compile(r"(?:幡面煞气被削去|阴罗幡煞气被吞去)\s*(?P<amount>\d+)\s*点")
 RE_ASSIST_SHA_REQUIRED = re.compile(r"(?P<action>借幡镇魂|剥离咒源)至少需要\s*(?P<amount>\d+)\s*点煞气")
 
 
@@ -315,6 +317,11 @@ def _default_wanxin_assist():
         "bannered_commission_id": 0,
         "last_anchor_msg_id": 0,
         "last_anchor_at": 0,
+        "last_sha_cost_msg_id": 0,
+        "last_sha_cost_at": 0,
+        "last_sha_cost_action": "",
+        "last_sha_cost_target": "",
+        "last_sha_cost_amount": 0,
         "last_action": "",
         "last_result": "",
         "last_error": "",
@@ -411,13 +418,14 @@ def normalize_wanxin_observation(value=None):
         "helper_next_banner_time",
         "helper_next_strip_time",
         "last_anchor_at",
+        "last_sha_cost_at",
     ):
         assist[key] = max(0.0, _safe_float(assist.get(key), 0))
     for key in ("identified_commission_id", "bannered_commission_id"):
         assist[key] = max(0, _safe_int(assist.get(key), 0))
-    assist["last_anchor_msg_id"] = max(0, _safe_int(assist.get("last_anchor_msg_id"), 0))
-    assist["last_contrib_gain"] = max(0, _safe_int(assist.get("last_contrib_gain"), 0))
-    for key in ("last_action", "last_result", "last_error"):
+    for key in ("last_anchor_msg_id", "last_sha_cost_msg_id", "last_sha_cost_amount", "last_contrib_gain"):
+        assist[key] = max(0, _safe_int(assist.get(key), 0))
+    for key in ("last_sha_cost_action", "last_sha_cost_target", "last_action", "last_result", "last_error"):
         assist[key] = str(assist.get(key) or "").strip()
     observed["assist"] = assist
 
@@ -798,17 +806,19 @@ def parse_wanxin_text(text, now=None, family=""):
             "seal_down": _safe_int(seal_match.group("down"), 0) if seal_match else 0,
             "moon_gain": _safe_int(moon_match.group("gain"), 0) if moon_match else 0,
             "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
-            "sha_cost": _safe_int(sha_cost_match.group("amount"), 0) if sha_cost_match else 0,
+            "sha_cost": _safe_int(sha_cost_match.group("amount"), WANXIN_BANNER_SHA_COST) if sha_cost_match else WANXIN_BANNER_SHA_COST,
             "summary": "借幡镇魂成功",
         })
         return parsed
     if "【剥离咒源失败】" in raw:
         contrib_match = RE_CONTRIB_GAIN.search(raw)
+        sha_cost_match = RE_ASSIST_SHA_COST.search(raw)
         parsed.update({
             "type": "assist_strip_failed",
             "available": "yes",
             "target_username": _parse_target_username(raw),
             "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
+            "sha_cost": _safe_int(sha_cost_match.group("amount"), WANXIN_STRIP_SHA_COST) if sha_cost_match else WANXIN_STRIP_SHA_COST,
             "summary": "剥离咒源失败",
         })
         return parsed
@@ -823,6 +833,7 @@ def parse_wanxin_text(text, now=None, family=""):
             "source_gain": _safe_int(source_match.group("gain"), 0) if source_match else 0,
             "seal_down": _safe_int(seal_match.group("down"), 0) if seal_match else 0,
             "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
+            "sha_cost": WANXIN_STRIP_SHA_COST,
             "summary": "剥离咒源成功",
         })
         return parsed
@@ -1214,7 +1225,37 @@ def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_
     return False
 
 
-def _apply_assist_success_to_observed(observed, action, parsed, now):
+def _record_assist_sha_cost(observed, action, parsed, now, result_msg_id=0):
+    cost = int(parsed.get("sha_cost", 0) or 0)
+    if action not in {WANXIN_ACTION_BANNER, WANXIN_ACTION_STRIP} or cost <= 0:
+        return False
+    assist = observed["assist"]
+    result_msg_id = max(0, int(result_msg_id or 0))
+    target = str(parsed.get("target_username") or "").strip().lstrip("@").casefold()
+    if result_msg_id and result_msg_id == int(assist.get("last_sha_cost_msg_id", 0) or 0):
+        return False
+    if (
+        not result_msg_id
+        and str(assist.get("last_sha_cost_action") or "") == action
+        and str(assist.get("last_sha_cost_target") or "") == target
+        and int(assist.get("last_sha_cost_amount", 0) or 0) == cost
+        and float(now) - float(assist.get("last_sha_cost_at", 0) or 0) <= 300
+    ):
+        return False
+    record_yinluo_sha_consumption(
+        int(assist.get("send_as_id", 0) or 0),
+        cost,
+        now=now,
+    )
+    assist["last_sha_cost_msg_id"] = result_msg_id
+    assist["last_sha_cost_at"] = float(now)
+    assist["last_sha_cost_action"] = action
+    assist["last_sha_cost_target"] = target
+    assist["last_sha_cost_amount"] = cost
+    return True
+
+
+def _apply_assist_success_to_observed(observed, action, parsed, now, result_msg_id=0):
     _apply_success_cooldown(observed, action, now, parsed)
     observed["assist"]["last_action"] = action
     observed["assist"]["last_result"] = parsed.get("summary") or "协助成功"
@@ -1224,6 +1265,7 @@ def _apply_assist_success_to_observed(observed, action, parsed, now):
     observed["auto_last_action"] = action
     observed["auto_last_result"] = parsed.get("summary") or "协助成功"
     observed["auto_last_error"] = ""
+    _record_assist_sha_cost(observed, action, parsed, now, result_msg_id=result_msg_id)
     if action == WANXIN_ACTION_STRIP:
         _consume_commission(observed)
     _clear_pending(observed)
@@ -1255,11 +1297,11 @@ def _recover_recent_assist_success_from_log(observed, action, send_started_at):
         target = str(parsed.get("target_username") or "").strip().lstrip("@").casefold()
         if target != owner_username:
             continue
-        latest = (parsed, entry_ts)
+        latest = (parsed, entry_ts, _safe_int(entry.get("message_id"), 0))
     if not latest:
         return False
-    parsed, entry_ts = latest
-    _apply_assist_success_to_observed(observed, action, parsed, entry_ts)
+    parsed, entry_ts, result_msg_id = latest
+    _apply_assist_success_to_observed(observed, action, parsed, entry_ts, result_msg_id=result_msg_id)
     return True
 
 
@@ -2103,14 +2145,9 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["assist"]["last_contrib_gain"] = int(parsed.get("contrib_gain", 0) or 0)
             observed["auto_last_result"] = parsed.get("summary") or "协助成功"
             observed["auto_last_error"] = "" if ptype != "assist_strip_failed" else parsed.get("summary") or "剥离咒源失败"
+            _record_assist_sha_cost(observed, action, parsed, now, result_msg_id=result_msg_id)
             if action == WANXIN_ACTION_STRIP:
                 _consume_commission(observed)
-            if action == WANXIN_ACTION_BANNER and int(parsed.get("sha_cost", 0) or 0) > 0:
-                record_yinluo_sha_consumption(
-                    int((observed.get("assist") or {}).get("send_as_id", 0) or 0),
-                    int(parsed.get("sha_cost", 0) or 0),
-                    now=now,
-                )
             _clear_pending(observed)
             _schedule_next(observed, now)
         elif ptype == "assist_strip_blocked":
