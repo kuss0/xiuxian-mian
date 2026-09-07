@@ -71,8 +71,9 @@ proof that gameplay is healthy. Production files have not been changed.
 | R17 | High | Checkin/sect-teaching send receipts overwrite an early result's next step or update a removed/disabled identity; repeated success increments teaching twice and cleanup loses concurrently added work | Fixed in candidate for the reproduced interleavings; send-return ownership checks, shared persisted completion keys and chat-scoped incremental cleanup are covered by new tests |
 | R18 | High | Judgement rewrites stale pending snapshots, requeues prompts after disable/deletion, and uses pre-refresh button coordinates; account fallback can choose the wrong channel identity | Reproduced and fixed in candidate; exact terminal anchors precede unique-name broadcast matching, original-chat sends and current-entry updates are tested; queued transport cancellation and unknown outcomes remain under R07/scheduling review |
 | R19 | High | Nanlong omits the prompt chat, overwrites newer work after awaits, and accepts stale trade broadcasts during placement/recall; deleting an identity during send updates another identity | Reproduced and fixed for these boundaries in candidate; original route/receipt metadata is persisted, terminal transitions precede notifications, and real cross-group broadcasts still complete; pre-receipt outcome and uncertain-send review remains open |
+| R20 | High | A throwing registered pre-send guard is skipped, and a guard returning a Future is treated as allowed without awaiting its decision; decision-normalization errors are misclassified as unknown sends | Fixed in candidate; synchronous/async faults stop before transport as definitely unsent, all awaitables are awaited, and cancellation still propagates |
 
-Inventory: 284 tracked Python files, approximately 271k lines including tests;
+Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
 undefined-name/redefinition checks found R01 plus a duplicate `deque` import,
 and are green after the candidate fixes. These checks do not establish business
@@ -291,6 +292,17 @@ five monitor/control-only contracts need separate behavioral verification.
   Both exact wording pairs are fixtures in `nanlong_cross_chat_20260906.json`.
   The replay verifies original-chat dispatch and cross-group completion with
   mocked transport, not a newly executed live trade. Production remains untouched.
+- R20 pre-send-guard candidate: 3893 passed, 617 subtests passed, 58.24 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r20-send-guards-20260907.xml`; Ruff and diff
+  checks pass. Runtime-send, Tianxing and retry-scheduler tests passed 331 tests
+  and 13 subtests. Four initial failing cases demonstrated actual transport
+  invocation after a guard failure/Future denial, or an unsent decision error
+  being marked unknown. Cancellation propagation is also tested.
+- A guard failure now returns the existing `pre_send_guard` block code and is
+  recorded as definitely unsent. No pending reply is created, no cooldown is
+  inferred, and no new retry policy or CommandAttempt authority was introduced.
+  These changes are local candidate commits only; no deployment, restart,
+  live command, production state change or push was performed.
 
 ## Deployment Constraint
 
@@ -318,7 +330,11 @@ and cleanup code during a code-only rollback.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not
-   approved by these fixes.
+   approved by these fixes. Current source still creates `_GAME_SEND_TASKS`
+   receipts only in memory and persists message-keyed pending rows after a
+   message ID is available. An action-guard session with attempt zero is
+   considered closeable, so it cannot substitute for durable no-ID ownership.
+   Forced-stop and reload reproducers must exercise this actual boundary.
 3. Continue the full acceptance matrix: module enable/disable and authoritative
    cooldowns, MiniApp mutation/reconnect behavior, persistence capacity, UI
    control contracts and operations. Existing mocks and process uptime cannot

@@ -1,5 +1,6 @@
 import asyncio
 import html
+import inspect
 import json
 import os
 import random
@@ -878,12 +879,13 @@ async def _run_game_command_pre_send_guards(command, *, send_as_id, priority, in
                 intent=_compact_send_intent(intent),
                 now=time.time(),
             )
-            if asyncio.iscoroutine(result):
+            if inspect.isawaitable(result):
                 result = await result
-        except Exception:
+            allowed, reason, code = _normalize_pre_send_guard_result(result)
+        except Exception as exc:
             traceback.print_exc()
-            continue
-        allowed, reason, code = _normalize_pre_send_guard_result(result)
+            guard_name = getattr(guard, "__name__", type(guard).__name__)
+            return False, f"发送前守卫 {guard_name} 执行异常 ({type(exc).__name__})，本次未发送", "pre_send_guard"
         if not allowed:
             return False, reason or "发送前守卫拦截", code or getattr(guard, "__name__", "pre_send_guard")
     return True, "", ""

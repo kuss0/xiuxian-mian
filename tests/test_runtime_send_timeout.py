@@ -250,6 +250,72 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         self.assertEqual([], client.sent_requests)
 
+    async def test_raising_send_guard_blocks_transport_as_definitely_unsent(self):
+        for asynchronous in (False, True):
+            with self.subTest(asynchronous=asynchronous):
+                client = _FakeClient(["ok"])
+
+                def broken_guard(*_args, **_kwargs):
+                    raise ValueError("invalid protection state")
+
+                async def async_broken_guard(*_args, **_kwargs):
+                    await asyncio.sleep(0)
+                    raise ValueError("invalid protection state")
+
+                guard = async_broken_guard if asynchronous else broken_guard
+                with (
+                    self._prepared_send_context(client),
+                    patch.object(runtime, "_GAME_COMMAND_PRE_SEND_GUARDS", [guard]),
+                    patch.object(runtime, "_GAME_PRE_SEND_GUARD_BLOCK_LAST", {}),
+                    patch.object(runtime.traceback, "print_exc"),
+                ):
+                    result = await runtime.send_game_command(".guard_failure", send_as_id=301299112)
+                self.assertIsNone(result)
+                self.assertEqual([], client.sent_requests)
+                block = runtime.classify_game_send_block(301299112, ".guard_failure")
+                self.assertEqual("unsent", block["status"])
+                self.assertEqual("pre_send_guard", block["code"])
+                self.assertEqual({}, state_module.get_identity_state(301299112)["pending_tasks"])
+
+    async def test_send_guard_future_is_awaited_before_transport(self):
+        client = _FakeClient(["ok"])
+        decision = asyncio.get_running_loop().create_future()
+        decision.set_result({"allowed": False, "code": "pre_send_guard", "reason": "route changed"})
+        with (
+            self._prepared_send_context(client),
+            patch.object(runtime, "_GAME_COMMAND_PRE_SEND_GUARDS", [lambda *_args, **_kwargs: decision]),
+            patch.object(runtime, "_GAME_PRE_SEND_GUARD_BLOCK_LAST", {}),
+        ):
+            result = await runtime.send_game_command(".guard_future", send_as_id=301299112)
+        self.assertIsNone(result)
+        self.assertEqual([], client.sent_requests)
+        self.assertEqual("unsent", runtime.classify_game_send_block(301299112, ".guard_future")["status"])
+
+    async def test_send_guard_result_normalization_failure_is_unsent(self):
+        class InvalidDecision:
+            def __bool__(self):
+                raise ValueError("unreadable decision")
+
+        client = _FakeClient(["ok"])
+        with (
+            self._prepared_send_context(client),
+            patch.object(runtime, "_GAME_COMMAND_PRE_SEND_GUARDS", [lambda *_args, **_kwargs: {"allowed": InvalidDecision()}]),
+            patch.object(runtime, "_GAME_PRE_SEND_GUARD_BLOCK_LAST", {}),
+            patch.object(runtime.traceback, "print_exc"),
+        ):
+            result = await runtime.send_game_command(".guard_invalid_decision", send_as_id=301299112)
+        self.assertIsNone(result)
+        self.assertEqual([], client.sent_requests)
+        self.assertEqual("unsent", runtime.classify_game_send_block(301299112, ".guard_invalid_decision")["status"])
+
+    async def test_cancelled_send_guard_is_not_converted_to_permission(self):
+        async def guard(*_args, **_kwargs):
+            raise asyncio.CancelledError()
+
+        with patch.object(runtime, "_GAME_COMMAND_PRE_SEND_GUARDS", [guard]):
+            with self.assertRaises(asyncio.CancelledError):
+                await runtime._run_game_command_pre_send_guards(".guard_cancel", send_as_id=301299112, priority="normal")
+
     async def test_cancel_while_waiting_account_lock_closes_unstarted_coroutine(self):
         async def operation():
             self.fail("cancelled queued operation must not run")
