@@ -333,21 +333,20 @@ async def _resolve_schedule_context(send_as_id):
 
     send_as_id = int(send_as_id)
     account_id = int(get_identity_account(send_as_id) or 0)
-    if account_id and is_account_offline(account_id):
+    if account_id <= 0:
+        raise RuntimeError("身份未绑定账号，无法管理官方定时消息")
+    if is_account_offline(account_id):
         raise RuntimeError(get_account_offline_reason(account_id) or "账号离线")
-    if account_id:
-        active_client = get_registered_client(account_id)
-        if active_client is None:
-            reason = "账号 client 未注册或启动失败"
-            mark_account_offline(account_id, reason)
-            raise RuntimeError(reason)
-        await runtime._run_account_rpc(
-            runtime._ensure_account_client_ready(active_client),
-            account_id=account_id,
-            client_obj=active_client,
-        )
-    else:
-        account_id, active_client = runtime._get_any_authed_client_with_account()
+    active_client = get_registered_client(account_id)
+    if active_client is None:
+        reason = "账号 client 未注册或启动失败"
+        mark_account_offline(account_id, reason)
+        raise RuntimeError(reason)
+    await runtime._run_account_rpc(
+        runtime._ensure_account_client_ready(active_client),
+        account_id=account_id,
+        client_obj=active_client,
+    )
     game_group_id = get_game_group_id()
     if not game_group_id:
         raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
@@ -409,6 +408,8 @@ async def create_official_scheduled_message(send_as_id, command, schedule_at, *,
 
 
 async def list_official_scheduled_messages(send_as_id):
+    from . import runtime
+
     active_client, peer, _send_as_peer, _reply_to, account_id = await _resolve_schedule_context(send_as_id)
     result = await runtime._run_account_rpc(
         active_client(functions.messages.GetScheduledHistoryRequest(peer=peer, hash=0)),
@@ -434,6 +435,8 @@ async def list_official_scheduled_messages(send_as_id):
 
 
 async def delete_official_scheduled_messages(send_as_id, scheduled_msg_ids):
+    from . import runtime
+
     ids = [int(item) for item in (scheduled_msg_ids or []) if int(item or 0) > 0]
     if not ids:
         return 0
