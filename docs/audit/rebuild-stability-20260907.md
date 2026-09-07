@@ -62,7 +62,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R08 | High | Generic pending-log recovery closes a pending task and action guard without replaying the owning business handler | Fixed in candidate; real checkin-state regression plus ownership, failure, intermediate-ack and replay-idempotence tests pass |
 | R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Fixed in candidate; named/background/UI/login/provider task cleanup is joined, repeat cancellation is avoided, final save follows disconnect and is skipped on incomplete drain |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
-| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Source-path confirmed; collision reproducer and migration design pending |
+| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Cross-identity DB overwrite repaired and migration tested; same-identity cross-chat storage and in-memory/reply ownership remain open |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -126,6 +126,15 @@ five monitor/control-only contracts need separate behavioral verification.
   original quiz-bank edit and `tools/dump_ui_write_keys.py` are present. Main,
   watchdog and observer are active with `NRestarts=0`; listener remains inactive.
   These process facts do not claim that all gameplay is healthy.
+- R11 database candidate full suite: 3773 passed, 579 subtests passed, 57.12
+  seconds. JUnit: `/tmp/xiuxian-rebuild-r11-db-20260907.xml`. Pending and sent
+  message rows now use identity plus message ID, so one identity cannot overwrite
+  another's rows. Legacy rows, defaults and ordinary indexes survive migration;
+  one savepoint rolls back both table changes on failure. Unknown schemas,
+  triggers, unique constraints and incoming/outgoing foreign keys require manual
+  review rather than silent loss of behavior. This does not yet solve two groups
+  using the same message ID for one identity, or bare in-memory reply indexes.
+  R11 remains open. The skill and production files/services remain unchanged.
 
 ## Completion Gate
 

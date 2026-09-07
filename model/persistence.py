@@ -1012,6 +1012,69 @@ def _migrate_schema_to_current(conn):
     )
 
 
+def _ensure_identity_message_primary_keys(conn):
+    plans = []
+    referenced_tables = {
+        foreign_key[2]
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        for foreign_key in conn.execute('PRAGMA foreign_key_list("' + name.replace('"', '""') + '")')
+    }
+    for table, expected_columns in (
+        ("pending_tasks", PENDING_TASK_PERSISTED_COLUMNS),
+        ("message_index", ("msg_id", "send_as_id", "sent_at", "kind")),
+    ):
+        columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        primary_key = tuple(row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5])
+        if primary_key == ("send_as_id", "msg_id"):
+            continue
+        if primary_key != ("msg_id",) or {row[1] for row in columns} != set(expected_columns):
+            raise RuntimeError(f"{table}: unexpected schema; message-key migration requires review")
+        table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()[0]
+        triggers = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? LIMIT 1", (table,)).fetchone()
+        if (
+            triggers
+            or table in referenced_tables
+            or conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+            or any(row[2] and row[3] != "pk" for row in conn.execute(f"PRAGMA index_list({table})"))
+            or "CHECK" in str(table_sql).upper()
+        ):
+            raise RuntimeError(f"{table}: custom constraints require manual message-key migration")
+        indexes = [row[0] for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+            (table,),
+        )]
+        plans.append((table, columns, indexes))
+    if not plans:
+        return
+
+    # A single savepoint keeps the two ownership indexes consistent on failure.
+    conn.execute("SAVEPOINT identity_message_keys")
+    try:
+        for table, columns, indexes in plans:
+            definitions = []
+            for row in columns:
+                definition = f'"{row[1]}" {row[2]}'
+                if row[3] or row[1] in {"send_as_id", "msg_id"}:
+                    definition += " NOT NULL"
+                if row[4] is not None:
+                    definition += f" DEFAULT {row[4]}"
+                definitions.append(definition)
+            definitions.append("PRIMARY KEY (send_as_id, msg_id)")
+            replacement = f"{table}_identity_key_migration"
+            conn.execute(f"CREATE TABLE {replacement} ({', '.join(definitions)})")
+            names = ", ".join(f'"{row[1]}"' for row in columns)
+            conn.execute(f"INSERT INTO {replacement} ({names}) SELECT {names} FROM {table}")
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {replacement} RENAME TO {table}")
+            for index_sql in indexes:
+                conn.execute(index_sql)
+    except BaseException:
+        conn.execute("ROLLBACK TO identity_message_keys")
+        conn.execute("RELEASE identity_message_keys")
+        raise
+    conn.execute("RELEASE identity_message_keys")
+
+
 
 def _meta_defaults():
     """Seed values written once, on first run, for every meta key.
@@ -1633,7 +1696,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS pending_tasks (
-            msg_id INTEGER PRIMARY KEY,
+            msg_id INTEGER NOT NULL,
             send_as_id INTEGER NOT NULL,
             cmd TEXT NOT NULL,
             sent_at REAL NOT NULL,
@@ -1648,7 +1711,8 @@ def init_db():
             op_id TEXT NOT NULL DEFAULT '',
             chain_id TEXT NOT NULL DEFAULT '',
             delete_policy TEXT NOT NULL DEFAULT '',
-            recovery_json TEXT NOT NULL DEFAULT '{}'
+            recovery_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (send_as_id, msg_id)
         );
 
         CREATE TABLE IF NOT EXISTS command_attempts (
@@ -1736,10 +1800,11 @@ def init_db():
             ON command_attempt_evidence(op_id, seq);
 
         CREATE TABLE IF NOT EXISTS message_index (
-            msg_id INTEGER PRIMARY KEY,
+            msg_id INTEGER NOT NULL,
             send_as_id INTEGER NOT NULL,
             sent_at REAL NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'command'
+            kind TEXT NOT NULL DEFAULT 'command',
+            PRIMARY KEY (send_as_id, msg_id)
         );
 
         CREATE TABLE IF NOT EXISTS official_schedule_batches (
@@ -1785,6 +1850,7 @@ def init_db():
     else:
         _ensure_schema_columns(conn)
         _normalize_small_world_preach_defaults(conn)
+    _ensure_identity_message_primary_keys(conn)
     for meta_key, meta_value in _meta_defaults().items():
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (meta_key, meta_value))
     conn.commit()

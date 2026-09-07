@@ -121,6 +121,27 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual(".test", loaded["cmd"])
                 self.assertTrue(loaded["send_caller_detached"])
 
+    def test_same_message_id_in_two_groups_does_not_overwrite_another_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")):
+                for identity_id, chat_id in ((990009, -1234), (990010, -5678)):
+                    state_module.ensure_identity_registered(identity_id)
+                    identity_state = state_module.get_identity_state(identity_id)
+                    identity_state["pending_tasks"][42] = {
+                        "cmd": ".test", "sent_at": 100.0, "retry": 0, "timeout": 10,
+                        "chat_id": chat_id,
+                    }
+                    identity_state["my_msg_ids"][42] = 100.0
+                self.assertTrue(persistence.save_state())
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+                for identity_id, chat_id in ((990009, -1234), (990010, -5678)):
+                    restored = state_module.get_identity_state(identity_id)
+                    self.assertEqual(chat_id, restored["pending_tasks"][42]["chat_id"])
+                    self.assertEqual(100.0, restored["my_msg_ids"][42])
+
     def test_divination_daily_limit_roundtrips_as_integer(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

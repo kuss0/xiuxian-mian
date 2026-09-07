@@ -164,6 +164,85 @@ class PersistenceSchemaContractTests(unittest.TestCase):
         self.assertEqual((7, 9), row)
 
 
+class MessageKeyMigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.conn.executescript("""
+            CREATE TABLE pending_tasks (
+                msg_id INTEGER PRIMARY KEY, send_as_id INTEGER NOT NULL,
+                cmd TEXT NOT NULL, sent_at REAL NOT NULL, retry INTEGER NOT NULL,
+                timeout REAL NOT NULL, reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                chat_id INTEGER NOT NULL DEFAULT 0, topic_id INTEGER NOT NULL DEFAULT 0,
+                max_retry INTEGER NOT NULL DEFAULT 1, priority TEXT NOT NULL DEFAULT '',
+                source_module TEXT NOT NULL DEFAULT '', op_id TEXT NOT NULL DEFAULT '',
+                chain_id TEXT NOT NULL DEFAULT '', delete_policy TEXT NOT NULL DEFAULT '',
+                recovery_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX pending_by_identity ON pending_tasks(send_as_id);
+            CREATE TABLE message_index (
+                msg_id INTEGER PRIMARY KEY, send_as_id INTEGER NOT NULL,
+                sent_at REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'command'
+            );
+            INSERT INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, chat_id)
+                VALUES (42, 1, '.test', 100, 0, 10, -1234);
+            INSERT INTO message_index(msg_id, send_as_id, sent_at) VALUES (42, 1, 100);
+        """)
+
+    def _primary_key(self, table):
+        columns = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return tuple(row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5])
+
+    def test_legacy_keys_migrate_without_losing_rows_defaults_or_indexes(self):
+        before = self.conn.execute("SELECT * FROM pending_tasks").fetchall()
+        persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual(before, self.conn.execute("SELECT * FROM pending_tasks").fetchall())
+        for table in ("pending_tasks", "message_index"):
+            self.assertEqual(("send_as_id", "msg_id"), self._primary_key(table))
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'pending_by_identity'").fetchone())
+        self.conn.execute("INSERT INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout) VALUES (42, 2, '.other', 101, 0, 10)")
+        self.conn.execute("INSERT INTO message_index(msg_id, send_as_id, sent_at) VALUES (42, 2, 101)")
+        self.assertEqual(2, self.conn.execute("SELECT COUNT(*) FROM pending_tasks").fetchone()[0])
+        second = self.conn.execute("SELECT recovery_json FROM pending_tasks WHERE send_as_id = 2").fetchone()[0]
+        self.assertEqual("{}", second)
+        changes = self.conn.total_changes
+        persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual(changes, self.conn.total_changes)
+
+    def test_failure_rolls_back_both_table_migrations(self):
+        self.conn.execute("CREATE TABLE message_index_identity_key_migration (sentinel TEXT)")
+        with self.assertRaises(sqlite3.OperationalError):
+            persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual(("msg_id",), self._primary_key("pending_tasks"))
+        self.assertEqual(("msg_id",), self._primary_key("message_index"))
+        self.assertEqual(1, self.conn.execute("SELECT COUNT(*) FROM pending_tasks").fetchone()[0])
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'pending_tasks_identity_key_migration'").fetchone())
+
+    def test_custom_trigger_requires_review_instead_of_being_dropped(self):
+        self.conn.execute("CREATE TRIGGER keep_custom_behavior AFTER INSERT ON pending_tasks BEGIN SELECT 1; END")
+        with self.assertRaisesRegex(RuntimeError, "custom constraints"):
+            persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual(("msg_id",), self._primary_key("pending_tasks"))
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'keep_custom_behavior'").fetchone())
+
+    def test_custom_unique_index_requires_review(self):
+        self.conn.execute("CREATE UNIQUE INDEX unique_command_id ON message_index(msg_id)")
+        with self.assertRaisesRegex(RuntimeError, "custom constraints"):
+            persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual(("msg_id",), self._primary_key("pending_tasks"))
+        self.assertEqual(("msg_id",), self._primary_key("message_index"))
+
+    def test_incoming_foreign_key_is_not_silently_cascaded(self):
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("CREATE TABLE custom_receipts (msg_id INTEGER REFERENCES pending_tasks(msg_id) ON DELETE CASCADE)")
+        self.conn.execute("INSERT INTO custom_receipts VALUES (42)")
+        with self.assertRaisesRegex(RuntimeError, "custom constraints"):
+            persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual([(42,)], self.conn.execute("SELECT * FROM custom_receipts").fetchall())
+        self.assertEqual(("msg_id",), self._primary_key("pending_tasks"))
+
+
 class MetaDefaultsContractTests(unittest.TestCase):
     """Seed values for the meta table, declared as data rather than 38 inserts."""
 
