@@ -4575,7 +4575,7 @@ async def _game_send_allowed(
         item.get("send_caller_detached") and get_pending_command(item) == command
         for item in get_identity_state(send_as_id)["pending_tasks"].values()
     ):
-        _record_game_send_block(send_as_id, command, "action_guard", "cancelled caller's sent command still awaits reconciliation", definitely_unsent=True)
+        _record_game_send_block(send_as_id, command, "action_guard", "previous sent command still awaits reconciliation", definitely_unsent=True)
         return False
     maintenance_allowed = _allows_maintenance_passive_trigger(
         command, allow_maintenance_pause=allow_maintenance_pause, intent=send_intent,
@@ -5472,27 +5472,24 @@ async def run_retry_scheduler(now, send_as_id=None):
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                         continue
-                    if retry_limit <= 0:
-                        await send_audit_log(
-                            f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 超时无响应，已停补发。",
-                            scope="identity",
-                            send_as_id=identity_id,
-                        )
-                        identity_state["pending_tasks"].pop(msg_id, None)
-                        mark_dirty()
-                        continue
-                    await send_audit_log(
-                        f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 重试 {retry_limit} 次仍无响应，已停补发。",
-                        scope="identity",
-                        send_as_id=identity_id,
-                    )
-                    if _is_identity_refresh_command(cmd):
+                    chat_id, root_msg_id = message_key_parts(msg_id, current_item)
+                    if (
+                        retry_limit > 0 and chat_id and _is_identity_refresh_command(cmd)
+                        and int(identity_state.get("last_identity_info_msg_id") or 0) == root_msg_id
+                        and get_sent_message_chat_id(root_msg_id, default=0, send_as_id=identity_id) == chat_id
+                    ):
                         identity_state["last_identity_info_msg_id"] = 0
                         identity_state["identity_info_reply_msg_ids"] = []
                         identity_state["identity_info_followup_due_at"] = 0
                         identity_state["identity_info_last_error"] = IDENTITY_INFO_REFRESH_ERROR_TEXT
                     identity_state["pending_tasks"].pop(msg_id, None)
                     mark_dirty()
+                    outcome = "超时无响应" if retry_limit <= 0 else f"重试 {retry_limit} 次仍无响应"
+                    await send_audit_log(
+                        f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} {outcome}，已停补发。",
+                        scope="identity",
+                        send_as_id=identity_id,
+                    )
                     continue
 
             if module_managed_timeout_item is not None:
@@ -5511,6 +5508,8 @@ async def run_retry_scheduler(now, send_as_id=None):
             target_chat_id = message_key_parts(msg_id, current_item)[0]
             if target_chat_id:
                 reply_to_kwargs["target_chat_id"] = target_chat_id
+            retry_item = current_item
+            retry_snapshot = dict(current_item)
             new_msg = await send_game_command(
                 cmd,
                 send_as_id=identity_id,
@@ -5524,12 +5523,19 @@ async def run_retry_scheduler(now, send_as_id=None):
                 continue
             with use_identity(identity_id) as identity_state:
                 current_item = identity_state["pending_tasks"].get(msg_id)
+                if identity_state is not owner_state or current_item is not retry_item or current_item != retry_snapshot:
+                    new_pending = get_message_record(identity_state["pending_tasks"], new_msg) if new_msg else None
+                    if new_pending is not None and get_pending_command(new_pending) == cmd:
+                        new_pending["max_retry"] = 0
+                        new_pending["send_caller_detached"] = True
+                        mark_dirty()
+                    continue
                 if current_item and not new_msg:
-                    current_item["sent_at"] = now
-                    current_item["timeout"] = threshold
-                    current_item["retry_send_blocked_at"] = now
-                    current_item["retry_send_blocked_count"] = int(current_item.get("retry_send_blocked_count", 0) or 0) + 1
                     block = get_last_game_send_block(identity_id, cmd, max_age_sec=60)
+                    blocked_at = max(now, float((block or {}).get("at") or 0))
+                    current_item["reply_recovery_retry_at"] = blocked_at + max(1, threshold)
+                    current_item["retry_send_blocked_at"] = blocked_at
+                    current_item["retry_send_blocked_count"] = int(current_item.get("retry_send_blocked_count", 0) or 0) + 1
                     if block:
                         current_item["retry_send_blocked_code"] = str(block.get("code") or "")
                         current_item["retry_send_blocked_reason"] = str(block.get("reason") or "")[:160]

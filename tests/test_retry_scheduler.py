@@ -337,7 +337,8 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             pending = identity_state["pending_tasks"]
             self.assertIn(211, pending)
             self.assertEqual(0, pending[211]["retry"])
-            self.assertEqual(now, pending[211]["sent_at"])
+            self.assertEqual(now - 20, pending[211]["sent_at"])
+            self.assertEqual(now + 10, pending[211]["reply_recovery_retry_at"])
             self.assertEqual(1, pending[211]["retry_send_blocked_count"])
             self.assertEqual("send_queue_timeout", pending[211]["retry_send_blocked_code"])
 

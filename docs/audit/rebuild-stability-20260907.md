@@ -74,6 +74,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R20 | High | A throwing registered pre-send guard is skipped, and a guard returning a Future is treated as allowed without awaiting its decision; decision-normalization errors are misclassified as unknown sends | Fixed in candidate; synchronous/async faults stop before transport as definitely unsent, all awaitables are awaited, and cancellation still propagates |
 | R21 | High | Passive checkin marks the day complete before classifying the reply; repeated success rewinds queued teaching; old-day replies reset current-day progress; unknown replies are treated as terminal | Reproduced and fixed in candidate; direct and passive checkin share idempotent completion, old days cannot roll back state, and unknown replies retain pending ownership |
 | R22 | High | Nanlong can reenter while sending, retries unknown sends as failures, rearms them when a choice changes, and discards real receipts after a post-dispatch choice change | Fixed for reproduced boundaries in candidate; persist the existing pending decision before sending, retry only explicit unsent results, and keep operation ownership across option changes; early-result and late-receipt recovery remain open |
+| R23 | High | Retry timeout notifications and send receipts mutate replacement pending work; blocked retries rewrite the original send time, and an old refresh timeout clears newer or cross-chat ambiguous refresh anchors | Fixed in candidate; complete terminal cleanup before notification, recheck owner and pending snapshots after transport, keep detached receipts no-retry, persist separate retry backoff, and clear only an exact unambiguous refresh anchor |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -363,6 +364,22 @@ five monitor/control-only contracts need separate behavioral verification.
   resolution of R07. Result-before-receipt, late detached receipt adoption and
   recovery of unthreaded/cross-group results remain under review. Skill,
   production, switches, services and remote branches are unchanged.
+
+- R23 retry-ownership recheck: focused runtime-send, retry-scheduler and
+  persistence tests passed 119 tests and 12 subtests. Five regression tests
+  cover pending replacement during notification or transport, failed-retry
+  backoff without rewriting send evidence, and newer/cross-chat ambiguous
+  identity-refresh anchors. SQLite delta-save/reload also preserves the
+  separate backoff field.
+- R23 repeated full suite: 3926 passed, 634 subtests passed, 59.53 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r23-retry-ownership-recheck-20260908.xml`.
+  Ruff and diff checks pass. This verifies the current local candidate rather
+  than relying on the previous run's test summary.
+- Timeout cleanup now finishes before awaited audit delivery. A retry receipt
+  cannot replace changed pending work; a real new send still retains a
+  no-retry detached pending row until its own reply is reconciled. An unsent
+  retry does not invent a new send time. This change does not resolve R07's
+  no-message-ID crash gap or establish all module-level retry safety.
 
 ## Deployment Constraint
 

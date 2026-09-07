@@ -226,7 +226,7 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             pending = {"cmd": ".test", "sent_at": 100, "timeout": 10, "chat_id": -1001}
             state_module.get_identity_state(identity_id)["pending_tasks"][(-1001, 42)] = pending
             self.assertTrue(self._save_without_guard_backup())
-            for field, value in (("topic_id", 77), ("send_caller_detached", True), ("reply_recovery_applied", {"message:43:hash": False})):
+            for field, value in (("topic_id", 77), ("send_caller_detached", True), ("reply_recovery_retry_at", 10700), ("reply_recovery_applied", {"message:43:hash": False})):
                 with self.subTest(field=field):
                     pending[field] = value
                     with patch.object(persistence, "upsert_identity_to_db", wraps=persistence.upsert_identity_to_db) as upsert:
@@ -235,6 +235,7 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             restored = persistence._load_identity_from_db(identity_id)["pending_tasks"][(-1001, 42)]
             self.assertEqual(77, restored["topic_id"])
             self.assertTrue(restored["send_caller_detached"])
+            self.assertEqual(10700, restored["reply_recovery_retry_at"])
             self.assertEqual({"message:43:hash": False}, restored["reply_recovery_applied"])
 
     def test_detached_untracked_receipt_survives_reload_until_exact_reply(self):

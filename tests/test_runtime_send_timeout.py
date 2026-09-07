@@ -577,6 +577,119 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         sender.assert_not_awaited()
         self.assertFalse(state_module.has_identity(identity_id))
 
+    async def test_timeout_notification_cannot_remove_new_pending_work(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        now = runtime.time.time()
+        key = (123456, 910001)
+        identity["pending_tasks"][key] = {"cmd": ".old_pending", "sent_at": now - 100, "timeout": 10, "max_retry": 0}
+        fresh = {"cmd": ".fresh_pending", "sent_at": now + 1, "timeout": 100}
+
+        async def audit(*_args, **_kwargs):
+            identity["pending_tasks"][key] = dict(fresh)
+
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=now),
+            patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(return_value=None)),
+            patch.object(runtime, "send_audit_log", new=AsyncMock(side_effect=audit)),
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        self.assertEqual(fresh, identity["pending_tasks"].get(key))
+
+    async def test_retry_receipt_cannot_update_or_remove_replaced_pending_work(self):
+        for accepted in (False, True):
+            with self.subTest(accepted=accepted):
+                identity_id = 301299112
+                identity = state_module.ensure_identity_registered(identity_id)
+                now = runtime.time.time()
+                key = (123456, 910001)
+                identity["pending_tasks"] = {key: {"cmd": ".old_pending", "sent_at": now - 100, "timeout": 10, "max_retry": 1}}
+                fresh = {"cmd": ".fresh_pending", "sent_at": now + 1, "timeout": 100}
+
+                async def send(command, **_kwargs):
+                    result = None
+                    if accepted:
+                        result = runtime._finalize_game_command_sent(
+                            command, msg_id=910002, sent_at=now,
+                            send_as_id=identity_id, game_group_id=123456, append_sent_log=False,
+                        )
+                    identity["pending_tasks"][key] = dict(fresh)
+                    return result
+
+                with (
+                    patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+                    patch.object(runtime, "get_bot_last_seen_at", return_value=now),
+                    patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(return_value=None)),
+                    patch.object(runtime, "send_game_command", new=AsyncMock(side_effect=send)),
+                    patch.object(runtime, "_notify_game_command_sent_observers"),
+                    patch.object(runtime, "_reply_chain_tracker", {}),
+                ):
+                    await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+                self.assertEqual(fresh, identity["pending_tasks"].get(key))
+                if accepted:
+                    pending = identity["pending_tasks"][(123456, 910002)]
+                    self.assertEqual(0, pending["max_retry"])
+                    self.assertTrue(pending["send_caller_detached"])
+
+    async def test_failed_retry_preserves_original_send_time_and_waits_before_retry(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        now = runtime.time.time()
+        item = {"cmd": ".old_pending", "sent_at": now - 100, "timeout": 10, "max_retry": 1}
+        identity["pending_tasks"] = {(123456, 910001): item}
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=now),
+            patch.object(runtime, "find_message_log_replies", return_value=[]),
+            patch.object(runtime, "send_game_command", new=AsyncMock(return_value=None)) as sender,
+            patch.object(runtime, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}),
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+            await runtime.run_retry_scheduler(now + 2, send_as_id=identity_id)
+        self.assertEqual(now - 100, item["sent_at"])
+        sender.assert_awaited_once()
+
+    async def test_old_refresh_timeout_cannot_clear_a_newer_refresh_anchor(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        now = runtime.time.time()
+        identity.update(last_identity_info_msg_id=910099, identity_info_reply_msg_ids=[910099], identity_info_followup_due_at=now + 100)
+        identity["pending_tasks"] = {(123456, 910001): {
+            "cmd": runtime.CMD_IDENTITY_INFO, "sent_at": now - 100, "timeout": 10,
+            "retry": 1, "max_retry": 1,
+        }}
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=now),
+            patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(return_value=None)),
+            patch.object(runtime, "send_audit_log", new=AsyncMock()),
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        self.assertEqual(910099, identity["last_identity_info_msg_id"])
+        self.assertEqual([910099], identity["identity_info_reply_msg_ids"])
+        self.assertEqual(now + 100, identity["identity_info_followup_due_at"])
+
+    async def test_ambiguous_cross_chat_refresh_timeout_cannot_clear_the_anchor(self):
+        identity_id = 301299112
+        identity = state_module.ensure_identity_registered(identity_id)
+        now = runtime.time.time()
+        identity.update(last_identity_info_msg_id=910001, identity_info_reply_msg_ids=[910001])
+        identity["my_msg_ids"] = {(123456, 910001): now - 100, (123457, 910001): now - 10}
+        identity["pending_tasks"] = {(123456, 910001): {
+            "cmd": runtime.CMD_IDENTITY_INFO, "sent_at": now - 100, "timeout": 10,
+            "retry": 1, "max_retry": 1,
+        }}
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=now),
+            patch.object(runtime, "_recover_pending_reply_from_message_log", new=AsyncMock(return_value=None)),
+            patch.object(runtime, "send_audit_log", new=AsyncMock()),
+        ):
+            await runtime.run_retry_scheduler(now, send_as_id=identity_id)
+        self.assertEqual(910001, identity["last_identity_info_msg_id"])
+        self.assertEqual([910001], identity["identity_info_reply_msg_ids"])
+
     async def test_other_account_rpc_waits_for_cancelled_senders_transport(self):
         client = _ControlledSendClient()
         read_started = asyncio.Event()
