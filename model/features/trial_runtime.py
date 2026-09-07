@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from ..config import STATE_DIR
-from ..runtime import send_audit_log
+from ..runtime import send_audit_log, track_background_task
 from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_display_name, is_cave_public_identity_available, get_send_as_profile
 from ..timing import get_day_key
 from ..webapp_core import MiniAppCaptureStore
@@ -272,7 +272,7 @@ def start_trial_miniapp_batch_run(identity_ids, *, now=None, timeout_sec=TRIAL_B
     }
     timeout_coro = _trial_batch_timeout_worker(batch_id, max(300, float(timeout_sec or TRIAL_BATCH_TIMEOUT_SEC)))
     try:
-        asyncio.create_task(timeout_coro)
+        track_background_task(asyncio.create_task(timeout_coro))
     except RuntimeError:
         timeout_coro.close()
         pass

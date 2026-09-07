@@ -5,7 +5,7 @@ import unicodedata
 from collections import OrderedDict
 
 from ..forum_topic import event_topic_id
-from ..runtime import console_log, send_audit_log, send_log_bot_notification
+from ..runtime import console_log, send_audit_log, send_log_bot_notification, track_background_task
 
 
 RED_PACKET_MONITOR_CHAT_USERNAME = "ja_netfilter_group"
@@ -252,9 +252,9 @@ async def _send_red_packet_alerts(chat_id, topic_id, message_id, sender_id, pars
 
 
 def _schedule_red_packet_alert(chat_id, topic_id, message_id, sender_id, parsed):
-    task = asyncio.create_task(
+    task = track_background_task(asyncio.create_task(
         _send_red_packet_alerts(chat_id, topic_id, message_id, sender_id, parsed)
-    )
+    ))
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
 

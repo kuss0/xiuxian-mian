@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import sys
 import unittest
@@ -16,6 +17,13 @@ from model.features import trial_runtime
 def _trial_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=trial_SECRET999"):
     button = SimpleNamespace(button=SimpleNamespace(text="进入天机试炼", url=url))
     return SimpleNamespace(id=5001, message=SimpleNamespace(buttons=[[button]]))
+
+
+def _completed_timeout_task(coro):
+    coro.close()
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(None)
+    return future
 
 
 class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -87,7 +95,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("天机试炼结果", audit_text)
 
     async def test_trial_batch_collects_results_and_sends_one_summary(self):
-        with patch.object(trial_runtime.asyncio, "create_task", side_effect=lambda coro: coro.close()):
+        with patch.object(trial_runtime.asyncio, "create_task", side_effect=_completed_timeout_task):
             batch_id = trial_runtime.start_trial_miniapp_batch_run([1001, 1002], now=1_700_000_000.0)
         self.assertTrue(batch_id)
         trial_runtime.note_trial_batch_send_result(batch_id, 1001, ok=True, msg_id=11)
@@ -135,7 +143,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("全局暂停", audit_text)
 
     async def test_trial_batch_does_not_count_partial_result_as_success(self):
-        with patch.object(trial_runtime.asyncio, "create_task", side_effect=lambda coro: coro.close()):
+        with patch.object(trial_runtime.asyncio, "create_task", side_effect=_completed_timeout_task):
             batch_id = trial_runtime.start_trial_miniapp_batch_run([1001], now=1_700_000_000.0)
         trial_runtime.note_trial_batch_send_result(batch_id, 1001, ok=True, msg_id=11)
         trial_runtime._record_trial_batch_result(batch_id, 1001, {

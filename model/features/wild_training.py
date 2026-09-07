@@ -18,7 +18,7 @@ import time
 
 from ..config import CMD_TIANXING_PANEL, WILD_TRAINING_STRATEGIES
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command, track_background_task
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -586,7 +586,7 @@ def _launch_wild_training_miniapp_worker(identity_id, urls, due_at):
     identity_id = int(identity_id or 0)
     if identity_id <= 0 or _wild_training_miniapp_worker_busy():
         return False
-    task = asyncio.create_task(_run_wild_training_miniapp_worker(identity_id, list(urls), float(due_at or time.time())))
+    task = track_background_task(asyncio.create_task(_run_wild_training_miniapp_worker(identity_id, list(urls), float(due_at or time.time()))))
     _WILD_TRAINING_MINIAPP_TASKS[identity_id] = task
 
     def _done(done_task):

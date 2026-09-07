@@ -18,7 +18,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command, track_background_task
 from ..state import (
     REALM_SORT_INDEX,
     YUANYING_MIN_REALM_INDEX,
@@ -1890,7 +1890,7 @@ def _start_world_boss_miniapp_automation(
     global _WORLD_BOSS_MINIAPP_TASK
     if _world_boss_miniapp_task_running():
         return False
-    _WORLD_BOSS_MINIAPP_TASK = asyncio.create_task(
+    _WORLD_BOSS_MINIAPP_TASK = track_background_task(asyncio.create_task(
         _run_world_boss_miniapp_automation(
             event_key,
             identity_ids,
@@ -1900,7 +1900,7 @@ def _start_world_boss_miniapp_automation(
             account_gap_sec,
             window_skip_by_identity,
         )
-    )
+    ))
     return True
 
 
@@ -2643,9 +2643,11 @@ def _start_world_boss_round_task(now):
     global _WORLD_BOSS_ROUND_TASK
     if _world_boss_round_task_running():
         return False
+    coro = _run_world_boss_action_round(float(now or time.time()))
     try:
-        task = asyncio.create_task(_run_world_boss_action_round(float(now or time.time())))
+        task = track_background_task(asyncio.create_task(coro))
     except RuntimeError:
+        coro.close()
         return False
     _WORLD_BOSS_ROUND_TASK = task
     task.add_done_callback(_world_boss_round_done)

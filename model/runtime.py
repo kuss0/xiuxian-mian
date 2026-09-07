@@ -1772,9 +1772,54 @@ def _is_identity_refresh_command(command):
     return is_identity_refresh_command_text(command)
 
 
-def _fire_and_forget(coro):
-    task = asyncio.create_task(coro)
+def track_background_task(task):
+    task.add_done_callback(_background_tasks.discard)
     _background_tasks.add(task)
+    if is_game_send_quiesced() and not task.done():
+        task.cancel()
+    return task
+
+
+async def cancel_and_join_tasks(tasks, *, timeout=5.0):
+    current = asyncio.current_task()
+    tasks = {task for task in tasks if task is not None and task is not current}
+    if not tasks:
+        return True
+    for task in tasks:
+        if not task.done() and not task.cancelling():
+            task.cancel()
+    done, pending = await asyncio.wait(tasks, timeout=max(0.0, timeout))
+    for task in done:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            console_log(f"Task cleanup failed: {type(exc).__name__}", scope="global")
+    if pending:
+        console_log(f"Task cleanup deadline exceeded: {len(pending)} tasks", scope="global")
+    return not pending
+
+
+async def shutdown_background_tasks(*, timeout=5.0):
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        tasks = set(_background_tasks) - {asyncio.current_task()}
+        if not tasks:
+            return True
+        if not await cancel_and_join_tasks(tasks, timeout=max(0.0, deadline - time.monotonic())):
+            return False
+        _background_tasks.difference_update(tasks)
+
+
+async def drain_game_send_tasks(*, timeout=5.0):
+    if await _wait_for_game_send_tasks(timeout=max(0.0, timeout)):
+        return True
+    return await cancel_and_join_tasks(list(_GAME_SEND_TASKS), timeout=1.0)
+
+
+def _fire_and_forget(coro):
+    task = track_background_task(asyncio.create_task(coro))
     def _done(done_task):
         _background_tasks.discard(done_task)
         try:
@@ -1788,6 +1833,7 @@ def _fire_and_forget(coro):
             console_log(f"⚠️ 后台任务异常：{_truncate_log_text(exc, limit=120)}", limit=180)
             traceback.print_exception(type(exc), exc, exc.__traceback__)
     task.add_done_callback(_done)
+    return task
 
 
 def _secure_lookup(store, token):
@@ -4367,7 +4413,7 @@ def _start_game_send_rpc(factory, *, account_id, command, **finalize_kwargs):
     }
 
     async def dispatch():
-        if receipt["cancel_before_dispatch"] or (owner is not None and owner.cancelling()):
+        if receipt["cancel_before_dispatch"] or is_game_send_quiesced() or (owner is not None and owner.cancelling()):
             raise asyncio.CancelledError
         receipt["started"] = True
         return await factory()

@@ -394,9 +394,13 @@ async def suggest_quiz_answer_multi(question, options, config, *, decision_timeo
         task = asyncio.create_task(_call_provider(question, options, provider))
         task_providers[task] = provider
     tasks = list(task_providers)
-    done, pending = await asyncio.wait(tasks, timeout=decision_timeout)
-    for task in pending:
-        task.cancel()
+    try:
+        done, pending = await asyncio.wait(tasks, timeout=decision_timeout)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     results = []
     for task in done:
         try:

@@ -230,6 +230,7 @@ from .runtime import (
     _is_logged_game_bot_reply,
     CHANNEL_SEND_AS_PROBE_INTERVAL_SEC,
     account_rpc_slot,
+    cancel_and_join_tasks,
     check_bot_health_timeout,
     clear_pending_by_reply,
     _clear_channel_send_as_invalid_observations,
@@ -237,6 +238,7 @@ from .runtime import (
     _mark_channel_send_as_cohort_invalid,
     _mark_send_as_peer_invalid,
     console_log,
+    drain_game_send_tasks,
     GAME_SEND_RPC_TIMEOUT_SEC,
     GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC,
     GLOBAL_RECOVERY_THROTTLE_SEND_GAP_MAX_SEC,
@@ -262,6 +264,7 @@ from .runtime import (
     schedule_cleanup,
     send_game_command,
     set_game_send_quiesced,
+    shutdown_background_tasks,
     should_pause_for_bot_health,
     track_reply_chain_message,
     mono,
@@ -3018,7 +3021,7 @@ def _start_identity_schedulers_if_idle(now):
 
 def _cancel_identity_schedulers():
     global _identity_scheduler_task
-    if _identity_scheduler_task and not _identity_scheduler_task.done():
+    if _identity_scheduler_task and not _identity_scheduler_task.done() and not _identity_scheduler_task.cancelling():
         _identity_scheduler_task.cancel()
 
 
@@ -4036,6 +4039,8 @@ async def main():
     set_game_send_quiesced(False)
 
     def request_stop():
+        set_game_send_quiesced(True)
+        _cancel_identity_schedulers()
         stop_event.set()
 
     def request_quiesce():
@@ -4065,31 +4070,30 @@ async def main():
 
 
 async def shutdown():
-    global _log_bot_callback_task, _phaseful_scheduler_task, _small_world_scheduler_task
-    _cancel_identity_schedulers()
-    if _phaseful_scheduler_task and not _phaseful_scheduler_task.done():
-        _phaseful_scheduler_task.cancel()
-        try:
-            await _phaseful_scheduler_task
-        except asyncio.CancelledError:
-            pass
+    global _log_bot_callback_task, _phaseful_scheduler_task, _small_world_scheduler_task, _identity_scheduler_task
+    set_game_send_quiesced(True)
+    deadline = time.monotonic() + 15.0
+
+    def remaining(limit):
+        return min(limit, max(0.0, deadline - time.monotonic()))
+
+    schedulers = (_identity_scheduler_task, _phaseful_scheduler_task, _small_world_scheduler_task, _log_bot_callback_task)
+    for task in schedulers:
+        if task is not None and not task.done() and not task.cancelling():
+            task.cancel()
+    clean = True
+    try:
+        await asyncio.wait_for(stop_ui_server(), timeout=remaining(3.0))
+    except Exception:
+        clean = False
+        traceback.print_exc()
+    clean = await cancel_and_join_tasks(schedulers, timeout=remaining(3.0)) and clean
+    _identity_scheduler_task = None
     _phaseful_scheduler_task = None
-    if _small_world_scheduler_task and not _small_world_scheduler_task.done():
-        _small_world_scheduler_task.cancel()
-        try:
-            await _small_world_scheduler_task
-        except asyncio.CancelledError:
-            pass
     _small_world_scheduler_task = None
-    if _log_bot_callback_task and not _log_bot_callback_task.done():
-        _log_bot_callback_task.cancel()
-        try:
-            await _log_bot_callback_task
-        except asyncio.CancelledError:
-            pass
     _log_bot_callback_task = None
-    save_state()
-    await stop_ui_server()
+    clean = await shutdown_background_tasks(timeout=remaining(3.0)) and clean
+    clean = await drain_game_send_tasks(timeout=remaining(5.0)) and clean
     clients = [client]
     clients.extend(get_all_clients().values())
     seen = set()
@@ -4098,9 +4102,16 @@ async def shutdown():
             continue
         seen.add(id(tc))
         try:
-            await tc.disconnect()
+            await asyncio.wait_for(tc.disconnect(), timeout=remaining(3.0))
         except Exception:
+            clean = False
             traceback.print_exc()
+    # Late send completion and disconnect handlers may enqueue bookkeeping.
+    clean = await shutdown_background_tasks(timeout=remaining(2.0)) and clean
+    if clean:
+        return save_state()
+    console_log("Shutdown incomplete; final state save skipped while work may still be active", scope="global")
+    return False
 
 
 __all__ = ["bootstrap", "main", "main_loop", "on_message", "shutdown"]

@@ -191,7 +191,7 @@ from .official_schedule import (
     replace_planned_batch as replace_official_schedule_planned_batch,
 )
 from .persistence import save_state
-from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_bot_health_snapshot, get_game_group_route_activity_snapshot, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import MAINTENANCE_PAUSE_SOURCE, PHASEFUL_PASSIVE_TRIGGER_SOURCE_MODULE, PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, cancel_and_join_tasks, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_bot_health_snapshot, get_game_group_route_activity_snapshot, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .storage_bag_api_client import (
     REFRESH_PATH as STORAGE_BAG_API_REFRESH_PATH,
     VERIFY_PATH as STORAGE_BAG_API_VERIFY_PATH,
@@ -311,6 +311,8 @@ from .state import (
 from .timing import fmt_abs_ts, get_day_key
 
 _ui_server = None
+_ui_request_tasks = set()
+_ui_stopping = False
 _STORAGE_BAG_TRANSFER_METHODS = {"basic", "gift", "blocked", "unknown"}
 _STORAGE_BAG_DEFAULT_TAG = "未知"
 _STORAGE_BAG_DEFAULT_TAGS = [
@@ -6432,10 +6434,12 @@ async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_file
         return
 
     current_task = asyncio.current_task()
+    tasks = []
     for task_key in ("wait_task", "prepare_task", "phone_code_task", "expiry_task"):
         pending_task = pending.get(task_key)
-        if pending_task and pending_task is not current_task and not pending_task.done():
-            pending_task.cancel()
+        if pending_task and pending_task is not current_task:
+            tasks.append(pending_task)
+    joined = await cancel_and_join_tasks(tasks, timeout=1.0)
 
     tc = pending.get("client")
     disconnected = True
@@ -6444,6 +6448,8 @@ async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_file
 
     if remove_temp_files and (disconnected or not tc):
         _cleanup_pending_temp_session_files(session_key)
+    if not joined:
+        raise RuntimeError("login task cleanup did not complete")
 
 
 def _set_pending_login_state(session_key, flow_id=None, **updates):
@@ -9709,6 +9715,31 @@ def _serve_ui_document_route(writer, *, method, path, query, session, session_co
 
 
 async def handle_ui_http(reader, writer):
+    task = asyncio.current_task()
+    _ui_request_tasks.add(task)
+    try:
+        if _ui_stopping:
+            _write_response(writer, "HTTP/1.1 503 Service Unavailable", "Shutting down", content_type="text/plain; charset=utf-8")
+            await _close_ui_writer(writer)
+            return
+        await _handle_ui_http_request(reader, writer)
+    finally:
+        _ui_request_tasks.discard(task)
+
+
+async def _close_ui_writer(writer):
+    try:
+        await asyncio.wait_for(writer.drain(), timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+        pass
+    try:
+        writer.close()
+        await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+        pass
+
+
+async def _handle_ui_http_request(reader, writer):
     peer = writer.get_extra_info("peername")
     method = ""
     path = ""
@@ -10814,23 +10845,16 @@ async def handle_ui_http(reader, writer):
         except (ConnectionResetError, BrokenPipeError, OSError):
             pass
     finally:
-        try:
-            await writer.drain()
-        except (ConnectionResetError, BrokenPipeError, OSError):
-            pass
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except (ConnectionResetError, BrokenPipeError, OSError):
-            pass
+        await _close_ui_writer(writer)
         if peer:
             print(f"[{datetime.now(TZ_LOCAL).strftime('%Y-%m-%d %H:%M:%S')}] ui request: {peer} {method or '-'} {path or '-'}")
 
 
 async def start_ui_server():
-    global _ui_server
+    global _ui_server, _ui_stopping
     if _ui_server is not None:
         return _ui_server
+    _ui_stopping = False
     _ui_server = await asyncio.start_server(
         handle_ui_http,
         UI_HOST,
@@ -10844,12 +10868,17 @@ async def start_ui_server():
 
 
 async def stop_ui_server():
-    global _ui_server
-    if _ui_server is None:
-        return
-    _ui_server.close()
-    await _ui_server.wait_closed()
-    _ui_server = None
+    global _ui_server, _ui_stopping
+    _ui_stopping = True
+    if _ui_server is not None:
+        _ui_server.close()
+        await _ui_server.wait_closed()
+        _ui_server = None
+    joined = await cancel_and_join_tasks(set(_ui_request_tasks), timeout=2.0)
+    if _pending_login:
+        await asyncio.gather(*(_clear_pending_login(key) for key in list(_pending_login)))
+    if not joined:
+        raise RuntimeError("UI request cleanup did not complete")
 
 
 __all__ = [

@@ -24,7 +24,7 @@ proof that gameplay is healthy. Production files have not been changed.
 
 | Area | Required behavior | Evidence required | Status |
 | --- | --- | --- | --- |
-| Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Review in progress |
+| Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown repaired; reconnect and forced-stop durability review still pending |
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Pending |
@@ -60,7 +60,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R06 | Medium | MiniApp retries omit all backoff/Retry-After waits when no custom sleeper is supplied | Fixed; default-sleeper 429/503 regressions pass; 265 MiniApp tests and 12 subtests pass |
 | R07 | High | Cancelling a caller after its shielded send RPC starts can abandon result tracking while the RPC continues | Late-result ownership and serial barriers fixed in candidate; cancellation-before-dispatch, duplicate registration, and detached-pending tests pass; shutdown/unknown-result durability remains under review |
 | R08 | High | Generic pending-log recovery closes a pending task and action guard without replaying the owning business handler | Fixed in candidate; real checkin-state regression plus ownership, failure, intermediate-ack and replay-idempotence tests pass |
-| R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Review in progress; cancellation and final-save ordering need fault tests |
+| R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Fixed in candidate; named/background/UI/login/provider task cleanup is joined, repeat cancellation is avoided, final save follows disconnect and is skipped on incomplete drain |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
 | R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Source-path confirmed; collision reproducer and migration design pending |
 
@@ -112,6 +112,20 @@ five monitor/control-only contracts need separate behavioral verification.
   in-flight request. A caller cancelled before dispatch cannot initiate an RPC.
   An already-sent detached command retains a no-retry pending row until reply
   reconciliation. The no-message-ID/forced-shutdown case is not yet signed off.
+- R09 full suite: 3767 passed, 579 subtests passed, 57.76 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r09-20260907.xml`; Ruff and `git diff --check` pass.
+  Eight lifecycle regressions cover cleanup ordering, individual cleanup
+  failures, repeated quiesce, active HTTP requests, login workers, quiz-provider
+  cancellation, rejection of new background work during shutdown, and failed
+  drain behavior. Tower/wild/trial/World Boss/notification workers now share the
+  background-task ownership registry; no automation switch was changed.
+  Shutdown has a bounded cleanup budget before the supervisor's 20-second
+  worker-stop timeout. External threads and no-ID sends remain part of the
+  forced-stop durability review, not evidence of end-to-end acceptance.
+- Fresh production read-only check after R09: HEAD remains `a41409fd`; only the
+  original quiz-bank edit and `tools/dump_ui_write_keys.py` are present. Main,
+  watchdog and observer are active with `NRestarts=0`; listener remains inactive.
+  These process facts do not claim that all gameplay is healthy.
 
 ## Completion Gate
 
