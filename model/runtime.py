@@ -5547,9 +5547,14 @@ async def schedule_cleanup(reply_to, send_as_id=None):
             return
 
         msg_id = reply_to.id
-        if msg_id in identity_state.get("checkin_cleanup_msg_ids", []):
+        cleanup_ids = identity_state.get("checkin_cleanup_msg_ids", [])
+        if msg_id in cleanup_ids or list(message_key(reply_to)) in cleanup_ids:
             return
-        if msg_id == identity_state.get("sect_teach_reply_to_msg_id") and identity_state.get("next_sect_teach_time", 0) > 0:
+        if (
+            msg_id == identity_state.get("sect_teach_reply_to_msg_id")
+            and int(getattr(reply_to, "chat_id", 0) or 0) == int(identity_state.get("sect_teach_reply_chat_id") or 0)
+            and identity_state.get("next_sect_teach_time", 0) > 0
+        ):
             return
         if (
             is_identity_refresh_command_text(reply_to.raw_text)

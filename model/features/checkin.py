@@ -29,7 +29,7 @@ from ..config import (
     SECT_TEACH_DELAY_MIN_SEC,
 )
 from ..persistence import mark_dirty, save_state
-from ..message_keys import find_message_key, get_message_record, message_key, pop_message_record
+from ..message_keys import find_message_key, get_message_record, message_key, message_key_parts, pop_message_record
 from ..runtime import _get_identity_client, classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     format_window_text,
@@ -38,6 +38,7 @@ from ..state import (
     get_identity_state,
     get_module_window_hours,
     get_pending_command,
+    has_identity,
     is_module_available,
     is_auto_delete_sent_messages_enabled,
     state,
@@ -124,7 +125,10 @@ def _has_recent_checkin_send(now):
     if last_msg_id <= 0:
         return False
     try:
-        sent_at = float(get_message_record(state.get("my_msg_ids") or {}, last_msg_id, 0) or 0)
+        sent_at = float(get_message_record(
+            state.get("my_msg_ids") or {}, last_msg_id, 0,
+            chat_id=state.get("last_checkin_chat_id") or None,
+        ) or 0)
     except (TypeError, ValueError):
         sent_at = 0
     if sent_at <= 0:
@@ -183,8 +187,11 @@ def disable_sect_modules_for_current_identity(now=None):
         "next_checkin_time",
         "next_sect_teach_time",
         "sect_teach_reply_to_msg_id",
+        "sect_teach_reply_chat_id",
         "last_checkin_msg_id",
+        "last_checkin_chat_id",
         "last_sect_teach_msg_id",
+        "last_sect_teach_chat_id",
         "next_tower_time",
         "last_tower_msg_id",
         "tower_reply_due_at",
@@ -275,6 +282,7 @@ def _clear_unavailable_checkin_modules():
         identity_state["checkin_enabled"] = False
         identity_state["next_checkin_time"] = 0
         identity_state["last_checkin_msg_id"] = 0
+        identity_state["last_checkin_chat_id"] = 0
         _clear_pending_tasks_by_commands(identity_state, {CMD_CHECKIN})
         disabled_modules.append("点卯")
 
@@ -282,7 +290,9 @@ def _clear_unavailable_checkin_modules():
         identity_state["sect_teach_enabled"] = False
         identity_state["next_sect_teach_time"] = 0
         identity_state["sect_teach_reply_to_msg_id"] = 0
+        identity_state["sect_teach_reply_chat_id"] = 0
         identity_state["last_sect_teach_msg_id"] = 0
+        identity_state["last_sect_teach_chat_id"] = 0
         _clear_pending_tasks_by_commands(identity_state, {CMD_SECT_TEACH})
         disabled_modules.append("宗门传功")
 
@@ -298,6 +308,7 @@ def _handle_checkin_day_rollover(now, reply_to=None):
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
         state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
+        state["last_checkin_chat_id"] = int(getattr(reply_to, "chat_id", 0) or 0)
     return day_key
 
 
@@ -306,7 +317,9 @@ def _mark_checkin_done_and_schedule_teach(now, status_text):
     day_key = get_checkin_day_key(now)
     state["last_checkin_done_day"] = day_key
     next_ts = _schedule_checkin_next_day(now)
-    scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"]) if state.get("sect_teach_enabled") else False
+    scheduled = schedule_sect_teach_chain(
+        now, state["last_checkin_msg_id"], reply_chat_id=state.get("last_checkin_chat_id", 0),
+    ) if state.get("sect_teach_enabled") else False
     save_state()
     console_log(f"📝 {status_text}→{fmt_abs_ts(next_ts)}")
     if scheduled:
@@ -368,7 +381,7 @@ def get_sect_teach_status_text():
     return "\n".join(lines)
 
 
-def schedule_sect_teach_chain(now, reply_to_msg_id):
+def schedule_sect_teach_chain(now, reply_to_msg_id, *, reply_chat_id=0):
     day_key = get_checkin_day_key(now)
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
@@ -377,19 +390,24 @@ def schedule_sect_teach_chain(now, reply_to_msg_id):
         state["sect_teach_enabled"] = False
         state["next_sect_teach_time"] = 0
         state["sect_teach_reply_to_msg_id"] = 0
+        state["sect_teach_reply_chat_id"] = 0
         state["last_sect_teach_msg_id"] = 0
+        state["last_sect_teach_chat_id"] = 0
         _clear_pending_tasks_by_commands(state, {CMD_SECT_TEACH})
         save_state()
         return False
 
-    if not state.get("sect_teach_enabled") or state["checkin_teach_count"] >= 3 or not reply_to_msg_id:
+    key = _checkin_message_key(reply_to_msg_id, chat_id=reply_chat_id)
+    if not state.get("sect_teach_enabled") or state["checkin_teach_count"] >= 3 or not key or not key[0]:
         state["next_sect_teach_time"] = 0
         state["sect_teach_reply_to_msg_id"] = 0
+        state["sect_teach_reply_chat_id"] = 0
         save_state()
         return False
 
     state["next_sect_teach_time"] = now + random.uniform(SECT_TEACH_DELAY_MIN_SEC, SECT_TEACH_DELAY_MAX_SEC)
     state["sect_teach_reply_to_msg_id"] = reply_to_msg_id
+    state["sect_teach_reply_chat_id"] = key[0]
     save_state()
     return True
 
@@ -402,42 +420,86 @@ def is_sect_teach_already_done_text(text):
     return any(k in text for k in ["已经传功", "已传功"])
 
 
-def remember_checkin_cleanup_msg_id(msg_id):
-    if not msg_id:
+def _checkin_message_key(msg_id, *, chat_id=0):
+    try:
+        key = message_key(tuple(msg_id) if isinstance(msg_id, list) else msg_id, chat_id)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if key[0]:
+        return key
+    chats = set()
+    for records in (state.get("my_msg_ids") or {}, state.get("pending_tasks") or {}):
+        for candidate, item in records.items():
+            try:
+                candidate_chat, candidate_id = message_key_parts(candidate, item)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if candidate_id == key[1] and candidate_chat:
+                chats.add(candidate_chat)
+    return (next(iter(chats)), key[1]) if len(chats) == 1 else key
+
+
+def remember_checkin_cleanup_msg_id(msg_id, *, chat_id=0):
+    key = _checkin_message_key(msg_id, chat_id=chat_id)
+    if key is None:
         return
     msg_ids = state.setdefault("checkin_cleanup_msg_ids", [])
-    if msg_id not in msg_ids:
-        msg_ids.append(msg_id)
+    if list(key) not in msg_ids:
+        msg_ids.append(list(key))
         mark_dirty()
 
 
+def remember_sect_teach_completion(msg_id, *, chat_id=0):
+    key = _checkin_message_key(msg_id, chat_id=chat_id)
+    completed = state.setdefault("sect_teach_completed_message_keys", [])
+    if not key or not key[0] or list(key) in completed or state["checkin_teach_count"] >= 3:
+        return False
+    completed.append(list(key))
+    state["checkin_teach_count"] = min(3, state["checkin_teach_count"] + 1)
+    mark_dirty()
+    return True
+
+
 async def cleanup_checkin_chain_messages():
-    msg_ids = [msg_id for msg_id in state.get("checkin_cleanup_msg_ids", []) if msg_id]
+    identity_id = get_current_identity_id()
+    identity = get_identity_state(identity_id)
+    msg_ids = list(identity.get("checkin_cleanup_msg_ids", []))
     if not msg_ids:
         return
     if not is_auto_delete_sent_messages_enabled():
         state["checkin_cleanup_msg_ids"] = []
         save_state()
         return
+    entries = [(entry, _checkin_message_key(entry)) for entry in msg_ids]
+    deleted_keys = set()
     try:
-        from ..runtime import _get_identity_client_with_account, _run_account_rpc, get_pending_message_chat_id
+        from ..runtime import _get_identity_client_with_account, _run_account_rpc
         account_id, client = _get_identity_client_with_account()
         msg_ids_by_chat = {}
-        for msg_id in msg_ids:
-            chat_id = get_pending_message_chat_id(get_current_identity_id(), msg_id, default=0)
-            if chat_id:
-                msg_ids_by_chat.setdefault(chat_id, []).append(msg_id)
+        for _entry, key in entries:
+            if key and key[0]:
+                msg_ids_by_chat.setdefault(key[0], set()).add(key[1])
         for chat_id, routed_msg_ids in msg_ids_by_chat.items():
+            if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+                return
+            if not is_auto_delete_sent_messages_enabled():
+                break
             await _run_account_rpc(
-                client.delete_messages(chat_id, routed_msg_ids),
+                client.delete_messages(chat_id, sorted(routed_msg_ids)),
                 account_id=account_id,
                 client_obj=client,
             )
+            if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+                return
+            for msg_id in routed_msg_ids:
+                pop_message_record(identity["my_msg_ids"], msg_id, chat_id=chat_id)
+                deleted_keys.add((chat_id, msg_id))
     except Exception as e:
         print(f"cleanup_checkin_chain_messages failed: {e} | msg_ids={msg_ids}")
-    for msg_id in msg_ids:
-        pop_message_record(state["my_msg_ids"], msg_id)
-    state["checkin_cleanup_msg_ids"] = []
+    if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+        return
+    deleted_entries = [entry for entry, key in entries if key in deleted_keys]
+    identity["checkin_cleanup_msg_ids"] = [item for item in identity["checkin_cleanup_msg_ids"] if item not in deleted_entries]
     save_state()
 
 
@@ -454,7 +516,8 @@ async def handle_checkin_reply(text, now, reply_to, matched_family=None):
 
     if is_no_sect_checkin_text(text):
         state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
-        remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"])
+        state["last_checkin_chat_id"] = int(getattr(reply_to, "chat_id", 0) or 0)
+        remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"], chat_id=state["last_checkin_chat_id"])
         disable_sect_modules_for_current_identity(now)
         save_state()
         await send_audit_log("⚠️ 当前身份无宗门，已关闭点卯、传功及宗门限定模块。", scope="identity")
@@ -465,8 +528,9 @@ async def handle_checkin_reply(text, now, reply_to, matched_family=None):
         return False
 
     state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
-    remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"])
+    state["last_checkin_chat_id"] = int(getattr(reply_to, "chat_id", 0) or 0)
     _handle_checkin_day_rollover(now, reply_to=reply_to)
+    remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"], chat_id=state["last_checkin_chat_id"])
 
     next_ts = state["next_checkin_time"]
     if next_ts <= now:
@@ -491,22 +555,26 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
     if matched_family != "sect_teach" and CMD_SECT_TEACH not in orig_cmd:
         return False
 
-    state["last_sect_teach_msg_id"] = reply_to.id if reply_to else 0
-    remember_checkin_cleanup_msg_id(state["last_sect_teach_msg_id"])
     day_key = get_checkin_day_key(now)
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
-        state["last_sect_teach_msg_id"] = reply_to.id if reply_to else 0
+    reply_id = int(getattr(reply_to, "id", 0) or 0)
+    reply_chat_id = int(getattr(reply_to, "chat_id", 0) or 0)
+    if "传功玉简已记录！" in text and not remember_sect_teach_completion(reply_id, chat_id=reply_chat_id):
+        return True
+    state["last_sect_teach_msg_id"] = reply_id
+    state["last_sect_teach_chat_id"] = reply_chat_id
+    remember_checkin_cleanup_msg_id(reply_id, chat_id=reply_chat_id)
     mark_dirty()
 
     if "传功玉简已记录！" in text:
-        state["checkin_teach_count"] = min(3, state["checkin_teach_count"] + 1)
         if state["checkin_teach_count"] < 3 and state.get("sect_teach_enabled"):
-            schedule_sect_teach_chain(now, state["last_sect_teach_msg_id"])
+            schedule_sect_teach_chain(now, reply_id, reply_chat_id=reply_chat_id)
             console_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
         else:
             state["next_sect_teach_time"] = 0
             state["sect_teach_reply_to_msg_id"] = 0
+            state["sect_teach_reply_chat_id"] = 0
             save_state()
             await cleanup_checkin_chain_messages()
             console_log("📘 传功成功 3/3")
@@ -516,6 +584,7 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
     if is_sect_teach_already_done_text(text):
         state["next_sect_teach_time"] = 0
         state["sect_teach_reply_to_msg_id"] = 0
+        state["sect_teach_reply_chat_id"] = 0
         save_state()
         await cleanup_checkin_chain_messages()
         console_log(f"📘 传功暂不可执行 {state['checkin_teach_count']}/3")
@@ -542,13 +611,28 @@ async def run_checkin_scheduler(now):
         mark_dirty()
 
     if state.get("sect_teach_enabled") and state["next_sect_teach_time"] > 0 and now >= state["next_sect_teach_time"]:
+        identity_id = get_current_identity_id()
+        identity = get_identity_state(identity_id)
         reply_to_msg_id = state.get("sect_teach_reply_to_msg_id", 0)
-        if reply_to_msg_id and state["checkin_teach_count"] < 3:
-            msg = await send_game_command(CMD_SECT_TEACH, track=False, reply_to=reply_to_msg_id)
+        reply_chat_id = int(state.get("sect_teach_reply_chat_id") or 0)
+        if reply_to_msg_id and reply_chat_id and state["checkin_teach_count"] < 3:
+            expected = (reply_to_msg_id, reply_chat_id, state["next_sect_teach_time"], state["checkin_teach_count"])
+            msg = await send_game_command(
+                CMD_SECT_TEACH, track=False, reply_to=reply_to_msg_id, target_chat_id=reply_chat_id,
+            )
+            if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+                return
+            if not state.get("sect_teach_enabled") or expected != (
+                state["sect_teach_reply_to_msg_id"], state["sect_teach_reply_chat_id"],
+                state["next_sect_teach_time"], state["checkin_teach_count"],
+            ):
+                return
             if msg:
                 state["last_sect_teach_msg_id"] = msg.id
+                state["last_sect_teach_chat_id"] = int(getattr(msg, "chat_id", 0) or reply_chat_id)
                 state["next_sect_teach_time"] = 0
                 state["sect_teach_reply_to_msg_id"] = 0
+                state["sect_teach_reply_chat_id"] = 0
                 save_state()
                 console_log(f"📘 执行传功 {state['checkin_teach_count'] + 1}/3")
             else:
@@ -567,8 +651,11 @@ async def run_checkin_scheduler(now):
                 else:
                     await send_audit_log("❌ 传功发送失败，稍后重试。")
         else:
+            if reply_to_msg_id and not reply_chat_id:
+                console_log("⚠️ 传功缺少原始群，停止旧链路并等待有锚点的回包。")
             state["next_sect_teach_time"] = 0
             state["sect_teach_reply_to_msg_id"] = 0
+            state["sect_teach_reply_chat_id"] = 0
             mark_dirty()
 
     if not state.get("checkin_enabled"):
@@ -579,7 +666,16 @@ async def run_checkin_scheduler(now):
         return
 
     if now >= next_checkin_time:
+        identity_id = get_current_identity_id()
+        identity = get_identity_state(identity_id)
+        expected = (state["next_checkin_time"], state["last_checkin_done_day"], state["last_checkin_msg_id"])
         msg = await send_game_command(CMD_CHECKIN, max_retry=1)
+        if not has_identity(identity_id) or get_identity_state(identity_id) is not identity:
+            return
+        if not state.get("checkin_enabled") or expected != (
+            state["next_checkin_time"], state["last_checkin_done_day"], state["last_checkin_msg_id"],
+        ):
+            return
         if not msg:
             failed_at = time.time()
             _schedule_checkin_retry(failed_at)
@@ -600,9 +696,10 @@ async def run_checkin_scheduler(now):
         msg_id = int(getattr(msg, "id", 0) or 0)
         if msg_id:
             state["last_checkin_msg_id"] = msg_id
+            state["last_checkin_chat_id"] = int(getattr(msg, "chat_id", 0) or 0)
             key = message_key(msg, getattr(msg, "chat_id", 0) or 0)
             state.setdefault("my_msg_ids", {})[key] = sent_at
-            remember_checkin_cleanup_msg_id(msg_id)
+            remember_checkin_cleanup_msg_id(msg_id, chat_id=state["last_checkin_chat_id"])
         next_ts = _schedule_checkin_next_day(sent_at)
         save_state()
         console_log(f"📝 执行点卯，等待回复→{fmt_abs_ts(next_ts)}")

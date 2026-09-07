@@ -43,7 +43,7 @@ IDENTITY_TIMER_COLUMNS = [
     "weak_until",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
-    "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
+    "sect_teach_reply_to_msg_id", "sect_teach_reply_chat_id", "last_checkin_msg_id", "last_checkin_chat_id", "last_sect_teach_msg_id", "last_sect_teach_chat_id", "sect_teach_completed_message_keys", "checkin_cleanup_msg_ids",
     "tree_maturing_logged", "tree_harvest_followup_due_at", "tree_harvest_inflight_until", "tree_last_harvest_result_msg_id", "tree_last_harvest_reply_to_msg_id", "tree_bootstrap_check_due_at", "last_tree_status_sent_at",
     "tree_pulse_mode_seen", "tree_pulse_last_panel_at", "tree_pulse_progress", "tree_pulse_main", "tree_pulse_aux", "tree_pulse_reverse", "tree_pulse_neutral", "tree_pulse_stability", "tree_pulse_stability_max", "tree_pulse_turbidity", "tree_pulse_turbidity_max", "tree_pulse_daily_used", "tree_pulse_daily_limit", "tree_pulse_rush_used", "tree_pulse_rush_limit", "tree_pulse_last_action", "tree_pulse_last_error", "tree_pulse_blocked_until",
     "last_tower_msg_id", "last_tower_command_sent_at", "tower_reply_due_at", "tower_retry_count", "pet_last_error", "pet_warm_last_error", "pet_trial_last_error", "pet_formation_last_error", "pet_formation_retry_count",
@@ -77,7 +77,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "weak_reason", "weak_source", "weak_last_block_log_at",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "wanxin_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders", "mulan_report_texts", "duel_daily_limited_targets"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "sect_teach_completed_message_keys", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "wanxin_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders", "mulan_report_texts", "duel_daily_limited_targets"}
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "mulan_enabled", "wanxin_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_high_stock_silence_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "duel_unequip_prepared", "fishing_enabled",
@@ -460,8 +460,12 @@ IDENTITY_STATE_TEMPLATE = {
     "last_checkin_done_day": "",
     "next_sect_teach_time": 0,
     "sect_teach_reply_to_msg_id": 0,
+    "sect_teach_reply_chat_id": 0,
     "last_checkin_msg_id": 0,
+    "last_checkin_chat_id": 0,
     "last_sect_teach_msg_id": 0,
+    "last_sect_teach_chat_id": 0,
+    "sect_teach_completed_message_keys": [],
     "checkin_cleanup_msg_ids": [],
 
     # 闯塔模块

@@ -1652,7 +1652,9 @@ def _get_checkin_resume_time():
 def _clear_sect_teach_runtime():
     state["next_sect_teach_time"] = 0
     state["sect_teach_reply_to_msg_id"] = 0
+    state["sect_teach_reply_chat_id"] = 0
     state["last_sect_teach_msg_id"] = 0
+    state["last_sect_teach_chat_id"] = 0
     _clear_pending_tasks_by_commands({CMD_SECT_TEACH})
 
 
@@ -1670,6 +1672,7 @@ def _manual_enable_checkin_module_state(now):
     if _get_checkin_resume_time() > now:
         return
     state["last_checkin_msg_id"] = 0
+    state["last_checkin_chat_id"] = 0
     _set_checkin_module_enabled(True, now)
 
 
@@ -1692,6 +1695,7 @@ def _manual_enable_sect_teach_module_state(now):
     if state.get("last_checkin_done_day") == day_key and last_checkin_msg_id > 0:
         state["next_sect_teach_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
         state["sect_teach_reply_to_msg_id"] = last_checkin_msg_id
+        state["sect_teach_reply_chat_id"] = int(state.get("last_checkin_chat_id") or 0)
 
 
 def _manual_disable_tower_module_state():
@@ -2068,6 +2072,7 @@ def _set_checkin_module_enabled(enabled, now):
         return
     state["next_checkin_time"] = 0
     state["last_checkin_msg_id"] = 0
+    state["last_checkin_chat_id"] = 0
     _clear_pending_tasks_by_commands({CMD_CHECKIN})
 
 
@@ -3994,6 +3999,7 @@ def _restore_checkin_runtime(now):
         return
 
     state["last_checkin_msg_id"] = 0
+    state["last_checkin_chat_id"] = 0
     _set_checkin_module_enabled(True, now)
 
 
@@ -4012,6 +4018,7 @@ def _restore_sect_teach_runtime(now):
     if state.get("last_checkin_done_day") == day_key and last_checkin_msg_id > 0:
         state["next_sect_teach_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
         state["sect_teach_reply_to_msg_id"] = last_checkin_msg_id
+        state["sect_teach_reply_chat_id"] = int(state.get("last_checkin_chat_id") or 0)
 
 
 

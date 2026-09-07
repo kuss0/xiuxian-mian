@@ -75,6 +75,34 @@ class PersistenceDeltaLabTests(unittest.TestCase):
                 SimpleNamespace(id=125, chat_id=-1001, reply_to_msg_id=124),
             ))
 
+    def test_checkin_teach_routes_and_completed_commands_survive_reload(self):
+        from model.features import checkin
+
+        expected = {
+            "last_checkin_msg_id": 121,
+            "last_checkin_chat_id": -1001,
+            "last_sect_teach_msg_id": 123,
+            "last_sect_teach_chat_id": -1002,
+            "sect_teach_reply_to_msg_id": 123,
+            "sect_teach_reply_chat_id": -1002,
+            "checkin_teach_count": 1,
+            "sect_teach_completed_message_keys": [[-1002, 123]],
+            "checkin_cleanup_msg_ids": [[-1001, 121], [-1002, 123]],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            state_module.ensure_identity_registered(990113)
+            state_module.get_identity_state(990113).update(copy.deepcopy(expected))
+            self.assertTrue(self._save_without_guard_backup())
+            loaded = persistence._load_identity_from_db(990113)
+            for key, value in expected.items():
+                self.assertEqual(value, loaded[key], key)
+            with state_module.use_identity(990113):
+                self.assertFalse(checkin.remember_sect_teach_completion(123, chat_id=-1002))
+                self.assertTrue(checkin.remember_sect_teach_completion(123, chat_id=-1003))
+                self.assertEqual(2, state_module.state["checkin_teach_count"])
+
     def test_same_identity_cross_chat_pending_survives_reload_and_exact_reply_cleanup(self):
         from model import runtime
 

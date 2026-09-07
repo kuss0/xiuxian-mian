@@ -68,6 +68,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R14 | High | Delta-save snapshots omit pending chat, topic and recovery metadata; a receipt-only or detached-send update can be skipped after an earlier save | Fixed; route and recovery-only edits trigger an identity write, and reload preserves the no-retry marker and replay receipts |
 | R15 | High | Tianji quiz scheduler writes an old pending-map snapshot after awaits, deleting newly queued prompts, restoring cleared work, and sending cancelled later items | Fixed in candidate; per-entry ownership is rechecked before dispatch and after awaited work; three interleaving regressions pass |
 | R16 | High | Second-soul warnings are discarded after a status panel sets the same phase, and warning callbacks enter a deleted identity after awaited logging or sending | Fixed in candidate; panel-first warnings acquire an exact route, legacy anchors gain a chat without resending, and both deletion boundaries are tested |
+| R17 | High | Checkin/sect-teaching send receipts overwrite an early result's next step or update a removed/disabled identity; repeated success increments teaching twice and cleanup loses concurrently added work | Fixed in candidate for the reproduced interleavings; send-return ownership checks, shared persisted completion keys and chat-scoped incremental cleanup are covered by new tests |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -229,6 +230,24 @@ five monitor/control-only contracts need separate behavioral verification.
   Early completion cannot be overwritten by a late send receipt, and deletion
   during either await cannot recreate or enter the removed identity. The new
   identity-deletion, username and panel-order tests failed before their fixes.
+- R11 checkin/sect-teaching/R17 candidate: 3849 passed, 599 subtests passed,
+  60.79 seconds. JUnit: `/tmp/xiuxian-rebuild-r11-checkin-20260907.xml`.
+  The focused lifecycle, no-sect, control, persistence, passive identity and
+  early-replay suite passed 143 tests and 16 subtests. Ruff and diff checks
+  pass. No deployment, restart, push, game send or live state change occurred.
+- Checkin and teaching anchors now persist their originating chat through
+  replies, the next queued step, save/reload, control resume and daily reset.
+  A legacy queued reply without a chat stops rather than guessing a primary
+  group. Direct and passive teaching results share at most three command keys
+  per game day, so duplicate delivery does not advance the count twice, and
+  either delivery order retains the next step. The send callback cannot clear
+  a next step established during the send await or enter a removed identity.
+- Cleanup records use chat/message pairs and remove only the successfully
+  deleted snapshot entries. Same-ID messages in different chats remain
+  distinct, ambiguous legacy IDs cannot select the primary group, and work
+  added during a deletion is retained. The new route/lifecycle tests reproduced
+  eight failing cases before the first fix; subsequent tests reproduced the
+  passive-first followup gap and both checkin send-return races before repair.
 
 ## Deployment Constraint
 
@@ -237,6 +256,9 @@ same message ID for one identity, old loaders collapse those rows in memory.
 Any later deployment needs a verified database snapshot and an explicit rollback
 procedure; do not run the old code against newly written multi-chat state.
 This candidate has not migrated the production database.
+Checkin cleanup JSON also changes from bare IDs to chat/message pairs; even
+without a same-ID collision, that data must not be handed to the old loader
+and cleanup code during a code-only rollback.
 
 ## Next Review Priorities
 
@@ -244,10 +266,11 @@ This candidate has not migrated the production database.
    guard closures without an expected root/chat, and follow-up sends whose
    `reply_to` has no explicit target chat. The shared pending/history contract
    is now tested end-to-end; it does not prove every module's ownership rules.
-   Jiyin/quiz/Tianji routing and second-soul heart-demon broadcasts are covered;
-   remaining second-soul scalar reply guards, Nanlong, sect teaching, judgement
-   and wrapped send calls still require review. Initial follow-through found
-   Nanlong and sect-teaching replies still omit an explicit target chat; these
+   Jiyin/quiz/Tianji routing, second-soul heart-demon broadcasts and the
+   checkin/teaching followup route are covered; remaining second-soul scalar
+   reply guards, Nanlong, judgement and wrapped send calls still require
+   review. Initial follow-through found Nanlong replies still omit an explicit
+   target chat. Its result broadcasts also ignore the event's chat/root. These
    paths need reproducers and fixes before R11 can close.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
@@ -257,6 +280,11 @@ This candidate has not migrated the production database.
    cooldowns, MiniApp mutation/reconnect behavior, persistence capacity, UI
    control contracts and operations. Existing mocks and process uptime cannot
    replace missing real-game evidence or the final integration review.
+   Checkin's broad passive success classification and repeated checkin replies
+   scheduling teaching again need separate terminal/idempotence review; the
+   new chat-key tests do not establish those business invariants. A teaching
+   send with no receipt and no early reply still needs the R07 durable-unknown
+   policy, not a claim that its existing timer is a confirmed failure.
 
 ## Completion Gate
 

@@ -185,7 +185,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once_with(config.CMD_CHECKIN, max_retry=1)
             self.assertEqual(7701, identity_state["last_checkin_msg_id"])
             self.assertEqual(now, identity_state["my_msg_ids"][(-1001, 7701)])
-            self.assertIn(7701, identity_state["checkin_cleanup_msg_ids"])
+            self.assertIn([-1001, 7701], identity_state["checkin_cleanup_msg_ids"])
 
     async def test_checkin_runtime_block_is_not_reported_as_send_failure(self):
         send_as_id = 991007
@@ -261,6 +261,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
             identity_state["checkin_teach_day"] = checkin.get_checkin_day_key(now)
             identity_state["next_sect_teach_time"] = now - 1
             identity_state["sect_teach_reply_to_msg_id"] = 8808
+            identity_state["sect_teach_reply_chat_id"] = -1002
             identity_state["checkin_teach_count"] = 1
 
             with (

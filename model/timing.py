@@ -255,8 +255,12 @@ def reset_checkin_daily_state(now=None):
     state["checkin_teach_count"] = 0
     state["next_sect_teach_time"] = 0
     state["sect_teach_reply_to_msg_id"] = 0
+    state["sect_teach_reply_chat_id"] = 0
     state["last_checkin_msg_id"] = 0
+    state["last_checkin_chat_id"] = 0
     state["last_sect_teach_msg_id"] = 0
+    state["last_sect_teach_chat_id"] = 0
+    state["sect_teach_completed_message_keys"] = []
     state["checkin_cleanup_msg_ids"] = []
 
 
