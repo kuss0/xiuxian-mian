@@ -5532,7 +5532,8 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
             await delete_identity_info_trigger_msg(send_as_id, trigger_msg_id, persist=False)
     save_state()
     if not final_payload:
-        return False
+        # The primary card was consumed; the follow-up owns the missing fields.
+        return True
     if trigger_msg_ids:
         await send_audit_log(
             f"🪪 已更新身份信息：{final_payload['daohao']}｜{final_payload['realm']}｜{final_payload['sect_name']}",

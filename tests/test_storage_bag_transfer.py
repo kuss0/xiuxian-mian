@@ -1756,8 +1756,9 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
                     reply_context,
                 )
         finally:
-            runtime._reply_chain_tracker.pop(701, None)
-            runtime._reply_chain_tracker.pop(702, None)
+            for key in list(runtime._reply_chain_tracker):
+                if key[1] in {701, 702}:
+                    runtime._reply_chain_tracker.pop(key, None)
 
         self.assertFalse(handled)
         gap_mock.assert_not_called()

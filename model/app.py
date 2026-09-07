@@ -1792,10 +1792,16 @@ def _remember_early_routed_reply(event, text, now, reply_to, reply_context, *, e
     if root_msg_id <= 0 or identity_id <= 0:
         return False
     _prune_early_routed_replies(now)
-    items = _early_routed_replies.setdefault(root_msg_id, [])
+    key = (int(getattr(event, "chat_id", 0) or 0), identity_id, root_msg_id)
+    items = _early_routed_replies.setdefault(key, [])
     event_id = int(getattr(event, "id", 0) or 0)
     normalized_kind = "edit" if str(event_kind or "").strip().lower() == "edit" else "message"
-    if any(int(item.get("event_id", 0) or 0) == event_id and item.get("event_kind") == normalized_kind for item in items):
+    if any(
+        int(item.get("event_id", 0) or 0) == event_id
+        and item.get("event_kind") == normalized_kind
+        and item.get("text") == str(text or "")
+        for item in items
+    ):
         return True
     items.append({
         "event": event,
@@ -1821,7 +1827,7 @@ def _logged_reply_event(entry, command, send_as_id):
         reply_to=reply_header,
         message=SimpleNamespace(buttons=None),
     )
-    reply_to = SimpleNamespace(id=root_msg_id, raw_text=str(command or ""), sender_id=int(send_as_id or 0))
+    reply_to = SimpleNamespace(id=root_msg_id, chat_id=event.chat_id, raw_text=str(command or ""), sender_id=int(send_as_id or 0))
     return event, reply_to
 
 
@@ -1836,8 +1842,16 @@ async def _replay_early_replies_after_sent(
 ):
     await asyncio.sleep(_EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC)
     _prune_early_routed_replies()
-    items = list(_early_routed_replies.pop(int(msg_id or 0), []))
-    if not items and allow_log_fallback:
+    keys = [
+        key for key in _early_routed_replies
+        if key[1:] == (int(send_as_id or 0), int(msg_id or 0))
+        and (not game_group_id or key[0] == int(game_group_id))
+    ]
+    if len(keys) > 1:
+        return False
+    items = list(_early_routed_replies.pop(keys[0], [])) if keys else []
+    game_group_id = int(game_group_id or (keys[0][0] if keys else 0))
+    if not items and allow_log_fallback and game_group_id:
         logged = find_message_log_replies_tail(
             msg_id,
             time.time(),
@@ -1865,9 +1879,9 @@ async def _replay_early_replies_after_sent(
     for item in sorted(items, key=lambda value: (float(value.get("event_at", 0) or 0), int(value.get("event_id", 0) or 0))):
         event = item.get("event")
         reply_to = item.get("reply_to") or SimpleNamespace(id=int(msg_id or 0), raw_text=str(command or ""))
-        if event is None:
+        if event is None or int(getattr(event, "chat_id", 0) or 0) != game_group_id:
             continue
-        context = get_reply_context(reply_to, reply_to_msg_id=msg_id, send_as_id=send_as_id)
+        context = get_reply_context(reply_to, reply_to_msg_id=msg_id, send_as_id=send_as_id, chat_id=game_group_id)
         context.update({
             "send_as_id": int(send_as_id or 0),
             "family": family or context.get("family"),
@@ -1906,7 +1920,12 @@ async def _replay_early_replies_after_sent(
 def _observe_sent_for_early_reply_replay(send_as_id, command, *, now, msg_id, **metadata):
     if int(msg_id or 0) <= 0:
         return
-    has_cached_reply = int(msg_id or 0) in _early_routed_replies
+    game_group_id = int(metadata.get("game_group_id") or 0)
+    has_cached_reply = any(
+        key[1:] == (int(send_as_id or 0), int(msg_id or 0))
+        and (not game_group_id or key[0] == game_group_id)
+        for key in _early_routed_replies
+    )
     allow_log_fallback = bool(metadata.get("recovered")) or float(metadata.get("send_elapsed_sec", 0) or 0) >= 1.0
     if not has_cached_reply and not allow_log_fallback:
         return
@@ -3072,6 +3091,7 @@ async def _handle_routed_reply_event(
     # authoritative owner here; requiring the owner client would leave pending
     # tasks uncleared and trigger retry storms.
     allow_reprocessed_edit = kind_scope == "edit" and matched_family in {
+        "identity_info",
         "concubine_heart",
         "divination",
         "duel",
@@ -3087,8 +3107,7 @@ async def _handle_routed_reply_event(
             and int((reply_context or {}).get("send_as_id") or 0) == routed_identity_id
         )
         is_identity_info_observation = matched_family == "identity_info" and _is_identity_info_reply_observation(text)
-        clear_result = None if replay or is_nonterminal_waiting_reply else clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
-        root_msg_id = int((reply_context or {}).get("root_msg_id") or (clear_result or {}).get("reply_to_msg_id") or 0)
+        root_msg_id = int((reply_context or {}).get("root_msg_id") or (reply_context or {}).get("reply_to_msg_id") or 0)
         if root_msg_id <= 0:
             root_msg_id = int(getattr(reply_to, "id", 0) or 0)
         if matched_family:
@@ -3100,7 +3119,7 @@ async def _handle_routed_reply_event(
                 chat_id=event.chat_id,
             )
 
-        if replay and already_consumed:
+        if already_consumed:
             if not is_nonterminal_waiting_reply:
                 clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
             return True
@@ -3317,12 +3336,11 @@ async def _handle_routed_reply_event(
             if not storage_transfer_done:
                 handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
-        if replay and handled_any and not is_nonterminal_waiting_reply:
+        if handled_any and not is_nonterminal_waiting_reply:
             clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
         if matched_family and handled_any and not already_consumed:
             if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
-                guard_kwargs = {"expected_msg_id": root_msg_id} if replay else {}
-                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now, **guard_kwargs)
+                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now, expected_msg_id=root_msg_id)
             if not is_nonterminal_waiting_reply:
                 _mark_runtime_message_consumed(event, matched_family)
         elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:

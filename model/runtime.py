@@ -1504,6 +1504,7 @@ SEND_INTENT_FIELDS = ("source_module", "op_id", "chain_id", "delete_policy")
 
 
 REPLY_FAMILY_COMMANDS = {
+    "identity_info": {CMD_IDENTITY_INFO},
     "checkin": {CMD_CHECKIN},
     "sect_teach": {CMD_SECT_TEACH},
     "pet": {CMD_PET},
@@ -2120,22 +2121,27 @@ def _get_special_tracked_message_family(identity_state, msg_id):
     return None
 
 
+def _reply_chain_entries(msg_id, send_as_id=None, chat_id=None):
+    return [
+        payload
+        for (tracked_chat_id, tracked_msg_id, tracked_identity_id), payload in _reply_chain_tracker.items()
+        if tracked_msg_id == msg_id
+        and (send_as_id is None or tracked_identity_id == int(send_as_id))
+        and (not chat_id or tracked_chat_id == int(chat_id))
+        and has_identity(tracked_identity_id)
+    ]
+
+
 def _resolve_identity_message_owner(msg_id, send_as_id=None, chat_id=None):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return None, None
 
     _gc_reply_chain_tracker()
-    tracker_payload = _reply_chain_tracker.get(msg_id)
-    tracked_identity_id = int((tracker_payload or {}).get("send_as_id", 0) or 0)
-    tracker_chat_id = int((tracker_payload or {}).get("chat_id", 0) or 0)
-    if (
-        tracked_identity_id > 0
-        and has_identity(tracked_identity_id)
-        and (send_as_id is None or int(send_as_id) == tracked_identity_id)
-        and (not chat_id or not tracker_chat_id or int(chat_id) == tracker_chat_id)
-    ):
-        return tracked_identity_id, "reply_chain_tracker"
+    candidates = {
+        (int(payload["send_as_id"]), int(payload.get("chat_id") or 0)): "reply_chain_tracker"
+        for payload in _reply_chain_entries(msg_id, send_as_id, chat_id)
+    }
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     for identity_id in target_ids:
@@ -2144,13 +2150,19 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None, chat_id=None):
         identity_state = get_identity_state(identity_id)
         pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
         pending_chat_id = int((pending_item or {}).get("chat_id", 0) or 0)
-        if chat_id and pending_chat_id and int(chat_id) != pending_chat_id:
-            continue
-        if msg_id in identity_state["my_msg_ids"]:
-            return identity_id, "my_msg_ids"
-        if _get_special_tracked_message_family(identity_state, msg_id):
-            return identity_id, "tracked_ids"
-    return None, None
+        if pending_item and (not chat_id or int(chat_id) == pending_chat_id):
+            candidates.setdefault((identity_id, pending_chat_id), "pending_tasks")
+        # Numeric IDs without group provenance cannot override an explicit
+        # group or choose between two known owners.
+        if not chat_id:
+            if msg_id in identity_state["my_msg_ids"]:
+                candidates.setdefault((identity_id, 0), "my_msg_ids")
+            elif _get_special_tracked_message_family(identity_state, msg_id):
+                candidates.setdefault((identity_id, 0), "tracked_ids")
+    if len({key[0] for key in candidates}) != 1 or len({key[1] for key in candidates if key[1]}) > 1:
+        return None, None
+    (identity_id, _), source = next(iter(candidates.items()))
+    return identity_id, source
 
 
 def _resolve_identity_from_message_sender(message, send_as_id=None):
@@ -2175,15 +2187,16 @@ def _resolve_identity_from_message_sender(message, send_as_id=None):
     return None, None
 
 
-def _resolve_identity_message_family(msg_id, send_as_id):
+def _resolve_identity_message_family(msg_id, send_as_id, chat_id=None):
     msg_id = int(msg_id or 0)
     send_as_id = int(send_as_id or 0)
     if msg_id <= 0 or send_as_id <= 0 or not has_identity(send_as_id):
         return None, 0, ""
 
     _gc_reply_chain_tracker()
-    tracker_payload = _reply_chain_tracker.get(msg_id)
-    if tracker_payload and int(tracker_payload.get("send_as_id", 0) or 0) == send_as_id:
+    entries = _reply_chain_entries(msg_id, send_as_id, chat_id)
+    if len(entries) == 1:
+        tracker_payload = entries[0]
         return (
             tracker_payload.get("family") or None,
             int(tracker_payload.get("root_msg_id", 0) or msg_id),
@@ -2192,12 +2205,13 @@ def _resolve_identity_message_family(msg_id, send_as_id):
 
     identity_state = get_identity_state(send_as_id)
     pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
-    if pending_item:
+    pending_chat_id = int((pending_item or {}).get("chat_id") or 0)
+    if pending_item and (not chat_id or int(chat_id) == pending_chat_id):
         pending_family = resolve_reply_family(get_pending_command(pending_item))
         if pending_family:
             return pending_family, msg_id, ""
 
-    special_family = _get_special_tracked_message_family(identity_state, msg_id)
+    special_family = _get_special_tracked_message_family(identity_state, msg_id) if not chat_id else None
     if special_family:
         return special_family, msg_id, ""
 
@@ -2239,6 +2253,7 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=Non
 
     def _match_lines(lines, *, reverse=False):
         iterable = reversed(lines) if reverse else lines
+        matches = {}
         for line in iterable or ():
             try:
                 payload = json.loads(line)
@@ -2250,11 +2265,12 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=Non
                 continue
             try:
                 payload_msg_id = int(payload.get("message_id") or 0)
-            except (TypeError, ValueError):
-                payload_msg_id = 0
+                payload_chat_id = int(payload.get("chat_id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
             if payload_msg_id != msg_id:
                 continue
-            if chat_id and int(payload.get("chat_id") or 0) != int(chat_id):
+            if chat_id and payload_chat_id != int(chat_id):
                 continue
             try:
                 identity_id = int(payload.get("sender_id") or 0)
@@ -2267,26 +2283,28 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=Non
                 # false negative for the requested route.
                 continue
             family = str(payload.get("family") or "").strip() or resolve_reply_family(payload.get("text") or "")
-            return identity_id, family or None, msg_id, "sent_message_log"
-        return None
+            matches.setdefault((payload_chat_id, identity_id), (identity_id, family or None, msg_id, "sent_message_log"))
+        return matches
 
     paths = [path for path in _recent_sent_message_log_paths() if os.path.exists(path)]
-    for path in paths:
-        matched = _match_lines(_read_recent_message_log_tail(path), reverse=True)
-        if matched:
-            return matched
+    if chat_id:
+        for path in paths:
+            matched = _match_lines(_read_recent_message_log_tail(path), reverse=True)
+            if matched:
+                return next(iter(matched.values())) if len(matched) == 1 else (None, None, 0, None)
 
     # A busy game log can push a real command out of the hot tail before its
     # bot reply arrives. This is a cold, read-only recovery path: scan the
     # recent daily files fully before declaring the reply owner unknown.
+    matches = {}
     for path in paths:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as handle:
-                matched = _match_lines(handle)
+                matches.update(_match_lines(handle))
         except OSError:
             continue
-        if matched:
-            return matched
+    if len(matches) == 1:
+        return next(iter(matches.values()))
     return None, None, 0, None
 
 
@@ -2372,7 +2390,14 @@ def get_pending_message_chat_id(send_as_id, msg_id, default=None):
 
 def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, chat_id=None):
     resolved_reply_to_msg_id = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
-    if resolved_reply_to_msg_id <= 0:
+    object_chat_id = int(getattr(reply_to, "chat_id", 0) or 0)
+    object_msg_id = int(getattr(reply_to, "id", 0) or 0)
+    chat_id = int(chat_id or object_chat_id or 0)
+    if (
+        resolved_reply_to_msg_id <= 0
+        or (object_chat_id and chat_id != object_chat_id)
+        or (object_msg_id and resolved_reply_to_msg_id != object_msg_id)
+    ):
         return {
             "send_as_id": None,
             "family": None,
@@ -2380,24 +2405,19 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, c
             "matched_via": "none",
             "root_msg_id": 0,
             "source": "",
+            "chat_id": chat_id,
         }
 
     resolved_send_as_id = None
     family = None
-    root_msg_id = resolved_reply_to_msg_id
+    root_msg_id = 0
     matched_via = None
-    if chat_id:
-        resolved_send_as_id, family, root_msg_id, matched_via = _resolve_identity_from_sent_message_log(
-            resolved_reply_to_msg_id,
-            send_as_id=send_as_id,
-            chat_id=chat_id,
-        )
-    if resolved_send_as_id is None:
-        resolved_send_as_id, matched_via = _resolve_identity_message_owner(
-            resolved_reply_to_msg_id,
-            send_as_id=send_as_id,
-            chat_id=chat_id,
-        )
+    sender_identity_id, _ = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
+    resolved_send_as_id, matched_via = _resolve_identity_message_owner(
+        resolved_reply_to_msg_id,
+        send_as_id=sender_identity_id or send_as_id,
+        chat_id=chat_id,
+    )
     if resolved_send_as_id is None and reply_to is not None:
         resolved_send_as_id, matched_via = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
     source = ""
@@ -2411,22 +2431,13 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, c
         resolved_family, resolved_root_msg_id, resolved_source = _resolve_identity_message_family(
             resolved_reply_to_msg_id,
             resolved_send_as_id,
+            chat_id=chat_id,
         )
         family = family or resolved_family
         source = resolved_source or source
         root_msg_id = int(root_msg_id or resolved_root_msg_id or resolved_reply_to_msg_id)
     if family is None and reply_to is not None:
         family = resolve_reply_family(getattr(reply_to, "raw_text", ""))
-    if family is None and resolved_send_as_id is not None and reply_to is not None:
-        identity_state = get_identity_state(resolved_send_as_id)
-        reply_text = str(getattr(reply_to, "raw_text", "") or "").strip()
-        if reply_text:
-            for pending in identity_state.get("pending_tasks", {}).values():
-                pending_cmd = get_pending_command(pending)
-                if pending_cmd and pending_cmd in reply_text:
-                    family = resolve_reply_family(pending_cmd)
-                    break
-
     return {
         "send_as_id": resolved_send_as_id,
         "family": family,
@@ -2434,6 +2445,7 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, c
         "matched_via": matched_via or ("reply_header" if reply_to is None else "reply_object"),
         "root_msg_id": int(root_msg_id or resolved_reply_to_msg_id),
         "source": source,
+        "chat_id": chat_id,
     }
 
 
@@ -2446,7 +2458,8 @@ def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, s
     if msg_id <= 0 or send_as_id <= 0 or not family:
         return False
     _gc_reply_chain_tracker()
-    existing = _reply_chain_tracker.get(msg_id)
+    key = (int(chat_id or 0), msg_id, send_as_id)
+    existing = _reply_chain_tracker.get(key)
     if (
         source == "manual_game_command"
         and isinstance(existing, dict)
@@ -2454,7 +2467,7 @@ def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, s
         and str(existing.get("source") or "").strip() != "manual_game_command"
     ):
         return True
-    _reply_chain_tracker[msg_id] = {
+    _reply_chain_tracker[key] = {
         "send_as_id": send_as_id,
         "family": family,
         "root_msg_id": root_msg_id,
@@ -5121,7 +5134,10 @@ def find_identity_by_msg_id(msg_id):
 def is_reply_to_identity_message(reply_to, send_as_id):
     if not reply_to:
         return False
-    resolved_send_as_id, _matched_via = _resolve_identity_message_owner(getattr(reply_to, "id", 0), send_as_id=send_as_id)
+    resolved_send_as_id, _matched_via = _resolve_identity_message_owner(
+        getattr(reply_to, "id", 0), send_as_id=send_as_id,
+        chat_id=int(getattr(reply_to, "chat_id", 0) or 0),
+    )
     return resolved_send_as_id == int(send_as_id or 0)
 
 
@@ -5152,25 +5168,42 @@ def gc_my_msg_ids(now=None, send_as_id=None):
         mark_dirty()
 
 
-def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None, *, clear_family=True):
+def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None, *, clear_family=False):
     if reply_context is None:
         reply_context = get_reply_context(reply_to, send_as_id=send_as_id)
 
     resolved_send_as_id = int((reply_context or {}).get("send_as_id") or 0)
     family = (reply_context or {}).get("family") or None
     reply_to_msg_id = int((reply_context or {}).get("reply_to_msg_id") or getattr(reply_to, "id", 0) or 0)
-    if resolved_send_as_id <= 0 or reply_to_msg_id <= 0:
+    root_msg_id = int((reply_context or {}).get("root_msg_id") or reply_to_msg_id)
+    chat_id = int((reply_context or {}).get("chat_id") or getattr(reply_to, "chat_id", 0) or 0)
+    if (
+        resolved_send_as_id <= 0 or reply_to_msg_id <= 0 or not has_identity(resolved_send_as_id)
+        or (send_as_id is not None and int(send_as_id) != resolved_send_as_id)
+    ):
         return {"send_as_id": None, "family": family, "removed_ids": [], "matched": False}
 
     removed_ids = []
     with use_identity(resolved_send_as_id):
-        if reply_to_msg_id in state["pending_tasks"]:
-            state["pending_tasks"].pop(reply_to_msg_id, None)
-            removed_ids.append(reply_to_msg_id)
+        root_pending = state["pending_tasks"].get(root_msg_id)
+        known_chats = {int(entry.get("chat_id") or 0) for entry in _reply_chain_entries(root_msg_id, resolved_send_as_id)} - {0}
+        pending_family = resolve_reply_family(get_pending_command(root_pending or {}))
+        if (
+            root_pending
+            and (not chat_id or int(root_pending.get("chat_id") or 0) == chat_id)
+            and (chat_id or len(known_chats) <= 1)
+            and (not family or not pending_family or family == pending_family)
+        ):
+            state["pending_tasks"].pop(root_msg_id, None)
+            removed_ids.append(root_msg_id)
 
-        if family and clear_family:
+        if family and clear_family and removed_ids:
             family_commands = get_reply_family_commands(family)
             for msg_id, pending in list(state["pending_tasks"].items()):
+                if int(pending.get("chat_id") or 0) != int(root_pending.get("chat_id") or 0):
+                    continue
+                if float(pending.get("sent_at") or 0) > float(root_pending.get("sent_at") or 0):
+                    continue
                 pending_cmd = get_pending_command(pending)
                 if pending_cmd in family_commands or resolve_reply_family(pending_cmd) == family:
                     state["pending_tasks"].pop(msg_id, None)

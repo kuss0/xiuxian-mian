@@ -220,7 +220,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
                 reply_context,
             )
 
-        self.assertFalse(handled)
+        self.assertTrue(handled)
         gap_mock.assert_not_called()
         with state_module.use_identity(1001) as identity_state:
             self.assertNotIn(503, identity_state["pending_tasks"])

@@ -59,10 +59,11 @@ proof that gameplay is healthy. Production files have not been changed.
 | R05 | Medium | Cancelling `_run_account_rpc` before acquiring its account lock leaves the supplied coroutine unclosed | Fixed; coroutine lifecycle regression passes |
 | R06 | Medium | MiniApp retries omit all backoff/Retry-After waits when no custom sleeper is supplied | Fixed; default-sleeper 429/503 regressions pass; 265 MiniApp tests and 12 subtests pass |
 | R07 | High | Cancelling a caller after its shielded send RPC starts can abandon result tracking while the RPC continues | Late-result ownership and serial barriers fixed in candidate; cancellation-before-dispatch, duplicate registration, and detached-pending tests pass; shutdown/unknown-result durability remains under review |
-| R08 | High | Generic pending-log recovery closes a pending task and action guard without replaying the owning business handler | Fixed in candidate; real checkin-state regression plus ownership, failure, intermediate-ack and replay-idempotence tests pass |
+| R08 | High | Pending recovery and live routing close pending tasks before successful business handling; family cleanup can remove newer work | Candidate log/live paths now clear only the handled root and guard; real checkin, failure, intermediate-ack, identity-card continuation and replay-idempotence tests pass |
 | R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Fixed in candidate; named/background/UI/login/provider task cleanup is joined, repeat cancellation is avoided, final save follows disconnect and is skipped on incomplete drain |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
-| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Cross-identity DB overwrite repaired and migration tested; same-identity cross-chat storage and in-memory/reply ownership remain open |
+| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Cross-identity DB overwrite, reply-chain and early-reply ownership repaired; same-identity cross-chat storage and remaining numeric-ID consumers remain open |
+| R12 | High | Second-soul and phaseful timeout cleanup call the all-identities pending-clear helper without an owner argument | Source-path confirmed; multi-identity regressions and scoped cleanup pending |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -135,6 +136,17 @@ five monitor/control-only contracts need separate behavioral verification.
   review rather than silent loss of behavior. This does not yet solve two groups
   using the same message ID for one identity, or bare in-memory reply indexes.
   R11 remains open. The skill and production files/services remain unchanged.
+- R08/R11 routing candidate: 3786 passed, 579 subtests passed, 58.24 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r11-routing-20260907.xml`; Ruff and diff checks
+  pass. Eight new regressions first reproduced premature pending removal,
+  cross-chat routing, broken root propagation and newer-guard closure. Follow-up
+  tests cover ambiguous log rows, early-reply cache collisions, unknown legacy
+  chat provenance and identity-card partial/final edits. In-memory indexes now
+  include chat and identity; known entries bypass the log scan. Live dispatch
+  clears only a successfully handled root and uses its message ID to close the
+  action guard. Identity refresh now reports accepted partial cards as handled,
+  while preserving the follow-up and allowing final edits. No service restart,
+  production mutation, game send, deployment or push was performed.
 
 ## Completion Gate
 

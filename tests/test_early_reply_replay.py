@@ -93,11 +93,12 @@ class EarlyReplyReplayTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(first_handled)
-        self.assertIn(command_msg_id, app._early_routed_replies)
+        self.assertIn((event.chat_id, identity_id, command_msg_id), app._early_routed_replies)
 
         with state_module.use_identity(identity_id) as identity_state:
             identity_state["pending_tasks"][command_msg_id] = {
                 "cmd": config.CMD_CHECKIN,
+                "chat_id": event.chat_id,
                 "sent_at": event_at + 3,
                 "retry": 0,
                 "timeout": 900,
@@ -218,6 +219,73 @@ class EarlyReplyReplayTests(unittest.IsolatedAsyncioTestCase):
             await runtime._recover_pending_reply_from_message_log(identity_id, 154926, item, now)
         self.assertNotIn(154926, identity_state["pending_tasks"])
         self.assertEqual(other, identity_state["pending_tasks"][154928])
+
+    async def test_live_reply_does_not_clear_newer_same_family_pending_or_guard(self):
+        identity_id, item, reply, now = self._pending_log_fixture()
+        identity_state = state_module.get_identity_state(identity_id)
+        identity_state["pending_tasks"][154928] = {**item, "sent_at": now}
+        event, reply_to = app._logged_reply_event(reply, item["cmd"], identity_id)
+        context = {"send_as_id": identity_id, "family": "checkin", "reply_to_msg_id": 154926,
+                   "root_msg_id": 154926, "chat_id": reply["chat_id"]}
+        with patch.object(app, "close_action_guard_by_family") as close:
+            handled = await app._handle_routed_reply_event(event, event.raw_text, now, reply_to, context)
+        self.assertTrue(handled)
+        self.assertNotIn(154926, identity_state["pending_tasks"])
+        self.assertIn(154928, identity_state["pending_tasks"])
+        self.assertEqual(154926, close.call_args.kwargs["expected_msg_id"])
+
+    async def test_live_unmatched_or_failed_handler_preserves_pending(self):
+        identity_id, item, reply, now = self._pending_log_fixture()
+        event, reply_to = app._logged_reply_event(reply, item["cmd"], identity_id)
+        context = {"send_as_id": identity_id, "family": "checkin", "reply_to_msg_id": 154926,
+                   "root_msg_id": 154926, "chat_id": reply["chat_id"]}
+        with patch.object(app, "handle_checkin_reply", new=AsyncMock(return_value=False)):
+            handled = await app._handle_routed_reply_event(event, "unrecognized result", now, reply_to, context)
+        self.assertFalse(handled)
+        self.assertIn(154926, state_module.get_identity_state(identity_id)["pending_tasks"])
+        app_runtime._runtime_event_claims.clear()
+        with patch.object(app, "handle_checkin_reply", side_effect=RuntimeError("injected failure")):
+            with self.assertRaisesRegex(RuntimeError, "injected failure"):
+                await app._handle_routed_reply_event(event, event.raw_text, now, reply_to, context)
+        self.assertIn(154926, state_module.get_identity_state(identity_id)["pending_tasks"])
+
+    async def test_early_reply_cache_does_not_replay_another_chat_or_identity(self):
+        identity_id, item, reply, now = self._pending_log_fixture()
+        other_identity = identity_id + 1
+        state_module.ensure_identity_registered(other_identity)
+        other_chat = -1002083016447
+        for current_identity, chat_id in ((identity_id, item["chat_id"]), (other_identity, other_chat)):
+            entry = {**reply, "chat_id": chat_id}
+            event, reply_to = app._logged_reply_event(entry, item["cmd"], current_identity)
+            app._remember_early_routed_reply(event, event.raw_text, now, reply_to, {
+                "send_as_id": current_identity, "reply_to_msg_id": 154926, "matched_via": "reply_sender",
+            }, event_kind="message")
+        with (
+            patch.object(app, "_EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC", 0),
+            patch.object(app, "_handle_routed_reply_event", new=AsyncMock(return_value=True)) as handler,
+            patch.object(app, "_bind_command_attempt_shadow"),
+        ):
+            self.assertTrue(await app._replay_early_replies_after_sent(
+                identity_id, item["cmd"], now, 154926, game_group_id=item["chat_id"],
+            ))
+            self.assertEqual(1, handler.await_count)
+            self.assertEqual(item["chat_id"], handler.await_args.args[0].chat_id)
+            handler.reset_mock()
+            self.assertTrue(await app._replay_early_replies_after_sent(
+                other_identity, item["cmd"], now, 154926, game_group_id=other_chat,
+            ))
+            self.assertEqual(1, handler.await_count)
+            self.assertEqual(other_chat, handler.await_args.args[0].chat_id)
+
+    async def test_identity_info_final_edit_is_dispatched_after_partial_card(self):
+        identity_id, item, reply, now = self._pending_log_fixture(config.CMD_IDENTITY_INFO)
+        event, reply_to = app._logged_reply_event(reply, item["cmd"], identity_id)
+        context = {"send_as_id": identity_id, "family": "identity_info", "reply_to_msg_id": 154926,
+                   "root_msg_id": 154926, "chat_id": reply["chat_id"]}
+        with patch.object(app, "handle_identity_info_reply", new=AsyncMock(return_value=True)) as handler:
+            self.assertTrue(await app._handle_routed_reply_event(event, "partial card", now, reply_to, context))
+            self.assertTrue(await app._handle_routed_reply_event(event, "final card", now + 1, reply_to, context, event_kind="edit"))
+        self.assertEqual(["partial card", "final card"], [call.args[0] for call in handler.await_args_list])
 
     async def test_pending_replay_rejects_wrong_chat_anchor_player_and_untrusted_bot(self):
         identity_id, item, reply, now = self._pending_log_fixture()

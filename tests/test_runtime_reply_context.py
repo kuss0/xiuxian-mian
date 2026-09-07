@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -168,7 +169,7 @@ class RuntimeReplyContextTests(unittest.TestCase):
         context = runtime.get_reply_context(reply_to_msg_id=7001)
 
         self.assertTrue(tracked)
-        self.assertEqual("manual_game_command", runtime._reply_chain_tracker[7001]["source"])
+        self.assertEqual("manual_game_command", runtime._reply_chain_tracker[(0, 7001, identity_id)]["source"])
         self.assertEqual(identity_id, context["send_as_id"])
         self.assertEqual("concubine_voyage", context["family"])
         self.assertEqual("reply_chain_tracker", context["matched_via"])
@@ -187,7 +188,7 @@ class RuntimeReplyContextTests(unittest.TestCase):
         context = runtime.get_reply_context(reply_to_msg_id=7001)
 
         self.assertTrue(tracked)
-        self.assertEqual("", runtime._reply_chain_tracker[7001]["source"])
+        self.assertEqual("", runtime._reply_chain_tracker[(0, 7001, identity_id)]["source"])
         self.assertEqual(identity_id, context["send_as_id"])
         self.assertEqual("concubine_voyage", context["family"])
         self.assertEqual("reply_chain_tracker", context["matched_via"])
@@ -214,7 +215,106 @@ class RuntimeReplyContextTests(unittest.TestCase):
 
         self.assertTrue(tracked)
         self.assertTrue(echoed)
-        self.assertEqual("", runtime._reply_chain_tracker[7001]["source"])
+        self.assertEqual("", runtime._reply_chain_tracker[(0, 7001, identity_id)]["source"])
         self.assertEqual(identity_id, context["send_as_id"])
         self.assertEqual("divination", context["family"])
         self.assertEqual("", context["source"])
+
+    def test_memory_tracker_keeps_both_chats_without_reading_logs(self):
+        identity_id = self._register_identity(991201)
+        runtime.track_reply_chain_message(7001, identity_id, "checkin", root_msg_id=6999, chat_id=-1001)
+        runtime.track_reply_chain_message(7001, identity_id, "duel", root_msg_id=6998, chat_id=-1002)
+        with patch.object(runtime, "_resolve_identity_from_sent_message_log") as lookup:
+            first = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1001)
+            second = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1002)
+        lookup.assert_not_called()
+        self.assertEqual((identity_id, "checkin", 6999, -1001), (
+            first["send_as_id"], first["family"], first["root_msg_id"], first["chat_id"],
+        ))
+        self.assertEqual((identity_id, "duel", 6998, -1002), (
+            second["send_as_id"], second["family"], second["root_msg_id"], second["chat_id"],
+        ))
+
+    def test_missing_chat_does_not_pick_one_of_two_memory_owners(self):
+        first = self._register_identity(991201)
+        second = self._register_identity(991202)
+        runtime.track_reply_chain_message(7001, first, "checkin", chat_id=-1001)
+        runtime.track_reply_chain_message(7001, second, "duel", chat_id=-1002)
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            context = runtime.get_reply_context(reply_to_msg_id=7001)
+        self.assertIsNone(context["send_as_id"])
+
+    def test_missing_chat_does_not_pick_latest_colliding_log_row(self):
+        identity_id = self._register_identity(991201)
+        day = runtime.datetime.now(runtime.TZ_LOCAL).strftime("%Y-%m-%d")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            path = Path(tmpdir) / f"{day}.log"
+            path.write_text("\n".join(json.dumps({
+                "event_type": "sent", "message_id": 7001, "chat_id": chat_id,
+                "sender_id": identity_id, "text": command,
+            }) for chat_id, command in ((-1001, ".宗门点卯"), (-1002, ".斗法 @test"))) + "\n", encoding="utf-8")
+            context = runtime.get_reply_context(reply_to_msg_id=7001)
+        self.assertIsNone(context["send_as_id"])
+
+    def test_identity_info_family_does_not_depend_on_legacy_business_id(self):
+        identity_id = self._register_identity(991201)
+        state_module.get_identity_state(identity_id)["pending_tasks"][7001] = {
+            "cmd": runtime.CMD_IDENTITY_INFO, "chat_id": -1001,
+        }
+        context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1001)
+        self.assertEqual("identity_info", context["family"])
+
+    def test_foreign_chat_cannot_reuse_unscoped_message_or_business_ids(self):
+        identity_id = self._register_identity(991201)
+        identity_state = state_module.get_identity_state(identity_id)
+        identity_state["my_msg_ids"][7001] = 100.0
+        identity_state["last_checkin_msg_id"] = 7001
+        runtime.track_reply_chain_message(7001, identity_id, "checkin", chat_id=-1001)
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1002)
+        self.assertIsNone(context["send_as_id"])
+
+    def test_reply_object_chat_is_used_when_caller_omits_it(self):
+        identity_id = self._register_identity(991201)
+        runtime.track_reply_chain_message(7001, identity_id, "checkin", chat_id=-1001)
+        runtime.track_reply_chain_message(7001, identity_id, "duel", chat_id=-1002)
+        reply = SimpleNamespace(id=7001, chat_id=-1001, raw_text="", sender_id=0)
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            context = runtime.get_reply_context(reply)
+        self.assertEqual("checkin", context["family"])
+        self.assertEqual(-1001, context["chat_id"])
+
+    def test_clear_pending_is_anchored_to_root_and_chat(self):
+        identity_id = self._register_identity(991201)
+        identity_state = state_module.get_identity_state(identity_id)
+        identity_state["pending_tasks"] = {
+            6999: {"cmd": ".宗门点卯", "chat_id": -1001},
+            7000: {"cmd": ".宗门点卯", "chat_id": -1002},
+        }
+        context = {"send_as_id": identity_id, "family": "checkin", "reply_to_msg_id": 7001,
+                   "root_msg_id": 6999, "chat_id": -1001}
+        result = runtime.clear_pending_by_reply(reply_context=context)
+        self.assertEqual([6999], result["removed_ids"])
+        self.assertIn(7000, identity_state["pending_tasks"])
+
+    def test_clear_pending_rejects_same_id_in_wrong_chat_or_identity(self):
+        identity_id = self._register_identity(991201)
+        identity_state = state_module.get_identity_state(identity_id)
+        item = {"cmd": ".宗门点卯", "chat_id": -1002}
+        identity_state["pending_tasks"][7001] = item
+        context = {"send_as_id": identity_id, "family": "checkin", "reply_to_msg_id": 7001, "chat_id": -1001}
+        result = runtime.clear_pending_by_reply(reply_context=context)
+        self.assertFalse(result["removed_ids"])
+        self.assertEqual(item, identity_state["pending_tasks"][7001])
+        context["chat_id"] = -1002
+        result = runtime.clear_pending_by_reply(send_as_id=991202, reply_context=context)
+        self.assertFalse(result["removed_ids"])
+        self.assertIn(7001, identity_state["pending_tasks"])
+
+    def test_clear_pending_does_not_assume_chat_for_legacy_row(self):
+        identity_id = self._register_identity(991201)
+        identity_state = state_module.get_identity_state(identity_id)
+        identity_state["pending_tasks"][7001] = {"cmd": ".宗门点卯"}
+        context = {"send_as_id": identity_id, "family": "checkin", "reply_to_msg_id": 7001, "chat_id": -1001}
+        self.assertFalse(runtime.clear_pending_by_reply(reply_context=context)["removed_ids"])
+        self.assertIn(7001, identity_state["pending_tasks"])

@@ -412,6 +412,7 @@ REPLY_FAMILY_TO_MODULE = {
     for family in tuple(manifest.reply_families or ())
 }
 REPLY_FAMILY_TO_MODULE.update({
+    "identity_info": "身份信息",
     "heavenly_pardon": "全局安全",
 })
 WORKFLOW_TO_MODULE = {
