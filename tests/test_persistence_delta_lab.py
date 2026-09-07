@@ -217,6 +217,46 @@ class PersistenceDeltaLabTests(unittest.TestCase):
             self.assertEqual("exchange_pending", loaded["nanlong_protect_phase"])
             self.assertEqual(123, loaded["nanlong_reply_to_msg_id"])
 
+    def test_nanlong_terminal_state_and_exact_detached_cleanup_survive_reload(self):
+        from model.features import nanlong
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")),
+            patch.object(nanlong, "save_state", side_effect=self._save_without_guard_backup),
+            patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            now = 1788748200.0
+            identity_id = 990118
+            identity = state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="NanlongReload", enabled=True)
+            identity.update(
+                nanlong_enabled=True, nanlong_reply_to_msg_id=123, nanlong_reply_chat_id=-1001,
+                nanlong_last_prompt_key="-1001:123", nanlong_last_msg_id=124,
+                nanlong_last_chat_id=-1001, nanlong_last_sent_at=now - 1,
+                nanlong_last_command=nanlong.CMD_NANLONG_EXCHANGE_FABAO,
+            )
+            identity["pending_tasks"] = {
+                (chat_id, 124): {
+                    "cmd": nanlong.CMD_NANLONG_EXCHANGE_FABAO, "chat_id": chat_id,
+                    "sent_at": now - 1, "max_retry": 0, "send_caller_detached": True,
+                }
+                for chat_id in (-1001, -1002)
+            }
+            self.assertTrue(self._save_without_guard_backup())
+            with state_module.use_identity(identity_id):
+                self.assertTrue(asyncio.run(nanlong.handle_nanlong_result_broadcast(
+                    "【天机异闻·南陇侯的交易】@NanlongReload 已完成交易。", now,
+                    SimpleNamespace(id=125, chat_id=-1002),
+                )))
+            loaded = persistence._load_identity_from_db(identity_id)
+            self.assertEqual(0, loaded["nanlong_last_msg_id"])
+            self.assertEqual("-1001:123", loaded["nanlong_last_prompt_key"])
+            self.assertNotIn((-1001, 124), loaded["pending_tasks"])
+            self.assertTrue(loaded["pending_tasks"][(-1002, 124)]["send_caller_detached"])
+            sender.assert_not_awaited()
+
     def test_pending_route_and_recovery_only_edits_are_not_lost_by_delta_save(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(
             persistence, "DB_FILE", str(Path(tmpdir) / "state.db")

@@ -15,11 +15,12 @@ from ..config import (
     NANLONG_REPLY_TIMEOUT_SEC,
     RE_WHITESPACE,
 )
-from ..message_log_recovery import find_message_log_replies
+from ..message_log_recovery import iter_message_log_entries_between
 from ..persistence import mark_dirty, save_state
-from ..runtime import classify_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command
+from ..runtime import _is_logged_game_bot_reply, classify_game_send_block, clear_pending_by_reply, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
+    get_game_group_ids,
     get_game_group_topic_id,
     get_identity_enabled,
     get_identity_ids,
@@ -259,6 +260,16 @@ def _is_concubine_recall_failure(text):
 
 
 def _is_nanlong_recovery_log_entry(entry):
+    if not isinstance(entry, dict) or entry.get("event_type") not in {"message", "edit"}:
+        return False
+    try:
+        if int(entry.get("message_id") or 0) <= 0 or not int(entry.get("chat_id") or 0):
+            return False
+        int(entry.get("reply_to_msg_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not _is_logged_game_bot_reply(entry):
+        return False
     raw_text = str((entry or {}).get("text") or "").strip()
     if not raw_text:
         return False
@@ -517,7 +528,19 @@ async def _maybe_audit_nanlong_prompt_override(previous_reply_to, previous_deadl
         await send_audit_log(f"🤝 南陇侯新抉择覆盖旧消息：{previous_reply_to}->{new_reply_to}")
 
 
+def _clear_nanlong_reply_pending():
+    msg_id, valid = _parse_nanlong_pending_int(state.get("nanlong_last_msg_id", 0))
+    chat_id = _get_nanlong_last_chat_id()
+    if valid and msg_id > 0 and chat_id:
+        identity_id = get_current_identity_id()
+        clear_pending_by_reply(send_as_id=identity_id, reply_context={
+            "send_as_id": identity_id, "family": "nanlong", "chat_id": chat_id,
+            "root_msg_id": msg_id, "reply_to_msg_id": msg_id,
+        })
+
+
 async def _finalize_nanlong_success(audit_text):
+    _clear_nanlong_reply_pending()
     clear_nanlong_state(persist=True)
     await send_audit_log(audit_text)
 
@@ -629,6 +652,7 @@ async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
 async def _handle_nanlong_trade_confirmed(text, now, audit_text):
     identity_id = get_current_identity_id()
     identity = get_identity_state(identity_id)
+    _clear_nanlong_reply_pending()
     partner_name = str(state.get("concubine_name") or "").strip()
     permanent_moon_partner = partner_name == "南宫婉" or partner_name.startswith("南宫婉·")
     if not permanent_moon_partner and _get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING and _is_nanlong_trade_success_reply(text):
@@ -650,26 +674,35 @@ async def _recover_nanlong_pending_reply_from_log(now):
     chat_id = _get_nanlong_last_chat_id()
     if not chat_id:
         return False
-    replies = find_message_log_replies(
-        msg_id,
-        now,
-        lookback_sec=NANLONG_LOG_REPLAY_LOOKBACK_SEC,
-        lookahead_sec=NANLONG_LOG_REPLAY_LOOKAHEAD_SEC,
-        chat_id=chat_id,
-        predicate=_is_nanlong_recovery_log_entry,
-    )
+    allowed_chats = {chat_id, *get_game_group_ids()}
+    replies = []
+    for entry, entry_at in iter_message_log_entries_between(
+        max(0, now - NANLONG_LOG_REPLAY_LOOKBACK_SEC), now + NANLONG_LOG_REPLAY_LOOKAHEAD_SEC,
+    ):
+        if not _is_nanlong_recovery_log_entry(entry):
+            continue
+        entry_chat_id = int(entry.get("chat_id") or 0)
+        direct = entry_chat_id == chat_id and int(entry.get("reply_to_msg_id") or 0) == msg_id
+        if direct or (entry_chat_id in allowed_chats and _is_nanlong_success_reply(entry.get("text"))):
+            replies.append((entry_at, int(entry["message_id"]), direct, entry))
     if not replies:
         return False
     reply_to = SimpleNamespace(id=msg_id, chat_id=chat_id, raw_text=str(state.get("nanlong_last_command") or ""))
     handled_any = False
-    for entry in replies:
+    for entry_at, _message_id, direct, entry in sorted(replies, key=lambda item: item[:2]):
         expected = _capture_nanlong_operation()
-        handled = await handle_nanlong_reply(
-            entry.get("text") or "",
-            float(entry.get("ts_epoch") or now),
-            reply_to,
-            matched_family="nanlong",
-        )
+        if direct:
+            handled = await handle_nanlong_reply(
+                entry.get("text") or "", entry_at, reply_to, matched_family="nanlong",
+            )
+        else:
+            # Real trade outcomes can be unthreaded in the other game group.
+            # Keep the live handler's identity, phase and time checks on replay.
+            event = SimpleNamespace(
+                id=int(entry["message_id"]), chat_id=int(entry["chat_id"]),
+                reply_to_msg_id=int(entry.get("reply_to_msg_id") or 0),
+            )
+            handled = await handle_nanlong_result_broadcast(entry.get("text") or "", entry_at, event)
         handled_any = handled_any or handled
         if not _nanlong_operation_is_current(expected):
             break
@@ -893,9 +926,11 @@ async def handle_nanlong_reply(text, now, reply_to, matched_family=None):
     phase = _get_nanlong_protect_phase()
     if phase == NANLONG_PROTECT_PLACE_PENDING:
         if _is_concubine_place_success(text):
+            _clear_nanlong_reply_pending()
             await _send_nanlong_exchange_after_place(now)
             return True
         if _is_concubine_place_failure(text):
+            _clear_nanlong_reply_pending()
             state["nanlong_protect_phase"] = ""
             state["nanlong_place_msg_id"] = 0
             state["nanlong_last_msg_id"] = 0
@@ -914,6 +949,7 @@ async def handle_nanlong_reply(text, now, reply_to, matched_family=None):
             await _finalize_nanlong_success("🤝 南陇侯交易完成，侍妾已召回")
             return True
         if _is_concubine_recall_failure(text):
+            _clear_nanlong_reply_pending()
             state["nanlong_last_error"] = "南陇侯交易完成但侍妾召回失败"
             clear_nanlong_state(persist=True, keep_last_error=True)
             await send_audit_log("⚠️ 南陇侯交易完成但侍妾召回失败，请人工核对。")

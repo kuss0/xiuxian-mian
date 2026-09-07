@@ -75,6 +75,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R21 | High | Passive checkin marks the day complete before classifying the reply; repeated success rewinds queued teaching; old-day replies reset current-day progress; unknown replies are treated as terminal | Reproduced and fixed in candidate; direct and passive checkin share idempotent completion, old days cannot roll back state, and unknown replies retain pending ownership |
 | R22 | High | Nanlong can reenter while sending, retries unknown sends as failures, rearms them when a choice changes, and discards real receipts after a post-dispatch choice change | Fixed for reproduced boundaries in candidate; persist the existing pending decision before sending, retry only explicit unsent results, and keep operation ownership across option changes; early-result and late-receipt recovery remain open |
 | R23 | High | Retry timeout notifications and send receipts mutate replacement pending work; blocked retries rewrite the original send time, and an old refresh timeout clears newer or cross-chat ambiguous refresh anchors | Fixed in candidate; complete terminal cleanup before notification, recheck owner and pending snapshots after transport, keep detached receipts no-retry, persist separate retry backoff, and clear only an exact unambiguous refresh anchor |
+| R24 | High | Nanlong log recovery misses unthreaded cross-group trade results, trusts player copies of result wording, and leaves a confirmed detached command pending after business completion | Fixed for reproduced cases in candidate; replay trusted incoming evidence through the existing direct/broadcast handlers, preserve source-chat boundaries, and clear only the confirmed command's exact pending key; no-ID/early-receipt recovery remains open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -380,6 +381,26 @@ five monitor/control-only contracts need separate behavioral verification.
   no-retry detached pending row until its own reply is reconciled. An unsent
   retry does not invent a new send time. This change does not resolve R07's
   no-message-ID crash gap or establish all module-level retry safety.
+- R24 reproducers initially failed for cross-group result recovery, a strict
+  new official bot shard, completed-trade recall selection, result recovery
+  after the prompt deadline, and a player copying placement-success wording.
+  Two additional live-handler/log-replay subcases reproduced detached pending
+  rows surviving confirmed business completion.
+- Recovery now performs one bounded log-window scan, accepts only incoming
+  official-bot evidence, and reuses the live business handlers. Cross-group
+  unthreaded results are considered only in the configured game groups or the
+  recorded source group; exact direct replies keep their original chat/root.
+  The existing real `2026-09-06` wording pairs are replayed from temporary log
+  files. Repeated trade evidence sends only the existing recall step once,
+  rather than another exchange. This does not add automatic recovery for
+  sends that still have no known message ID, or change CommandAttempt authority.
+- R24 candidate full suite: 3935 passed, 645 subtests passed, 57.62 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r24-nanlong-log-recovery-20260908.xml`.
+  Focused Nanlong/control/persistence/early-replay tests passed 98 tests and
+  44 subtests before the additional SQLite terminal-cleanup regression, which
+  passes in the full suite. Save/reload preserves completed business state and
+  exact detached-row removal while retaining a same-numbered row in another
+  chat. Ruff and diff checks pass. No production or skill changes were made.
 
 ## Deployment Constraint
 
@@ -402,9 +423,10 @@ and cleanup code during a code-only rollback.
    checkin/teaching, judgement and Nanlong routes are covered; remaining
    second-soul scalar reply guards and wrapped send calls still require review.
    Nanlong's send-in-flight reentry and unknown-send automatic retry are now
-   covered by R22. Result-before-receipt, late detached receipt adoption and
-   unthreaded result recovery still need reconciliation before its lifecycle
-   is signed off. Passing route tests does not close R07 or R11.
+   covered by R22, and trusted cross-group unthreaded result recovery and exact
+   terminal pending cleanup by R24. Result-before-receipt and late detached
+   receipt adoption still need reconciliation before its lifecycle is signed
+   off. Passing route tests does not close R07 or R11.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not

@@ -319,6 +319,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scheduler_recovers_place_confirmation_from_message_log(self):
         now = 1_700_000_000.0
+        state_module.set_game_bot_ids([7001])
         identity_id = self._prepare_pending(991306, now=now)
         state_module.update_send_as_profile(
             identity_id,
@@ -339,13 +340,16 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 "ts_epoch": now - 10,
                 "message_id": 9904,
                 "reply_to_msg_id": 9901,
+                "event_type": "message",
+                "chat_id": -100,
+                "sender_id": 7001,
             }]
 
             async def fake_send_exchange(command, **kwargs):
                 return SimpleNamespace(id=9902, sent_at=now)
 
             with (
-                patch.object(nanlong, "find_message_log_replies", return_value=replies) as recovery_mock,
+                patch.object(nanlong, "iter_message_log_entries_between", return_value=[(entry, entry["ts_epoch"]) for entry in replies]) as recovery_mock,
                 patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=fake_send_exchange)) as send_mock,
                 patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(nanlong, "save_state") as save_mock,

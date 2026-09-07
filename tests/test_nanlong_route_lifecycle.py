@@ -1,12 +1,14 @@
 import copy
 import json
+import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from model import state as state_module
+from model import message_log_recovery, state as state_module
 from model.features import nanlong
 
 
@@ -62,6 +64,30 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         if protected:
             self.identity["concubine_name"] = "墨彩环"
+
+    @contextmanager
+    def logged_results(self, entries, *, groups=(-1001, -1002)):
+        state_module.set_game_bot_ids([7001])
+        state_module.set_game_group_route_config({
+            "enabled": True, "primary_group_id": groups[0],
+            "backup_group_ids": list(groups[1:]),
+        })
+        with tempfile.TemporaryDirectory(prefix="nanlong-recovery-") as directory:
+            for entry, timestamp in entries:
+                local_time = datetime.fromtimestamp(timestamp, message_log_recovery.TZ_LOCAL)
+                payload = {"ts": local_time.strftime("%Y-%m-%d %H:%M:%S UTC+8"), **entry}
+                path = Path(directory) / f"{local_time.date().isoformat()}.log"
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            with patch.object(message_log_recovery, "MESSAGES_DIR", directory):
+                yield
+
+    def result_entry(self, *, chat_id=-1002, reply_id=0, text=None, **overrides):
+        return {
+            "event_type": "message", "message_id": 900, "chat_id": chat_id,
+            "sender_id": 7001, "reply_to_msg_id": reply_id,
+            "text": self.trade_text if text is None else text, **overrides,
+        }
 
     async def test_prompt_and_scheduled_reply_keep_the_original_chat(self):
         await self.seed_prompt(chat_id=-1002)
@@ -352,7 +378,7 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_without_original_chat_does_not_guess_primary_group(self):
         self.seed_exchange()
         self.identity["nanlong_last_chat_id"] = 0
-        with state_module.use_identity(self.identity_id), patch.object(nanlong, "find_message_log_replies", return_value=[]) as recovery:
+        with state_module.use_identity(self.identity_id), patch.object(nanlong, "iter_message_log_entries_between", return_value=[]) as recovery:
             await nanlong._recover_nanlong_pending_reply_from_log(self.now)
         recovery.assert_not_called()
 
@@ -362,6 +388,92 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
             handled = await nanlong.handle_nanlong_result_broadcast(self.trade_text, self.now, self.event(900, -1002))
         self.assertTrue(handled)
         self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    async def test_log_recovery_completes_cross_group_result_without_resending(self):
+        self.seed_exchange()
+        self.identity["nanlong_reply_due_at"] = self.now
+        with (
+            self.logged_results([(self.result_entry(), self.now)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(self.now + 1)
+        sender.assert_not_awaited()
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+        self.assertEqual("", self.identity["nanlong_last_error"])
+
+    async def test_logged_trade_result_can_be_recovered_after_prompt_deadline(self):
+        self.seed_exchange()
+        with (
+            self.logged_results([(self.result_entry(), self.now)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(self.now + 121)
+        sender.assert_not_awaited()
+        self.assertEqual("", self.identity["nanlong_last_error"])
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    async def test_recovery_ignores_player_copy_of_a_place_success(self):
+        self.seed_exchange(protected=True)
+        self.identity.update(nanlong_protect_phase="place_pending", nanlong_last_command=nanlong.CMD_CONCUBINE_PLACE)
+        entry = self.result_entry(
+            chat_id=-1001, reply_id=124, sender_id=123456, sender_is_bot=False,
+            text="你已将道侣【墨彩环】安置在洞府的藏娇阁中。",
+        )
+        with (
+            self.logged_results([(entry, self.now)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            handled = await nanlong._recover_nanlong_pending_reply_from_log(self.now + 1)
+        self.assertFalse(handled)
+        sender.assert_not_awaited()
+        self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+
+    async def test_log_recovery_accepts_a_strict_new_official_bot_shard(self):
+        self.seed_exchange()
+        entry = self.result_entry(sender_id=7002, sender_is_bot=True, sender_username="hantianzun999_bot")
+        with self.logged_results([(entry, self.now)]), state_module.use_identity(self.identity_id):
+            self.assertTrue(await nanlong._recover_nanlong_pending_reply_from_log(self.now + 1))
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    async def test_recovery_rejects_untrusted_or_conflicting_result_logs(self):
+        variants = (
+            {"sender_id": 123456, "sender_is_bot": False},
+            {"sender_id": 7002, "sender_is_bot": True, "sender_username": "unrelated_bot"},
+            {"chat_id": -1003},
+            {"chat_id": -1001, "reply_to_msg_id": 555},
+            {"event_type": "sent"},
+            {"message_id": 0},
+            {"text": "【天机异闻·南陇侯的交易】@SomeoneElse 已完成交易。"},
+        )
+        for overrides in variants:
+            with self.subTest(overrides=overrides):
+                self.seed_exchange()
+                with (
+                    self.logged_results([(self.result_entry(**overrides), self.now)]),
+                    state_module.use_identity(self.identity_id),
+                ):
+                    self.assertFalse(await nanlong._recover_nanlong_pending_reply_from_log(self.now + 1))
+                self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+
+    async def test_log_recovery_of_protected_trade_sends_only_one_recall(self):
+        self.seed_exchange(protected=True)
+        self.identity["nanlong_reply_due_at"] = self.now
+        entries = [(self.result_entry(chat_id=chat_id), self.now) for chat_id in (-1001, -1002)]
+        with (
+            self.logged_results(entries),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                id=125, chat_id=-1001, sent_at=self.now + 1,
+            ))) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(self.now + 1)
+        sender.assert_awaited_once()
+        self.assertEqual(nanlong.CMD_CONCUBINE_RECALL, sender.await_args.args[0])
+        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+        self.assertEqual(125, self.identity["nanlong_last_msg_id"])
 
     async def test_real_old_group_prompts_accept_new_group_unthreaded_results(self):
         fixture = json.loads((Path(__file__).parent / "fixtures" / "nanlong_cross_chat_20260906.json").read_text(encoding="utf-8"))
@@ -392,6 +504,60 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 sender.assert_awaited_once()
                 self.assertEqual(prompt["chat_id"], sender.call_args.kwargs["target_chat_id"])
                 self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    async def test_real_cross_group_result_logs_finish_the_existing_trade(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures" / "nanlong_cross_chat_20260906.json").read_text(encoding="utf-8"))
+        for case in fixture["cases"]:
+            with self.subTest(username=case["username"]):
+                prompt, result = case["prompt"], case["result"]
+                prompt_at = datetime.fromisoformat(prompt["date"]).timestamp()
+                result_at = datetime.fromisoformat(result["date"]).timestamp()
+                state_module.update_send_as_profile(self.identity_id, username=case["username"])
+                self.identity.update(
+                    nanlong_reply_to_msg_id=prompt["id"], nanlong_reply_chat_id=prompt["chat_id"],
+                    next_nanlong_time=prompt_at + 600, nanlong_reply_due_at=prompt_at + 80,
+                    nanlong_last_msg_id=prompt["id"] + 1, nanlong_last_chat_id=prompt["chat_id"],
+                    nanlong_last_sent_at=prompt_at + 20, nanlong_last_command=nanlong.CMD_NANLONG_EXCHANGE_FABAO,
+                    nanlong_protect_phase="", nanlong_retry_count=0,
+                )
+                entry = self.result_entry(chat_id=result["chat_id"], text=result["text"], message_id=result["id"])
+                with (
+                    self.logged_results([(entry, result_at)], groups=(prompt["chat_id"], result["chat_id"])),
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                ):
+                    await nanlong.run_nanlong_scheduler(max(result_at + 1, prompt_at + 81))
+                sender.assert_not_awaited()
+                self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+                self.assertEqual("", self.identity["nanlong_last_error"])
+
+    async def test_trade_completion_clears_only_its_exact_detached_receipt(self):
+        for from_log in (False, True):
+            with self.subTest(from_log=from_log):
+                self.seed_exchange()
+                self.identity["nanlong_reply_due_at"] = self.now
+                pending = {
+                    (chat_id, msg_id): {
+                        "cmd": nanlong.CMD_NANLONG_EXCHANGE_FABAO,
+                        "sent_at": self.now - 1, "chat_id": chat_id,
+                        "send_caller_detached": True, "max_retry": 0,
+                    }
+                    for chat_id, msg_id in ((-1001, 124), (-1002, 124), (-1001, 130))
+                }
+                self.identity["pending_tasks"] = pending
+                with (
+                    self.logged_results([(self.result_entry(), self.now)]),
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                ):
+                    if from_log:
+                        await nanlong.run_nanlong_scheduler(self.now + 1)
+                    else:
+                        await nanlong.handle_nanlong_result_broadcast(self.trade_text, self.now, self.event(900, -1002))
+                sender.assert_not_awaited()
+                self.assertNotIn((-1001, 124), pending)
+                self.assertIn((-1002, 124), pending)
+                self.assertIn((-1001, 130), pending)
 
     async def test_old_or_conflicting_broadcast_cannot_complete_current_trade(self):
         for event in (self.event(900, -1002, at=self.now - 60), self.event(900, -1001, reply_id=555)):
