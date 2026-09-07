@@ -216,7 +216,18 @@ PENDING_TASK_PERSISTED_COLUMNS = (
     "op_id",
     "chain_id",
     "delete_policy",
+    "recovery_json",
 )
+PENDING_TASK_RECOVERY_KEYS = (
+    "reply_recovery_retry_at", "reply_recovery_error", "reply_recovery_msg_id",
+    "reply_recovery_applied", "send_caller_detached",
+)
+
+
+def _pending_recovery_fields(value):
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in PENDING_TASK_RECOVERY_KEYS if key in value}
 
 
 def _safety_watchdog_fused_file():
@@ -867,6 +878,7 @@ _SCHEMA_COLUMNS = {
         ("op_id", "TEXT NOT NULL DEFAULT ''"),
         ("chain_id", "TEXT NOT NULL DEFAULT ''"),
         ("delete_policy", "TEXT NOT NULL DEFAULT ''"),
+        ("recovery_json", "TEXT NOT NULL DEFAULT '{}'"),
     ),
 }
 
@@ -1635,7 +1647,8 @@ def init_db():
             source_module TEXT NOT NULL DEFAULT '',
             op_id TEXT NOT NULL DEFAULT '',
             chain_id TEXT NOT NULL DEFAULT '',
-            delete_policy TEXT NOT NULL DEFAULT ''
+            delete_policy TEXT NOT NULL DEFAULT '',
+            recovery_json TEXT NOT NULL DEFAULT '{}'
         );
 
         CREATE TABLE IF NOT EXISTS command_attempts (
@@ -2002,7 +2015,7 @@ def upsert_identity_to_db(send_as_id):
     conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),))
     for msg_id, item in identity_state.get("pending_tasks", {}).items():
         conn.execute(
-            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, chat_id, topic_id, max_retry, priority, source_module, op_id, chain_id, delete_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, chat_id, topic_id, max_retry, priority, source_module, op_id, chain_id, delete_policy, recovery_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(msg_id),
                 int(send_as_id),
@@ -2019,6 +2032,7 @@ def upsert_identity_to_db(send_as_id):
                 str(item.get("op_id", "") or ""),
                 str(item.get("chain_id", "") or ""),
                 str(item.get("delete_policy", "") or ""),
+                json.dumps(_pending_recovery_fields(item), ensure_ascii=False),
             ),
         )
 
@@ -2093,6 +2107,7 @@ def _load_identity_from_db(send_as_id):
     pending_rows = conn.execute("SELECT * FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),)).fetchall()
     identity_state["pending_tasks"] = {
         int(row["msg_id"]): {
+            **_pending_recovery_fields(_decode_meta_json(row["recovery_json"], {}) if "recovery_json" in row.keys() else {}),
             "cmd": row["cmd"],
             "sent_at": row["sent_at"],
             "retry": row["retry"],

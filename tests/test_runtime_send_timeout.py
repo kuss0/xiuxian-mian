@@ -71,9 +71,32 @@ class _FakeClient:
         return SimpleNamespace(id=910001)
 
 
+class _ControlledSendClient(_FakeClient):
+    def __init__(self, *, error=None):
+        super().__init__([])
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.error = error
+
+    async def __call__(self, request):
+        self.sent_requests.append(request)
+        msg_id = 910000 + len(self.sent_requests)
+        self.started.set()
+        try:
+            await self.release.wait()
+            if self.error is not None:
+                raise self.error
+            return SimpleNamespace(id=msg_id)
+        finally:
+            self.finished.set()
+
+
 class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._send_tasks_snapshot = dict(runtime._GAME_SEND_TASKS)
+        runtime._GAME_SEND_TASKS.clear()
         self._queue_snapshot = (
             runtime._GAME_SEND_LOCK,
             runtime._GAME_LAST_SEND_AT,
@@ -99,7 +122,16 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._CHANNEL_SEND_AS_INVALID_OBSERVATIONS.clear()
         runtime._GAME_GROUP_BOT_ACTIVITY_AT.clear()
 
+    async def asyncTearDown(self):
+        tasks = list(runtime._GAME_SEND_TASKS)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     def tearDown(self):
+        runtime._GAME_SEND_TASKS.clear()
+        runtime._GAME_SEND_TASKS.update(self._send_tasks_snapshot)
         runtime._GAME_SEND_LOCK = self._queue_snapshot[0]
         runtime._GAME_LAST_SEND_AT = self._queue_snapshot[1]
         runtime._MODULE_LAST_SEND_AT.clear()
@@ -233,6 +265,171 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(inspect.CORO_CLOSED, inspect.getcoroutinestate(operation_coro))
         finally:
             operation_coro.close()
+
+    async def test_cancelled_sender_retains_and_registers_late_rpc_result_once(self):
+        client = _ControlledSendClient()
+        with self._prepared_send_context(client):
+            task = asyncio.create_task(runtime.send_game_command(
+                ".cancel_test", send_as_id=301299112, source_module="audit",
+                op_id="cancel-op", chain_id="cancel-chain", max_retry=2,
+            ))
+            await asyncio.wait_for(client.started.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            block = runtime.classify_game_send_block(301299112, ".cancel_test")
+            client.release.set()
+            await asyncio.wait_for(client.finished.wait(), 1)
+            for _ in range(8):
+                await asyncio.sleep(0)
+            pending = state_module.get_identity_state(301299112)["pending_tasks"].get(910001)
+            self.assertIsNotNone(pending)
+            self.assertEqual("unknown", block["status"])
+            self.assertEqual(0, pending["max_retry"])
+            self.assertEqual("cancel-op", pending["op_id"])
+            self.assertEqual("cancel-chain", pending["chain_id"])
+            self.assertEqual(123456, pending["chat_id"])
+            runtime._append_sent_message_log.assert_called_once()
+            runtime._notify_game_command_sent_observers.assert_called_once()
+            self.assertEqual("none", runtime.classify_game_send_block(301299112, ".cancel_test")["status"])
+        self.assertEqual(1, len(client.sent_requests))
+
+    async def test_result_after_timeout_return_is_still_registered(self):
+        client = _ControlledSendClient()
+        with (
+            self._prepared_send_context(client),
+            patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.01),
+            patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 0),
+            patch.object(runtime, "recover_sent_command_from_message_log", return_value=None),
+            patch.object(runtime, "recover_sent_command_from_reply_log", return_value=None),
+        ):
+            result = await runtime.send_game_command(".late_test", send_as_id=301299112)
+            self.assertIsNone(result)
+            client.release.set()
+            await asyncio.wait_for(client.finished.wait(), 1)
+            for _ in range(8):
+                await asyncio.sleep(0)
+            self.assertIn(910001, state_module.get_identity_state(301299112)["pending_tasks"])
+            runtime._append_sent_message_log.assert_called_once()
+
+    async def test_cancellation_before_rpc_is_classified_unsent(self):
+        client = _FakeClient(["ok"])
+        preparing = asyncio.Event()
+
+        async def resolve(_entity_id):
+            preparing.set()
+            await asyncio.Event().wait()
+
+        client.get_input_entity = resolve
+        with self._prepared_send_context(client):
+            task = asyncio.create_task(runtime.send_game_command(".cancel_before_send", send_as_id=301299112))
+            await asyncio.wait_for(preparing.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual("unsent", runtime.classify_game_send_block(301299112, ".cancel_before_send")["status"])
+        self.assertEqual([], client.sent_requests)
+
+    async def test_abandoned_rpc_keeps_next_game_send_serialized(self):
+        client = _ControlledSendClient()
+        with self._prepared_send_context(client):
+            first = asyncio.create_task(runtime.send_game_command(".first_test", send_as_id=301299112))
+            await asyncio.wait_for(client.started.wait(), 1)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            second = asyncio.create_task(runtime.send_game_command(".second_test", send_as_id=301299112))
+            try:
+                for _ in range(12):
+                    await asyncio.sleep(0)
+                self.assertEqual(1, len(client.sent_requests))
+            finally:
+                client.release.set()
+                await asyncio.wait_for(second, 1)
+        self.assertEqual(2, len(client.sent_requests))
+
+    async def test_recovered_log_and_late_rpc_do_not_double_register(self):
+        client = _ControlledSendClient()
+        with (
+            self._prepared_send_context(client),
+            patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.01),
+            patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 0),
+            patch.object(runtime, "recover_sent_command_from_message_log", return_value={
+                "event_type": "message", "message_id": 910001, "ts_epoch": 1234.5,
+            }),
+        ):
+            result = await runtime.send_game_command(".recover_once", send_as_id=301299112)
+            self.assertEqual(910001, result.id)
+            client.release.set()
+            await asyncio.wait_for(client.finished.wait(), 1)
+            for _ in range(8):
+                await asyncio.sleep(0)
+            runtime._append_sent_message_log.assert_called_once()
+            runtime._notify_game_command_sent_observers.assert_called_once()
+
+    async def test_cancel_before_transport_dispatch_does_not_send(self):
+        client = _FakeClient(["ok"])
+        original_start = runtime._start_game_send_rpc
+
+        def start_then_cancel(*args, **kwargs):
+            result = original_start(*args, **kwargs)
+            asyncio.current_task().cancel()
+            return result
+
+        with (
+            self._prepared_send_context(client),
+            patch.object(runtime, "_start_game_send_rpc", side_effect=start_then_cancel),
+        ):
+            task = asyncio.create_task(runtime.send_game_command(".cancel_dispatch", send_as_id=301299112))
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            for _ in range(8):
+                await asyncio.sleep(0)
+            self.assertEqual([], client.sent_requests)
+            self.assertEqual("unsent", runtime.classify_game_send_block(301299112, ".cancel_dispatch")["status"])
+
+    async def test_detached_success_blocks_a_queued_duplicate(self):
+        client = _ControlledSendClient()
+        with self._prepared_send_context(client):
+            first = asyncio.create_task(runtime.send_game_command(".same_test", send_as_id=301299112))
+            await asyncio.wait_for(client.started.wait(), 1)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            duplicate = asyncio.create_task(runtime.send_game_command(".same_test", send_as_id=301299112))
+            client.release.set()
+            self.assertIsNone(await asyncio.wait_for(duplicate, 1))
+            self.assertEqual(1, len(client.sent_requests))
+            with (
+                patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+                patch.object(runtime, "get_bot_last_seen_at", return_value=runtime.time.time() + 10_000),
+                patch.object(runtime, "find_message_log_replies", return_value=[]),
+            ):
+                await runtime.run_retry_scheduler(runtime.time.time() + 5000, send_as_id=301299112)
+            self.assertTrue(state_module.get_identity_state(301299112)["pending_tasks"][910001]["send_caller_detached"])
+
+    async def test_other_account_rpc_waits_for_cancelled_senders_transport(self):
+        client = _ControlledSendClient()
+        read_started = asyncio.Event()
+
+        async def read():
+            read_started.set()
+
+        with self._prepared_send_context(client):
+            first = asyncio.create_task(runtime.send_game_command(".read_barrier", send_as_id=301299112))
+            await asyncio.wait_for(client.started.wait(), 1)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            reading = asyncio.create_task(runtime._run_account_rpc(read(), account_id=7001))
+            try:
+                for _ in range(8):
+                    await asyncio.sleep(0)
+                self.assertFalse(read_started.is_set())
+            finally:
+                client.release.set()
+                await asyncio.wait_for(reading, 1)
+        self.assertTrue(read_started.is_set())
 
     async def test_unbound_identity_never_falls_back_to_another_account(self):
         send_as_id = 301299112
@@ -425,7 +622,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(sum(sleeps), runtime.IDENTITY_SEND_GAP_MIN_SEC)
 
-    async def test_send_rpc_timeout_releases_global_send_lock(self):
+    async def test_send_rpc_timeout_releases_lock_but_waits_for_transport_deadline(self):
         send_as_id = 301299112
         account_id = 7001
         state_module.ensure_identity_registered(send_as_id)
@@ -435,6 +632,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         with ExitStack() as stack:
             for patcher in (
                 patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.05),
+                patch.object(runtime, "GAME_SEND_RPC_COMPLETION_TIMEOUT_SEC", 0.1),
                 patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 0.0),
                 patch.object(runtime, "get_registered_client", return_value=client),
                 patch.object(runtime, "is_account_offline", return_value=False),

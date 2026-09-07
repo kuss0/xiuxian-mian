@@ -71,6 +71,56 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
         self.assertEqual(persistence.SQLITE_BUSY_TIMEOUT_MS, int(busy_timeout))
         self.assertEqual("wal", journal_mode)
 
+    def test_pending_recovery_evidence_survives_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")):
+                identity_id = 990008
+                state_module.ensure_identity_registered(identity_id)
+                evidence = {
+                    "reply_recovery_retry_at": 500.0,
+                    "reply_recovery_error": "reply_handler_not_matched",
+                    "reply_recovery_msg_id": 43,
+                    "reply_recovery_applied": {"message:43:abc123": False},
+                    "send_caller_detached": True,
+                }
+                state_module.get_identity_state(identity_id)["pending_tasks"][42] = {
+                    "cmd": ".test", "sent_at": 100.0, "retry": 0, "timeout": 10,
+                    "max_retry": 0, "chat_id": -1234, **evidence,
+                }
+                self.assertTrue(persistence.save_state())
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+                pending = state_module.get_identity_state(identity_id)["pending_tasks"][42]
+                self.assertEqual(evidence, {key: pending.get(key) for key in evidence})
+                self.assertEqual(".test", pending["cmd"])
+                self.assertEqual(-1234, pending["chat_id"])
+
+    def test_pending_recovery_column_migrates_and_cannot_override_core_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")):
+                identity_id = 990008
+                state_module.ensure_identity_registered(identity_id)
+                state_module.get_identity_state(identity_id)["pending_tasks"][42] = {
+                    "cmd": ".test", "sent_at": 100.0, "retry": 0, "timeout": 10,
+                }
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                conn.execute("ALTER TABLE pending_tasks DROP COLUMN recovery_json")
+                conn.commit()
+                persistence._schema_columns_ensured_key = None
+                persistence._ensure_schema_columns(conn)
+                row = conn.execute("SELECT recovery_json FROM pending_tasks WHERE msg_id = 42").fetchone()
+                self.assertEqual({}, json.loads(row["recovery_json"]))
+                conn.execute("UPDATE pending_tasks SET recovery_json = ? WHERE msg_id = 42", (
+                    json.dumps({"cmd": ".wrong", "send_caller_detached": True}),
+                ))
+                conn.commit()
+                loaded = persistence._load_identity_from_db(identity_id)["pending_tasks"][42]
+                self.assertEqual(".test", loaded["cmd"])
+                self.assertTrue(loaded["send_caller_detached"])
+
     def test_divination_daily_limit_roundtrips_as_integer(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

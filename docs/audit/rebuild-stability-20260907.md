@@ -58,10 +58,11 @@ proof that gameplay is healthy. Production files have not been changed.
 | R04 | High | Global pause, shutdown quiesce, and route-protection changes during entity resolution are not checked before SendMessageRequest | Fixed; one shared validation function at all three boundaries; 308 related tests and 11 subtests pass |
 | R05 | Medium | Cancelling `_run_account_rpc` before acquiring its account lock leaves the supplied coroutine unclosed | Fixed; coroutine lifecycle regression passes |
 | R06 | Medium | MiniApp retries omit all backoff/Retry-After waits when no custom sleeper is supplied | Fixed; default-sleeper 429/503 regressions pass; 265 MiniApp tests and 12 subtests pass |
-| R07 | High | Cancelling a caller after its shielded send RPC starts can abandon result tracking while the RPC continues | Source-path confirmed; deterministic reproducer and correction pending |
+| R07 | High | Cancelling a caller after its shielded send RPC starts can abandon result tracking while the RPC continues | Late-result ownership and serial barriers fixed in candidate; cancellation-before-dispatch, duplicate registration, and detached-pending tests pass; shutdown/unknown-result durability remains under review |
 | R08 | High | Generic pending-log recovery closes a pending task and action guard without replaying the owning business handler | Fixed in candidate; real checkin-state regression plus ownership, failure, intermediate-ack and replay-idempotence tests pass |
 | R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Review in progress; cancellation and final-save ordering need fault tests |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
+| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Source-path confirmed; collision reproducer and migration design pending |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -100,6 +101,17 @@ five monitor/control-only contracts need separate behavioral verification.
   their pending state; per-pending replay receipts are bounded to 64 entries.
   Receipt/edit ordering and duplicate replay are tested after in-memory dedupe
   state is cleared. No production deployment or remote CI run has occurred.
+- R07/R08 candidate full suite: 3758 passed, 579 subtests passed, 55.79 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r07-r08-20260907.xml`. Follow-up persistence,
+  runtime send and reply-replay tests: 98 passed, 2 subtests passed.
+  A restart roundtrip exposed missing recovery-field persistence; additive
+  `pending_tasks.recovery_json` now preserves the bounded receipts and detached
+  caller marker. Legacy-column migration and rejection of metadata overrides
+  are tested. Late RPCs have strong ownership and a 120-second completion
+  deadline; waiting sends obey their own queue deadline and do not overlap an
+  in-flight request. A caller cancelled before dispatch cannot initiate an RPC.
+  An already-sent detached command retains a no-retry pending row until reply
+  reconciliation. The no-message-ID/forced-shutdown case is not yet signed off.
 
 ## Completion Gate
 

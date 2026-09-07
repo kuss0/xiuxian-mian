@@ -297,6 +297,18 @@ def _get_identity_client_with_account(send_as_id=None):
 
 _background_tasks = set()
 _ACCOUNT_RPC_LOCKS = {}
+_GAME_SEND_TASKS = {}
+
+
+async def _wait_for_game_send_tasks(*, account_id=None, timeout=None):
+    tasks = {
+        task for task, receipt in _GAME_SEND_TASKS.items()
+        if not task.done() and (account_id is None or receipt["account_id"] == int(account_id))
+    }
+    if not tasks:
+        return True
+    _done, pending = await asyncio.wait(tasks, timeout=timeout)
+    return not pending
 
 
 def _account_rpc_lock_key(account_id=0, client_obj=None):
@@ -317,6 +329,7 @@ async def account_rpc_slot(account_id=0, client_obj=None):
         lock = asyncio.Lock()
         _ACCOUNT_RPC_LOCKS[key] = lock
     async with lock:
+        await _wait_for_game_send_tasks(account_id=account_id)
         yield
 
 
@@ -420,6 +433,7 @@ GAME_SEND_UNSENT_BLOCK_CODES = {
     "pre_send_guard",
     "action_guard",
     "supervisor_quiesce",
+    "send_cancelled_unsent",
 }
 _LOG_BOT_UPDATE_OFFSET = None
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
@@ -431,6 +445,7 @@ LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_BOT_POLL_MAX_RETRY_DELAY_SEC = 60.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 60
+GAME_SEND_RPC_COMPLETION_TIMEOUT_SEC = 120
 SEND_AS_PEER_INVALID_BACKOFF_SEC = 30 * 60
 CHANNEL_SEND_AS_PROBE_INTERVAL_SEC = 5 * 60
 CHANNEL_SEND_AS_GLOBAL_FAILURE_WINDOW_SEC = 90
@@ -1416,6 +1431,14 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
                     raise GameSendQueueTimeout("local send queue wait timeout") from exc
             else:
                 await _GAME_SEND_LOCK.acquire()
+            try:
+                remaining = max(0.0, queue_deadline - time.monotonic()) if queue_deadline > 0 else None
+                if not await _wait_for_game_send_tasks(timeout=remaining):
+                    _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "queue_timeout"
+                    raise GameSendQueueTimeout("previous send RPC is still unresolved")
+            except BaseException:
+                _GAME_SEND_LOCK.release()
+                raise
             now_mono = time.monotonic()
             if not _is_recovery_queue_turn(queue_token, recovery_ordered=recovery_ordered):
                 _GAME_SEND_LOCK.release()
@@ -3616,15 +3639,6 @@ def _extract_sent_message_id(result):
     return 0
 
 
-def _consume_background_task_result(task):
-    try:
-        task.result()
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
-
-
 def _is_account_session_error(error):
     error_text = str(error or "")
     error_code = error_text.upper()
@@ -4226,6 +4240,9 @@ def _finalize_game_command_sent(
             topic_id=topic_id,
         )
     msg = SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
+    if not has_identity(send_as_id):
+        note_shadow_attempt_sent(msg_id, sent_at=sent_at)
+        return msg
     action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
     with use_identity(send_as_id) as identity_state:
         identity_state["my_msg_ids"][msg_id] = sent_at
@@ -4289,6 +4306,87 @@ def _finalize_game_command_sent(
     )
     note_shadow_attempt_sent(msg_id, sent_at=sent_at)
     return msg
+
+
+def _finalize_game_send_receipt(receipt, *, msg_id, sent_at, append_sent_log=True, recovered=False):
+    if receipt["message"] is not None:
+        return receipt["message"]
+    kwargs = dict(receipt["finalize_kwargs"])
+    if receipt["detached"]:
+        kwargs["max_retry"] = 0
+    msg = _finalize_game_command_sent(
+        receipt["command"], msg_id=msg_id, sent_at=sent_at,
+        append_sent_log=append_sent_log, recovered=recovered or receipt["detached"], **kwargs,
+    )
+    receipt["message"] = msg
+    if msg is not None and receipt["detached"] and has_identity(receipt["send_as_id"]):
+        pending = get_identity_state(receipt["send_as_id"])["pending_tasks"].get(msg.id)
+        if pending is not None:
+            pending["send_caller_detached"] = True
+            mark_dirty()
+    return msg
+
+
+def _complete_game_send_rpc(task, receipt):
+    global _GAME_LAST_SEND_AT
+    _GAME_SEND_TASKS.pop(task, None)
+    try:
+        result = task.result()
+    except BaseException as exc:
+        if receipt["detached"] and receipt["message"] is None:
+            _record_game_send_block(receipt["send_as_id"], receipt["command"], "send_timeout", f"unresolved RPC: {type(exc).__name__}")
+        return
+    if not receipt["detached"] or receipt["message"] is not None:
+        return
+    msg_id = _extract_sent_message_id(result)
+    if msg_id <= 0:
+        return
+    try:
+        _finalize_game_send_receipt(receipt, msg_id=msg_id, sent_at=time.time(), recovered=True)
+        finished_mono = time.monotonic()
+        _GAME_LAST_SEND_AT = finished_mono
+        _IDENTITY_LAST_SEND_AT[receipt["send_as_id"]] = finished_mono
+        module_name = str(receipt["finalize_kwargs"]["send_intent"].get("source_module") or "")
+        if module_name:
+            _MODULE_LAST_SEND_AT[module_name] = finished_mono
+    except Exception:
+        traceback.print_exc()
+
+
+def _start_game_send_rpc(factory, *, account_id, command, **finalize_kwargs):
+    owner = asyncio.current_task()
+    receipt = {
+        "account_id": int(account_id),
+        "command": command,
+        "send_as_id": int(finalize_kwargs["send_as_id"]),
+        "finalize_kwargs": finalize_kwargs,
+        "message": None,
+        "detached": False,
+        "started": False,
+        "cancel_before_dispatch": False,
+    }
+
+    async def dispatch():
+        if receipt["cancel_before_dispatch"] or (owner is not None and owner.cancelling()):
+            raise asyncio.CancelledError
+        receipt["started"] = True
+        return await factory()
+
+    async def run():
+        return await asyncio.wait_for(dispatch(), timeout=GAME_SEND_RPC_COMPLETION_TIMEOUT_SEC)
+
+    task = asyncio.create_task(run())
+    _GAME_SEND_TASKS[task] = receipt
+    task.add_done_callback(lambda done: _complete_game_send_rpc(done, receipt))
+    return task, receipt
+
+
+def _detach_game_send_rpc(task, receipt):
+    if task is None or receipt is None:
+        return
+    receipt["detached"] = True
+    if task.done():
+        _complete_game_send_rpc(task, receipt)
 
 
 async def _recover_timed_out_game_send(
@@ -4395,6 +4493,12 @@ async def _game_send_allowed(
 ):
     if is_game_send_quiesced():
         _record_game_send_block(send_as_id, command, "supervisor_quiesce", "进程停机排空中")
+        return False
+    if has_identity(send_as_id) and any(
+        item.get("send_caller_detached") and get_pending_command(item) == command
+        for item in get_identity_state(send_as_id)["pending_tasks"].values()
+    ):
+        _record_game_send_block(send_as_id, command, "action_guard", "cancelled caller's sent command still awaits reconciliation", definitely_unsent=True)
         return False
     maintenance_allowed = _allows_maintenance_passive_trigger(
         command, allow_maintenance_pause=allow_maintenance_pause, intent=send_intent,
@@ -4506,6 +4610,8 @@ async def _send_game_command_impl(
     send_priority = _normalize_send_priority(command, priority=priority)
     account_id = int(get_identity_account(send_as_id) or 0)
     send_request_started_at = 0.0
+    send_task = None
+    send_receipt = None
     send_intent = _normalize_send_intent(
         command,
         intent=intent,
@@ -4639,17 +4745,16 @@ async def _send_game_command_impl(
                                 return None
                             rpc_stage = "send_message"
                             send_request_started_at = time.time()
-                            send_task = asyncio.create_task(
-                                active_client(
-                                    functions.messages.SendMessageRequest(
-                                        peer=peer,
-                                        message=command,
-                                        reply_to=reply_to_spec,
-                                        send_as=send_as_peer,
-                                    )
-                                ),
+                            request = functions.messages.SendMessageRequest(
+                                peer=peer, message=command, reply_to=reply_to_spec, send_as=send_as_peer,
                             )
-                            send_task.add_done_callback(_consume_background_task_result)
+                            send_task, send_receipt = _start_game_send_rpc(
+                                lambda request=request: active_client(request),
+                                account_id=account_id, command=command, send_as_id=send_as_id,
+                                reply_to=reply_to, send_priority=send_priority, track=track,
+                                reply_timeout=reply_timeout, max_retry=max_retry, send_intent=send_intent,
+                                send_started_at=send_request_started_at, game_group_id=game_group_id, topic_id=topic_id,
+                            )
                             result = await asyncio.wait_for(
                                 asyncio.shield(send_task),
                                 timeout=GAME_SEND_RPC_TIMEOUT_SEC,
@@ -4726,22 +4831,12 @@ async def _send_game_command_impl(
                     send_task=send_task,
                 )
                 if recovered:
-                    msg = _finalize_game_command_sent(
-                        command,
+                    msg = _finalize_game_send_receipt(
+                        send_receipt,
                         msg_id=int(recovered.get("message_id") or 0),
                         sent_at=float(recovered.get("ts_epoch") or time.time()),
-                        send_as_id=send_as_id,
-                        reply_to=reply_to,
-                        send_priority=send_priority,
-                        track=track,
-                        reply_timeout=reply_timeout,
-                        max_retry=max_retry,
-                        send_intent=send_intent,
                         append_sent_log=str(recovered.get("event_type") or "") != "sent",
                         recovered=True,
-                        send_started_at=send_request_started_at,
-                        game_group_id=game_group_id,
-                        topic_id=topic_id,
                     )
                     if msg is not None:
                         await send_audit_log(
@@ -4767,27 +4862,30 @@ async def _send_game_command_impl(
                     priority=_send_timeout_audit_priority(command, send_intent),
                 )
                 _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
-                return None
+                _detach_game_send_rpc(send_task, send_receipt)
+                return send_receipt["message"] if send_receipt is not None else None
             msg_id = _extract_sent_message_id(result)
             if msg_id <= 0:
                 raise ValueError("无法从发送结果中解析消息 ID")
             sent_at = time.time()
-            msg = _finalize_game_command_sent(
-                command,
+            msg = _finalize_game_send_receipt(
+                send_receipt,
                 msg_id=msg_id,
                 sent_at=sent_at,
-                send_as_id=send_as_id,
-                reply_to=reply_to,
-                send_priority=send_priority,
-                track=track,
-                reply_timeout=reply_timeout,
-                max_retry=max_retry,
-                send_intent=send_intent,
-                send_started_at=send_request_started_at,
-                game_group_id=game_group_id,
-                topic_id=topic_id,
             )
             return msg
+    except asyncio.CancelledError:
+        if send_request_started_at > 0 and send_receipt is not None and send_receipt["started"]:
+            if send_receipt["message"] is None:
+                _record_game_send_block(send_as_id, command, "send_timeout", "caller cancelled after RPC started")
+                _detach_game_send_rpc(send_task, send_receipt)
+        else:
+            if send_task is not None and send_receipt is not None and not send_receipt["started"]:
+                send_receipt["cancel_before_dispatch"] = True
+                send_task.cancel()
+            _close_guard_for_unsent_command(command, send_as_id, "send_cancelled_unsent")
+            _record_game_send_block(send_as_id, command, "send_cancelled_unsent", "caller cancelled before RPC", definitely_unsent=True)
+        raise
     except SendAsPeerInvalidError as e:
         await _handle_send_as_peer_invalid(
             command,
@@ -5232,6 +5330,11 @@ async def run_retry_scheduler(now, send_as_id=None):
             with use_identity(identity_id) as identity_state:
                 current_item = identity_state["pending_tasks"].get(msg_id)
                 if not current_item:
+                    continue
+                if current_item.get("send_caller_detached"):
+                    current_item["reply_recovery_retry_at"] = now + 60
+                    current_item["reply_recovery_error"] = "detached_send_reply_unresolved"
+                    mark_dirty()
                     continue
                 if _is_pending_consumed(identity_state, msg_id, family):
                     identity_state["pending_tasks"].pop(msg_id, None)
