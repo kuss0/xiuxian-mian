@@ -26,11 +26,11 @@ proof that gameplay is healthy. Production files have not been changed.
 | --- | --- | --- | --- |
 | Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown repaired; reconnect and forced-stop durability review still pending |
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Pending |
-| Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Pending |
+| Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
-| Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Pending |
+| Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
 | Final review | Revisit every finding and changed contract; record real residual limits | Full suite, targeted fault replay, diff review, deployment comparison | Not started |
@@ -62,9 +62,10 @@ proof that gameplay is healthy. Production files have not been changed.
 | R08 | High | Pending recovery and live routing close pending tasks before successful business handling; family cleanup can remove newer work | Candidate log/live paths now clear only the handled root and guard; real checkin, failure, intermediate-ack, identity-card continuation and replay-idempotence tests pass |
 | R09 | Medium | Shutdown cancels identity/background tasks without consistently joining them before final state save | Fixed in candidate; named/background/UI/login/provider task cleanup is joined, repeat cancellation is avoided, final save follows disconnect and is skipped on incomplete drain |
 | R10 | Medium | No dependency lock or static undefined-name gate; baseline tests did not cover broken official-schedule RPCs | Clean dependency install, `pip check`, Ruff and full suite pass; CI workflow added but not yet run remotely |
-| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Cross-identity DB overwrite, reply-chain and early-reply ownership repaired; same-identity cross-chat storage and remaining numeric-ID consumers remain open |
+| R11 | High | Pending/message-index SQLite tables and several in-memory trackers use message ID without a full chat/identity key; distinct groups can reuse message IDs | Candidate pending/history now use chat plus message ID within each identity, including save/reload, recovery, retry, cleanup and UI; scalar business anchors and unanchored business-level guard closures still need review |
 | R12 | High | Second-soul and phaseful timeout cleanup call the all-identities pending-clear helper without an owner argument | Fixed; both callers supply the active identity, helper requires explicit scope, global World Boss cleanup is explicit |
 | R13 | Medium | A TypeError inside a sent-command observer is mistaken for a legacy signature and invokes that observer again | Fixed; removed the re-invocation fallback, verified both registered observers accept metadata, and isolated callback failures |
+| R14 | High | Delta-save snapshots omit pending chat, topic and recovery metadata; a receipt-only or detached-send update can be skipped after an earlier save | Fixed; route and recovery-only edits trigger an identity write, and reload preserves the no-retry marker and replay receipts |
 
 Inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -163,13 +164,53 @@ five monitor/control-only contracts need separate behavioral verification.
   only the user's original quiz-bank edit and untracked helper. Main service,
   observer and watchdog are active with `NRestarts=0`; listener is inactive.
   No production state/configuration or monitoring skill was modified.
+- R11 chat-scoped candidate: 3811 passed, 584 subtests passed, 57.33 seconds.
+  JUnit: `/tmp/xiuxian-rebuild-r11-chat-20260907.xml`; Ruff and diff checks pass.
+  Initial failing tests demonstrated same-identity cross-chat overwrite and
+  last-log-row route selection. Subsequent reproducers caught cross-chat action
+  guard closure and lost family resolution after history-only reload.
+  A finalizer -> SQLite save/reload -> exact reply cleanup -> second save/reload
+  test preserves both chats. Real checkin-handler replay, scoped retry with a
+  colliding new ID, delayed message cleanup, and JSON UI snapshots also pass.
+- Both SQLite keys are now `(send_as_id, chat_id, msg_id)`; both per-identity
+  maps use `(chat_id, msg_id)`. Known-chat lookups use the composite key directly.
+  Old global or identity-only primary keys migrate in one savepoint. Unknown
+  legacy provenance remains zero and does not authorize automatic retry or
+  deletion in the primary group. Conflicting legacy and composite references
+  fail the save transaction instead of silently replacing a row.
+- Message-log lookup treats an explicit zero chat as unresolved, not an
+  unscoped query. An intentionally unscoped read also rejects cross-chat ID
+  collisions. Phaseful replay retains its originating chat; shared reply and
+  timeout guard closure checks both the root ID and chat. No CommandAttempt
+  recovery authority or new send/retry policy was introduced.
+- R14 regression changes only topic, detached-send flag or replay receipts
+  after an initial save; each edit must cause a delta write. The loaded row
+  retains every edited field. This checks the incremental-save path, not only
+  initial serialization of a new pending row.
+- R11/R14 pre-commit review repeated the isolated full suite: 3811 passed,
+  584 subtests passed, 57.46 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r11-precommit-20260907.xml`; Ruff and diff checks pass.
+  The shared-key candidate is ready for a local commit, not deployment or R11
+  completion. Module-level anchors and guard closure remain under review.
+- Production was checked again read-only after the candidate changes: HEAD
+  `a41409fd`, only the original quiz-bank/helper changes, main/watchdog/observer
+  active with `NRestarts=0`, listener inactive. No deployment, restart, push,
+  live command or skill modification has occurred.
+
+## Deployment Constraint
+
+The chat-key migration is not a code-only rollback. Once two chats contain the
+same message ID for one identity, old loaders collapse those rows in memory.
+Any later deployment needs a verified database snapshot and an explicit rollback
+procedure; do not run the old code against newly written multi-chat state.
+This candidate has not migrated the production database.
 
 ## Next Review Priorities
 
-1. R11: migrate same-identity, cross-chat pending/history storage and audit the
-   remaining numeric-ID consumers, including cleanup, follow-up routing,
-   persistence snapshots and UI records. The repaired in-memory route lookup
-   does not make the old per-identity integer-key dictionaries collision-safe.
+1. R11 follow-through: audit scalar module anchors (`*_msg_id`), business-level
+   guard closures without an expected root/chat, and follow-up sends whose
+   `reply_to` has no explicit target chat. The shared pending/history contract
+   is now tested end-to-end; it does not prove every module's ownership rules.
 2. R07: establish crash-durable ownership before a send can cross the transport
    boundary, and reconcile an outcome without a message ID. Preserve the
    CommandAttempt shadow-only boundary; a new retry/recovery controller is not

@@ -198,13 +198,17 @@ class MessageKeyMigrationTests(unittest.TestCase):
         persistence._ensure_identity_message_primary_keys(self.conn)
         self.assertEqual(before, self.conn.execute("SELECT * FROM pending_tasks").fetchall())
         for table in ("pending_tasks", "message_index"):
-            self.assertEqual(("send_as_id", "msg_id"), self._primary_key(table))
+            self.assertEqual(("send_as_id", "chat_id", "msg_id"), self._primary_key(table))
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'pending_by_identity'").fetchone())
         self.conn.execute("INSERT INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout) VALUES (42, 2, '.other', 101, 0, 10)")
         self.conn.execute("INSERT INTO message_index(msg_id, send_as_id, sent_at) VALUES (42, 2, 101)")
         self.assertEqual(2, self.conn.execute("SELECT COUNT(*) FROM pending_tasks").fetchone()[0])
         second = self.conn.execute("SELECT recovery_json FROM pending_tasks WHERE send_as_id = 2").fetchone()[0]
         self.assertEqual("{}", second)
+        self.conn.execute("INSERT INTO pending_tasks(msg_id, send_as_id, chat_id, cmd, sent_at, retry, timeout) VALUES (42, 1, -5678, '.other_chat', 102, 0, 10)")
+        self.conn.execute("INSERT INTO message_index(msg_id, send_as_id, chat_id, sent_at) VALUES (42, 1, -5678, 102)")
+        self.assertEqual(3, self.conn.execute("SELECT COUNT(*) FROM pending_tasks").fetchone()[0])
+        self.assertEqual(3, self.conn.execute("SELECT COUNT(*) FROM message_index").fetchone()[0])
         changes = self.conn.total_changes
         persistence._ensure_identity_message_primary_keys(self.conn)
         self.assertEqual(changes, self.conn.total_changes)
@@ -217,6 +221,23 @@ class MessageKeyMigrationTests(unittest.TestCase):
         self.assertEqual(("msg_id",), self._primary_key("message_index"))
         self.assertEqual(1, self.conn.execute("SELECT COUNT(*) FROM pending_tasks").fetchone()[0])
         self.assertIsNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'pending_tasks_identity_key_migration'").fetchone())
+        self.assertNotIn("chat_id", {row[1] for row in self.conn.execute("PRAGMA table_info(message_index)")})
+
+    def test_identity_only_primary_key_is_upgraded_too(self):
+        self.conn.executescript("""
+            DROP TABLE message_index;
+            CREATE TABLE message_index (
+                msg_id INTEGER NOT NULL, send_as_id INTEGER NOT NULL,
+                sent_at REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'command',
+                PRIMARY KEY (send_as_id, msg_id)
+            );
+            INSERT INTO message_index(msg_id, send_as_id, sent_at) VALUES (42, 1, 100), (42, 2, 200);
+        """)
+        persistence._ensure_identity_message_primary_keys(self.conn)
+        self.assertEqual(("send_as_id", "chat_id", "msg_id"), self._primary_key("message_index"))
+        self.assertEqual([(1, 0, 42, 100), (2, 0, 42, 200)], self.conn.execute(
+            "SELECT send_as_id, chat_id, msg_id, sent_at FROM message_index ORDER BY send_as_id"
+        ).fetchall())
 
     def test_custom_trigger_requires_review_instead_of_being_dropped(self):
         self.conn.execute("CREATE TRIGGER keep_custom_behavior AFTER INSERT ON pending_tasks BEGIN SELECT 1; END")

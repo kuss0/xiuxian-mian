@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .message_keys import message_key_parts
+
 
 DEFAULT_FLUSH_INTERVAL_SEC = 60.0
 DEFAULT_BACKUP_INTERVAL_SEC = 6 * 3600.0
@@ -130,15 +132,19 @@ def build_identity_snapshot(
     serialize_value: Callable[[str, Any], Any],
     pending_command: Callable[[dict[str, Any]], str],
     retry_limit: int,
+    pending_recovery: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> tuple[Any, ...]:
     identity_state = identity_state if isinstance(identity_state, dict) else {}
     pending_rows = []
-    for msg_id, item in (identity_state.get("pending_tasks") or {}).items():
+    for key, item in (identity_state.get("pending_tasks") or {}).items():
         item = item if isinstance(item, dict) else {}
+        chat_id, msg_id = message_key_parts(key, item)
         max_retry = item.get("max_retry", retry_limit)
         pending_rows.append(
             (
                 int(msg_id),
+                chat_id,
+                int(item.get("topic_id") or 0),
                 pending_command(item),
                 float(item.get("sent_at", 0) or 0),
                 int(item.get("retry", 0) or 0),
@@ -150,12 +156,13 @@ def build_identity_snapshot(
                 str(item.get("op_id", "") or ""),
                 str(item.get("chain_id", "") or ""),
                 str(item.get("delete_policy", "") or ""),
+                json.dumps(pending_recovery(item), sort_keys=True, ensure_ascii=False),
             )
         )
     message_rows = tuple(
         sorted(
-            (int(msg_id), float(sent_at or 0), "command")
-            for msg_id, sent_at in (identity_state.get("my_msg_ids") or {}).items()
+            (*message_key_parts(key), float(sent_at or 0), "command")
+            for key, sent_at in (identity_state.get("my_msg_ids") or {}).items()
         )
     )
     return (

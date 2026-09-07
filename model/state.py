@@ -840,10 +840,9 @@ IDENTITY_STATE_TEMPLATE = {
     "deep_retreat_waiting_logged": False,
     "deep_retreat_protect_logged": False,
 
-    # 追踪补发模块（运行态，不持久化）
-    "pending_tasks": {},
-    # { msg_id: sent_at }
-    "my_msg_ids": {},
+    # Pending commands and sent history are persisted with chat-scoped keys.
+    "pending_tasks": {},  # (chat_id, message_id) -> pending command
+    "my_msg_ids": {},  # (chat_id, message_id) -> sent timestamp
 }
 
 GLOBAL_STATE_DEFAULTS = {

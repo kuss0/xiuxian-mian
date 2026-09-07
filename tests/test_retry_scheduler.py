@@ -84,6 +84,54 @@ class _StateIsolationMixin:
 
 
 class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
+    def test_cross_chat_retry_cannot_consume_or_update_another_chat(self):
+        identity_id = 971020
+        now = 9000.0
+        state_module.ensure_identity_registered(identity_id)
+        identity = state_module.get_identity_state(identity_id)
+        command = config.CMD_IDENTITY_INFO
+        first = {"cmd": command, "sent_at": now - 200, "timeout": 10, "retry": 0, "max_retry": 1, "chat_id": -1001}
+        second = {**first, "sent_at": now - 30, "timeout": 1000, "chat_id": -1002}
+        identity["pending_tasks"] = {(-1001, 42): first, (-1002, 43): second}
+
+        async def fake_send(command, **kwargs):
+            return runtime._finalize_game_command_sent(
+                command, msg_id=43, send_as_id=identity_id, sent_at=now,
+                game_group_id=kwargs["target_chat_id"], append_sent_log=False,
+            )
+
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "get_bot_last_seen_at", return_value=now),
+            patch.object(runtime, "find_message_log_replies", return_value=[]),
+            patch.object(runtime, "send_game_command", side_effect=fake_send) as send,
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+            patch.object(runtime, "_reply_chain_tracker", {}),
+        ):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=identity_id))
+        self.assertEqual(-1001, send.call_args.kwargs["target_chat_id"])
+        self.assertEqual({(-1001, 43), (-1002, 43)}, set(identity["pending_tasks"]))
+        self.assertEqual(1, identity["pending_tasks"][(-1001, 43)]["retry"])
+        self.assertEqual(second, identity["pending_tasks"][(-1002, 43)])
+        self.assertEqual(0, second["retry"])
+
+    def test_unknown_legacy_chat_is_held_without_searching_or_resending(self):
+        identity_id = 971021
+        state_module.ensure_identity_registered(identity_id)
+        item = {"cmd": config.CMD_IDENTITY_INFO, "sent_at": 100, "timeout": 10}
+        state_module.get_identity_state(identity_id)["pending_tasks"] = {(0, 42): item}
+        with (
+            patch.object(runtime, "should_pause_for_bot_health", return_value=False),
+            patch.object(runtime, "find_message_log_replies") as lookup,
+            patch.object(runtime, "send_game_command", new=AsyncMock()) as send,
+        ):
+            for now in (1000, 1100):
+                asyncio.run(runtime.run_retry_scheduler(now, send_as_id=identity_id))
+        lookup.assert_not_called()
+        send.assert_not_awaited()
+        self.assertEqual("unknown_message_chat", item["reply_recovery_error"])
+        self.assertEqual(100, item["sent_at"])
+
     def test_maintenance_passive_trigger_gate_is_exact(self):
         with patch.object(runtime, "get_global_enabled", return_value=False), \
                 patch.object(runtime, "get_global_pause_source", return_value="tianzun_maintenance"):
@@ -130,6 +178,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 101: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".测试指令",
                     "sent_at": now - 20,
                     "retry": 1,
@@ -259,6 +308,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 211: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".测试指令",
                     "sent_at": now - 20,
                     "retry": 0,
@@ -281,6 +331,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             priority=runtime.SEND_PRIORITY_RETRY,
             max_retry=1,
             reply_timeout=10,
+            target_chat_id=state_module.get_game_group_id(),
         )
         with state_module.use_identity(send_as_id) as identity_state:
             pending = identity_state["pending_tasks"]
@@ -297,6 +348,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 231: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".元婴状态",
                     "sent_at": now - 40,
                     "retry": 0,
@@ -336,6 +388,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 154926: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": config.CMD_CHECKIN,
                     "sent_at": now - 40,
                     "retry": 0,
@@ -381,6 +434,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 251: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".引道 水",
                     "sent_at": now - 20,
                     "retry": 0,
@@ -410,6 +464,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             max_retry=1,
             reply_timeout=10,
             source_module="太一",
+            target_chat_id=state_module.get_game_group_id(),
             op_id="taiyi-yindao-251",
             chain_id="taiyi-cycle-1",
             delete_policy="auto_delete",
@@ -422,6 +477,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 271: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".灵树灌溉",
                     "sent_at": now - 20,
                     "retry": 0,
@@ -447,6 +503,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             max_retry=1,
             reply_timeout=10,
             reply_to=123456,
+            target_chat_id=state_module.get_game_group_id(),
         )
 
     def test_pending_timeout_without_bot_seen_waits_for_global_silence_threshold(self):
@@ -456,6 +513,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 261: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".灵树状态",
                     "sent_at": now - 20,
                     "retry": 0,
@@ -482,6 +540,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 281: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": ".灵树状态",
                     "sent_at": now - runtime.BOT_SILENCE_TIMEOUT_SEC - 1,
                     "retry": 0,
@@ -562,6 +621,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 301: {
+                    "chat_id": state_module.get_game_group_id(),
                     "command": ".旧结构指令",
                     "sent_at": now - 20,
                     "retry": 0,
@@ -574,6 +634,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         async def fake_send(command, **kwargs):
             with state_module.use_identity(send_as_id) as identity_state:
                 identity_state["pending_tasks"][302] = {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": command,
                     "sent_at": now + 1,
                     "retry": 0,
@@ -595,6 +656,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             priority=runtime.SEND_PRIORITY_RETRY,
             max_retry=1,
             reply_timeout=10,
+            target_chat_id=state_module.get_game_group_id(),
         )
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertNotIn(301, identity_state["pending_tasks"])
@@ -633,6 +695,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 402: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": f"{config.CMD_STARGAZER_GUIDE} 天雷星",
                     "sent_at": now - 20,
                     "retry": 0,
@@ -662,6 +725,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 403: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": config.CMD_DIVINATION,
                     "sent_at": now - 20,
                     "retry": 0,
@@ -695,6 +759,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 404: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": config.CMD_SMALL_WORLD_QUERY,
                     "sent_at": now - 400,
                     "retry": 0,
@@ -726,6 +791,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 405: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": f"{config.CMD_HEHUAN_DUAL} 温养",
                     "sent_at": now - 400,
                     "retry": 0,
@@ -757,6 +823,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 406: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": f"{config.CMD_CRAFT} 玄铁剑",
                     "sent_at": now - 400,
                     "retry": 0,
@@ -773,6 +840,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
                     "attempt": 1,
                     "last_sent_at": now - 400,
                     "last_msg_id": 406,
+                    "last_chat_id": state_module.get_game_group_id(),
                     "last_command": f"{config.CMD_CRAFT} 玄铁剑",
                     "next_allowed_at": now + 600,
                 }
@@ -799,6 +867,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["pending_tasks"] = {
                 407: {
+                    "chat_id": state_module.get_game_group_id(),
                     "cmd": config.CMD_TIANXING_PANEL,
                     "sent_at": now - 200,
                     "retry": 0,

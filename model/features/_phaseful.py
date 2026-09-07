@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
+from ..message_keys import find_message_key, pop_message_record
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining
@@ -165,7 +166,7 @@ def _recover_phaseful_sent_from_message_log(command, attempt_started_at, now=Non
     sent_at = float(found.get("ts_epoch") or now)
     if msg_id <= 0 or sent_at + 3 < attempt_started_at:
         return None
-    return SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=True)
+    return SimpleNamespace(id=msg_id, chat_id=int(found.get("chat_id") or 0), sent_at=sent_at, recovered_from_message_log=True)
 
 
 async def _replay_recovered_phaseful_replies(spec, command, msg, now=None):
@@ -178,10 +179,12 @@ async def _replay_recovered_phaseful_replies(spec, command, msg, now=None):
         return False
     now = float(now if now is not None else time.time())
     game_group_id = get_sent_message_chat_id(
-        msg_id,
-        default=get_game_group_id(),
+        msg,
+        default=0,
         send_as_id=get_current_identity_id(),
     )
+    if not game_group_id:
+        return False
     replies = find_message_log_replies(
         msg_id,
         now,
@@ -461,6 +464,7 @@ def _remember_summary_consumed_command(
     reply_to=0,
     priority=None,
     max_retry=None,
+    game_group_id=0,
     **send_intent,
 ):
     if not _is_replayable_summary_consumed_command(spec, command, reply_to=reply_to):
@@ -469,7 +473,10 @@ def _remember_summary_consumed_command(
     if key <= 0:
         return
     previous = _SUMMARY_CONSUMED_COMMANDS.get(key)
-    if previous and int(previous.get("msg_id", 0) or 0) == int(msg_id or 0):
+    if (
+        previous and int(previous.get("msg_id", 0) or 0) == int(msg_id or 0)
+        and int(previous.get("chat_id") or 0) == int(game_group_id or 0)
+    ):
         specs = set(previous.get("specs") or ())
         specs.add(spec.phase_key)
         previous["specs"] = sorted(specs)
@@ -490,6 +497,7 @@ def _remember_summary_consumed_command(
     _SUMMARY_CONSUMED_COMMANDS[key] = {
         "cmd": str(command or "").strip(),
         "msg_id": int(msg_id or 0),
+        "chat_id": int(game_group_id or 0),
         "sent_at": float(now or time.time()),
         "track": bool(track),
         "reply_to": int(reply_to or 0),
@@ -513,13 +521,11 @@ def _has_other_summary_observation(spec=None):
 
 def _has_pending_command(command, *, ignore_msg_id=0):
     command = str(command or "").strip()
-    ignore_msg_id = int(ignore_msg_id or 0)
-    for pending_msg_id, item in state.get("pending_tasks", {}).items():
-        try:
-            if int(pending_msg_id) == ignore_msg_id:
-                continue
-        except (TypeError, ValueError):
-            pass
+    records = state.get("pending_tasks", {})
+    ignored_key = find_message_key(records, ignore_msg_id)
+    for key, item in records.items():
+        if key == ignored_key:
+            continue
         if get_pending_command(item) == command:
             return True
     return False
@@ -645,6 +651,12 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     if not _is_summary_replayable_command(command):
         return
 
+    chat_id = int((payload or {}).get("chat_id") or 0) or get_sent_message_chat_id(
+        msg_id, default=0, send_as_id=send_as_id,
+    )
+    if not chat_id:
+        return
+
     track = bool((payload or {}).get("track", True))
     max_retry = (payload or {}).get("max_retry")
     priority = "retry"
@@ -657,10 +669,11 @@ async def _replay_summary_consumed_command(send_as_id, payload):
             return
         if command == CMD_TREE_GUARD and float(state.get("next_guard_time", 0) or 0) > now + SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC:
             return
-        if track and msg_id > 0 and msg_id not in state.get("pending_tasks", {}):
+        key = find_message_key(state.get("pending_tasks", {}), msg_id, chat_id=chat_id)
+        if track and msg_id > 0 and key is None:
             return
-        if msg_id > 0:
-            state.get("pending_tasks", {}).pop(msg_id, None)
+        if key is not None:
+            state.get("pending_tasks", {}).pop(key, None)
         if not _prepare_replayed_command_state(command, now, old_msg_id=msg_id):
             save_state()
             return
@@ -672,6 +685,7 @@ async def _replay_summary_consumed_command(send_as_id, payload):
         send_as_id=send_as_id,
         priority=priority,
         max_retry=max_retry,
+        target_chat_id=chat_id,
         **send_intent,
     )
     if msg:
@@ -761,6 +775,7 @@ def observe_phaseful_identity_message(
             previous
             and int(previous.get("msg_id", 0) or 0) == int(msg_id or 0)
             and str(previous.get("cmd") or "").strip() == text
+            and int(previous.get("chat_id") or 0) == int(_send_intent.get("game_group_id") or 0)
         ):
             previous["track"] = bool(previous.get("track", True)) and bool(track)
             if priority is not None:
@@ -1177,16 +1192,17 @@ async def delete_summary_trigger_msg(spec):
             chat_id = get_pending_message_chat_id(
                 get_current_identity_id(),
                 msg_id,
-                default=get_game_group_id(),
+                default=0,
             )
-            await _run_account_rpc(
-                client.delete_messages(chat_id, [msg_id]),
-                account_id=account_id,
-                client_obj=client,
-            )
+            if chat_id:
+                await _run_account_rpc(
+                    client.delete_messages(chat_id, [msg_id]),
+                    account_id=account_id,
+                    client_obj=client,
+                )
         except Exception:
             pass
-    state["my_msg_ids"].pop(msg_id, None)
+    pop_message_record(state["my_msg_ids"], msg_id)
 
 
 async def finalize_summary_broadcast(spec, now):

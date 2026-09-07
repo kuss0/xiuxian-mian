@@ -809,7 +809,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 patch.object(
                     _phaseful,
                     "find_recent_message_log_command",
-                    return_value={"message_id": 9257, "ts_epoch": now + 1},
+                    return_value={"message_id": 9257, "chat_id": state_module.get_game_group_id(), "ts_epoch": now + 1},
                 ),
                 patch.object(
                     _phaseful,
@@ -2775,6 +2775,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         payload = {
             "cmd": concubine.CMD_CONCUBINE_DREAM,
+            "chat_id": state_module.get_game_group_id(),
             "msg_id": old_msg_id,
             "sent_at": now - 30,
             "track": False,
@@ -2802,6 +2803,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             max_retry=0,
             source_module="侍妾",
             op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{concubine.CMD_CONCUBINE_DREAM}",
+            target_chat_id=state_module.get_game_group_id(),
             chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
         )
         with state_module.use_identity(send_as_id):
@@ -2826,6 +2828,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         payload = {
             "cmd": concubine.CMD_CONCUBINE_VOYAGE_RETURN,
+            "chat_id": state_module.get_game_group_id(),
             "msg_id": old_msg_id,
             "sent_at": now - 30,
             "track": False,
@@ -2853,6 +2856,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             max_retry=0,
             source_module="侍妾远航",
             op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{concubine.CMD_CONCUBINE_VOYAGE_RETURN}",
+            target_chat_id=state_module.get_game_group_id(),
             chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
         )
         with state_module.use_identity(send_as_id):
@@ -2879,6 +2883,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         payload = {
             "cmd": command,
+            "chat_id": state_module.get_game_group_id(),
             "msg_id": old_msg_id,
             "sent_at": now - 30,
             "track": False,
@@ -2918,6 +2923,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         payload = {
             "cmd": command,
+            "chat_id": state_module.get_game_group_id(),
             "msg_id": old_msg_id,
             "sent_at": now - 30,
             "track": False,
@@ -2945,6 +2951,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             max_retry=0,
             source_module="斗法",
             op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{command}",
+            target_chat_id=state_module.get_game_group_id(),
             chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
         )
         with state_module.use_identity(send_as_id):

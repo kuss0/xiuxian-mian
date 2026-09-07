@@ -1080,7 +1080,7 @@ def is_guarded_command(command):
     return bool(resolve_action_key(command))
 
 
-def note_sent(command, send_as_id, msg_id, sent_at=None):
+def note_sent(command, send_as_id, msg_id, sent_at=None, *, chat_id=0):
     action_key = resolve_action_key(command)
     if not action_key or not has_identity(send_as_id):
         return
@@ -1096,6 +1096,7 @@ def note_sent(command, send_as_id, msg_id, sent_at=None):
         session["attempt"] = attempt
         session["last_command"] = normalize_command(command)
         session["last_msg_id"] = int(msg_id or 0)
+        session["last_chat_id"] = int(chat_id or 0)
         session["last_sent_at"] = sent_at
         if float(session.get("first_sent_at", 0) or 0) <= 0:
             session["first_sent_at"] = sent_at
@@ -1241,7 +1242,7 @@ def get_timing_blocked_until(command, send_as_id=None, now=None):
     return 0.0, ""
 
 
-def close_action(action_key, send_as_id=None, reason="reply", now=None, *, expected_msg_id=None):
+def close_action(action_key, send_as_id=None, reason="reply", now=None, *, expected_msg_id=None, expected_chat_id=None):
     action_key = str(action_key or "").strip()
     if not action_key or not has_identity(send_as_id):
         return False
@@ -1253,9 +1254,12 @@ def close_action(action_key, send_as_id=None, reason="reply", now=None, *, expec
             return False
         if expected_msg_id is not None and int(session.get("last_msg_id") or 0) != int(expected_msg_id):
             return False
+        if expected_chat_id is not None and int(session.get("last_chat_id") or 0) != int(expected_chat_id):
+            return False
         if _has_remote_block(session, now) and str(session.get("remote_block_kind") or "") != "send_unknown":
             session["attempt"] = 0
             session["last_msg_id"] = 0
+            session["last_chat_id"] = 0
             session["next_allowed_at"] = 0
             session["closed_at"] = now
             session["close_reason"] = str(reason or "")
@@ -1295,10 +1299,12 @@ def close_actions(action_keys, send_as_id=None, reason="reply", now=None):
     return closed_count
 
 
-def close_by_family(family, send_as_id=None, reason="reply", now=None, *, expected_msg_id=None):
+def close_by_family(family, send_as_id=None, reason="reply", now=None, *, expected_msg_id=None, expected_chat_id=None):
     closed = False
     for action_key in resolve_action_keys_for_family(family):
         kwargs = {"expected_msg_id": expected_msg_id} if expected_msg_id is not None else {}
+        if expected_chat_id is not None:
+            kwargs["expected_chat_id"] = expected_chat_id
         closed = close_action(action_key, send_as_id=send_as_id, reason=reason, now=now, **kwargs) or closed
     return closed
 

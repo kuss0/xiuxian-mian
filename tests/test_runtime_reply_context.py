@@ -41,6 +41,63 @@ class RuntimeReplyContextTests(unittest.TestCase):
         path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
         return path
 
+    def test_same_identity_sends_in_two_chats_keep_both_pending_and_history(self):
+        identity_id = self._register_identity(991201)
+        with patch.object(runtime, "_notify_game_command_sent_observers"):
+            for chat_id, command in ((-1001, runtime.CMD_CHECKIN), (-1002, runtime.CMD_SECT_TEACH)):
+                msg = runtime._finalize_game_command_sent(
+                    command, msg_id=7001, sent_at=runtime.time.time(),
+                    send_as_id=identity_id, game_group_id=chat_id, append_sent_log=False,
+                )
+                self.assertIsNotNone(msg)
+        identity = state_module.get_identity_state(identity_id)
+        self.assertEqual(2, len(identity["pending_tasks"]))
+        self.assertEqual({(-1001, 7001), (-1002, 7001)}, set(identity["my_msg_ids"]))
+        self.assertEqual(-1002, msg.chat_id)
+        runtime._reply_chain_tracker.clear()
+        with patch.object(runtime, "_resolve_identity_from_sent_message_log") as log_lookup:
+            for chat_id, family in ((-1001, "checkin"), (-1002, "sect_teach")):
+                context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=chat_id)
+                self.assertEqual((identity_id, family), (context["send_as_id"], context["family"]))
+            log_lookup.assert_not_called()
+
+    def test_sent_chat_lookup_rejects_ambiguous_same_identity_logs(self):
+        identity_id = self._register_identity(991201)
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            path = self._write_message_log(tmpdir, {})
+            path.write_text("\n".join(json.dumps({
+                "event_type": "sent", "message_id": 7001, "chat_id": chat_id,
+                "sender_id": identity_id, "text": runtime.CMD_CHECKIN,
+            }) for chat_id in (-1001, -1002)), encoding="utf-8")
+            self.assertEqual(0, runtime.get_sent_message_chat_id(7001, default=-1009, send_as_id=identity_id))
+
+    def test_restored_history_without_pending_still_resolves_family_from_log(self):
+        identity_id = self._register_identity(991201)
+        state_module.get_identity_state(identity_id)["my_msg_ids"][(-1001, 7001)] = runtime.time.time()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(runtime, "MESSAGES_DIR", tmpdir):
+            self._write_message_log(tmpdir, {
+                "event_type": "sent", "message_id": 7001, "chat_id": -1001,
+                "sender_id": identity_id, "text": runtime.CMD_CHECKIN,
+            })
+            context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1001)
+        self.assertEqual((identity_id, "checkin"), (context["send_as_id"], context["family"]))
+
+    def test_ui_pending_rows_expose_chat_without_leaking_tuple_keys(self):
+        from model import ui
+
+        identity_id = self._register_identity(991201)
+        state_module.get_identity_state(identity_id)["pending_tasks"] = {
+            (chat_id, 7001): {"cmd": runtime.CMD_CHECKIN, "chat_id": chat_id, "sent_at": runtime.time.time()}
+            for chat_id in (-1001, -1002)
+        }
+        snapshot = ui.get_identity_ui_snapshot(identity_id)
+        self.assertEqual({(-1001, 7001), (-1002, 7001)}, {
+            (row["chat_id"], row["msg_id"]) for row in snapshot["pending_tasks"]
+        })
+        self.assertEqual(2, snapshot["pending_task_count"])
+        json.dumps(snapshot)
+        json.dumps(ui.get_ui_snapshot())
+
     def test_reply_context_recovers_script_sent_message_from_log(self):
         identity_id = self._register_identity(991201)
         payload = {

@@ -175,7 +175,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
             identity_state["last_checkin_done_day"] = ""
             identity_state["next_checkin_time"] = now - 1
 
-            fake_msg = SimpleNamespace(id=7701, sent_at=now)
+            fake_msg = SimpleNamespace(id=7701, chat_id=-1001, sent_at=now)
             with (
                 patch.object(checkin, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(checkin, "save_state"),
@@ -184,7 +184,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once_with(config.CMD_CHECKIN, max_retry=1)
             self.assertEqual(7701, identity_state["last_checkin_msg_id"])
-            self.assertEqual(now, identity_state["my_msg_ids"][7701])
+            self.assertEqual(now, identity_state["my_msg_ids"][(-1001, 7701)])
             self.assertIn(7701, identity_state["checkin_cleanup_msg_ids"])
 
     async def test_checkin_runtime_block_is_not_reported_as_send_failure(self):

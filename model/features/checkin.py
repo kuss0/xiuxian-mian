@@ -29,6 +29,7 @@ from ..config import (
     SECT_TEACH_DELAY_MIN_SEC,
 )
 from ..persistence import mark_dirty, save_state
+from ..message_keys import find_message_key, get_message_record, message_key, pop_message_record
 from ..runtime import _get_identity_client, classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     format_window_text,
@@ -110,7 +111,7 @@ def _is_checkin_window_time(ts):
 def _has_checkin_pending():
     pending_tasks = state.get("pending_tasks", {})
     last_msg_id = int(state.get("last_checkin_msg_id", 0) or 0)
-    if last_msg_id > 0 and last_msg_id in pending_tasks:
+    if last_msg_id > 0 and find_message_key(pending_tasks, last_msg_id) is not None:
         return True
     for pending in pending_tasks.values():
         if get_pending_command(pending) == CMD_CHECKIN:
@@ -123,7 +124,7 @@ def _has_recent_checkin_send(now):
     if last_msg_id <= 0:
         return False
     try:
-        sent_at = float((state.get("my_msg_ids") or {}).get(last_msg_id, 0) or 0)
+        sent_at = float(get_message_record(state.get("my_msg_ids") or {}, last_msg_id, 0) or 0)
     except (TypeError, ValueError):
         sent_at = 0
     if sent_at <= 0:
@@ -423,8 +424,9 @@ async def cleanup_checkin_chain_messages():
         account_id, client = _get_identity_client_with_account()
         msg_ids_by_chat = {}
         for msg_id in msg_ids:
-            chat_id = get_pending_message_chat_id(get_current_identity_id(), msg_id, default=get_game_group_id())
-            msg_ids_by_chat.setdefault(chat_id, []).append(msg_id)
+            chat_id = get_pending_message_chat_id(get_current_identity_id(), msg_id, default=0)
+            if chat_id:
+                msg_ids_by_chat.setdefault(chat_id, []).append(msg_id)
         for chat_id, routed_msg_ids in msg_ids_by_chat.items():
             await _run_account_rpc(
                 client.delete_messages(chat_id, routed_msg_ids),
@@ -434,7 +436,7 @@ async def cleanup_checkin_chain_messages():
     except Exception as e:
         print(f"cleanup_checkin_chain_messages failed: {e} | msg_ids={msg_ids}")
     for msg_id in msg_ids:
-        state["my_msg_ids"].pop(msg_id, None)
+        pop_message_record(state["my_msg_ids"], msg_id)
     state["checkin_cleanup_msg_ids"] = []
     save_state()
 
@@ -598,7 +600,8 @@ async def run_checkin_scheduler(now):
         msg_id = int(getattr(msg, "id", 0) or 0)
         if msg_id:
             state["last_checkin_msg_id"] = msg_id
-            state.setdefault("my_msg_ids", {})[msg_id] = sent_at
+            key = message_key(msg, getattr(msg, "chat_id", 0) or 0)
+            state.setdefault("my_msg_ids", {})[key] = sent_at
             remember_checkin_cleanup_msg_id(msg_id)
         next_ts = _schedule_checkin_next_day(sent_at)
         save_state()

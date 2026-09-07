@@ -50,6 +50,76 @@ class PersistenceDeltaLabTests(unittest.TestCase):
         with patch.object(persistence, "_write_live_guard_backup"):
             return persistence.save_state()
 
+    def test_same_identity_cross_chat_pending_survives_reload_and_exact_reply_cleanup(self):
+        from model import runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ), patch.object(runtime, "_reply_chain_tracker", {}), patch.object(
+            runtime, "_notify_game_command_sent_observers"
+        ):
+            identity_id = 990106
+            state_module.ensure_identity_registered(identity_id)
+            for chat_id in (-1001, -1002):
+                runtime._finalize_game_command_sent(
+                    runtime.CMD_CHECKIN, msg_id=7001, sent_at=runtime.time.time(),
+                    send_as_id=identity_id, game_group_id=chat_id, append_sent_log=False,
+                )
+            self.assertTrue(self._save_without_guard_backup())
+            runtime._reply_chain_tracker.clear()
+            restored = persistence._load_identity_from_db(identity_id)
+            self.assertEqual({(-1001, 7001), (-1002, 7001)}, set(restored["pending_tasks"]))
+            self.assertEqual({(-1001, 7001), (-1002, 7001)}, set(restored["my_msg_ids"]))
+            context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1001)
+            self.assertEqual(identity_id, context["send_as_id"])
+            runtime.clear_pending_by_reply(reply_context=context)
+            self.assertEqual({(-1002, 7001)}, set(restored["pending_tasks"]))
+            self.assertTrue(self._save_without_guard_backup())
+            restored = persistence._load_identity_from_db(identity_id)
+            self.assertEqual({(-1002, 7001)}, set(restored["pending_tasks"]))
+            context = runtime.get_reply_context(reply_to_msg_id=7001, chat_id=-1002)
+            self.assertEqual((identity_id, "checkin"), (context["send_as_id"], context["family"]))
+
+    def test_pending_route_and_recovery_only_edits_are_not_lost_by_delta_save(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            persistence, "DB_FILE", str(Path(tmpdir) / "state.db")
+        ):
+            identity_id = 990107
+            state_module.ensure_identity_registered(identity_id)
+            pending = {"cmd": ".test", "sent_at": 100, "timeout": 10, "chat_id": -1001}
+            state_module.get_identity_state(identity_id)["pending_tasks"][(-1001, 42)] = pending
+            self.assertTrue(self._save_without_guard_backup())
+            for field, value in (("topic_id", 77), ("send_caller_detached", True), ("reply_recovery_applied", {"message:43:hash": False})):
+                with self.subTest(field=field):
+                    pending[field] = value
+                    with patch.object(persistence, "upsert_identity_to_db", wraps=persistence.upsert_identity_to_db) as upsert:
+                        self.assertTrue(self._save_without_guard_backup())
+                    upsert.assert_called_once_with(identity_id)
+            restored = persistence._load_identity_from_db(identity_id)["pending_tasks"][(-1001, 42)]
+            self.assertEqual(77, restored["topic_id"])
+            self.assertTrue(restored["send_caller_detached"])
+            self.assertEqual({"message:43:hash": False}, restored["reply_recovery_applied"])
+
+    def test_duplicate_legacy_and_scoped_reference_cannot_silently_replace_a_row(self):
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(persistence, "DB_FILE", str(Path(tmpdir) / "state.db")),
+            patch.object(persistence, "_last_save_failed_at", 0.0),
+            patch.object(persistence, "_last_save_error", ""),
+        ):
+            identity_id = 990108
+            state_module.ensure_identity_registered(identity_id)
+            identity = state_module.get_identity_state(identity_id)
+            item = {"cmd": ".original", "sent_at": 100, "timeout": 10, "chat_id": -1001}
+            identity["pending_tasks"] = {(-1001, 42): item}
+            self.assertTrue(self._save_without_guard_backup())
+            identity["pending_tasks"][42] = {**item, "cmd": ".conflicting"}
+            self.assertFalse(self._save_without_guard_backup())
+            rows = persistence.get_db_conn().execute(
+                "SELECT chat_id, msg_id, cmd FROM pending_tasks WHERE send_as_id = ?", (identity_id,),
+            ).fetchall()
+            self.assertEqual([(-1001, 42, ".original")], [tuple(row) for row in rows])
+
     def test_repeated_no_change_save_has_no_mutating_sql(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(
             persistence, "DB_FILE", str(Path(tmpdir) / "state.db")

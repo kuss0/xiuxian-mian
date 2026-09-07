@@ -11,6 +11,7 @@ from ..action_guard import close_by_family as close_action_guard_by_family
 from ..config import CMD_DIVINATION, CMD_DIVINATION_EXCHANGE, MESSAGES_DIR, PROJECT_ROOT_DIR, TZ_LOCAL
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
+from ..message_keys import message_key_parts
 from ..runtime import clear_pending_by_reply, mono, send_audit_log, send_game_command
 from ..state import (
     get_divination_daily_limit,
@@ -367,7 +368,7 @@ def _record_observed_daily_count(record, observed_count, limit, now):
     return changed
 
 
-def _clear_query_pending_task(identity_id, msg_id):
+def _clear_query_pending_task(identity_id, msg_id, *, chat_id=0):
     try:
         identity_id = int(identity_id or 0)
         msg_id = int(msg_id or 0)
@@ -380,6 +381,7 @@ def _clear_query_pending_task(identity_id, msg_id):
             "send_as_id": identity_id,
             "reply_to_msg_id": msg_id,
             "family": "",
+            "chat_id": chat_id,
         }
     )
     return bool((result or {}).get("removed_ids"))
@@ -1628,7 +1630,7 @@ def get_divination_pending_health_lines(now=None, *, limit=8):
             if cmd != CMD_DIVINATION and source_module != "卜筮问天":
                 continue
             try:
-                msg_id = int(msg_id or pending.get("msg_id") or 0)
+                chat_id, msg_id = message_key_parts(msg_id, pending)
                 sent_at = float(pending.get("sent_at") or 0)
                 timeout = float(pending.get("timeout") or 0)
             except (TypeError, ValueError):
@@ -1648,6 +1650,7 @@ def get_divination_pending_health_lines(now=None, *, limit=8):
                 {
                     "identity": _format_identity(identity_id),
                     "msg_id": msg_id,
+                    "chat_id": chat_id,
                     "age": age,
                     "timeout": int(timeout),
                     "overdue": overdue,
@@ -1704,7 +1707,7 @@ def _cleanup_stale_divination_pending_tasks(now=None):
             if cmd != CMD_DIVINATION and source_module != "卜筮问天":
                 continue
             try:
-                msg_id = int(msg_id or pending.get("msg_id") or 0)
+                chat_id, msg_id = message_key_parts(msg_id, pending)
                 sent_at = float(pending.get("sent_at") or 0)
                 timeout = float(pending.get("timeout") or 0)
                 max_retry = int(pending.get("max_retry") or 0)
@@ -1714,7 +1717,7 @@ def _cleanup_stale_divination_pending_tasks(now=None):
                 continue
             if max_retry > 0 or sent_at <= 0 or timeout <= 0 or now < sent_at + timeout:
                 continue
-            if _clear_query_pending_task(identity_id, msg_id):
+            if _clear_query_pending_task(identity_id, msg_id, chat_id=chat_id):
                 removed += 1
     return removed
 

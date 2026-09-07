@@ -16,6 +16,8 @@ from datetime import datetime
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
+from .message_keys import message_key_parts
+
 try:
     import segno
 except ImportError:
@@ -4868,12 +4870,14 @@ def get_identity_ui_snapshot(send_as_id):
         else:
             stargazer_next_action_time = stargazer_followup_due_at or stargazer_next_panel_time
         pending_tasks = []
-        for msg_id, item in sorted(
+        for key, item in sorted(
             (identity_state.get("pending_tasks") or {}).items(),
             key=lambda pair: float((pair[1] or {}).get("sent_at", 0) or 0),
         ):
+            chat_id, msg_id = message_key_parts(key, item)
             pending_tasks.append({
                 "msg_id": int(msg_id or 0),
+                "chat_id": chat_id,
                 "cmd": get_pending_command(item),
                 "retry": int((item or {}).get("retry", 0) or 0),
                 "max_retry": int((item or {}).get("max_retry", 0) or 0),

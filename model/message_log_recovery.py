@@ -72,9 +72,10 @@ def iter_message_log_entries_between(start_ts, end_ts, *, messages_dir=None):
         day += timedelta(days=1)
 
 
-def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=0, messages_dir=None):
+def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=None, messages_dir=None):
+    # None is an intentional unscoped read; zero is unresolved routing evidence.
     command_msg_id = int(command_msg_id or 0)
-    if command_msg_id <= 0:
+    if command_msg_id <= 0 or (chat_id is not None and not int(chat_id or 0)):
         return []
     chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
@@ -90,6 +91,8 @@ def find_message_log_replies(command_msg_id, now, *, lookback_sec=900, lookahead
         item = dict(entry)
         item["ts_epoch"] = entry_ts
         matches.append(item)
+    if not chat_id and len({int(item.get("chat_id") or 0) for item in matches}) > 1:
+        return []
     matches.sort(key=lambda item: (float(item.get("ts_epoch") or 0), int(item.get("message_id") or 0)))
     return matches
 
@@ -101,7 +104,7 @@ def find_message_log_replies_tail(
     lookback_sec=120,
     lookahead_sec=5,
     predicate=None,
-    chat_id=0,
+    chat_id=None,
     messages_dir=None,
     max_bytes=512 * 1024,
 ):
@@ -111,7 +114,7 @@ def find_message_log_replies_tail(
     is already durable before the accepted command id is registered locally.
     """
     command_msg_id = int(command_msg_id or 0)
-    if command_msg_id <= 0:
+    if command_msg_id <= 0 or (chat_id is not None and not int(chat_id or 0)):
         return []
     chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
@@ -144,13 +147,15 @@ def find_message_log_replies_tail(
             item = dict(entry)
             item["ts_epoch"] = entry_ts
             matches.append(item)
+    if not chat_id and len({int(item.get("chat_id") or 0) for item in matches}) > 1:
+        return []
     matches.sort(key=lambda item: (float(item.get("ts_epoch") or 0), int(item.get("message_id") or 0)))
     return matches
 
 
-def find_message_log_message(msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=0, messages_dir=None):
+def find_message_log_message(msg_id, now, *, lookback_sec=900, lookahead_sec=30, predicate=None, chat_id=None, messages_dir=None):
     msg_id = int(msg_id or 0)
-    if msg_id <= 0:
+    if msg_id <= 0 or (chat_id is not None and not int(chat_id or 0)):
         return None
     chat_id = int(chat_id or 0)
     end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
@@ -163,6 +168,8 @@ def find_message_log_message(msg_id, now, *, lookback_sec=900, lookahead_sec=30,
             continue
         if predicate is not None and not predicate(entry):
             continue
+        if found is not None and not chat_id and int(found.get("chat_id") or 0) != int(entry.get("chat_id") or 0):
+            return None
         found = dict(entry)
         found["ts_epoch"] = entry_ts
     return found

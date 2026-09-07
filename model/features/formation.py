@@ -15,6 +15,7 @@ from ..config import (
 )
 from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
+from ..message_keys import find_message_key
 from ..runtime import console_log, get_sent_message_chat_id, has_active_reply_dispatch, send_game_command
 from ..state import (
     get_current_identity_id,
@@ -361,27 +362,29 @@ def _record_success(parsed, now, *, message_id=0, reply_to_msg_id=0):
     return bool(success_ids or removed_invites)
 
 
-def _resolve_failure_identity(reply_to_msg_id=0, identity_id_hint=0):
+def _resolve_failure_identity(reply_to_msg_id=0, identity_id_hint=0, *, chat_id=0):
     identity_id_hint = int(identity_id_hint or 0)
     if identity_id_hint > 0 and has_identity(identity_id_hint):
         return identity_id_hint
     reply_to_msg_id = int(reply_to_msg_id or 0)
     if reply_to_msg_id <= 0:
         return 0
+    candidates = set()
     for identity_id in get_identity_ids():
         identity_state = get_identity_state(identity_id)
-        if reply_to_msg_id in (identity_state.get("my_msg_ids") or {}):
-            return int(identity_id)
-        if reply_to_msg_id == int(identity_state.get("formation_pending_assist_msg_id", 0) or 0):
-            return int(identity_id)
-        if reply_to_msg_id == int(identity_state.get("last_formation_msg_id", 0) or 0):
-            return int(identity_id)
-    return 0
+        if find_message_key(identity_state.get("my_msg_ids") or {}, reply_to_msg_id, chat_id=chat_id or None) is not None:
+            candidates.add(int(identity_id))
+        if not chat_id and reply_to_msg_id in {
+            int(identity_state.get("formation_pending_assist_msg_id", 0) or 0),
+            int(identity_state.get("last_formation_msg_id", 0) or 0),
+        }:
+            candidates.add(int(identity_id))
+    return next(iter(candidates)) if len(candidates) == 1 else 0
 
 
-def _record_failure(parsed, now, *, reply_to_msg_id=0, message_id=0, identity_id_hint=0, command_text=""):
+def _record_failure(parsed, now, *, reply_to_msg_id=0, message_id=0, identity_id_hint=0, command_text="", chat_id=0):
     kind = str((parsed or {}).get("kind") or "")
-    identity_id = _resolve_failure_identity(reply_to_msg_id=reply_to_msg_id, identity_id_hint=identity_id_hint)
+    identity_id = _resolve_failure_identity(reply_to_msg_id=reply_to_msg_id, identity_id_hint=identity_id_hint, chat_id=chat_id)
     error_text = {
         "cooldown_start": "启阵冷却",
         "cooldown_assist": "助阵冷却",
@@ -452,6 +455,7 @@ def apply_formation_reply_snapshot(command_text, text, now, *, reply_to_msg_id=0
         message_id=message_id,
         identity_id_hint=identity_id_hint,
         command_text=normalize_formation_command(command_text),
+        chat_id=chat_id,
     )
 
 

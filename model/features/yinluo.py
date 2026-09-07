@@ -16,6 +16,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
+from ..message_keys import get_message_record
 from ..message_log_recovery import iter_message_log_entries_between
 from ..persisted_state import PersistedState
 from ..runtime import send_game_command
@@ -378,11 +379,11 @@ def _next_daily_sacrifice_time(now):
     return float(next_day.timestamp() + YINLUO_TIME_BUFFER_SEC)
 
 
-def _message_sent_at(msg_id):
+def _message_sent_at(msg_id, *, chat_id=None):
     msg_id = _safe_int(msg_id)
     if msg_id <= 0:
         return 0.0
-    return _safe_float((state.get("my_msg_ids") or {}).get(msg_id), 0)
+    return _safe_float(get_message_record(state.get("my_msg_ids") or {}, msg_id, chat_id=chat_id), 0)
 
 
 def _safe_int(value, default=0):
@@ -578,7 +579,7 @@ def _yinluo_result_day_key(now, event_context=None):
         if ts > 0:
             return get_day_key(ts)
     for msg_key in ("root_msg_id", "reply_to_msg_id", "msg_id", "source_message_id"):
-        sent_at = _message_sent_at(context.get(msg_key))
+        sent_at = _message_sent_at(context.get(msg_key), chat_id=_safe_int(context.get("chat_id")) or None)
         if sent_at > 0:
             return get_day_key(sent_at)
     return get_day_key(now)

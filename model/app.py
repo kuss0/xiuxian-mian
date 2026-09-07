@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from telethon import events, functions
 from telethon.errors import PeerIdInvalidError, SendAsPeerInvalidError
 
+from .message_keys import find_message_key
+
 from .account_membership import (
     TargetGroupMembership,
     TargetGroupMembershipProbe,
@@ -3340,7 +3342,10 @@ async def _handle_routed_reply_event(
             clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
         if matched_family and handled_any and not already_consumed:
             if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
-                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now, expected_msg_id=root_msg_id)
+                close_action_guard_by_family(
+                    matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now,
+                    expected_msg_id=root_msg_id, expected_chat_id=int(getattr(event, "chat_id", 0) or 0),
+                )
             if not is_nonterminal_waiting_reply:
                 _mark_runtime_message_consumed(event, matched_family)
         elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:
@@ -3408,7 +3413,9 @@ async def _replay_pending_log_replies(send_as_id, msg_id, pending, replies, now)
             if not handled:
                 _release_runtime_event(event, scope=_routed_reply_scope(context, event_kind, event.raw_text, replay=True))
         if handled:
-            applied[receipt_key] = msg_id not in get_identity_state(send_as_id)["pending_tasks"]
+            applied[receipt_key] = find_message_key(
+                get_identity_state(send_as_id)["pending_tasks"], msg_id, chat_id=event.chat_id,
+            ) is None
             pending["reply_recovery_applied"] = dict(list(applied.items())[-64:])
             mark_dirty()
         handled_any = handled_any or handled
@@ -3498,6 +3505,7 @@ async def on_message(event):
                 now=now,
                 msg_id=event.id,
                 reply_to=int(getattr(event, "reply_to_msg_id", 0) or 0),
+                game_group_id=event.chat_id,
             )
             _track_manual_game_command(identity_sender_id, text, event.id, chat_id=event.chat_id)
             observe_replica_game_command_message(event, identity_sender_id, now=now)

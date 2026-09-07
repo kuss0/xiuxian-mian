@@ -92,7 +92,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
                 self._reset_persistence_connection()
                 self.assertTrue(persistence.load_state())
-                pending = state_module.get_identity_state(identity_id)["pending_tasks"][42]
+                pending = state_module.get_identity_state(identity_id)["pending_tasks"][(-1234, 42)]
                 self.assertEqual(evidence, {key: pending.get(key) for key in evidence})
                 self.assertEqual(".test", pending["cmd"])
                 self.assertEqual(-1234, pending["chat_id"])
@@ -117,7 +117,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     json.dumps({"cmd": ".wrong", "send_caller_detached": True}),
                 ))
                 conn.commit()
-                loaded = persistence._load_identity_from_db(identity_id)["pending_tasks"][42]
+                loaded = persistence._load_identity_from_db(identity_id)["pending_tasks"][(0, 42)]
                 self.assertEqual(".test", loaded["cmd"])
                 self.assertTrue(loaded["send_caller_detached"])
 
@@ -139,8 +139,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.load_state())
                 for identity_id, chat_id in ((990009, -1234), (990010, -5678)):
                     restored = state_module.get_identity_state(identity_id)
-                    self.assertEqual(chat_id, restored["pending_tasks"][42]["chat_id"])
-                    self.assertEqual(100.0, restored["my_msg_ids"][42])
+                    self.assertEqual(chat_id, restored["pending_tasks"][(chat_id, 42)]["chat_id"])
+                    self.assertEqual(100.0, restored["my_msg_ids"][(0, 42)])
 
     def test_divination_daily_limit_roundtrips_as_integer(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -820,7 +820,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.load_state())
 
                 with state_module.use_identity(identity_id):
-                    item = state_module.state["pending_tasks"][4567]
+                    item = state_module.state["pending_tasks"][(-1001680975844, 4567)]
                     self.assertEqual("太一", item["source_module"])
                     self.assertEqual("taiyi-yindao-4567", item["op_id"])
                     self.assertEqual("taiyi-cycle-1", item["chain_id"])

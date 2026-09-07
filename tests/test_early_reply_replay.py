@@ -220,6 +220,40 @@ class EarlyReplyReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(154926, identity_state["pending_tasks"])
         self.assertEqual(other, identity_state["pending_tasks"][154928])
 
+    async def test_real_handler_replay_clears_only_the_exact_chat_with_same_id(self):
+        identity_id, item, reply, now = self._pending_log_fixture()
+        identity = state_module.get_identity_state(identity_id)
+        first_key, second_key = (item["chat_id"], 154926), (-1002, 154926)
+        other = {**item, "chat_id": -1002}
+        identity["pending_tasks"] = {first_key: item, second_key: other}
+        identity["my_msg_ids"] = {first_key: item["sent_at"], second_key: other["sent_at"]}
+        wrong_reply = {**reply, "chat_id": -1002, "text": "unrelated result"}
+        with patch.object(runtime, "find_message_log_replies", return_value=[wrong_reply, reply]):
+            result = await runtime._recover_pending_reply_from_message_log(identity_id, first_key, item, now)
+        self.assertTrue(result["recovery_handled"])
+        self.assertEqual({second_key: other}, identity["pending_tasks"])
+        self.assertEqual(checkin.get_checkin_day_key(reply["ts_epoch"]), identity["last_checkin_done_day"])
+        routed = runtime.get_reply_context(reply_to_msg_id=154927, chat_id=item["chat_id"])
+        self.assertEqual((identity_id, "checkin", 154926), (routed["send_as_id"], routed["family"], routed["root_msg_id"]))
+
+    async def test_message_cleanup_removes_only_the_captured_chat_reference(self):
+        identity_id, item, _reply, _now = self._pending_log_fixture()
+        identity = state_module.get_identity_state(identity_id)
+        first_key, second_key = (item["chat_id"], 154926), (-1002, 154926)
+        identity["my_msg_ids"] = {first_key: item["sent_at"], second_key: item["sent_at"]}
+        outgoing = SimpleNamespace(id=154926, chat_id=item["chat_id"], raw_text=item["cmd"], delete=AsyncMock())
+        scheduled = []
+        with (
+            patch.object(runtime, "is_auto_delete_sent_messages_enabled", return_value=True),
+            patch.object(runtime, "_fire_and_forget", side_effect=scheduled.append),
+            patch.object(runtime.asyncio, "sleep", new=AsyncMock()),
+        ):
+            await runtime.schedule_cleanup(outgoing, send_as_id=identity_id)
+            self.assertEqual(1, len(scheduled))
+            await scheduled[0]
+        outgoing.delete.assert_awaited_once()
+        self.assertEqual({second_key}, set(identity["my_msg_ids"]))
+
     async def test_live_reply_does_not_clear_newer_same_family_pending_or_guard(self):
         identity_id, item, reply, now = self._pending_log_fixture()
         identity_state = state_module.get_identity_state(identity_id)
@@ -424,6 +458,20 @@ class EarlyReplyReplayTests(unittest.IsolatedAsyncioTestCase):
         identity_state = state_module.get_identity_state(identity_id)
         sessions_before = copy.deepcopy(identity_state["action_guard_sessions"])
         self.assertTrue(sessions_before)
+        with (
+            patch.object(runtime, "find_message_log_replies", return_value=[reply]),
+            patch.object(app, "handle_wendao_reply", new=AsyncMock(return_value=True)),
+        ):
+            await runtime._recover_pending_reply_from_message_log(identity_id, 154926, item, now)
+        self.assertEqual(sessions_before, identity_state["action_guard_sessions"])
+
+    async def test_same_id_reply_in_other_chat_cannot_close_action_guard(self):
+        identity_id, item, reply, now = self._pending_log_fixture(config.CMD_WENDAO)
+        action_guard.note_sent(item["cmd"], identity_id, 154926, now)
+        identity_state = state_module.get_identity_state(identity_id)
+        for session in identity_state["action_guard_sessions"].values():
+            session["last_chat_id"] = -1002
+        sessions_before = copy.deepcopy(identity_state["action_guard_sessions"])
         with (
             patch.object(runtime, "find_message_log_replies", return_value=[reply]),
             patch.object(app, "handle_wendao_reply", new=AsyncMock(return_value=True)),

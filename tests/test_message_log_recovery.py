@@ -66,6 +66,9 @@ class MessageLogRecoveryTests(unittest.TestCase):
             ])
 
             replies = find_message_log_replies(154926, now, chat_id=game_group_id, messages_dir=tmp)
+            self.assertEqual([], find_message_log_replies(154926, now, messages_dir=tmp))
+            self.assertEqual([], find_message_log_replies_tail(154926, now, messages_dir=tmp))
+            self.assertIsNone(find_message_log_message(154927, now, messages_dir=tmp))
             message = find_message_log_message(154927, now, chat_id=game_group_id, messages_dir=tmp)
             command = find_recent_message_log_command(
                 now,
@@ -78,6 +81,17 @@ class MessageLogRecoveryTests(unittest.TestCase):
         self.assertEqual(["点卯成功"], [item["text"] for item in replies])
         self.assertEqual("点卯成功", message["text"])
         self.assertEqual(game_group_id, command["chat_id"])
+
+    def test_explicit_unknown_chat_never_turns_into_an_unscoped_lookup(self):
+        now = parse_message_log_ts("2026-07-15 10:55:11 UTC+8")
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_log(tmp, "2026-07-15", [{
+                "ts": "2026-07-15 10:55:08 UTC+8", "event_type": "message",
+                "chat_id": -1001, "message_id": 43, "reply_to_msg_id": 42,
+            }])
+            self.assertEqual([], find_message_log_replies(42, now, chat_id=0, messages_dir=tmp))
+            self.assertEqual([], find_message_log_replies_tail(42, now, chat_id=0, messages_dir=tmp))
+            self.assertIsNone(find_message_log_message(43, now, chat_id=0, messages_dir=tmp))
 
     def test_tail_reply_lookup_finds_reply_before_late_sent_row(self):
         now = parse_message_log_ts("2026-07-15 10:55:11 UTC+8")

@@ -16,6 +16,8 @@ import requests
 from telethon import functions, types
 from telethon.errors import FloodWaitError, SendAsPeerInvalidError
 
+from .message_keys import find_message_key, get_message_record, message_key, message_key_parts
+
 from .account_membership import (
     TargetGroupMembership,
     classify_membership_error,
@@ -2120,6 +2122,13 @@ def _get_special_tracked_message_family(identity_state, msg_id):
 
 
 def _reply_chain_entries(msg_id, send_as_id=None, chat_id=None):
+    if chat_id:
+        target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
+        return [
+            payload for identity_id in target_ids
+            if has_identity(identity_id)
+            and (payload := _reply_chain_tracker.get((int(chat_id), msg_id, identity_id))) is not None
+        ]
     return [
         payload
         for (tracked_chat_id, tracked_msg_id, tracked_identity_id), payload in _reply_chain_tracker.items()
@@ -2146,17 +2155,19 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None, chat_id=None):
         if not has_identity(identity_id):
             continue
         identity_state = get_identity_state(identity_id)
-        pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
-        pending_chat_id = int((pending_item or {}).get("chat_id", 0) or 0)
-        if pending_item and (not chat_id or int(chat_id) == pending_chat_id):
-            candidates.setdefault((identity_id, pending_chat_id), "pending_tasks")
-        # Numeric IDs without group provenance cannot override an explicit
-        # group or choose between two known owners.
-        if not chat_id:
-            if msg_id in identity_state["my_msg_ids"]:
-                candidates.setdefault((identity_id, 0), "my_msg_ids")
-            elif _get_special_tracked_message_family(identity_state, msg_id):
-                candidates.setdefault((identity_id, 0), "tracked_ids")
+        for source in ("pending_tasks", "my_msg_ids"):
+            records = identity_state.get(source, {})
+            if chat_id:
+                key = find_message_key(records, msg_id, chat_id=chat_id)
+                if key is not None:
+                    candidates.setdefault((identity_id, int(chat_id)), source)
+                continue
+            for key, item in records.items():
+                recorded_chat, recorded_msg = message_key_parts(key, item)
+                if recorded_msg == msg_id:
+                    candidates.setdefault((identity_id, recorded_chat), source)
+        if not chat_id and _get_special_tracked_message_family(identity_state, msg_id):
+            candidates.setdefault((identity_id, 0), "tracked_ids")
     if len({key[0] for key in candidates}) != 1 or len({key[1] for key in candidates if key[1]}) > 1:
         return None, None
     (identity_id, _), source = next(iter(candidates.items()))
@@ -2202,9 +2213,8 @@ def _resolve_identity_message_family(msg_id, send_as_id, chat_id=None):
         )
 
     identity_state = get_identity_state(send_as_id)
-    pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
-    pending_chat_id = int((pending_item or {}).get("chat_id") or 0)
-    if pending_item and (not chat_id or int(chat_id) == pending_chat_id):
+    pending_item = get_message_record(identity_state.get("pending_tasks", {}), msg_id, chat_id=chat_id or None)
+    if pending_item:
         pending_family = resolve_reply_family(get_pending_command(pending_item))
         if pending_family:
             return pending_family, msg_id, ""
@@ -2307,46 +2317,35 @@ def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None, chat_id=Non
 
 
 def get_sent_message_chat_id(msg_id, default=None, *, send_as_id=None):
-    """Return the route recorded for an outgoing message, if available."""
+    """Return a known route; conflicting evidence never falls back to primary."""
     try:
-        target_msg_id = int(msg_id or 0)
+        explicit_chat, target_msg_id = message_key(msg_id)
     except (TypeError, ValueError, OverflowError):
-        target_msg_id = 0
-    if target_msg_id <= 0:
         return int(get_game_group_id() if default is None else default or 0)
+    if explicit_chat:
+        return explicit_chat
     try:
         target_send_as_id = int(send_as_id or 0)
     except (TypeError, ValueError, OverflowError):
         target_send_as_id = 0
+    chats = set()
+    target_ids = [target_send_as_id] if target_send_as_id else get_identity_ids()
+    for identity_id in target_ids:
+        if not has_identity(identity_id):
+            continue
+        identity_state = get_identity_state(identity_id)
+        for source in ("pending_tasks", "my_msg_ids"):
+            for key, item in identity_state.get(source, {}).items():
+                recorded_chat, recorded_msg = message_key_parts(key, item)
+                if recorded_msg == target_msg_id and recorded_chat:
+                    chats.add(recorded_chat)
+    if chats:
+        return next(iter(chats)) if len(chats) == 1 else 0
+
+    # This cold fallback must inspect all candidates, not pick the last log row.
     for path in _recent_sent_message_log_paths():
         if not os.path.exists(path):
             continue
-        for line in reversed(_read_recent_message_log_tail(path)):
-            try:
-                payload = json.loads(line)
-            except Exception:
-                continue
-            if not isinstance(payload, dict) or str(payload.get("event_type") or "") != "sent":
-                continue
-            try:
-                message_id = int(payload.get("message_id") or 0)
-                chat_id = int(payload.get("chat_id") or 0)
-                sender_id = int(payload.get("sender_id") or 0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if message_id != target_msg_id or not chat_id:
-                continue
-            if target_send_as_id and sender_id != target_send_as_id:
-                continue
-            if message_id == target_msg_id:
-                return chat_id
-    # The hot tail can cover only a few hours on busy days. This is a cold
-    # recovery path, so scan the two daily files fully before defaulting to the
-    # primary group and risking a cross-chat reply.
-    for path in _recent_sent_message_log_paths():
-        if not os.path.exists(path):
-            continue
-        matched_chat_id = 0
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as handle:
                 for line in handle:
@@ -2366,19 +2365,22 @@ def get_sent_message_chat_id(msg_id, default=None, *, send_as_id=None):
                         continue
                     if target_send_as_id and sender_id != target_send_as_id:
                         continue
-                    matched_chat_id = chat_id
+                    chats.add(chat_id)
+                    if len(chats) > 1:
+                        return 0
         except OSError:
             continue
-        if matched_chat_id:
-            return matched_chat_id
+    if chats:
+        return next(iter(chats))
     return int(get_game_group_id() if default is None else default or 0)
 
 
 def get_pending_message_chat_id(send_as_id, msg_id, default=None):
     try:
         identity_state = get_identity_state(int(send_as_id or 0))
-        pending = identity_state.get("pending_tasks", {}).get(int(msg_id or 0)) or {}
-        chat_id = int(pending.get("chat_id") or 0)
+        records = identity_state.get("pending_tasks", {})
+        key = find_message_key(records, msg_id)
+        chat_id = message_key_parts(key, records[key])[0] if key is not None else 0
     except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
         chat_id = 0
     if chat_id:
@@ -2436,6 +2438,12 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None, c
         root_msg_id = int(root_msg_id or resolved_root_msg_id or resolved_reply_to_msg_id)
     if family is None and reply_to is not None:
         family = resolve_reply_family(getattr(reply_to, "raw_text", ""))
+    if family is None and resolved_send_as_id is not None:
+        _identity_id, logged_family, logged_root, _source = _resolve_identity_from_sent_message_log(
+            resolved_reply_to_msg_id, send_as_id=resolved_send_as_id, chat_id=chat_id,
+        )
+        family = logged_family
+        root_msg_id = int(logged_root or root_msg_id)
     return {
         "send_as_id": resolved_send_as_id,
         "family": family,
@@ -2491,7 +2499,7 @@ def _clear_pending_tasks_by_commands_locked(commands):
             remove_ids.append(msg_id)
     for msg_id in remove_ids:
         state["pending_tasks"].pop(msg_id, None)
-    return remove_ids
+    return [message_key_parts(key)[1] for key in remove_ids]
 
 
 def clear_pending_tasks_by_commands(commands, *, send_as_id):
@@ -3015,12 +3023,17 @@ def _handoff_module_managed_pending_timeout(identity_id, msg_id, item, family, n
     if not _stateful_no_retry_timeout_is_module_managed(item, family):
         return False
     cmd = get_pending_command(item)
+    key = msg_id
+    chat_id, msg_id = message_key_parts(key, item)
     _recover_module_managed_timeout_state(identity_id, msg_id, item, family, now)
     if family:
-        action_guard_close_by_family(family, send_as_id=identity_id, reason="module_managed_timeout", now=now)
+        action_guard_close_by_family(
+            family, send_as_id=identity_id, reason="module_managed_timeout", now=now,
+            expected_msg_id=msg_id, expected_chat_id=chat_id,
+        )
     with use_identity(identity_id) as identity_state:
-        if msg_id in identity_state.get("pending_tasks", {}):
-            identity_state["pending_tasks"].pop(msg_id, None)
+        if key in identity_state.get("pending_tasks", {}):
+            identity_state["pending_tasks"].pop(key, None)
             mark_dirty()
     console_log(
         f"🧯 指令 {_truncate_log_text(cmd, limit=40)} 超时无响应，交由模块状态机继续。",
@@ -4296,13 +4309,15 @@ def _finalize_game_command_sent(
             game_group_id=game_group_id,
             topic_id=topic_id,
         )
-    msg = SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
+    chat_id = int(game_group_id if game_group_id is not None else get_game_group_id() or 0)
+    key = message_key(msg_id, chat_id)
+    msg = SimpleNamespace(id=msg_id, chat_id=chat_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
     if not has_identity(send_as_id):
         note_shadow_attempt_sent(msg_id, sent_at=sent_at)
         return msg
-    action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
+    action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at, chat_id=chat_id)
     with use_identity(send_as_id) as identity_state:
-        identity_state["my_msg_ids"][msg_id] = sent_at
+        identity_state["my_msg_ids"][key] = sent_at
         if track:
             if reply_timeout is not None:
                 try:
@@ -4322,13 +4337,13 @@ def _finalize_game_command_sent(
                 "retry": 0,
                 "timeout": timeout,
                 "reply_to_msg_id": int(reply_to or 0),
-                "chat_id": int(game_group_id if game_group_id is not None else get_game_group_id() or 0),
+                "chat_id": chat_id,
                 "topic_id": int(topic_id if topic_id is not None else get_game_topic_id() or 0),
                 "priority": send_priority,
                 "max_retry": retry_limit,
             }
             pending_item.update(send_intent)
-            identity_state["pending_tasks"][msg_id] = pending_item
+            identity_state["pending_tasks"][key] = pending_item
         mark_dirty()
     note_game_command_sent(command, sent_at=sent_at, priority=send_priority, msg_id=msg_id)
     family = resolve_reply_family(command)
@@ -4377,7 +4392,7 @@ def _finalize_game_send_receipt(receipt, *, msg_id, sent_at, append_sent_log=Tru
     )
     receipt["message"] = msg
     if msg is not None and receipt["detached"] and has_identity(receipt["send_as_id"]):
-        pending = get_identity_state(receipt["send_as_id"])["pending_tasks"].get(msg.id)
+        pending = get_message_record(get_identity_state(receipt["send_as_id"])["pending_tasks"], msg)
         if pending is not None:
             pending["send_caller_detached"] = True
             mark_dirty()
@@ -5124,8 +5139,8 @@ def _get_tracked_identity_message_ids(identity_state):
     return tracked_ids
 
 
-def find_identity_by_msg_id(msg_id):
-    resolved_send_as_id, _matched_via = _resolve_identity_message_owner(msg_id)
+def find_identity_by_msg_id(msg_id, *, chat_id=None):
+    resolved_send_as_id, _matched_via = _resolve_identity_message_owner(msg_id, chat_id=chat_id)
     return resolved_send_as_id
 
 
@@ -5183,29 +5198,32 @@ def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None, *
 
     removed_ids = []
     with use_identity(resolved_send_as_id):
-        root_pending = state["pending_tasks"].get(root_msg_id)
-        known_chats = {int(entry.get("chat_id") or 0) for entry in _reply_chain_entries(root_msg_id, resolved_send_as_id)} - {0}
+        root_key = find_message_key(state["pending_tasks"], root_msg_id, chat_id=chat_id or None)
+        root_pending = state["pending_tasks"].get(root_key)
+        known_chats = set() if chat_id else {
+            int(entry.get("chat_id") or 0) for entry in _reply_chain_entries(root_msg_id, resolved_send_as_id)
+        } - {0}
         pending_family = resolve_reply_family(get_pending_command(root_pending or {}))
         if (
             root_pending
-            and (not chat_id or int(root_pending.get("chat_id") or 0) == chat_id)
+            and (not chat_id or message_key_parts(root_key, root_pending)[0] == chat_id)
             and (chat_id or len(known_chats) <= 1)
             and (not family or not pending_family or family == pending_family)
         ):
-            state["pending_tasks"].pop(root_msg_id, None)
+            state["pending_tasks"].pop(root_key, None)
             removed_ids.append(root_msg_id)
 
         if family and clear_family and removed_ids:
             family_commands = get_reply_family_commands(family)
             for msg_id, pending in list(state["pending_tasks"].items()):
-                if int(pending.get("chat_id") or 0) != int(root_pending.get("chat_id") or 0):
+                if message_key_parts(msg_id, pending)[0] != message_key_parts(root_key, root_pending)[0]:
                     continue
                 if float(pending.get("sent_at") or 0) > float(root_pending.get("sent_at") or 0):
                     continue
                 pending_cmd = get_pending_command(pending)
                 if pending_cmd in family_commands or resolve_reply_family(pending_cmd) == family:
                     state["pending_tasks"].pop(msg_id, None)
-                    removed_ids.append(msg_id)
+                    removed_ids.append(message_key_parts(msg_id, pending)[1])
 
         if removed_ids:
             mark_dirty()
@@ -5220,25 +5238,25 @@ def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None, *
 
 
 def _is_pending_consumed(identity_state, msg_id, family):
-    msg_id = int(msg_id or 0)
-    if msg_id <= 0:
-        return True
     pending_tasks = identity_state.get("pending_tasks", {})
-    if msg_id not in pending_tasks:
+    key = find_message_key(pending_tasks, msg_id)
+    if key is None:
         return True
+    chat_id, _msg_id = message_key_parts(key, pending_tasks[key])
     if family:
         family_commands = get_reply_family_commands(family)
         same_family_items = [
             (pending_msg_id, pending)
             for pending_msg_id, pending in pending_tasks.items()
-            if (get_pending_command(pending) in family_commands)
-            or (resolve_reply_family(get_pending_command(pending)) == family)
+            if message_key_parts(pending_msg_id, pending)[0] == chat_id
+            and ((get_pending_command(pending) in family_commands)
+                 or (resolve_reply_family(get_pending_command(pending)) == family))
         ]
         if not same_family_items:
             return True
-        my_sent_at = float((pending_tasks.get(msg_id) or {}).get("sent_at", 0) or 0)
+        my_sent_at = float((pending_tasks.get(key) or {}).get("sent_at", 0) or 0)
         if any(
-            int(pending_msg_id or 0) != msg_id
+            pending_msg_id != key
             and float((pending or {}).get("sent_at", 0) or 0) > my_sent_at + 60
             for pending_msg_id, pending in same_family_items
         ):
@@ -5250,7 +5268,7 @@ async def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now
     """Replay logged bot evidence before deciding whether a send needs recovery."""
     try:
         identity_id = int(identity_id or 0)
-        msg_id = int(msg_id or 0)
+        game_group_id, msg_id = message_key_parts(msg_id, item)
         now = float(now or time.time())
     except (TypeError, ValueError, OverflowError):
         return None
@@ -5268,7 +5286,11 @@ async def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now
     if sent_at <= 0:
         sent_at = max(0.0, now - max(300, RETRY_MAX_SEC + 60))
     lookback_sec = max(300, min(6 * 3600, int(max(0.0, now - sent_at) + 180)))
-    game_group_id = int(item.get("chat_id") or get_game_group_id() or 0)
+    if not game_group_id:
+        item["reply_recovery_retry_at"] = now + 60
+        item["reply_recovery_error"] = "unknown_message_chat"
+        mark_dirty()
+        return {"recovery_pending": True}
 
     def matches(entry):
         try:
@@ -5314,9 +5336,12 @@ async def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now
             console_log(f"⚠️ 日志回包重放失败：{cmd[:40]}｜{error}", scope="identity", send_as_id=identity_id)
     if has_identity(identity_id):
         with use_identity(identity_id) as identity_state:
-            current = identity_state["pending_tasks"].get(msg_id)
+            records = identity_state["pending_tasks"]
+            key = find_message_key(records, msg_id, chat_id=game_group_id)
+            current = records.get(key)
             if not handled:
-                current = identity_state["pending_tasks"].setdefault(msg_id, dict(item))
+                key = key if key is not None else message_key(msg_id, game_group_id)
+                current = records.setdefault(key, dict(item))
             if current is not None and get_pending_command(current) == cmd:
                 current["reply_recovery_retry_at"] = now + 60
                 current["reply_recovery_error"] = error
@@ -5465,7 +5490,7 @@ async def run_retry_scheduler(now, send_as_id=None):
             reply_to_msg_id = int((current_item or {}).get("reply_to_msg_id", 0) or 0)
             if reply_to_msg_id > 0:
                 reply_to_kwargs["reply_to"] = reply_to_msg_id
-            target_chat_id = int((current_item or {}).get("chat_id", 0) or 0)
+            target_chat_id = message_key_parts(msg_id, current_item)[0]
             if target_chat_id:
                 reply_to_kwargs["target_chat_id"] = target_chat_id
             new_msg = await send_game_command(
@@ -5494,10 +5519,11 @@ async def run_retry_scheduler(now, send_as_id=None):
                     continue
                 if current_item:
                     identity_state["pending_tasks"].pop(msg_id, None)
-                if new_msg and new_msg.id in identity_state["pending_tasks"]:
-                    identity_state["pending_tasks"][new_msg.id]["retry"] = retry + 1
-                    identity_state["pending_tasks"][new_msg.id]["max_retry"] = retry_limit
-                    identity_state["pending_tasks"][new_msg.id]["timeout"] = threshold
+                new_pending = get_message_record(identity_state["pending_tasks"], new_msg) if new_msg else None
+                if new_pending is not None:
+                    new_pending["retry"] = retry + 1
+                    new_pending["max_retry"] = retry_limit
+                    new_pending["timeout"] = threshold
                     if _is_identity_refresh_command(cmd):
                         sent_at = float(getattr(new_msg, "sent_at", 0) or time.time())
                         _refresh_identity_info_retry_tracking(identity_state, int(new_msg.id), sent_at)
@@ -5509,12 +5535,13 @@ async def schedule_cleanup(reply_to, send_as_id=None):
         return
 
     if send_as_id is None:
-        send_as_id = find_identity_by_msg_id(reply_to.id)
+        send_as_id = find_identity_by_msg_id(reply_to.id, chat_id=getattr(reply_to, "chat_id", None))
     if send_as_id is None or not has_identity(send_as_id):
         return
 
     with use_identity(send_as_id) as identity_state:
-        is_my_msg = reply_to.id in identity_state["my_msg_ids"]
+        key = find_message_key(identity_state["my_msg_ids"], reply_to)
+        is_my_msg = key is not None
         is_script_cmd = is_script_command_text(reply_to.raw_text)
         if not (is_my_msg and is_script_cmd):
             return
@@ -5544,7 +5571,7 @@ async def schedule_cleanup(reply_to, send_as_id=None):
         if not has_identity(send_as_id):
             return
         with use_identity(send_as_id) as identity_state:
-            identity_state["my_msg_ids"].pop(msg_id, None)
+            identity_state["my_msg_ids"].pop(key, None)
             mark_dirty()
 
     _fire_and_forget(safe_delete())

@@ -10,6 +10,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .message_keys import find_message_key, message_key_parts, pop_message_record
 from .module_manifest import get_module_manifest, is_module_archived
 from .config import (
     ADMIN_IDS,
@@ -1029,7 +1030,7 @@ def _clear_stale_pending_tasks_for_global_recovery(now):
                 if not _pending_is_stale_for_global_recovery(pending, now):
                     continue
                 command = get_pending_command(pending)
-                if _reconcile_stale_pending_module_runtime(identity_id, msg_id, pending, command, now):
+                if _reconcile_stale_pending_module_runtime(identity_id, message_key_parts(msg_id, pending)[1], pending, command, now):
                     affected_identity_ids.add(int(identity_id))
                 pending_tasks.pop(msg_id, None)
                 current_removed += 1
@@ -4944,7 +4945,10 @@ def _get_identity_refresh_tracking_ids():
 
 
 def _collect_identity_refresh_trigger_msg_ids():
-    return sorted(msg_id for msg_id in _get_identity_refresh_tracking_ids() if msg_id in state.get("my_msg_ids", {}))
+    return sorted(
+        msg_id for msg_id in _get_identity_refresh_tracking_ids()
+        if find_message_key(state.get("my_msg_ids", {}), msg_id) is not None
+    )
 
 
 def _track_identity_refresh_message(msg_id):
@@ -5360,13 +5364,14 @@ async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
             chat_id = get_pending_message_chat_id(
                 send_as_id,
                 msg_id,
-                default=get_game_group_id(),
+                default=0,
             )
-            await _run_account_rpc(
-                client.delete_messages(chat_id, [msg_id]),
-                account_id=account_id,
-                client_obj=client,
-            )
+            if chat_id:
+                await _run_account_rpc(
+                    client.delete_messages(chat_id, [msg_id]),
+                    account_id=account_id,
+                    client_obj=client,
+                )
         except Exception as e:
             console_log(
                 f"❌ 删除身份信息触发消息失败：{e}｜msg={msg_id}",
@@ -5374,7 +5379,7 @@ async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
                 send_as_id=send_as_id,
             )
     with use_identity(send_as_id):
-        state["my_msg_ids"].pop(msg_id, None)
+        pop_message_record(state["my_msg_ids"], msg_id)
         if state.get("last_identity_info_msg_id", 0) == msg_id:
             state["last_identity_info_msg_id"] = 0
         state["identity_info_reply_msg_ids"] = [

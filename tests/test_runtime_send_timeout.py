@@ -282,7 +282,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(client.finished.wait(), 1)
             for _ in range(8):
                 await asyncio.sleep(0)
-            pending = state_module.get_identity_state(301299112)["pending_tasks"].get(910001)
+            pending = state_module.get_identity_state(301299112)["pending_tasks"].get((123456, 910001))
             self.assertIsNotNone(pending)
             self.assertEqual("unknown", block["status"])
             self.assertEqual(0, pending["max_retry"])
@@ -309,7 +309,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(client.finished.wait(), 1)
             for _ in range(8):
                 await asyncio.sleep(0)
-            self.assertIn(910001, state_module.get_identity_state(301299112)["pending_tasks"])
+            self.assertIn((123456, 910001), state_module.get_identity_state(301299112)["pending_tasks"])
             runtime._append_sent_message_log.assert_called_once()
 
     async def test_cancellation_before_rpc_is_classified_unsent(self):
@@ -406,7 +406,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "find_message_log_replies", return_value=[]),
             ):
                 await runtime.run_retry_scheduler(runtime.time.time() + 5000, send_as_id=301299112)
-            self.assertTrue(state_module.get_identity_state(301299112)["pending_tasks"][910001]["send_caller_detached"])
+        self.assertTrue(state_module.get_identity_state(301299112)["pending_tasks"][(123456, 910001)]["send_caller_detached"])
 
     async def test_other_account_rpc_waits_for_cancelled_senders_transport(self):
         client = _ControlledSendClient()
@@ -1301,7 +1301,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(920002, msg.id)
         self.assertTrue(msg.recovered_from_message_log)
         append_mock.assert_called_once()
-        guard_note_mock.assert_called_once_with(".观星台", send_as_id, 920002, sent_at=1234.5)
+        guard_note_mock.assert_called_once_with(".观星台", send_as_id, 920002, sent_at=1234.5, chat_id=123456)
         note_sent_mock.assert_called_once_with(
             ".观星台",
             sent_at=1234.5,
@@ -1310,7 +1310,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         )
         observer_mock.assert_called_once()
         audit_mock.assert_awaited()
-        pending = state_module.get_identity_state(send_as_id)["pending_tasks"][920002]
+        pending = state_module.get_identity_state(send_as_id)["pending_tasks"][(123456, 920002)]
         self.assertEqual(".观星台", pending["cmd"])
         self.assertEqual(1234.5, pending["sent_at"])
 

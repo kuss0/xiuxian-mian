@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from ..config import STATE_DIR
 from ..action_guard import close_by_family as close_action_guard_by_family
 from ..persistence import save_state
+from ..message_keys import find_message_key
 from ..state import get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, state, use_identity
 from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait_time
 from ..verified_event import VerifiedGameEvent
@@ -906,7 +907,10 @@ def _is_script_small_world_query_reply(family, reply_context):
     reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
     if reply_to_msg_id <= 0:
         return False
-    return reply_to_msg_id in (state.get("my_msg_ids") or {})
+    return find_message_key(
+        state.get("my_msg_ids") or {}, reply_to_msg_id,
+        chat_id=_context_msg_id(reply_context, "chat_id") or None,
+    ) is not None
 
 
 def _is_active_small_world_query_panel(reply_context):

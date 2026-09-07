@@ -6,6 +6,7 @@ import time
 import traceback
 
 from . import persistence_shadow
+from .message_keys import message_key, message_key_parts
 from .config import DB_FILE, DB_SCHEMA_VERSION, DIVINATION_DEFAULT_DAILY_LIMIT, FLUSH_INTERVAL_SEC, RETRY_LIMIT
 from .delayed_actions import (
     DELAYED_ACTIONS_STATE_KEY,
@@ -290,7 +291,7 @@ def _schema_columns_complete(conn):
         "identity_timers": {"send_as_id", *IDENTITY_TIMER_COLUMNS},
         "identity_runtime_state": {"send_as_id", *IDENTITY_RUNTIME_COLUMNS},
         "pending_tasks": set(PENDING_TASK_PERSISTED_COLUMNS),
-        "message_index": {"msg_id", "send_as_id", "sent_at", "kind"},
+        "message_index": {"msg_id", "send_as_id", "chat_id", "sent_at", "kind"},
     }
     for table_name, required_columns in expected.items():
         actual_columns = {
@@ -1021,13 +1022,17 @@ def _ensure_identity_message_primary_keys(conn):
     }
     for table, expected_columns in (
         ("pending_tasks", PENDING_TASK_PERSISTED_COLUMNS),
-        ("message_index", ("msg_id", "send_as_id", "sent_at", "kind")),
+        ("message_index", ("msg_id", "send_as_id", "sent_at", "kind", "chat_id")),
     ):
         columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
         primary_key = tuple(row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5])
-        if primary_key == ("send_as_id", "msg_id"):
+        if primary_key == ("send_as_id", "chat_id", "msg_id"):
             continue
-        if primary_key != ("msg_id",) or {row[1] for row in columns} != set(expected_columns):
+        actual_columns = {row[1] for row in columns}
+        allowed_columns = [set(expected_columns)]
+        if table == "message_index":
+            allowed_columns.append(set(expected_columns) - {"chat_id"})
+        if primary_key not in {("msg_id",), ("send_as_id", "msg_id")} or actual_columns not in allowed_columns:
             raise RuntimeError(f"{table}: unexpected schema; message-key migration requires review")
         table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()[0]
         triggers = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? LIMIT 1", (table,)).fetchone()
@@ -1054,12 +1059,14 @@ def _ensure_identity_message_primary_keys(conn):
             definitions = []
             for row in columns:
                 definition = f'"{row[1]}" {row[2]}'
-                if row[3] or row[1] in {"send_as_id", "msg_id"}:
+                if row[3] or row[1] in {"send_as_id", "chat_id", "msg_id"}:
                     definition += " NOT NULL"
                 if row[4] is not None:
                     definition += f" DEFAULT {row[4]}"
                 definitions.append(definition)
-            definitions.append("PRIMARY KEY (send_as_id, msg_id)")
+            if "chat_id" not in {row[1] for row in columns}:
+                definitions.append('"chat_id" INTEGER NOT NULL DEFAULT 0')
+            definitions.append("PRIMARY KEY (send_as_id, chat_id, msg_id)")
             replacement = f"{table}_identity_key_migration"
             conn.execute(f"CREATE TABLE {replacement} ({', '.join(definitions)})")
             names = ", ".join(f'"{row[1]}"' for row in columns)
@@ -1712,7 +1719,7 @@ def init_db():
             chain_id TEXT NOT NULL DEFAULT '',
             delete_policy TEXT NOT NULL DEFAULT '',
             recovery_json TEXT NOT NULL DEFAULT '{}',
-            PRIMARY KEY (send_as_id, msg_id)
+            PRIMARY KEY (send_as_id, chat_id, msg_id)
         );
 
         CREATE TABLE IF NOT EXISTS command_attempts (
@@ -1804,7 +1811,8 @@ def init_db():
             send_as_id INTEGER NOT NULL,
             sent_at REAL NOT NULL,
             kind TEXT NOT NULL DEFAULT 'command',
-            PRIMARY KEY (send_as_id, msg_id)
+            chat_id INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (send_as_id, chat_id, msg_id)
         );
 
         CREATE TABLE IF NOT EXISTS official_schedule_batches (
@@ -1913,6 +1921,7 @@ def _build_identity_persistence_snapshot(send_as_id):
         serialize_value=_serialize_db_value,
         pending_command=get_pending_command,
         retry_limit=RETRY_LIMIT,
+        pending_recovery=_pending_recovery_fields,
     )
 
 
@@ -2079,9 +2088,10 @@ def upsert_identity_to_db(send_as_id):
     )
 
     conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),))
-    for msg_id, item in identity_state.get("pending_tasks", {}).items():
+    for key, item in identity_state.get("pending_tasks", {}).items():
+        chat_id, msg_id = message_key_parts(key, item)
         conn.execute(
-            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, chat_id, topic_id, max_retry, priority, source_module, op_id, chain_id, delete_policy, recovery_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, chat_id, topic_id, max_retry, priority, source_module, op_id, chain_id, delete_policy, recovery_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(msg_id),
                 int(send_as_id),
@@ -2090,7 +2100,7 @@ def upsert_identity_to_db(send_as_id):
                 int(item.get("retry", 0) or 0),
                 float(item.get("timeout", 0) or 0),
                 int(item.get("reply_to_msg_id", 0) or 0),
-                int(item.get("chat_id", 0) or 0),
+                chat_id,
                 int(item.get("topic_id", 0) or 0),
                 int(item.get("max_retry", RETRY_LIMIT) if item.get("max_retry", RETRY_LIMIT) is not None else RETRY_LIMIT),
                 str(item.get("priority", "") or ""),
@@ -2103,10 +2113,11 @@ def upsert_identity_to_db(send_as_id):
         )
 
     conn.execute("DELETE FROM message_index WHERE send_as_id = ?", (int(send_as_id),))
-    for msg_id, sent_at in identity_state.get("my_msg_ids", {}).items():
+    for key, sent_at in identity_state.get("my_msg_ids", {}).items():
+        chat_id, msg_id = message_key_parts(key)
         conn.execute(
-            "INSERT OR REPLACE INTO message_index(msg_id, send_as_id, sent_at, kind) VALUES (?, ?, ?, ?)",
-            (int(msg_id), int(send_as_id), float(sent_at or 0), "command"),
+            "INSERT INTO message_index(msg_id, send_as_id, chat_id, sent_at, kind) VALUES (?, ?, ?, ?, ?)",
+            (msg_id, int(send_as_id), chat_id, float(sent_at or 0), "command"),
         )
 
 
@@ -2172,7 +2183,7 @@ def _load_identity_from_db(send_as_id):
 
     pending_rows = conn.execute("SELECT * FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),)).fetchall()
     identity_state["pending_tasks"] = {
-        int(row["msg_id"]): {
+        message_key(row["msg_id"], row["chat_id"]): {
             **_pending_recovery_fields(_decode_meta_json(row["recovery_json"], {}) if "recovery_json" in row.keys() else {}),
             "cmd": row["cmd"],
             "sent_at": row["sent_at"],
@@ -2191,8 +2202,8 @@ def _load_identity_from_db(send_as_id):
         for row in pending_rows
     }
 
-    index_rows = conn.execute("SELECT msg_id, sent_at FROM message_index WHERE send_as_id = ?", (int(send_as_id),)).fetchall()
-    identity_state["my_msg_ids"] = {int(row["msg_id"]): row["sent_at"] for row in index_rows}
+    index_rows = conn.execute("SELECT chat_id, msg_id, sent_at FROM message_index WHERE send_as_id = ?", (int(send_as_id),)).fetchall()
+    identity_state["my_msg_ids"] = {message_key(row["msg_id"], row["chat_id"]): row["sent_at"] for row in index_rows}
 
     _meta_state["identity_states"][int(send_as_id)] = identity_state
     return identity_state

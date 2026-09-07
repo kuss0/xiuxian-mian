@@ -24,6 +24,7 @@ from ..message_log_recovery import (
     recover_sent_command_from_message_log,
 )
 from ..persistence import mark_dirty, save_state
+from ..message_keys import message_key_parts
 from ..runtime import classify_game_send_block, clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
@@ -31,6 +32,7 @@ from ..state import (
     get_game_group_ids,
     get_identity_enabled,
     get_identity_ids,
+    get_pending_command,
     get_send_as_tags,
     is_cave_public_auto_enabled,
     state,
@@ -2043,7 +2045,12 @@ def restore_small_world_runtime(now, *, persist=False):
         mark_dirty()
 
     query_msg_id = int(state.get("small_world_query_msg_id", 0) or 0)
-    if phase == "query_pending" and query_msg_id > 0 and query_msg_id not in pending_tasks:
+    has_query_pending = any(
+        message_key_parts(key, item)[1] == query_msg_id
+        and get_pending_command(item) == CMD_SMALL_WORLD_QUERY
+        for key, item in pending_tasks.items()
+    )
+    if phase == "query_pending" and query_msg_id > 0 and not has_query_pending:
         _clear_chain_pending()
         sessions = state.get("action_guard_sessions")
         if isinstance(sessions, dict):
