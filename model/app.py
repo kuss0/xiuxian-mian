@@ -113,10 +113,13 @@ from .features.tianxing import (
     apply_tianxing_passive,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
+    close_tianxing_reply_guards,
     has_tianxing_craft_farm_due,
     has_tianxing_craft_farm_override_due,
     has_tianxing_timeline_due_work,
+    has_tianxing_pending_reply,
     is_tianxing_route_released,
+    is_tianxing_waiting_reply,
     normalize_tianxing_observation,
     normalize_tianxing_timeline_state,
     parse_tianxing_text,
@@ -3202,11 +3205,15 @@ async def _handle_routed_reply_event(
     is_nonterminal_waiting_reply = (
         matched_family in {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift"}
         and is_storage_transfer_waiting_reply(text)
-    ) or is_identity_info_waiting_reply
+    ) or is_identity_info_waiting_reply or is_tianxing_waiting_reply(
+        text, now=now, family=matched_family,
+        command=getattr(reply_to, "raw_text", None) if int(getattr(reply_to, "id", 0) or 0) == int((reply_context or {}).get("root_msg_id") or 0) else None,
+    )
     claimed = _claim_runtime_event(event, scope=_routed_reply_scope(reply_context, event_kind, text, replay=replay))
     if not claimed:
         if replay and matched_family and _has_runtime_message_consumed(event, matched_family):
             if not is_nonterminal_waiting_reply:
+                close_tianxing_reply_guards(text, now, matched_family, dict(reply_context or {}, chat_id=event.chat_id))
                 clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
             return True
         return False
@@ -3246,6 +3253,7 @@ async def _handle_routed_reply_event(
 
         if already_consumed:
             if not is_nonterminal_waiting_reply:
+                close_tianxing_reply_guards(text, now, matched_family, dict(reply_context or {}, chat_id=event.chat_id))
                 clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
             return True
 
@@ -3254,8 +3262,9 @@ async def _handle_routed_reply_event(
         if not already_consumed and str(matched_family or "").startswith("tianxing_"):
             handled_any = apply_tianxing_passive(
                 text, now=now, family=matched_family,
-                reply_context=dict(reply_context or {}, root_msg_id=root_msg_id, chat_id=event.chat_id, msg_id=event.id),
+                reply_context=dict(reply_context or {}, root_msg_id=root_msg_id, chat_id=event.chat_id, msg_id=event.id, processed_at=max(now, time.time())),
             ) or handled_any
+            is_nonterminal_waiting_reply = is_nonterminal_waiting_reply or has_tianxing_pending_reply(matched_family)
         tree_runtime_archived = _is_tree_runtime_archived()
         if not tree_runtime_archived:
             await handle_tree_invasion_end(text, now, is_reply_to_me)
@@ -3465,6 +3474,7 @@ async def _handle_routed_reply_event(
                 handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if handled_any and not is_nonterminal_waiting_reply:
+            close_tianxing_reply_guards(text, now, matched_family, dict(reply_context or {}, root_msg_id=root_msg_id, chat_id=event.chat_id))
             clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
         if matched_family and handled_any and not already_consumed:
             if (
@@ -3528,6 +3538,7 @@ async def _replay_pending_log_replies(send_as_id, msg_id, pending, replies, now)
         receipt_key = f"{event_kind}:{event.id}:{text_hash}"
         if receipt_key in applied:
             if applied[receipt_key]:
+                close_tianxing_reply_guards(event.raw_text, event_at, family, context)
                 clear_pending_by_reply(reply_to, send_as_id, reply_context=context, clear_family=False)
             handled_any = True
             continue

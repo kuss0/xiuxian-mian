@@ -1663,10 +1663,107 @@ def _retreat_result_matches_command(parsed, command):
     ):
         if command.startswith(prefix) and action == expected_action and result in outcomes:
             try:
-                return not parsed.get(count_key) or int(parsed[count_key]) == int(command.removeprefix(prefix))
+                if count_key not in parsed:
+                    return result != "success"
+                count = parsed[count_key]
+                return type(count) is int and count > 0 and count == int(command.removeprefix(prefix))
             except (TypeError, ValueError, OverflowError):
                 return False
     return False
+
+
+def _tianxing_panel_has_fields(parsed):
+    return any(key in parsed for key in (
+        "tianji_value", "calamity_count", "hit_count", "miss_count", "change_count",
+        "fixed_star", "current_prediction", "current_change", "available_stars",
+    ))
+
+
+def _tianxing_auto_result_matches(action, parsed, command):
+    if parsed.get("action") != _TIANXING_AUTO_PENDING_ACTIONS.get(action):
+        return False
+    result = str(parsed.get("result") or "")
+    if action == "panel":
+        return result == "panel" and _tianxing_panel_has_fields(parsed)
+    if action == "observe":
+        return result == "success" and bool(parsed.get("available_stars"))
+    if result in {"blocked", "need_observe", "noop", "cooldown"}:
+        return True
+    if result != "success":
+        return False
+    if action == "set_star":
+        star = parsed.get("fixed_star") if command is None else _star_arg_from_command(command)
+        return star in TIANXING_STARS and parsed.get("fixed_star") == star
+    if action in {"predict", "change_fate"}:
+        prefix = CMD_TIANXING_PREDICT if action == "predict" else CMD_TIANXING_CHANGE_FATE
+        key = "current_prediction" if action == "predict" else "current_change"
+        route = parsed.get(key) if command is None else _route_arg_from_command(command, prefix)
+        return route in TIANXING_ROUTES and parsed.get(key) == route
+    return action == "clear_calamity"
+
+
+def _tianxing_parsed_is_terminal(parsed, family, command=None):
+    if not isinstance(parsed, dict):
+        return False
+    for action, expected_family in _TIANXING_AUTO_PENDING_FAMILIES.items():
+        if family == expected_family:
+            return _tianxing_auto_result_matches(action, parsed, command)
+    action, result = parsed.get("action"), parsed.get("result")
+    if family == "tianxing_craft_farm":
+        if action != "炼制" or result not in {"blocked", "success", "failure", "prediction_hit", "prediction_miss", "change_triggered"}:
+            return False
+        if command is not None and parsed.get("craft_item") != str(command).removeprefix(CMD_CRAFT).strip() and parsed.get("craft_item"):
+            return False
+        if result == "blocked":
+            return True
+        count = parsed.get("craft_count")
+        success_count = parsed.get("craft_success_count", 0)
+        return type(count) is int and type(success_count) is int and count > 0 and 0 <= success_count <= count
+    if family == "tianxing_retreat_farm":
+        if command is None:
+            command = {
+                "闭关": CMD_NORMAL_RETREAT, "合气丹": CMD_USE_HEQI_DAN,
+                "兑换合气丹": CMD_EXCHANGE_HEQI_DAN_PREFIX + str(parsed.get("exchange_count") or 0),
+                "宗门捐献": CMD_SECT_DONATE_LINGSHI_PREFIX + str(parsed.get("donate_count") or 0),
+            }.get(action, "")
+        return _retreat_result_matches_command(parsed, command)
+    return False
+
+
+def is_tianxing_waiting_reply(text, now=None, family="", *, command=None):
+    if family not in TIANXING_REPLY_GUARD_FAMILIES:
+        return False
+    parsed = parse_tianxing_text(text, now=now, family=family)
+    return not _tianxing_parsed_is_terminal(parsed, family, command)
+
+
+def has_tianxing_pending_reply(family):
+    if family not in TIANXING_REPLY_GUARD_FAMILIES:
+        return False
+    if family in _TIANXING_AUTO_PENDING_FAMILIES.values():
+        observed = state.get("tianxing_observation", {})
+        if not isinstance(observed, dict):
+            return True
+        action = observed.get("auto_pending_action", "")
+        if not isinstance(action, str) or (action and action not in _TIANXING_AUTO_PENDING_FAMILIES):
+            return True
+        return _TIANXING_AUTO_PENDING_FAMILIES.get(action) == family
+    if family in {"tianxing_craft_farm", "tianxing_retreat_farm"}:
+        kind = "craft" if family == "tianxing_craft_farm" else "retreat"
+        timeline = state.get("tianxing_timeline_state", {})
+        if not isinstance(timeline, dict):
+            return True
+        farm = timeline.get(f"{kind}_farm", {})
+        if not isinstance(farm, dict):
+            return True
+        return bool(farm.get("pending_craft" if kind == "craft" else "pending_command"))
+    return False
+
+
+def _tianxing_reply_processing_time(now, reply_context):
+    context = reply_context if isinstance(reply_context, dict) else {}
+    processed_at, dirty = _parse_observation_float(context.get("processed_at"))
+    return max(now, processed_at) if not dirty else now
 
 
 def _update_retreat_farm_from_parsed(parsed, observed, now, family="", *, reply_context=None):
@@ -1687,7 +1784,7 @@ def _update_retreat_farm_from_parsed(parsed, observed, now, family="", *, reply_
             return False
         if scoped:
             receipt = _tianxing_farm_receipt(farm)
-            _adopt_tianxing_farm_receipt(receipt, farm, now)
+            _adopt_tianxing_farm_receipt(receipt, farm, _tianxing_reply_processing_time(now, reply_context))
             if receipt["command"] != CMD_TIANXING_PANEL or not _tianxing_farm_receipt_matches(receipt, reply_context, now) or farm["send_outcome"] == "resolved":
                 return False
             farm["send_outcome"] = "resolved"
@@ -1700,7 +1797,7 @@ def _update_retreat_farm_from_parsed(parsed, observed, now, family="", *, reply_
             _set_tianxing_retreat_farm_state(farm, now)
             return True
     elif scoped:
-        _adopt_tianxing_farm_receipt(pending, farm, now)
+        _adopt_tianxing_farm_receipt(pending, farm, _tianxing_reply_processing_time(now, reply_context))
         if not _tianxing_farm_receipt_matches(pending, reply_context, now) or not _retreat_result_matches_command(parsed, pending.get("command")):
             return False
         owned_pending = True
@@ -2245,17 +2342,40 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     if not parsed:
         return False
     action = parsed.get("action")
+    if (
+        parsed.get("result") in {"guide", "observed", "preparing"}
+        or (action == "天机盘" and not _tianxing_panel_has_fields(parsed))
+        or (action == "观命" and not parsed.get("available_stars"))
+        or (action == "炼制" and not _tianxing_parsed_is_terminal(parsed, "tianxing_craft_farm"))
+        or (
+            action in {"兑换合气丹", "宗门捐献"} and parsed.get("result") == "success"
+            and not _tianxing_parsed_is_terminal(parsed, "tianxing_retreat_farm")
+        )
+    ):
+        # Diagnostics and a start acknowledgement are not new effect evidence.
+        # Preserve the authoritative snapshot until a real result arrives.
+        source = state.get("tianxing_observation")
+        observed = copy.deepcopy(source) if isinstance(source, dict) else {}
+        recent = observed.get("recent") if isinstance(observed.get("recent"), list) else []
+        observed["recent"] = (recent + [{
+            "ts": now, "action": action, "result": parsed.get("result"), "summary": parsed.get("summary"),
+        }])[-8:]
+        state["tianxing_observation"] = observed
+        if action == "炼制" and parsed.get("result") == "preparing":
+            _update_craft_farm_from_parsed(parsed, observed, now, family, reply_context=reply_context)
+        return True
     for farm, result_key, actions in (
         (_current_craft_farm_state(), "last_craft_result", {"炼制"}),
         (_current_retreat_farm_state(), "last_command_result", {"闭关", "合气丹", "兑换合气丹", "宗门捐献"}),
     ):
         settled = farm[result_key]
         if action in actions and _tianxing_farm_receipt_matches(settled, reply_context, now):
+            _close_tianxing_guards_from_reply(parsed, state.get("tianxing_observation") or {}, now, reply_context=reply_context)
             return True
         if action != "天机盘" or not settled or farm["last_command"] != CMD_TIANXING_PANEL:
             continue
         receipt = _tianxing_farm_receipt(farm)
-        _adopt_tianxing_farm_receipt(receipt, farm, now)
+        _adopt_tianxing_farm_receipt(receipt, farm, _tianxing_reply_processing_time(now, reply_context))
         if (
             _tianxing_farm_receipt_matches(receipt, reply_context, now)
             and receipt["started_at"] <= float(settled.get("result_at") or 0)
@@ -2263,7 +2383,7 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
             return False
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    _adopt_tianxing_auto_receipt(observed, now)
+    _adopt_tianxing_auto_receipt(observed, _tianxing_reply_processing_time(now, reply_context))
     auto_resolved = _auto_pending_matches_parsed(observed, parsed, now, reply_context=reply_context)
     seen_key = _tianxing_auto_reply_key(observed, parsed, reply_context)
     seen = observed["auto_pending_seen_replies"]
@@ -2277,6 +2397,7 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
                 if observed["auto_next_time"] == due_at:
                     observed["auto_next_time"] = now + 60
             state["tianxing_observation"] = observed
+        _close_tianxing_guards_from_reply(parsed, observed, now, reply_context=reply_context)
         return True
     if seen_key:
         # Retain evidence until this operation is resolved, even before the
@@ -2680,7 +2801,15 @@ _TIANXING_AUTO_PENDING_FAMILIES = {
     "change_fate": "tianxing_change_fate",
     "clear_calamity": "tianxing_clear_calamity",
 }
-TIANXING_REPLY_GUARD_FAMILIES = frozenset(_TIANXING_AUTO_PENDING_FAMILIES.values())
+_TIANXING_GUARD_FAMILIES = {
+    **{family: family for family in _TIANXING_AUTO_PENDING_FAMILIES.values()},
+    "tianxing_craft_farm": "tianxing_craft_farm",
+    "tianxing_retreat_farm": "tianxing_retreat_farm",
+    "tianxing_heqi_dan": "tianxing_retreat_farm",
+    "tianxing_heqi_exchange": "tianxing_retreat_farm",
+    "tianxing_lingshi_donation": "tianxing_retreat_farm",
+}
+TIANXING_REPLY_GUARD_FAMILIES = frozenset(_TIANXING_GUARD_FAMILIES.values())
 
 
 def _tianxing_day_start_ts(now):
@@ -2969,7 +3098,10 @@ def _tianxing_pending_retreat_effect():
         return {"status": "unknown"}
     # Only ordinary retreat consumes this route; deep retreat and material
     # preparation do not consume or block Tianxing effects by themselves.
-    return pending if pending and pending.get("command", CMD_NORMAL_RETREAT) == CMD_NORMAL_RETREAT else {}
+    command = pending.get("command")
+    if pending and (not isinstance(command, str) or not command.strip()):
+        return pending
+    return pending if command == CMD_NORMAL_RETREAT else {}
 
 
 def _owns_tianxing_craft_dispatch(op_id):
@@ -3069,24 +3201,7 @@ def _auto_pending_matches_parsed(observed, parsed, now, *, reply_context=None):
             return False
     if action not in {"panel", "observe"} and not anchored:
         return False
-    result = str((parsed or {}).get("result") or "")
-    if action == "panel":
-        return result == "panel" and any(key in parsed for key in ("tianji_value", "calamity_count", "hit_count", "fixed_star", "current_prediction", "current_change"))
-    if action == "observe":
-        return result == "success" and bool(parsed.get("available_stars"))
-    if result in {"blocked", "need_observe", "noop", "cooldown"}:
-        return anchored
-    if result != "success":
-        return False
-    command = str(observed.get("auto_pending_command") or "")
-    if action == "set_star":
-        return bool(_star_arg_from_command(command)) and parsed.get("fixed_star") == _star_arg_from_command(command)
-    if action in {"predict", "change_fate"}:
-        prefix = CMD_TIANXING_PREDICT if action == "predict" else CMD_TIANXING_CHANGE_FATE
-        key = "current_prediction" if action == "predict" else "current_change"
-        expected_route = _route_arg_from_command(command, prefix)
-        return bool(expected_route) and parsed.get(key) == expected_route
-    return action == "clear_calamity"
+    return _tianxing_auto_result_matches(action, parsed, str(observed.get("auto_pending_command") or ""))
 
 
 def _note_tianxing_auto_pending(observed, now, plan, config):
@@ -3804,6 +3919,7 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
 
     if not isinstance(reply_context, dict):
         return 0
+    observed = observed if isinstance(observed, dict) else {}
     send_as_id = get_current_identity_id()
     account_id = get_identity_account(send_as_id)
     owner = exact_id(reply_context.get("send_as_id"))
@@ -3814,7 +3930,12 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
 
     pending_by_action = {}
     sessions = action_guard.get_action_guard_sessions(send_as_id)
-    for action, key in _TIANXING_AUTO_PENDING_FAMILIES.items():
+    source_record = get_message_record(state.get("pending_tasks", {}), root_id, chat_id=chat_id)
+    source_record = source_record if isinstance(source_record, dict) else {}
+    dispatch_at, dispatch_dirty = _parse_observation_float(source_record.get("send_started_at"))
+    receipt_at, receipt_dirty = _parse_observation_float(source_record.get("sent_at"))
+    for key, reply_family in _TIANXING_GUARD_FAMILIES.items():
+        action = key.removeprefix("tianxing_")
         session = sessions.get(key)
         if not isinstance(session, dict):
             continue
@@ -3824,12 +3945,23 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
         receipt_msg = exact_id(session.get("last_msg_id"))
         command = str(session.get("last_command") or "")
         if (
-            dirty or isinstance(session.get("last_sent_at"), bool) or sent_at <= 0 or int(now) < int(sent_at)
+            dirty or isinstance(session.get("last_sent_at"), bool) or sent_at <= 0
             or receipt_account != account_id or receipt_chat != chat_id or receipt_msg <= 0
             or action_guard.resolve_action_key(command) != key
         ):
             continue
+        verified_dispatch = bool(
+            receipt_msg == root_id and source_record.get("cmd") == command
+            and not isinstance(source_record.get("send_started_at"), bool)
+            and not isinstance(source_record.get("sent_at"), bool)
+            and not dispatch_dirty and not receipt_dirty and 0 < dispatch_at <= receipt_at
+            and receipt_at == sent_at
+        )
+        if int(now) < int(dispatch_at if verified_dispatch else sent_at):
+            continue
         pending_by_action[action] = {
+            "guard_key": key, "reply_family": reply_family,
+            "dispatch_at": dispatch_at if verified_dispatch else 0,
             "auto_pending_action": action, "auto_pending_command": command,
             "auto_pending_account_id": receipt_account, "auto_pending_chat_id": receipt_chat,
             "auto_pending_msg_id": receipt_msg, "auto_pending_sent_at": sent_at,
@@ -3837,7 +3969,7 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
 
     def close(pending, reason):
         return bool(action_guard.close_action(
-            _TIANXING_AUTO_PENDING_FAMILIES[pending["auto_pending_action"]],
+            pending["guard_key"],
             send_as_id=send_as_id, reason=reason, now=now,
             expected_msg_id=pending["auto_pending_msg_id"],
             expected_chat_id=pending["auto_pending_chat_id"],
@@ -3845,21 +3977,12 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
 
     closed = 0
     for action, pending in pending_by_action.items():
-        if not _auto_pending_matches_parsed(pending, parsed, now, reply_context=reply_context):
+        if pending["auto_pending_msg_id"] != root_id or not _tianxing_parsed_is_terminal(parsed, pending["reply_family"], pending["auto_pending_command"]):
             continue
         if action == "panel":
             # A late panel is not a fresh snapshot. Verify the original query's
             # actual dispatch, not its response arrival or cached observation.
-            record = get_message_record(state.get("pending_tasks", {}), root_id, chat_id=chat_id)
-            record = record if isinstance(record, dict) else {}
-            dispatch_at, dispatch_dirty = _parse_observation_float(record.get("send_started_at"))
-            sent_at, sent_dirty = _parse_observation_float(record.get("sent_at"))
-            query_verified = bool(
-                not dispatch_dirty and not sent_dirty and 0 < dispatch_at <= sent_at
-                and sent_at == pending["auto_pending_sent_at"]
-                and record.get("cmd") == CMD_TIANXING_PANEL
-            )
-            if query_verified:
+            if pending["dispatch_at"] > 0:
                 for target_action, field, prefix in (
                     ("predict", "current_prediction", CMD_TIANXING_PREDICT),
                     ("change_fate", "current_change", CMD_TIANXING_CHANGE_FATE),
@@ -3868,7 +3991,7 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
                     target = pending_by_action.get(target_action)
                     if (
                         not target or target["auto_pending_msg_id"] >= root_id
-                        or target["auto_pending_sent_at"] > dispatch_at
+                        or target["auto_pending_sent_at"] > pending["dispatch_at"]
                     ):
                         continue
                     command = target["auto_pending_command"]
@@ -3886,6 +4009,22 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
                         closed += 1
         closed += int(close(pending, "tianxing_correlated_reply"))
     return closed
+
+
+def close_tianxing_reply_guards(text, now, family, reply_context):
+    if family not in TIANXING_REPLY_GUARD_FAMILIES or not isinstance(reply_context, dict):
+        return 0
+    try:
+        identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not has_identity(identity_id):
+        return 0
+    parsed = parse_tianxing_text(text, now=now, family=family)
+    if not parsed:
+        return 0
+    with use_identity(identity_id):
+        return _close_tianxing_guards_from_reply(parsed, state.get("tianxing_observation") or {}, now, reply_context=reply_context)
 
 
 def _tianxing_reply_family_for_action(action):
@@ -6569,11 +6708,13 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family="", *, reply_co
 
     action = str(parsed.get("action") or "")
     result = str(parsed.get("result") or "")
+    if action == "炼制" and result != "preparing" and not _tianxing_parsed_is_terminal(parsed, "tianxing_craft_farm"):
+        return False
     pending = farm["pending_craft"]
     scoped = bool(pending or farm["last_op_id"])
     owned_craft = False
     if scoped and action == "炼制":
-        _adopt_tianxing_farm_receipt(pending, farm, now)
+        _adopt_tianxing_farm_receipt(pending, farm, _tianxing_reply_processing_time(now, reply_context))
         if not _tianxing_farm_receipt_matches(pending, reply_context, now):
             return False
         expected_item = str(pending.get("command") or "").removeprefix(CMD_CRAFT).strip()
@@ -6585,7 +6726,7 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family="", *, reply_co
             return False
         if scoped:
             receipt = _tianxing_farm_receipt(farm)
-            _adopt_tianxing_farm_receipt(receipt, farm, now)
+            _adopt_tianxing_farm_receipt(receipt, farm, _tianxing_reply_processing_time(now, reply_context))
             if receipt["command"] != CMD_TIANXING_PANEL or not _tianxing_farm_receipt_matches(receipt, reply_context, now) or farm["send_outcome"] == "resolved":
                 return False
             farm["send_outcome"] = "resolved"
@@ -6651,7 +6792,7 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family="", *, reply_co
             _craft_farm_audit(farm, now, "craft_blocked", item=item, reason=farm["last_error"])
             changed = True
         elif result in {"success", "failure", "prediction_hit", "prediction_miss", "change_triggered"}:
-            count = int(parsed.get("craft_count", 0) or 0) or 1
+            count = parsed["craft_count"]
             success_count = int(parsed.get("craft_success_count", 0) or 0)
             gain = int(parsed.get("last_tianji_gain", 0) or 0)
             phase_before = str(farm.get("phase") or "")

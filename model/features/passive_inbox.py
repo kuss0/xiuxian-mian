@@ -1632,7 +1632,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
         if family.startswith("tianxing_") or (not family and tianxing_mod.looks_like_tianxing_text(raw_text)):
             module_changed = tianxing_mod.apply_tianxing_passive(
                 raw_text, now, family,
-                reply_context=dict(reply_context or {}, send_as_id=target_id, chat_id=observed_chat_id, msg_id=observed_msg_id),
+                reply_context=dict(reply_context or {}, send_as_id=target_id, chat_id=observed_chat_id, msg_id=observed_msg_id, processed_at=max(now, time.time())),
             )
             if module_changed:
                 changed_modules.append("tianxing")

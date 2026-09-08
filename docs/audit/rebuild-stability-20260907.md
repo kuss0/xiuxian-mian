@@ -101,6 +101,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R47 | High | Craft farm and prediction-consumption callers can overlap, retry uncertain sends, overwrite early results or new work, and mistake panel calibration for craft completion; business-denial backoff is ignored | Fixed for reproduced craft lifecycle boundaries in candidate; shared operation lock, pre-dispatch ownership/evidence checks, persisted unknown pending, strict existing-receipt adoption, independent craft/calibration anchors, idempotent last-result handling and preserved business backoff pass; retreat lifecycle, general reducer ordering and R07 durability remain open |
 | R48 | High | Ordinary retreat and its material chain do not claim pending work before sending; scheduler ticks erase reply-wait phases, panel replies complete unrelated work, missing potions loop, and local guard delays lose the intended next action | Fixed for scoped candidate operations; shared farm transport/receipt code, retreat serialization, strict command/quantity/result ownership, retained unknown work, separate calibration, bounded denial/unsent retries and force-exit caller propagation pass; legacy unanchored farm state, general reducer ordering and shared R07 durability remain open |
 | R49 | High | Tianxing guard cleanup treats cached fields as fresh command evidence, closes unrelated chat/account/action sessions, and accepts late or partial panels; generic routed/passive cleanup bypasses module checks | Fixed for the six direct Tianxing families in candidate; exact reply/session ownership, captured sending account, explicit parsed outcomes, original panel dispatch ordering and expected root/chat closure pass through both dispatchers and SQLite replay; farm-family cleanup, general observation ordering and R07 durability remain open |
+| R50 | High | Empty Tianxing panels, craft-start acknowledgements and zero-quantity results clear pending work before the final edit; an early result followed by its transport receipt loses business completion or leaves a new guard stranded | Fixed in candidate; shared terminal classification preserves incomplete work, exact late receipts close once without repeating reducers, farm/material guards use the module evidence contract, and malformed pending/context cases fail closed; general reducer ordering and R07 durability remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1215,6 +1216,33 @@ five monitor/control-only contracts need separate behavioral verification.
   observation reducer's freshness/idempotence or every generic pending cleanup.
   Production, live switches, listener, skill and CommandAttempt remain untouched.
 
+- R50 starts from 30 intermediate/final-edit cases (20 failed), followed by 14
+  early-result/late-transport cases (all failed). The routed handler, passive
+  inbox and SQLite replay now distinguish a diagnostic or preparation reply
+  from an explicit terminal business result. Empty panels do not renew the
+  authoritative observation or confirm a timeline step; craft preparation
+  advances only its existing waiting phase, with native/business pending intact.
+- Positive, command-matching exchange/donation quantities are required for
+  success. A further 43-case review reproduced incomplete/contradictory craft
+  counts, malformed observation/context/pending shapes, and empty ordinary-
+  retreat pending commands. Removed the craft reducer's `count or 1` fallback;
+  classification and the reducer both reject zero or inconsistent totals.
+  The malformed pending guards retain uncertainty without new sends. Known
+  deep-retreat/material preparation still does not block Tianxing effects.
+- Farm/material guard families now share the exact correlated closure path.
+  A confirmed early result is not applied twice when the send receipt arrives;
+  replay may close its newly registered guard without rerunning the reducer.
+  Existing receipt adoption uses processing time only to locate a receipt
+  already recorded in memory. Effect/result/CD timestamps remain the original
+  game-event time, and actual dispatch evidence is required when a result
+  precedes receipt delivery. No speculative query, resend or controller added.
+- R50 final verification (2026-09-09): 87 new reply-completion cases, 1286
+  related tests and 14 subtests; full suite **5461 passed, 1198 subtests passed**,
+  84.46 seconds. JUnit: `/tmp/xiuxian-rebuild-r50-final-20260909.xml`.
+  Selected Ruff checks, compilation and `git diff --check` pass. Candidate-only;
+  no production configuration/database changes, deployment, restart, game
+  commands, listener activation, skill edits or push.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1323,6 +1351,11 @@ and cleanup code during a code-only rollback.
    cleanup, and the normalization branch that clears consumed prediction
    evidence based only on `last_action`. Material receipt quantities of zero
    and malformed ordinary-retreat pending commands also need explicit cases.
+   R50 now covers incomplete versus terminal replies, farm/material guard
+   closure, late receipt completion and zero-quantity results. General
+   observation provenance, older-than-last results, partial-panel field
+   freshness and consumed-effect resurrection during normalization still need
+   review; the full-suite checkpoint is not final project acceptance.
 
 ## Completion Gate
 
