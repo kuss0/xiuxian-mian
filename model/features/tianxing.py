@@ -130,6 +130,7 @@ TIANXING_OBSERVATION_TIME_KEYS = (
 
 _TIANXING_TIMELINE_LOCKS = {}
 _TIANXING_AUTO_LOCKS = {}
+_TIANXING_CRAFT_LOCKS = {}
 
 
 @dataclass(frozen=True, eq=False)
@@ -796,6 +797,15 @@ def _default_tianxing_craft_farm_state():
         "last_action": "",
         "last_command": "",
         "last_msg_id": 0,
+        "last_chat_id": 0,
+        "last_op_id": "",
+        "last_account_id": 0,
+        "last_send_started_at": 0,
+        "last_sent_at": 0,
+        "send_outcome": "",
+        "pending_craft": {},
+        "last_craft_result": {},
+        "calibration_required": False,
         "last_error": "",
         "last_result": "",
         "last_tianji_gain": 0,
@@ -835,17 +845,41 @@ def normalize_tianxing_craft_farm_state(value=None):
     farm = copy.deepcopy(_default_tianxing_craft_farm_state())
     if isinstance(value, dict):
         farm.update(value)
-    for key in ("started_at", "updated_at", "next_time"):
+    for key in ("started_at", "updated_at", "next_time", "last_send_started_at", "last_sent_at"):
         farm[key], _dirty = _parse_observation_float(farm.get(key, 0))
-    for key in ("target_tianji", "start_tianji", "estimated_tianji", "daily_limit", "daily_count", "success_count", "hit_count", "miss_count", "last_msg_id", "last_tianji_gain"):
+    for key in ("target_tianji", "start_tianji", "estimated_tianji", "daily_limit", "daily_count", "success_count", "hit_count", "miss_count", "last_msg_id", "last_chat_id", "last_account_id", "last_tianji_gain"):
         try:
             farm[key] = int(farm.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
             farm[key] = 0
-    for key in ("phase", "daily_day", "last_item", "last_action", "last_command", "last_error", "last_result"):
+    for key in ("phase", "daily_day", "last_item", "last_action", "last_command", "last_error", "last_result", "last_op_id", "send_outcome"):
         farm[key] = str(farm.get(key) or "").strip()
     if not isinstance(farm.get("dry_run_plan"), dict):
         farm["dry_run_plan"] = {}
+    if not isinstance(farm.get("pending_craft"), dict):
+        farm["pending_craft"] = {"status": "unknown"} if farm.get("pending_craft") else {}
+    else:
+        farm["pending_craft"] = copy.deepcopy(farm["pending_craft"])
+    pending = farm["pending_craft"]
+    if pending:
+        for key in ("op_id", "command", "status"):
+            pending[key] = str(pending.get(key) or "").strip()
+        if pending["status"] not in {"sending", "sent", "unknown"}:
+            pending["status"] = "unknown"
+        for key in ("msg_id", "chat_id", "account_id"):
+            try:
+                pending[key] = int(pending.get(key) or 0)
+            except (TypeError, ValueError, OverflowError):
+                pending[key] = 0
+        for key in ("started_at", "sent_at"):
+            pending[key], _dirty = _parse_observation_float(pending.get(key))
+    if not isinstance(farm.get("last_craft_result"), dict):
+        farm["last_craft_result"] = {}
+    else:
+        farm["last_craft_result"] = copy.deepcopy(farm["last_craft_result"])
+        if farm["last_craft_result"]:
+            farm["last_craft_result"]["result_at"], _dirty = _parse_observation_float(farm["last_craft_result"].get("result_at"))
+    farm["calibration_required"] = _coerce_bool(farm.get("calibration_required"), False)
     audit = []
     for item in farm.get("audit") or []:
         if isinstance(item, dict):
@@ -884,7 +918,7 @@ def _reset_craft_farm_daily_if_needed(farm, now, observed=None, config=None):
         return farm, True
 
     previous_phase = str(farm.get("phase") or "").strip()
-    if previous_phase in {"send_blocked", "sent_waiting_reply", "crafting_waiting_final", "calibrating", "phaseful_deferred"}:
+    if farm.get("pending_craft") or previous_phase in {"sending", "send_unknown", "send_blocked", "sent_waiting_reply", "crafting_waiting_final", "calibrating", "phaseful_deferred"}:
         farm["daily_day"] = today_key
         return farm, True
 
@@ -2142,6 +2176,18 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     parsed = parse_tianxing_text(text, now=now, family=family)
     if not parsed:
         return False
+    craft = _current_craft_farm_state()
+    settled = craft["last_craft_result"]
+    if parsed.get("action") == "炼制" and _craft_receipt_matches(settled, reply_context, now):
+        return True
+    if parsed.get("action") == "天机盘" and settled and craft["last_command"] == CMD_TIANXING_PANEL:
+        receipt = _craft_farm_receipt(craft)
+        _adopt_craft_receipt(receipt, craft, now)
+        if (
+            _craft_receipt_matches(receipt, reply_context, now)
+            and receipt["started_at"] <= float(settled.get("result_at") or 0)
+        ):
+            return False
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     _adopt_tianxing_auto_receipt(observed, now)
@@ -2313,7 +2359,7 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     _close_tianxing_guards_from_observation(observed, now)
     _prune_tianxing_released_routes(observed, now)
     _update_retreat_farm_from_parsed(parsed, observed, now, family)
-    _update_craft_farm_from_parsed(parsed, observed, now, family)
+    _update_craft_farm_from_parsed(parsed, observed, now, family, reply_context=reply_context)
     _update_tianxing_timeline_from_negative_observation(parsed, now)
     confirmed, _timeline = _confirm_tianxing_timeline_from_observation(now)
     if confirmed:
@@ -2828,19 +2874,33 @@ def _tianxing_auto_mutation_pending(observed=None):
     return bool(action and action not in {"panel", "observe"})
 
 
-def _adopt_tianxing_auto_receipt(observed, now):
-    if not observed.get("auto_pending_action") or observed.get("auto_pending_msg_id"):
-        return False
-    op_id = str(observed.get("auto_pending_op_id") or "")
-    account_id = int(observed.get("auto_pending_account_id") or 0)
+def _tianxing_pending_craft():
+    timeline = state.get("tianxing_timeline_state") or {}
+    if not isinstance(timeline, dict):
+        return {}
+    farm = timeline.get("craft_farm") or {}
+    if not isinstance(farm, dict):
+        return {}
+    pending = farm.get("pending_craft") or {}
+    return pending if isinstance(pending, dict) else {"status": "unknown"}
+
+
+def _owns_tianxing_craft_dispatch(op_id):
+    pending = _tianxing_pending_craft()
+    return bool(
+        op_id and pending.get("op_id") == op_id and pending.get("status") == "sending"
+        and not pending.get("msg_id") and pending.get("account_id") == get_identity_account(get_current_identity_id())
+    )
+
+
+def _find_tianxing_operation_receipt(*, op_id, command, account_id, started_at, now):
     if not op_id or not account_id or account_id != get_identity_account(get_current_identity_id()):
-        return False
-    started_at = float(observed.get("auto_pending_sent_at") or 0)
+        return None
     if started_at <= 0:
-        return False
+        return None
     matches = []
     for key, item in state.get("pending_tasks", {}).items():
-        if not isinstance(item, dict) or item.get("op_id") != op_id or item.get("cmd") != observed.get("auto_pending_command") or item.get("source_module") != "天星宗":
+        if not isinstance(item, dict) or item.get("op_id") != op_id or item.get("cmd") != command or item.get("source_module") != "天星宗":
             continue
         try:
             chat_id, msg_id = message_key_parts(key, item)
@@ -2848,12 +2908,23 @@ def _adopt_tianxing_auto_receipt(observed, now):
             continue
         sent_at, sent_dirty = _parse_observation_float(item.get("sent_at"))
         dispatch_at, dispatch_dirty = _parse_observation_float(item.get("send_started_at"))
-        if not chat_id or sent_dirty or dispatch_dirty or not started_at <= dispatch_at <= sent_at <= now + 1:
+        if not chat_id or msg_id <= 0 or sent_dirty or dispatch_dirty or not started_at <= dispatch_at <= sent_at <= now + 1:
             continue
-        matches.append((chat_id, msg_id, dispatch_at))
-    if len(matches) != 1:
+        matches.append((chat_id, msg_id, dispatch_at, sent_at))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _adopt_tianxing_auto_receipt(observed, now):
+    if not observed.get("auto_pending_action") or observed.get("auto_pending_msg_id"):
         return False
-    observed["auto_pending_chat_id"], observed["auto_pending_msg_id"], observed["auto_pending_sent_at"] = matches[0]
+    receipt = _find_tianxing_operation_receipt(
+        op_id=str(observed.get("auto_pending_op_id") or ""), command=observed.get("auto_pending_command"),
+        account_id=int(observed.get("auto_pending_account_id") or 0),
+        started_at=float(observed.get("auto_pending_sent_at") or 0), now=now,
+    )
+    if receipt is None:
+        return False
+    observed["auto_pending_chat_id"], observed["auto_pending_msg_id"], observed["auto_pending_sent_at"] = receipt[:3]
     return True
 
 
@@ -5327,7 +5398,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config, *, operation
         return current
 
     def send_allowed():
-        if not operation.is_current() or current_send() is None or _tianxing_auto_mutation_pending():
+        if not operation.is_current() or current_send() is None or _tianxing_auto_mutation_pending() or _tianxing_pending_craft():
             return False
         deadline = float(sending.get("deadline_at") or 0)
         if deadline > 0 and operation.current_time() >= deadline:
@@ -5508,7 +5579,7 @@ def _tianxing_route_has_pending_downstream(route):
         )
     if route == "炼制":
         farm = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state")).get("craft_farm") or {}
-        return str(farm.get("phase") or "").strip() in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"}
+        return bool(farm.get("pending_craft")) or str(farm.get("phase") or "").strip() in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"}
     if route == "闭关":
         farm = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state")).get("retreat_farm") or {}
         return str(farm.get("phase") or "").strip() in {"sent_waiting_reply", "calibrating"}
@@ -5561,12 +5632,24 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
         if not state.get("tianxing_enabled") or not is_module_available("天星宗"):
             return {"allowed": True}
         command_route = _command_tianxing_route(command)
+        source_module = str((intent or {}).get("source_module") or "").strip() if isinstance(intent, dict) else ""
+        own_craft_dispatch = bool(
+            command_route == "炼制" and source_module == "天星宗" and isinstance(intent, dict)
+            and _owns_tianxing_craft_dispatch(intent.get("op_id"))
+            and str(command or "").strip() == _tianxing_pending_craft().get("command")
+        )
+        effect_command = str(command or "").split(maxsplit=1)[:1]
+        if _tianxing_pending_craft() and not own_craft_dispatch and (
+            command_route or (effect_command and effect_command[0] in {
+                CMD_TIANXING_PREDICT, CMD_TIANXING_CHANGE_FATE, CMD_TIANXING_SET_STAR, CMD_TIANXING_CLEAR_CALAMITY,
+            })
+        ):
+            return {"allowed": False, "code": "tianxing_craft_pending", "reason": "炼制结果仍未核销，暂不推进其他天星消费或重复炼制。"}
         if command_route and _tianxing_auto_mutation_pending():
             return {
                 "allowed": False, "code": "tianxing_auto_pending",
                 "reason": "天星自动动作仍未核销，暂不发送路线动作，避免重复消费或逆命。",
             }
-        source_module = str((intent or {}).get("source_module") or "").strip() if isinstance(intent, dict) else ""
         lease = _active_tianxing_route_lease(now)
         if not lease:
             if command_route and source_module in {"天星宗", "炼制", "野外历练", "探寻裂缝", "斗法"}:
@@ -5589,7 +5672,7 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
         route = _normalize_route_choice(lease.get("route"), "")
         if not route:
             return {"allowed": True}
-        has_pending_downstream = _tianxing_route_has_pending_downstream(route)
+        has_pending_downstream = _tianxing_route_has_pending_downstream(route) and not (own_craft_dispatch and route == "炼制")
         if has_pending_downstream:
             if not command_route:
                 return {"allowed": True}
@@ -5642,6 +5725,8 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     state["tianxing_observation"] = observed
+    if _tianxing_pending_craft():
+        return {"phase": "craft_pending", "active": True, "changed": False, "reason": "炼制仍未核销，天星时间线等待真实回包。", "next_time": now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC}
     if _tianxing_auto_mutation_pending(observed):
         return {
             "phase": "auto_pending", "active": True, "changed": False,
@@ -5877,7 +5962,7 @@ def _route_preflight_prepare(route, stage, plan, now, deadline_at, reason=""):
     )
 
 
-def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None, require_change_fate=False):
+def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None, require_change_fate=False, craft_op_id=None):
     now = float(now if now is not None else time.time())
     route = _normalize_route_choice(route, "")
     deadline_at = float(deadline_at or 0)
@@ -5903,6 +5988,11 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
     effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     route_reason = str(reason or route).strip() or route
+    if _tianxing_pending_craft() and not (route == "炼制" and _owns_tianxing_craft_dispatch(craft_op_id)):
+        return _route_preflight_result(
+            route, "craft_pending", False, "炼制结果仍未核销，等待真实回包，不推进下游。",
+            deadline_at=deadline_at, now=now, blocked_until=now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC,
+        )
     if _tianxing_auto_mutation_pending(observed):
         return _route_preflight_result(
             route, "auto_pending", False,
@@ -6065,6 +6155,212 @@ def _current_craft_farm_state():
     return normalize_tianxing_craft_farm_state(timeline.get("craft_farm"))
 
 
+async def _run_tianxing_craft_locked(now, scheduler, *, config=None, operation_check=None, **kwargs):
+    now = float(now if now is not None else time.time())
+    operation = _TianxingOperation.capture(now, operation_check)
+    if operation is None:
+        return _craft_farm_result("cancelled", reason="天星炼制身份已失效。")
+    config = normalize_tianxing_auto_config(config if config is not None else operation.identity.get("tianxing_auto_config"))
+    lock = _identity_lock(_TIANXING_CRAFT_LOCKS)
+    waited = lock.locked()
+    async with lock:
+        if not operation.is_current():
+            return _craft_farm_result("cancelled", reason="天星炼制身份、配置或前置操作已变化，本轮停止。")
+        return await scheduler(operation.current_time() if waited else now, config=config, operation=operation, **kwargs)
+
+
+def _craft_farm_receipt(farm):
+    return {
+        "op_id": farm["last_op_id"], "account_id": farm["last_account_id"],
+        "command": farm["last_command"], "msg_id": farm["last_msg_id"],
+        "chat_id": farm["last_chat_id"], "started_at": farm["last_send_started_at"],
+        "sent_at": farm["last_sent_at"], "status": farm["send_outcome"],
+    }
+
+
+def _craft_farm_dispatch_hold(farm, now):
+    if farm.get("phase") == "blocked" and float(farm.get("next_time") or 0) > now:
+        return _craft_farm_result(
+            "blocked_waiting", active=True, handoff=True,
+            reason=farm.get("last_error") or "炼制受阻，等待退避窗口。",
+            next_time=farm["next_time"],
+        )
+    pending = farm.get("pending_craft") or {}
+    status = str(pending.get("status") or "")
+    if status not in {"sending", "unknown"} and farm.get("phase") not in {"sending", "send_unknown"}:
+        return None
+    return _craft_farm_result(
+        "send_unknown" if status == "unknown" or farm.get("phase") == "send_unknown" else "waiting_reply",
+        active=True, takeover=False, handoff=True,
+        reason=farm.get("last_error") or "炼制发送仍未确认，保留原任务等待真实回包；不重复炼制。",
+        next_time=max(float(farm.get("next_time") or 0), now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC),
+    )
+
+
+async def _send_tianxing_craft_command(farm, plan, now, config, *, operation, ready_check, sent_stage="sent_waiting_reply"):
+    if not operation.is_current():
+        return _craft_farm_result("cancelled", reason="天星炼制前置操作已变化。")
+    command = str(plan.get("command") or "")
+    is_craft = command != CMD_TIANXING_PANEL
+    timeout = int(config.get("craft_farm_reply_timeout_sec") or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC)
+    farm.update(
+        phase="sending" if is_craft else "calibrating", last_command=command,
+        last_op_id=f"tianxing-craft-{uuid4().hex}", last_account_id=operation.account_id,
+        last_msg_id=0, last_chat_id=0, last_send_started_at=now, last_sent_at=0,
+        send_outcome="sending", next_time=now + timeout,
+        last_result="sending", last_error="",
+    )
+    if is_craft:
+        farm["last_item"] = command.removeprefix(CMD_CRAFT).strip()
+        farm["pending_craft"] = _craft_farm_receipt(farm)
+    farm["calibration_required"] = not is_craft
+    expected = copy.deepcopy(_set_tianxing_craft_farm_state(farm, now))
+    evidence_keys = (
+        "current_prediction", "current_prediction_until", "current_prediction_set_at",
+        "prediction_consumed_route", "prediction_consumed_at",
+        "current_change", "current_change_until", "current_change_set_at",
+    )
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    evidence = {key: observed.get(key) for key in evidence_keys}
+    predicted = is_craft and _has_active_craft_prediction(now, observed)
+
+    def owned_farm():
+        if not operation.owns_identity():
+            return None
+        current = normalize_tianxing_timeline_state(operation.identity.get("tianxing_timeline_state"))["craft_farm"]
+        if any(current.get(key) != expected.get(key) for key in ("last_op_id", "last_account_id", "last_command")):
+            return None
+        return current
+
+    def send_allowed():
+        if not operation.is_current() or owned_farm() != expected:
+            return False
+        latest = normalize_tianxing_observation(operation.identity.get("tianxing_observation"))
+        return (
+            not _tianxing_auto_mutation_pending(latest)
+            and (not is_craft or all(latest.get(key) == value for key, value in evidence.items()))
+            and (not predicted or _has_active_craft_prediction(operation.current_time(), latest))
+            and ready_check(operation.current_time()) is True
+        )
+
+    saved = save_state() is not False
+    locally_unsent = not saved or not send_allowed()
+    cancelled = False
+    send_error = ""
+    msg = None
+    if not locally_unsent:
+        try:
+            msg = await send_game_command(
+                command, track=True, max_retry=0, priority="normal", source_module="天星宗",
+                op_id=expected["last_op_id"], operation_check=send_allowed,
+                queue_timeout=TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC,
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            send_error = "cancelled"
+        except Exception as exc:
+            send_error = type(exc).__name__
+
+    current = owned_farm()
+    if current is None:
+        if cancelled:
+            raise asyncio.CancelledError
+        return _craft_farm_result("cancelled", reason="炼制任务已被替换，旧发送结果不回写。")
+    now = operation.current_time()
+    try:
+        raw_id = getattr(msg, "id", 0)
+        msg_id = int(raw_id or 0)
+        if isinstance(raw_id, bool) or (not isinstance(raw_id, (str, int)) and raw_id != msg_id):
+            msg_id = 0
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg is not None and msg_id <= 0:
+        msg = None
+        send_error = "invalid_message_id"
+    # An early routed reply may already have adopted this exact receipt.
+    if msg is None and current["last_msg_id"] > 0:
+        msg_id = current["last_msg_id"]
+    if msg_id > 0 and current["last_msg_id"] not in {0, msg_id}:
+        if cancelled:
+            raise asyncio.CancelledError
+        return _craft_farm_result("cancelled", reason="炼制回执与当前任务冲突，保留现有状态。")
+
+    if msg_id > 0:
+        sent_at, dirty = _parse_observation_float(getattr(msg, "sent_at", 0))
+        if dirty or sent_at <= 0:
+            sent_at = current["last_sent_at"] or now
+        dispatch_at, dirty = _parse_observation_float(getattr(msg, "send_started_at", 0))
+        if dirty or not expected["last_send_started_at"] <= dispatch_at <= sent_at:
+            dispatch_at = current["last_send_started_at"]
+        try:
+            chat_id = int(getattr(msg, "chat_id", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            chat_id = 0
+        chat_id = chat_id or current["last_chat_id"] or get_sent_message_chat_id(msg_id, default=0, send_as_id=operation.identity_id)
+        if current["last_chat_id"] and chat_id != current["last_chat_id"]:
+            if cancelled:
+                raise asyncio.CancelledError
+            return _craft_farm_result("cancelled", reason="炼制回执群与现有证据冲突，保留现有状态。")
+        current.update(last_msg_id=msg_id, last_chat_id=chat_id, last_sent_at=sent_at, last_send_started_at=dispatch_at)
+        updates = {
+            "phase": "sent_waiting_reply" if is_craft else "calibrating", "send_outcome": "sent",
+            "last_result": "sent_waiting_reply" if is_craft else "waiting_calibration",
+            "next_time": sent_at + timeout,
+            "last_error": "" if is_craft else "等待查盘校准；不重复炼制。",
+        }
+        stage = sent_stage
+        event = "sent_waiting_reply"
+    else:
+        block = {} if send_error or locally_unsent else get_last_game_send_block(operation.identity_id, command)
+        code = str((block or {}).get("code") or "")
+        unsent = locally_unsent or (
+            code not in {"send_timeout", "send_exception"}
+            and bool((block or {}).get("definitely_unsent") or code in GAME_SEND_UNSENT_BLOCK_CODES)
+        )
+        if unsent:
+            delay = (
+                random.uniform(TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MIN_SEC, TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MAX_SEC)
+                if code == "send_queue_timeout" else _craft_farm_interval_sec(config)
+            )
+            error = "炼制发送态保存失败，本轮未发送。" if not saved else f"{command} 明确未发送，错峰后重试。"
+            if code == "send_queue_timeout":
+                error = f"{command} 排队超过 {TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC}s 未发送，错峰后重试。"
+            stage = "send_blocked"
+        else:
+            delay = TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC
+            error = f"{command} 发送结果未知{f' ({send_error})' if send_error else ''}，保留原任务等待回包；不重复炼制。"
+            stage = "send_unknown" if is_craft else "waiting_calibration"
+        updates = {
+            "phase": "send_blocked" if unsent else ("send_unknown" if is_craft else "calibrating"),
+            "send_outcome": "unsent" if unsent else "unknown",
+            "last_error": error, "last_result": stage, "next_time": now + delay,
+        }
+        event = "send_queue_timeout_retry" if unsent and code == "send_queue_timeout" else stage
+
+    pending = current["pending_craft"]
+    if is_craft and pending.get("op_id") == expected["last_op_id"]:
+        if updates["send_outcome"] == "unsent":
+            current["pending_craft"] = {}
+        else:
+            current["pending_craft"] = dict(_craft_farm_receipt(current), status=updates["send_outcome"])
+    # A result may clear an error to its original value; field equality alone
+    # cannot distinguish that from an untouched send claim.
+    result_applied = current["last_craft_result"] != expected["last_craft_result"] or current["send_outcome"] == "resolved"
+    # Transport facts survive switch-off; business results and newer clocks win.
+    for key, value in updates.items():
+        if current.get(key) == expected.get(key) and (key == "send_outcome" or not result_applied):
+            current[key] = value
+    if current["phase"] != updates["phase"]:
+        stage = current["phase"]
+        event = "receipt_after_reply" if msg_id > 0 else "send_finished_after_state_change"
+    _craft_farm_audit(current, now, event, command=command, msg_id=current["last_msg_id"])
+    _set_tianxing_craft_farm_state(current, now)
+    save_state()
+    if cancelled:
+        raise asyncio.CancelledError
+    return dict(plan, stage=stage, msg_id=current["last_msg_id"], next_time=current["next_time"], reason=current["last_error"] or plan.get("reason") or "")
+
+
 def _heqi_exchange_command(config):
     config = normalize_tianxing_auto_config(config)
     count = int(config.get("retreat_farm_heqi_exchange_count", 10) or 10)
@@ -6097,7 +6393,41 @@ def _retreat_farm_cooldown_until(farm, now):
     return 0.0
 
 
-def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
+def _adopt_craft_receipt(receipt, farm, now):
+    if not receipt or receipt.get("msg_id"):
+        return False
+    found = _find_tianxing_operation_receipt(
+        op_id=receipt.get("op_id"), command=receipt.get("command"),
+        account_id=receipt.get("account_id"), started_at=receipt.get("started_at") or 0, now=now,
+    )
+    if found is None:
+        return False
+    receipt.update(chat_id=found[0], msg_id=found[1], started_at=found[2], sent_at=found[3], status="sent")
+    if receipt["op_id"] == farm["last_op_id"]:
+        farm.update(last_chat_id=found[0], last_msg_id=found[1], last_send_started_at=found[2], last_sent_at=found[3])
+    return True
+
+
+def _craft_receipt_matches(receipt, context, now):
+    if not receipt or not context:
+        return False
+    try:
+        owner = int(context.get("send_as_id") or 0)
+        root = int(context.get("root_msg_id") or context.get("reply_to_msg_id") or 0)
+        chat = int(context.get("chat_id") or 0)
+        started_at, dirty = _parse_observation_float(receipt.get("started_at"))
+        return bool(
+            (not owner or owner == get_current_identity_id())
+            and int(receipt.get("account_id") or 0) == get_identity_account(get_current_identity_id())
+            and root > 0 and root == int(receipt.get("msg_id") or 0)
+            and chat and chat == int(receipt.get("chat_id") or 0)
+            and not dirty and started_at > 0 and int(now) >= int(started_at)
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _update_craft_farm_from_parsed(parsed, observed, now, family="", *, reply_context=None):
     parsed = parsed if isinstance(parsed, dict) else {}
     farm = _current_craft_farm_state()
     family = str(family or "")
@@ -6107,6 +6437,37 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
 
     action = str(parsed.get("action") or "")
     result = str(parsed.get("result") or "")
+    pending = farm["pending_craft"]
+    scoped = bool(pending or farm["last_op_id"])
+    owned_craft = False
+    if scoped and action == "炼制":
+        _adopt_craft_receipt(pending, farm, now)
+        if not _craft_receipt_matches(pending, reply_context, now):
+            return False
+        expected_item = str(pending.get("command") or "").removeprefix(CMD_CRAFT).strip()
+        if parsed.get("craft_item") and parsed["craft_item"] != expected_item:
+            return False
+        owned_craft = True
+    if action == "天机盘":
+        if parsed.get("tianji_value") is None:
+            return False
+        if scoped:
+            receipt = _craft_farm_receipt(farm)
+            _adopt_craft_receipt(receipt, farm, now)
+            if receipt["command"] != CMD_TIANXING_PANEL or not _craft_receipt_matches(receipt, reply_context, now) or farm["send_outcome"] == "resolved":
+                return False
+            farm["send_outcome"] = "resolved"
+        if pending:
+            # A panel is an observation, not proof that the outstanding craft
+            # finished. Keep its command/root independently of this query.
+            farm.update(
+                phase="sent_waiting_reply", calibration_required=True,
+                estimated_tianji=int(parsed["tianji_value"]),
+                last_result="calibration_waiting_craft", last_error="查盘已返回，炼制仍待真实结算回包；不重复炼制。",
+                next_time=max(farm["next_time"], now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC),
+            )
+            _set_tianxing_craft_farm_state(farm, now)
+            return True
     changed = False
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     target = int(farm.get("target_tianji", 0) or config.get("target_tianji_daily", 0) or 0)
@@ -6115,6 +6476,7 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
     changed = bool(daily_reset)
 
     if action == "天机盘":
+        farm["calibration_required"] = False
         current = int(observed.get("tianji_value", 0) or 0)
         farm["estimated_tianji"] = current
         farm["target_tianji"] = target
@@ -6148,6 +6510,8 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
             _craft_farm_audit(farm, now, "craft_preparing", item=item)
             changed = True
         elif result == "blocked":
+            farm["pending_craft"] = {}
+            farm["calibration_required"] = False
             farm["phase"] = "blocked"
             farm["next_time"] = float(now + _status_backoff_sec(config))
             farm["last_error"] = parsed.get("last_error") or "炼制受阻"
@@ -6159,7 +6523,7 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
             success_count = int(parsed.get("craft_success_count", 0) or 0)
             gain = int(parsed.get("last_tianji_gain", 0) or 0)
             phase_before = str(farm.get("phase") or "")
-            can_account = phase_before in {"sent_waiting_reply", "crafting_waiting_final"}
+            can_account = owned_craft or phase_before in {"sent_waiting_reply", "crafting_waiting_final"}
             has_prediction_settlement = result in {"prediction_hit", "prediction_miss", "change_triggered"}
             if can_account and has_prediction_settlement:
                 farm["daily_count"] = int(farm.get("daily_count", 0) or 0) + count
@@ -6173,6 +6537,8 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
                     observed["tianji_value"] = int(observed.get("tianji_value", 0) or 0) + gain
                     state["tianxing_observation"] = observed
             farm["estimated_tianji"] = int(observed.get("tianji_value", 0) or 0)
+            farm["pending_craft"] = {}
+            farm["calibration_required"] = result in {"success", "failure"} and can_account
             farm["last_result"] = parsed.get("summary") or result
             farm["last_error"] = ""
             if result in {"success", "failure"} and can_account:
@@ -6206,6 +6572,10 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
             changed = True
 
     if changed:
+        if owned_craft and result != "preparing":
+            farm["last_craft_result"] = dict(pending, result=result, result_at=now)
+            if pending.get("op_id") == farm["last_op_id"]:
+                farm["send_outcome"] = "resolved"
         _set_tianxing_craft_farm_state(farm, now)
     return changed
 
@@ -6520,13 +6890,20 @@ def build_tianxing_retreat_farm_plan(*, now=None, deep_retreat_phase="", config=
     )
 
 
-async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", config=None):
+async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", config=None, operation_check=None):
     now = float(now if now is not None else time.time())
+    operation = _TianxingOperation.capture(now, operation_check)
+    if operation is None or not operation.is_current():
+        return _retreat_farm_result("cancelled", reason="天星闭关前置操作已变化。")
     config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     plan = build_tianxing_retreat_farm_plan(now=now, deep_retreat_phase=deep_retreat_phase, config=config)
     farm = _current_retreat_farm_state()
     if not plan.get("active"):
         return plan
+    expected_farm = copy.deepcopy(farm)
+
+    def is_current():
+        return operation.is_current() and _current_retreat_farm_state() == expected_farm
 
     if not farm.get("started_at"):
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
@@ -6575,7 +6952,10 @@ async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", con
             now,
             windows=build_tianxing_farm_window(now=now, config=config, reason="天星普通闭关攒点"),
             config=config,
+            operation_check=is_current,
         )
+        if not is_current():
+            return _retreat_farm_result("cancelled", reason="天星闭关等待期间状态已变化。")
         current_timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
         if current_timeline.get("phase") == "prediction_conflict" and float(current_timeline.get("blocked_until", 0) or 0) > now:
             farm = current_timeline["retreat_farm"]
@@ -6634,7 +7014,10 @@ async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", con
         priority=priority,
         source_module=source_module,
         op_id=f"tianxing-retreat-farm-{plan.get('action')}-{int(now)}",
+        operation_check=is_current,
     )
+    if not operation.owns_identity() or _current_retreat_farm_state() != expected_farm:
+        return _retreat_farm_result("cancelled", reason="天星闭关发送结果不覆盖新任务。")
     if not msg:
         farm["phase"] = "send_blocked"
         farm["next_time"] = float(now + TIANXING_RETREAT_FARM_RETRY_SEC)
@@ -6688,294 +7071,114 @@ def _has_active_craft_prediction(now, observed=None):
     )
 
 
-async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
-    now = float(now if now is not None else time.time())
-    config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
-    if not state.get("tianxing_enabled"):
-        return _craft_farm_result("disabled", reason="天星宗模块未开启。")
-    if not is_module_available("天星宗"):
-        return _craft_farm_result("unavailable", reason="当前身份不是天星宗。")
+async def _run_tianxing_consume_craft_prediction_unlocked(now, *, reason="", config, operation):
+    farm = _current_craft_farm_state()
+    unresolved = _craft_farm_dispatch_hold(farm, now)
+    if unresolved:
+        return unresolved
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    if not _has_active_craft_prediction(now, observed):
+    if not _has_active_craft_prediction(now, observed) and not farm.get("pending_craft") and not farm.get("calibration_required"):
         return _craft_farm_result("no_active_craft_prediction", reason="当前没有可消费的炼制推命。")
 
-    farm = _current_craft_farm_state()
     farm, daily_reset = _reset_craft_farm_daily_if_needed(farm, now, observed=observed, config=config)
     if daily_reset:
         _set_tianxing_craft_farm_state(farm, now)
         save_state()
-    farm_phase = str(farm.get("phase") or "").strip()
-    farm_next_time = float(farm.get("next_time", 0) or 0)
+    farm_phase = farm["phase"]
+    farm_next_time = farm["next_time"]
     craft_command, item = _craft_farm_command(config)
     if farm_phase == "send_blocked" and farm_next_time > now:
         return _craft_farm_result(
-            "send_blocked_waiting",
-            active=True,
-            takeover=False,
-            handoff=True,
-            reason=farm.get("last_error") or "炼制推命消费已有等待窗口，暂不重复炼制。",
-            action=farm.get("last_action") or farm_phase,
-            command=farm.get("last_command") or craft_command,
-            next_time=farm_next_time,
+            "send_blocked_waiting", active=True, handoff=True,
+            reason=farm["last_error"] or "炼制推命消费已有等待窗口，暂不重复炼制。",
+            action=farm["last_action"], command=farm["last_command"], next_time=farm_next_time,
         )
     if farm_phase in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"} and farm_next_time > now:
         return _craft_farm_result(
-            "waiting_reply",
-            active=True,
-            takeover=False,
-            handoff=True,
-            reason="炼制推命消费已发送，等待炼制回复或查盘校准。",
-            next_time=farm_next_time,
+            "waiting_reply", active=True, handoff=True,
+            reason="炼制推命消费已发送，等待炼制回复或查盘校准。", next_time=farm_next_time,
         )
     if farm_phase == "phaseful_deferred" and farm_next_time > now:
         return _craft_farm_result(
-            "phaseful_deferred",
-            active=True,
-            takeover=True,
-            handoff=True,
-            reason=farm.get("last_error") or "闭关/元婴结算窗口内，先炼制消费推命延后。",
-            next_time=farm_next_time,
+            "phaseful_deferred", active=True, takeover=True, handoff=True,
+            reason=farm["last_error"] or "结算窗口内，先炼制消费推命延后。", next_time=farm_next_time,
         )
-    should_calibrate = farm_phase in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"} and farm_next_time <= now
+    if farm_phase == "ready" and farm_next_time > now:
+        return _craft_farm_result(
+            "waiting_interval", active=True, handoff=True,
+            reason=farm["last_error"] or "等待炼制消费间隔。", next_time=farm_next_time,
+        )
+    should_calibrate = bool(farm.get("calibration_required") or farm.get("pending_craft")) or farm_phase in {
+        "sent_waiting_reply", "crafting_waiting_final", "calibrating",
+    }
     if (
         farm_phase == "send_blocked"
         and farm_next_time <= now
-        and str(farm.get("last_action") or "") in {"consume_craft_prediction", "consume_craft_prediction_calibration"}
-        and str(farm.get("last_command") or "") in {craft_command, CMD_TIANXING_PANEL}
+        and farm["last_action"] in {"consume_craft_prediction", "consume_craft_prediction_calibration"}
+        and farm["last_command"] in {craft_command, CMD_TIANXING_PANEL}
     ):
         should_calibrate = True
-    if should_calibrate:
-        command = CMD_TIANXING_PANEL
-        if not farm.get("started_at"):
-            farm["started_at"] = float(now)
-            farm["start_tianji"] = int(observed.get("tianji_value", 0) or 0)
-            farm["estimated_tianji"] = int(observed.get("tianji_value", 0) or 0)
-        farm["daily_day"] = get_day_key(now)
-        farm["target_tianji"] = int(config.get("target_tianji_daily", 0) or 0)
-        farm["daily_limit"] = int(config.get("craft_farm_daily_limit", 0) or 0)
-        farm["last_action"] = "consume_craft_prediction_calibration"
-        farm["last_command"] = command
-        farm["last_error"] = "炼制推命消费回复超时，查盘校准；不重复炼制。"
-        farm["handoff_ready"] = True
-        payload = _defer_tianxing_farm_for_phaseful_summary(
-            farm,
-            now,
-            kind="craft",
-            action="消费炼制推命校准",
-            command=command,
-        )
-        if payload:
-            return _craft_farm_result(
-                "phaseful_deferred",
-                active=True,
-                takeover=True,
-                handoff=True,
-                reason=payload["error"],
-                action="consume_craft_prediction_calibration",
-                command=command,
-                next_time=payload["next_time"],
-            )
-
-        guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
-        if guard_next_time > now:
-            farm["phase"] = "ready"
-            farm["last_command"] = ""
-            farm["last_result"] = "action_guard_waiting"
-            farm["last_error"] = guard_reason
-            farm["next_time"] = float(guard_next_time)
-            _craft_farm_audit(
-                farm,
-                now,
-                "consume_craft_prediction_calibration_guard_wait",
-                command=command,
-                reason=guard_reason,
-                next_time=farm["next_time"],
-            )
-            _set_tianxing_craft_farm_state(farm, now)
-            save_state()
-            return _craft_farm_result(
-                "action_guard_waiting",
-                active=True,
-                takeover=False,
-                handoff=True,
-                reason=guard_reason,
-                action="consume_craft_prediction_calibration",
-                command="",
-                next_time=farm["next_time"],
-            )
-
-        msg = await send_game_command(
-            command,
-            track=True,
-            max_retry=0,
-            priority="normal",
-            source_module="天星宗",
-            op_id=f"tianxing-consume-craft-calibration-{int(now)}",
-        )
-        if not msg:
-            farm["phase"] = "send_blocked"
-            farm["next_time"] = float(now + _craft_farm_interval_sec(config))
-            farm["last_error"] = f"{command} 发送失败或被安全策略拦截。"
-            _craft_farm_audit(farm, now, "consume_craft_prediction_calibration_blocked", command=command, reason=reason)
-            _set_tianxing_craft_farm_state(farm, now)
-            save_state()
-            return _craft_farm_result(
-                "send_blocked",
-                active=True,
-                takeover=False,
-                handoff=True,
-                reason=farm["last_error"],
-                action="consume_craft_prediction_calibration",
-                command=command,
-                next_time=farm["next_time"],
-            )
-
-        sent_at = float(getattr(msg, "sent_at", 0) or now)
-        farm["phase"] = "calibrating"
-        farm["last_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        farm["next_time"] = float(sent_at + int(config.get("craft_farm_reply_timeout_sec", TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC) or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC))
-        farm["last_result"] = "waiting_calibration"
-        farm["last_error"] = "炼制推命消费回复超时，查盘校准；不重复炼制。"
-        _craft_farm_audit(farm, sent_at, "consume_craft_prediction_calibration_sent", command=command, msg_id=farm["last_msg_id"], reason=reason)
-        _set_tianxing_craft_farm_state(farm, sent_at)
-        save_state()
-        return _craft_farm_result(
-            "waiting_calibration",
-            active=True,
-            takeover=True,
-            handoff=True,
-            reason=farm["last_error"],
-            action="consume_craft_prediction_calibration",
-            command=command,
-            next_time=farm["next_time"],
-            msg_id=farm["last_msg_id"],
-        )
-
-    command = craft_command
-    if not farm.get("started_at"):
-        farm["started_at"] = float(now)
-        farm["start_tianji"] = int(observed.get("tianji_value", 0) or 0)
-        farm["estimated_tianji"] = int(observed.get("tianji_value", 0) or 0)
-    farm["daily_day"] = get_day_key(now)
-    farm["target_tianji"] = int(config.get("target_tianji_daily", 0) or 0)
-    farm["daily_limit"] = int(config.get("craft_farm_daily_limit", 0) or 0)
-    farm["last_action"] = "consume_craft_prediction"
-    farm["last_command"] = command
-    farm["last_item"] = item
-    farm["last_error"] = ""
-    farm["handoff_ready"] = True
-
+    command = CMD_TIANXING_PANEL if should_calibrate else craft_command
+    action = "consume_craft_prediction_calibration" if should_calibrate else "consume_craft_prediction"
+    if not farm["started_at"]:
+        farm["started_at"] = now
+        farm["start_tianji"] = int(observed.get("tianji_value") or 0)
+        farm["estimated_tianji"] = int(observed.get("tianji_value") or 0)
+    farm.update(
+        daily_day=get_day_key(now), target_tianji=int(config.get("target_tianji_daily") or 0),
+        daily_limit=int(config.get("craft_farm_daily_limit") or 0), last_action=action,
+        last_command=command, handoff_ready=True, calibration_required=should_calibrate,
+        last_error="炼制推命消费回复超时，查盘校准；不重复炼制。" if should_calibrate else "",
+    )
+    if not should_calibrate:
+        farm["last_item"] = item
+    plan = _craft_farm_result(
+        "calibrate_panel" if should_calibrate else "send_craft", active=True, takeover=True, handoff=True,
+        action=action, command=command,
+        reason=reason or ("炼制推命消费回复超时，查盘校准；不重复炼制。" if should_calibrate else "已有炼制推命阻断探索，先炼制消费推命。"),
+    )
     if config.get("craft_farm_dry_run_enabled"):
-        farm["phase"] = "dry_run"
-        farm["last_result"] = "consume_craft_prediction_dry_run"
-        farm["next_time"] = float(now + _craft_farm_interval_sec(config))
+        # A dry run may describe an unresolved task, but cannot erase it.
+        if farm.get("pending_craft") or should_calibrate:
+            return dict(plan, stage="dry_run", takeover=False, dry_run=True, next_time=farm_next_time)
+        farm.update(phase="dry_run", last_result="consume_craft_prediction_dry_run", next_time=now + _craft_farm_interval_sec(config))
         _craft_farm_audit(farm, now, "consume_craft_prediction_dry_run", command=command, reason=reason)
         _set_tianxing_craft_farm_state(farm, now)
         save_state()
-        return _craft_farm_result(
-            "dry_run",
-            active=True,
-            takeover=False,
-            handoff=True,
-            reason="试运行：检测到炼制推命阻断探索，只记录不发送炼制。",
-            action="consume_craft_prediction",
-            command=command,
-            next_time=farm["next_time"],
-            dry_run=True,
-        )
+        return dict(plan, stage="dry_run", takeover=False, dry_run=True, next_time=farm["next_time"])
 
     payload = _defer_tianxing_farm_for_phaseful_summary(
-        farm,
-        now,
-        kind="craft",
-        action="消费炼制推命",
-        command=command,
+        farm, now, kind="craft", action="消费炼制推命校准" if should_calibrate else "消费炼制推命", command=command,
     )
     if payload:
-        return _craft_farm_result(
-            "phaseful_deferred",
-            active=True,
-            takeover=True,
-            handoff=True,
-            reason=payload["error"],
-            action="consume_craft_prediction",
-            command=command,
-            next_time=payload["next_time"],
-        )
+        return dict(plan, stage="phaseful_deferred", reason=payload["error"], next_time=payload["next_time"])
 
     guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
     if guard_next_time > now:
-        farm["phase"] = "ready"
-        farm["last_command"] = ""
-        farm["last_result"] = "action_guard_waiting"
-        farm["last_error"] = guard_reason
-        farm["next_time"] = float(guard_next_time)
-        _craft_farm_audit(
-            farm,
-            now,
-            "consume_craft_prediction_guard_wait",
-            command=command,
-            reason=guard_reason,
-            next_time=farm["next_time"],
-        )
+        farm["phase"] = "calibrating" if should_calibrate else "ready"
+        farm["last_command"] = _current_craft_farm_state()["last_command"] if should_calibrate else ""
+        farm.update(last_result="action_guard_waiting", last_error=guard_reason, next_time=float(guard_next_time))
+        _craft_farm_audit(farm, now, "consume_craft_prediction_guard_wait", command=command, reason=guard_reason, next_time=farm["next_time"])
         _set_tianxing_craft_farm_state(farm, now)
         save_state()
-        return _craft_farm_result(
-            "action_guard_waiting",
-            active=True,
-            takeover=False,
-            handoff=True,
-            reason=guard_reason,
-            action="consume_craft_prediction",
-            command="",
-            next_time=farm["next_time"],
-        )
+        return dict(plan, stage="action_guard_waiting", takeover=False, command="", reason=guard_reason, next_time=farm["next_time"])
 
-    msg = await send_game_command(
-        command,
-        track=True,
-        max_retry=0,
-        priority="normal",
-        source_module="天星宗",
-        op_id=f"tianxing-consume-craft-prediction-{int(now)}",
+    def ready_check(check_now):
+        if should_calibrate:
+            return True
+        lease_route = _normalize_route_choice((_active_tianxing_route_lease(check_now) or {}).get("route"), "")
+        return _has_active_craft_prediction(check_now) and lease_route in {"", "炼制"}
+
+    return await _send_tianxing_craft_command(
+        farm, plan, now, config, operation=operation, ready_check=ready_check,
+        sent_stage="waiting_calibration" if should_calibrate else "sent_waiting_reply",
     )
-    if not msg:
-        farm["phase"] = "send_blocked"
-        farm["next_time"] = float(now + _craft_farm_interval_sec(config))
-        farm["last_error"] = f"{command} 发送失败或被安全策略拦截。"
-        _craft_farm_audit(farm, now, "consume_craft_prediction_blocked", command=command, reason=reason)
-        _set_tianxing_craft_farm_state(farm, now)
-        save_state()
-        return _craft_farm_result(
-            "send_blocked",
-            active=True,
-            takeover=False,
-            handoff=True,
-            reason=farm["last_error"],
-            action="consume_craft_prediction",
-            command=command,
-            next_time=farm["next_time"],
-        )
 
-    sent_at = float(getattr(msg, "sent_at", 0) or now)
-    farm["phase"] = "sent_waiting_reply"
-    farm["last_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    farm["next_time"] = float(sent_at + int(config.get("craft_farm_reply_timeout_sec", TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC) or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC))
-    farm["last_result"] = "sent_waiting_reply"
-    farm["last_error"] = ""
-    _craft_farm_audit(farm, sent_at, "consume_craft_prediction_sent", command=command, msg_id=farm["last_msg_id"], reason=reason)
-    _set_tianxing_craft_farm_state(farm, sent_at)
-    save_state()
-    return _craft_farm_result(
-        "sent_waiting_reply",
-        active=True,
-        takeover=True,
-        handoff=True,
-        reason=reason or "已有炼制推命阻断探索，已先发送炼制消费推命。",
-        action="consume_craft_prediction",
-        command=command,
-        next_time=farm["next_time"],
-        msg_id=farm["last_msg_id"],
+
+async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None, operation_check=None):
+    return await _run_tianxing_craft_locked(
+        now, _run_tianxing_consume_craft_prediction_unlocked,
+        reason=reason, config=config, operation_check=operation_check,
     )
 
 
@@ -7149,6 +7352,10 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             next_time=_tianxing_pause_block_until(now, observed=observed, config=config),
         )
 
+    farm = _current_craft_farm_state()
+    hold = _craft_farm_dispatch_hold(farm, now)
+    if hold:
+        return hold
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     cleared_conflict, timeline = _clear_stale_tianxing_prediction_conflict(timeline, observed, now)
     if cleared_conflict:
@@ -7166,6 +7373,20 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
     estimated_tianji = max(current_tianji, int(farm.get("estimated_tianji", 0) or 0))
     next_time = float(farm.get("next_time", 0) or 0)
     farm_phase = str(farm.get("phase") or "").strip()
+    if farm.get("pending_craft") or farm.get("calibration_required"):
+        dry_run = bool(config.get("craft_farm_dry_run_enabled"))
+        if next_time > now:
+            return _craft_farm_result(
+                "waiting_calibration" if farm_phase == "calibrating" else "waiting_reply",
+                active=True, takeover=not dry_run, handoff=dry_run,
+                reason=farm.get("last_error") or "炼制仍在等待真实回包或校准。", next_time=next_time,
+            )
+        return _craft_farm_result(
+            "calibrate_panel", active=True, takeover=not dry_run, handoff=dry_run,
+            action="panel", command=CMD_TIANXING_PANEL, dry_run=dry_run,
+            reason="炼制仍未完成核对，先查盘校准；不重复炼制。",
+            next_time=now + int(config.get("craft_farm_reply_timeout_sec") or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC),
+        )
     unpredicted_override_reason = _craft_farm_unpredicted_override_reason(now, config, observed, estimated_tianji)
     daily_limit = int(config.get("craft_farm_daily_limit", 0) or 0)
     if target_tianji <= 0:
@@ -7384,15 +7605,23 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
     )
 
 
-async def run_tianxing_craft_farm_scheduler(now, *, config=None):
-    now = float(now if now is not None else time.time())
-    config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
+async def _run_tianxing_craft_farm_scheduler_unlocked(now, *, config, operation):
+    unresolved = _craft_farm_dispatch_hold(_current_craft_farm_state(), now)
+    if unresolved:
+        return unresolved
     plan_windows, run_off_window_active = _build_tianxing_craft_farm_windows(now, config, reason="天星炼制攒点")
     interval_sec = lambda: _craft_farm_interval_sec(config, off_window=run_off_window_active)
     plan = build_tianxing_craft_farm_plan(now=now, config=config)
     farm = _current_craft_farm_state()
     if not plan.get("active"):
         return plan
+    if plan.get("stage") in {"waiting_reply", "waiting_calibration", "blocked_waiting", "send_blocked_waiting", "waiting_interval", "send_unknown"}:
+        return plan
+
+    child_farm = copy.deepcopy(farm)
+
+    def child_is_current():
+        return operation.is_current() and _current_craft_farm_state() == child_farm
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if not farm.get("started_at"):
@@ -7436,7 +7665,16 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             now,
             deep_retreat_phase=state.get("deep_retreat_phase") or "",
             config=consume_config,
+            operation_check=child_is_current,
         )
+        if not child_is_current():
+            if operation.is_current():
+                return dict(
+                    plan, unchanged=True, consume_stage=consume_result.get("stage") or "",
+                    next_time=max(_current_craft_farm_state()["next_time"], float(consume_result.get("next_time") or 0), operation.current_time() + interval_sec()),
+                )
+            return _craft_farm_result("cancelled", reason="闭关消费等待期间炼制任务已变化，保留现有状态。")
+        now = operation.current_time()
         farm = _current_craft_farm_state()
         farm["phase"] = "consume_prediction"
         farm["last_result"] = str(consume_result.get("stage") or "")
@@ -7478,7 +7716,21 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             now,
             windows=plan_windows,
             config=config,
+            operation_check=child_is_current,
         )
+        if not child_is_current():
+            if operation.is_current():
+                current = normalize_tianxing_timeline_state(operation.identity.get("tianxing_timeline_state"))
+                return dict(
+                    plan, unchanged=True, timeline_phase=timeline_result.get("phase") or "",
+                    next_time=max(
+                        current["craft_farm"]["next_time"], float(current.get("blocked_until") or 0),
+                        float((current.get("active_step") or {}).get("ack_due_at") or 0),
+                        operation.current_time() + TIANXING_CRAFT_FARM_RETRY_SEC,
+                    ),
+                )
+            return _craft_farm_result("cancelled", reason="天星时间线等待期间炼制任务已变化，保留现有状态。")
+        now = operation.current_time()
         current_timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
         if current_timeline.get("phase") == "prediction_conflict" and float(current_timeline.get("blocked_until", 0) or 0) > now:
             farm = current_timeline["craft_farm"]
@@ -7543,20 +7795,6 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
         save_state()
         return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "", next_time=farm["next_time"])
 
-    if plan.get("stage") in {"waiting_reply", "waiting_calibration"}:
-        previous_phase = str(farm.get("phase") or "").strip()
-        if plan.get("stage") == "waiting_calibration":
-            farm["phase"] = "calibrating"
-        elif previous_phase in {"sent_waiting_reply", "crafting_waiting_final"}:
-            farm["phase"] = previous_phase
-        else:
-            farm["phase"] = "sent_waiting_reply"
-        farm["last_result"] = plan.get("stage") or ""
-        _craft_farm_audit(farm, now, "waiting", stage=plan.get("stage"), reason=plan.get("reason"))
-        _set_tianxing_craft_farm_state(farm, now)
-        save_state()
-        return plan
-
     command = str(plan.get("command") or "")
     if not command:
         farm["phase"] = "waiting"
@@ -7609,8 +7847,9 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
 
     guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
     if guard_next_time > now:
-        farm["phase"] = "ready"
-        farm["last_command"] = ""
+        farm["calibration_required"] = command == CMD_TIANXING_PANEL
+        farm["phase"] = "calibrating" if farm["calibration_required"] else "ready"
+        farm["last_command"] = _current_craft_farm_state()["last_command"] if farm["calibration_required"] else ""
         farm["last_result"] = "action_guard_waiting"
         farm["last_error"] = guard_reason
         farm["next_time"] = float(guard_next_time)
@@ -7619,47 +7858,39 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
         save_state()
         return dict(plan, stage="action_guard_waiting", command="", reason=guard_reason, next_time=farm["next_time"])
 
-    msg = await send_game_command(
-        command,
-        track=True,
-        max_retry=0,
-        priority="normal",
-        source_module="天星宗",
-        op_id=f"tianxing-craft-farm-{plan.get('action')}-{int(now)}",
-        queue_timeout=TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC,
-    )
-    if not msg:
-        send_block = get_last_game_send_block(get_current_identity_id(), command)
-        if str(send_block.get("code") or "") == "send_queue_timeout":
-            farm["phase"] = "send_blocked"
-            farm["next_time"] = float(now + random.uniform(TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MIN_SEC, TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MAX_SEC))
-            farm["last_error"] = f"{command} 排队超过 {TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC}s 未发送，错峰后重试。"
-            _craft_farm_audit(farm, now, "send_queue_timeout_retry", command=command, next_time=farm["next_time"])
-            _set_tianxing_craft_farm_state(farm, now)
-            save_state()
-            return dict(plan, stage="send_blocked", reason=farm["last_error"], next_time=farm["next_time"])
-        farm["phase"] = "send_blocked"
-        farm["next_time"] = float(now + interval_sec())
-        farm["last_error"] = f"{command} 发送失败或被安全策略拦截。"
-        _craft_farm_audit(farm, now, "send_blocked", command=command)
-        _set_tianxing_craft_farm_state(farm, now)
-        save_state()
-        return dict(plan, stage="send_blocked", reason=farm["last_error"], next_time=farm["next_time"])
+    def ready_check(check_now):
+        if command == CMD_TIANXING_PANEL:
+            return True
+        lease_route = _normalize_route_choice((_active_tianxing_route_lease(check_now) or {}).get("route"), "")
+        if lease_route and lease_route != "炼制":
+            return False
+        if _craft_farm_explore_consume_block(check_now, config) or _tianxing_craft_world_boss_block(check_now):
+            return False
+        latest = normalize_tianxing_observation(state.get("tianxing_observation"))
+        tianji = max(int(latest.get("tianji_value") or 0), int(_current_craft_farm_state().get("estimated_tianji") or 0))
+        if tianji >= int(config.get("target_tianji_daily") or 0):
+            return False
+        preflight = build_tianxing_route_preflight_plan(
+            "炼制", reason="炼制排队放行复核", now=check_now, config=config,
+            craft_op_id=_current_craft_farm_state()["last_op_id"],
+        )
+        return bool(
+            preflight.get("route_allowed")
+            or (
+                plan.get("allow_prediction_conflict") and preflight.get("stage") == "prediction_conflict"
+                and _craft_farm_unpredicted_override_reason(check_now, config, latest, tianji)
+            )
+        )
 
-    sent_at = float(getattr(msg, "sent_at", 0) or now)
-    if command == CMD_TIANXING_PANEL:
-        farm["phase"] = "calibrating"
-    else:
-        _command, item = _craft_farm_command(config)
-        farm["phase"] = "sent_waiting_reply"
-        farm["last_item"] = item
-    farm["last_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    farm["next_time"] = float(sent_at + int(config.get("craft_farm_reply_timeout_sec", TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC) or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC))
-    farm["last_error"] = ""
-    _craft_farm_audit(farm, sent_at, "sent_waiting_reply", command=command, msg_id=farm["last_msg_id"])
-    _set_tianxing_craft_farm_state(farm, sent_at)
-    save_state()
-    return dict(plan, stage="sent_waiting_reply", msg_id=farm["last_msg_id"], next_time=farm["next_time"])
+    return await _send_tianxing_craft_command(
+        farm, plan, now, config, operation=operation, ready_check=ready_check,
+    )
+
+
+async def run_tianxing_craft_farm_scheduler(now, *, config=None, operation_check=None):
+    return await _run_tianxing_craft_locked(
+        now, _run_tianxing_craft_farm_scheduler_unlocked, config=config, operation_check=operation_check,
+    )
 
 
 def _record_tianxing_dry_run(observed, now, plan, config):
@@ -7883,7 +8114,7 @@ async def _run_tianxing_scheduler_unlocked(now, *, operation=None):
                 return
 
         before_auto = _tianxing_auto_fields(observed)
-        craft_result = await run_tianxing_craft_farm_scheduler(now, config=config)
+        craft_result = await run_tianxing_craft_farm_scheduler(now, config=config, operation_check=operation.is_current)
         if not operation.is_current():
             return
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
@@ -7934,6 +8165,8 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=
         return False
     observed = current
     action = str((plan or {}).get("action") or "")
+    if action not in {"panel", "observe"} and _tianxing_pending_craft():
+        return False
     if not config.get(f"auto_{action}_enabled", True):
         return False
     if action in {"set_star", "predict", "change_fate"} and config.get("strategy_dry_run_enabled"):
@@ -7969,6 +8202,7 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=
         return (
             operation.is_current()
             and operation.identity.get("tianxing_observation") == expected
+            and (action in {"panel", "observe"} or not _tianxing_pending_craft())
             and plan_is_current()
         )
 

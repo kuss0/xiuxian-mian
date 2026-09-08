@@ -29,7 +29,12 @@ from ..runtime import classify_game_send_block, console_log, send_audit_log, sen
 from ..state import (
     REALM_SORT_INDEX,
     get_current_identity_id,
+    get_global_enabled,
+    get_identity_account,
+    get_identity_enabled,
+    get_identity_state,
     get_send_as_profile,
+    has_identity,
     infer_realm_from_xiuwei_max,
     state,
 )
@@ -1465,13 +1470,42 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
 
 
 async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
+    identity_id = get_current_identity_id()
+    if not has_identity(identity_id):
+        return False
+    identity = get_identity_state(identity_id)
+    account_id = get_identity_account(identity_id)
+    expected = {key: identity.get(key) for key in (
+        "explore_rift_enabled", "explore_rift_manual_required", "next_explore_rift_time",
+        "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id",
+        "explore_rift_tianxing_prepare_retry_at", "tianxing_enabled",
+    )}
+    started_at = time.monotonic()
+    started_now = now
+
+    def is_current():
+        return bool(
+            has_identity(identity_id) and get_identity_state(identity_id) is identity
+            and get_identity_account(identity_id) == account_id
+            and get_global_enabled() and get_identity_enabled(identity_id)
+            and identity.get("explore_rift_enabled")
+            and all(identity.get(key) == value for key, value in expected.items())
+        )
+
+    if not is_current():
+        return False
     due_at = float(due_at or now)
     preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
     if preflight.get("route_allowed"):
         state["explore_rift_tianxing_prepare_retry_at"] = 0
         return True
     if str(preflight.get("stage") or "") == "prediction_conflict":
-        consume_result = await run_tianxing_consume_craft_prediction(now, reason="探寻裂缝前消费炼制推命")
+        consume_result = await run_tianxing_consume_craft_prediction(
+            now, reason="探寻裂缝前消费炼制推命", operation_check=is_current,
+        )
+        if not is_current():
+            return False
+        now = started_now + max(0.0, time.monotonic() - started_at)
         if consume_result.get("active"):
             if due_at <= now:
                 _schedule_explore_rift_tianxing_prepare_retry(now, due_at)
@@ -1481,6 +1515,10 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
             state["explore_rift_last_error"] = "" if consume_result.get("takeover") or consume_result.get("stage") == "waiting_reply" else str(consume_result.get("reason") or "")
             save_state()
             return False
+        preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
+        if preflight.get("route_allowed"):
+            state["explore_rift_tianxing_prepare_retry_at"] = 0
+            return True
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
         current_due = float(state.get("next_explore_rift_time", 0) or due_at or now)
@@ -1509,7 +1547,10 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         )
         if not windows:
             return True
-        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows, operation_check=is_current)
+        if not is_current():
+            return False
+        now = started_now + max(0.0, time.monotonic() - started_at)
         followup = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
         if followup.get("route_allowed"):
             state["explore_rift_tianxing_prepare_retry_at"] = 0

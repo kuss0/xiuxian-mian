@@ -98,6 +98,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R44 | High | Tianxing timeline lock/queue waits admit invalidated work; old send returns and cancellations overwrite newer plans or confirmations; recovered no-ID sends are rearmed; explicit expired prediction deadlines are extended | Fixed for reproduced timeline boundaries in candidate; transient identity/config/parent checks, exact sending snapshots, receipt-owned persistence, strictly unsent retry classification, chat-scoped guard closure and authoritative expiry pass; outer auto/farm callers and disabled-module reducer reconciliation still require review |
 | R45 | High | Outer Tianxing schedulers use stale identities/configuration after lock/child waits; automatic receipts reopen completed pending work or overwrite new clocks; pause/resume clears dispatched auto pending | Fixed for reproduced outer automatic/daily/follow-up boundaries in candidate; captured controls, post-await auto-state comparisons, queued-plan checks, exact pending receipt ownership and pause-preserved pending pass; unknown auto-send retries, craft/retreat internals and other reducer anchors remain open |
 | R46 | High | Automatic Tianxing clears unknown sends and expired pending, accepts malformed receipts, and closes work on action name alone; timeline/downstream paths can bypass that unresolved action | Fixed for reproduced automatic evidence boundaries in candidate; explicit-unsent classification, retained unknown operations, exact receipt/log correlation, dispatch-time bounds, bounded early-result deduplication and pending-aware route admission pass; legacy no-ID work without authoritative evidence, general reducer freshness and craft/retreat internals remain open |
+| R47 | High | Craft farm and prediction-consumption callers can overlap, retry uncertain sends, overwrite early results or new work, and mistake panel calibration for craft completion; business-denial backoff is ignored | Fixed for reproduced craft lifecycle boundaries in candidate; shared operation lock, pre-dispatch ownership/evidence checks, persisted unknown pending, strict existing-receipt adoption, independent craft/calibration anchors, idempotent last-result handling and preserved business backoff pass; retreat lifecycle, general reducer ordering and R07 durability remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1104,6 +1105,47 @@ five monitor/control-only contracts need separate behavioral verification.
   last two panel/route cases). Full Ruff, compilation and diff checks pass.
   The goal is still active; this is not whole-project or production acceptance.
 
+- R47 serializes the two craft entrypoints with one identity lock and reuses
+  the existing Tianxing operation checks. Identity replacement, rebinding,
+  switch/pause/configuration changes, parent invalidation and newer farm state
+  are checked after waits and immediately before runtime dispatch. Prediction
+  evidence must still be valid at dispatch; a queued craft cannot consume a
+  replacement prediction or run after a newer clock or task takes ownership.
+- Craft sends persist their operation/account/command claim before transport.
+  Only an explicitly unsent outcome can retry; exceptions, cancellation,
+  unknown block evidence and malformed receipts retain unresolved work across
+  ticks and SQLite reload. Queue timeout keeps the existing 10-20 minute
+  stagger. Original craft ownership is separate from later panel calibration:
+  a returned panel never proves that the craft completed or authorizes another
+  craft. Existing runtime receipts can be adopted only by exact operation,
+  source, command, account, chat and dispatch-time evidence. No new recovery
+  controller or CommandAttempt authority was introduced.
+- Actual craft replies reconcile the original command root, chat, account,
+  dispatch bound and item. The last settled craft is not accounted twice.
+  Early replies and post-dispatch switch-off retain confirmed facts; a later
+  transport return does not reopen a completed task, overwrite a new clock,
+  or recreate its cleared error. A calibration panel dispatched before that
+  result cannot roll the observation backward, including when the panel reply
+  itself arrives before its transport receipt. A genuinely newer panel remains
+  usable. Business rejection retains its future backoff across either entrypoint
+  and a day boundary; expiry still permits the next normally admitted action.
+- Pending craft work also gates automatic Tianxing mutations, timeline sends
+  and downstream route admission; only that operation's original first craft
+  dispatch is exempt. Wild/rift preparation passes its parent ownership checks
+  to craft consumption and recomputes time after awaited work. The ordinary
+  retreat caller only gains parent/queue/post-await checks in this finding:
+  its complete send/outcome lifecycle is not certified. Deep retreat still
+  does not block or consume Tianxing effects.
+- R47 final verification (2026-09-09): 205 craft lifecycle cases pass; the
+  ordered Tianxing/wild/rift/runtime group passes 946 tests and 149 subtests.
+  The real-runtime craft admission matrix covers entity resolution, registered
+  guards and the final dispatch boundary for both entrypoints. Full suite:
+  4929 passed, 1088 subtests passed, 76.62 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r47-craft-final-20260909.xml`.
+  Full configured Ruff, compilation and `git diff --check` pass. No deployment,
+  restart, push, production configuration/DB mutation or game request occurred;
+  user-owned quiz-bank/tool changes remain excluded from this local commit.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1195,10 +1237,13 @@ and cleanup code during a code-only rollback.
    adopts only exactly correlated existing runtime receipts, and requires
    anchored, argument-appropriate results to close mutations. It does not
    authorize a speculative status-query loop or replay of legacy no-ID work.
-   Continue with `run_tianxing_consume_craft_prediction`, craft/retreat farm
-   internals, and general reducer freshness/idempotence (including results
-   after disable and unthreaded scalar guard cleanup). The bounded per-pending
-   early-result set is not a replacement for those broader reducer contracts.
+   R47 now covers both craft entrypoints and their parent callers, including
+   early/unknown transport results, separate panel ownership and business
+   backoff. Continue with the ordinary retreat farm's complete lifecycle and
+   general reducer freshness/idempotence (including results after disable,
+   older-than-last craft replies and unthreaded scalar guard cleanup). The
+   bounded pending/last-result evidence is not a replacement for those broader
+   reducer contracts or R07 crash-durable transport ownership.
 
 ## Completion Gate
 

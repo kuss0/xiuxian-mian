@@ -6281,7 +6281,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("send_blocked", result["stage"])
         self.assertEqual(tianxing.TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC, send_mock.await_args.kwargs["queue_timeout"])
         self.assertEqual("send_blocked", craft["phase"])
-        self.assertEqual(now + 33, craft["next_time"])
+        self.assertAlmostEqual(now + 33, craft["next_time"], delta=1)
         self.assertIn("排队超过", craft["last_error"])
         self.assertIn("错峰", craft["last_error"])
 
@@ -6580,7 +6580,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 "blocked_until": now + 3600,
                 "last_error": "已有 闭关 推命尚未应验，不能切到 炼制；等待当前推命消费或过期。",
                 "craft_farm": {
-                    "phase": "timeline_waiting",
+                    "phase": "prediction_conflict",
+                    "next_time": now + 3600,
                     "started_at": now - 5,
                     "target_tianji": 42,
                     "daily_limit": 42,
@@ -6631,7 +6632,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 "blocked_until": now + 3600,
                 "last_error": "已有 探索 推命尚未应验，不能切到 炼制；等待当前推命消费或过期。",
                 "craft_farm": {
-                    "phase": "timeline_waiting",
+                    "phase": "prediction_conflict",
+                    "next_time": now + 3600,
                     "started_at": now - 5,
                     "target_tianji": 42,
                     "daily_limit": 42,
@@ -8117,6 +8119,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_timeline_scheduler(*_args, **_kwargs):
             state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": copy.deepcopy(state_module.state.get("tianxing_timeline_state", {}).get("craft_farm", {})),
                 "phase": "sent_waiting_ack",
                 "route": "炼制",
                 "active_step_index": 0,

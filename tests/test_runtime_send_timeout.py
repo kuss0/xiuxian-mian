@@ -444,10 +444,17 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_tianxing_auto_plan_is_revalidated_through_runtime(self):
         await self._exercise_tianxing_queued_operation("auto")
 
+    async def test_tianxing_craft_farm_is_revalidated_through_runtime(self):
+        await self._exercise_tianxing_queued_operation("craft")
+
+    async def test_tianxing_craft_consumption_is_revalidated_through_runtime(self):
+        await self._exercise_tianxing_queued_operation("consume_craft")
+
     async def _exercise_tianxing_queued_operation(self, mode):
         from model.features import tianxing
 
         identity_id = 301299112
+        craft_mode = mode in {"craft", "consume_craft"}
         for boundary in ("entity", "guard", "dispatch"):
             for change in ("disabled", "config", "new_plan", "new_step", "observation", "paused", "unchanged"):
                 with self.subTest(boundary=boundary, change=change):
@@ -467,15 +474,21 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                             identity["tianxing_enabled"] = False
                         elif change == "config":
                             flag = "auto_predict_enabled" if mode == "timeline" else "auto_observe_enabled"
+                            if craft_mode:
+                                flag = "craft_farm_enabled"
                             identity["tianxing_auto_config"][flag] = False
                         elif change == "new_plan":
                             if mode == "timeline":
                                 timeline["plan_id"] = "new-plan"
+                            elif craft_mode:
+                                timeline["craft_farm"]["last_op_id"] = "replacement"
                             else:
                                 identity["tianxing_observation"]["auto_pending_sent_at"] = now + 1
                         elif change == "new_step":
                             if mode == "timeline":
                                 timeline["active_step"]["send_started_at"] = now + 1
+                            elif craft_mode:
+                                timeline["craft_farm"]["next_time"] = now + 1000
                             else:
                                 identity["tianxing_observation"]["auto_pending_due_at"] = now + 1000
                         elif change == "observation":
@@ -498,6 +511,9 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                         if prepared and boundary == "guard":
                             await asyncio.sleep(0)
                             change_operation()
+                        if craft_mode:
+                            verdict = tianxing.tianxing_route_pre_send_guard(*_args, **_kwargs)
+                            return verdict["allowed"], verdict.get("reason", ""), verdict.get("code", "")
                         return True, "", ""
 
                     def start(*args, **kwargs):
@@ -512,6 +528,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                         state_module.use_identity(identity_id) as identity,
                         patch.object(tianxing, "save_state", return_value=True),
                         patch.object(tianxing, "_TIANXING_TIMELINE_LOCKS", {}),
+                        patch.object(tianxing, "_TIANXING_CRAFT_LOCKS", {}),
                         patch.object(tianxing, "_tianxing_action_guard_wait", return_value=(0, "")),
                         patch.object(tianxing.time, "time", return_value=now),
                         patch.object(runtime, "_run_game_command_pre_send_guards", side_effect=guard),
@@ -532,6 +549,22 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                         if mode == "timeline":
                             command = ".推命 探索"
                             await tianxing.run_tianxing_timeline_scheduler(now)
+                        elif craft_mode:
+                            command = ".炼制 玄铁剑"
+                            identity["tianxing_auto_config"].update(
+                                timeline_enabled=False, farm_route="炼制", craft_farm_enabled=True,
+                                craft_farm_item="玄铁剑", target_tianji_daily=42,
+                            )
+                            identity["tianxing_observation"].update(
+                                current_prediction="炼制", current_prediction_until=now + 3600,
+                                current_prediction_set_at=now - 20, fixed_star="太阴",
+                                fixed_star_day=tianxing.get_day_key(now),
+                            )
+                            identity["tianxing_timeline_state"] = {
+                                "released_routes": {"炼制": {"released_at": now - 1, "basis": "prediction"}},
+                            }
+                            scheduler = tianxing.run_tianxing_craft_farm_scheduler if mode == "craft" else tianxing.run_tianxing_consume_craft_prediction
+                            await scheduler(now)
                         else:
                             command = ".观命"
                             await tianxing._execute_tianxing_auto_plan(
@@ -545,6 +578,9 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                     if change != "unchanged":
                         self.assertEqual("unsent", block["status"])
                     else:
+                        if craft_mode:
+                            self.assertEqual(123456, identity["tianxing_timeline_state"]["craft_farm"]["last_chat_id"])
+                            continue
                         chat_id = (
                             identity["tianxing_timeline_state"]["active_step"]["send_chat_id"]
                             if mode == "timeline" else identity["tianxing_observation"]["auto_pending_chat_id"]

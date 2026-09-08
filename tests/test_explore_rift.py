@@ -992,9 +992,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
             self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
             send_mock.assert_not_awaited()
-            self.assertEqual(
+            self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
                 state_module.state["next_explore_rift_time"],
+                delta=1,
             )
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
@@ -1092,9 +1093,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(timeline_mock.await_args.kwargs["windows"][0]["end_at"], due_at)
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
-            self.assertEqual(
+            self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
                 state_module.state["explore_rift_tianxing_prepare_retry_at"],
+                delta=1,
             )
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
@@ -1104,6 +1106,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         due_at = now + 240
         blocked_until = now + 2 * 3600
         with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
             state_module.state["next_explore_rift_time"] = due_at
             with (
                 patch.object(explore_rift, "build_tianxing_route_preflight_plan", return_value={
@@ -1128,6 +1131,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         due_at = now + 240
         blocked_until = now + 120
         with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
             state_module.state["next_explore_rift_time"] = due_at
             with (
                 patch.object(explore_rift, "build_tianxing_route_preflight_plan", return_value={
@@ -1371,9 +1375,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             consume_mock.assert_awaited_once()
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
-            self.assertEqual(
+            self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
                 state_module.state["next_explore_rift_time"],
+                delta=1,
             )
             self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
@@ -1417,9 +1422,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
-            self.assertEqual(
+            self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
                 state_module.state["explore_rift_tianxing_prepare_retry_at"],
+                delta=1,
             )
             self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
@@ -1516,9 +1522,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             timeline_mock.assert_awaited_once()
             send_mock.assert_not_awaited()
             self.assertNotIn("auto模式", state_module.state["explore_rift_last_error"])
-            self.assertEqual(
+            self.assertAlmostEqual(
                 now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
                 state_module.state["next_explore_rift_time"],
+                delta=1,
             )
 
     async def test_scheduler_allows_high_xiuwei_when_tianxing_explore_change_ready(self):

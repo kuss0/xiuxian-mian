@@ -436,7 +436,9 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0, operation=None
         if due_at <= now and _recent_craft_prediction_consume_attempt_for_due(due_at, now):
             await _send_tianxing_panel_calibration(now, "炼制推命消费后需查盘确认探索路线", operation=operation)
             return False
-        consume_result = await run_tianxing_consume_craft_prediction(now, reason="野外 MiniApp 前消费炼制推命")
+        consume_result = await run_tianxing_consume_craft_prediction(
+            now, reason="野外 MiniApp 前消费炼制推命", operation_check=operation.is_current,
+        )
         if not operation.is_current():
             return False
         now = started_now + max(0.0, time.monotonic() - started_at)
