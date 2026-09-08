@@ -1061,15 +1061,8 @@ def normalize_tianxing_observation(value=None):
     consumed_route = _normalize_route_choice(observed.get("prediction_consumed_route"), "")
     last_action = str(observed.get("last_action") or "").strip()
     last_result = str(observed.get("last_result") or "").strip()
-    if (
-        current_prediction
-        and consumed_route == current_prediction
-        and last_action in {"观命", "定命", "推命", "改命", "天机盘", "消劫"}
-        and last_result not in {"prediction_hit", "prediction_miss", "change_triggered", "modifier"}
-    ):
-        observed["prediction_consumed_route"] = ""
-        observed["prediction_consumed_at"] = 0
-        consumed_route = ""
+    # Reading state cannot establish a new prediction. Only a newer effect
+    # timestamp can supersede a recorded consumption of the same route.
     if current_prediction and consumed_route == current_prediction:
         consumed_at = float(observed.get("prediction_consumed_at", 0) or 0)
         set_at = float(observed.get("current_prediction_set_at", 0) or 0)

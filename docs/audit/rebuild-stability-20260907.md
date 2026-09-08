@@ -102,6 +102,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R48 | High | Ordinary retreat and its material chain do not claim pending work before sending; scheduler ticks erase reply-wait phases, panel replies complete unrelated work, missing potions loop, and local guard delays lose the intended next action | Fixed for scoped candidate operations; shared farm transport/receipt code, retreat serialization, strict command/quantity/result ownership, retained unknown work, separate calibration, bounded denial/unsent retries and force-exit caller propagation pass; legacy unanchored farm state, general reducer ordering and shared R07 durability remain open |
 | R49 | High | Tianxing guard cleanup treats cached fields as fresh command evidence, closes unrelated chat/account/action sessions, and accepts late or partial panels; generic routed/passive cleanup bypasses module checks | Fixed for the six direct Tianxing families in candidate; exact reply/session ownership, captured sending account, explicit parsed outcomes, original panel dispatch ordering and expected root/chat closure pass through both dispatchers and SQLite replay; farm-family cleanup, general observation ordering and R07 durability remain open |
 | R50 | High | Empty Tianxing panels, craft-start acknowledgements and zero-quantity results clear pending work before the final edit; an early result followed by its transport receipt loses business completion or leaves a new guard stranded | Fixed in candidate; shared terminal classification preserves incomplete work, exact late receipts close once without repeating reducers, farm/material guards use the module evidence contract, and malformed pending/context cases fail closed; general reducer ordering and R07 durability remain open |
+| R51 | High | Observation normalization deletes prediction-consumption evidence based solely on the latest action label, resurrecting an old effect and permitting downstream release after restart | Fixed in candidate; normalization preserves consumption and only a strictly newer prediction timestamp supersedes it; real unrelated replies, read-only status, route admission and SQLite reload are covered; parsed-result provenance and chronology remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1243,6 +1244,25 @@ five monitor/control-only contracts need separate behavioral verification.
   no production configuration/database changes, deployment, restart, game
   commands, listener activation, skill edits or push.
 
+- R51 reproduces consumption resurrection in 48 of 55 new cases before the
+  fix. Merely reading/normalizing a state whose last action was observe,
+  set-star, predict, change-fate, panel or clear-calamity erased the consumption
+  marker; unrelated real replies and a partial panel could also expose this
+  old prediction as usable. Removed that heuristic instead of inferring a new
+  effect from an unrelated action label.
+- The existing timestamp comparison now retains consumed state unless an
+  explicit prediction timestamp is newer. A genuine new predict result still
+  renews the effect. Corrected two old tests that required unsafe resurrection
+  or restart release, and gave the positive calibration-skip test an actually
+  newer prediction timestamp rather than contradictory consumed state.
+  Read-only status and preflight after SQLite reload preserve the marker.
+- R51 final verification (2026-09-09): 299 related tests and 9 subtests; full
+  suite **5516 passed, 1198 subtests passed**, 81.61 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r51-final-20260909.xml`. Selected Ruff, compilation and
+  diff checks pass. This is a normalization fix, not certification of the
+  timestamp's provenance: stale/unrelated parsed results and partial panels
+  still require reducer-level review. No production actions were taken.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1356,6 +1376,10 @@ and cleanup code during a code-only rollback.
    observation provenance, older-than-last results, partial-panel field
    freshness and consumed-effect resurrection during normalization still need
    review; the full-suite checkpoint is not final project acceptance.
+   R51 removes consumption resurrection from normalization. Continue with
+   parsed-result ownership and timestamp provenance, including old predict
+   replies and new panels that must not borrow a cached field. Do not infer
+   global reducer correctness from safe read-only normalization.
 
 ## Completion Gate
 
