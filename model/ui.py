@@ -9237,12 +9237,14 @@ async def run_miniapp_daily_scheduler(now):
         canary_urls = list(canary_gate.get("urls") or [])
         if canary_gate.get("allowed") and canary_ids and canary_urls:
             result = await probe_cave_public_entry(canary_ids[0], canary_urls[0], now=now)
+            cancelled = (result.get("extra") or {}).get("status") == "cancelled"
             return {
-                "started": True,
+                "started": not cancelled,
                 "kind": "entry_canary",
                 "ok": bool(result.get("ok")),
                 "identity_id": canary_ids[0],
                 "message": str(result.get("message") or ""),
+                **({"reason": "entry_canary_cancelled"} if cancelled else {}),
             }
     if entry_gate.get("blocked"):
         return {

@@ -1279,14 +1279,63 @@ async def probe_cave_public_entry(identity_id, public_entry_url, *, now=None):
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if identity_id <= 0 or error:
         return {"ok": False, "message": error or "身份不存在", "extra": {}}
-    session = await _load_cave_public_identity_session(
-        identity_id,
-        token,
-        webview_url,
-        now=now,
-        capture_source=f"cave_public_entry_canary:{identity_id}",
-        include_details=False,
-    )
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    config = dict(get_miniapp_auto_config() or {})
+    signature = cave_public_entry_urls_signature(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
+    blocked_signature = config.get("cave_public_entry_token_blocked_signature")
+    claimed_at = config.get("cave_public_entry_token_canary_at") or 0
+
+    def current_claim_config():
+        current = dict(get_miniapp_auto_config() or {})
+        urls = current.get("cave_public_entry_urls") or current.get("cave_public_entry_url")
+        if (
+            cave_public_entry_urls_signature(urls) == signature
+            and current.get("cave_public_entry_token_blocked_signature") == blocked_signature
+            and (current.get("cave_public_entry_token_canary_at") or 0) == claimed_at
+        ):
+            return current
+        return None
+
+    def can_continue():
+        return (
+            owner is not None
+            and owner.is_current()
+            and is_cave_public_identity_available(identity_id)
+            and _public_entry_allowed()
+            and (not claimed_at or claimed_at == now)
+            and current_claim_config() is not None
+        )
+
+    def cancelled_result():
+        current = current_claim_config()
+        # Cancellation is not entry-health evidence and cannot release a newer claim.
+        if current is not None and claimed_at == now:
+            current["cave_public_entry_token_canary_at"] = 0
+            set_miniapp_auto_config(current)
+            save_state()
+        return {
+            "ok": False,
+            "message": "洞府公共入口复核已取消或上下文已变更",
+            "extra": {"canary": True, "status": "cancelled"},
+        }
+
+    if not can_continue():
+        return cancelled_result()
+    try:
+        session = await _load_cave_public_identity_session(
+            identity_id,
+            token,
+            webview_url,
+            now=now,
+            capture_source=f"cave_public_entry_canary:{identity_id}",
+            include_details=False,
+            operation_check=can_continue,
+        )
+    except asyncio.CancelledError:
+        cancelled_result()
+        raise
+    if not can_continue() or session.get("status") in {"cancelled", "operation_cancelled"}:
+        return cancelled_result()
     if session.get("ok"):
         note_cave_public_entry_success([public_entry_url])
         return {"ok": True, "message": "洞府公共入口单次复核成功", "extra": {"canary": True}}

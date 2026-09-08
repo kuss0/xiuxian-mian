@@ -89,6 +89,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R35 | High | Tower workers start and write results after identity deletion/replacement/rebinding or switch-off; public-entry awaits continue with stale owners, and tower status falls back to another identity's result | Fixed at queued worker and asynchronous public-entry/session boundaries in candidate; exact owner/account capture, schedule snapshots, guarded fallback and confirmed-result controls pass; R36 covers guarded tower/dwelling threads, not all other game flows |
 | R36 | High | Cancelling a tower caller releases public-entry locks while its HTTP thread continues and challenges; module switch-off also permits another in-thread action; missing challenge state is falsely accepted as daily completion, and notification faults lose confirmed completion | Fixed for tower and its dwelling start/details/external path in candidate; cooperative request checks, joined threads, result-carrying cancellation, strict server-state parsing and notification isolation pass full caller/fake-HTTP tests; forced stop and other game flows remain open |
 | R37 | High | Pooled HTTP sessions survive identity deletion/replacement/account rebinding; close tears down active sessions and their exclusion locks, while idle entries and locks are unbounded | Fixed in candidate; owner-aware leases retain serial exclusion across route/owner changes, defer active closes, reclaim idle entries with TTL/LRU, and bound active/retired/closing capacity; per-game lifecycle and live validation remain open |
+| R38 | High | Local identity invalidation defers shared entry revalidation for six hours; cancelled tasks strand the claim, and old probes overwrite newer claims/entry lists or continue after manual pause | Fixed in candidate; exact owner/entry/claim checks propagate into the loader, cancellation releases only its own claim without changing health evidence, and later scheduler ticks select remaining eligible roles; real server-error backoff is preserved |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -741,6 +742,32 @@ five monitor/control-only contracts need separate behavioral verification.
   Full Ruff, changed-file compilation and diff checks pass. Tests remain offline
   and use temporary state. No skill, production, live DB or remote branch change.
 
+- R38 reproduced 14 failing cases and four passing controls before the fix.
+  A real loader interrupted by deletion/replacement/rebind/disable changed the
+  shared retry timestamp from an already-due time to now + six hours and replaced
+  the token-expiry reason with a local cancellation message. Manual pause during
+  initialization still reached HTTP. Cancelled tasks retained a 20-minute claim,
+  and stale results could clear or worsen a newer claim/entry generation.
+- Entry probes now retain the identity owner, configured URL signature, blocked
+  signature and existing canary timestamp. They revalidate these boundaries in
+  the guarded loader and before publishing the result. A local cancellation only
+  clears a claim belonging to this exact scheduler tick; it does not reset the
+  failure counter, rewrite the health reason, move the health retry timer or
+  mutate a replacement claim. Task cancellation still propagates. No new
+  persistent controller or claim schema was introduced.
+- Scheduler integration reports cancellation separately rather than a started
+  failed probe. A two-tick test runs the real scheduler/probe/loader path: the
+  first identity is disabled during initialization, then a different eligible
+  identity revalidates the same entry on the next tick, without a same-tick
+  fanout. Real token-expired and HTTP 502 controls keep their existing backoff;
+  channel-only freeze plus Tianzun maintenance still permits MiniApp HTTP.
+  A follow-up ownership test also reproduced and fixed using another tick's
+  pre-existing claim. Focused suite: 244 passed, 8 subtests passed. Full suite:
+  4160 passed, 1004 subtests passed, 68.42 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r38-entry-probe-lifecycle-20260908.xml`.
+  Full Ruff, changed-file compilation and diff checks pass. All verification is
+  offline, with temporary state and no production/skill/remote changes.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -795,10 +822,11 @@ and cleanup code during a code-only rollback.
    R35/R36 cover the tower scheduler, public wrapper and guarded dwelling
    loading/external and tower HTTP threads. Other game callers still need
    individual admission, cancellation and result-retention tests; the optional
-   transport check does not automatically protect every caller. Also inspect how
-   `probe_cave_public_entry` maps a cancelled/invalidated loader result into
-   shared entry-health backoff, rather than treating a local owner change as
-   evidence that the public entry is unhealthy. No live validation is approved.
+   transport check does not automatically protect every caller. R38 covers
+   probe cancellation and entry/claim generation changes, not all public-entry
+   refresh/invalidation paths. Next review the stargazer action loop and its
+   public/command callers: it still uses raw `asyncio.to_thread` and lacks a
+   shared per-flow request budget. No live validation is approved.
 
 ## Completion Gate
 
