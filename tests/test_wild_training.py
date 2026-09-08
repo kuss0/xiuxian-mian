@@ -287,7 +287,7 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def blocked_worker(_identity_id, _urls, _due_at):
+        async def blocked_worker(_identity_id, _urls, _due_at, *, operation=None):
             started.set()
             await release.wait()
 

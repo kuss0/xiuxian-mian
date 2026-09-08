@@ -94,6 +94,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R40 | High | Stargazer releases its caller while an HTTP thread still runs, has no shared per-run budget, loses confirmed collections on later parse failures, and permits duplicate entries or stale results to rewrite a running operation | Fixed in candidate; joined cooperative threads, one run budget, public/manual shared exclusion, owner/choice/schedule admission and partial-result retention pass; notification-time owner replacement cannot return an old result for the replacement role |
 | R41 | High | Public-entry background work captures only an identity number; queued actions ignore changed controls, cancellation and local busy results become 30-minute failures, and late completions overwrite newer retry/slot state or mark the next day complete | Fixed for reproduced background-job boundaries in candidate; enqueue-time owner/control snapshots, repeated UI/loader checks, exact in-memory job ownership, cancellation-aware completion and original-day terminal markers pass; downstream unguarded game workers remain open |
 | R42 | High | Small-world HTTP-envelope success hides business rejection; raw threads outlive cancellation, stale/incomplete panels become current resource balances, and late results overwrite owners, clocks or newer panels | Fixed for reproduced MiniApp boundaries in candidate; joined cooperative execution, shared per-flow budget, explicit business confirmation, complete snapshot evidence, owner/control checks, guarded cooldown updates and notification-safe persistence pass; legacy command internals and other MiniApp game flows remain open |
+| R43 | High | Wild-training workers outlive their owner/configuration/entry, continue with stale Tianxing protection, infer completion from HTTP success, and lose confirmed results on cancellation or notification failure | Fixed for reproduced wild-worker/public-journey boundaries in candidate; original-owner admission, action-time preflight, joined HTTP completion, explicit business evidence, protected result clocks and retained rate-limit evidence pass; shared Tianxing scheduler/craft internals still require review |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -929,6 +930,57 @@ five monitor/control-only contracts need separate behavioral verification.
   Full Ruff, compilation and diff checks pass. No production, service, skill,
   live DB/configuration, remote branch or gameplay action was touched.
 
+- R43 first reproduced 35 failing wild-training lifecycle cases. Subsequent
+  fault tests covered current-entry changes, malformed optional fields and
+  explicit invalid player IDs; they also caught a NaN timer that could never
+  pass its ownership check. The final focused suite has 88 cases, including
+  real worker-to-HTTP cancellation, queued-owner invalidation, and normal
+  authoritative-cooldown controls. Related wild/cave suites: 230 passed,
+  5 subtests passed.
+- Wild workers capture the existing identity/account, controls, schedule and
+  entry list before queuing. They recheck after their serial wait and Tianxing
+  preparation, during public-entry loading and at the actual HTTP boundary.
+  Done callbacks remove only their own task; failed task creation closes its
+  coroutine. Late errors cannot enter a deleted/replaced identity or overwrite
+  independently edited deadlines. These are in-memory ownership checks, not
+  new durable fences or a CommandAttempt recovery controller.
+- Journey HTTP now uses the existing cooperative thread runner and a bounded
+  request budget, retaining HTTP status, attempts and Retry-After. Cancellation
+  joins the in-flight thread before releasing public/worker locks and carries
+  any returned business result. Entry fallback is limited to explicit expired
+  entry evidence before the journey action; timeouts, missing panels, action
+  errors and rate-limited responses cannot trigger another URL/action.
+- Explicit `actionResult.ok == true` and no explicit incomplete result are
+  required for completion. Missing/foreign/malformed identity evidence cannot
+  publish another player's resources or cooldown. A selected request's valid
+  partial receipt can complete without a repeated identity block; it does not
+  turn the pre-action panel into a current post-action snapshot. Missing journey
+  domains and invalid counters do not authorize actions. Malformed optional
+  loot/mode fields cannot erase a confirmed result. Identical rewards from
+  distinct confirmed runs have distinct inventory evidence keys.
+- Confirmed outcomes persist across cancellation and switch-off; independently
+  edited clocks and newer MiniApp records remain intact. Cooldowns use the
+  completion time and server evidence, with no invented 12-hour rule. Explicit
+  HTTP rejections retain Retry-After without being mistaken for Tianxing
+  consumption. Notification failures cannot convert completion into a gameplay
+  retry. Existing cautious/balanced/deep choices, cautious low-Tianji fallback,
+  daily spread and serial admission remain in place.
+- The HTTP preflight checks current prediction expiry/consumption and current
+  strategy after loading, not only before its awaits. Explicit expired
+  prediction timestamps cannot be extended by the shared preflight's inferred
+  lifetime at this boundary. Late receipts do not consume newly observed
+  predictions. Tests confirm that active, near-expiry and expired deep retreat
+  do not block or consume Tianxing effects. This does not yet establish the
+  internal lifecycle correctness of `run_tianxing_timeline_scheduler` or
+  `run_tianxing_consume_craft_prediction`: their own queued sends, await-time
+  snapshots, no-ID recovery and disabled-module result reconciliation remain
+  the next targeted review. No production or live-game verification was run.
+- R43 final full suite: 4485 passed, 1004 subtests passed, 71.58 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r43-wild-training-20260908.xml`.
+  Full Ruff, compilation and diff checks pass. The changes remain offline and
+  local; the production tree, live state/configuration, services, skill and
+  remote branches were not touched.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1003,6 +1055,10 @@ and cleanup code during a code-only rollback.
    and its Tianxing preparation/consumption chain, then the other per-game
    workers. Preserve disabled incense-to-consciousness controls and the rule
    that deep retreat does not block or consume Tianxing effects.
+   R43 now covers the wild-training worker and public journey action, including
+   its caller-side Tianxing preparation checks. Continue with the shared
+   Tianxing timeline/craft functions' internal awaits and queued command
+   admission; passing mocked preparation tests does not prove those callees.
 
 ## Completion Gate
 

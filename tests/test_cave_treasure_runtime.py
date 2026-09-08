@@ -263,7 +263,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "loot": [{"name": "养魂木", "quantity": 1}],
             },
         }
-        flow_result = {"ok": True, "status": "acted", "data": action_result}
+        flow_result = {"ok": True, "status": "acted", "data": action_result, "action_dispatched": True}
 
         with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
                 patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
@@ -279,7 +279,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["extra"]["acted"])
         self.assertTrue(result["extra"]["completed"])
-        self.assertEqual(now + 43200, result["extra"]["next_time"])
+        self.assertAlmostEqual(now + 43200, result["extra"]["next_time"], delta=0.1)
         flow_mock.assert_awaited_once()
         self.assertEqual("wild_experience", flow_mock.await_args.kwargs["action"])
         self.assertEqual("deep", flow_mock.await_args.kwargs["mode"])
@@ -336,7 +336,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "daily_remaining": 2, "remaining_seconds": 0,
             }}}}},
         }
-        flow_result = {"ok": True, "data": {
+        flow_result = {"ok": True, "action_dispatched": True, "data": {
             "ok": True,
             "account": {"playerId": 9999, "journey": {"wildExperience": {
                 "available": True, "dailyCount": 1, "dailyLimit": 2,

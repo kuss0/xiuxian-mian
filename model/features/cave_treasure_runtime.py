@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import time
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ from .small_world import (
     _parse_wait_from_text,
 )
 from .cave_treasure_miniapp import (
+    _parse_cave_journey_overview,
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
     build_cave_treasure_launch_args,
     extract_cave_treasure_miniapp_launch,
@@ -2644,6 +2646,8 @@ def _server_epoch_seconds(value):
         timestamp = float(value or 0)
     except (TypeError, ValueError, OverflowError):
         return 0.0
+    if not math.isfinite(timestamp):
+        return 0.0
     if timestamp > 10_000_000_000:
         timestamp /= 1000.0
     return max(0.0, timestamp)
@@ -2675,7 +2679,7 @@ def _wild_training_post_action_next_time(wild, action_result, *, now):
     if daily_count < 0:
         daily_count = _parse_int(action_result.get("dailyCount"), 0)
     daily_remaining = _parse_int(wild.get("daily_remaining"), max(0, daily_limit - daily_count))
-    if daily_remaining > 0 and bool(wild.get("available", True)):
+    if daily_remaining > 0 and wild.get("available") is True:
         return float(now) + WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC
     return float(now) + 30 * 60
 
@@ -2685,7 +2689,8 @@ def _wild_training_action_summary(action_result):
     title = str(action_result.get("title") or "野外历练").strip()
     cultivation_delta = _parse_int(action_result.get("cultivationDelta"), 0)
     rewards = {}
-    for item in action_result.get("loot") or ():
+    loot = action_result.get("loot") if isinstance(action_result.get("loot"), list) else []
+    for item in loot:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or item.get("itemId") or "").strip()
@@ -2714,12 +2719,14 @@ def _wild_training_action_summary(action_result):
     return title, "｜".join(parts) or message or "状态已更新", rewards, gains
 
 
-def _record_cave_wild_training_state(identity_id, *, strategy, mode, wild, action_result, phase, now):
+def _record_cave_wild_training_state(identity_id, *, strategy, mode, wild, action_result, phase, now, action_dispatched=False):
     payload = {
         "phase": str(phase or ""),
         "strategy": str(strategy or ""),
         "mode": str(mode or ""),
         "wild": dict(wild or {}),
+        "snapshot_current": bool(wild),
+        "action_dispatched": bool(action_dispatched),
         "result": {
             key: action_result.get(key)
             for key in (
@@ -2741,13 +2748,17 @@ def _record_cave_wild_training_state(identity_id, *, strategy, mode, wild, actio
     )
 
 
-async def run_cave_public_wild_training(identity_id, public_entry_url, strategy, *, now=None):
+async def run_cave_public_wild_training(identity_id, public_entry_url, strategy, *, now=None, operation_check=None):
     """Read the authoritative journey state and execute at most one wild-training action."""
+    from .wild_training import WildTrainingMiniAppOperation, wild_training_http_route_is_ready
+
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
+    started_at = time.monotonic()
     strategy = str(strategy or "").strip()
     mode = _WILD_TRAINING_MODE_MAP.get(strategy, "")
-    if identity_id <= 0:
+    operation = WildTrainingMiniAppOperation.capture(identity_id)
+    if identity_id <= 0 or operation is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not mode:
         return {"ok": False, "message": "野外历练策略无效", "extra": {}}
@@ -2761,35 +2772,66 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+    record_before = deepcopy(get_miniapp_state_records().get(f"{identity_id}:wild_training") or {})
+    cancelled = {"ok": False, "message": "洞府野外操作已取消或身份已变更", "extra": {"phase": "cancelled", "acted": False}}
+
+    def record_is_current():
+        return record_before == (get_miniapp_state_records().get(f"{identity_id}:wild_training") or {})
+
+    def can_continue():
+        return (
+            operation.is_current() and record_is_current()
+            and (operation_check is None or operation_check() is True)
+            and (observation is None or observation.permits(identity_id, token))
+        )
+
+    def completed_now():
+        return now + max(0.0, time.monotonic() - started_at)
+
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_wild_training_start:{identity_id}",
-            include_details=True,
-        )
+        if not can_continue():
+            return cancelled
+        try:
+            session = await _load_cave_public_identity_session(
+                identity_id,
+                token,
+                webview_url,
+                now=now,
+                capture_source=f"cave_public_wild_training_start:{identity_id}",
+                include_details=True,
+                operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled:
+            raise MiniAppFlowCancelled(cancelled) from None
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             return {
                 "ok": False,
                 "message": f"洞府野外历练身份读取失败：{session.get('error') or 'unknown'}",
-                "extra": {"phase": "session_failed"},
+                "extra": _miniapp_result_extra({"phase": "session_failed", "acted": False}, session),
             }
+        player_error = _selected_player_error({"player_id": session.get("player_id")}, identity_id)
+        if player_error:
+            return {"ok": False, "message": player_error, "extra": {"phase": "player_mismatch", "acted": False}}
         session_data = dict((session.get("result") or {}).get("data") or {})
         before_overview = session_data.get("overview") if isinstance(session_data.get("overview"), dict) else {}
         before_journey = before_overview.get("journey") if isinstance(before_overview.get("journey"), dict) else {}
         before_wild = before_journey.get("wild_experience") if isinstance(before_journey.get("wild_experience"), dict) else {}
-        server_next_time = _wild_training_server_next_time(before_wild, now=now)
+        observed_at = completed_now()
+        server_next_time = _wild_training_server_next_time(before_wild, now=observed_at)
         available = bool(before_wild.get("available"))
         daily_remaining = _parse_int(before_wild.get("daily_remaining"), 0)
-        if not before_wild:
+        daily_count = _parse_int(before_wild.get("daily_count"), -1)
+        daily_limit = _parse_int(before_wild.get("daily_limit"), 0)
+        if not before_wild or daily_count < 0 or daily_remaining < 0 or daily_limit <= 0 or daily_count + daily_remaining > daily_limit:
             return {"ok": False, "message": "洞府游历页未返回野外历练状态", "extra": {"phase": "state_missing"}}
-        if not available or daily_remaining <= 0 or server_next_time > now:
-            next_time = server_next_time or (now + 30 * 60)
+        if not available or daily_remaining <= 0 or server_next_time > observed_at:
+            next_time = server_next_time or (observed_at + 30 * 60)
             _record_cave_wild_training_state(
                 identity_id,
                 strategy=strategy,
@@ -2797,7 +2839,7 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
                 wild=before_wild,
                 action_result={},
                 phase="cooldown",
-                now=now,
+                now=observed_at,
             )
             return {
                 "ok": True,
@@ -2812,57 +2854,109 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
                 },
             }
 
-        result = await run_cave_journey_action_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            action="wild_experience",
-            mode=mode,
-            player_id=session.get("player_id"),
-            init_data=session.get("init_data") or "",
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_wild_training:{identity_id}",
-        )
+        tianxing_basis = {}
+
+        def can_dispatch():
+            if not can_continue():
+                return False
+            with use_identity(identity_id):
+                if not wild_training_http_route_is_ready(strategy, completed_now()):
+                    return False
+                tianxing_basis.update({
+                    key: deepcopy(state.get(key))
+                    for key in ("tianxing_observation", "tianxing_timeline_state")
+                })
+            return True
+
+        if not can_dispatch():
+            return {"ok": False, "message": "天星探索前置已变化，本轮未出手", "extra": {"phase": "route_changed", "acted": False}}
+        cancelled_flow = None
+        try:
+            result = await run_cave_journey_action_production_flow(
+                identity_id,
+                token=token,
+                webview_url=webview_url,
+                action="wild_experience",
+                mode=mode,
+                player_id=session.get("player_id"),
+                init_data=session.get("init_data") or "",
+                capture_sink=_capture_store(now),
+                capture_source=f"cave_public_wild_training:{identity_id}",
+                operation_check=can_dispatch,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
+        dispatched = result.get("action_dispatched") is True
+        if not operation.owner.is_current() or (not dispatched and not can_continue()):
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return cancelled
+        if not dispatched:
+            response = {
+                "ok": False, "message": result.get("error") or "MiniApp 野外未出手",
+                "extra": _miniapp_result_extra({
+                    "phase": "cancelled" if result.get("status") == "cancelled" else "action_not_sent", "acted": False,
+                }, result),
+            }
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled(response) from None
+            return response
+        observed_at = completed_now()
+        tianxing_current = all(operation.owner.identity.get(key) == value for key, value in tianxing_basis.items())
         raw = result.get("data") if isinstance(result.get("data"), dict) else {}
-        after_overview = parse_cave_dwelling_overview(raw) if raw else {}
-        action_player_error = _selected_player_error(after_overview, identity_id) if after_overview else "洞府动作回包缺少身份"
-        after_journey = after_overview.get("journey") if isinstance(after_overview.get("journey"), dict) else {}
+        if isinstance(raw.get("data"), dict):
+            raw = raw["data"]
+        account = raw.get("account") if isinstance(raw.get("account"), dict) else {}
+        reply_identity = raw.get("identity") if isinstance(raw.get("identity"), dict) else {}
+        player_id_present = "playerId" in account or "selectedPlayerId" in reply_identity
+        reply_player_id = account.get("playerId") if "playerId" in account else reply_identity.get("selectedPlayerId")
+        action_player_error = _selected_player_error({"player_id": reply_player_id}, identity_id) if player_id_present else ""
+        if action_player_error:
+            response = {"ok": False, "message": action_player_error, "extra": _miniapp_result_extra({
+                "phase": "action_unknown", "acted": True, "completed": False, "outcome_unknown": True,
+                "tianxing_result_current": tianxing_current,
+            }, result)}
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled(response) from None
+            return response
+        after_journey = _parse_cave_journey_overview(account.get("journey"))
         after_wild = after_journey.get("wild_experience") if isinstance(after_journey.get("wild_experience"), dict) else {}
-        if not after_wild:
-            after_wild = dict(before_wild)
         action_result = raw.get("actionResult") if isinstance(raw.get("actionResult"), dict) else {}
         action_error = str(action_result.get("error") or "").strip()
         completed = (
             bool(result.get("ok"))
             and not action_player_error
-            and bool(action_result.get("ok", True))
+            and action_result.get("ok") is True
             and action_result.get("completed") is not False
         )
-        next_time = _wild_training_post_action_next_time(after_wild, action_result, now=now)
+        server_next_time = _wild_training_server_next_time(after_wild, now=observed_at)
+        next_time = _wild_training_post_action_next_time(after_wild, action_result, now=observed_at)
         title, summary, rewards, gains = _wild_training_action_summary(action_result)
-        phase = "completed" if completed else ("action_unknown" if not result.get("ok") else "blocked")
-        _record_cave_wild_training_state(
-            identity_id,
-            strategy=strategy,
-            mode=mode,
-            wild=after_wild,
-            action_result=action_result,
-            phase=phase,
-            now=now,
+        rejected = action_result.get("ok") is False or action_result.get("completed") is False or any(
+            event.get("status_code") in {400, 401, 403, 404, 409, 422, 429}
+            for event in result.get("events") or [] if isinstance(event, dict)
         )
+        phase = "completed" if completed else ("blocked" if rejected else "action_unknown")
+        snapshot_current = record_is_current()
+        if snapshot_current:
+            _record_cave_wild_training_state(
+                identity_id, strategy=strategy, mode=mode, wild=after_wild, action_result=action_result,
+                phase=phase, now=observed_at, action_dispatched=True,
+            )
         if completed and rewards:
             record_inventory_delta(
                 identity_id,
                 source="wild_training_miniapp",
-                source_id=f"wild_training:{identity_id}:{stable_payload_digest(action_result)}",
+                source_id=f"wild_training:{identity_id}:{int(now * 1000)}:{stable_payload_digest(action_result)}",
                 items=rewards,
-                now=now,
+                now=observed_at,
                 source_summary={"strategy": strategy, "title": title, "gains": gains},
             )
-        return {
+        response = {
             "ok": completed,
             "message": f"{title}｜{summary}" if completed else (action_player_error or action_error or result.get("error") or summary or "野外历练未完成"),
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "acted": True,
                 "completed": completed,
                 "phase": phase,
@@ -2873,8 +2967,15 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
                 "strategy": strategy,
                 "mode": mode,
                 "transport_ok": bool(result.get("ok")),
-            },
+                "server_cooldown": server_next_time > observed_at,
+                "outcome_unknown": phase == "action_unknown",
+                "tianxing_result_current": tianxing_current,
+                "schedule_current": snapshot_current,
+            }, result),
         }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        return response
 
 
 async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now=None, harvest_only=False):

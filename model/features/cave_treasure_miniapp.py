@@ -1063,8 +1063,11 @@ def _parse_cave_journey_overview(journey):
     if not isinstance(journey, dict):
         return {}
     wild = journey.get("wildExperience") if isinstance(journey.get("wildExperience"), dict) else {}
+    if not wild:
+        return {}
     modes = []
-    for item in wild.get("modes") or ():
+    raw_modes = wild.get("modes") if isinstance(wild.get("modes"), list) else []
+    for item in raw_modes:
         if not isinstance(item, dict):
             continue
         key = str(item.get("key") or "").strip().lower()
@@ -1080,10 +1083,10 @@ def _parse_cave_journey_overview(journey):
     return {
         "server_time": _coerce_int(journey.get("serverTime"), 0),
         "wild_experience": {
-            "available": bool(wild.get("available")),
-            "daily_count": _coerce_int(wild.get("dailyCount"), 0),
+            "available": wild.get("available") is True,
+            "daily_count": _coerce_int(wild.get("dailyCount"), -1),
             "daily_limit": _coerce_int(wild.get("dailyLimit"), 0),
-            "daily_remaining": _coerce_int(wild.get("dailyRemaining"), 0),
+            "daily_remaining": _coerce_int(wild.get("dailyRemaining"), -1),
             "cooldown_hours": _coerce_float(wild.get("cooldownHours"), 0.0),
             "remaining_seconds": _coerce_int(wild.get("remainingSeconds"), 0),
             "last_at": _coerce_int(wild.get("lastAt"), 0),
@@ -2028,18 +2031,22 @@ async def run_cave_journey_action_production_flow(
     capture_sink=None,
     capture_source="",
     init_data="",
+    operation_check=None,
 ):
     """Execute one whitelisted journey action without replaying an uncertain POST."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
+        require_miniapp_operation(operation_check)
         request = build_cave_journey_action_request(
             action,
             mode=mode,
@@ -2048,19 +2055,25 @@ async def run_cave_journey_action_production_flow(
             init_data=init_data,
             adapter=adapter,
         )
-        result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            request,
-            _flow_transport(transport, identity_id),
-            backoff_sec=(),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"journey:{normalize_cave_journey_action(action)}",
-        )
-        if not result.ok:
-            return _flow_result(False, "failed", error=result.error, data=result.data, events=[{"step": "journey", "ok": False}])
-        return _flow_result(True, "acted", data=result.data, events=[{"step": "journey", "ok": True}])
+        def run(operation):
+            step = f"journey:{normalize_cave_journey_action(action)}"
+            result = execute_miniapp_http_request(
+                request, _flow_transport(transport, identity_id, operation_check=operation.check),
+                backoff_sec=(), sleeper=operation.sleep, capture_sink=capture_sink,
+                capture_source=capture_source, step_key=step,
+                request_budget=MiniAppRequestBudget(adapter.request_policy, sleeper=operation.sleep),
+                operation_check=operation.check,
+            )
+            events = []
+            _append_http_event(events, step, result)
+            status = "acted" if result.ok else ("cancelled" if result.error_type == "operation_cancelled" else "failed")
+            response = _flow_result(result.ok, status, error=result.error, data=result.data, events=events)
+            response["action_dispatched"] = int(result.attempts or 0) > 0
+            return response
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
