@@ -3,6 +3,9 @@ import hashlib
 import logging
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urljoin
@@ -16,7 +19,7 @@ from ..persistence import save_state
 from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
 from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_storage_bag_records, state, use_identity
 from ..timing import fmt_abs_ts, get_day_key
-from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
+from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, miniapp_retry_after_sec, require_miniapp_operation
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
 from .small_world import (
     SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
@@ -137,6 +140,86 @@ def _cave_public_entry_urls(value):
 def cave_public_entry_urls_signature(urls):
     normalized = _cave_public_entry_urls(urls)
     return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest() if normalized else ""
+
+
+@dataclass(frozen=True)
+class CavePublicEntryHealthSnapshot:
+    """Compare existing entry-health fields without adding persistent control state."""
+
+    urls: tuple
+    blocked_signature: str
+    claimed_at: float
+    failure_evidence: tuple
+
+    @classmethod
+    def _from_config(cls, config):
+        return cls(
+            tuple(_cave_public_entry_urls(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))),
+            str(config.get("cave_public_entry_token_blocked_signature") or ""),
+            config.get("cave_public_entry_token_canary_at") or 0,
+            (
+                config.get("cave_public_entry_token_blocked_at") or 0,
+                str(config.get("cave_public_entry_token_blocked_reason") or ""),
+                config.get("cave_public_entry_token_retry_at") or 0,
+                config.get("cave_public_entry_token_failure_count") or 0,
+            ),
+        )
+
+    @classmethod
+    def capture(cls):
+        return cls._from_config(dict(get_miniapp_auto_config() or {}))
+
+    def current_config(self):
+        current = dict(get_miniapp_auto_config() or {})
+        return current if self._from_config(current) == self else None
+
+    def release_canary(self, claimed_at):
+        if not claimed_at or claimed_at != self.claimed_at:
+            return False
+        current = self.current_config()
+        if current is None:
+            return False
+        current["cave_public_entry_token_canary_at"] = 0
+        set_miniapp_auto_config(current)
+        save_state()
+        return True
+
+
+@dataclass
+class CavePublicEntryObservation:
+    identity_id: int
+    token_digest: str
+    operation_check: object = None
+    verified: bool = False
+    invalidated: bool = False
+
+    def permits(self, identity_id, token):
+        if self.invalidated:
+            return False
+        try:
+            require_miniapp_operation(self.operation_check)
+            allowed = self.identity_id == identity_id and self.token_digest == stable_payload_digest(token)
+        except MiniAppRequestAborted:
+            allowed = False
+        self.invalidated = not allowed
+        return allowed
+
+
+_CAVE_PUBLIC_ENTRY_OBSERVATION = ContextVar("cave_public_entry_observation", default=None)
+
+
+@contextmanager
+def observe_cave_public_entry(identity_id, public_entry_url, *, operation_check=None):
+    """Bind read evidence to this caller, not to a module's business-result wording."""
+    token, _webview_url, error = _parse_public_cave_entry_url(public_entry_url)
+    observation = CavePublicEntryObservation(
+        int(identity_id), stable_payload_digest(token), operation_check, invalidated=bool(error),
+    )
+    marker = _CAVE_PUBLIC_ENTRY_OBSERVATION.set(observation)
+    try:
+        yield observation
+    finally:
+        _CAVE_PUBLIC_ENTRY_OBSERVATION.reset(marker)
 
 
 def get_cave_public_entry_gate(urls=None, *, now=None):
@@ -1027,6 +1110,7 @@ async def _load_cave_public_identity_session(
     operation_check=None,
 ):
     owner = MiniAppIdentityOwner.capture(identity_id)
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
     cancelled = {"ok": False, "status": "cancelled", "error": "洞府公共入口操作已失效"}
 
     def can_continue():
@@ -1034,6 +1118,7 @@ async def _load_cave_public_identity_session(
             owner is not None
             and owner.is_current()
             and is_cave_public_identity_available(identity_id)
+            and (observation is None or observation.permits(identity_id, token))
             and (operation_check is None or operation_check() is True)
         )
 
@@ -1071,6 +1156,8 @@ async def _load_cave_public_identity_session(
     initial_data = dict(initial_result.get("data") or {})
     initial_overview = initial_data.get("overview") if isinstance(initial_data.get("overview"), dict) else {}
     initial_player_id = _parse_int(initial_overview.get("player_id"), 0)
+    if initial_player_id and observation is not None:
+        observation.verified = True
     if initial_player_id and _normalize_dwelling_identity_id(initial_player_id) == _normalize_dwelling_identity_id(identity_id):
         session = {
             "ok": True,
@@ -1109,6 +1196,8 @@ async def _load_cave_public_identity_session(
             "player_id": selected_player_id,
             "result": selected_result,
         }
+        if observation is not None:
+            observation.verified = True
 
     session_raw = dict((session.get("result") or {}).get("data") or {}).get("raw") or {}
     if not include_details or _has_cave_details_snapshot(session_raw):
@@ -1280,21 +1369,7 @@ async def probe_cave_public_entry(identity_id, public_entry_url, *, now=None):
     if identity_id <= 0 or error:
         return {"ok": False, "message": error or "身份不存在", "extra": {}}
     owner = MiniAppIdentityOwner.capture(identity_id)
-    config = dict(get_miniapp_auto_config() or {})
-    signature = cave_public_entry_urls_signature(config.get("cave_public_entry_urls") or config.get("cave_public_entry_url"))
-    blocked_signature = config.get("cave_public_entry_token_blocked_signature")
-    claimed_at = config.get("cave_public_entry_token_canary_at") or 0
-
-    def current_claim_config():
-        current = dict(get_miniapp_auto_config() or {})
-        urls = current.get("cave_public_entry_urls") or current.get("cave_public_entry_url")
-        if (
-            cave_public_entry_urls_signature(urls) == signature
-            and current.get("cave_public_entry_token_blocked_signature") == blocked_signature
-            and (current.get("cave_public_entry_token_canary_at") or 0) == claimed_at
-        ):
-            return current
-        return None
+    health = CavePublicEntryHealthSnapshot.capture()
 
     def can_continue():
         return (
@@ -1302,17 +1377,13 @@ async def probe_cave_public_entry(identity_id, public_entry_url, *, now=None):
             and owner.is_current()
             and is_cave_public_identity_available(identity_id)
             and _public_entry_allowed()
-            and (not claimed_at or claimed_at == now)
-            and current_claim_config() is not None
+            and (not health.claimed_at or health.claimed_at == now)
+            and health.current_config() is not None
         )
 
     def cancelled_result():
-        current = current_claim_config()
         # Cancellation is not entry-health evidence and cannot release a newer claim.
-        if current is not None and claimed_at == now:
-            current["cave_public_entry_token_canary_at"] = 0
-            set_miniapp_auto_config(current)
-            save_state()
+        health.release_canary(now)
         return {
             "ok": False,
             "message": "洞府公共入口复核已取消或上下文已变更",

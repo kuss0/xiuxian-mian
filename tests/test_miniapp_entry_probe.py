@@ -327,6 +327,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_small_world_uses_http_runner_without_sending_command(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_small_world_sync", new=AsyncMock(return_value={
@@ -348,6 +349,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_deep_retreat_action_uses_http_runner_without_sending_command(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_deep_retreat_action", new=AsyncMock(return_value={
@@ -369,6 +371,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_treasure_uses_http_runner_without_sending_command(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_treasure", new=AsyncMock(return_value={
@@ -390,6 +393,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_trial_uses_http_runner_without_sending_command(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
@@ -411,6 +415,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_promotes_nested_retry_after_to_extra(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
@@ -436,6 +441,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_fate_cards_uses_persisted_explicit_choice_without_sending_command(self):
+        state_module.ensure_identity_registered(1001)
         state_module._meta_state["miniapp_auto_config"] = {
             "cave_public_fate_cards_enabled": False,
             "cave_public_fate_cards_choice_key": "hide",
@@ -465,6 +471,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_cave_public_entry_yuanying_uses_http_runner_without_sending_command(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_yuanying", new=AsyncMock(return_value={
@@ -582,6 +589,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("df_SECRET222", text)
 
     async def test_cave_public_entry_run_falls_back_only_for_entry_health_failure(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_trial", new=AsyncMock(side_effect=[
@@ -602,6 +610,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, run_mock.await_count)
 
     async def test_cave_public_entry_token_expiry_falls_back_to_a_fresh_candidate(self):
+        state_module.ensure_identity_registered(1001)
         background_snapshot = dict(ui._cave_public_background_state)
         try:
             ui._close_cave_public_upstream_circuit()
@@ -628,6 +637,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.update(background_snapshot)
 
     async def test_cave_public_entry_all_token_expiry_opens_entry_circuit(self):
+        state_module.ensure_identity_registered(1001)
+        state_module.set_miniapp_auto_config({"cave_public_entry_urls": [
+            "https://t.me/hantianzun21_bot?startapp=df_SECRET111",
+            "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+        ]})
         background_snapshot = dict(ui._cave_public_background_state)
         try:
             ui._close_cave_public_upstream_circuit()
@@ -660,6 +674,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.update(background_snapshot)
 
     async def test_cave_public_entry_token_expiry_blocks_same_config_until_url_changes(self):
+        state_module.ensure_identity_registered(1001)
         old_urls = [
             "https://t.me/hantianzun21_bot?startapp=df_SECRET111",
             "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
@@ -678,9 +693,9 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                     "extra": {},
                 },
                 {
-                    "ok": True,
-                    "message": "洞府小世界请求仍在最小间隔内，已跳过请求",
-                    "extra": {"skipped": True},
+                    "ok": False,
+                    "message": "洞府天机试炼身份读取失败：dwelling_token_expired",
+                    "extra": {},
                 },
             ])
             with patch.object(ui, "get_identity_ids", return_value=[1001]), \
@@ -768,6 +783,11 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         tree_mock.assert_not_awaited()
 
     async def test_cave_public_entry_run_opens_circuit_without_retrying_upstream_502(self):
+        state_module.ensure_identity_registered(1001)
+        state_module.set_miniapp_auto_config({"cave_public_entry_urls": [
+            "https://t.me/hantianzun21_bot?startapp=df_SECRET111",
+            "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET222",
+        ]})
         background_snapshot = dict(ui._cave_public_background_state)
         try:
             ui._close_cave_public_upstream_circuit()
@@ -796,6 +816,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_state.update(background_snapshot)
 
     async def test_cave_public_entry_stops_candidate_fallback_on_shared_rate_limit(self):
+        state_module.ensure_identity_registered(1001)
         run_mock = AsyncMock(return_value={
             "ok": False,
             "message": "洞府天机命脉动态入口获取失败：external_action_rate_limited",
@@ -822,6 +843,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         run_mock.assert_awaited_once()
 
     async def test_cave_public_entry_run_does_not_fallback_for_business_completion(self):
+        state_module.ensure_identity_registered(1001)
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
                 patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
@@ -1119,6 +1141,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_retry_at.update(retries)
 
     async def test_shared_limit_blocks_other_identity_ui_batch_and_daily_scheduler(self):
+        state_module.ensure_identity_registered(1002)
         now = time.time()
         state_module._meta_state["miniapp_auto_config"] = {"cave_public_shared_retry_at": now + 1302}
         with patch.object(ui, "get_identity_ids", return_value=[1001, 1002]), \
@@ -1164,6 +1187,19 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_batch_state.update(snapshot)
 
     async def test_cave_public_success_closes_upstream_circuit(self):
+        state_module.ensure_identity_registered(1001)
+        url = "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"
+        state_module.set_miniapp_auto_config({"cave_public_entry_urls": [url]})
+
+        async def read_and_complete(identity_id, public_url):
+            token, webview_url, error = cave_treasure_runtime._parse_public_cave_entry_url(public_url)
+            self.assertFalse(error)
+            session = await cave_treasure_runtime._load_cave_public_identity_session(
+                identity_id, token, webview_url, now=time.time(), capture_source="fixture-public-ui",
+            )
+            self.assertTrue(session["ok"])
+            return {"ok": True, "message": "洞府天机试炼公共入口：完成", "extra": {}}
+
         background_snapshot = dict(ui._cave_public_background_state)
         try:
             ui._cave_public_background_state.update({
@@ -1173,15 +1209,16 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             })
             with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                     patch.object(ui, "get_identity_enabled", return_value=True), \
-                    patch.object(ui, "run_cave_public_trial", new=AsyncMock(return_value={
-                        "ok": True,
-                        "message": "洞府天机试炼公共入口：完成",
-                        "extra": {},
-                    })):
+                    patch.object(cave_treasure_runtime, "_capture_store", return_value=None), \
+                    patch.object(cave_treasure_runtime, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="fixture-init")), \
+                    patch.object(cave_treasure_runtime, "run_cave_dwelling_start_production_flow", new=AsyncMock(return_value={
+                        "ok": True, "data": {"overview": {"player_id": 1001}, "raw": {}},
+                    })), \
+                    patch.object(ui, "run_cave_public_trial", new=AsyncMock(side_effect=read_and_complete)):
                 ok, _message, _extra = await ui.ui_run_cave_public_entry(
                     1001,
                     "trial",
-                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    url,
                 )
 
             self.assertTrue(ok)

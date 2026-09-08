@@ -31,7 +31,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, thread draining, confirmed-result retention and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
-| UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Pending |
+| UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
 | Final review | Revisit every finding and changed contract; record real residual limits | Full suite, targeted fault replay, diff review, deployment comparison | Not started |
 
@@ -90,6 +90,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R36 | High | Cancelling a tower caller releases public-entry locks while its HTTP thread continues and challenges; module switch-off also permits another in-thread action; missing challenge state is falsely accepted as daily completion, and notification faults lose confirmed completion | Fixed for tower and its dwelling start/details/external path in candidate; cooperative request checks, joined threads, result-carrying cancellation, strict server-state parsing and notification isolation pass full caller/fake-HTTP tests; forced stop and other game flows remain open |
 | R37 | High | Pooled HTTP sessions survive identity deletion/replacement/account rebinding; close tears down active sessions and their exclusion locks, while idle entries and locks are unbounded | Fixed in candidate; owner-aware leases retain serial exclusion across route/owner changes, defer active closes, reclaim idle entries with TTL/LRU, and bound active/retired/closing capacity; per-game lifecycle and live validation remain open |
 | R38 | High | Local identity invalidation defers shared entry revalidation for six hours; cancelled tasks strand the claim, and old probes overwrite newer claims/entry lists or continue after manual pause | Fixed in candidate; exact owner/entry/claim checks propagate into the loader, cancellation releases only its own claim without changing health evidence, and later scheduler ticks select remaining eligible roles; real server-error backoff is preserved |
+| R39 | High | Public-entry UI treats local cancellation/skip as entry recovery, claims before local admission, overwrites newer shared health, and retries downstream failures through another URL | Fixed for reproduced UI caller boundaries in candidate; real loader evidence, exact owner/health snapshots, scoped claim cleanup, no post-read fallback, preserved confirmed results and genuine failure/rate-limit controls pass; per-game workers and remaining UI/background contracts remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -768,6 +769,43 @@ five monitor/control-only contracts need separate behavioral verification.
   Full Ruff, changed-file compilation and diff checks pass. All verification is
   offline, with temporary state and no production/skill/remote changes.
 
+- R39 initially reproduced 23 failing public-entry UI cases and three passing
+  controls. A cancelled or locally skipped callback cleared shared token/circuit
+  health; busy and invalid actions stranded a canary, while removed/rebound
+  identities and changed entry lists still reached fallback or shared writes.
+- UI action dispatch is now lazy and validated before claiming a canary. It
+  retains the real identity/account owner and rechecks admission after lock
+  acquisition, inside dwelling loading, after the callback and before fallback.
+  Manual global pause still blocks new requests, while channel-only freeze and
+  Tianzun maintenance continue to allow eligible public-entry HTTP.
+- An in-memory entry-health snapshot compares configured URLs, claim timestamp,
+  blocked signature and existing failure fields. It is shared with R38's probe
+  path and adds no persistent control schema. Cancellation and callback faults
+  release only the original claim; old results cannot clear a replacement
+  claim, a newer failure on the same URL, or a newer upstream circuit.
+- Task-local read observations bind the expected identity/token and operation
+  check to the real dwelling loader. Business success wording alone is not
+  entry-health evidence. Once a dwelling read is verified, downstream failure
+  does not replay the business chain through another URL. A local skipped URL
+  is not counted as expired, and manually testing an unrelated URL or just one
+  configured candidate cannot establish that the full configured list expired.
+- Confirmed same-owner outcomes survive a post-dispatch pause/disable without
+  further requests or shared-health writes. Fate-card notification faults no
+  longer discard confirmed rewards, and logging exposes only exception class.
+  Real HTTP 502 controls still open the upstream circuit, genuine canary server
+  failures retain the six-hour retry, and shared 429 deadlines stop fanout and
+  remain monotonic. Successful dwelling reads cannot conceal a later HTTP 502.
+- The dedicated lifecycle suite now has 45 cases. Legacy UI fixtures now
+  register actual owners; the all-expired test now supplies two real token
+  failures instead of incorrectly treating a local throttle as the second one.
+  Manual-only actions remain excluded from the batch allowlist. Related suite:
+  174 passed, 45 subtests passed. Final full suite: 4205 passed, 1004 subtests
+  passed, 68.71 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r39-public-ui-lifecycle-20260908.xml`.
+  Full Ruff, changed-file compilation and diff checks pass. No production,
+  live configuration, service, skill or remote branch was changed. This does
+  not close R07, R11 or the remaining per-game lifecycle/final-review work.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -827,13 +865,11 @@ and cleanup code during a code-only rollback.
    refresh/invalidation paths. Next review the stargazer action loop and its
    public/command callers: it still uses raw `asyncio.to_thread` and lacks a
    shared per-flow request budget. No live validation is approved.
-5. Follow `ui_run_cave_public_entry` independently of the R38 canary path. Its
-   non-entry-error branch currently calls `note_cave_public_entry_success` and
-   closes the upstream circuit even for a local cancelled result. Claiming a
-   canary also precedes its local busy-lock check. Reproduce cancellation,
-   unavailable/busy short-circuits, identity replacement and entry-list changes
-   before trusting its shared-health writes or fallback dispatch. R38 does not
-   close this separate UI/background caller contract.
+5. R39 covers the public-entry UI caller's health writes, canary ownership and
+   fallback admission independently of R38. Continue through per-game workers,
+   background scheduling/batch continuation and the remaining UI control
+   contracts. Guarding the entry loader does not stop an unguarded game's
+   later HTTP requests or prove its result persistence/notification behavior.
 
 ## Completion Gate
 

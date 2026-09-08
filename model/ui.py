@@ -6,6 +6,7 @@ import inspect
 import ipaddress
 import importlib.util
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -13,6 +14,7 @@ import sys
 import time
 import traceback
 from datetime import datetime
+from functools import partial
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
@@ -101,6 +103,7 @@ from .webapp_core import get_miniapp_global_rate_limit_snapshot, miniapp_retry_a
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import (
+    CavePublicEntryHealthSnapshot,
     _parse_public_cave_entry_url,
     authorize_cave_treasure_miniapp_manual_run,
     revoke_cave_treasure_miniapp_manual_run,
@@ -121,8 +124,11 @@ from .features.cave_treasure_runtime import (
     prepare_cave_public_entry_attempt,
     note_cave_public_entry_success,
     note_cave_public_entry_token_failure,
+    defer_cave_public_entry_canary,
+    observe_cave_public_entry,
     probe_cave_public_entry,
 )
+from .features.miniapp_common import MiniAppIdentityOwner
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
 from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
@@ -7364,164 +7370,207 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
     return True, "已发送 MiniApp 手动执行命令，等待入口按钮接管", extra
 
 
+def _cave_public_entry_runner(identity_id, action):
+    runners = {
+        "small_world": run_cave_public_small_world_sync,
+        "treasure": run_cave_public_treasure, "hunt": run_cave_public_treasure,
+        "cave_treasure": run_cave_public_treasure,
+        "trial": run_cave_public_trial, "tianji_trial": run_cave_public_trial,
+        "fishing": run_cave_public_fishing, "fish": run_cave_public_fishing,
+        "inventory": run_cave_public_inventory, "storage_bag": run_cave_public_inventory,
+        "bag": run_cave_public_inventory,
+        "stargazer": run_cave_public_stargazer, "sect_farm": run_cave_public_stargazer,
+        "star_farm": run_cave_public_stargazer,
+        "tower": run_cave_public_tower, "pagoda": run_cave_public_tower,
+        "yuanying": run_cave_public_yuanying, "yuan_ying": run_cave_public_yuanying,
+        "yuanying_launch": run_cave_public_yuanying,
+        "tianti_status": run_cave_public_tianti_status, "tianjie_status": run_cave_public_tianti_status,
+    }
+    if action in runners:
+        return partial(runners[action], identity_id)
+    if action in {"small_world_harvest", "harvest_incense"}:
+        return partial(run_cave_public_small_world_sync, identity_id, harvest_only=True)
+    if action in {"fate_cards", "fate", "tianji_fate"}:
+        return lambda url: run_cave_public_fate_cards(
+            identity_id, url,
+            choice_key=normalize_miniapp_auto_config().get("cave_public_fate_cards_choice_key", "accept"),
+        )
+    if action in {"tree", "spirit_tree", "luoyun_tree"}:
+        return lambda url: run_cave_public_tree(identity_id, url, score_profiles=get_tree_miniapp_score_config(identity_id))
+    commands = {
+        "yinluo_status": ".我的阴罗幡", "yinluo_banner": ".我的阴罗幡",
+        "concubine_status": ".我的侍妾", "concubine": ".我的侍妾",
+        "beast_status": ".我的灵兽", "beast": ".我的灵兽",
+    }
+    if action in commands:
+        return lambda url: run_cave_public_tianjige_read_only(identity_id, url, commands[action])
+    if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
+        return lambda url: run_cave_public_deep_retreat_action(identity_id, url, action.removeprefix("deep_"))
+    return None
+
+
 async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
     try:
         identity_id = int(send_as_id or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         identity_id = 0
-    if identity_id not in get_identity_ids():
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if owner is None or identity_id not in get_identity_ids():
         return False, "身份不存在", {}
     if not is_cave_public_identity_available(identity_id):
         return False, "身份已停用", {}
+    if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
+        return False, "全局暂停来源不允许洞府公共入口 MiniApp HTTP", {"status": "cancelled"}
+    normalized_action = str(action or "").strip().lower()
+    runner = _cave_public_entry_runner(identity_id, normalized_action)
+    if runner is None:
+        return False, "洞府公共入口动作无效", {}
     shared_hold = _cave_public_shared_hold(time.time())
     if shared_hold:
         return False, "洞府公共入口共享限流，等待服务端冷却", shared_hold
     using_config_urls = not bool(str(public_entry_url or "").strip())
-    if public_entry_url:
-        candidate_urls = _normalize_cave_public_entry_urls_value(public_entry_url)
-    else:
+    if using_config_urls:
         candidate_urls = list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or [])
+    else:
+        candidate_urls = _normalize_cave_public_entry_urls_value(public_entry_url)
     if not candidate_urls:
         return False, "缺少洞府公共入口 URL", {}
-    canary = False
-    if using_config_urls:
-        gate = prepare_cave_public_entry_attempt(candidate_urls, now=time.time())
-        if not gate.get("allowed"):
-            retry_at = float(gate.get("retry_at") or 0)
-            retry_text = f"，下次单次复核 {fmt_abs_ts(retry_at)}" if retry_at else ""
-            return (
-                False,
-                f"洞府公共入口授权已过期，已暂停重复请求{retry_text}；请在 UI 更新最新洞府公共入口 URL",
-                {"entry_token_blocked": True, "retry_at": retry_at},
-            )
-        if gate.get("canary"):
-            candidate_urls = list(gate.get("urls") or candidate_urls)[:1]
-            canary = True
     if _cave_public_ui_run_lock.locked():
         return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {}
+    health = CavePublicEntryHealthSnapshot.capture()
+
+    def owner_available():
+        return (
+            owner.is_current()
+            and is_cave_public_identity_available(identity_id)
+            and (get_global_enabled() or get_global_pause_source() == MAINTENANCE_PAUSE_SOURCE)
+        )
+
+    def can_continue():
+        return owner_available() and health.current_config() is not None
+
     async with _cave_public_ui_run_lock:
-        normalized_action = str(action or "").strip().lower()
-        result = {}
+        if not can_continue():
+            return False, "洞府公共入口操作已取消或上下文已变更", {"status": "cancelled"}
+        shared_hold = _cave_public_shared_hold(time.time())
+        if shared_hold:
+            return False, "洞府公共入口共享限流，等待服务端冷却", shared_hold
+        canary = False
+        claimed_at = 0
+        if using_config_urls:
+            now = time.time()
+            gate = prepare_cave_public_entry_attempt(candidate_urls, now=now)
+            if not gate.get("allowed"):
+                retry_at = float(gate.get("retry_at") or 0)
+                retry_text = f"，下次单次复核 {fmt_abs_ts(retry_at)}" if retry_at else ""
+                return (
+                    False,
+                    f"洞府公共入口授权已过期，已暂停重复请求{retry_text}；请在 UI 更新最新洞府公共入口 URL",
+                    {"entry_token_blocked": True, "retry_at": retry_at},
+                )
+            if gate.get("canary"):
+                candidate_urls = list(gate.get("urls") or candidate_urls)[:1]
+                canary = True
+                claimed_at = now
+        health = CavePublicEntryHealthSnapshot.capture()
+        circuit = (
+            _cave_public_background_state.get("circuit_open_until", 0),
+            _cave_public_background_state.get("circuit_reason", ""),
+        )
+
+        def circuit_is_current():
+            return circuit == (
+                _cave_public_background_state.get("circuit_open_until", 0),
+                _cave_public_background_state.get("circuit_reason", ""),
+            )
+
         attempted = []
         token_failure_count = 0
-        for index, url in enumerate(candidate_urls):
-            if normalized_action == "small_world":
-                result = await run_cave_public_small_world_sync(identity_id, url)
-            elif normalized_action in {"small_world_harvest", "harvest_incense"}:
-                result = await run_cave_public_small_world_sync(identity_id, url, harvest_only=True)
-            elif normalized_action in {"treasure", "hunt", "cave_treasure"}:
-                result = await run_cave_public_treasure(identity_id, url)
-            elif normalized_action in {"trial", "tianji_trial"}:
-                result = await run_cave_public_trial(identity_id, url)
-            elif normalized_action in {"fate_cards", "fate", "tianji_fate"}:
-                result = await run_cave_public_fate_cards(
-                    identity_id,
-                    url,
-                    choice_key=normalize_miniapp_auto_config().get("cave_public_fate_cards_choice_key", "accept"),
-                )
-            elif normalized_action in {"fishing", "fish"}:
-                result = await run_cave_public_fishing(identity_id, url)
-            elif normalized_action in {"inventory", "storage_bag", "bag"}:
-                result = await run_cave_public_inventory(identity_id, url)
-            elif normalized_action in {"stargazer", "sect_farm", "star_farm"}:
-                result = await run_cave_public_stargazer(identity_id, url)
-            elif normalized_action in {"tower", "pagoda"}:
-                result = await run_cave_public_tower(identity_id, url)
-            elif normalized_action in {"tree", "spirit_tree", "luoyun_tree"}:
-                result = await run_cave_public_tree(
-                    identity_id,
-                    url,
-                    score_profiles=get_tree_miniapp_score_config(identity_id),
-                )
-            elif normalized_action in {"yuanying", "yuan_ying", "yuanying_launch"}:
-                result = await run_cave_public_yuanying(identity_id, url)
-            elif normalized_action in {"tianti_status", "tianjie_status"}:
-                result = await run_cave_public_tianti_status(identity_id, url)
-            elif normalized_action in {"yinluo_status", "yinluo_banner"}:
-                result = await run_cave_public_tianjige_read_only(identity_id, url, ".我的阴罗幡")
-            elif normalized_action in {"concubine_status", "concubine"}:
-                result = await run_cave_public_tianjige_read_only(identity_id, url, ".我的侍妾")
-            elif normalized_action in {"beast_status", "beast"}:
-                result = await run_cave_public_tianjige_read_only(identity_id, url, ".我的灵兽")
-            elif normalized_action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
-                deep_action = normalized_action.replace("deep_", "", 1)
-                result = await run_cave_public_deep_retreat_action(identity_id, url, deep_action)
-            else:
-                return False, "洞府公共入口动作无效", {}
-            message = str(result.get("message") or "")
-            attempted.append({"index": index, "ok": bool(result.get("ok")), "message": message[:120]})
-            if _is_cave_public_entry_token_failure(message):
-                token_failure_count += 1
-            result_extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
-            retry_after_sec = miniapp_retry_after_sec(result)
-            if retry_after_sec > 0:
-                result_extra = dict(result_extra)
-                result_extra["retry_after_sec"] = retry_after_sec
-                result["extra"] = result_extra
-            if result_extra.get("shared_rate_limit"):
-                # A 429 from the shared public-entry action is scoped to the
-                # gateway, not to this identity or one candidate URL. Trying
-                # the remaining URLs only repeats the rejected request and can
-                # hide the server's retry hint behind token noise.
-                extra = dict(result_extra)
-                extra["shared_retry_at"] = _remember_cave_public_shared_limit(extra, time.time())
-                extra["entry_index"] = index
-                extra["entry_attempts"] = attempted
-                extra["entry_canary"] = canary
-                return False, message, extra
-            skip_after_token_failure = bool(
-                token_failure_count
-                and result.get("ok")
-                and result_extra.get("skipped")
-                and "最小间隔" in message
-            )
-            if skip_after_token_failure:
-                # The first candidate already touched the shared per-identity
-                # request timer. A later candidate can only report the local
-                # throttle skip; that is not a successful entry validation.
-                token_failure_count += 1
-                continue
-            health_failure = _is_cave_public_entry_health_failure(message)
-            if result.get("ok") or not health_failure:
-                _close_cave_public_upstream_circuit()
-                note_cave_public_entry_success([url])
+        try:
+            for index, url in enumerate(candidate_urls):
+                if not can_continue():
+                    return False, "洞府公共入口操作已取消或上下文已变更", {
+                        "status": "cancelled", "entry_attempts": attempted,
+                    }
+                with observe_cave_public_entry(identity_id, url, operation_check=can_continue) as observation:
+                    result = await runner(url)
+                message = str(result.get("message") or "")
+                attempted.append({"index": index, "ok": bool(result.get("ok")), "message": message[:120]})
                 extra = dict(result.get("extra") or {})
-                extra["entry_index"] = index
-                extra["entry_attempts"] = attempted
-                extra["entry_canary"] = canary
-                if normalized_action in {"fate_cards", "fate", "tianji_fate"}:
-                    await maybe_send_cave_public_fate_cards_daily_summary()
-                return bool(result.get("ok")), message, extra
-            if _is_cave_public_upstream_failure(message):
-                _open_cave_public_upstream_circuit(message)
-                break
-            if index + 1 < len(candidate_urls):
-                console_log(
-                    f"🧩 洞府公共入口候选失效，切换备用：{get_identity_display_name(identity_id)}｜{normalized_action}｜{message[:120]}",
-                    scope="identity",
-                    send_as_id=identity_id,
-                    limit=220,
-                )
-        if attempted and token_failure_count == len(attempted):
-            _open_cave_public_upstream_circuit(
-                "洞府公共入口授权已过期，请更新入口 URL",
-                duration_sec=CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC,
-            )
-            if using_config_urls:
-                _persist_cave_public_entry_token_block(
-                    list(normalize_miniapp_auto_config().get("cave_public_entry_urls") or candidate_urls),
+                extra.update(entry_index=index, entry_attempts=attempted, entry_canary=canary)
+                retry_after_sec = miniapp_retry_after_sec(result)
+                if retry_after_sec > 0:
+                    extra["retry_after_sec"] = retry_after_sec
+                # A real gateway rate limit is shared even if this caller was invalidated.
+                if extra.get("shared_rate_limit"):
+                    extra["shared_retry_at"] = _remember_cave_public_shared_limit(extra, time.time())
+                    return False, message, extra
+                if not owner_available():
+                    if owner.is_current() and observation.verified and result.get("ok"):
+                        extra["operation_cancelled"] = True
+                        return True, message, extra
+                    extra["status"] = "cancelled"
+                    return False, "洞府公共入口操作已取消或身份已变更", extra
+                if health.current_config() is None:
+                    extra["entry_context_stale"] = True
+                    return bool(result.get("ok")), message, extra
+                cancelled_statuses = {"cancelled", "operation_cancelled"}
+                if observation.invalidated or result.get("status") in cancelled_statuses or extra.get("status") in cancelled_statuses:
+                    extra["status"] = "cancelled"
+                    return False, "洞府公共入口操作已取消或上下文已变更", extra
+                if observation.verified:
+                    # Entry read evidence is independent of the downstream game's outcome.
+                    # Once read, never replay a business chain against another URL.
+                    if url in health.urls:
+                        note_cave_public_entry_success([url])
+                        if circuit_is_current():
+                            if not result.get("ok") and _is_cave_public_upstream_failure(message):
+                                _open_cave_public_upstream_circuit(message)
+                            else:
+                                _close_cave_public_upstream_circuit()
+                    if normalized_action in {"fate_cards", "fate", "tianji_fate"}:
+                        try:
+                            await maybe_send_cave_public_fate_cards_daily_summary()
+                        except Exception as exc:
+                            logging.getLogger(__name__).warning(
+                                "Cave public daily report failed (%s)", type(exc).__name__,
+                            )
+                    return bool(result.get("ok")), message, extra
+                if extra.get("skipped"):
+                    return bool(result.get("ok")) and not token_failure_count, message, extra
+                if result.get("ok") or not _is_cave_public_entry_health_failure(message):
+                    return bool(result.get("ok")), message, extra
+                if not circuit_is_current():
+                    extra["entry_context_stale"] = True
+                    return False, message, extra
+                if _is_cave_public_entry_token_failure(message):
+                    token_failure_count += 1
+                if _is_cave_public_upstream_failure(message):
+                    if url in health.urls:
+                        _open_cave_public_upstream_circuit(message)
+                        if canary:
+                            defer_cave_public_entry_canary([url], message, now=time.time())
+                    return False, message, extra
+                if index + 1 < len(candidate_urls):
+                    console_log(
+                        f"🧩 洞府公共入口候选失效，切换备用：{get_identity_display_name(identity_id)}｜{normalized_action}｜{message[:120]}",
+                        scope="identity", send_as_id=identity_id, limit=220,
+                    )
+            all_token_failed = bool(attempted and token_failure_count == len(candidate_urls))
+            covers_config = bool(health.urls) and (canary or set(health.urls).issubset(candidate_urls))
+            if all_token_failed and covers_config:
+                _open_cave_public_upstream_circuit(
                     "洞府公共入口授权已过期，请更新入口 URL",
+                    duration_sec=CAVE_PUBLIC_ENTRY_TOKEN_CIRCUIT_SEC,
                 )
-            message = (
-                f"{str(result.get('message') or '洞府公共入口授权失效')}｜"
-                f"入口授权已过期，已暂停重复请求；"
-                "请在 UI 更新最新洞府公共入口 URL"
-            )
-        extra = dict(result.get("extra") or {})
-        extra["entry_index"] = max(0, len(attempted) - 1)
-        extra["entry_attempts"] = attempted
-        all_token_failed = bool(attempted and token_failure_count == len(attempted))
-        return (False if all_token_failed else bool(result.get("ok"))), message, extra
+                _persist_cave_public_entry_token_block(health.urls, "洞府公共入口授权已过期，请更新入口 URL")
+                message = (
+                    f"{message}｜入口授权已过期，已暂停重复请求；"
+                    "请在 UI 更新最新洞府公共入口 URL"
+                )
+            return False, message, extra
+        finally:
+            health.release_canary(claimed_at)
 
 
 def _is_cave_public_entry_health_failure(message):
