@@ -4436,7 +4436,8 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
 async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    operation = stargazer.StargazerMiniAppOperation.capture(identity_id)
+    if identity_id <= 0 or operation is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
@@ -4448,10 +4449,23 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+
+    def can_continue():
+        return (
+            operation.is_current()
+            and _public_entry_allowed()
+            and (observation is None or observation.permits(identity_id, token))
+        )
+
+    cancelled = {"ok": False, "message": "洞府观星台操作已取消或身份已变更", "extra": {"status": "cancelled"}}
     lock = _public_entry_lock(identity_id)
-    if lock.locked():
+    game_lock = stargazer._stargazer_miniapp_run_lock(identity_id)
+    if lock.locked() or game_lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
-    async with lock:
+    async with lock, game_lock:
+        if not can_continue():
+            return cancelled
         session = await _load_cave_public_identity_session(
             identity_id,
             token,
@@ -4459,7 +4473,10 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             now=now,
             capture_source=f"cave_public_stargazer_start:{identity_id}",
             include_details=True,
+            operation_check=can_continue,
         )
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             return {
                 "ok": False,
@@ -4470,7 +4487,6 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
         selected_player_id = session.get("player_id")
         cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
-        overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
         external_app = _find_stargazer_external_app_in_cave_payload(cave_data.get("raw") or {})
         if not external_app or not external_app.get("available"):
             with use_identity(identity_id):
@@ -4495,7 +4511,10 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
                 init_data=init_data,
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_stargazer_external:{identity_id}",
+                operation_check=can_continue,
             )
+            if not can_continue():
+                return cancelled
             if not external_result.get("ok"):
                 return {
                     "ok": False,
@@ -4507,26 +4526,38 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
             launch = _stargazer_launch_from_external_app(external_app)
         if not launch:
             return {"ok": False, "message": "洞府观星台入口未返回可用 URL", "extra": {}}
-        with use_identity(identity_id):
-            star_choice = stargazer.get_stargazer_star_choice()
+        star_choice = operation.star_choice
         capture_sink = stargazer._stargazer_miniapp_capture_store(now)
         capture_source = f"cave_public_stargazer:{identity_id}"
-        result = await run_stargazer_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            star_choice=star_choice,
-            init_data=init_data,
-            player_id=selected_player_id,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
+        cancelled_flow = None
+        try:
+            result = await run_stargazer_miniapp_production_flow(
+                identity_id,
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                star_choice=star_choice,
+                init_data=init_data,
+                player_id=selected_player_id,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
         result = dict(result or {})
+        confirmed = stargazer.stargazer_miniapp_has_confirmed_outcome(result)
+        if not operation.owner.is_current() or (not can_continue() and not confirmed):
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return cancelled
+        if cancelled_flow is not None and not confirmed:
+            raise MiniAppFlowCancelled(result) from None
         result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
         action_counts = result_data.get("action_counts") if isinstance(result_data.get("action_counts"), dict) else {}
         item_deltas = result_data.get("item_deltas") if isinstance(result_data.get("item_deltas"), dict) else {}
         collect_count = _parse_int(action_counts.get("collect"), 0)
-        if result.get("ok") and collect_count > 0:
+        if collect_count > 0:
             append_business_capture(
                 capture_sink,
                 adapter_key="stargazer",
@@ -4534,17 +4565,33 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
                 source=capture_source,
                 created_at=now,
             )
-        with use_identity(identity_id):
-            handled = await stargazer._finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
-        return {
+        update_schedule = can_continue() and cancelled_flow is None and result.get("status") != "cancelled"
+        try:
+            with use_identity(identity_id):
+                handled = await stargazer._finish_stargazer_miniapp_result(
+                    result, now, star_choice=star_choice, update_schedule=update_schedule,
+                )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            handled = True
+        if not operation.owner.is_current():
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return cancelled
+        response = {
             "ok": bool(handled and result.get("ok")),
             "message": f"洞府观星台：{result.get('status') or ('完成' if handled else '未处理')}",
             "extra": _miniapp_result_extra({
                 "title": launch.get("title", ""),
+                "status": result.get("status") or "",
+                "operation_cancelled": not update_schedule,
                 "action_counts": dict(result_data.get("action_counts") or {}),
                 "rewards": dict(result_data.get("item_deltas") or {}),
             }, result),
         }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        return response
 
 
 async def run_cave_public_tree(

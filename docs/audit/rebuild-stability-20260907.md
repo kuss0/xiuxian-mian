@@ -91,6 +91,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R37 | High | Pooled HTTP sessions survive identity deletion/replacement/account rebinding; close tears down active sessions and their exclusion locks, while idle entries and locks are unbounded | Fixed in candidate; owner-aware leases retain serial exclusion across route/owner changes, defer active closes, reclaim idle entries with TTL/LRU, and bound active/retired/closing capacity; per-game lifecycle and live validation remain open |
 | R38 | High | Local identity invalidation defers shared entry revalidation for six hours; cancelled tasks strand the claim, and old probes overwrite newer claims/entry lists or continue after manual pause | Fixed in candidate; exact owner/entry/claim checks propagate into the loader, cancellation releases only its own claim without changing health evidence, and later scheduler ticks select remaining eligible roles; real server-error backoff is preserved |
 | R39 | High | Public-entry UI treats local cancellation/skip as entry recovery, claims before local admission, overwrites newer shared health, and retries downstream failures through another URL | Fixed for reproduced UI caller boundaries in candidate; real loader evidence, exact owner/health snapshots, scoped claim cleanup, no post-read fallback, preserved confirmed results and genuine failure/rate-limit controls pass; per-game workers and remaining UI/background contracts remain open |
+| R40 | High | Stargazer releases its caller while an HTTP thread still runs, has no shared per-run budget, loses confirmed collections on later parse failures, and permits duplicate entries or stale results to rewrite a running operation | Fixed in candidate; joined cooperative threads, one run budget, public/manual shared exclusion, owner/choice/schedule admission and partial-result retention pass; notification-time owner replacement cannot return an old result for the replacement role |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -806,6 +807,39 @@ five monitor/control-only contracts need separate behavioral verification.
   live configuration, service, skill or remote branch was changed. This does
   not close R07, R11 or the remaining per-game lifecycle/final-review work.
 
+- R40 first reproduced 32 failing lifecycle cases and two passing controls.
+  Stargazer now uses the existing guarded blocking-flow runner rather than raw
+  `asyncio.to_thread`. The start and every soothe/collect/pull request share one
+  request budget. Every WebView await and HTTP dispatch checks the current
+  operation; cancellation joins the worker, including repeated cancellation,
+  before releasing either the public-entry or game-specific lock.
+- The in-memory operation captures the exact identity/account, module switch,
+  selected star and four existing scheduling fields. Public and command-entry
+  callers share the same game lock. A duplicate entry is rejected before any
+  legacy-chain or timer modification. A fresh timer, changed star, pause,
+  deletion or account rebind stops further requests and cannot be overwritten
+  by the old operation.
+- Confirmed collections survive a later missing farm snapshot, exhausted
+  request budget, transport failure, cancellation or switch-off. Same-owner
+  partial rewards are recorded once without overwriting new scheduling. A
+  replaced owner receives neither those deltas nor an old result. Notification
+  failures log only their exception class and do not discard results; actual
+  cancellation still propagates, carrying a confirmed result only while its
+  identity/account owner remains current.
+- Follow-up review reproduced the duplicate-entry scheduler corruption and
+  six public notification-time ownership cases. The latter and equivalent
+  manual-path cases are covered after the fix. The four WebView tests initially
+  omitted the required launch URL; their fixtures were corrected to supply a
+  valid Telegram URL, without relaxing production launch validation.
+- R40 verification: the new lifecycle file contains 60 cases. Related suite:
+  484 passed, 22 subtests passed. Full suite: 4265 passed, 1004 subtests passed,
+  72.76 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r40-stargazer-lifecycle-20260908.xml`.
+  Full Ruff, changed-file compilation and diff checks pass. All HTTP and
+  Telegram boundaries are fake test transports; no production, skill, live DB,
+  configuration, service or remote branch was changed. Full project acceptance
+  remains open.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -862,14 +896,20 @@ and cleanup code during a code-only rollback.
    individual admission, cancellation and result-retention tests; the optional
    transport check does not automatically protect every caller. R38 covers
    probe cancellation and entry/claim generation changes, not all public-entry
-   refresh/invalidation paths. Next review the stargazer action loop and its
-   public/command callers: it still uses raw `asyncio.to_thread` and lacks a
-   shared per-flow request budget. No live validation is approved.
+   refresh/invalidation paths. R40 covers stargazer's action loop, public and
+   command callers, including shared budget, thread draining and partial
+   collection retention. Other custom loops, including Nangongque, still need
+   individual review. No live validation is approved.
 5. R39 covers the public-entry UI caller's health writes, canary ownership and
    fallback admission independently of R38. Continue through per-game workers,
    background scheduling/batch continuation and the remaining UI control
    contracts. Guarding the entry loader does not stop an unguarded game's
    later HTTP requests or prove its result persistence/notification behavior.
+   In particular, the background scheduler currently queues only an identity
+   number and action: it does not retain enqueue-time ownership/configuration.
+   Its worker also writes retry and slot state unconditionally in `finally`.
+   Reproduce deletion/replacement, switch-off, rescheduling and cancellation
+   between enqueue and execution before changing this contract.
 
 ## Completion Gate
 

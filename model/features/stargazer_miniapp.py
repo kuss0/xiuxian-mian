@@ -1,6 +1,4 @@
-import asyncio
 import re
-import time
 
 from telethon import functions
 
@@ -10,18 +8,22 @@ from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestAborted,
+    MiniAppRequestBudget,
     build_miniapp_launch_request,
     build_miniapp_http_request,
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
+    require_miniapp_operation,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
 from .miniapp_common import (
     append_http_event as _append_http_event,
     build_pooled_miniapp_transport,
+    run_miniapp_blocking_flow,
 )
 from ..timing import has_wait_time, parse_wait_time
 
@@ -88,23 +90,28 @@ def build_stargazer_miniapp_request(
     )
 
 
-async def request_stargazer_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None):
+async def request_stargazer_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None):
     adapter = adapter or build_stargazer_miniapp_adapter()
     launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
     if not launch.allowed:
         raise ValueError(launch.reason or "stargazer miniapp launch not allowed")
+    require_miniapp_operation(operation_check)
     account_id, client = _get_identity_client_with_account(identity_id)
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
+        require_miniapp_operation(operation_check)
         bot = await client.get_entity(launch.bot_username or adapter.bot_username)
+        require_miniapp_operation(operation_check)
         bot_input = await client.get_input_entity(bot)
+        require_miniapp_operation(operation_check)
         result = await client(functions.messages.RequestMainWebViewRequest(
             peer=bot_input,
             bot=bot_input,
             platform=launch.platform or adapter.platform,
             start_param=launch.start_param,
         ))
+    require_miniapp_operation(operation_check)
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
@@ -416,6 +423,8 @@ def run_stargazer_miniapp_lab_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
+    request_budget=None,
 ):
     adapter = adapter or build_stargazer_miniapp_adapter()
     token = str(token or "").strip()
@@ -428,6 +437,19 @@ def run_stargazer_miniapp_lab_flow(
     events = []
     action_counts = {"soothe": 0, "collect": 0, "pull": 0}
     item_deltas = {}
+    farm_state = {}
+    decision = {}
+    if request_budget is None:
+        request_budget = MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper)
+
+    def finish(ok, status, *, error="", extra=None):
+        return _flow_result(ok, status, error=error, events=events, data={
+            "farm_state": farm_state,
+            "decision": decision,
+            "action_counts": action_counts,
+            "item_deltas": item_deltas,
+            **dict(extra or {}),
+        })
 
     start_request = build_stargazer_miniapp_request(
         "start",
@@ -443,83 +465,59 @@ def run_stargazer_miniapp_lab_flow(
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="start",
+        request_budget=request_budget,
+        operation_check=operation_check,
     )
     _append_http_event(events, "start", start_result)
     if not start_result.ok:
-        return _flow_result(False, "failed", error=start_result.error, events=events)
+        status = "cancelled" if start_result.error_type == "operation_cancelled" else "failed"
+        return finish(False, status, error=start_result.error)
 
     current_data = start_result.data
     farm_state = parse_stargazer_farm_state(current_data)
     if not farm_state:
-        return _flow_result(False, "failed", error="MiniApp 返回不是观星台状态", events=events, data={"raw_keys": sorted(current_data)})
+        return finish(False, "failed", error="MiniApp 返回不是观星台状态", extra={"raw_keys": sorted(current_data)})
 
     max_actions = max(STARGAZER_MINIAPP_MAX_ACTION_FLOOR, int(farm_state.get("total_slots", 0) or 0) * 3 + 3)
-    for index in range(max_actions):
-        farm_state = parse_stargazer_farm_state(current_data)
-        if not farm_state:
-            return _flow_result(False, "failed", error="MiniApp 返回不是观星台状态", events=events)
-        decision = choose_stargazer_farm_action(farm_state, star_choice=star_choice)
-        action = str(decision.get("action") or "").strip()
-        if action in {"wait", "inspect"}:
-            return _flow_result(True, action, data={
-                "farm_state": farm_state,
-                "decision": decision,
-                "action_counts": action_counts,
-                "item_deltas": item_deltas,
-            }, events=events)
+    try:
+        for _index in range(max_actions):
+            farm_state = parse_stargazer_farm_state(current_data)
+            if not farm_state:
+                return finish(False, "failed", error="MiniApp 返回不是观星台状态")
+            require_miniapp_operation(operation_check)
+            decision = choose_stargazer_farm_action(farm_state, star_choice=star_choice)
+            action = str(decision.get("action") or "").strip()
+            if action in {"wait", "inspect"}:
+                return finish(True, action)
 
-        action_request = build_stargazer_farm_action_request(
-            decision,
-            token=token,
-            init_data=init_data,
-            player_id=player_id,
-            adapter=adapter,
-        )
-        action_result = execute_miniapp_http_request(
-            action_request,
-            transport,
-            sleeper=sleeper,
-            backoff_sec=(),
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"action_{action}",
-        )
-        _append_http_event(events, f"action_{action}", action_result)
-        if not action_result.ok:
-            return _flow_result(False, "failed", error=action_result.error, events=events, data={
-                "farm_state": farm_state,
-                "decision": decision,
-                "action_counts": action_counts,
-                "item_deltas": item_deltas,
-            })
-        business_result = parse_stargazer_miniapp_action_result(action_result.data)
-        if not business_result["ok"]:
-            return _flow_result(
-                False,
-                "action_failed",
-                error=business_result["error"],
-                events=events,
-                data={
-                    "farm_state": farm_state,
-                    "decision": decision,
-                    "action_counts": action_counts,
-                    "item_deltas": item_deltas,
-                    "action_result": business_result,
-                },
+            action_request = build_stargazer_farm_action_request(
+                decision, token=token, init_data=init_data, player_id=player_id, adapter=adapter,
             )
-        if action in action_counts:
-            action_counts[action] += 1
-        if action == "collect":
-            _merge_item_deltas(item_deltas, extract_stargazer_miniapp_item_deltas(action_result.data))
-        current_data = action_result.data
+            action_result = execute_miniapp_http_request(
+                action_request, transport, sleeper=sleeper, backoff_sec=(),
+                capture_sink=capture_sink, capture_source=capture_source,
+                step_key=f"action_{action}", request_budget=request_budget, operation_check=operation_check,
+            )
+            _append_http_event(events, f"action_{action}", action_result)
+            if not action_result.ok:
+                status = "cancelled" if action_result.error_type == "operation_cancelled" else "failed"
+                return finish(False, status, error=action_result.error)
+            business_result = parse_stargazer_miniapp_action_result(action_result.data)
+            if not business_result["ok"]:
+                return finish(False, "action_failed", error=business_result["error"], extra={"action_result": business_result})
+            if action in action_counts:
+                action_counts[action] += 1
+            if action == "collect":
+                _merge_item_deltas(item_deltas, extract_stargazer_miniapp_item_deltas(action_result.data))
+            current_data = action_result.data
+    except MiniAppRequestAborted as exc:
+        return finish(False, "cancelled", error=exc)
+    except Exception as exc:
+        return finish(False, "failed", error=exc)
 
     farm_state = parse_stargazer_farm_state(current_data) or farm_state
-    return _flow_result(True, "action_limit", data={
-        "farm_state": farm_state,
-        "decision": {"action": "wait", "reason": "action_limit"},
-        "action_counts": action_counts,
-        "item_deltas": item_deltas,
-    }, events=events)
+    decision = {"action": "wait", "reason": "action_limit"}
+    return finish(True, "action_limit")
 
 
 async def run_stargazer_miniapp_production_flow(
@@ -535,33 +533,37 @@ async def run_stargazer_miniapp_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     adapter = adapter or build_stargazer_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_stargazer_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        return await asyncio.to_thread(
-            run_stargazer_miniapp_lab_flow,
-            token=token,
-            init_data=init_data,
-            player_id=player_id,
-            star_choice=star_choice,
-            transport=transport or build_pooled_miniapp_transport(
-                adapter_key=adapter.game_key,
-                identity_id=identity_id,
-                timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT,
-            ),
-            adapter=adapter,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
+        require_miniapp_operation(operation_check)
+
+        def run(operation):
+            return run_stargazer_miniapp_lab_flow(
+                token=token, init_data=init_data, player_id=player_id, star_choice=star_choice,
+                transport=transport or build_pooled_miniapp_transport(
+                    adapter_key=adapter.game_key, identity_id=identity_id,
+                    timeout=STARGAZER_MINIAPP_HTTP_TIMEOUT, operation_check=operation.check,
+                ),
+                adapter=adapter, sleeper=operation.sleep,
+                capture_sink=capture_sink, capture_source=capture_source,
+                operation_check=operation.check,
+            )
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 

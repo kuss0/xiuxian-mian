@@ -1,7 +1,10 @@
+import asyncio
+import logging
 import random
 import re
 import time
 from pathlib import Path
+from dataclasses import dataclass
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -15,10 +18,10 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log
-from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
+from ..state import get_current_identity_id, get_global_enabled, get_global_pause_source, get_identity_enabled, get_stargazer_star_choice, get_stargazer_total_slots, is_cave_public_identity_available, set_stargazer_total_slots, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
-from .miniapp_common import append_business_capture
+from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner, append_business_capture
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_deltas, apply_storage_bag_item_text_delta
 from .stargazer_miniapp import extract_stargazer_miniapp_launch, run_stargazer_miniapp_production_flow
@@ -55,6 +58,44 @@ STARGAZER_MINIAPP_FAILURE_BACKOFF_SEC = 30 * 60
 STARGAZER_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
 _MINIAPP_MANUAL_AUTH_UNTIL = {}
 _MINIAPP_RUN_LOCKS = {}
+_MINIAPP_SCHEDULE_KEYS = (
+    "next_stargazer_panel_time", "stargazer_followup_due_at",
+    "stargazer_queued_action", "stargazer_last_action",
+)
+
+
+@dataclass(frozen=True)
+class StargazerMiniAppOperation:
+    owner: MiniAppIdentityOwner
+    module_enabled: bool
+    star_choice: str
+    schedule: tuple
+
+    @classmethod
+    def capture(cls, identity_id):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        return cls(
+            owner, bool(owner.identity.get("stargazer_enabled")), get_stargazer_star_choice(identity_id),
+            tuple(owner.identity.get(key) for key in _MINIAPP_SCHEDULE_KEYS),
+        )
+
+    def is_current(self):
+        return (
+            self.owner.is_current()
+            and is_cave_public_identity_available(self.owner.identity_id)
+            and (get_global_enabled() or _miniapp_http_allowed_during_pause())
+            and bool(self.owner.identity.get("stargazer_enabled")) == self.module_enabled
+            and get_stargazer_star_choice(self.owner.identity_id) == self.star_choice
+            and tuple(self.owner.identity.get(key) for key in _MINIAPP_SCHEDULE_KEYS) == self.schedule
+        )
+
+
+def stargazer_miniapp_has_confirmed_outcome(result):
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    counts = data.get("action_counts") if isinstance(data.get("action_counts"), dict) else {}
+    return bool(result.get("ok") or data.get("item_deltas") or any(_safe_float(count) > 0 for count in counts.values()))
 
 
 def _miniapp_http_allowed_during_pause():
@@ -319,17 +360,20 @@ def _format_stargazer_miniapp_action_summary(action_counts, item_deltas, star_ch
     return "｜".join(parts)
 
 
-async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
+async def _finish_stargazer_miniapp_result(result, now, *, star_choice="", update_schedule=True):
     result = dict(result or {})
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     farm_state = data.get("farm_state") if isinstance(data.get("farm_state"), dict) else {}
     action_counts = data.get("action_counts") if isinstance(data.get("action_counts"), dict) else {}
     item_deltas = data.get("item_deltas") if isinstance(data.get("item_deltas"), dict) else {}
 
-    if farm_state:
-        _sync_stargazer_panel_state(farm_state, now)
     if item_deltas:
         apply_storage_bag_item_deltas(get_current_identity_id(), item_deltas)
+    if not update_schedule:
+        save_state()
+        return True
+    if farm_state:
+        _sync_stargazer_panel_state(farm_state, now)
     state["stargazer_followup_due_at"] = 0
     state["stargazer_queued_action"] = ""
     state["stargazer_wait_full_collect"] = False
@@ -348,7 +392,12 @@ async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
         summary = _format_stargazer_miniapp_action_summary(action_counts, item_deltas, star_choice, suffix)
         changed = bool(item_deltas) or any(int(count or 0) > 0 for count in action_counts.values())
         priority = "normal" if changed else "low"
-        await send_audit_log(f"🔭 观星台 MiniApp：{summary or suffix}", scope="identity", priority=priority, limit=260)
+        try:
+            await send_audit_log(f"🔭 观星台 MiniApp：{summary or suffix}", scope="identity", priority=priority, limit=260)
+        except asyncio.CancelledError:
+            raise MiniAppFlowCancelled(result) from None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Stargazer notification failed (%s); result preserved", type(exc).__name__)
         return True
 
     error_text = str(result.get("error") or "未知错误")
@@ -362,12 +411,19 @@ async def _finish_stargazer_miniapp_result(result, now, *, star_choice=""):
     _queue_stargazer_followup_action(now, "panel", delay)
     state["stargazer_last_action"] = "miniapp_error"
     save_state()
-    await send_audit_log(f"{audit_text}：{error_text}→{fmt_time_after(delay)}", scope="identity", limit=260)
+    try:
+        await send_audit_log(f"{audit_text}：{error_text}→{fmt_time_after(delay)}", scope="identity", limit=260)
+    except asyncio.CancelledError:
+        raise MiniAppFlowCancelled(result) from None
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Stargazer notification failed (%s); result preserved", type(exc).__name__)
     return True
 
 
 async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
     identity_id = get_current_identity_id()
+    if MiniAppIdentityOwner.capture(identity_id) is None:
+        return False
     manual_auth = _has_stargazer_miniapp_manual_auth(identity_id, now)
 
     launch = extract_stargazer_miniapp_launch(event, message_text=text)
@@ -378,6 +434,11 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
         return False
     if not manual_auth and not state.get("stargazer_enabled"):
         return False
+
+    lock = _stargazer_miniapp_run_lock(identity_id)
+    if lock.locked():
+        await send_audit_log("🔭 观星台 MiniApp 已在执行，重复入口忽略。", scope="identity", priority="low", limit=160)
+        return True
 
     was_paused = _is_stargazer_miniapp_paused()
     _pause_stargazer_legacy_chain(now, result_msg_id=result_msg_id or getattr(event, "id", 0) or 0)
@@ -419,13 +480,13 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
             )
         return True
 
-    lock = _stargazer_miniapp_run_lock(identity_id)
-    if lock.locked():
-        await send_audit_log("🔭 观星台 MiniApp 已在执行，重复入口忽略。", scope="identity", priority="low", limit=160)
+    operation = StargazerMiniAppOperation.capture(identity_id)
+    if operation is None or not operation.is_current():
         return True
-
-    star_choice = get_stargazer_star_choice()
+    star_choice = operation.star_choice
     async with lock:
+        if not operation.is_current():
+            return True
         if not was_paused:
             await send_audit_log(
                 "🔭 观星台 MiniApp 接管入口，开始 WebView/HTTP 流程。"
@@ -434,22 +495,37 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
                 priority="low",
                 limit=180,
             )
+        if not operation.is_current():
+            return True
         capture_sink = _stargazer_miniapp_capture_store(now)
         capture_source = f"stargazer_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
-        result = await run_stargazer_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            star_choice=star_choice,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
+        cancelled_flow = None
+        try:
+            result = await run_stargazer_miniapp_production_flow(
+                identity_id,
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                star_choice=star_choice,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                operation_check=operation.is_current,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
         result = dict(result or {})
+        confirmed = stargazer_miniapp_has_confirmed_outcome(result)
+        if not operation.owner.is_current() or (not operation.is_current() and not confirmed):
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return True
+        if cancelled_flow is not None and not confirmed:
+            raise MiniAppFlowCancelled(result) from None
         result_data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
         action_counts = result_data.get("action_counts") if isinstance(result_data.get("action_counts"), dict) else {}
         item_deltas = result_data.get("item_deltas") if isinstance(result_data.get("item_deltas"), dict) else {}
         collect_count = int(action_counts.get("collect", 0) or 0)
-        if result.get("ok") and collect_count > 0:
+        if collect_count > 0:
             append_business_capture(
                 capture_sink,
                 adapter_key="stargazer",
@@ -457,7 +533,21 @@ async def handle_stargazer_miniapp_entry(event, text, now, reply_to=None, matche
                 source=capture_source,
                 created_at=now,
             )
-        return await _finish_stargazer_miniapp_result(result, now, star_choice=star_choice)
+        try:
+            handled = await _finish_stargazer_miniapp_result(
+                result, now, star_choice=star_choice,
+                update_schedule=operation.is_current() and cancelled_flow is None and result.get("status") != "cancelled",
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            handled = True
+        if not operation.owner.is_current():
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return True
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(result) from None
+        return handled
 
 
 async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None):
