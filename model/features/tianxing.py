@@ -135,6 +135,7 @@ class _TianxingOperation:
     identity: dict
     account_id: int
     config: dict
+    controls: tuple
     now: float
     started_at: float
     parent_check: object = None
@@ -148,7 +149,17 @@ class _TianxingOperation:
         return cls(
             identity_id, identity, get_identity_account(identity_id),
             normalize_tianxing_auto_config(identity.get("tianxing_auto_config")),
+            cls.control_values(identity_id, identity),
             float(now), time.monotonic(), parent_check,
+        )
+
+    @staticmethod
+    def control_values(identity_id, identity):
+        observed = normalize_tianxing_observation(identity.get("tianxing_observation"))
+        return (
+            get_global_enabled(), get_identity_enabled(identity_id),
+            bool(identity.get("tianxing_enabled")), is_module_available("天星宗", identity_id),
+            observed["automation_paused_until"], observed["automation_paused_at"],
         )
 
     def owns_identity(self):
@@ -161,14 +172,20 @@ class _TianxingOperation:
     def current_time(self):
         return self.now + max(0.0, time.monotonic() - self.started_at)
 
+    def configuration_is_current(self):
+        return (
+            self.owns_identity()
+            and normalize_tianxing_auto_config(self.identity.get("tianxing_auto_config")) == self.config
+            and self.control_values(self.identity_id, self.identity) == self.controls
+        )
+
     def is_current(self):
         if not (
-            self.owns_identity()
+            self.configuration_is_current()
             and get_global_enabled()
             and get_identity_enabled(self.identity_id)
             and self.identity.get("tianxing_enabled")
             and is_module_available("天星宗", self.identity_id)
-            and normalize_tianxing_auto_config(self.identity.get("tianxing_auto_config")) == self.config
             and not is_tianxing_automation_paused(self.current_time(), self.identity.get("tianxing_observation"))
         ):
             return False
@@ -190,6 +207,10 @@ def _tianxing_timeline_step_result(operation, timeline, reason):
         "phase": current["phase"], "changed": timeline is not None,
         "reason": current.get("last_error") or reason,
     }
+
+
+def _tianxing_auto_fields(observed):
+    return {key: copy.deepcopy(value) for key, value in observed.items() if key.startswith("auto_")}
 
 
 def _is_empty_state_value(value):
@@ -285,6 +306,7 @@ def _default_tianxing_observation():
         "auto_pending_action": "",
         "auto_pending_command": "",
         "auto_pending_msg_id": 0,
+        "auto_pending_chat_id": 0,
         "auto_pending_sent_at": 0,
         "auto_pending_due_at": 0,
         "automation_paused_until": 0,
@@ -973,7 +995,7 @@ def normalize_tianxing_observation(value=None):
     observed["recent"] = recent[-8:]
     for key in TIANXING_OBSERVATION_TIME_KEYS:
         observed[key], _dirty = _parse_observation_float(observed.get(key, 0))
-    for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain", "auto_pending_msg_id"):
+    for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain", "auto_pending_msg_id", "auto_pending_chat_id"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
@@ -1871,8 +1893,11 @@ def _timeline_followup_time(timeline, now, config):
     return float(now + min(60, max(5, _craft_farm_interval_sec(config))))
 
 
-async def _drain_existing_tianxing_timeline(now, config):
+async def _drain_existing_tianxing_timeline(now, config, *, operation=None):
     """Advance an already-created timeline even when the farm window is closed."""
+    operation = operation or _TianxingOperation.capture(now)
+    if operation is None or not operation.is_current():
+        return {}
     if not _timeline_has_existing_work(now):
         return {}
     last_result = {}
@@ -1887,7 +1912,10 @@ async def _drain_existing_tianxing_timeline(now, config):
             str((before.get("active_step") or {}).get("status") or ""),
             str((before.get("active_step") or {}).get("action") or ""),
         )
-        result = await run_tianxing_timeline_scheduler(now, config=config)
+        before_auto = _tianxing_auto_fields(normalize_tianxing_observation(state.get("tianxing_observation")))
+        result = await run_tianxing_timeline_scheduler(now, config=config, operation_check=operation.is_current)
+        if not operation.is_current():
+            return {}
         last_result = dict(result or {})
         after = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
         after_key = (
@@ -1899,6 +1927,8 @@ async def _drain_existing_tianxing_timeline(now, config):
         if after_key == before_key:
             break
         mutated = True
+        if _tianxing_auto_fields(normalize_tianxing_observation(state.get("tianxing_observation"))) != before_auto:
+            break
         if str((after.get("active_step") or {}).get("status") or "").strip() in {"sending", "sent_waiting_ack", "ack_timeout"}:
             break
     if not mutated and not _timeline_result_is_active(last_result):
@@ -2024,8 +2054,11 @@ def has_tianxing_craft_farm_due(now=None):
     return next_time <= now
 
 
-async def _run_tianxing_timeline_followup_scheduler_unlocked(now):
+async def _run_tianxing_timeline_followup_scheduler_unlocked(now, *, operation=None):
     now = float(now if now is not None else time.time())
+    operation = operation or _TianxingOperation.capture(now)
+    if operation is None or not operation.configuration_is_current():
+        return dict(_cancelled_tianxing_operation_result(), active=False)
     if not state.get("tianxing_enabled"):
         return {"active": False, "reason": "disabled"}
     if not is_module_available("天星宗"):
@@ -2042,7 +2075,13 @@ async def _run_tianxing_timeline_followup_scheduler_unlocked(now):
         return {"active": True, "reason": "pending", "next_time": observed.get("auto_next_time", 0)}
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
 
-    timeline_result = await _drain_existing_tianxing_timeline(now, config)
+    before_auto = _tianxing_auto_fields(observed)
+    timeline_result = await _drain_existing_tianxing_timeline(now, config, operation=operation)
+    if not operation.is_current():
+        return dict(_cancelled_tianxing_operation_result(), active=False)
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if _tianxing_auto_fields(observed) != before_auto:
+        return {"active": False, "reason": "天星自动状态已更新，本轮不覆盖新状态。"}
     if not timeline_result.get("active"):
         timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
         craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
@@ -2083,8 +2122,7 @@ async def _run_tianxing_timeline_followup_scheduler_unlocked(now):
 
 
 async def run_tianxing_timeline_followup_scheduler(now):
-    async with _auto_lock():
-        return await _run_tianxing_timeline_followup_scheduler_unlocked(now)
+    return await _run_tianxing_auto_locked(now, _run_tianxing_timeline_followup_scheduler_unlocked)
 
 
 def apply_tianxing_passive(text, now=None, family=""):
@@ -2519,6 +2557,11 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
     msg_id = int(observed.get("auto_pending_msg_id", 0) or 0)
     if msg_id <= 0:
         return False
+    chat_id = int(observed.get("auto_pending_chat_id") or 0) or get_sent_message_chat_id(
+        msg_id, send_as_id=get_current_identity_id(),
+    )
+    if not chat_id:
+        return False
     action = str(observed.get("auto_pending_action") or "").strip()
     family = _TIANXING_AUTO_PENDING_FAMILIES.get(action, "")
     sent_at = float(observed.get("auto_pending_sent_at", 0) or 0)
@@ -2528,7 +2571,7 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
         now,
         lookback_sec=lookback,
         lookahead_sec=10,
-        chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
+        chat_id=chat_id,
         predicate=_tianxing_log_reply_predicate,
     )
     if not replies:
@@ -2693,6 +2736,7 @@ def _clear_tianxing_auto_pending(observed):
     observed["auto_pending_action"] = ""
     observed["auto_pending_command"] = ""
     observed["auto_pending_msg_id"] = 0
+    observed["auto_pending_chat_id"] = 0
     observed["auto_pending_sent_at"] = 0
     observed["auto_pending_due_at"] = 0
 
@@ -2728,6 +2772,7 @@ def _note_tianxing_auto_pending(observed, now, plan, config):
     observed["auto_pending_action"] = action
     observed["auto_pending_command"] = command
     observed["auto_pending_msg_id"] = 0
+    observed["auto_pending_chat_id"] = 0
     observed["auto_pending_sent_at"] = float(now)
     observed["auto_pending_due_at"] = float(now + max(15, timeout))
     observed["auto_last_action"] = action
@@ -2806,9 +2851,6 @@ def _tianxing_pause_block_until(now, observed=None, config=None):
 
 def _apply_tianxing_pause_wait(observed, now, config=None):
     changed = False
-    if str(observed.get("auto_pending_action") or "").strip():
-        _clear_tianxing_auto_pending(observed)
-        changed = True
     next_time = _tianxing_pause_block_until(now, observed=observed, config=config)
     if (
         changed
@@ -2824,6 +2866,7 @@ def _apply_tianxing_pause_wait(observed, now, config=None):
         observed["auto_next_time"] = next_time
         state["tianxing_observation"] = observed
         save_state()
+        changed = True
     return changed
 
 
@@ -2835,7 +2878,6 @@ def set_tianxing_automation_paused(paused=True, *, now=None, duration_sec=0, rea
         observed["automation_paused_until"] = float(now + duration) if duration > 0 else -1.0
         observed["automation_paused_at"] = float(now)
         observed["automation_paused_reason"] = str(reason or "手动暂停").strip() or "手动暂停"
-        _clear_tianxing_auto_pending(observed)
         observed["auto_last_action"] = "paused"
         observed["auto_last_error"] = "天星自动调度已暂停；手动恢复前不接管路线。"
         observed["auto_last_error_at"] = float(now)
@@ -2846,7 +2888,6 @@ def set_tianxing_automation_paused(paused=True, *, now=None, duration_sec=0, rea
         observed["automation_paused_until"] = 0
         observed["automation_paused_at"] = 0
         observed["automation_paused_reason"] = ""
-        _clear_tianxing_auto_pending(observed)
         observed["auto_last_action"] = "resumed"
         observed["auto_last_error"] = ""
         observed["auto_last_error_at"] = 0
@@ -4274,6 +4315,17 @@ def _timeline_lock():
 
 def _auto_lock():
     return _identity_lock(_TIANXING_AUTO_LOCKS)
+
+
+async def _run_tianxing_auto_locked(now, scheduler):
+    now = float(now if now is not None else time.time())
+    operation = _TianxingOperation.capture(now)
+    if operation is None or not get_global_enabled() or not get_identity_enabled(operation.identity_id):
+        return dict(_cancelled_tianxing_operation_result(), active=False)
+    async with _auto_lock():
+        if not operation.configuration_is_current():
+            return dict(_cancelled_tianxing_operation_result(), active=False)
+        return await scheduler(now, operation=operation)
 
 
 def _timeline_plan_id(plan, now):
@@ -7537,8 +7589,11 @@ def _tianxing_auto_send_priority(plan):
     return "normal"
 
 
-async def _run_tianxing_scheduler_unlocked(now):
+async def _run_tianxing_scheduler_unlocked(now, *, operation=None):
     now = float(now if now is not None else time.time())
+    operation = operation or _TianxingOperation.capture(now)
+    if operation is None or not operation.configuration_is_current():
+        return
     if not state.get("tianxing_enabled"):
         return
     if not is_module_available("天星宗"):
@@ -7561,7 +7616,13 @@ async def _run_tianxing_scheduler_unlocked(now):
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if _recover_tianxing_daily_observe_from_message_log(observed, now):
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    timeline_result = await _drain_existing_tianxing_timeline(now, config)
+    before_auto = _tianxing_auto_fields(observed)
+    timeline_result = await _drain_existing_tianxing_timeline(now, config, operation=operation)
+    if not operation.is_current():
+        return
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if _tianxing_auto_fields(observed) != before_auto:
+        return
     if timeline_result.get("active"):
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
         observed["auto_last_action"] = "timeline"
@@ -7613,7 +7674,13 @@ async def _run_tianxing_scheduler_unlocked(now):
     ):
         plan = build_tianxing_manual_plan("observe", now=now)
     else:
-        timeline_result = await _drain_existing_tianxing_timeline(now, config)
+        before_auto = _tianxing_auto_fields(observed)
+        timeline_result = await _drain_existing_tianxing_timeline(now, config, operation=operation)
+        if not operation.is_current():
+            return
+        observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+        if _tianxing_auto_fields(observed) != before_auto:
+            return
         if timeline_result.get("active"):
             observed = normalize_tianxing_observation(state.get("tianxing_observation"))
             observed["auto_last_action"] = "timeline"
@@ -7627,7 +7694,13 @@ async def _run_tianxing_scheduler_unlocked(now):
             if _timeline_has_existing_work(now):
                 return
 
+        before_auto = _tianxing_auto_fields(observed)
         craft_result = await run_tianxing_craft_farm_scheduler(now, config=config)
+        if not operation.is_current():
+            return
+        observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+        if _tianxing_auto_fields(observed) != before_auto:
+            return
         if craft_result.get("active"):
             if craft_result.get("unchanged"):
                 return
@@ -7661,17 +7734,55 @@ async def _run_tianxing_scheduler_unlocked(now):
         _record_tianxing_dry_run(observed, now, plan, config)
         return
 
-    await _execute_tianxing_auto_plan(plan, observed, config, now)
+    await _execute_tianxing_auto_plan(plan, observed, config, now, operation=operation)
 
 
-async def _execute_tianxing_auto_plan(plan, observed, config, now):
+async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=None):
+    operation = operation or _TianxingOperation.capture(now)
+    if operation is None or not operation.is_current():
+        return False
+    current = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if current.get("auto_pending_action") or _tianxing_auto_fields(current) != _tianxing_auto_fields(observed):
+        return False
+    observed = current
     action = str((plan or {}).get("action") or "")
+    if not config.get(f"auto_{action}_enabled", True):
+        return False
+    if action in {"set_star", "predict", "change_fate"} and config.get("strategy_dry_run_enabled"):
+        return False
+
+    def plan_is_current():
+        latest = normalize_tianxing_observation(state.get("tianxing_observation"))
+        if plan.get("daily_bootstrap"):
+            allowed = _build_tianxing_daily_plan(latest, config, operation.current_time())
+        else:
+            allowed = build_tianxing_manual_plan(action, plan.get("arg") or "", now=operation.current_time())
+        return bool(allowed.get("allowed") and allowed.get("command") == plan.get("command"))
+
+    if not plan_is_current():
+        return False
     if _defer_tianxing_auto_plan_for_phaseful_summary(observed, now, plan):
-        return
+        return False
 
     _note_tianxing_auto_pending(observed, now, plan, config)
     state["tianxing_observation"] = observed
-    save_state()
+    expected = copy.deepcopy(observed)
+    if save_state() is False:
+        if operation.owns_identity() and operation.identity.get("tianxing_observation") == expected:
+            observed = normalize_tianxing_observation(expected)
+            _clear_tianxing_auto_pending(observed)
+            _set_tianxing_auto_wait(
+                observed, now, action, now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC,
+                "天星发送态保存失败，本轮未发送。",
+            )
+        return False
+
+    def send_allowed():
+        return (
+            operation.is_current()
+            and operation.identity.get("tianxing_observation") == expected
+            and plan_is_current()
+        )
 
     msg = await send_game_command(
         plan["command"],
@@ -7680,39 +7791,55 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now):
         priority=_tianxing_auto_send_priority(plan),
         source_module="天星宗",
         op_id=f"tianxing-auto-{action}-{int(now)}",
+        operation_check=send_allowed,
+    ) if send_allowed() else None
+    if not operation.owns_identity():
+        return False
+    observed = normalize_tianxing_observation(operation.identity.get("tianxing_observation"))
+    pending_keys = (
+        "auto_pending_action", "auto_pending_command", "auto_pending_msg_id",
+        "auto_pending_chat_id", "auto_pending_sent_at", "auto_pending_due_at",
     )
+    if any(observed.get(key) != expected.get(key) for key in pending_keys):
+        return False
+    now = operation.current_time()
     sent_at = now
     if msg:
         parsed_sent_at, sent_at_dirty = _parse_observation_float(getattr(msg, "sent_at", 0))
         sent_at = now if sent_at_dirty or parsed_sent_at <= 0 else parsed_sent_at
-    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if not msg:
         _clear_tianxing_auto_pending(observed)
-        _set_tianxing_auto_wait(
-            observed,
-            now,
-            action,
-            sent_at + _tianxing_send_fail_backoff_sec(action, observed, now),
-            "天星宗自动命令发送失败或被安全策略拦截",
+        updates = {
+            "auto_last_action": action, "auto_last_error": "天星宗自动命令发送失败或被安全策略拦截",
+            "auto_last_error_at": float(now),
+            "auto_next_time": sent_at + _tianxing_send_fail_backoff_sec(action, observed, now),
+        }
+    else:
+        observed["auto_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        observed["auto_pending_chat_id"] = int(getattr(msg, "chat_id", 0) or 0) or get_sent_message_chat_id(
+            observed["auto_pending_msg_id"], send_as_id=operation.identity_id,
         )
-        return
-
-    observed["auto_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    observed["auto_pending_sent_at"] = float(sent_at)
-    observed["auto_pending_due_at"] = float(sent_at + int(config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC))
-    observed["auto_last_action"] = action
-    observed["auto_last_error"] = ""
-    observed["auto_last_error_at"] = 0
-    observed["auto_last_plan"] = plan.get("command") or ""
-    observed["auto_last_plan_at"] = float(sent_at)
-    observed["auto_next_time"] = observed["auto_pending_due_at"]
+        observed["auto_pending_sent_at"] = float(sent_at)
+        observed["auto_pending_due_at"] = float(sent_at + int(config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC))
+        updates = {
+            "auto_last_action": action, "auto_last_error": "", "auto_last_error_at": 0,
+            "auto_last_plan": plan.get("command") or "", "auto_last_plan_at": float(sent_at),
+            "auto_next_time": observed["auto_pending_due_at"],
+        }
+    for key, value in updates.items():
+        if observed.get(key) == expected.get(key):
+            observed[key] = value
     state["tianxing_observation"] = observed
     save_state()
+    return bool(msg)
 
 
-async def _run_tianxing_daily_bootstrap_scheduler_unlocked(now):
+async def _run_tianxing_daily_bootstrap_scheduler_unlocked(now, *, operation=None):
     """Run only the 0点日切观命/定命 preflight for the current identity."""
     now = float(now if now is not None else time.time())
+    operation = operation or _TianxingOperation.capture(now)
+    if operation is None or not operation.configuration_is_current():
+        return dict(_cancelled_tianxing_operation_result(), active=False)
     if not state.get("tianxing_enabled"):
         return {"active": False, "reason": "disabled"}
     if not is_module_available("天星宗"):
@@ -7741,18 +7868,16 @@ async def _run_tianxing_daily_bootstrap_scheduler_unlocked(now):
         _record_tianxing_dry_run(observed, now, plan, config)
         return {"active": True, "reason": "dry_run"}
 
-    await _execute_tianxing_auto_plan(plan, observed, config, now)
+    await _execute_tianxing_auto_plan(plan, observed, config, now, operation=operation)
     return {"active": True, "action": plan.get("action") or "", "command": plan.get("command") or ""}
 
 
 async def run_tianxing_daily_bootstrap_scheduler(now):
-    async with _auto_lock():
-        return await _run_tianxing_daily_bootstrap_scheduler_unlocked(now)
+    return await _run_tianxing_auto_locked(now, _run_tianxing_daily_bootstrap_scheduler_unlocked)
 
 
 async def run_tianxing_scheduler(now):
-    async with _auto_lock():
-        return await _run_tianxing_scheduler_unlocked(now)
+    return await _run_tianxing_auto_locked(now, _run_tianxing_scheduler_unlocked)
 
 
 async def execute_tianxing_manual_action(action="panel", arg="", *, send_as_id=None, now=None):

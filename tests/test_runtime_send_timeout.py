@@ -439,6 +439,12 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(0, identity["nanlong_last_msg_id"])
 
     async def test_tianxing_queued_step_is_revalidated_through_runtime(self):
+        await self._exercise_tianxing_queued_operation("timeline")
+
+    async def test_tianxing_auto_plan_is_revalidated_through_runtime(self):
+        await self._exercise_tianxing_queued_operation("auto")
+
+    async def _exercise_tianxing_queued_operation(self, mode):
         from model.features import tianxing
 
         identity_id = 301299112
@@ -460,11 +466,18 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                         if change == "disabled":
                             identity["tianxing_enabled"] = False
                         elif change == "config":
-                            identity["tianxing_auto_config"]["auto_predict_enabled"] = False
+                            flag = "auto_predict_enabled" if mode == "timeline" else "auto_observe_enabled"
+                            identity["tianxing_auto_config"][flag] = False
                         elif change == "new_plan":
-                            timeline["plan_id"] = "new-plan"
+                            if mode == "timeline":
+                                timeline["plan_id"] = "new-plan"
+                            else:
+                                identity["tianxing_observation"]["auto_pending_sent_at"] = now + 1
                         elif change == "new_step":
-                            timeline["active_step"]["send_started_at"] = now + 1
+                            if mode == "timeline":
+                                timeline["active_step"]["send_started_at"] = now + 1
+                            else:
+                                identity["tianxing_observation"]["auto_pending_due_at"] = now + 1000
                         elif change == "observation":
                             identity["tianxing_observation"].update(
                                 current_prediction="斗法", current_prediction_until=now + 3600,
@@ -516,14 +529,27 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                             "plan_id": "old-plan", "phase": "waiting_send", "active_step_index": 0,
                             "active_step": step, "steps": [dict(step)],
                         }
-                        await tianxing.run_tianxing_timeline_scheduler(now)
-                        block = runtime.classify_game_send_block(identity_id, ".推命 探索")
+                        if mode == "timeline":
+                            command = ".推命 探索"
+                            await tianxing.run_tianxing_timeline_scheduler(now)
+                        else:
+                            command = ".观命"
+                            await tianxing._execute_tianxing_auto_plan(
+                                tianxing.build_tianxing_manual_plan("observe", now=now),
+                                tianxing.normalize_tianxing_observation(identity["tianxing_observation"]),
+                                tianxing.normalize_tianxing_auto_config(identity["tianxing_auto_config"]), now,
+                            )
+                        block = runtime.classify_game_send_block(identity_id, command)
                     self.assertTrue(changed)
                     self.assertEqual(1 if change == "unchanged" else 0, len(client.sent_requests))
                     if change != "unchanged":
                         self.assertEqual("unsent", block["status"])
                     else:
-                        self.assertEqual(123456, identity["tianxing_timeline_state"]["active_step"]["send_chat_id"])
+                        chat_id = (
+                            identity["tianxing_timeline_state"]["active_step"]["send_chat_id"]
+                            if mode == "timeline" else identity["tianxing_observation"]["auto_pending_chat_id"]
+                        )
+                        self.assertEqual(123456, chat_id)
 
     async def test_nanlong_all_steps_keep_normal_dispatch_and_honor_disable(self):
         from model.features import nanlong

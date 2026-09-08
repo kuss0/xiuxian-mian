@@ -7286,7 +7286,8 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
         self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
-        self.assertEqual(now + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
+        self.assertGreaterEqual(observed["auto_last_error_at"], now)
+        self.assertEqual(observed["auto_last_error_at"] + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
 
     async def test_daily_wrong_star_correction_send_failure_uses_short_bootstrap_backoff(self):
         now = local_ts(2, 30, year=2026, month=6, day=30)
@@ -7320,7 +7321,8 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
         self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
-        self.assertEqual(now + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
+        self.assertGreaterEqual(observed["auto_last_error_at"], now)
+        self.assertEqual(observed["auto_last_error_at"] + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
 
     async def test_action_guard_closes_tianxing_set_star_when_module_has_no_pending(self):
         now = 1_780_000_000.0
@@ -7630,7 +7632,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["auto_pending_msg_id"])
         self.assertEqual("", observed["auto_last_error"])
 
-    async def test_scheduler_manual_pause_clears_pending_without_sending(self):
+    async def test_scheduler_manual_pause_preserves_pending_without_sending(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             state_module.state["tianxing_enabled"] = True
@@ -7650,8 +7652,8 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
 
         send_mock.assert_not_called()
-        self.assertEqual("", observed["auto_pending_action"])
-        self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertEqual("panel", observed["auto_pending_action"])
+        self.assertEqual(9101, observed["auto_pending_msg_id"])
         self.assertEqual("paused", observed["auto_last_action"])
         self.assertIn("已暂停", observed["auto_last_error"])
 

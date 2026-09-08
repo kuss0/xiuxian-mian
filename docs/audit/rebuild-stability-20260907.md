@@ -96,6 +96,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R42 | High | Small-world HTTP-envelope success hides business rejection; raw threads outlive cancellation, stale/incomplete panels become current resource balances, and late results overwrite owners, clocks or newer panels | Fixed for reproduced MiniApp boundaries in candidate; joined cooperative execution, shared per-flow budget, explicit business confirmation, complete snapshot evidence, owner/control checks, guarded cooldown updates and notification-safe persistence pass; legacy command internals and other MiniApp game flows remain open |
 | R43 | High | Wild-training workers outlive their owner/configuration/entry, continue with stale Tianxing protection, infer completion from HTTP success, and lose confirmed results on cancellation or notification failure | Fixed for reproduced wild-worker/public-journey boundaries in candidate; original-owner admission, action-time preflight, joined HTTP completion, explicit business evidence, protected result clocks and retained rate-limit evidence pass; shared Tianxing scheduler/craft internals still require review |
 | R44 | High | Tianxing timeline lock/queue waits admit invalidated work; old send returns and cancellations overwrite newer plans or confirmations; recovered no-ID sends are rearmed; explicit expired prediction deadlines are extended | Fixed for reproduced timeline boundaries in candidate; transient identity/config/parent checks, exact sending snapshots, receipt-owned persistence, strictly unsent retry classification, chat-scoped guard closure and authoritative expiry pass; outer auto/farm callers and disabled-module reducer reconciliation still require review |
+| R45 | High | Outer Tianxing schedulers use stale identities/configuration after lock/child waits; automatic receipts reopen completed pending work or overwrite new clocks; pause/resume clears dispatched auto pending | Fixed for reproduced outer automatic/daily/follow-up boundaries in candidate; captured controls, post-await auto-state comparisons, queued-plan checks, exact pending receipt ownership and pause-preserved pending pass; unknown auto-send retries, craft/retreat internals and other reducer anchors remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1020,6 +1021,42 @@ five monitor/control-only contracts need separate behavioral verification.
   Full Ruff and diff checks pass. The candidate is not deployed; production
   files/state/configuration, services, skill and remotes remain untouched.
 
+- R45 first reproduced 46 failures in 64 automatic lifecycle cases. Follow-up
+  tests cover inactive child returns, post-craft waits, real pause/resume and
+  real-message early replies. The final focused suite has 84 cases; another
+  21 real-runtime subtests exercise automatic commands after entity resolution,
+  awaited guards and immediately before RPC dispatch. Fake transports only.
+- Automatic, daily-bootstrap and timeline-follow-up entrypoints capture the
+  original owner/account/configuration and control values before their shared
+  lock. Existing module-off/unavailable/paused handling is preserved for work
+  admitted in that state; a change while waiting cancels the old operation.
+  Timeline draining rechecks its parent lifetime between steps. Outer callers
+  reload observations after child awaits and do not overwrite newer automatic
+  clocks or pending/plan metadata, even when the child returns inactive.
+- Automatic commands preclaim their existing pending fields and require a
+  successful save before queueing. Their in-memory operation check validates
+  the current plan and observation at actual dispatch. Late receipts require
+  the original pending action/command/message/chat/timestamps and identity,
+  preserving early replies and replacement work. Metadata is merged only where
+  it is still unchanged; actual receipt facts survive post-dispatch switch-off
+  and a newer manual clock. No CommandAttempt control transition was made.
+- Pausing, resuming and paused scheduler ticks no longer erase dispatched
+  automatic pending work. An actual pause during send keeps the eventual
+  receipt as well as the pause deadline/status. Automatic pending records now
+  include the receipt chat; anchored log recovery uses that chat or an
+  unambiguous stored receipt, and refuses an unknown route instead of assuming
+  the currently selected group. Other unthreaded recovery paths still need R11
+  review; this is not a claim that all Tianxing replies are fully attributed.
+- R45 related tests: 585 passed, 102 subtests passed. Final full suite:
+  4639 passed, 1046 subtests passed, 73.10 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r45-tianxing-auto-20260908.xml`.
+  Full Ruff and diff checks pass. The existing automatic no-receipt failure
+  branch and pending-timeout retry policy remain unsafe for uncertain
+  resource-spending actions and are not certified by these ownership tests.
+  Craft-consumption/craft-farm/retreat-farm callees also remain to be repaired;
+  guarding their caller does not validate their internal sends. Production,
+  services, live state, skill and remote branches were not changed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1103,6 +1140,13 @@ and cleanup code during a code-only rollback.
    Continue with outer automatic/follow-up scheduling and craft-consumption
    internals, which still hold state across awaits; also review result reducers
    after module disable. Timeline tests do not certify these callers or R07.
+   R45 now covers the outer auto/daily/follow-up lifecycle and auto receipt
+   ownership, including retaining pending work across pause/resume. Prioritize
+   automatic sends with no receipt and expired pending: `_execute_tianxing_auto_plan`
+   still conflates unknown outcomes with blocked/unsent results, and
+   `_handle_tianxing_auto_pending` still clears unresolved work on timeout.
+   Establish evidence-driven reconciliation without a new Gate 4 controller,
+   then continue the craft/retreat callees and disabled-module reducers.
 
 ## Completion Gate
 
