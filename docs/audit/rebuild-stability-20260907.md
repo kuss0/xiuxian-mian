@@ -97,6 +97,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R43 | High | Wild-training workers outlive their owner/configuration/entry, continue with stale Tianxing protection, infer completion from HTTP success, and lose confirmed results on cancellation or notification failure | Fixed for reproduced wild-worker/public-journey boundaries in candidate; original-owner admission, action-time preflight, joined HTTP completion, explicit business evidence, protected result clocks and retained rate-limit evidence pass; shared Tianxing scheduler/craft internals still require review |
 | R44 | High | Tianxing timeline lock/queue waits admit invalidated work; old send returns and cancellations overwrite newer plans or confirmations; recovered no-ID sends are rearmed; explicit expired prediction deadlines are extended | Fixed for reproduced timeline boundaries in candidate; transient identity/config/parent checks, exact sending snapshots, receipt-owned persistence, strictly unsent retry classification, chat-scoped guard closure and authoritative expiry pass; outer auto/farm callers and disabled-module reducer reconciliation still require review |
 | R45 | High | Outer Tianxing schedulers use stale identities/configuration after lock/child waits; automatic receipts reopen completed pending work or overwrite new clocks; pause/resume clears dispatched auto pending | Fixed for reproduced outer automatic/daily/follow-up boundaries in candidate; captured controls, post-await auto-state comparisons, queued-plan checks, exact pending receipt ownership and pause-preserved pending pass; unknown auto-send retries, craft/retreat internals and other reducer anchors remain open |
+| R46 | High | Automatic Tianxing clears unknown sends and expired pending, accepts malformed receipts, and closes work on action name alone; timeline/downstream paths can bypass that unresolved action | Fixed for reproduced automatic evidence boundaries in candidate; explicit-unsent classification, retained unknown operations, exact receipt/log correlation, dispatch-time bounds, bounded early-result deduplication and pending-aware route admission pass; legacy no-ID work without authoritative evidence, general reducer freshness and craft/retreat internals remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1057,6 +1058,52 @@ five monitor/control-only contracts need separate behavioral verification.
   guarding their caller does not validate their internal sends. Production,
   services, live state, skill and remote branches were not changed.
 
+- R46 distinguishes a normal explicitly unsent result from an unknown send.
+  Unknown block codes, missing block evidence, exceptions, cancellation and
+  malformed message IDs retain the original automatic pending work. Timeout
+  does not rearm a mutation, including after repeated ticks and SQLite reload.
+  Read-only panel/observe queries keep their existing bounded retry policy.
+  Mutation log recovery runs only when its existing due time expires, with a
+  24-hour maximum lookback and a 30-minute interval between unresolved checks.
+  This is local evidence reading, not additional game polling or blind retry.
+- Each automatic operation now stores a unique correlation ID and its account
+  in the existing observation JSON before sending. A unique existing runtime
+  pending receipt with the same operation, command, source module, account and
+  valid dispatch interval can be adopted; ambiguous, older or foreign receipts
+  cannot. A real `_finalize_game_command_sent` test verifies this contract.
+  No outbox, new shared durable fence or CommandAttempt controller was added.
+  No-ID legacy entries without these anchors remain unresolved rather than
+  being guessed from command text. R07's shared forced-stop problem is open.
+- Actual routed and passive callers pass chat, command-root and result-message
+  provenance to the reducer. Mutation completion requires the original route,
+  action, successful argument and non-stale dispatch bound; an anchored game
+  rejection also closes the attempt without pretending it succeeded. Recovery
+  accepts trusted bot results only, refuses an unknown chat instead of using
+  the primary group, and uses each result message's latest edit. Header-only
+  panels and blank star/prediction/change fields are not explicit state.
+- An early clear-calamity result can arrive before its transport receipt.
+  Its delta is applied once while the operation remains pending; later receipt
+  adoption or log recovery closes the operation without decrementing it again.
+  The pending-only receipt set survives reload, is capped at 64 entries and
+  never evicts an applied delta to make space. Full capacity rejects a new
+  unaccounted delta and retains the unresolved task. This does not certify all
+  unsolicited/manual result idempotence or general out-of-order observations.
+- Existing timeline entry and queued admission, downstream route preflight and
+  the final route guard now respect an unresolved automatic mutation. Unrelated
+  observations cannot erase its diagnostic or retry clock. Deep retreat is not
+  part of this condition and does not consume Tianxing effects. Initial full
+  suite: 4709 passed, 1046 subtests; follow-up edit, routing and persistence
+  regressions were added before final verification. One new real-runtime
+  fixture initially leaked a synthetic send into the health timer; the fixture
+  now isolates that observer, and the formerly failing ordered group passes.
+  All work remains in the offline candidate; no production changes or probes.
+- R46 final verification (2026-09-09): 83 focused evidence cases; 4722 tests
+  and 1046 subtests pass in the full suite (80.58 seconds). JUnit:
+  `/tmp/xiuxian-rebuild-r46-tianxing-auto-evidence-20260908.xml`.
+  The ordered related group also passes (613 tests and 151 subtests before the
+  last two panel/route cases). Full Ruff, compilation and diff checks pass.
+  The goal is still active; this is not whole-project or production acceptance.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1141,12 +1188,17 @@ and cleanup code during a code-only rollback.
    internals, which still hold state across awaits; also review result reducers
    after module disable. Timeline tests do not certify these callers or R07.
    R45 now covers the outer auto/daily/follow-up lifecycle and auto receipt
-   ownership, including retaining pending work across pause/resume. Prioritize
-   automatic sends with no receipt and expired pending: `_execute_tianxing_auto_plan`
-   still conflates unknown outcomes with blocked/unsent results, and
-   `_handle_tianxing_auto_pending` still clears unresolved work on timeout.
-   Establish evidence-driven reconciliation without a new Gate 4 controller,
-   then continue the craft/retreat callees and disabled-module reducers.
+   ownership, including retaining pending work across pause/resume. Its
+   remaining unknown-send/expired-pending follow-up is covered by R46 below;
+   craft/retreat callees and disabled-module reducers are still open.
+   R46 now retains uncertain automatic sends and expired mutation pending,
+   adopts only exactly correlated existing runtime receipts, and requires
+   anchored, argument-appropriate results to close mutations. It does not
+   authorize a speculative status-query loop or replay of legacy no-ID work.
+   Continue with `run_tianxing_consume_craft_prediction`, craft/retreat farm
+   internals, and general reducer freshness/idempotence (including results
+   after disable and unthreaded scalar guard cleanup). The bounded per-pending
+   early-result set is not a replacement for those broader reducer contracts.
 
 ## Completion Gate
 

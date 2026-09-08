@@ -6,6 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -26,10 +27,11 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import GAME_SEND_UNSENT_BLOCK_CODES, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_pre_send_guard, send_game_command
+from ..runtime import GAME_SEND_UNSENT_BLOCK_CODES, _is_logged_game_bot_reply, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_pre_send_guard, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_game_group_topic_id, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_state, get_world_boss_run_state, has_identity, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
+from ..message_keys import message_key_parts
 from ._phaseful import get_phaseful_summary_risk_reason
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until
 
@@ -41,6 +43,7 @@ TIANXING_OBSERVATION_STALE_SEC = 24 * 3600
 TIANXING_AUTO_STATUS_BACKOFF_SEC = 6 * 3600
 TIANXING_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
+TIANXING_AUTO_PENDING_REPLY_LIMIT = 64
 TIANXING_DAILY_BOOTSTRAP_RETRY_SEC = 2 * 60
 TIANXING_DAILY_STAR_CORRECTION_WINDOW_SEC = 6 * 3600
 TIANXING_TIMELINE_ACK_TIMEOUT_SEC = 90
@@ -305,6 +308,9 @@ def _default_tianxing_observation():
         "auto_last_plan_at": 0,
         "auto_pending_action": "",
         "auto_pending_command": "",
+        "auto_pending_op_id": "",
+        "auto_pending_account_id": 0,
+        "auto_pending_seen_replies": [],
         "auto_pending_msg_id": 0,
         "auto_pending_chat_id": 0,
         "auto_pending_sent_at": 0,
@@ -993,9 +999,11 @@ def normalize_tianxing_observation(value=None):
         entry["ts"], _dirty = _parse_observation_float(entry.get("ts", 0))
         recent.append(entry)
     observed["recent"] = recent[-8:]
+    seen = observed.get("auto_pending_seen_replies")
+    observed["auto_pending_seen_replies"] = [key for key in seen if isinstance(key, str)][:TIANXING_AUTO_PENDING_REPLY_LIMIT] if isinstance(seen, list) else []
     for key in TIANXING_OBSERVATION_TIME_KEYS:
         observed[key], _dirty = _parse_observation_float(observed.get(key, 0))
-    for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain", "auto_pending_msg_id", "auto_pending_chat_id"):
+    for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain", "auto_pending_msg_id", "auto_pending_chat_id", "auto_pending_account_id"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
@@ -1271,17 +1279,21 @@ def parse_tianxing_text(text, now=None, family=""):
                 parsed["available_stars_source"] = "panel"
             elif stripped.startswith("今日已定命星"):
                 stars = _stars_from_line(stripped)
-                parsed["fixed_star"] = stars[0] if stars else ""
+                value = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
+                if stars or value in {"无", "未定", "未定命"}:
+                    parsed["fixed_star"] = stars[0] if stars else ""
             elif stripped.startswith("当前推命"):
                 value = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
                 route, until = _parse_route_timer(value, now)
-                parsed["current_prediction"] = route
-                parsed["current_prediction_until"] = until
+                if value == "无" or route in TIANXING_ROUTES:
+                    parsed["current_prediction"] = route
+                    parsed["current_prediction_until"] = until
             elif stripped.startswith("当前改命"):
                 value = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
                 route, until = _parse_route_timer(value, now)
-                parsed["current_change"] = route
-                parsed["current_change_until"] = until
+                if value == "无" or route in TIANXING_ROUTES:
+                    parsed["current_change"] = route
+                    parsed["current_change_until"] = until
         tianji_match = RE_TIANJI_VALUE.search(raw_text)
         calamity_match = RE_CALAMITY.search(raw_text)
         counts_match = RE_COUNTS.search(raw_text)
@@ -2125,13 +2137,34 @@ async def run_tianxing_timeline_followup_scheduler(now):
     return await _run_tianxing_auto_locked(now, _run_tianxing_timeline_followup_scheduler_unlocked)
 
 
-def apply_tianxing_passive(text, now=None, family=""):
+def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     now = float(now if now is not None else time.time())
     parsed = parse_tianxing_text(text, now=now, family=family)
     if not parsed:
         return False
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    _adopt_tianxing_auto_receipt(observed, now)
+    auto_resolved = _auto_pending_matches_parsed(observed, parsed, now, reply_context=reply_context)
+    seen_key = _tianxing_auto_reply_key(observed, parsed, reply_context)
+    seen = observed["auto_pending_seen_replies"]
+    if seen_key and seen_key in seen:
+        if auto_resolved:
+            due_at = observed["auto_pending_due_at"]
+            _clear_tianxing_auto_pending(observed)
+            if not is_tianxing_automation_paused(now, observed):
+                observed["auto_last_error"] = ""
+                observed["auto_last_error_at"] = 0
+                if observed["auto_next_time"] == due_at:
+                    observed["auto_next_time"] = now + 60
+            state["tianxing_observation"] = observed
+        return True
+    if seen_key:
+        # Retain evidence until this operation is resolved, even before the
+        # transport returns its receipt. Never evict it to reapply a delta.
+        if len(seen) >= TIANXING_AUTO_PENDING_REPLY_LIMIT:
+            return False
+        seen.append(seen_key)
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     timeline_before = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     previous_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
@@ -2253,21 +2286,22 @@ def apply_tianxing_passive(text, now=None, family=""):
         observed["calamity_count"] = max(0, int(observed.get("calamity_count", 0) or 0) + int(parsed.get("calamity_delta") or 0))
     if parsed.get("action") == "消劫" and parsed.get("result") == "success":
         observed["calamity_count"] = max(0, int(observed.get("calamity_count", 0) or 0) - 1)
-    if _auto_pending_matches_parsed(observed, parsed):
+    if auto_resolved:
         _clear_tianxing_auto_pending(observed)
-    observed["auto_last_error"] = ""
-    observed["auto_last_error_at"] = 0
-    if int(observed.get("calamity_count", 0) or 0) > 0:
-        observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
-    elif not _effective_fixed_star(observed, now):
-        if parsed.get("action") == "观命" and parsed.get("available_stars") and config.get("auto_set_star_enabled"):
-            observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now, now)
-        else:
+    if not observed.get("auto_pending_action"):
+        observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
+        if int(observed.get("calamity_count", 0) or 0) > 0:
             observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
-    elif _should_wake_tianxing_timeline(observed, config, now):
-        observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
-    else:
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), now + TIANXING_AUTO_STATUS_BACKOFF_SEC)
+        elif not _effective_fixed_star(observed, now):
+            if parsed.get("action") == "观命" and parsed.get("available_stars") and config.get("auto_set_star_enabled"):
+                observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now, now)
+            else:
+                observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
+        elif _should_wake_tianxing_timeline(observed, config, now):
+            observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
+        else:
+            observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), now + TIANXING_AUTO_STATUS_BACKOFF_SEC)
     observed["recent"].append({
         "ts": now,
         "action": observed.get("last_action", ""),
@@ -2549,7 +2583,15 @@ def _apply_tianxing_log_reply(entry, *, family=""):
         entry_ts = float((entry or {}).get("ts_epoch") or 0)
     except (TypeError, ValueError, OverflowError):
         entry_ts = 0.0
-    return apply_tianxing_passive(text, now=entry_ts or time.time(), family=family)
+    return apply_tianxing_passive(
+        text, now=entry_ts or time.time(), family=family,
+        reply_context={
+            "send_as_id": get_current_identity_id(),
+            "chat_id": (entry or {}).get("chat_id", 0),
+            "root_msg_id": (entry or {}).get("reply_to_msg_id", 0),
+            "msg_id": (entry or {}).get("message_id", 0),
+        },
+    )
 
 
 def _recover_tianxing_pending_reply_from_message_log(observed, now):
@@ -2558,14 +2600,14 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
     if msg_id <= 0:
         return False
     chat_id = int(observed.get("auto_pending_chat_id") or 0) or get_sent_message_chat_id(
-        msg_id, send_as_id=get_current_identity_id(),
+        msg_id, default=0, send_as_id=get_current_identity_id(),
     )
     if not chat_id:
         return False
     action = str(observed.get("auto_pending_action") or "").strip()
     family = _TIANXING_AUTO_PENDING_FAMILIES.get(action, "")
     sent_at = float(observed.get("auto_pending_sent_at", 0) or 0)
-    lookback = max(900, int(max(0.0, float(now or time.time()) - sent_at) + 300)) if sent_at > 0 else 900
+    lookback = min(24 * 3600, max(900, int(max(0.0, float(now) - sent_at) + 300))) if sent_at > 0 else 900
     replies = find_message_log_replies(
         msg_id,
         now,
@@ -2576,11 +2618,31 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
     )
     if not replies:
         return False
-    # Use the latest edit/message for this command. It is the closest thing to
-    # the final game state when Telegram delivery and edits arrive out of order.
+    seen_messages = set()
     for entry in reversed(replies):
-        if _apply_tianxing_log_reply(entry, family=family):
-            return True
+        if not isinstance(entry, dict):
+            continue
+        try:
+            message_key = int(entry.get("chat_id") or 0), int(entry.get("message_id") or 0)
+            if not message_key[0] or message_key[1] <= 0 or message_key in seen_messages:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        seen_messages.add(message_key)
+        if entry.get("event_type") not in {"message", "edit"} or not _is_logged_game_bot_reply(entry):
+            continue
+        entry_ts, dirty = _parse_observation_float(entry.get("ts_epoch"))
+        if dirty or entry_ts <= 0 or entry_ts > float(now) + 1:
+            continue
+        parsed = parse_tianxing_text(entry.get("text"), now=entry_ts, family=family)
+        context = {
+            "send_as_id": get_current_identity_id(), "chat_id": entry.get("chat_id", 0),
+            "root_msg_id": entry.get("reply_to_msg_id", 0),
+        }
+        if _auto_pending_matches_parsed(observed, parsed, entry_ts, reply_context=context):
+            if _apply_tianxing_log_reply(entry, family=family):
+                save_state()
+                return not bool(normalize_tianxing_observation(state.get("tianxing_observation"))["auto_pending_action"])
     return False
 
 
@@ -2735,6 +2797,9 @@ def _recover_tianxing_daily_observe_from_message_log(observed, now):
 def _clear_tianxing_auto_pending(observed):
     observed["auto_pending_action"] = ""
     observed["auto_pending_command"] = ""
+    observed["auto_pending_op_id"] = ""
+    observed["auto_pending_account_id"] = 0
+    observed["auto_pending_seen_replies"] = []
     observed["auto_pending_msg_id"] = 0
     observed["auto_pending_chat_id"] = 0
     observed["auto_pending_sent_at"] = 0
@@ -2757,12 +2822,105 @@ def _defer_tianxing_auto_plan_for_phaseful_summary(observed, now, plan):
     return True
 
 
-def _auto_pending_matches_parsed(observed, parsed):
-    action = str((observed or {}).get("auto_pending_action") or "").strip()
-    if not action:
+def _tianxing_auto_mutation_pending(observed=None):
+    observed = observed if isinstance(observed, dict) else state.get("tianxing_observation") or {}
+    action = str(observed.get("auto_pending_action") or "").strip()
+    return bool(action and action not in {"panel", "observe"})
+
+
+def _adopt_tianxing_auto_receipt(observed, now):
+    if not observed.get("auto_pending_action") or observed.get("auto_pending_msg_id"):
         return False
+    op_id = str(observed.get("auto_pending_op_id") or "")
+    account_id = int(observed.get("auto_pending_account_id") or 0)
+    if not op_id or not account_id or account_id != get_identity_account(get_current_identity_id()):
+        return False
+    started_at = float(observed.get("auto_pending_sent_at") or 0)
+    if started_at <= 0:
+        return False
+    matches = []
+    for key, item in state.get("pending_tasks", {}).items():
+        if not isinstance(item, dict) or item.get("op_id") != op_id or item.get("cmd") != observed.get("auto_pending_command") or item.get("source_module") != "天星宗":
+            continue
+        try:
+            chat_id, msg_id = message_key_parts(key, item)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        sent_at, sent_dirty = _parse_observation_float(item.get("sent_at"))
+        dispatch_at, dispatch_dirty = _parse_observation_float(item.get("send_started_at"))
+        if not chat_id or sent_dirty or dispatch_dirty or not started_at <= dispatch_at <= sent_at <= now + 1:
+            continue
+        matches.append((chat_id, msg_id, dispatch_at))
+    if len(matches) != 1:
+        return False
+    observed["auto_pending_chat_id"], observed["auto_pending_msg_id"], observed["auto_pending_sent_at"] = matches[0]
+    return True
+
+
+def _tianxing_auto_reply_key(observed, parsed, context):
+    action = str(observed.get("auto_pending_action") or "")
+    if not context or action != "clear_calamity" or parsed.get("action") != "消劫" or parsed.get("result") != "success":
+        return ""
+    try:
+        chat_id = int(context.get("chat_id") or 0)
+        msg_id = int(context.get("msg_id") or 0)
+        root_id = int(context.get("root_msg_id") or context.get("reply_to_msg_id") or 0)
+        owner_id = int(context.get("send_as_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if not chat_id or msg_id <= 0 or root_id <= 0 or (owner_id and owner_id != get_current_identity_id()):
+        return ""
+    return f"{chat_id}:{msg_id}:{root_id}:{action}:{parsed.get('result', '')}"
+
+
+def _auto_pending_matches_parsed(observed, parsed, now, *, reply_context=None):
+    action = str((observed or {}).get("auto_pending_action") or "").strip()
     expected = _TIANXING_AUTO_PENDING_ACTIONS.get(action, "")
-    return bool(expected) and str((parsed or {}).get("action") or "").strip() == expected
+    if not expected or str((parsed or {}).get("action") or "").strip() != expected:
+        return False
+    sent_at, dirty = _parse_observation_float((observed or {}).get("auto_pending_sent_at"))
+    if dirty or sent_at <= 0 or int(now) < int(sent_at):
+        return False
+    account_id = int((observed or {}).get("auto_pending_account_id") or 0)
+    if account_id and account_id != get_identity_account(get_current_identity_id()):
+        return False
+    anchored = False
+    if reply_context:
+        try:
+            owner_id = int(reply_context.get("send_as_id") or 0)
+            root_id = int(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id") or 0)
+            chat_id = int(reply_context.get("chat_id") or 0)
+            expected_id = int(observed.get("auto_pending_msg_id") or 0)
+            expected_chat = int(observed.get("auto_pending_chat_id") or 0)
+            if expected_id > 0 and not expected_chat:
+                expected_chat = get_sent_message_chat_id(expected_id, default=0, send_as_id=get_current_identity_id())
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if owner_id and owner_id != get_current_identity_id():
+            return False
+        anchored = bool(expected_id > 0 and root_id == expected_id and chat_id and chat_id == expected_chat)
+        if expected_id > 0 and not anchored:
+            return False
+    if action not in {"panel", "observe"} and not anchored:
+        return False
+    result = str((parsed or {}).get("result") or "")
+    if action == "panel":
+        return result == "panel" and any(key in parsed for key in ("tianji_value", "calamity_count", "hit_count", "fixed_star", "current_prediction", "current_change"))
+    if action == "observe":
+        return result == "success" and bool(parsed.get("available_stars"))
+    if result in {"blocked", "need_observe", "noop", "cooldown"}:
+        return anchored
+    if result != "success":
+        return False
+    command = str(observed.get("auto_pending_command") or "")
+    if action == "set_star":
+        return bool(_star_arg_from_command(command)) and parsed.get("fixed_star") == _star_arg_from_command(command)
+    if action in {"predict", "change_fate"}:
+        prefix = CMD_TIANXING_PREDICT if action == "predict" else CMD_TIANXING_CHANGE_FATE
+        key = "current_prediction" if action == "predict" else "current_change"
+        expected_route = _route_arg_from_command(command, prefix)
+        return bool(expected_route) and parsed.get(key) == expected_route
+    return action == "clear_calamity"
 
 
 def _note_tianxing_auto_pending(observed, now, plan, config):
@@ -2771,6 +2929,9 @@ def _note_tianxing_auto_pending(observed, now, plan, config):
     timeout = int((config or {}).get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC)
     observed["auto_pending_action"] = action
     observed["auto_pending_command"] = command
+    observed["auto_pending_op_id"] = f"tianxing-auto-{action}-{uuid4().hex}"
+    observed["auto_pending_account_id"] = get_identity_account(get_current_identity_id())
+    observed["auto_pending_seen_replies"] = []
     observed["auto_pending_msg_id"] = 0
     observed["auto_pending_chat_id"] = 0
     observed["auto_pending_sent_at"] = float(now)
@@ -2787,23 +2948,32 @@ def _handle_tianxing_auto_pending(observed, now):
     action = str((observed or {}).get("auto_pending_action") or "").strip()
     if not action:
         return False
+    if _adopt_tianxing_auto_receipt(observed, now):
+        state["tianxing_observation"] = observed
+        save_state()
     if action == "observe" and _recover_tianxing_daily_observe_from_message_log(observed, now):
         save_state()
-        return False
-    if _recover_tianxing_pending_reply_from_message_log(observed, now):
-        return False
+        return bool(normalize_tianxing_observation(state.get("tianxing_observation"))["auto_pending_action"])
     due_at = float((observed or {}).get("auto_pending_due_at", 0) or 0)
-    if due_at <= 0 or now < due_at:
+    if due_at > now:
         return True
     if _recover_tianxing_pending_reply_from_message_log(observed, now):
         return False
     command = str((observed or {}).get("auto_pending_command") or "").strip()
-    _clear_tianxing_auto_pending(observed)
+    if _tianxing_auto_mutation_pending(observed):
+        observed["auto_pending_due_at"] = float(now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC)
+        error = "天星宗自动动作回复超时，结果仍未知；保留原任务等待回包核对，不重发、不推进下游。"
+    else:
+        _clear_tianxing_auto_pending(observed)
+        error = "天星宗只读查询回复超时，退避后重查；不继续推进下游。"
     observed["auto_last_action"] = action
     observed["auto_last_plan"] = command
-    observed["auto_last_error"] = "天星宗自动动作回复超时，暂缓重试；不继续推进下游。"
+    observed["auto_last_error"] = error
     observed["auto_last_error_at"] = float(now)
-    observed["auto_next_time"] = float(now + _tianxing_send_fail_backoff_sec(action, observed, now))
+    observed["auto_next_time"] = float(
+        observed["auto_pending_due_at"] if observed.get("auto_pending_action")
+        else now + _tianxing_send_fail_backoff_sec(action, observed, now)
+    )
     state["tianxing_observation"] = observed
     save_state()
     return True
@@ -5157,7 +5327,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config, *, operation
         return current
 
     def send_allowed():
-        if not operation.is_current() or current_send() is None:
+        if not operation.is_current() or current_send() is None or _tianxing_auto_mutation_pending():
             return False
         deadline = float(sending.get("deadline_at") or 0)
         if deadline > 0 and operation.current_time() >= deadline:
@@ -5391,6 +5561,11 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
         if not state.get("tianxing_enabled") or not is_module_available("天星宗"):
             return {"allowed": True}
         command_route = _command_tianxing_route(command)
+        if command_route and _tianxing_auto_mutation_pending():
+            return {
+                "allowed": False, "code": "tianxing_auto_pending",
+                "reason": "天星自动动作仍未核销，暂不发送路线动作，避免重复消费或逆命。",
+            }
         source_module = str((intent or {}).get("source_module") or "").strip() if isinstance(intent, dict) else ""
         lease = _active_tianxing_route_lease(now)
         if not lease:
@@ -5467,6 +5642,12 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     state["tianxing_observation"] = observed
+    if _tianxing_auto_mutation_pending(observed):
+        return {
+            "phase": "auto_pending", "active": True, "changed": False,
+            "next_time": observed["auto_pending_due_at"],
+            "reason": "天星自动动作仍未核销，时间线等待原任务回包，不重复发送。",
+        }
     if _recover_tianxing_timeline_unthreaded_reply_from_message_log(now):
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
         state["tianxing_observation"] = observed
@@ -5722,6 +5903,13 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
     effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     route_reason = str(reason or route).strip() or route
+    if _tianxing_auto_mutation_pending(observed):
+        return _route_preflight_result(
+            route, "auto_pending", False,
+            "天星自动动作仍未核销，等待原任务回包，不推进下游。",
+            deadline_at=deadline_at, now=now,
+            blocked_until=max(now + 60, float(observed.get("auto_pending_due_at") or 0)),
+        )
     if is_tianxing_automation_paused(now=now, observed=observed):
         return _route_preflight_result(
             route,
@@ -7784,42 +7972,86 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=
             and plan_is_current()
         )
 
-    msg = await send_game_command(
-        plan["command"],
-        track=True,
-        max_retry=0,
-        priority=_tianxing_auto_send_priority(plan),
-        source_module="天星宗",
-        op_id=f"tianxing-auto-{action}-{int(now)}",
-        operation_check=send_allowed,
-    ) if send_allowed() else None
+    send_error = ""
+    cancelled = False
+    locally_unsent = not send_allowed()
+    msg = None
+    if not locally_unsent:
+        try:
+            msg = await send_game_command(
+                plan["command"],
+                track=True,
+                max_retry=0,
+                priority=_tianxing_auto_send_priority(plan),
+                source_module="天星宗",
+                op_id=expected["auto_pending_op_id"],
+                operation_check=send_allowed,
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            send_error = "cancelled"
+        except Exception as exc:
+            send_error = type(exc).__name__
     if not operation.owns_identity():
+        if cancelled:
+            raise asyncio.CancelledError
         return False
     observed = normalize_tianxing_observation(operation.identity.get("tianxing_observation"))
     pending_keys = (
         "auto_pending_action", "auto_pending_command", "auto_pending_msg_id",
         "auto_pending_chat_id", "auto_pending_sent_at", "auto_pending_due_at",
+        "auto_pending_op_id", "auto_pending_account_id",
     )
     if any(observed.get(key) != expected.get(key) for key in pending_keys):
+        if cancelled:
+            raise asyncio.CancelledError
         return False
     now = operation.current_time()
+    try:
+        raw_id = getattr(msg, "id", 0)
+        msg_id = int(raw_id or 0)
+        if isinstance(raw_id, bool) or (not isinstance(raw_id, (str, int)) and raw_id != msg_id):
+            msg_id = 0
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg is not None and msg_id <= 0:
+        msg = None
+        send_error = "invalid_message_id"
     sent_at = now
-    if msg:
+    if msg is not None:
         parsed_sent_at, sent_at_dirty = _parse_observation_float(getattr(msg, "sent_at", 0))
         sent_at = now if sent_at_dirty or parsed_sent_at <= 0 else parsed_sent_at
-    if not msg:
-        _clear_tianxing_auto_pending(observed)
+    if msg is None:
+        block = {} if send_error or locally_unsent else get_last_game_send_block(operation.identity_id, plan["command"])
+        code = str((block or {}).get("code") or "")
+        unsent = locally_unsent or (
+            code not in {"send_timeout", "send_exception"}
+            and bool((block or {}).get("definitely_unsent") or code in GAME_SEND_UNSENT_BLOCK_CODES)
+        )
+        if unsent:
+            _clear_tianxing_auto_pending(observed)
+            error = "天星宗自动命令明确未发送，退避后重试。"
+        else:
+            observed["auto_pending_due_at"] = float(now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC)
+            error = f"天星宗自动命令发送结果未知{f' ({send_error})' if send_error else ''}，保留原任务等待回包核对；不重复发送。"
         updates = {
-            "auto_last_action": action, "auto_last_error": "天星宗自动命令发送失败或被安全策略拦截",
+            "auto_last_action": action, "auto_last_error": error,
             "auto_last_error_at": float(now),
-            "auto_next_time": sent_at + _tianxing_send_fail_backoff_sec(action, observed, now),
+            "auto_next_time": sent_at + _tianxing_send_fail_backoff_sec(action, observed, now) if unsent else observed["auto_pending_due_at"],
         }
     else:
-        observed["auto_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        observed["auto_pending_chat_id"] = int(getattr(msg, "chat_id", 0) or 0) or get_sent_message_chat_id(
-            observed["auto_pending_msg_id"], send_as_id=operation.identity_id,
+        observed["auto_pending_msg_id"] = msg_id
+        try:
+            chat_id = int(getattr(msg, "chat_id", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            chat_id = 0
+        observed["auto_pending_chat_id"] = chat_id or get_sent_message_chat_id(
+            msg_id, default=0, send_as_id=operation.identity_id,
         )
-        observed["auto_pending_sent_at"] = float(sent_at)
+        dispatch_at, dispatch_dirty = _parse_observation_float(getattr(msg, "send_started_at", 0))
+        observed["auto_pending_sent_at"] = float(
+            dispatch_at if not dispatch_dirty and expected["auto_pending_sent_at"] <= dispatch_at <= sent_at else sent_at
+        )
         observed["auto_pending_due_at"] = float(sent_at + int(config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC))
         updates = {
             "auto_last_action": action, "auto_last_error": "", "auto_last_error_at": 0,
@@ -7831,7 +8063,9 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=
             observed[key] = value
     state["tianxing_observation"] = observed
     save_state()
-    return bool(msg)
+    if cancelled:
+        raise asyncio.CancelledError
+    return msg is not None
 
 
 async def _run_tianxing_daily_bootstrap_scheduler_unlocked(now, *, operation=None):

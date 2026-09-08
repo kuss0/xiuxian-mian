@@ -7254,7 +7254,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_called()
         self.assertNotEqual("set_star", observed.get("auto_last_action"))
 
-    async def test_daily_set_star_send_failure_uses_short_bootstrap_backoff(self):
+    async def test_daily_set_star_unsent_uses_short_bootstrap_backoff(self):
         now = local_ts(0, 2, year=2026, month=6, day=30)
         observation = {
             "last_observed_at": now - 30,
@@ -7279,17 +7279,20 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "strategy_dry_run_enabled": False,
                 "star_priority": ["太阴", "贪狼", "天府", "紫微"],
             }
-            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=None) as send_mock:
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}), \
+                 patch.object(tianxing, "send_game_command", return_value=None) as send_mock:
                 await tianxing.run_tianxing_scheduler(now)
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
 
         send_mock.assert_awaited_once()
         self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
-        self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
+        self.assertIn("明确未发送", observed["auto_last_error"])
+        self.assertEqual("", observed["auto_pending_action"])
         self.assertGreaterEqual(observed["auto_last_error_at"], now)
         self.assertEqual(observed["auto_last_error_at"] + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
 
-    async def test_daily_wrong_star_correction_send_failure_uses_short_bootstrap_backoff(self):
+    async def test_daily_wrong_star_correction_unsent_uses_short_bootstrap_backoff(self):
         now = local_ts(2, 30, year=2026, month=6, day=30)
         observation = {
             "last_observed_at": now - 30,
@@ -7314,13 +7317,16 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "strategy_dry_run_enabled": False,
                 "star_priority": ["太阴", "贪狼", "天府", "紫微"],
             }
-            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=None) as send_mock:
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}), \
+                 patch.object(tianxing, "send_game_command", return_value=None) as send_mock:
                 await tianxing.run_tianxing_scheduler(now)
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
 
         send_mock.assert_awaited_once()
         self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
-        self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
+        self.assertIn("明确未发送", observed["auto_last_error"])
+        self.assertEqual("", observed["auto_pending_action"])
         self.assertGreaterEqual(observed["auto_last_error_at"], now)
         self.assertEqual(observed["auto_last_error_at"] + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
 
@@ -7591,9 +7597,15 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scheduler_recovers_pending_set_star_reply_from_message_log(self):
         now = 1_780_000_000.0
+        chat_id = -100460001
         reply = {
             "message_id": 9202,
             "reply_to_msg_id": 9101,
+            "chat_id": chat_id,
+            "sender_id": 880460001,
+            "sender_is_bot": True,
+            "sender_username": "hantianzun21_bot",
+            "event_type": "message",
             "text": "你将今日命轨定在 【太阴】。\n主趋吉避祸，探索更易避祸，斗法更善脱身，但闭关悟性略降。",
             "ts_epoch": now - 5,
         }
@@ -7615,6 +7627,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "auto_pending_action": "set_star",
                 "auto_pending_command": ".定命 太阴",
                 "auto_pending_msg_id": 9101,
+                "auto_pending_chat_id": chat_id,
                 "auto_pending_sent_at": now - 120,
                 "auto_pending_due_at": now - 30,
             }

@@ -3251,7 +3251,10 @@ async def _handle_routed_reply_event(
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
         if not already_consumed and str(matched_family or "").startswith("tianxing_"):
-            handled_any = apply_tianxing_passive(text, now=now, family=matched_family) or handled_any
+            handled_any = apply_tianxing_passive(
+                text, now=now, family=matched_family,
+                reply_context=dict(reply_context or {}, root_msg_id=root_msg_id, chat_id=event.chat_id, msg_id=event.id),
+            ) or handled_any
         tree_runtime_archived = _is_tree_runtime_archived()
         if not tree_runtime_archived:
             await handle_tree_invasion_end(text, now, is_reply_to_me)

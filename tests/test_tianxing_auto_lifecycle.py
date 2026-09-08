@@ -266,6 +266,8 @@ def test_pause_and_resume_do_not_erase_dispatched_auto_pending(auto_env, known_r
     observed = auto_env.identity["tianxing_observation"]
     observed.update(
         auto_pending_action="observe", auto_pending_command=".观命",
+        auto_pending_op_id="fixture-pending", auto_pending_account_id=7451,
+        auto_pending_seen_replies=["fixture-reply"],
         auto_pending_msg_id=4501 if known_receipt else 0, auto_pending_chat_id=CHAT_ID,
         auto_pending_sent_at=NOW - 5, auto_pending_due_at=NOW + 85,
     )
