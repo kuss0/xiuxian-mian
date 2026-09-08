@@ -1,6 +1,7 @@
 import asyncio
 from collections import deque
 import json
+import math
 import os
 import random
 import re
@@ -20,12 +21,15 @@ from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestAborted,
+    MiniAppRequestBudget,
     build_miniapp_http_request,
     build_miniapp_launch_request,
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
+    require_miniapp_operation,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -424,7 +428,8 @@ def build_cave_treasure_launch_args(url, *, start_param="", bot_username=CAVE_TR
     return request, build_request_webview_args(adapter, request) if request.allowed else {}
 
 
-async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None):
+async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None):
+    require_miniapp_operation(operation_check)
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
     if not launch.allowed:
@@ -433,6 +438,7 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
+        require_miniapp_operation(operation_check)
         primary_bot = launch.bot_username or adapter.bot_username
         bot_usernames = [primary_bot, *_recent_game_bot_usernames(exclude=(primary_bot,))]
         result = None
@@ -440,6 +446,7 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
         recoverable_errors = {"BotInvalidError", "UsernameInvalidError", "UsernameNotOccupiedError"}
         for bot_username in bot_usernames:
             try:
+                require_miniapp_operation(operation_check)
                 try:
                     bot = await client.get_entity(bot_username)
                 except Exception as exc:
@@ -448,14 +455,18 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
                     bot_id = _recent_game_bot_id_for_username(bot_username)
                     if bot_id <= 0:
                         raise
+                    require_miniapp_operation(operation_check)
                     bot = await client.get_entity(bot_id)
+                require_miniapp_operation(operation_check)
                 bot_input = await client.get_input_entity(bot)
+                require_miniapp_operation(operation_check)
                 result = await client(functions.messages.RequestMainWebViewRequest(
                     peer=bot_input,
                     bot=bot_input,
                     platform=launch.platform or adapter.platform,
                     start_param=launch.start_param,
                 ))
+                require_miniapp_operation(operation_check)
                 break
             except Exception as exc:
                 if type(exc).__name__ not in recoverable_errors:
@@ -465,6 +476,7 @@ async def request_cave_treasure_miniapp_init_data(identity_id, *, token, webview
             if last_bot_error is not None:
                 raise last_bot_error
             raise RuntimeError("没有可用的官方游戏 Bot 获取 WebView")
+    require_miniapp_operation(operation_check)
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
@@ -1083,7 +1095,7 @@ def _parse_cave_journey_overview(journey):
 
 
 def _parse_cave_small_world_overview(small_world):
-    if not isinstance(small_world, dict):
+    if not isinstance(small_world, dict) or not small_world:
         return {}
     summary = small_world.get("summary") if isinstance(small_world.get("summary"), dict) else {}
     prayer = small_world.get("prayer") if isinstance(small_world.get("prayer"), dict) else {}
@@ -1113,14 +1125,14 @@ def _parse_cave_small_world_overview(small_world):
         "level": _coerce_int(temple.get("level") or small_world.get("level"), 0),
         "temple_level": _coerce_int(temple.get("level") or small_world.get("templeLevel") or small_world.get("temple_level"), 0),
         "temple_name": sanitize_webapp_secret_text(temple.get("name") or "", limit=80),
-        "population": _coerce_int(summary.get("population") or small_world.get("population"), 0),
+        "population": _coerce_int(summary.get("population", small_world.get("population")), 0),
         "population_cap": _coerce_int(summary.get("populationCap"), 0),
         "faith": _coerce_int(summary.get("faith") if summary else small_world.get("faith"), 0),
         "faith_cap": faith_cap,
         "stability": _coerce_int(summary.get("stability") if summary else small_world.get("stability"), 0),
         "stability_cap": stability_cap,
-        "incense_stock": _coerce_int(summary.get("incensePoints") or small_world.get("incenseStock") or small_world.get("incense_stock"), 0),
-        "pending_incense": _coerce_float(summary.get("uncollectedIncense") or small_world.get("pendingIncense") or small_world.get("pending_incense"), 0.0),
+        "incense_stock": _coerce_int(summary.get("incensePoints", small_world.get("incenseStock", small_world.get("incense_stock"))), 0),
+        "pending_incense": _coerce_float(summary.get("uncollectedIncense", small_world.get("pendingIncense", small_world.get("pending_incense"))), 0.0),
         "hourly_incense": _coerce_float(summary.get("hourlyIncense"), 0.0),
         "shenshi_text": sanitize_webapp_secret_text(summary.get("shenshiText") or "", limit=80),
         "has_prayer": bool(prayer),
@@ -1146,6 +1158,24 @@ def _parse_cave_small_world_overview(small_world):
             limit=160,
         ),
     }
+
+
+def _has_complete_small_world_balances(data):
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    account = root.get("account") if isinstance(root.get("account"), dict) else {}
+    world = account.get("smallWorld") if isinstance(account.get("smallWorld"), dict) else {}
+    summary = world.get("summary") if isinstance(world.get("summary"), dict) else {}
+    for key in ("population", "faith", "stability", "incensePoints", "uncollectedIncense"):
+        value = summary.get(key)
+        if isinstance(value, bool):
+            return False
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(numeric) or numeric < 0:
+            return False
+    return True
 
 
 def parse_cave_treasure_state(data):
@@ -1666,6 +1696,7 @@ async def run_cave_dwelling_start_production_flow(
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
         start_request = build_cave_treasure_miniapp_request(
             "start",
@@ -1688,14 +1719,19 @@ async def run_cave_dwelling_start_production_flow(
         start_result = await run_miniapp_blocking_flow(
             run, operation_check=operation_check, sleeper=sleeper,
         )
+        events = []
+        _append_http_event(events, "dwelling_start", start_result)
         if not start_result.ok:
-            return _flow_result(False, "failed", error=start_result.error, events=[{"step": "dwelling_start", "ok": False}])
+            status = "cancelled" if start_result.error_type == "operation_cancelled" else "failed"
+            return _flow_result(False, status, error=start_result.error, events=events)
         return _flow_result(
             True,
             "ok",
             data={"overview": parse_cave_dwelling_overview(start_result.data), "raw": start_result.data},
-            events=[{"step": "dwelling_start", "ok": True}],
+            events=events,
         )
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -1808,6 +1844,7 @@ async def run_cave_dwelling_snapshot_production_flow(
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
         payload = {"playerId": int(player_id)} if player_id not in (None, "") else {}
         if endpoint == "section":
@@ -1836,9 +1873,14 @@ async def run_cave_dwelling_snapshot_production_flow(
         result = await run_miniapp_blocking_flow(
             run, operation_check=operation_check, sleeper=sleeper,
         )
+        events = []
+        _append_http_event(events, f"dwelling_{endpoint}", result)
         if not result.ok:
-            return _flow_result(False, "failed", error=result.error, data=result.data)
-        return _flow_result(True, "ok", data=result.data, events=[{"step": f"dwelling_{endpoint}", "ok": True}])
+            status = "cancelled" if result.error_type == "operation_cancelled" else "failed"
+            return _flow_result(False, status, error=result.error, data=result.data, events=events)
+        return _flow_result(True, "ok", data=result.data, events=events)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -1857,85 +1899,117 @@ async def run_cave_small_world_production_flow(
     init_data="",
     player_id=None,
     initial_snapshot=None,
+    operation_check=None,
 ):
     """Read the dwelling once and execute at most one planned small-world action."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        snapshot_data = initial_snapshot if isinstance(initial_snapshot, dict) and initial_snapshot else None
-        if snapshot_data is None:
-            start_request = build_cave_treasure_miniapp_request(
-                "start",
-                token=token,
-                init_data=init_data,
-                payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
-                adapter=adapter,
-            )
-            start_result = await asyncio.to_thread(
-                execute_miniapp_http_request,
-                start_request,
-                _flow_transport(transport, identity_id),
-                sleeper=sleeper or time.sleep,
-                capture_sink=capture_sink,
-                capture_source=capture_source,
-                step_key="small_world:start",
-            )
-            if not start_result.ok:
-                return _flow_result(False, "failed", error=start_result.error, data={"raw": start_result.data})
-            snapshot_data = start_result.data
+        require_miniapp_operation(operation_check)
 
-        before_overview = parse_cave_dwelling_overview(snapshot_data)
-        plan = dict(action_planner(before_overview) or {})
-        action = str(plan.get("action") or "").strip()
-        if not action:
-            return _flow_result(
-                True,
-                "noop",
-                data={"overview": before_overview, "before_overview": before_overview, "plan": plan, "raw": snapshot_data},
-                events=[{"step": "small_world:start", "ok": True}, {"step": "small_world:noop", "ok": True}],
-            )
+        def run(operation):
+            events = []
+            data = {"action_confirmed": False, "action_dispatched": False, "snapshot_current": False}
+            budget = MiniAppRequestBudget(adapter.request_policy, sleeper=operation.sleep)
+            flow_transport = _flow_transport(transport, identity_id, operation_check=operation.check)
 
-        action_request = build_cave_small_world_action_request(
-            action,
-            token=token,
-            init_data=init_data,
-            payload=plan.get("payload") or {},
-            adapter=adapter,
-        )
-        action_result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            action_request,
-            _flow_transport(transport, identity_id),
-            backoff_sec=(),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"small_world:{normalize_cave_small_world_action(action)}",
-        )
-        merged_action_data = merge_cave_dwelling_snapshot_data(snapshot_data, action_result.data)
-        after_overview = parse_cave_dwelling_overview(merged_action_data) or before_overview
-        data = {
-            "overview": after_overview,
-            "before_overview": before_overview,
-            "plan": plan,
-            "action": normalize_cave_small_world_action(action),
-            "action_result": dict(action_result.data.get("actionResult") or {}) if isinstance(action_result.data, dict) else {},
-            "raw": merged_action_data,
-        }
-        return _flow_result(
-            bool(action_result.ok),
-            "acted" if action_result.ok else "action_failed",
-            error=action_result.error,
-            data=data,
-            events=[{"step": "small_world:start", "ok": True}, {"step": f"small_world:{action}", "ok": bool(action_result.ok)}],
-        )
+            def finish(ok, status, error=""):
+                return _flow_result(ok, status, error=error, data=data, events=events)
+
+            try:
+                require_miniapp_operation(operation.check)
+                snapshot_data = initial_snapshot if isinstance(initial_snapshot, dict) and initial_snapshot else None
+                if snapshot_data is None:
+                    start_request = build_cave_treasure_miniapp_request(
+                        "start", token=token, init_data=init_data, adapter=adapter,
+                        payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
+                    )
+                    start_result = execute_miniapp_http_request(
+                        start_request, flow_transport, sleeper=operation.sleep,
+                        capture_sink=capture_sink, capture_source=capture_source, step_key="small_world:start",
+                        request_budget=budget, operation_check=operation.check,
+                    )
+                    _append_http_event(events, "small_world:start", start_result)
+                    if not start_result.ok:
+                        status = "cancelled" if start_result.error_type == "operation_cancelled" else "failed"
+                        return finish(False, status, start_result.error)
+                    snapshot_data = start_result.data
+
+                if isinstance(snapshot_data.get("data"), dict):
+                    snapshot_data = snapshot_data["data"]
+                before_overview = parse_cave_dwelling_overview(snapshot_data)
+                data.update(overview=before_overview, before_overview=before_overview, raw=snapshot_data)
+                require_miniapp_operation(operation.check)
+                expected_player_id = _coerce_int(player_id, 0) or _coerce_int(before_overview.get("player_id"), 0)
+                if before_overview.get("player_id") and expected_player_id != before_overview["player_id"]:
+                    return finish(False, "failed", "small_world_player_mismatch")
+                if not before_overview.get("small_world"):
+                    return finish(False, "failed", "small_world_state_missing")
+                data["snapshot_current"] = _has_complete_small_world_balances(snapshot_data)
+                if not data["snapshot_current"]:
+                    data["plan"] = {"reason": "小世界面板不完整", "suppress_refresh": True}
+                    return finish(True, "noop")
+                plan = dict(action_planner(before_overview) or {})
+                data["plan"] = plan
+                require_miniapp_operation(operation.check)
+                action = str(plan.get("action") or "").strip()
+                if not action:
+                    return finish(True, "noop")
+
+                action = normalize_cave_small_world_action(action)
+                data["action"] = action
+                action_request = build_cave_small_world_action_request(
+                    action, token=token, init_data=init_data, payload=plan.get("payload") or {}, adapter=adapter,
+                )
+                # A pre-action snapshot cannot prove the post-action resource balance.
+                data["snapshot_current"] = False
+                action_result = execute_miniapp_http_request(
+                    action_request, flow_transport, backoff_sec=(), sleeper=operation.sleep,
+                    capture_sink=capture_sink, capture_source=capture_source, step_key=f"small_world:{action}",
+                    request_budget=budget, operation_check=operation.check,
+                )
+                _append_http_event(events, f"small_world:{action}", action_result)
+                data["action_dispatched"] = int(action_result.attempts or 0) > 0
+                action_data = action_result.data if isinstance(action_result.data, dict) else {}
+                root = action_data.get("data") if isinstance(action_data.get("data"), dict) else action_data
+                business = root.get("actionResult") if isinstance(root.get("actionResult"), dict) else {}
+                data["action_result"] = dict(business)
+                account = root.get("account") if isinstance(root.get("account"), dict) else {}
+                identity = root.get("identity") if isinstance(root.get("identity"), dict) else {}
+                reply_player_id = _coerce_int(account.get("playerId") or identity.get("selectedPlayerId"), 0)
+                if reply_player_id and expected_player_id and reply_player_id != expected_player_id:
+                    return finish(False, "action_failed", "small_world_player_mismatch")
+                data["action_confirmed"] = (
+                    action_result.ok and business.get("ok") is True and business.get("completed") is not False
+                )
+                if not action_result.ok:
+                    status = "cancelled" if action_result.error_type == "operation_cancelled" else "action_failed"
+                    return finish(False, status, action_result.error)
+                merged_data = merge_cave_dwelling_snapshot_data(snapshot_data, root)
+                data["raw"] = merged_data
+                after_overview = parse_cave_dwelling_overview(root)
+                data["overview"] = parse_cave_dwelling_overview(merged_data)
+                data["snapshot_current"] = bool(after_overview.get("small_world")) and _has_complete_small_world_balances(root)
+                if not data["action_confirmed"]:
+                    return finish(False, "action_failed", business.get("error") or business.get("message") or "small_world_action_unconfirmed")
+                return finish(True, "acted")
+            except MiniAppRequestAborted as exc:
+                return finish(False, "cancelled", exc)
+            except Exception as exc:
+                return finish(False, "failed", exc)
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 

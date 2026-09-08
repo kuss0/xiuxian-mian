@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import inventory_delta
 from model import state as state_module
 from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, deep_retreat, tianti, yinluo, yuanying
+from model.webapp_core import MiniAppHttpResult
 
 
 def _cave_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=df_SECRET999"):
@@ -3226,6 +3227,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "acted",
             "data": {
+                "action_confirmed": True,
+                "snapshot_current": True,
                 "action": "manifest",
                 "plan": {"action": "manifest", "reason": "处理祈愿 江河决堤"},
                 "action_result": {"rawMessage": "显灵成功，信仰 +3。"},
@@ -3280,7 +3283,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "account": {
                 "smallWorld": {
                     "hasWorld": True,
-                    "summary": {"faith": 94, "population": 250000, "stability": 100},
+                    "summary": {"faith": 94, "population": 250000, "stability": 100, "incensePoints": 1000, "uncollectedIncense": 0},
                     "actions": {"canCollect": False, "canManifest": False},
                 },
             },
@@ -3308,13 +3311,14 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "account": {
                 "smallWorld": {
                     "hasWorld": True,
-                    "summary": {"faith": 94, "population": 250000, "stability": 100},
+                    "summary": {"faith": 94, "population": 250000, "stability": 100, "incensePoints": 1000, "uncollectedIncense": 0},
                     "actions": {"canCollect": False, "canManifest": True},
                 },
             },
         }
-        action_reply = SimpleNamespace(
+        action_reply = MiniAppHttpResult(
             ok=True,
+            status_code=200,
             error="",
             data={
                 "snapshot": {"level": "action", "partial": True, "domains": ["smallWorld"]},
@@ -3344,6 +3348,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "acted",
             "data": {
+                "action_confirmed": True,
+                "snapshot_current": True,
                 "action": "collect",
                 "plan": {"action": "collect", "harvest_due": True, "reason": "MiniApp 8 小时收割到期"},
                 "action_result": {"rawMessage": "收割成功，获得 800 香火。"},
@@ -3394,6 +3400,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "noop",
             "data": {
+                "snapshot_current": True,
                 "plan": {
                     "harvest_due": True,
                     "harvest_checked": True,
@@ -3448,6 +3455,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "acted",
             "data": {
+                "action_confirmed": True,
+                "snapshot_current": True,
                 "action": "collect",
                 "plan": {"action": "collect", "harvest_due": True},
                 "action_result": {"rawMessage": "收割成功，获得 800 香火。"},
@@ -3500,6 +3509,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "acted",
             "data": {
+                "action_confirmed": True,
+                "snapshot_current": True,
                 "action": "miracle_sermon",
                 "plan": {"action": "miracle_sermon", "reason": "信仰 60/100，执行布道"},
                 "action_result": {"rawMessage": "布道成功。"},
@@ -3566,6 +3577,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "noop",
             "data": {
+                "snapshot_current": True,
                 "plan": {"reason": "当前无已启用且可执行的小世界动作"},
                 "overview": {
                     "small_world": {
@@ -3611,6 +3623,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "noop",
             "data": {
+                "snapshot_current": True,
                 "plan": {
                     "silent": True,
                     "suppress_refresh": True,

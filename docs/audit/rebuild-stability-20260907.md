@@ -28,7 +28,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Identity admission and Nanlong queued-operation checks repaired in candidate; no-ID crash durability and other modules' business admission still pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
-| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, thread draining, confirmed-result retention and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
+| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
@@ -93,6 +93,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R39 | High | Public-entry UI treats local cancellation/skip as entry recovery, claims before local admission, overwrites newer shared health, and retries downstream failures through another URL | Fixed for reproduced UI caller boundaries in candidate; real loader evidence, exact owner/health snapshots, scoped claim cleanup, no post-read fallback, preserved confirmed results and genuine failure/rate-limit controls pass; per-game workers and remaining UI/background contracts remain open |
 | R40 | High | Stargazer releases its caller while an HTTP thread still runs, has no shared per-run budget, loses confirmed collections on later parse failures, and permits duplicate entries or stale results to rewrite a running operation | Fixed in candidate; joined cooperative threads, one run budget, public/manual shared exclusion, owner/choice/schedule admission and partial-result retention pass; notification-time owner replacement cannot return an old result for the replacement role |
 | R41 | High | Public-entry background work captures only an identity number; queued actions ignore changed controls, cancellation and local busy results become 30-minute failures, and late completions overwrite newer retry/slot state or mark the next day complete | Fixed for reproduced background-job boundaries in candidate; enqueue-time owner/control snapshots, repeated UI/loader checks, exact in-memory job ownership, cancellation-aware completion and original-day terminal markers pass; downstream unguarded game workers remain open |
+| R42 | High | Small-world HTTP-envelope success hides business rejection; raw threads outlive cancellation, stale/incomplete panels become current resource balances, and late results overwrite owners, clocks or newer panels | Fixed for reproduced MiniApp boundaries in candidate; joined cooperative execution, shared per-flow budget, explicit business confirmation, complete snapshot evidence, owner/control checks, guarded cooldown updates and notification-safe persistence pass; legacy command internals and other MiniApp game flows remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -879,6 +880,55 @@ five monitor/control-only contracts need separate behavioral verification.
   Full Ruff, compilation and diff checks pass. Production, services, skill,
   live DB/configuration and remote branches remain unchanged.
 
+- R42 first reproduced 36 failing small-world lifecycle cases. Follow-up tests
+  caught incomplete resource domains becoming zero balances, stale nested
+  envelopes hiding an action snapshot, early cooldowns after a slow loader,
+  and cancellation during WebView initialization being labelled a failure.
+  The flow now uses the existing joined blocking runner and one request budget
+  for its start/action steps, reuses the loader's initial snapshot, checks every
+  Telegram initialization await, and never retries the spending action. HTTP
+  events and Retry-After survive start, selected-player and details failures.
+- An action requires explicit `actionResult.ok == true` and no explicit
+  incomplete result. Transport success alone, missing receipts and explicit
+  foreign-player replies cannot establish completion. Confirmed receipts remain
+  available when the following panel is absent or malformed. The action payload
+  protocol is unchanged: no unverified player-selection field was introduced.
+- Full resource snapshots require finite nonnegative population, faith,
+  stability, stock and uncollected-incense balances. Missing domains no longer
+  manufacture a zero-resource world, and explicit zero values cannot fall back
+  to stale legacy fields. An incomplete initial panel does not reach the
+  spending planner or start repeated prayer refreshes. Missing post-action
+  panels preserve old numbers but invalidate their existing cache timestamps,
+  so command-side cached decisions cannot treat them as current facts.
+- The public caller retains the exact owner/account, existing module controls,
+  schedules, panel and MiniApp record in memory. It checks them after loading
+  and before later HTTP dispatch; it does not overwrite a replacement identity,
+  a newer record/panel, or newly edited six/eight-hour deadlines. Concurrent
+  public calls and an already-pending command chain return local busy before
+  modifying the minimum-request timer. This is not a durable fence, outbox or
+  recovery controller, and it does not replace command-side reducers.
+- A confirmed harvest retains its eight-hour completion clock through task
+  cancellation or switch-off, while independently edited clocks remain intact.
+  Cooldowns use elapsed completion time rather than a potentially old loader
+  start time. Server prayer waits take precedence over stale prayer presence;
+  a partial manifest result cannot schedule an immediate re-manifest. Ordinary
+  maintenance stays six-hourly, harvest stays eight-hourly, and optional refresh
+  stays ten-minute/max-five with the persisted ten-minute admission interval.
+  The 1150 reserve and disabled automatic incense-to-consciousness choices are
+  unchanged. Explicit manual UI runs, maintenance and channel-freeze HTTP
+  availability remain supported.
+- State snapshots and confirmed-action metadata are saved together before
+  notification. A failed notification cannot lose a completed harvest; a
+  cancelled notification carries the completed result without replaying it.
+  These metadata fields use the existing bounded MiniApp snapshot record and
+  are not read as an automatic recovery authority. New lifecycle suite:
+  73 cases, including a real caller-to-thread cancellation/lock test and real
+  fake-HTTP loader rate-limit tests. Final full suite: 4397 passed, 1004 subtests
+  passed, 71.89 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r42-small-world-20260908.xml`.
+  Full Ruff, compilation and diff checks pass. No production, service, skill,
+  live DB/configuration, remote branch or gameplay action was touched.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -946,11 +996,13 @@ and cleanup code during a code-only rollback.
    later HTTP requests or prove its result persistence/notification behavior.
    R41 covers queued background ownership, independent automatic switches,
    completion bookkeeping and local busy admission. It does not make the
-   remaining raw threaded game functions cooperative. Review public small-world
-   work next: the current flow uses raw `asyncio.to_thread`, treats HTTP-envelope
-   success as action success without checking `actionResult.ok`, and its caller
-   can apply results or rewrite six/eight-hour timers after owner/control changes.
-   Preserve the disabled incense-to-consciousness controls during this review.
+   remaining raw threaded game functions cooperative. R42 covers public
+   small-world ownership, business evidence, resource snapshot freshness and
+   six/eight-hour clock updates, but not the legacy small-world command reducer's
+   own internal awaits and cross-chat anchors. Continue with public wild-training
+   and its Tianxing preparation/consumption chain, then the other per-game
+   workers. Preserve disabled incense-to-consciousness controls and the rule
+   that deep retreat does not block or consume Tianxing effects.
 
 ## Completion Gate
 

@@ -5,6 +5,7 @@ import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree
 from .small_world import (
     SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
     _calc_refine_amount,
+    _parse_wait_from_text,
 )
 from .cave_treasure_miniapp import (
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
@@ -1129,6 +1131,7 @@ async def _load_cave_public_identity_session(
             identity_id,
             token=token,
             webview_url=webview_url,
+            operation_check=can_continue,
         )
     except Exception as exc:
         if not can_continue():
@@ -1152,6 +1155,7 @@ async def _load_cave_public_identity_session(
         return {
             "ok": False,
             "error": initial_result.get("error") or initial_result.get("status") or "initial_start_failed",
+            "result": initial_result,
         }
     initial_data = dict(initial_result.get("data") or {})
     initial_overview = initial_data.get("overview") if isinstance(initial_data.get("overview"), dict) else {}
@@ -1185,6 +1189,7 @@ async def _load_cave_public_identity_session(
             return {
                 "ok": False,
                 "error": selected_result.get("error") or selected_result.get("status") or "selected_start_failed",
+                "result": selected_result,
             }
         selected_data = dict(selected_result.get("data") or {})
         player_error = _selected_player_error(selected_data.get("overview") or {}, identity_id)
@@ -1220,6 +1225,7 @@ async def _load_cave_public_identity_session(
         return {
             "ok": False,
             "error": details_result.get("error") or details_result.get("status") or "details_failed",
+            "result": details_result,
         }
     start_data = dict((session.get("result") or {}).get("data") or {})
     merged_raw = merge_cave_dwelling_snapshot_data(
@@ -1228,6 +1234,7 @@ async def _load_cave_public_identity_session(
     )
     session["result"] = {
         **dict(session.get("result") or {}),
+        "events": list((session.get("result") or {}).get("events") or []) + list(details_result.get("events") or []),
         "data": {
             **start_data,
             "overview": parse_cave_dwelling_overview(merged_raw),
@@ -2289,21 +2296,80 @@ def _cave_treasure_unknown_hold(identity_id, now):
     )
 
 
-def _record_cave_small_world_state(identity_id, result, *, now, result_msg_id=0):
+@dataclass(frozen=True)
+class _CaveSmallWorldOperation:
+    owner: MiniAppIdentityOwner
+    snapshot: dict
+    record: dict
+
+    @classmethod
+    def capture(cls, identity_id):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        return cls(
+            owner,
+            {key: deepcopy(value) for key, value in owner.identity.items()
+             if (key.startswith("small_world_") or key == "next_small_world_time")
+             and key != "small_world_last_public_request_at"},
+            deepcopy(get_miniapp_state_records().get(f"{identity_id}:cave_small_world") or {}),
+        )
+
+    def matches(self, *keys):
+        return self.owner.is_current() and all(
+            self.owner.identity.get(key) == self.snapshot.get(key) for key in keys
+        )
+
+    def record_is_current(self):
+        return self.owner.is_current() and self.record == (
+            get_miniapp_state_records().get(f"{self.owner.identity_id}:cave_small_world") or {}
+        )
+
+    def panel_is_current(self, now):
+        return self.matches(
+            "small_world_last_panel_at", "small_world_panel_snapshot", "small_world_faith_value",
+            "small_world_incense_stock", "small_world_pending_incense",
+        ) and self.record_is_current() and max(
+            float(self.snapshot.get("small_world_last_panel_at") or 0),
+            float(self.record.get("updated_at") or 0),
+        ) <= now
+
+    def is_current(self):
+        return (
+            self.matches(*self.snapshot)
+            and self.record_is_current()
+            and is_cave_public_identity_available(self.owner.identity_id)
+        )
+
+
+def _record_cave_small_world_state(identity_id, result, *, now, result_msg_id=0, update_snapshot=True):
     data = dict((result or {}).get("data") or {})
     overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
     small_world = overview.get("small_world") if isinstance(overview.get("small_world"), dict) else {}
-    if not small_world:
+    confirmed = data.get("action_confirmed") is True
+    if not (small_world and update_snapshot) and not confirmed:
         return {"changed": False, "record": {}, "record_key": ""}
+    previous = get_miniapp_state_records().get(f"{identity_id}:cave_small_world") or {}
+    payload = dict(previous.get("state") or {})
+    if small_world and update_snapshot:
+        payload.update(small_world)
+        payload["snapshot_updated_at"] = now
+    payload["snapshot_current"] = bool(small_world and update_snapshot)
+    if confirmed:
+        payload.update(
+            last_action=data.get("action") or "", last_action_at=now, last_action_confirmed=True,
+            last_action_message=_cave_small_world_action_message(result),
+        )
     return record_miniapp_state(
         identity_id,
         "cave_small_world",
-        small_world,
+        payload,
         source="cave_dwelling_miniapp",
-        source_id=f"cave_small_world:{int(result_msg_id or 0)}:{stable_payload_digest(small_world)}",
+        source_id=f"cave_small_world:{int(result_msg_id or 0)}:{stable_payload_digest(payload)}",
         now=now,
         outputs=("module_snapshot",),
         replaces_commands=(".小世界",),
+        persist=False,
     )
 
 
@@ -2382,15 +2448,13 @@ def _cave_small_world_harvest_due(now):
 
 def _cave_small_world_prayer_due_at(small_world, now):
     small_world = small_world if isinstance(small_world, dict) else {}
-    if small_world.get("has_prayer"):
-        return float(now)
     try:
         remaining = int(small_world.get("prayer_remaining_seconds", 0) or 0)
     except (TypeError, ValueError):
         remaining = 0
-    if remaining <= 0:
-        return 0.0
-    return float(now + remaining + CD_BUFFER_SEC)
+    if remaining > 0:
+        return float(now + remaining + CD_BUFFER_SEC)
+    return float(now) if small_world.get("has_prayer") else 0.0
 
 
 def _cave_small_world_next_check_at(small_world, now, *, default_delay=CAVE_SMALL_WORLD_CYCLE_SEC):
@@ -2415,7 +2479,7 @@ def _plan_cave_public_small_world_action(overview, *, now=None):
     now = float(now or time.time())
     small_world = overview.get("small_world") if isinstance(overview, dict) and isinstance(overview.get("small_world"), dict) else {}
     if not small_world or not small_world.get("available") or not small_world.get("has_world"):
-        return {"reason": "小世界尚不可用"}
+        return {"reason": "小世界尚不可用", "suppress_refresh": True}
 
     harvest_due = _cave_small_world_harvest_due(now)
     can_harvest = bool(small_world.get("can_harvest"))
@@ -2483,7 +2547,7 @@ def _plan_cave_public_small_world_harvest(overview, *, now=None):
     now = float(now or time.time())
     small_world = overview.get("small_world") if isinstance(overview, dict) and isinstance(overview.get("small_world"), dict) else {}
     if not small_world or not small_world.get("available") or not small_world.get("has_world"):
-        return {"reason": "小世界尚不可用"}
+        return {"reason": "小世界尚不可用", "suppress_refresh": True}
     if not state.get("small_world_harvest_enabled"):
         return {"reason": "自动收割香火未开启"}
     if not _cave_small_world_harvest_due(now):
@@ -2816,7 +2880,9 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
 async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now=None, harvest_only=False):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    started_at = time.monotonic()
+    operation = _CaveSmallWorldOperation.capture(identity_id)
+    if identity_id <= 0 or operation is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
@@ -2825,7 +2891,24 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+    cancelled = {"ok": False, "message": "洞府小世界操作已取消或身份已变更", "extra": {"status": "cancelled"}}
+
+    def can_continue():
+        return (
+            operation.is_current()
+            and _public_entry_allowed()
+            and (observation is None or observation.permits(identity_id, token))
+        )
+
+    lock = _public_entry_lock(identity_id)
+    if lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
+    if not can_continue():
+        return cancelled
     with use_identity(identity_id):
+        if str(state.get("small_world_phase") or "idle") not in {"idle", "refresh_wait", "calibration_wait"}:
+            return {"ok": False, "message": "小世界命令链路仍在等待回包", "extra": {"status": "busy"}}
         next_time = float(state.get("next_small_world_time", 0) or 0)
         existing_next_time = next_time
         next_harvest_at = float(state.get("small_world_next_public_harvest_at", 0) or 0)
@@ -2864,10 +2947,9 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                 "message": "洞府小世界请求仍在最小间隔内，已跳过请求",
                 "extra": {"skipped": True, "next_time": next_time},
             }
-    lock = _public_entry_lock(identity_id)
-    if lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
+        if not can_continue():
+            return cancelled
         with use_identity(identity_id):
             state["small_world_last_public_request_at"] = float(now)
             save_state()
@@ -2878,82 +2960,140 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
             now=now,
             capture_source=f"cave_public_small_world_start:{identity_id}",
             include_details=True,
+            operation_check=can_continue,
         )
+        if not can_continue() or session.get("status") == "cancelled":
+            return cancelled
         if not session.get("ok"):
             message = f"洞府小世界身份读取失败：{session.get('error') or 'unknown'}"
-            await send_audit_log(f"🌏 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
         with use_identity(identity_id):
             session_data = dict((session.get("result") or {}).get("data") or {})
-            result = await run_cave_small_world_production_flow(
-                identity_id,
-                token=token,
-                webview_url=webview_url,
-                init_data=session.get("init_data") or "",
-                player_id=session.get("player_id"),
-                action_planner=(
-                    (lambda overview: _plan_cave_public_small_world_harvest(overview, now=now))
-                    if harvest_only
-                    else (lambda overview: _plan_cave_public_small_world_action(overview, now=now))
-                ),
-                capture_sink=_capture_store(now),
-                capture_source=f"cave_public_small_world:{identity_id}",
-                initial_snapshot=session_data.get("raw") or {},
-            )
+            cancelled_flow = None
+            try:
+                result = await run_cave_small_world_production_flow(
+                    identity_id,
+                    token=token,
+                    webview_url=webview_url,
+                    init_data=session.get("init_data") or "",
+                    player_id=session.get("player_id"),
+                    action_planner=(
+                        (lambda overview: _plan_cave_public_small_world_harvest(overview, now=now))
+                        if harvest_only
+                        else (lambda overview: _plan_cave_public_small_world_action(overview, now=now))
+                    ),
+                    capture_sink=_capture_store(now),
+                    capture_source=f"cave_public_small_world:{identity_id}",
+                    initial_snapshot=session_data.get("raw") or {},
+                    operation_check=can_continue,
+                )
+            except MiniAppFlowCancelled as exc:
+                cancelled_flow = exc
+                result = exc.result if isinstance(exc.result, dict) else {}
+            now += max(0, int(time.monotonic() - started_at))
             data = dict(result.get("data") or {})
+            confirmed = data.get("action_confirmed") is True
+            dispatched = data.get("action_dispatched") is True
+            update_schedule = can_continue() and cancelled_flow is None and result.get("status") != "cancelled"
+            if not operation.owner.is_current() or (not update_schedule and not (confirmed or dispatched)):
+                if cancelled_flow is not None:
+                    raise MiniAppFlowCancelled() from None
+                return cancelled
             overview = data.get("overview") if isinstance(data.get("overview"), dict) else {}
             small_world = overview.get("small_world") if isinstance(overview.get("small_world"), dict) else {}
             plan = data.get("plan") if isinstance(data.get("plan"), dict) else {}
             action = str(data.get("action") or plan.get("action") or "")
-            snapshot = _apply_cave_small_world_overview(small_world, now) if small_world else {}
-            record = _record_cave_small_world_state(identity_id, result, now=now)
+            snapshot_current = data.get("snapshot_current") is True
+            panel_owned = operation.panel_is_current(now)
+            update_snapshot = bool(
+                small_world.get("available") and small_world.get("has_world")
+                and snapshot_current and panel_owned
+            )
+            harvest_clock_owned = operation.matches("small_world_last_public_harvest_at", "small_world_next_public_harvest_at")
+            snapshot = _apply_cave_small_world_overview(small_world, now) if update_snapshot else {}
+            if not snapshot_current and (confirmed or dispatched) and panel_owned:
+                # Keep the last resource counts, but do not reuse pre-mutation decisions.
+                cached = dict(state.get("small_world_panel_snapshot") or {})
+                if cached:
+                    cached["updated_at"] = 0
+                    state["small_world_panel_snapshot"] = cached
+                state["small_world_last_panel_at"] = 0
+            record = _record_cave_small_world_state(
+                identity_id, result, now=now, update_snapshot=update_snapshot,
+            ) if operation.record_is_current() and float(operation.record.get("updated_at") or 0) <= now else {}
             action_message = _cave_small_world_action_message(result)
-            resource_blocked = plan.get("blocked") == "resource" or ("不足" in action_message and action == "manifest")
+            resource_blocked = not confirmed and (plan.get("blocked") == "resource" or ("不足" in action_message and action == "manifest"))
+            action_label = {
+                "manifest": "显灵", "miracle_sermon": "布道", "miracle_relief": "赈灾",
+                "collect": "收割香火", "refine_shenshi": "神识淬炼",
+            }.get(action, action)
+            if confirmed and action == "collect":
+                state["small_world_last_public_harvest_at"] = max(float(state.get("small_world_last_public_harvest_at") or 0), now)
+                if harvest_clock_owned:
+                    state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
+            if confirmed and action in {"miracle_sermon", "miracle_relief"} and operation.matches("small_world_god_cooldown_until"):
+                state["small_world_god_cooldown_until"] = max(
+                    float(state.get("small_world_god_cooldown_until") or 0), now + CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC,
+                )
+            if not update_schedule:
+                save_state()
+                response = {
+                    "ok": confirmed,
+                    "message": (
+                        f"洞府小世界已{action_label}：{action_message or '动作已确认'}；保留新的调度设置"
+                        if confirmed else f"洞府小世界{action_label}结果未确认；保留新的调度设置"
+                    ),
+                    "extra": _miniapp_result_extra({
+                        "record_key": record.get("record_key", ""), "action": action, "action_confirmed": confirmed,
+                        "snapshot": snapshot, "operation_cancelled": True, "status": "acted" if confirmed else "cancelled",
+                    }, result),
+                }
+                if cancelled_flow is not None:
+                    raise MiniAppFlowCancelled(response) from None
+                return response
+            if action and not confirmed:
+                result = {**result, "ok": False, "error": result.get("error") or "small_world_action_unconfirmed"}
+            retry_after_sec = miniapp_retry_after_sec(result)
+            wait_sec, _wait_text = _parse_wait_from_text(action_message)
             harvest_was_due = bool(plan.get("harvest_due")) or _cave_small_world_harvest_due(now)
-            harvest_checked = bool(plan.get("harvest_checked"))
-            if action == "collect" and result.get("ok"):
-                state["small_world_last_public_harvest_at"] = now
-                state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
-            elif harvest_checked:
-                state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
-            elif harvest_was_due and (harvest_only or not result.get("ok") or not small_world):
-                state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_RETRY_SEC
-            if not result.get("ok"):
+            harvest_checked = bool(plan.get("harvest_checked") and snapshot_current)
+            if not (action == "collect" and confirmed):
+                if harvest_checked:
+                    state["small_world_next_public_harvest_at"] = now + CAVE_SMALL_WORLD_HARVEST_INTERVAL_SEC
+                elif harvest_was_due and (harvest_only or not result.get("ok") or not snapshot_current):
+                    state["small_world_next_public_harvest_at"] = now + max(CAVE_SMALL_WORLD_HARVEST_RETRY_SEC, retry_after_sec)
+            if not result.get("ok") and not confirmed:
                 state["small_world_refresh_count"] = 0
                 state["small_world_phase"] = "idle"
-                state["next_small_world_time"] = now + CAVE_SMALL_WORLD_CYCLE_SEC
+                state["next_small_world_time"] = now + max(CAVE_SMALL_WORLD_CYCLE_SEC, retry_after_sec, wait_sec + CD_BUFFER_SEC)
                 if resource_blocked:
                     state["small_world_last_error"] = f"洞府显灵资源不足：{plan.get('reason') or action_message or '资源不足'}"
                     message = f"洞府小世界显灵资源不足，已退避 6 小时：{plan.get('reason') or action_message or '资源不足'}"
                 else:
                     state["small_world_last_error"] = f"洞府小世界处理失败：{result.get('error') or result.get('status') or 'unknown'}"
                     message = f"洞府小世界处理失败，已退避 6 小时：{result.get('error') or result.get('status') or 'unknown'}"
-            elif not small_world:
+            elif not snapshot_current and not confirmed:
                 state["small_world_refresh_count"] = 0
                 state["small_world_phase"] = "idle"
                 state["next_small_world_time"] = now + CAVE_SMALL_WORLD_CYCLE_SEC
-                state["small_world_last_error"] = "洞府小世界回包未包含面板"
-                message = "洞府小世界处理完成，但回包未包含面板，已退避 6 小时"
+                state["small_world_last_error"] = "洞府小世界回包未包含完整面板"
+                message = "洞府小世界面板不完整，保留上次数据，6 小时后再查"
             elif resource_blocked:
                 state["small_world_refresh_count"] = 0
                 state["small_world_phase"] = "idle"
                 state["next_small_world_time"] = now + CAVE_SMALL_WORLD_RESOURCE_PAUSE_SEC
                 state["small_world_last_error"] = f"洞府显灵资源不足：{plan.get('reason') or '资源不足'}"
                 message = f"洞府小世界显灵资源不足，已退避 6 小时：{plan.get('reason') or '资源不足'}"
-            elif action:
+            elif confirmed:
                 state["small_world_refresh_count"] = 0
                 state["small_world_phase"] = "idle"
-                state["next_small_world_time"] = _cave_small_world_next_check_at(small_world, now)
-                if action in {"miracle_sermon", "miracle_relief"}:
-                    state["small_world_god_cooldown_until"] = now + CAVE_SMALL_WORLD_GOD_COOLDOWN_SEC
+                state["next_small_world_time"] = _cave_small_world_next_check_at(small_world if snapshot_current else {}, now)
+                if wait_sec > 0 and action == "manifest":
+                    state["next_small_world_time"] = max(
+                        _cave_small_world_prayer_due_at(small_world, now) if snapshot_current else 0,
+                        now + wait_sec + CD_BUFFER_SEC,
+                    )
                 state["small_world_last_error"] = ""
-                action_label = {
-                    "manifest": "显灵",
-                    "miracle_sermon": "布道",
-                    "miracle_relief": "赈灾",
-                    "collect": "收割香火",
-                    "refine_shenshi": "神识淬炼",
-                }.get(action, action)
                 message = f"洞府小世界已{action_label}：{action_message or plan.get('reason') or '处理完成'}"
             else:
                 can_refresh = bool(
@@ -2995,22 +3135,27 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
                     now,
                 )
             save_state()
-        await send_audit_log(
-            f"🌏 {message}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="high" if resource_blocked else ("normal" if action or not result.get("ok") else "low"),
-            limit=300,
-        )
-        return {
-            "ok": bool(result.get("ok")) or resource_blocked,
+        response = {
+            "ok": bool(result.get("ok")) or confirmed or resource_blocked,
             "message": message,
-            "extra": {
+            "extra": _miniapp_result_extra({
                 "record_key": record.get("record_key", ""),
                 "action": action,
+                "action_confirmed": confirmed,
                 "snapshot": snapshot,
-            },
+            }, result),
         }
+        try:
+            await send_audit_log(
+                f"🌏 {message}", scope="identity", send_as_id=identity_id,
+                priority="high" if resource_blocked else ("normal" if action or not result.get("ok") else "low"),
+                limit=300,
+            )
+        except asyncio.CancelledError:
+            raise MiniAppFlowCancelled(response if operation.owner.is_current() else None) from None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Small-world notification failed (%s); result preserved", type(exc).__name__)
+        return response if operation.owner.is_current() else cancelled
 
 
 async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
