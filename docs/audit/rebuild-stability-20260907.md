@@ -827,6 +827,13 @@ and cleanup code during a code-only rollback.
    refresh/invalidation paths. Next review the stargazer action loop and its
    public/command callers: it still uses raw `asyncio.to_thread` and lacks a
    shared per-flow request budget. No live validation is approved.
+5. Follow `ui_run_cave_public_entry` independently of the R38 canary path. Its
+   non-entry-error branch currently calls `note_cave_public_entry_success` and
+   closes the upstream circuit even for a local cancelled result. Claiming a
+   canary also precedes its local busy-lock check. Reproduce cancellation,
+   unavailable/busy short-circuits, identity replacement and entry-list changes
+   before trusting its shared-health writes or fallback dispatch. R38 does not
+   close this separate UI/background caller contract.
 
 ## Completion Gate
 
