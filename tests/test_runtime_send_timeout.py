@@ -438,6 +438,93 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(456, identity["nanlong_reply_to_msg_id"])
                     self.assertEqual(0, identity["nanlong_last_msg_id"])
 
+    async def test_tianxing_queued_step_is_revalidated_through_runtime(self):
+        from model.features import tianxing
+
+        identity_id = 301299112
+        for boundary in ("entity", "guard", "dispatch"):
+            for change in ("disabled", "config", "new_plan", "new_step", "observation", "paused", "unchanged"):
+                with self.subTest(boundary=boundary, change=change):
+                    client = _FakeClient(["ok"])
+                    prepared = changed = False
+                    now = 1788748200.0
+                    original_resolve = client.get_input_entity
+                    original_start = runtime._start_game_send_rpc
+
+                    def change_operation():
+                        nonlocal changed
+                        if changed:
+                            return
+                        changed = True
+                        timeline = identity["tianxing_timeline_state"]
+                        if change == "disabled":
+                            identity["tianxing_enabled"] = False
+                        elif change == "config":
+                            identity["tianxing_auto_config"]["auto_predict_enabled"] = False
+                        elif change == "new_plan":
+                            timeline["plan_id"] = "new-plan"
+                        elif change == "new_step":
+                            timeline["active_step"]["send_started_at"] = now + 1
+                        elif change == "observation":
+                            identity["tianxing_observation"].update(
+                                current_prediction="斗法", current_prediction_until=now + 3600,
+                            )
+                        elif change == "paused":
+                            identity["tianxing_observation"]["automation_paused_until"] = -1
+
+                    async def resolve(entity_id):
+                        nonlocal prepared
+                        result = await original_resolve(entity_id)
+                        if entity_id == identity_id:
+                            prepared = True
+                            if boundary == "entity":
+                                change_operation()
+                        return result
+
+                    async def guard(*_args, **_kwargs):
+                        if prepared and boundary == "guard":
+                            await asyncio.sleep(0)
+                            change_operation()
+                        return True, "", ""
+
+                    def start(*args, **kwargs):
+                        result = original_start(*args, **kwargs)
+                        if boundary == "dispatch":
+                            change_operation()
+                        return result
+
+                    client.get_input_entity = resolve
+                    with (
+                        self._prepared_send_context(client),
+                        state_module.use_identity(identity_id) as identity,
+                        patch.object(tianxing, "save_state", return_value=True),
+                        patch.object(tianxing, "_TIANXING_TIMELINE_LOCKS", {}),
+                        patch.object(tianxing, "_tianxing_action_guard_wait", return_value=(0, "")),
+                        patch.object(tianxing.time, "time", return_value=now),
+                        patch.object(runtime, "_run_game_command_pre_send_guards", side_effect=guard),
+                        patch.object(runtime, "_start_game_send_rpc", side_effect=start),
+                    ):
+                        state_module.update_send_as_profile(identity_id, enabled=True, sect_name="天星宗")
+                        state_module.set_global_enabled(True)
+                        identity.update(
+                            tianxing_enabled=True,
+                            tianxing_auto_config={"auto_predict_enabled": True},
+                            tianxing_observation={"last_observed_at": now - 1, "tianji_value": 12},
+                        )
+                        step = {"action": "predict", "arg": "探索", "status": "pending"}
+                        identity["tianxing_timeline_state"] = {
+                            "plan_id": "old-plan", "phase": "waiting_send", "active_step_index": 0,
+                            "active_step": step, "steps": [dict(step)],
+                        }
+                        await tianxing.run_tianxing_timeline_scheduler(now)
+                        block = runtime.classify_game_send_block(identity_id, ".推命 探索")
+                    self.assertTrue(changed)
+                    self.assertEqual(1 if change == "unchanged" else 0, len(client.sent_requests))
+                    if change != "unchanged":
+                        self.assertEqual("unsent", block["status"])
+                    else:
+                        self.assertEqual(123456, identity["tianxing_timeline_state"]["active_step"]["send_chat_id"])
+
     async def test_nanlong_all_steps_keep_normal_dispatch_and_honor_disable(self):
         from model.features import nanlong
 

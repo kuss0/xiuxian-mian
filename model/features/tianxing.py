@@ -4,6 +4,7 @@ import math
 import random
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 from ..config import (
@@ -25,8 +26,8 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_pre_send_guard, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_game_group_topic_id, get_game_topic_id, get_world_boss_run_state, is_module_available, state, use_identity
+from ..runtime import GAME_SEND_UNSENT_BLOCK_CODES, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_pre_send_guard, send_game_command
+from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_game_group_topic_id, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_state, get_world_boss_run_state, has_identity, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -126,6 +127,69 @@ TIANXING_OBSERVATION_TIME_KEYS = (
 
 _TIANXING_TIMELINE_LOCKS = {}
 _TIANXING_AUTO_LOCKS = {}
+
+
+@dataclass(frozen=True, eq=False)
+class _TianxingOperation:
+    identity_id: int
+    identity: dict
+    account_id: int
+    config: dict
+    now: float
+    started_at: float
+    parent_check: object = None
+
+    @classmethod
+    def capture(cls, now, parent_check=None):
+        identity_id = get_current_identity_id()
+        if not has_identity(identity_id):
+            return None
+        identity = get_identity_state(identity_id)
+        return cls(
+            identity_id, identity, get_identity_account(identity_id),
+            normalize_tianxing_auto_config(identity.get("tianxing_auto_config")),
+            float(now), time.monotonic(), parent_check,
+        )
+
+    def owns_identity(self):
+        return (
+            has_identity(self.identity_id)
+            and get_identity_state(self.identity_id) is self.identity
+            and get_identity_account(self.identity_id) == self.account_id
+        )
+
+    def current_time(self):
+        return self.now + max(0.0, time.monotonic() - self.started_at)
+
+    def is_current(self):
+        if not (
+            self.owns_identity()
+            and get_global_enabled()
+            and get_identity_enabled(self.identity_id)
+            and self.identity.get("tianxing_enabled")
+            and is_module_available("天星宗", self.identity_id)
+            and normalize_tianxing_auto_config(self.identity.get("tianxing_auto_config")) == self.config
+            and not is_tianxing_automation_paused(self.current_time(), self.identity.get("tianxing_observation"))
+        ):
+            return False
+        try:
+            return self.parent_check is None or self.parent_check() is True
+        except Exception:
+            return False
+
+
+def _cancelled_tianxing_operation_result():
+    return {"phase": "cancelled", "changed": False, "reason": "天星任务身份、配置或前置操作已变化，本轮停止。"}
+
+
+def _tianxing_timeline_step_result(operation, timeline, reason):
+    if not operation.owns_identity():
+        return _cancelled_tianxing_operation_result()
+    current = normalize_tianxing_timeline_state(operation.identity.get("tianxing_timeline_state"))
+    return {
+        "phase": current["phase"], "changed": timeline is not None,
+        "reason": current.get("last_error") or reason,
+    }
 
 
 def _is_empty_state_value(value):
@@ -3246,7 +3310,7 @@ def _prediction_effective_until(route, observed, now=None):
     if str(observed.get("current_prediction") or "").strip() != route:
         return 0.0
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
-    if prediction_until > now:
+    if prediction_until > 0:
         return prediction_until
     set_at = float(observed.get("current_prediction_set_at", 0) or 0)
     if set_at > 0 and set_at <= now and now - set_at < TIANXING_PREDICTION_SEC:
@@ -3464,10 +3528,24 @@ def _close_tianxing_guard_for_timeline_step(step, now, *, reason="timeline_send_
     if not family:
         return False
     try:
+        msg_id = int((step or {}).get("send_msg_id") or 0)
+        chat_id = int((step or {}).get("send_chat_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if msg_id <= 0:
+        return False
+    if not chat_id:
+        chat_id = get_sent_message_chat_id(msg_id, send_as_id=send_as_id)
+    if not chat_id:
+        return False
+    try:
         from .. import action_guard
     except Exception:
         return False
-    return bool(action_guard.close_by_family(family, send_as_id=send_as_id, reason=reason, now=now))
+    return bool(action_guard.close_by_family(
+        family, send_as_id=send_as_id, reason=reason, now=now,
+        expected_msg_id=msg_id, expected_chat_id=chat_id,
+    ))
 
 
 def _tianxing_action_guard_wait(command, now):
@@ -4494,7 +4572,7 @@ def _timeline_route_release_ready(route, basis, observed, timeline, now):
     return prediction_ready or change_ready
 
 
-async def _release_tianxing_calibration_if_route_ready(timeline, observed, now, config):
+async def _release_tianxing_calibration_if_route_ready(timeline, observed, now, config, *, operation):
     timeline = normalize_tianxing_timeline_state(timeline)
     active_step = dict(timeline.get("active_step") or {})
     active_action = str(active_step.get("action") or "").strip()
@@ -4549,7 +4627,9 @@ async def _release_tianxing_calibration_if_route_ready(timeline, observed, now, 
     _set_timeline_step(timeline, active_index, active_step)
     _timeline_audit(timeline, now, "calibration_skipped_route_ready", route=release_step.get("route") or release_step.get("arg"))
     _activate_timeline_step(timeline, release_index, now)
-    timeline = await _send_tianxing_timeline_step(timeline, dict(timeline.get("active_step") or {}), now, config)
+    timeline = await _send_tianxing_timeline_step(
+        timeline, dict(timeline.get("active_step") or {}), now, config, operation=operation,
+    )
     return True, timeline
 
 
@@ -4874,6 +4954,8 @@ def _tianxing_timeline_unsent_block_retry(send_block, now):
         return None
     if code == "send_queue_timeout":
         return None
+    if not (send_block or {}).get("definitely_unsent") and code not in GAME_SEND_UNSENT_BLOCK_CODES:
+        return None
 
     reason = str((send_block or {}).get("reason") or "").strip()
     if code == "dungeon_quiet":
@@ -4899,11 +4981,41 @@ def _tianxing_timeline_unsent_block_retry(send_block, now):
     }
 
 
-async def _send_tianxing_timeline_step(timeline, step, now, config):
+async def _send_tianxing_timeline_step(timeline, step, now, config, *, operation):
+    if not operation.is_current():
+        return None
+    expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
+    timeline = normalize_tianxing_timeline_state(copy.deepcopy(timeline))
+
+    def commit(value):
+        if not operation.owns_identity() or operation.identity.get("tianxing_timeline_state") != expected_state:
+            return None
+        operation.identity["tianxing_timeline_state"] = value
+        save_state()
+        return value
+
     action = str((step or {}).get("action") or "").strip()
     arg = str((step or {}).get("arg") or "").strip()
+    action_flag = f"auto_{action}_enabled"
+    if config.get("timeline_dry_run_enabled") or not config.get(action_flag, True):
+        return commit(_defer_tianxing_timeline_blocked_send(
+            timeline, step, now, reason="当前配置不允许执行此前安排的天星步骤。",
+            retry_at=now + TIANXING_TIMELINE_BLOCKED_RETRY_SEC, event="action_disabled",
+        ))
     if action == "release_downstream":
-        return _release_tianxing_downstream(timeline, step, now)
+        observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+        if not _timeline_route_release_ready(
+            step.get("route") or arg, step.get("release_basis"), observed, timeline, operation.current_time(),
+        ):
+            step = dict(step, status="send_blocked", last_error="天星放行依据已过期或被消费，需重算时间线。")
+            _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+            timeline.update(
+                phase="blocked_replan", active_step={}, active_step_index=-1,
+                blocked_until=float(now), updated_at=float(now), last_error=step["last_error"],
+            )
+            _timeline_audit(timeline, now, "release_evidence_expired", route=step.get("route") or arg)
+            return commit(timeline)
+        return commit(_release_tianxing_downstream(timeline, step, now))
 
     plan = build_tianxing_manual_plan(
         action,
@@ -4922,7 +5034,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         timeline["updated_at"] = float(now)
         _set_timeline_step(timeline, _timeline_active_index(timeline), step)
         _timeline_audit(timeline, now, "send_blocked", action=action, arg=arg, reason=step["last_error"])
-        return timeline
+        return commit(timeline)
 
     if action == "change_fate":
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
@@ -4940,10 +5052,10 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
             timeline["updated_at"] = float(now)
             _set_timeline_step(timeline, _timeline_active_index(timeline), step)
             _timeline_audit(timeline, now, "change_fate_tianji_guard_block", action=action, arg=arg, tianji=tianji_value)
-            return timeline
+            return commit(timeline)
 
     if _defer_tianxing_timeline_step_for_phaseful_summary(timeline, step, now, action, plan.get("command") or ""):
-        return timeline
+        return commit(timeline)
 
     guard_next_time, guard_reason = _tianxing_action_guard_wait(plan.get("command") or "", now)
     if guard_next_time > now:
@@ -4957,7 +5069,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         timeline["updated_at"] = float(now)
         _set_timeline_step(timeline, _timeline_active_index(timeline), step)
         _timeline_audit(timeline, now, "action_guard_waiting", action=action, arg=arg, reason=guard_reason, next_time=guard_next_time)
-        return timeline
+        return commit(timeline)
 
     step = dict(step or {})
     step["status"] = "sending"
@@ -4969,9 +5081,54 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
     _set_timeline_step(timeline, _timeline_active_index(timeline), step)
     _timeline_audit(timeline, now, "sending", action=action, arg=arg)
     state["tianxing_timeline_state"] = timeline
-    save_state()
+    expected_state = copy.deepcopy(timeline)
+    if save_state() is False:
+        return commit(_defer_tianxing_timeline_blocked_send(
+            normalize_tianxing_timeline_state(copy.deepcopy(timeline)), step, now,
+            reason="天星发送态保存失败，本轮未发送。",
+            retry_at=now + TIANXING_TIMELINE_BLOCKED_RETRY_SEC, event="state_save_failed",
+        ))
+
+    # Only this plan/step owns the receipt; farm bookkeeping may advance separately.
+    send_keys = (
+        "plan_id", "created_at", "phase", "route", "deadline_at",
+        "active_step_index", "active_step", "steps", "blocked_until", "released_routes",
+    )
+    sending = {key: copy.deepcopy(expected_state.get(key)) for key in send_keys}
+
+    def current_send():
+        if not operation.owns_identity():
+            return None
+        current = normalize_tianxing_timeline_state(operation.identity.get("tianxing_timeline_state"))
+        if any(current.get(key) != value for key, value in sending.items()):
+            return None
+        return current
+
+    def send_allowed():
+        if not operation.is_current() or current_send() is None:
+            return False
+        deadline = float(sending.get("deadline_at") or 0)
+        if deadline > 0 and operation.current_time() >= deadline:
+            return False
+        latest_plan = build_tianxing_manual_plan(
+            action, arg, now=operation.current_time(),
+            allow_prediction_override=bool(config.get("allow_prediction_override_enabled")),
+            allow_same_route_probe=bool(step.get("probe_existing_prediction")),
+        )
+        return bool(latest_plan.get("allowed") and latest_plan.get("command") == plan["command"])
+
+    if not send_allowed():
+        current = current_send()
+        if current is None:
+            return None
+        expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
+        return commit(_defer_tianxing_timeline_blocked_send(
+            current, current["active_step"], now, reason="天星发送前置条件已变化，本轮未发送。",
+            retry_at=now + TIANXING_TIMELINE_BLOCKED_RETRY_SEC, event="operation_changed",
+        ))
 
     send_timeout = _effective_tianxing_timeline_send_timeout(config)
+    send_error = ""
     try:
         msg = await send_game_command(
             plan["command"],
@@ -4981,78 +5138,75 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
             source_module="天星宗",
             op_id=f"tianxing-timeline-{action}-{int(now)}",
             queue_timeout=max(1, send_timeout),
+            operation_check=send_allowed,
         )
     except asyncio.CancelledError:
-        _mark_tianxing_timeline_send_unknown(
-            timeline,
-            step,
-            now,
-            config,
-            reason="天星时间线发送被外层调度取消，等待查盘校准；不重复发送。",
-            event="send_cancelled",
-        )
-        state["tianxing_timeline_state"] = timeline
-        save_state()
+        current = current_send()
+        if current is not None:
+            expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
+            commit(_mark_tianxing_timeline_send_unknown(
+                current, current["active_step"], operation.current_time(), config,
+                reason="天星时间线发送被外层调度取消，等待查盘校准；不重复发送。",
+                event="send_cancelled",
+            ))
         raise
+    except Exception as exc:
+        msg = None
+        send_error = type(exc).__name__
 
-    latest_timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
-    latest_step = dict(latest_timeline.get("active_step") or {})
-    if (
-        str(latest_step.get("action") or "").strip() == action
-        and str(latest_step.get("arg") or "").strip() == arg
-        and str(latest_step.get("status") or "").strip() == "sending"
-    ):
-        timeline = latest_timeline
-        step = latest_step
-    else:
-        _timeline_audit(
-            latest_timeline,
-            now,
-            "send_result_stale_ignored",
-            action=action,
-            arg=arg,
-            current_action=latest_step.get("action"),
-            current_arg=latest_step.get("arg"),
-            current_status=latest_step.get("status"),
-        )
-        latest_timeline["updated_at"] = float(now)
-        return latest_timeline
+    timeline = current_send()
+    if timeline is None:
+        return None
+    expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
+    step = dict(timeline.get("active_step") or {})
+    now = operation.current_time()
 
-    step = dict(step or {})
+    try:
+        msg_id = int(getattr(msg, "id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        msg_id = 0
+    if msg and msg_id <= 0:
+        msg = None
+        send_error = "invalid_message_id"
     sent_at = float(now)
     if msg:
         parsed_sent_at, sent_at_dirty = _parse_observation_float(getattr(msg, "sent_at", 0))
         if not sent_at_dirty and parsed_sent_at > 0:
             sent_at = parsed_sent_at
     if not msg:
-        send_block = get_last_game_send_block(get_current_identity_id(), plan["command"])
+        send_block = {"code": "send_exception"} if send_error else get_last_game_send_block(operation.identity_id, plan["command"])
         blocked_retry = _tianxing_timeline_unsent_block_retry(send_block, now)
         if blocked_retry:
-            return _defer_tianxing_timeline_blocked_send(
+            return commit(_defer_tianxing_timeline_blocked_send(
                 timeline,
                 step,
                 now,
                 reason=blocked_retry["reason"],
                 retry_at=blocked_retry["retry_at"],
                 event=blocked_retry["event"],
-            )
+            ))
         if str(send_block.get("code") or "") == "send_queue_timeout":
-            return _defer_tianxing_timeline_queue_retry(
+            return commit(_defer_tianxing_timeline_queue_retry(
                 timeline,
                 step,
                 now,
                 reason=f"天星时间线排队超过 {send_timeout}s 未发送，短退避后重发；不查盘。",
-            )
-        return _mark_tianxing_timeline_send_unknown(
+            ))
+        return commit(_mark_tianxing_timeline_send_unknown(
             timeline,
             step,
             now,
             config,
-            reason="天星时间线发送未返回消息ID，等待查盘校准；不重复发送。",
-        )
+            reason=f"天星时间线发送未确认{f' ({send_error})' if send_error else ''}，等待查盘校准；不重复发送。",
+        ))
 
     step["status"] = "sent_waiting_ack"
-    step["send_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    step["send_msg_id"] = msg_id
+    try:
+        chat_id = int(getattr(msg, "chat_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        chat_id = 0
+    step["send_chat_id"] = chat_id or get_sent_message_chat_id(msg_id, send_as_id=operation.identity_id)
     step["sent_at"] = float(sent_at)
     step["ack_due_at"] = float(sent_at + int(config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC))
     timeline["phase"] = "sent_waiting_ack"
@@ -5060,7 +5214,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
     timeline["updated_at"] = float(sent_at)
     _set_timeline_step(timeline, _timeline_active_index(timeline), step)
     _timeline_audit(timeline, sent_at, "sent_waiting_ack", action=action, arg=arg, msg_id=step["send_msg_id"])
-    return timeline
+    return commit(timeline)
 
 
 def is_tianxing_route_released(route, *, now=None, max_age_sec=3600, require_change_fate=False):
@@ -5234,8 +5388,11 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
         }
 
 
-async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config=None, horizon_hours=8):
+async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config=None, horizon_hours=8, operation=None):
     now = float(now if now is not None else time.time())
+    operation = operation or _TianxingOperation.capture(now)
+    if operation is None or not operation.is_current():
+        return _cancelled_tianxing_operation_result()
     effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     if not state.get("tianxing_enabled"):
         return {"phase": "disabled", "changed": False, "reason": "天星宗模块未开启。"}
@@ -5272,16 +5429,21 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
     if cleared_conflict:
         state["tianxing_timeline_state"] = timeline
         save_state()
+    before_calibration = copy.deepcopy(state.get("tianxing_timeline_state"))
     released_from_calibration, timeline = await _release_tianxing_calibration_if_route_ready(
         state.get("tianxing_timeline_state"),
         observed,
         now,
         effective_config,
+        operation=operation,
     )
     if released_from_calibration:
-        state["tianxing_timeline_state"] = timeline
-        save_state()
-        return {"phase": timeline.get("phase") or "downstream_released", "changed": True, "reason": "已有有效推命与改命，已跳过查盘校准并放行下游。"}
+        return _tianxing_timeline_step_result(operation, timeline, "已有有效推命与改命，已跳过查盘校准并放行下游。")
+    if not operation.is_current():
+        return _cancelled_tianxing_operation_result()
+    if state.get("tianxing_timeline_state") != before_calibration:
+        return _tianxing_timeline_step_result(operation, None, "天星计划已更新，本轮不覆盖新状态。")
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if _clear_unconfirmed_timeline_step_for_observed_route_result(observed, now):
         timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
         save_state()
@@ -5337,11 +5499,12 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
             return {"phase": "sending", "changed": True, "reason": "天星前置命令发送态缺少时间戳，已补记录并继续等待。"}
         if now < started_at + ack_timeout:
             return {"phase": "sending", "changed": False, "reason": "天星前置命令正在发送队列中，等待返回或真实回复。"}
-        timeline = _defer_tianxing_timeline_queue_retry(
+        timeline = _mark_tianxing_timeline_send_unknown(
             timeline,
             active_step,
             now,
-            reason="天星前置命令发送态超时且未确认消息ID，短退避后重发；不查盘。",
+            effective_config,
+            reason="天星前置命令发送态超时，不能证明未发送；等待查盘校准，不重复发送。",
         )
         state["tianxing_timeline_state"] = timeline
         save_state()
@@ -5404,16 +5567,15 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
             str(next_step.get("status") or "").strip() == "pending"
             and str(next_step.get("action") or "").strip() == "release_downstream"
         ):
-            timeline = await _send_tianxing_timeline_step(timeline, next_step, now, effective_config)
+            timeline = await _send_tianxing_timeline_step(timeline, next_step, now, effective_config, operation=operation)
+            return _tianxing_timeline_step_result(operation, timeline, "时间线推进到下一步。")
         state["tianxing_timeline_state"] = timeline
         save_state()
         return {"phase": timeline.get("phase"), "changed": True, "reason": "时间线推进到下一步。"}
 
     if active_status == "pending":
-        timeline = await _send_tianxing_timeline_step(timeline, active_step, now, effective_config)
-        state["tianxing_timeline_state"] = timeline
-        save_state()
-        return {"phase": timeline.get("phase"), "changed": True, "reason": timeline.get("last_error") or "时间线步骤已处理。"}
+        timeline = await _send_tianxing_timeline_step(timeline, active_step, now, effective_config, operation=operation)
+        return _tianxing_timeline_step_result(operation, timeline, "时间线步骤已处理。")
 
     plan = build_tianxing_timeline_plan(now=now, horizon_hours=horizon_hours, windows=windows or [], config=effective_config)
     timeline = _build_tianxing_timeline_state_from_plan(plan, now, effective_config)
@@ -5423,15 +5585,21 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
         return {"phase": timeline.get("phase"), "changed": True, "reason": timeline.get("last_error") or timeline.get("reason") or "时间线计划已记录。"}
 
     active_step = dict(timeline.get("active_step") or {})
-    timeline = await _send_tianxing_timeline_step(timeline, active_step, now, effective_config)
-    state["tianxing_timeline_state"] = timeline
-    save_state()
-    return {"phase": timeline.get("phase"), "changed": True, "reason": timeline.get("last_error") or "时间线步骤已处理。"}
+    timeline = await _send_tianxing_timeline_step(timeline, active_step, now, effective_config, operation=operation)
+    return _tianxing_timeline_step_result(operation, timeline, "时间线步骤已处理。")
 
 
-async def run_tianxing_timeline_scheduler(now, *, windows=None, config=None, horizon_hours=8):
+async def run_tianxing_timeline_scheduler(now, *, windows=None, config=None, horizon_hours=8, operation_check=None):
+    now = float(now if now is not None else time.time())
+    operation = _TianxingOperation.capture(now, operation_check)
+    if operation is None or not operation.is_current():
+        return _cancelled_tianxing_operation_result()
+    windows = copy.deepcopy(windows)
+    config = normalize_tianxing_auto_config(config if config is not None else operation.identity.get("tianxing_auto_config"))
     async with _timeline_lock():
-        return await _run_tianxing_timeline_scheduler_unlocked(now, windows=windows, config=config, horizon_hours=horizon_hours)
+        return await _run_tianxing_timeline_scheduler_unlocked(
+            now, windows=windows, config=config, horizon_hours=horizon_hours, operation=operation,
+        )
 
 
 def _route_preflight_result(route, stage, route_allowed, reason="", prepare_plan=None, deadline_at=0, now=0, blocked_until=0, timeline_required=False):

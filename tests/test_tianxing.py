@@ -3962,6 +3962,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "last_observed_at": now - 1,
                 "current_prediction": "探索",
                 "current_prediction_until": now + 3600,
+                "current_prediction_set_at": sent_at,
                 "current_change": "探索",
                 "current_change_until": now + 12 * 3600,
                 "current_change_set_at": now - 120,
@@ -4487,10 +4488,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 result = await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now))
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertEqual("waiting_send", result["phase"])
-        self.assertEqual("pending", timeline["active_step"]["status"])
-        self.assertGreater(timeline["active_step"]["queue_retry_at"], now)
-        self.assertIn("短退避", timeline["last_error"])
+        self.assertEqual("ack_timeout", result["phase"])
+        self.assertEqual("ack_timeout", timeline["active_step"]["status"])
+        self.assertGreater(timeline["active_step"]["calibration_due_at"], now)
+        self.assertIn("不重复发送", timeline["last_error"])
         send_mock.assert_not_called()
 
     async def test_timeline_ignores_stale_reply_before_sent_at(self):
@@ -7379,6 +7380,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "fixed_star_day": tianxing.get_day_key(now),
                 "current_prediction": "炼制",
                 "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 10,
                 "current_change": "",
                 "current_change_until": 0,
                 "tianji_value": 12,

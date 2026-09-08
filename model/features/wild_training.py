@@ -472,7 +472,7 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0, operation=None
     if not windows:
         await _send_tianxing_panel_calibration(now, "野外 MiniApp 缺少天星消费窗口", operation=operation)
         return False
-    timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+    timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows, operation_check=operation.is_current)
     if not operation.is_current():
         return False
     now = started_now + max(0.0, time.monotonic() - started_at)

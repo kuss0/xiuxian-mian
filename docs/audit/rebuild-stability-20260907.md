@@ -95,6 +95,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R41 | High | Public-entry background work captures only an identity number; queued actions ignore changed controls, cancellation and local busy results become 30-minute failures, and late completions overwrite newer retry/slot state or mark the next day complete | Fixed for reproduced background-job boundaries in candidate; enqueue-time owner/control snapshots, repeated UI/loader checks, exact in-memory job ownership, cancellation-aware completion and original-day terminal markers pass; downstream unguarded game workers remain open |
 | R42 | High | Small-world HTTP-envelope success hides business rejection; raw threads outlive cancellation, stale/incomplete panels become current resource balances, and late results overwrite owners, clocks or newer panels | Fixed for reproduced MiniApp boundaries in candidate; joined cooperative execution, shared per-flow budget, explicit business confirmation, complete snapshot evidence, owner/control checks, guarded cooldown updates and notification-safe persistence pass; legacy command internals and other MiniApp game flows remain open |
 | R43 | High | Wild-training workers outlive their owner/configuration/entry, continue with stale Tianxing protection, infer completion from HTTP success, and lose confirmed results on cancellation or notification failure | Fixed for reproduced wild-worker/public-journey boundaries in candidate; original-owner admission, action-time preflight, joined HTTP completion, explicit business evidence, protected result clocks and retained rate-limit evidence pass; shared Tianxing scheduler/craft internals still require review |
+| R44 | High | Tianxing timeline lock/queue waits admit invalidated work; old send returns and cancellations overwrite newer plans or confirmations; recovered no-ID sends are rearmed; explicit expired prediction deadlines are extended | Fixed for reproduced timeline boundaries in candidate; transient identity/config/parent checks, exact sending snapshots, receipt-owned persistence, strictly unsent retry classification, chat-scoped guard closure and authoritative expiry pass; outer auto/farm callers and disabled-module reducer reconciliation still require review |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -981,6 +982,44 @@ five monitor/control-only contracts need separate behavioral verification.
   local; the production tree, live state/configuration, services, skill and
   remote branches were not touched.
 
+- R44 first reproduced 30 failures in 34 timeline lifecycle cases. Follow-up
+  fault tests exposed unclassified send errors being retried, malformed message
+  IDs being accepted, expired release evidence, and a sending-save failure
+  whose in-memory mutation obscured the reported outcome. The final lifecycle
+  suite has 68 cases, plus 21 real-runtime subtests spanning entity resolution,
+  awaited pre-send guards and the actual RPC dispatch boundary. All transport
+  clients are fakes; no game service was contacted.
+- Timeline operations retain the identity object/account and normalized
+  controls before waiting for the existing lock. A parent operation check
+  propagates the wild-worker lifetime into queued Tianxing preparation. The
+  existing runtime revalidates the exact plan/step and current manual-action
+  prerequisites before dispatch. Dry-run/action-off changes and expired
+  deadlines cannot execute an already-queued plan. No new durable fence,
+  outbox or CommandAttempt recovery controller was added.
+- Send results are applied only to their original plan, index and complete
+  sending snapshot. Early confirmations, replacement identities/plans and
+  independently advanced farm bookkeeping survive both late receipts and
+  cancellation. Actual receipts remain recorded after a post-dispatch switch
+  change. Callers no longer blindly store a returned stale timeline. Sending
+  state must save successfully before the transport is called.
+- No-ID recovered sending, malformed IDs, arbitrary exceptions and unknown
+  block codes stay in the existing acknowledgement-timeout/calibration path.
+  Only explicit unsent evidence permits a bounded retry, with backoff measured
+  after the await. An isolated SQLite save/reload test confirms no rearming of
+  unknown sends. Timeline cleanup requires the exact message and chat; without
+  evidence it cannot close a newer family guard. This does not close R07's
+  shared forced-stop problem or R11's other scalar anchors/observation cleanup.
+- A positive server prediction expiry is authoritative even after it passes.
+  Missing-expiry legacy inference is retained. Releasing downstream now checks
+  current unconsumed, fresh effect evidence; old positive test fixtures were
+  completed with the prediction timestamps their assertions require. Deep
+  retreat remains unrelated to Tianxing effect consumption or admission.
+- R44 related tests: 500 passed, 81 subtests passed. Final full suite:
+  4554 passed, 1025 subtests passed, 70.91 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r44-tianxing-timeline-20260908.xml`.
+  Full Ruff and diff checks pass. The candidate is not deployed; production
+  files/state/configuration, services, skill and remotes remain untouched.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1059,6 +1098,11 @@ and cleanup code during a code-only rollback.
    its caller-side Tianxing preparation checks. Continue with the shared
    Tianxing timeline/craft functions' internal awaits and queued command
    admission; passing mocked preparation tests does not prove those callees.
+   R44 now covers the shared timeline's lock, queued command, cancellation and
+   receipt boundaries, plus explicit expiry and recovered sending-state safety.
+   Continue with outer automatic/follow-up scheduling and craft-consumption
+   internals, which still hold state across awaits; also review result reducers
+   after module disable. Timeline tests do not certify these callers or R07.
 
 ## Completion Gate
 
