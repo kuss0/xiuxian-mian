@@ -17,6 +17,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
 from contextvars import copy_context
 
 import requests
@@ -25,7 +26,7 @@ from requests.exceptions import RequestException
 
 from ..config import TG_REQUESTS_PROXIES
 from ..state import get_current_identity_id, get_identity_account, get_identity_state, has_identity
-from ..webapp_core import require_miniapp_operation, safe_miniapp_event_detail, sanitize_webapp_secret_text
+from ..webapp_core import MiniAppRequestAborted, require_miniapp_operation, safe_miniapp_event_detail, sanitize_webapp_secret_text
 
 
 def resolve_identity_id(value=None):
@@ -118,6 +119,8 @@ async def run_miniapp_blocking_flow(flow, *, operation_check=None, sleeper=None)
 
 
 DEFAULT_MINIAPP_HTTP_TIMEOUT = (5, 20)
+DEFAULT_MINIAPP_SESSION_MAX_ENTRIES = 256
+DEFAULT_MINIAPP_SESSION_IDLE_TTL_SEC = 30 * 60
 MINIAPP_DEFAULT_USER_AGENT = "Mozilla/5.0"
 MINIAPP_BUSINESS_CAPTURE_ADAPTERS = frozenset({
     "fishing",
@@ -175,13 +178,44 @@ def build_miniapp_transport(*, timeout=DEFAULT_MINIAPP_HTTP_TIMEOUT, session=Non
     return _transport
 
 
-class _MiniAppSessionPool:
-    """Keep route-specific sessions while serializing one identity's requests."""
+@dataclass(eq=False)
+class _MiniAppSessionEntry:
+    key: tuple
+    session: object
+    route: str
+    owner: MiniAppIdentityOwner | None
+    last_used_at: float
+    active: bool = False
+    retired: bool = False
 
-    def __init__(self):
+    def owner_is_current(self):
+        return self.owner.is_current() if self.owner is not None else not has_identity(self.key[1])
+
+    def matches_owner(self, owner):
+        if self.owner is None or owner is None:
+            return self.owner is owner
+        return self.owner.identity is owner.identity and self.owner.account_id == owner.account_id
+
+
+@dataclass
+class _MiniAppRequestSlot:
+    lock: object
+    users: int = 0
+
+
+class _MiniAppSessionPool:
+    """Bound cached sessions and keep identity exclusion until every lease exits."""
+
+    def __init__(self, *, max_entries=DEFAULT_MINIAPP_SESSION_MAX_ENTRIES,
+                 idle_ttl_sec=DEFAULT_MINIAPP_SESSION_IDLE_TTL_SEC, clock=None):
         self._lock = threading.RLock()
         self._entries = {}
-        self._request_locks = {}
+        self._retired = set()
+        self._closing = set()
+        self._request_slots = {}
+        self.max_entries = max(1, int(max_entries))
+        self.idle_ttl_sec = max(0.0, float(idle_ttl_sec))
+        self._clock = clock or time.monotonic
 
     @staticmethod
     def _proxy_fingerprint(proxies):
@@ -205,98 +239,153 @@ class _MiniAppSessionPool:
     @staticmethod
     def _new_session(route, proxies):
         session = requests.Session()
-        session.trust_env = False
-        adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=0)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        if route == "config_proxy" and proxies:
-            session.proxies.update(proxies)
-        return session
-
-    def acquire(self, adapter_key, identity_id, proxies):
-        key = self._key(adapter_key, identity_id, proxies)
-        lock_key = self._lock_key(adapter_key, identity_id)
-        with self._lock:
-            request_lock = self._request_locks.get(lock_key)
-            if request_lock is None:
-                request_lock = threading.Lock()
-                self._request_locks[lock_key] = request_lock
-            entry = self._entries.get(key)
-            if entry is None:
-                route = "config_proxy" if proxies else "direct"
-                entry = {
-                    "route": route,
-                    "session": self._new_session(route, proxies),
-                    "request_lock": request_lock,
-                }
-                self._entries[key] = entry
-            return entry["session"], str(entry["route"]), entry["request_lock"]
-
-    def is_current(self, adapter_key, identity_id, session, request_lock, proxies):
-        key = self._key(adapter_key, identity_id, proxies)
-        with self._lock:
-            entry = self._entries.get(key)
-            return bool(
-                isinstance(entry, dict)
-                and entry.get("session") is session
-                and entry.get("request_lock") is request_lock
-            )
-
-    def invalidate(self, adapter_key, identity_id, session, proxies, *, request_lock=None):
-        key = self._key(adapter_key, identity_id, proxies)
-        old_session = None
-        with self._lock:
-            entry = self._entries.get(key)
-            if not isinstance(entry, dict) or entry.get("session") is not session:
-                return
-            old_session = entry.get("session")
-            route = str(entry.get("route") or "direct")
-            self._entries[key] = {
-                "route": route,
-                "session": self._new_session(route, proxies),
-                # Keep the per-identity lock across route replacement. This
-                # prevents a waiting caller from using the new session while
-                # the failed caller is still unwinding the old one.
-                "request_lock": request_lock or self._request_locks.setdefault(
-                    self._lock_key(adapter_key, identity_id),
-                    threading.Lock(),
-                ),
-            }
-        if old_session is not None:
-            try:
-                old_session.close()
-            except Exception:
-                pass
-
-    def close(self, adapter_key=None, identity_id=None):
-        adapter_key = str(adapter_key or "")
-        identity_id = None if identity_id is None else int(identity_id or 0)
-        sessions = []
-        with self._lock:
-            keys = [
-                key for key in self._entries
-                if (not adapter_key or key[0] == adapter_key)
-                and (identity_id is None or key[1] == identity_id)
-            ]
-            for key in keys:
-                entry = self._entries.pop(key, None)
-                if isinstance(entry, dict) and entry.get("session") is not None:
-                    sessions.append(entry["session"])
-            active_lock_keys = {(key[0], key[1]) for key in self._entries}
-            lock_keys = [
-                key for key in self._request_locks
-                if (not adapter_key or key[0] == adapter_key)
-                and (identity_id is None or key[1] == identity_id)
-                and key not in active_lock_keys
-            ]
-            for key in lock_keys:
-                self._request_locks.pop(key, None)
-        for session in sessions:
+        try:
+            session.trust_env = False
+            adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=0)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            if route == "config_proxy" and proxies:
+                session.proxies.update(proxies)
+        except Exception:
             try:
                 session.close()
             except Exception:
                 pass
-        return len(sessions)
+            raise
+        return session
+
+    def _retire_locked(self, entry, closing):
+        if entry.retired:
+            return
+        entry.retired = True
+        if self._entries.get(entry.key) is entry:
+            self._entries.pop(entry.key)
+        if entry.active:
+            self._retired.add(entry)
+        else:
+            self._closing.add(entry)
+            closing.append(entry)
+
+    def _close_entries(self, entries):
+        for entry in entries:
+            try:
+                entry.session.close()
+            except Exception as exc:
+                logging.getLogger(__name__).warning("MiniApp session close failed (%s)", type(exc).__name__)
+            finally:
+                with self._lock:
+                    self._closing.discard(entry)
+
+    def _prune_locked(self, now, closing):
+        for entry in list(self._entries.values()):
+            if not entry.active and (
+                not entry.owner_is_current() or now - entry.last_used_at >= self.idle_ttl_sec
+            ):
+                self._retire_locked(entry, closing)
+
+    def prune(self):
+        closing = []
+        with self._lock:
+            self._prune_locked(self._clock(), closing)
+        self._close_entries(closing)
+        return len(closing)
+
+    def _checkout(self, key, proxies, owner):
+        while True:
+            closing = []
+            with self._lock:
+                now = self._clock()
+                self._prune_locked(now, closing)
+                entry = self._entries.get(key)
+                if entry is not None and not entry.matches_owner(owner):
+                    self._retire_locked(entry, closing)
+                    entry = None
+                if not closing:
+                    if entry is None and len(self._entries) + len(self._retired) + len(self._closing) >= self.max_entries:
+                        idle = [item for item in self._entries.values() if not item.active]
+                        if not idle:
+                            raise MiniAppRequestAborted("session_pool_capacity")
+                        self._retire_locked(min(idle, key=lambda item: item.last_used_at), closing)
+                    if not closing:
+                        if entry is None:
+                            route = "config_proxy" if proxies else "direct"
+                            try:
+                                session = self._new_session(route, proxies)
+                            except Exception as exc:
+                                raise MiniAppRequestAborted("session_pool_init_failed") from exc
+                            entry = _MiniAppSessionEntry(key, session, route, owner, now)
+                            self._entries[key] = entry
+                        entry.active = True
+                        return entry
+            # Closing resources still count against capacity until close returns.
+            self._close_entries(closing)
+
+    def _release(self, entry):
+        closing = []
+        with self._lock:
+            entry.active = False
+            entry.last_used_at = self._clock()
+            if entry.retired:
+                self._retired.discard(entry)
+                self._closing.add(entry)
+                closing.append(entry)
+            elif not entry.owner_is_current():
+                self._retire_locked(entry, closing)
+        self._close_entries(closing)
+
+    @contextmanager
+    def lease(self, adapter_key, identity_id, proxies, *, owner=None, operation_check=None):
+        key = self._key(adapter_key, identity_id, proxies)
+        lock_key = self._lock_key(adapter_key, identity_id)
+        require_miniapp_operation(operation_check)
+        with self._lock:
+            slot = self._request_slots.get(lock_key)
+            if slot is None:
+                slot = _MiniAppRequestSlot(threading.Lock())
+                self._request_slots[lock_key] = slot
+            slot.users += 1
+        acquired = False
+        entry = None
+        try:
+            while not slot.lock.acquire(timeout=0.1):
+                require_miniapp_operation(operation_check)
+            acquired = True
+            require_miniapp_operation(operation_check)
+            entry = self._checkout(key, proxies, owner)
+            yield entry
+        finally:
+            try:
+                if entry is not None:
+                    self._release(entry)
+            finally:
+                if acquired:
+                    slot.lock.release()
+                with self._lock:
+                    slot.users -= 1
+                    if slot.users == 0 and self._request_slots.get(lock_key) is slot:
+                        self._request_slots.pop(lock_key)
+
+    def invalidate(self, entry):
+        closing = []
+        with self._lock:
+            self._retire_locked(entry, closing)
+        self._close_entries(closing)
+
+    def close(self, adapter_key=None, identity_id=None):
+        """Retire matching sessions without closing an in-flight request."""
+        adapter_key = str(adapter_key or "")
+        identity_id = None if identity_id is None else int(identity_id or 0)
+        closing = []
+        with self._lock:
+            entries = [
+                entry for key, entry in self._entries.items()
+                if (not adapter_key or key[0] == adapter_key)
+                and (identity_id is None or key[1] == identity_id)
+            ]
+            for entry in entries:
+                self._retire_locked(entry, closing)
+        self._close_entries(closing)
+        return len(entries)
 
 
 _MINIAPP_SESSION_POOL = _MiniAppSessionPool()
@@ -322,30 +411,25 @@ def build_pooled_miniapp_transport(
     )
     adapter_key = str(adapter_key or "miniapp")
     identity_id = int(identity_id or 0)
+    owner = MiniAppIdentityOwner.capture(identity_id)
+
+    def current_operation():
+        if owner is not None:
+            if not owner.is_current():
+                return False
+        elif has_identity(identity_id):
+            return False
+        require_miniapp_operation(operation_check)
+        return True
 
     def _transport(request):
-        while True:
-            require_miniapp_operation(operation_check)
-            session, _route, request_lock = _MINIAPP_SESSION_POOL.acquire(
-                adapter_key,
-                identity_id,
-                effective_proxies,
-            )
-            while not request_lock.acquire(timeout=0.1):
-                require_miniapp_operation(operation_check)
-            if _MINIAPP_SESSION_POOL.is_current(
-                adapter_key,
-                identity_id,
-                session,
-                request_lock,
-                effective_proxies,
-            ):
-                break
-            request_lock.release()
-        try:
-            require_miniapp_operation(operation_check)
+        pool = _MINIAPP_SESSION_POOL
+        with pool.lease(
+            adapter_key, identity_id, effective_proxies, owner=owner, operation_check=current_operation,
+        ) as entry:
+            require_miniapp_operation(current_operation)
             try:
-                return session.request(
+                return entry.session.request(
                     str(request.get("method") or "POST"),
                     request["url"],
                     json=request.get("payload") or {},
@@ -357,17 +441,9 @@ def build_pooled_miniapp_transport(
                     timeout=timeout,
                     allow_redirects=False,
                 )
-            except RequestException as exc:
-                _MINIAPP_SESSION_POOL.invalidate(
-                    adapter_key,
-                    identity_id,
-                    session,
-                    effective_proxies,
-                    request_lock=request_lock,
-                )
+            except RequestException:
+                pool.invalidate(entry)
                 raise
-        finally:
-            request_lock.release()
 
     return _transport
 

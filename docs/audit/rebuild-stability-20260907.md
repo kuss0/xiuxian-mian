@@ -28,7 +28,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Identity admission and Nanlong queued-operation checks repaired in candidate; no-ID crash durability and other modules' business admission still pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
-| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy and tower/public-entry ownership, thread draining and confirmed-result retention fixed in candidate; other per-game retry/reentry, pool lifecycle and current-entry integration still pending |
+| MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, thread draining, confirmed-result retention and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Pending |
@@ -88,6 +88,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R34 | High | Nanlong queued commands still dispatch after module disable, prompt replacement/clear, choice change or expiry; post-send validation arrives too late to stop the game action | Fixed for reproduced boundaries in candidate; a pure synchronous module operation check is revalidated by the existing owner checks and immediately before RPC dispatch; normal steps, recall cleanup and post-dispatch receipt controls pass |
 | R35 | High | Tower workers start and write results after identity deletion/replacement/rebinding or switch-off; public-entry awaits continue with stale owners, and tower status falls back to another identity's result | Fixed at queued worker and asynchronous public-entry/session boundaries in candidate; exact owner/account capture, schedule snapshots, guarded fallback and confirmed-result controls pass; R36 covers guarded tower/dwelling threads, not all other game flows |
 | R36 | High | Cancelling a tower caller releases public-entry locks while its HTTP thread continues and challenges; module switch-off also permits another in-thread action; missing challenge state is falsely accepted as daily completion, and notification faults lose confirmed completion | Fixed for tower and its dwelling start/details/external path in candidate; cooperative request checks, joined threads, result-carrying cancellation, strict server-state parsing and notification isolation pass full caller/fake-HTTP tests; forced stop and other game flows remain open |
+| R37 | High | Pooled HTTP sessions survive identity deletion/replacement/account rebinding; close tears down active sessions and their exclusion locks, while idle entries and locks are unbounded | Fixed in candidate; owner-aware leases retain serial exclusion across route/owner changes, defer active closes, reclaim idle entries with TTL/LRU, and bound active/retired/closing capacity; per-game lifecycle and live validation remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -712,6 +713,34 @@ five monitor/control-only contracts need separate behavioral verification.
   changed to satisfy that assertion. Production, skill, switches, DB and remote
   branches remain unchanged.
 
+- R37 replaces the private acquire/is-current protocol with scoped pool leases.
+  Transport creation retains the exact identity object/account; a removed,
+  replaced or rebound owner cannot dispatch later requests or reuse the old
+  owner's session. Profile/business-field changes still reuse the same owner's
+  session. Unregistered protocol-test identities cannot keep using a transport
+  after that ID becomes a registered role.
+- Pool slots count active and queued lease holders, so close, invalidation and
+  proxy changes cannot replace the identity lock until every holder exits.
+  Retiring an active session delays physical close until its request returns.
+  Idle sessions are reclaimed lazily on checkout or explicit prune after 30
+  minutes, with idle LRU eviction at the default 256-entry capacity. Active,
+  retired and currently-closing resources all count against that limit; a full
+  active pool rejects before HTTP rather than evicting an active connection.
+  Close runs outside the pool metadata lock. Init/close exceptions release
+  metadata and do not print credential-bearing exception text.
+- R37 verification covers real worker threads with fake HTTP sessions: expiry
+  at the exact TTL boundary, TTL from release rather than checkout, idle LRU,
+  all-active and retired capacity, blocked close with and without remaining
+  capacity, init/close exceptions, proxy-switch serialization, cancellation
+  while queued, identity churn and owner changes during an in-flight request.
+  The two existing tests that used the removed private acquire API were migrated
+  to leases and behavioral concurrency assertions, not a compatibility shim.
+  Focused suite: 189 passed, 17 subtests passed. Full suite: 4140 passed,
+  1004 subtests passed, 67.13 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r37-session-lifecycle-20260908.xml`.
+  Full Ruff, changed-file compilation and diff checks pass. Tests remain offline
+  and use temporary state. No skill, production, live DB or remote branch change.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -760,16 +789,13 @@ and cleanup code during a code-only rollback.
 4. MiniApp follow-through: R31 covers only the generic HTTP/flow runner, not
    every custom game loop. Most custom flows still lack a shared per-run
    budget; Nangongque constructs a new budget for each request. Review
-   unknown-result rescheduling, owner invalidation during threaded flows, and
-   session-pool retention/deletion/rebind behavior. R32 closes Requests' hidden
+   unknown-result rescheduling and owner invalidation during threaded flows.
+   R37 covers shared pool retention/deletion/rebind behavior. R32 closes Requests' hidden
    redirect path, not the remaining runtime lifecycle or entry-refresh matrix.
    R35/R36 cover the tower scheduler, public wrapper and guarded dwelling
    loading/external and tower HTTP threads. Other game callers still need
    individual admission, cancellation and result-retention tests; the optional
-   transport check does not automatically protect every caller. Pool entries
-   and locks currently remain until close/atexit and are not account-keyed;
-   review bounded retention and ownership changes before claiming isolated
-   long-term session behavior. Also inspect how
+   transport check does not automatically protect every caller. Also inspect how
    `probe_cave_public_entry` maps a cancelled/invalidated loader result into
    shared entry-health backoff, rather than treating a local owner change as
    evidence that the public entry is unhealthy. No live validation is approved.

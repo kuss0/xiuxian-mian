@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -1085,6 +1086,8 @@ class WebAppCoreTests(unittest.TestCase):
 
     def test_pooled_transport_proxy_switch_uses_new_session_and_shared_identity_lock(self):
         sessions = []
+        first_started, proxy_queued, proxy_started, release = (threading.Event() for _ in range(4))
+        pool = miniapp_common._MiniAppSessionPool()
 
         class _FakeSession:
             def __init__(self):
@@ -1096,6 +1099,12 @@ class WebAppCoreTests(unittest.TestCase):
 
             def request(self, method, url, **kwargs):
                 self.calls.append((method, url, kwargs))
+                if not self.proxies:
+                    first_started.set()
+                    if not release.wait(3):
+                        raise AssertionError("direct request was not released")
+                else:
+                    proxy_started.set()
                 return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
 
             def close(self):
@@ -1106,9 +1115,17 @@ class WebAppCoreTests(unittest.TestCase):
             sessions.append(session)
             return session
 
+        def proxy_check():
+            with pool._lock:
+                slot = pool._request_slots.get(("trial", 45))
+                if slot is not None and slot.users == 2:
+                    proxy_queued.set()
+            return True
+
         proxies = {"https": "http://127.0.0.1:7890"}
-        miniapp_common.close_pooled_miniapp_sessions()
-        with patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
+        self.addCleanup(pool.close)
+        with patch.object(miniapp_common, "_MINIAPP_SESSION_POOL", pool), \
+                patch.object(miniapp_common.requests, "Session", side_effect=session_factory):
             direct = miniapp_common.build_pooled_miniapp_transport(
                 adapter_key="trial",
                 identity_id=45,
@@ -1118,26 +1135,34 @@ class WebAppCoreTests(unittest.TestCase):
                 adapter_key="trial",
                 identity_id=45,
                 proxies=proxies,
+                operation_check=proxy_check,
             )
-            direct({"method": "POST", "url": "https://example.invalid/direct"})
-            proxied({"method": "POST", "url": "https://example.invalid/proxied"})
-            direct_session, _route, direct_lock = miniapp_common._MINIAPP_SESSION_POOL.acquire(
-                "trial", 45, {},
-            )
-            proxy_session, _route, proxy_lock = miniapp_common._MINIAPP_SESSION_POOL.acquire(
-                "trial", 45, proxies,
-            )
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(direct, {"method": "POST", "url": "https://example.invalid/direct"})
+                second = None
+                try:
+                    self.assertTrue(first_started.wait(1))
+                    second = executor.submit(proxied, {"method": "POST", "url": "https://example.invalid/proxied"})
+                    self.assertTrue(proxy_queued.wait(1))
+                    self.assertFalse(proxy_started.is_set())
+                finally:
+                    release.set()
+                    self.assertEqual(200, first.result(2).status_code)
+                    if second is not None:
+                        self.assertEqual(200, second.result(2).status_code)
+            owner = miniapp_common.MiniAppIdentityOwner.capture(45)
+            with pool.lease("trial", 45, {}, owner=owner) as direct_entry:
+                self.assertIs(sessions[0], direct_entry.session)
+            with pool.lease("trial", 45, proxies, owner=owner) as proxy_entry:
+                self.assertIs(sessions[1], proxy_entry.session)
 
         self.assertEqual(2, len(sessions))
-        self.assertIs(sessions[0], direct_session)
-        self.assertIs(sessions[1], proxy_session)
-        self.assertIsNot(direct_session, proxy_session)
-        self.assertIs(direct_lock, proxy_lock)
+        self.assertIsNot(direct_entry.session, proxy_entry.session)
+        self.assertEqual({}, pool._request_slots)
         self.assertEqual({}, sessions[0].proxies)
         self.assertEqual(proxies, sessions[1].proxies)
         self.assertEqual(1, len(sessions[0].calls))
         self.assertEqual(1, len(sessions[1].calls))
-        miniapp_common.close_pooled_miniapp_sessions()
 
     def test_retry_after_helper_reads_nested_events_and_results(self):
         value = {

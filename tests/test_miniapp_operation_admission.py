@@ -115,36 +115,39 @@ def test_cancellation_while_waiting_for_pool_does_not_wait_for_another_request()
         session.request.return_value = (200, {"ok": True})
         with patch.object(miniapp_common, "_MINIAPP_SESSION_POOL", pool), \
                 patch.object(miniapp_common.requests, "Session", return_value=session):
-            _session, _route, lock = pool.acquire("tower", 36, {})
-            lock.acquire()
-            real_acquire = pool.acquire
-
-            def acquire(*args):
-                result = real_acquire(*args)
-                loop.call_soon_threadsafe(queued.set)
-                return result
-
             def flow(operation):
+                def check():
+                    with pool._lock:
+                        slot = pool._request_slots.get(("tower", 36))
+                        if slot is not None and slot.users > 1:
+                            loop.call_soon_threadsafe(queued.set)
+                    return operation.check()
+
                 transport = miniapp_common.build_pooled_miniapp_transport(
-                    adapter_key="tower", identity_id=36, proxies={}, operation_check=operation.check,
+                    adapter_key="tower", identity_id=36, proxies={}, operation_check=check,
                 )
                 return core.execute_miniapp_http_request(
                     request(), transport, operation_check=operation.check, sleeper=operation.sleep,
                 )
 
-            with patch.object(pool, "acquire", side_effect=acquire):
-                task = asyncio.create_task(miniapp_common.run_miniapp_blocking_flow(flow))
-                try:
+            task = None
+            try:
+                with pool.lease("tower", 36, {}, owner=miniapp_common.MiniAppIdentityOwner.capture(36)):
+                    slot = pool._request_slots[("tower", 36)]
+                    task = asyncio.create_task(miniapp_common.run_miniapp_blocking_flow(flow))
                     await asyncio.wait_for(queued.wait(), 1)
                     task.cancel()
                     with pytest.raises(asyncio.CancelledError):
                         await asyncio.wait_for(task, 1)
                     session.request.assert_not_called()
-                    assert lock.locked()
-                finally:
-                    lock.release()
+                    assert slot.lock.locked()
+                    assert slot.users == 1
+                assert not pool._request_slots
+            finally:
+                if task is not None:
+                    task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
-                    pool.close()
+                pool.close()
 
     asyncio.run(run())
 
