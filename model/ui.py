@@ -14,6 +14,7 @@ import sys
 import time
 import traceback
 from datetime import datetime
+from dataclasses import dataclass
 from functools import partial
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
@@ -99,7 +100,7 @@ from .features import miniapp_command_catalog
 from .inventory_delta import build_inventory_freshness_snapshot
 from .miniapp_state import get_miniapp_state_snapshot, record_miniapp_state
 from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_miniapp_game_key
-from .webapp_core import get_miniapp_global_rate_limit_snapshot, miniapp_retry_after_sec
+from .webapp_core import MiniAppRequestAborted, get_miniapp_global_rate_limit_snapshot, miniapp_retry_after_sec, require_miniapp_operation
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.cave_treasure_runtime import (
@@ -127,8 +128,9 @@ from .features.cave_treasure_runtime import (
     defer_cave_public_entry_canary,
     observe_cave_public_entry,
     probe_cave_public_entry,
+    is_cave_public_entry_busy,
 )
-from .features.miniapp_common import MiniAppIdentityOwner
+from .features.miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
 from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
@@ -375,6 +377,7 @@ _cave_public_background_state = {
     "circuit_reason": "",
 }
 _cave_public_background_retry_at = {}
+_cave_public_background_operation = None
 _ui_state_get_cache = {"expires_at": 0.0, "snapshot": None}
 UI_STATE_GET_CACHE_SEC = 5.0
 CAVE_PUBLIC_UPSTREAM_CIRCUIT_SEC = 10 * 60
@@ -7409,7 +7412,16 @@ def _cave_public_entry_runner(identity_id, action):
     return None
 
 
-async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
+async def ui_run_cave_public_entry(send_as_id, action, public_entry_url, *, operation_check=None):
+    def operation_allowed():
+        try:
+            require_miniapp_operation(operation_check)
+            return True
+        except MiniAppRequestAborted:
+            return False
+
+    if not operation_allowed():
+        return False, "洞府公共入口操作已取消或上下文已变更", {"status": "cancelled"}
     try:
         identity_id = int(send_as_id or 0)
     except (TypeError, ValueError, OverflowError):
@@ -7436,7 +7448,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
     if not candidate_urls:
         return False, "缺少洞府公共入口 URL", {}
     if _cave_public_ui_run_lock.locked():
-        return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {}
+        return False, "洞府公共入口已有操作执行中，请等待当前请求完成", {"status": "busy"}
     health = CavePublicEntryHealthSnapshot.capture()
 
     def owner_available():
@@ -7444,6 +7456,7 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url):
             owner.is_current()
             and is_cave_public_identity_available(identity_id)
             and (get_global_enabled() or get_global_pause_source() == MAINTENANCE_PAUSE_SOURCE)
+            and operation_allowed()
         )
 
     def can_continue():
@@ -8894,34 +8907,190 @@ def _cave_public_background_candidate_sort_key(action, identity_id, now):
     return priority, due_at, int(identity_id)
 
 
-async def _execute_cave_public_background_action(identity_id, action, delay_sec):
+_CAVE_PUBLIC_BACKGROUND_ACTION_FLAGS = {
+    "yuanying": "cave_public_yuanying_enabled",
+    "deep_status": "cave_public_deep_status_enabled",
+    "small_world": "cave_public_small_world_enabled",
+    "small_world_harvest": "cave_public_small_world_harvest_enabled",
+    "fishing": "cave_public_fishing_enabled",
+    "stargazer": "cave_public_stargazer_enabled",
+    "fate_cards": "cave_public_fate_cards_enabled",
+    "treasure": "cave_public_treasure_enabled",
+    "tianti_status": "cave_public_tianti_status_enabled",
+}
+_CAVE_PUBLIC_BACKGROUND_MODULE_KEYS = {
+    "yuanying": ("yuanying_enabled",),
+    "deep_status": ("deep_retreat_enabled",),
+    "small_world": ("small_world_enabled", "small_world_harvest_enabled"),
+    "small_world_harvest": ("small_world_enabled", "small_world_harvest_enabled"),
+    "stargazer": ("stargazer_enabled",),
+}
+_CAVE_PUBLIC_BACKGROUND_SCHEDULE_KEYS = {
+    "yuanying": ("next_yuanying_time", "yuanying_phase"),
+    "deep_status": ("next_deep_retreat_time", "deep_retreat_phase"),
+    "small_world": ("next_small_world_time", "small_world_next_public_harvest_at"),
+    "small_world_harvest": ("small_world_next_public_harvest_at",),
+    "fishing": ("next_fishing_time", "fishing_daily_day", "fishing_daily_count", "fishing_daily_limit"),
+    "stargazer": ("next_stargazer_panel_time", "stargazer_followup_due_at", "stargazer_queued_action", "stargazer_last_action"),
+    "tianti_status": ("next_tianti_status_time", "tianti_last_status_seen_at"),
+}
+
+
+@dataclass(frozen=True, eq=False)
+class _CavePublicBackgroundOperation:
+    owner: MiniAppIdentityOwner
+    action: str
+    day_key: str
+    urls: tuple
+    controls: tuple
+    schedule: tuple
+    retry: object
+    slot: dict
+
+    @property
+    def family(self):
+        return "deep_status" if self.action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else self.action
+
+    @property
+    def retry_key(self):
+        return self.family, self.owner.identity_id
+
+    @property
+    def label(self):
+        return f"{self.owner.identity_id}:{self.action}"
+
+    @staticmethod
+    def control_values(owner, family, config):
+        module_values = tuple(bool(owner.identity.get(key)) for key in _CAVE_PUBLIC_BACKGROUND_MODULE_KEYS.get(family, ()))
+        return (
+            bool(config.get(_CAVE_PUBLIC_BACKGROUND_ACTION_FLAGS.get(family, ""))),
+            bool(config.get("cave_public_small_world_enabled")) if family == "small_world_harvest" else None,
+            str(config.get("cave_public_fate_cards_choice_key", "accept")) if family == "fate_cards" else None,
+            get_stargazer_star_choice(owner.identity_id) if family == "stargazer" else None,
+            module_values,
+        )
+
+    @classmethod
+    def capture(cls, identity_id, action, config, now):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        family = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
+        return cls(
+            owner, action, get_day_key(now), tuple(_cave_public_entry_urls_from_config(config)),
+            cls.control_values(owner, family, config),
+            tuple(owner.identity.get(key) for key in _CAVE_PUBLIC_BACKGROUND_SCHEDULE_KEYS.get(family, ())),
+            _cave_public_background_retry_at.get((family, identity_id)), _cave_public_background_state,
+        )
+
+    def owns_slot(self):
+        return (
+            _cave_public_background_operation is self
+            and _cave_public_background_state is self.slot
+            and self.slot.get("running")
+            and self.slot.get("last_action") == self.label
+        )
+
+    def controls_current(self):
+        if not self.owner.is_current() or not is_cave_public_identity_available(self.owner.identity_id):
+            return False
+        if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
+            return False
+        config = normalize_miniapp_auto_config()
+        return (
+            self.controls[0]
+            and self.controls == self.control_values(self.owner, self.family, config)
+            and self.urls == tuple(_cave_public_entry_urls_from_config(config))
+            and self.owner.identity_id in _cave_public_batch_identity_ids_for_action(self.family, get_identity_ids())
+        )
+
+    def schedule_current(self):
+        return self.schedule == tuple(
+            self.owner.identity.get(key) for key in _CAVE_PUBLIC_BACKGROUND_SCHEDULE_KEYS.get(self.family, ())
+        )
+
+    def can_continue(self):
+        return self.owns_slot() and self.controls_current()
+
+    def can_start(self):
+        now = time.time()
+        return (
+            self.can_continue() and self.schedule_current() and self.day_key == get_day_key(now)
+            and _cave_public_background_action_due(self.action, self.owner.identity_id, now)
+            and (self.family != "deep_status" or self.action == _cave_public_background_deep_action(self.owner.identity_id, now))
+            and float(_cave_public_background_retry_at.get(self.retry_key, 0) or 0) <= now
+            and float(self.slot.get("circuit_open_until", 0) or 0) <= now
+            and not _cave_public_shared_hold(now)
+            and not _cave_public_ui_run_lock.locked()
+            and not _cave_public_batch_state.get("running")
+            and not is_cave_public_entry_busy(self.owner.identity_id)
+        )
+
+    def release(self, delay_sec, message):
+        global _cave_public_background_operation
+        if self.owns_slot():
+            self.slot.update(
+                running=False,
+                next_run_at=max(
+                    time.time() + delay_sec, float(self.slot.get("next_run_at", 0) or 0),
+                    float(self.slot.get("circuit_open_until", 0) or 0), _cave_public_shared_retry_at(),
+                ),
+                last_result=str(message or "")[:240],
+            )
+        if _cave_public_background_operation is self:
+            _cave_public_background_operation = None
+
+
+async def _execute_cave_public_background_action(operation, delay_sec):
+    identity_id = operation.owner.identity_id
+    action = operation.action
     ok = False
     message = ""
     extra = {}
+    received = False
+    cancelled = False
     try:
-        ok, message, extra = await ui_run_cave_public_entry(identity_id, action, "")
-        if (
-            action in {"treasure", "fishing", "fate_cards"}
-            and isinstance(extra, dict)
-            and (extra.get("daily_exhausted") or extra.get("terminal_skip"))
-        ):
-            _cave_public_background_daily_done.add((action, get_day_key(time.time()), int(identity_id)))
+        if not operation.can_start():
+            message = "洞府公共入口后台操作已取消或调度已变更"
+            return
+        ok, message, extra = await ui_run_cave_public_entry(identity_id, action, "", operation_check=operation.can_continue)
+        received = True
+    except MiniAppFlowCancelled as exc:
+        cancelled = True
+        result = exc.result if isinstance(exc.result, dict) else {}
+        ok = bool(result.get("ok"))
+        message = str(result.get("message") or "洞府公共入口后台操作已取消")
+        extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+        raise
     except asyncio.CancelledError:
+        cancelled = True
+        message = "洞府公共入口后台操作已取消"
         raise
     except Exception as exc:
-        message = f"{type(exc).__name__}: {str(exc)[:180]}"
+        received = True
+        message = f"洞府公共入口后台异常：{type(exc).__name__}"
     finally:
         finished_at = time.time()
-        retry_action = "deep_status" if action in {"deep_status", "deep_start", "deep_settle", "deep_force"} else action
-        retry_sec = 60 if ok else 30 * 60
-        if isinstance(extra, dict) and float(extra.get("retry_after_sec", 0) or 0) > 0:
-            retry_sec = max(30, min(24 * 3600, float(extra.get("retry_after_sec") or 0)))
-        if action in {"deep_status", "deep_settle"} and not ok:
-            retry_sec = max(retry_sec, 30 * 60)
-        _cave_public_background_retry_at[(retry_action, int(identity_id))] = finished_at + retry_sec
-        circuit_open_until = float(_cave_public_background_state.get("circuit_open_until", 0) or 0)
+        extra = extra if isinstance(extra, dict) else {}
+        if (
+            operation.owner.is_current() and action in {"treasure", "fishing", "fate_cards"}
+            and (extra.get("daily_exhausted") or extra.get("terminal_skip"))
+        ):
+            _cave_public_background_daily_done.add((action, operation.day_key, int(identity_id)))
+        if (
+            received and not cancelled and operation.can_continue()
+            and extra.get("status") not in {"cancelled", "operation_cancelled", "busy"}
+            and (ok or operation.schedule_current())
+            and _cave_public_background_retry_at.get(operation.retry_key) == operation.retry
+        ):
+            retry_sec = 60 if ok else 30 * 60
+            if miniapp_retry_after_sec({"extra": extra}) > 0:
+                retry_sec = max(30, min(24 * 3600, miniapp_retry_after_sec({"extra": extra})))
+            if action in {"deep_status", "deep_settle"} and not ok:
+                retry_sec = max(retry_sec, 30 * 60)
+            _cave_public_background_retry_at[operation.retry_key] = finished_at + retry_sec
         shared_retry_sec = 0.0
-        if isinstance(extra, dict) and extra.get("shared_rate_limit"):
+        if extra.get("shared_rate_limit"):
             try:
                 shared_retry_sec = max(
                     CAVE_PUBLIC_SHARED_RATE_LIMIT_FLOOR_SEC,
@@ -8931,27 +9100,21 @@ async def _execute_cave_public_background_action(identity_id, action, delay_sec)
                 shared_retry_sec = 0.0
         if shared_retry_sec > 0 and not extra.get("shared_retry_at"):
             _remember_cave_public_shared_limit(extra, finished_at)
-        shared_retry_at = _cave_public_shared_retry_at()
-        _cave_public_background_state.update({
-            "running": False,
-            "next_run_at": max(finished_at + delay_sec, circuit_open_until, shared_retry_at),
-            "last_action": f"{identity_id}:{action}",
-            "last_result": (
-                f"{str(message or '')[:180]}｜共享入口限流，{int(shared_retry_sec)}s 后继续"
-                if shared_retry_sec > 0
-                else str(message or "")[:240]
-            ),
-        })
-    console_log(
-        f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"
-        f"{'成功' if ok else '失败'}｜{str(message or '无详情')[:180]}",
-        scope="identity",
-        send_as_id=identity_id,
-        limit=260,
-    )
+        operation.release(delay_sec, (
+            f"{str(message or '')[:180]}｜共享入口限流，{int(shared_retry_sec)}s 后继续"
+            if shared_retry_sec > 0 else message
+        ))
+    if operation.owner.is_current():
+        outcome = "等待" if extra.get("status") == "busy" else ("成功" if ok else "失败")
+        console_log(
+            f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"
+            f"{outcome}｜{str(message or '无详情')[:180]}",
+            scope="identity", send_as_id=identity_id, limit=260,
+        )
 
 
 async def _run_cave_public_background_scheduler(now, config):
+    global _cave_public_background_operation
     now = float(now or time.time())
     shared_hold = _cave_public_shared_hold(now)
     if shared_hold:
@@ -8971,20 +9134,9 @@ async def _run_cave_public_background_scheduler(now, config):
     if now < float(_cave_public_background_state.get("next_run_at", 0) or 0):
         return {"started": False, "reason": "background_throttled"}
 
-    action_flags = (
-        ("yuanying", "cave_public_yuanying_enabled"),
-        ("deep_status", "cave_public_deep_status_enabled"),
-        ("small_world", "cave_public_small_world_enabled"),
-        ("small_world_harvest", "cave_public_small_world_harvest_enabled"),
-        ("fishing", "cave_public_fishing_enabled"),
-        ("stargazer", "cave_public_stargazer_enabled"),
-        ("fate_cards", "cave_public_fate_cards_enabled"),
-        ("treasure", "cave_public_treasure_enabled"),
-        ("tianti_status", "cave_public_tianti_status_enabled"),
-    )
     enabled_action_flags = [
         (action, flag)
-        for action, flag in action_flags
+        for action, flag in _CAVE_PUBLIC_BACKGROUND_ACTION_FLAGS.items()
         if config.get(flag) and not (action == "small_world_harvest" and config.get("cave_public_small_world_enabled"))
     ]
     if not enabled_action_flags:
@@ -9005,6 +9157,9 @@ async def _run_cave_public_background_scheduler(now, config):
 
     candidates.sort(key=lambda item: _cave_public_background_candidate_sort_key(item[1], item[0], now))
     identity_id, action = candidates[0]
+    operation = _CavePublicBackgroundOperation.capture(identity_id, action, config, now)
+    if operation is None:
+        return {"started": False, "reason": "identity_invalidated"}
     _cave_public_background_state["cursor"] = 0
     delay_sec = _normalize_cave_public_batch_delay(config.get("cave_public_delay_sec"))
     _cave_public_background_state.update({
@@ -9013,10 +9168,15 @@ async def _run_cave_public_background_scheduler(now, config):
         "last_action": f"{identity_id}:{action}",
         "last_result": "执行中",
     })
+    _cave_public_background_operation = operation
+    worker = _execute_cave_public_background_action(operation, delay_sec)
     try:
-        _fire_and_forget(_execute_cave_public_background_action(identity_id, action, delay_sec))
+        task = _fire_and_forget(worker)
+        if isinstance(task, asyncio.Future):
+            task.add_done_callback(lambda _task: operation.release(delay_sec, "洞府公共入口后台任务已结束"))
     except Exception:
-        _cave_public_background_state["running"] = False
+        worker.close()
+        operation.release(delay_sec, "洞府公共入口后台任务创建失败")
         raise
     return {
         "started": True,

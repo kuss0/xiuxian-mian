@@ -4462,7 +4462,7 @@ async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
     lock = _public_entry_lock(identity_id)
     game_lock = stargazer._stargazer_miniapp_run_lock(identity_id)
     if lock.locked() or game_lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
     async with lock, game_lock:
         if not can_continue():
             return cancelled

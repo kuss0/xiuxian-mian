@@ -92,6 +92,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R38 | High | Local identity invalidation defers shared entry revalidation for six hours; cancelled tasks strand the claim, and old probes overwrite newer claims/entry lists or continue after manual pause | Fixed in candidate; exact owner/entry/claim checks propagate into the loader, cancellation releases only its own claim without changing health evidence, and later scheduler ticks select remaining eligible roles; real server-error backoff is preserved |
 | R39 | High | Public-entry UI treats local cancellation/skip as entry recovery, claims before local admission, overwrites newer shared health, and retries downstream failures through another URL | Fixed for reproduced UI caller boundaries in candidate; real loader evidence, exact owner/health snapshots, scoped claim cleanup, no post-read fallback, preserved confirmed results and genuine failure/rate-limit controls pass; per-game workers and remaining UI/background contracts remain open |
 | R40 | High | Stargazer releases its caller while an HTTP thread still runs, has no shared per-run budget, loses confirmed collections on later parse failures, and permits duplicate entries or stale results to rewrite a running operation | Fixed in candidate; joined cooperative threads, one run budget, public/manual shared exclusion, owner/choice/schedule admission and partial-result retention pass; notification-time owner replacement cannot return an old result for the replacement role |
+| R41 | High | Public-entry background work captures only an identity number; queued actions ignore changed controls, cancellation and local busy results become 30-minute failures, and late completions overwrite newer retry/slot state or mark the next day complete | Fixed for reproduced background-job boundaries in candidate; enqueue-time owner/control snapshots, repeated UI/loader checks, exact in-memory job ownership, cancellation-aware completion and original-day terminal markers pass; downstream unguarded game workers remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -840,6 +841,44 @@ five monitor/control-only contracts need separate behavioral verification.
   configuration, service or remote branch was changed. Full project acceptance
   remains open.
 
+- R41 reproduced 22 failing background-job cases and two passing controls.
+  An in-memory operation now retains the exact identity/account, relevant
+  automatic and module controls, entry URLs, schedule fields, game day and
+  existing retry value. Admission is rechecked after enqueue; the same control
+  predicate reaches the public UI and guarded dwelling loader. Removing or
+  replacing an identity, rebinding its account, changing its star/selection,
+  pausing, disabling automation, replacing an entry or rescheduling cannot
+  start stale work. Unrelated configuration saves do not cancel the operation.
+- Only the owning job releases its running slot, including cancellation before
+  the coroutine first executes. Task-creation failures close the unused
+  coroutine. A replaced operation for the same identity/action is also distinct;
+  the old job cannot clear the new slot or its status. No persistent claim,
+  outbox or recovery controller was introduced, and CommandAttempt remains
+  shadow-only.
+- Cancellation without an outcome no longer writes a 30-minute failure retry.
+  A late failure cannot overwrite new scheduling or shorten another retry
+  deadline. Confirmed terminal markers remain attached to the original owner
+  and operation day, including result-carrying cancellation; completion after
+  midnight cannot mark the next day done merely from the worker's local clock.
+  Actual server rate limits still propagate globally after owner invalidation,
+  remain monotonic and keep the normal send-spacing constraint.
+- Follow-up real-UI tests reproduced three additional false-failure cases:
+  the UI lock, public identity lock and stargazer game lock becoming busy after
+  enqueue. They now wait without an identity failure retry; the game-specific
+  busy result has a structured status and is not logged as a failure.
+- R41 verification covers all nine background action switches, explicit
+  fishing/Tianti selections, manual deep-retreat rescheduling, pre-start task
+  cancellation, same-key operation replacement, real UI-to-dwelling-loader
+  invalidation and secret-free exception diagnostics. Channel freeze plus
+  maintenance still permits public HTTP, and explicit UI requests remain
+  independent of the automatic switch. Five older worker fixtures now construct
+  a valid admitted operation instead of bypassing identity and control setup.
+  New lifecycle suite: 59 cases. Related suite: 414 passed, five subtests passed.
+  Final full suite: 4324 passed, 1004 subtests passed, 71.90 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r41-background-lifecycle-final-20260908.xml`.
+  Full Ruff, compilation and diff checks pass. Production, services, skill,
+  live DB/configuration and remote branches remain unchanged.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -905,11 +944,13 @@ and cleanup code during a code-only rollback.
    background scheduling/batch continuation and the remaining UI control
    contracts. Guarding the entry loader does not stop an unguarded game's
    later HTTP requests or prove its result persistence/notification behavior.
-   In particular, the background scheduler currently queues only an identity
-   number and action: it does not retain enqueue-time ownership/configuration.
-   Its worker also writes retry and slot state unconditionally in `finally`.
-   Reproduce deletion/replacement, switch-off, rescheduling and cancellation
-   between enqueue and execution before changing this contract.
+   R41 covers queued background ownership, independent automatic switches,
+   completion bookkeeping and local busy admission. It does not make the
+   remaining raw threaded game functions cooperative. Review public small-world
+   work next: the current flow uses raw `asyncio.to_thread`, treats HTTP-envelope
+   success as action success without checking `actionResult.ok`, and its caller
+   can apply results or rewrite six/eight-hour timers after owner/control changes.
+   Preserve the disabled incense-to-consciousness controls during this review.
 
 ## Completion Gate
 

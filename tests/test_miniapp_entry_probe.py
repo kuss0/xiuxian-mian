@@ -15,12 +15,31 @@ from model.features import cave_treasure_runtime
 class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._background_operation = ui._cave_public_background_operation
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        ui._cave_public_background_operation = self._background_operation
+
+    def background_operation(self, identity_id, action):
+        state_module.ensure_identity_registered(identity_id)
+        identity = state_module.get_identity_state(identity_id)
+        config = ui.normalize_miniapp_auto_config()
+        config[ui._CAVE_PUBLIC_BACKGROUND_ACTION_FLAGS[action]] = True
+        config["cave_public_entry_urls"] = ["https://t.me/fanrenxiuxian_bot?startapp=df_FIXTURE41"]
+        config["cave_public_entry_url"] = config["cave_public_entry_urls"][0]
+        if action == "fishing":
+            config["cave_public_fishing_identity_ids"] = [identity_id]
+        for key in ui._CAVE_PUBLIC_BACKGROUND_MODULE_KEYS.get(action, ()):
+            identity[key] = True
+        state_module.set_miniapp_auto_config(config)
+        operation = ui._CavePublicBackgroundOperation.capture(identity_id, action, config, time.time())
+        ui._cave_public_background_state.update(running=True, last_action=operation.label)
+        ui._cave_public_background_operation = operation
+        return operation
 
     def test_miniapp_send_whitelists_are_exact(self):
         self.assertEqual({"cave_treasure", "fishing", "stargazer", "tree", "trial"}, set(ui.MINIAPP_ENTRY_PROBE_COMMANDS))
@@ -1043,7 +1062,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_background_retry_at.clear()
             with patch.object(ui, "ui_run_cave_public_entry", new=AsyncMock(return_value=(True, "完成", {}))), \
                     patch.object(ui, "console_log"):
-                await ui._execute_cave_public_background_action(1001, "stargazer", 20)
+                await ui._execute_cave_public_background_action(self.background_operation(1001, "stargazer"), 20)
 
             self.assertFalse(ui._cave_public_background_state["running"])
             self.assertEqual("1001:stargazer", ui._cave_public_background_state["last_action"])
@@ -1075,7 +1094,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 },
             ))), patch.object(ui, "console_log"):
                 started_at = time.time()
-                await ui._execute_cave_public_background_action(1001, "fate_cards", 20)
+                await ui._execute_cave_public_background_action(self.background_operation(1001, "fate_cards"), 20)
 
             self.assertFalse(ui._cave_public_background_state["running"])
             self.assertGreaterEqual(ui._cave_public_background_state["next_run_at"], started_at + 299)
@@ -1123,7 +1142,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(deadline, ui._cave_public_background_state["next_run_at"])
                 with patch.object(ui, "ui_run_cave_public_entry", new=AsyncMock(return_value=(True, "完成", {}))), \
                         patch.object(ui, "console_log"):
-                    await ui._execute_cave_public_background_action(1002, "deep_status", 20)
+                    await ui._execute_cave_public_background_action(self.background_operation(1002, "deep_status"), 20)
             self.assertEqual(deadline, ui._cave_public_background_state["next_run_at"])
             ui._cave_public_background_state.clear()  # Simulate lost process-local state.
             config = ui.normalize_miniapp_auto_config()
@@ -1272,7 +1291,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 )),
             ):
                 with patch.object(ui, "console_log"):
-                    await ui._execute_cave_public_background_action(identity_id, "treasure", 20)
+                    await ui._execute_cave_public_background_action(self.background_operation(identity_id, "treasure"), 20)
 
             self.assertFalse(ui._cave_public_background_action_due("treasure", identity_id, time.time()))
         finally:
@@ -1302,7 +1321,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 )),
             ):
                 with patch.object(ui, "console_log"):
-                    await ui._execute_cave_public_background_action(identity_id, "fishing", 20)
+                    await ui._execute_cave_public_background_action(self.background_operation(identity_id, "fishing"), 20)
 
             self.assertFalse(ui._cave_public_background_action_due("fishing", identity_id, time.time()))
         finally:
