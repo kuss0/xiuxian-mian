@@ -3452,10 +3452,15 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     def test_passive_panel_closes_matching_predict_and_panel_guards(self):
         now = 1_780_000_000.0
+        chat_id = -100490001
+        state_module.set_identity_account(self.identity_id, 7491)
         with state_module.use_identity(self.identity_id):
             self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
-        action_guard.note_sent(".推命 炼制", self.identity_id, 9103, sent_at=now - 10)
-        action_guard.note_sent(".天机盘", self.identity_id, 9104, sent_at=now - 5)
+            state_module.state["pending_tasks"][(chat_id, 9104)] = {
+                "cmd": ".天机盘", "chat_id": chat_id, "send_started_at": now - 6, "sent_at": now - 5,
+            }
+        action_guard.note_sent(".推命 炼制", self.identity_id, 9103, sent_at=now - 10, chat_id=chat_id)
+        action_guard.note_sent(".天机盘", self.identity_id, 9104, sent_at=now - 5, chat_id=chat_id)
         self.assertIn("tianxing_predict", action_guard.get_action_guard_sessions(self.identity_id))
         self.assertIn("tianxing_panel", action_guard.get_action_guard_sessions(self.identity_id))
 
@@ -3464,6 +3469,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "【天机盘】\n今日可选命星: 【紫微】、【贪狼】\n今日已定命星: 【贪狼】\n当前推命: 炼制（剩余 7小时）\n当前改命: 无\n天机值: 23\n逆命劫: 0\n命中 / 落空 / 改命: 29 / 1 / 2",
                 now=now,
                 family="tianxing_panel",
+                reply_context={"send_as_id": self.identity_id, "chat_id": chat_id, "root_msg_id": 9104},
             )
 
         self.assertTrue(changed)
@@ -3471,7 +3477,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tianxing_predict", sessions)
         self.assertNotIn("tianxing_panel", sessions)
 
-    async def test_scheduler_closes_matching_predict_guard_from_existing_panel_state(self):
+    async def test_scheduler_keeps_predict_guard_without_correlated_panel_evidence(self):
         now = 1_780_000_000.0
         windows = [{"route": "炼制", "kind": "farm", "start_at": now, "end_at": now + 3600, "weight": 8}]
         with state_module.use_identity(self.identity_id):
@@ -3489,8 +3495,8 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command"):
                 result = await tianxing.run_tianxing_timeline_scheduler(now, windows=windows)
 
-        self.assertEqual("downstream_released", result["phase"])
-        self.assertNotIn("tianxing_predict", action_guard.get_action_guard_sessions(self.identity_id))
+        self.assertEqual("waiting_send", result["phase"])
+        self.assertIn("tianxing_predict", action_guard.get_action_guard_sessions(self.identity_id))
 
     def test_timeline_releases_recent_predict_after_last_craft(self):
         now = 1_780_000_000.0
@@ -8486,6 +8492,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
 
     def test_passive_inbox_updates_tianxing_from_reply_context(self):
         send_as_id = self._prepare_identity()
+        state_module.set_identity_account(send_as_id, 7491)
         event = SimpleNamespace(chat_id=-1001680975844, id=9706484)
         with state_module.use_identity(send_as_id):
             state_module.state["tianxing_observation"] = {
@@ -8494,7 +8501,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
                 "current_change": "探索",
                 "current_change_until": 1_780_200_000.0,
             }
-        action_guard.note_sent(".天机盘", send_as_id, 9706481, sent_at=1_779_999_990.0)
+        action_guard.note_sent(".天机盘", send_as_id, 9706481, sent_at=1_779_999_990.0, chat_id=event.chat_id)
         self.assertIn("tianxing_panel", action_guard.get_action_guard_sessions(send_as_id))
 
         with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):

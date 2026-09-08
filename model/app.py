@@ -109,6 +109,7 @@ from .features.cave_treasure_runtime import capture_cave_public_entry_event, dis
 from .features.trial_runtime import handle_trial_miniapp_entry
 from .features.tree_runtime import handle_tree_miniapp_entry
 from .features.tianxing import (
+    TIANXING_REPLY_GUARD_FAMILIES,
     apply_tianxing_passive,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
@@ -3466,7 +3467,10 @@ async def _handle_routed_reply_event(
         if handled_any and not is_nonterminal_waiting_reply:
             clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context, clear_family=False)
         if matched_family and handled_any and not already_consumed:
-            if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
+            if (
+                matched_family != "concubine_heart" and matched_family not in TIANXING_REPLY_GUARD_FAMILIES
+                and not is_nonterminal_waiting_reply
+            ):
                 close_action_guard_by_family(
                     matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now,
                     expected_msg_id=root_msg_id, expected_chat_id=int(getattr(event, "chat_id", 0) or 0),

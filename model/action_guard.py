@@ -81,7 +81,7 @@ from .config import (
     CMD_YUANYING_SECT_RETREAT,
 )
 from .persistence import mark_dirty
-from .state import has_identity, state, use_identity
+from .state import get_identity_account, has_identity, state, use_identity
 
 
 ACTION_KIND_HIGH_RISK = "high_risk"
@@ -1097,6 +1097,7 @@ def note_sent(command, send_as_id, msg_id, sent_at=None, *, chat_id=0):
         session["last_command"] = normalize_command(command)
         session["last_msg_id"] = int(msg_id or 0)
         session["last_chat_id"] = int(chat_id or 0)
+        session["last_account_id"] = get_identity_account(send_as_id)
         session["last_sent_at"] = sent_at
         if float(session.get("first_sent_at", 0) or 0) <= 0:
             session["first_sent_at"] = sent_at

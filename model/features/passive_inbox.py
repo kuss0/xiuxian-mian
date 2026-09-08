@@ -1676,7 +1676,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append(family)
             changed = module_changed or changed
-        if changed and family and family != "concubine_heart":
+        if (
+            changed and family and family != "concubine_heart"
+            and family not in tianxing_mod.TIANXING_REPLY_GUARD_FAMILIES
+        ):
             close_action_guard_by_family(family, send_as_id=target_id, reason="passive_state_changed", now=now)
         if changed:
             save_state()

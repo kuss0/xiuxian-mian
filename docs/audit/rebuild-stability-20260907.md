@@ -100,6 +100,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R46 | High | Automatic Tianxing clears unknown sends and expired pending, accepts malformed receipts, and closes work on action name alone; timeline/downstream paths can bypass that unresolved action | Fixed for reproduced automatic evidence boundaries in candidate; explicit-unsent classification, retained unknown operations, exact receipt/log correlation, dispatch-time bounds, bounded early-result deduplication and pending-aware route admission pass; legacy no-ID work without authoritative evidence, general reducer freshness and craft/retreat internals remain open |
 | R47 | High | Craft farm and prediction-consumption callers can overlap, retry uncertain sends, overwrite early results or new work, and mistake panel calibration for craft completion; business-denial backoff is ignored | Fixed for reproduced craft lifecycle boundaries in candidate; shared operation lock, pre-dispatch ownership/evidence checks, persisted unknown pending, strict existing-receipt adoption, independent craft/calibration anchors, idempotent last-result handling and preserved business backoff pass; retreat lifecycle, general reducer ordering and R07 durability remain open |
 | R48 | High | Ordinary retreat and its material chain do not claim pending work before sending; scheduler ticks erase reply-wait phases, panel replies complete unrelated work, missing potions loop, and local guard delays lose the intended next action | Fixed for scoped candidate operations; shared farm transport/receipt code, retreat serialization, strict command/quantity/result ownership, retained unknown work, separate calibration, bounded denial/unsent retries and force-exit caller propagation pass; legacy unanchored farm state, general reducer ordering and shared R07 durability remain open |
+| R49 | High | Tianxing guard cleanup treats cached fields as fresh command evidence, closes unrelated chat/account/action sessions, and accepts late or partial panels; generic routed/passive cleanup bypasses module checks | Fixed for the six direct Tianxing families in candidate; exact reply/session ownership, captured sending account, explicit parsed outcomes, original panel dispatch ordering and expected root/chat closure pass through both dispatchers and SQLite replay; farm-family cleanup, general observation ordering and R07 durability remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1185,6 +1186,35 @@ five monitor/control-only contracts need separate behavioral verification.
   ordering and legacy farm entries without operation provenance remain open;
   per-farm pending state is not a solution to the shared R07 forced-stop gap.
 
+- R49 starts from 142 guard-evidence cases: 105 failed and 37 passed. A separate
+  60-case real-dispatcher matrix exposed 36 failures in generic routed/passive
+  cleanup even after the internal helper was fixed. Both dispatchers now leave
+  the six direct Tianxing guard families to the module's correlated result
+  handling; unrelated modules and farm-family cleanup are not changed.
+- Removed cached-observation guard cleanup from the scheduler and timeline
+  confirmer. The replacement accepts only the original identity/account,
+  command, chat and root message, with a valid sending timestamp and explicit
+  parsed outcome. Missing legacy account/chat/timestamp evidence remains
+  unresolved by this path; no status request or mutation retry is introduced.
+- A panel may calibrate predict/change/set-star guards only when its existing
+  runtime pending record proves that the query was actually dispatched after
+  the target command in the same chat/account. Partial fields cannot borrow
+  cached values, older-day fixed stars cannot confirm a new day, and every
+  close supplies expected root/chat. Query receipt arrival does not substitute
+  for actual dispatch. Only existing exact-key in-memory records are read;
+  there is no history scan or new recovery controller in the send path.
+- Sending account metadata survives the existing JSON guard persistence;
+  actual runtime receipt registration and log replay pass both before and
+  after SQLite reload. Added malformed-reference tests exposed seven more
+  failures: fractional IDs were truncated and boolean timestamps were accepted.
+  These inputs are now rejected as closure evidence.
+- R49 final verification (2026-09-09): 218 guard-evidence cases; full suite
+  **5374 passed, 1198 subtests passed**, 80.90 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r49-final-20260909.xml`. Selected Ruff checks,
+  compilation and `git diff --check` pass. This does not certify the global
+  observation reducer's freshness/idempotence or every generic pending cleanup.
+  Production, live switches, listener, skill and CommandAttempt remain untouched.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1285,6 +1315,14 @@ and cleanup code during a code-only rollback.
    older-than-last craft replies and unthreaded scalar guard cleanup). The
    bounded pending/last-result evidence is not a replacement for those broader
    reducer contracts or R07 crash-durable transport ownership.
+   R49 removes source-less cached guard closure and the two dispatcher bypasses
+   for the six direct Tianxing families. It does not validate route-result
+   freshness or the distinction between an observed partial reply and terminal
+   business completion. Review the routed consumed-message marker and pending
+   cleanup on incomplete panels, older-than-last outcomes, farm-family guard
+   cleanup, and the normalization branch that clears consumed prediction
+   evidence based only on `last_action`. Material receipt quantities of zero
+   and malformed ordinary-retreat pending commands also need explicit cases.
 
 ## Completion Gate
 

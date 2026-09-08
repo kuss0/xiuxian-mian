@@ -31,7 +31,7 @@ from ..runtime import GAME_SEND_UNSENT_BLOCK_CODES, _is_logged_game_bot_reply, c
 from ..state import get_current_identity_id, get_game_group_id, get_game_group_ids, get_game_group_topic_id, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_state, get_world_boss_run_state, has_identity, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
-from ..message_keys import message_key_parts
+from ..message_keys import get_message_record, message_key_parts
 from ._phaseful import get_phaseful_summary_risk_reason
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until
 
@@ -2429,7 +2429,7 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     })
     observed["recent"] = observed["recent"][-8:]
     state["tianxing_observation"] = observed
-    _close_tianxing_guards_from_observation(observed, now)
+    _close_tianxing_guards_from_reply(parsed, observed, now, reply_context=reply_context)
     _prune_tianxing_released_routes(observed, now)
     _update_retreat_farm_from_parsed(parsed, observed, now, family, reply_context=reply_context)
     _update_craft_farm_from_parsed(parsed, observed, now, family, reply_context=reply_context)
@@ -2680,6 +2680,7 @@ _TIANXING_AUTO_PENDING_FAMILIES = {
     "change_fate": "tianxing_change_fate",
     "clear_calamity": "tianxing_clear_calamity",
 }
+TIANXING_REPLY_GUARD_FAMILIES = frozenset(_TIANXING_AUTO_PENDING_FAMILIES.values())
 
 
 def _tianxing_day_start_ts(now):
@@ -3790,97 +3791,100 @@ def _star_arg_from_command(command):
     return star if star in TIANXING_STARS else ""
 
 
-def _close_tianxing_guards_from_observation(observed, now):
-    send_as_id = int(get_current_identity_id() or 0)
-    if send_as_id <= 0:
+def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
+    from .. import action_guard
+
+    def exact_id(value):
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            return 0
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
+    if not isinstance(reply_context, dict):
         return 0
-    try:
-        from .. import action_guard
-    except Exception:
+    send_as_id = get_current_identity_id()
+    account_id = get_identity_account(send_as_id)
+    owner = exact_id(reply_context.get("send_as_id"))
+    chat_id = exact_id(reply_context.get("chat_id"))
+    root_id = exact_id(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id"))
+    if owner != send_as_id or owner <= 0 or account_id <= 0 or not chat_id or root_id <= 0:
         return 0
+
+    pending_by_action = {}
     sessions = action_guard.get_action_guard_sessions(send_as_id)
-    if not isinstance(sessions, dict) or not sessions:
-        return 0
+    for action, key in _TIANXING_AUTO_PENDING_FAMILIES.items():
+        session = sessions.get(key)
+        if not isinstance(session, dict):
+            continue
+        sent_at, dirty = _parse_observation_float(session.get("last_sent_at"))
+        receipt_account = exact_id(session.get("last_account_id"))
+        receipt_chat = exact_id(session.get("last_chat_id"))
+        receipt_msg = exact_id(session.get("last_msg_id"))
+        command = str(session.get("last_command") or "")
+        if (
+            dirty or isinstance(session.get("last_sent_at"), bool) or sent_at <= 0 or int(now) < int(sent_at)
+            or receipt_account != account_id or receipt_chat != chat_id or receipt_msg <= 0
+            or action_guard.resolve_action_key(command) != key
+        ):
+            continue
+        pending_by_action[action] = {
+            "auto_pending_action": action, "auto_pending_command": command,
+            "auto_pending_account_id": receipt_account, "auto_pending_chat_id": receipt_chat,
+            "auto_pending_msg_id": receipt_msg, "auto_pending_sent_at": sent_at,
+        }
 
-    now = float(now if now is not None else time.time())
-    original_observed = observed if isinstance(observed, dict) else None
-    observed = normalize_tianxing_observation(observed)
-    observed_at = float(observed.get("last_observed_at", 0) or 0)
-    last_action = str(observed.get("last_action") or "").strip()
+    def close(pending, reason):
+        return bool(action_guard.close_action(
+            _TIANXING_AUTO_PENDING_FAMILIES[pending["auto_pending_action"]],
+            send_as_id=send_as_id, reason=reason, now=now,
+            expected_msg_id=pending["auto_pending_msg_id"],
+            expected_chat_id=pending["auto_pending_chat_id"],
+        ))
+
     closed = 0
-
-    def _session_sent_before_observation(session):
-        try:
-            sent_at = float((session or {}).get("last_sent_at", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            sent_at = 0.0
-        return observed_at <= 0 or sent_at <= 0 or observed_at + 0.001 >= sent_at
-
-    def _session_sent_at(session):
-        try:
-            return float((session or {}).get("last_sent_at", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
-
-    predict = sessions.get("tianxing_predict") or {}
-    predicted_route = _route_arg_from_command(predict.get("last_command"), CMD_TIANXING_PREDICT)
-    predict_sent_at = _session_sent_at(predict)
-    if (
-        predicted_route
-        and _session_sent_before_observation(predict)
-        and str(observed.get("current_prediction") or "").strip() == predicted_route
-        and float(observed.get("current_prediction_until", 0) or 0) > now
-        and action_guard.close_action("tianxing_predict", send_as_id=send_as_id, reason="tianxing_observed_prediction", now=now)
-    ):
-        if predict_sent_at > 0:
-            observed["current_prediction_set_at"] = max(float(observed.get("current_prediction_set_at", 0) or 0), predict_sent_at)
-        closed += 1
-
-    change = sessions.get("tianxing_change_fate") or {}
-    changed_route = _route_arg_from_command(change.get("last_command"), CMD_TIANXING_CHANGE_FATE)
-    change_sent_at = _session_sent_at(change)
-    if (
-        changed_route
-        and _session_sent_before_observation(change)
-        and str(observed.get("current_change") or "").strip() == changed_route
-        and float(observed.get("current_change_until", 0) or 0) > now
-        and action_guard.close_action("tianxing_change_fate", send_as_id=send_as_id, reason="tianxing_observed_change_fate", now=now)
-    ):
-        if change_sent_at > 0:
-            observed["current_change_set_at"] = max(float(observed.get("current_change_set_at", 0) or 0), change_sent_at)
-        closed += 1
-
-    set_star = sessions.get("tianxing_set_star") or {}
-    star = _star_arg_from_command(set_star.get("last_command"))
-    if (
-        star
-        and _session_sent_before_observation(set_star)
-        and str(observed.get("fixed_star") or "").strip() == star
-        and action_guard.close_action("tianxing_set_star", send_as_id=send_as_id, reason="tianxing_observed_star", now=now)
-    ):
-        closed += 1
-
-    panel = sessions.get("tianxing_panel") or {}
-    if (
-        panel
-        and _session_sent_before_observation(panel)
-        and last_action in {"天机盘", "玩法帮助", "宗门信息"}
-        and action_guard.close_action("tianxing_panel", send_as_id=send_as_id, reason="tianxing_observed_panel", now=now)
-    ):
-        closed += 1
-
-    observe = sessions.get("tianxing_observe") or {}
-    if (
-        observe
-        and _session_sent_before_observation(observe)
-        and bool(observed.get("available_stars") or [])
-        and action_guard.close_action("tianxing_observe", send_as_id=send_as_id, reason="tianxing_observed_stars", now=now)
-    ):
-        closed += 1
-
-    if closed and original_observed is not None and original_observed is not observed:
-        original_observed.clear()
-        original_observed.update(observed)
+    for action, pending in pending_by_action.items():
+        if not _auto_pending_matches_parsed(pending, parsed, now, reply_context=reply_context):
+            continue
+        if action == "panel":
+            # A late panel is not a fresh snapshot. Verify the original query's
+            # actual dispatch, not its response arrival or cached observation.
+            record = get_message_record(state.get("pending_tasks", {}), root_id, chat_id=chat_id)
+            record = record if isinstance(record, dict) else {}
+            dispatch_at, dispatch_dirty = _parse_observation_float(record.get("send_started_at"))
+            sent_at, sent_dirty = _parse_observation_float(record.get("sent_at"))
+            query_verified = bool(
+                not dispatch_dirty and not sent_dirty and 0 < dispatch_at <= sent_at
+                and sent_at == pending["auto_pending_sent_at"]
+                and record.get("cmd") == CMD_TIANXING_PANEL
+            )
+            if query_verified:
+                for target_action, field, prefix in (
+                    ("predict", "current_prediction", CMD_TIANXING_PREDICT),
+                    ("change_fate", "current_change", CMD_TIANXING_CHANGE_FATE),
+                    ("set_star", "fixed_star", CMD_TIANXING_SET_STAR),
+                ):
+                    target = pending_by_action.get(target_action)
+                    if (
+                        not target or target["auto_pending_msg_id"] >= root_id
+                        or target["auto_pending_sent_at"] > dispatch_at
+                    ):
+                        continue
+                    command = target["auto_pending_command"]
+                    expected = _star_arg_from_command(command) if target_action == "set_star" else _route_arg_from_command(command, prefix)
+                    if not expected or parsed.get(field) != expected:
+                        continue
+                    if target_action == "set_star":
+                        if get_day_key(target["auto_pending_sent_at"]) != get_day_key(now):
+                            continue
+                    elif float(parsed.get(f"{field}_until") or 0) <= now:
+                        continue
+                    if close(target, "tianxing_correlated_panel"):
+                        if target_action != "set_star":
+                            observed[f"{field}_set_at"] = max(float(observed.get(f"{field}_set_at") or 0), target["auto_pending_sent_at"])
+                        closed += 1
+        closed += int(close(pending, "tianxing_correlated_reply"))
     return closed
 
 
@@ -4903,7 +4907,6 @@ def _confirm_tianxing_timeline_from_observation(now):
     if status == "ack_timeout" and action == "panel":
         return False, timeline
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    _close_tianxing_guards_from_observation(observed, now)
     if action == "panel" and bool(step.get("terminal_after_confirm")):
         if not _terminal_panel_calibration_observed(step, observed):
             return False, timeline
@@ -5846,9 +5849,6 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
         }
     if _recover_tianxing_timeline_unthreaded_reply_from_message_log(now):
         observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-        state["tianxing_observation"] = observed
-        save_state()
-    if _close_tianxing_guards_from_observation(observed, now):
         state["tianxing_observation"] = observed
         save_state()
     if _prune_tianxing_released_routes(observed, now):
