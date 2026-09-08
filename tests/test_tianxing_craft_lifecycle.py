@@ -485,10 +485,12 @@ def test_unrelated_craft_reply_does_not_settle_pending(env, invalid):
     else:
         text = text.replace(ITEM, "another-item")
     original = farm(env)
+    original_observed = copy.deepcopy(env.identity["tianxing_observation"])
     apply_result(text, now, ctx)
     assert farm(env)["pending_craft"] == original["pending_craft"]
     assert farm(env)["daily_count"] == 0
     assert farm(env)["phase"] == "sent_waiting_reply"
+    assert env.identity["tianxing_observation"] == original_observed
 
 
 @pytest.mark.parametrize("kind", KINDS)

@@ -84,7 +84,7 @@ def seed(env, kind):
             auto_pending_action=kind, auto_pending_command=command,
             auto_pending_account_id=ACCOUNT_ID, auto_pending_op_id="fixture",
             auto_pending_msg_id=ROOT_ID, auto_pending_chat_id=CHAT_ID,
-            auto_pending_sent_at=NOW - 10, auto_pending_due_at=NOW + 80,
+            auto_pending_sent_at=NOW - 11, auto_pending_due_at=NOW + 80,
         )
     else:
         farm_key = "craft_farm" if kind == "craft" else "retreat_farm"
@@ -337,4 +337,19 @@ def test_empty_retreat_pending_command_is_not_a_harmless_material_step(env, comm
         plan = tianxing.build_tianxing_route_preflight_plan(tianxing.TIANXING_ROUTES[1], now=NOW + 1)
     assert not plan["route_allowed"]
     assert plan["stage"] == "retreat_pending"
+    env.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", tuple(COMMANDS))
+@pytest.mark.parametrize("field", ["send_as_id", "root_msg_id", "chat_id"])
+def test_fractional_reply_reference_is_not_truncated_into_ownership(env, kind, field):
+    seed(env, kind)
+    expected = copy.deepcopy(env.identity)
+    context = event_context(kind)
+    context[field] += 0.5
+    with state_module.use_identity(IDENTITY_ID):
+        assert not tianxing.apply_tianxing_passive(
+            text_for(kind, True), NOW, context["family"], reply_context=context,
+        )
+    assert env.identity == expected
     env.send.assert_not_awaited()

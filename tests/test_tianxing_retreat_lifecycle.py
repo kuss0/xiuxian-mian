@@ -373,8 +373,10 @@ def test_retreat_result_requires_original_scope(env, mode, mismatch):
     elif mismatch == "account":
         state_module.set_identity_account(IDENTITY_ID, ACCOUNT_ID + 1)
     expected = farm(env)
+    expected_observed = copy.deepcopy(env.identity["tianxing_observation"])
     apply(env, mode, NOW - 1 if mismatch == "time" else NOW + 1, ctx)
     assert farm(env) == expected
+    assert env.identity["tianxing_observation"] == expected_observed
 
 
 def test_retreat_missing_potion_does_not_loop_without_exchange(env):

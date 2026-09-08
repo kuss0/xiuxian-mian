@@ -103,6 +103,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R49 | High | Tianxing guard cleanup treats cached fields as fresh command evidence, closes unrelated chat/account/action sessions, and accepts late or partial panels; generic routed/passive cleanup bypasses module checks | Fixed for the six direct Tianxing families in candidate; exact reply/session ownership, captured sending account, explicit parsed outcomes, original panel dispatch ordering and expected root/chat closure pass through both dispatchers and SQLite replay; farm-family cleanup, general observation ordering and R07 durability remain open |
 | R50 | High | Empty Tianxing panels, craft-start acknowledgements and zero-quantity results clear pending work before the final edit; an early result followed by its transport receipt loses business completion or leaves a new guard stranded | Fixed in candidate; shared terminal classification preserves incomplete work, exact late receipts close once without repeating reducers, farm/material guards use the module evidence contract, and malformed pending/context cases fail closed; general reducer ordering and R07 durability remain open |
 | R51 | High | Observation normalization deletes prediction-consumption evidence based solely on the latest action label, resurrecting an old effect and permitting downstream release after restart | Fixed in candidate; normalization preserves consumption and only a strictly newer prediction timestamp supersedes it; real unrelated replies, read-only status, route admission and SQLite reload are covered; parsed-result provenance and chronology remain open |
+| R52 | High | Auto/craft/retreat replies update authoritative Tianxing fields before validating the pending operation, so rejected roots/chats/accounts/arguments still change effects, resources and timestamps | Fixed for pending auto/farm operations in candidate; ownership and terminal-command checks run before observation writes, including exact integral references and early receipt adoption; active timeline provenance and general post-completion ordering remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1263,6 +1264,27 @@ five monitor/control-only contracts need separate behavioral verification.
   timestamp's provenance: stale/unrelated parsed results and partial panels
   still require reducer-level review. No production actions were taken.
 
+- R52 strengthens 36 existing operation-ownership cases with authoritative
+  observation assertions: 31 failed, while the five force-exit cases already
+  kept observations unchanged. Pending auto, craft and ordinary-retreat/material
+  results now pass the existing identity/account/chat/root/time/argument checks
+  before changing effects, resource counts or observation timestamps. The same
+  rejection applies to a full result from another command, not just partial
+  replies; rejecting a result does not silently mark it as handled or consumed.
+- All six automatic reply types now require an actual matching root, including
+  panel/observe. Early results wait for an already registered transport receipt
+  and then use existing replay exactly once; the old early-calamity test now
+  verifies that no delta is guessed before that receipt exists. Updated the
+  read-only positive fixtures to carry their actual chat/root/dispatch evidence,
+  rather than weakening receipt lookup to accept impossible ordering.
+  Twenty-one additional fractional-reference cases cover auto and both farms.
+- R52 final verification (2026-09-09): 1362 related tests and 14 subtests; full
+  suite **5537 passed, 1198 subtests passed**, 82.84 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r52-final-20260909.xml`. Selected Ruff, compilation and
+  diff checks pass. This does not certify active timeline-step confirmation,
+  legacy unscoped state, manual-operation arbitration, or old replies after
+  their pending operation has completed. No live/production changes or push.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1380,6 +1402,11 @@ and cleanup code during a code-only rollback.
    parsed-result ownership and timestamp provenance, including old predict
    replies and new panels that must not borrow a cached field. Do not infer
    global reducer correctness from safe read-only normalization.
+   R52 adds pre-write ownership checks for pending automatic/craft/retreat
+   operations. The active timeline still confirms from a merged observation;
+   review its own reply/source metadata and partial-field semantics next.
+   Replies after pending completion and older-than-last farm results also
+   still need durable idempotence and chronology tests.
 
 ## Completion Gate
 

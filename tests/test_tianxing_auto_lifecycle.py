@@ -340,11 +340,18 @@ def test_real_reply_before_receipt_is_not_reopened(auto_env):
     text = get_real_message_text(Path(__file__).parent / "fixtures" / "real_message_samples.json", "tianxing.observe.basic")
     expected = None
 
-    async def send(*_args, **_kwargs):
+    async def send(command, **kwargs):
         nonlocal expected
-        assert tianxing.apply_tianxing_passive(text, now=NOW + 1, family="tianxing_observe")
+        auto_env.identity["pending_tasks"][(CHAT_ID, 4501)] = {
+            "cmd": command, "chat_id": CHAT_ID, "op_id": kwargs["op_id"],
+            "source_module": kwargs["source_module"], "send_started_at": NOW, "sent_at": NOW + 0.5,
+        }
+        assert tianxing.apply_tianxing_passive(
+            text, now=NOW + 1, family="tianxing_observe",
+            reply_context={"send_as_id": IDENTITY_ID, "chat_id": CHAT_ID, "root_msg_id": 4501, "msg_id": 4502},
+        )
         expected = copy.deepcopy(auto_env.identity["tianxing_observation"])
-        return SimpleNamespace(id=4501, sent_at=NOW, chat_id=CHAT_ID)
+        return SimpleNamespace(id=4501, send_started_at=NOW, sent_at=NOW + 0.5, chat_id=CHAT_ID)
 
     auto_env.send.side_effect = send
     asyncio.run(run_plan())

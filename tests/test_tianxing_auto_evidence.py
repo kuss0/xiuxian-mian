@@ -199,9 +199,11 @@ def test_unrelated_result_cannot_clear_auto_pending(env, case):
         context = None
     else:
         text = text.replace(argument("set_star"), tianxing.TIANXING_STARS[0])
+    expected = copy.deepcopy(env.identity["tianxing_observation"])
     with state_module.use_identity(IDENTITY_ID):
         tianxing.apply_tianxing_passive(text, now=reply_at, family="tianxing_set_star", reply_context=context)
     assert env.identity["tianxing_observation"]["auto_pending_action"] == "set_star"
+    assert env.identity["tianxing_observation"] == expected
 
 
 @pytest.mark.parametrize("action,sample", [
@@ -396,15 +398,16 @@ def test_early_calamity_reply_is_not_applied_twice_during_recovery(env, receipt_
     async def send(_command, **kwargs):
         if receipt_registered:
             remember_runtime_receipt(env, kwargs["op_id"])
-        assert tianxing.apply_tianxing_passive(
+        handled = tianxing.apply_tianxing_passive(
             get_real_message_text(SAMPLES, "tianxing.clear_calamity.basic"), now=NOW + 2,
             reply_context=dict(reply_context(), msg_id=4602),
         )
+        assert handled is receipt_registered
         return SimpleNamespace(id=4601, chat_id=CHAT_ID, sent_at=NOW + 3, send_started_at=NOW)
 
     env.send.side_effect = send
     asyncio.run(execute())
-    assert env.identity["tianxing_observation"]["calamity_count"] == 1
+    assert env.identity["tianxing_observation"]["calamity_count"] == (1 if receipt_registered else 2)
     env.identity["tianxing_auto_config"]["auto_clear_calamity_enabled"] = False
     env.lookup.return_value = [logged_reply(ts_epoch=NOW + 2)]
     asyncio.run(schedule(NOW + 300))
@@ -465,7 +468,7 @@ def test_real_dispatcher_passes_pending_reply_ownership(env, monkeypatch, path, 
         handled = asyncio.run(app._handle_routed_reply_event(event, text, NOW, reply, context))
     else:
         handled = asyncio.run(passive_inbox.handle_passive_module_card(text, NOW, context, event, event_type="message"))
-    assert handled
+    assert handled is exact
     assert bool(env.identity["tianxing_observation"]["auto_pending_action"]) is not exact
     env.send.assert_not_awaited()
 

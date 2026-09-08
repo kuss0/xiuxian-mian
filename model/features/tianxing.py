@@ -234,6 +234,15 @@ def _parse_observation_float(value):
     return parsed, False
 
 
+def _tianxing_exact_id(value):
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
 def _dirty_tianxing_time_fields(value=None):
     if not isinstance(value, dict):
         return []
@@ -2331,6 +2340,11 @@ async def run_tianxing_timeline_followup_scheduler(now):
 
 def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     now = float(now if now is not None else time.time())
+    if reply_context is not None and (
+        not isinstance(reply_context, dict)
+        or _tianxing_exact_id(reply_context.get("send_as_id")) != get_current_identity_id()
+    ):
+        return False
     parsed = parse_tianxing_text(text, now=now, family=family)
     if not parsed:
         return False
@@ -2378,6 +2392,8 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     _adopt_tianxing_auto_receipt(observed, _tianxing_reply_processing_time(now, reply_context))
     auto_resolved = _auto_pending_matches_parsed(observed, parsed, now, reply_context=reply_context)
+    if not _tianxing_pending_observation_matches(parsed, observed, now, family, reply_context=reply_context):
+        return False
     seen_key = _tianxing_auto_reply_key(observed, parsed, reply_context)
     seen = observed["auto_pending_seen_replies"]
     if seen_key and seen_key in seen:
@@ -3170,31 +3186,56 @@ def _auto_pending_matches_parsed(observed, parsed, now, *, reply_context=None):
     if not expected or str((parsed or {}).get("action") or "").strip() != expected:
         return False
     sent_at, dirty = _parse_observation_float((observed or {}).get("auto_pending_sent_at"))
-    if dirty or sent_at <= 0 or int(now) < int(sent_at):
+    if dirty or isinstance(observed.get("auto_pending_sent_at"), bool) or sent_at <= 0 or int(now) < int(sent_at):
         return False
     account_id = int((observed or {}).get("auto_pending_account_id") or 0)
     if account_id and account_id != get_identity_account(get_current_identity_id()):
         return False
     anchored = False
-    if reply_context:
+    if isinstance(reply_context, dict):
         try:
-            owner_id = int(reply_context.get("send_as_id") or 0)
-            root_id = int(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id") or 0)
-            chat_id = int(reply_context.get("chat_id") or 0)
+            owner_id = _tianxing_exact_id(reply_context.get("send_as_id"))
+            root_id = _tianxing_exact_id(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id"))
+            chat_id = _tianxing_exact_id(reply_context.get("chat_id"))
             expected_id = int(observed.get("auto_pending_msg_id") or 0)
             expected_chat = int(observed.get("auto_pending_chat_id") or 0)
             if expected_id > 0 and not expected_chat:
                 expected_chat = get_sent_message_chat_id(expected_id, default=0, send_as_id=get_current_identity_id())
         except (TypeError, ValueError, OverflowError):
             return False
-        if owner_id and owner_id != get_current_identity_id():
+        if owner_id != get_current_identity_id():
             return False
         anchored = bool(expected_id > 0 and root_id == expected_id and chat_id and chat_id == expected_chat)
         if expected_id > 0 and not anchored:
             return False
-    if action not in {"panel", "observe"} and not anchored:
+    if not anchored:
         return False
     return _tianxing_auto_result_matches(action, parsed, str(observed.get("auto_pending_command") or ""))
+
+
+def _tianxing_pending_observation_matches(parsed, observed, now, family, *, reply_context):
+    action = parsed.get("action")
+    auto_action = str(observed.get("auto_pending_action") or "")
+    if auto_action and (
+        _TIANXING_AUTO_PENDING_ACTIONS.get(auto_action) == action
+        or _TIANXING_AUTO_PENDING_FAMILIES.get(auto_action) == family
+    ):
+        if not _auto_pending_matches_parsed(observed, parsed, now, reply_context=reply_context):
+            return False
+    for farm, pending_key, reply_family, actions in (
+        (_current_craft_farm_state(), "pending_craft", "tianxing_craft_farm", {"炼制"}),
+        (_current_retreat_farm_state(), "pending_command", "tianxing_retreat_farm", {"闭关", "合气丹", "兑换合气丹", "宗门捐献"}),
+    ):
+        pending = farm[pending_key]
+        if not pending or (family != reply_family and action not in actions):
+            continue
+        _adopt_tianxing_farm_receipt(pending, farm, _tianxing_reply_processing_time(now, reply_context))
+        if (
+            not _tianxing_farm_receipt_matches(pending, reply_context, now)
+            or not _tianxing_parsed_is_terminal(parsed, reply_family, pending.get("command"))
+        ):
+            return False
+    return True
 
 
 def _note_tianxing_auto_pending(observed, now, plan, config):
@@ -3902,22 +3943,14 @@ def _star_arg_from_command(command):
 def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
     from .. import action_guard
 
-    def exact_id(value):
-        if isinstance(value, bool) or not isinstance(value, (str, int)):
-            return 0
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-
     if not isinstance(reply_context, dict):
         return 0
     observed = observed if isinstance(observed, dict) else {}
     send_as_id = get_current_identity_id()
     account_id = get_identity_account(send_as_id)
-    owner = exact_id(reply_context.get("send_as_id"))
-    chat_id = exact_id(reply_context.get("chat_id"))
-    root_id = exact_id(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id"))
+    owner = _tianxing_exact_id(reply_context.get("send_as_id"))
+    chat_id = _tianxing_exact_id(reply_context.get("chat_id"))
+    root_id = _tianxing_exact_id(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id"))
     if owner != send_as_id or owner <= 0 or account_id <= 0 or not chat_id or root_id <= 0:
         return 0
 
@@ -3933,9 +3966,9 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
         if not isinstance(session, dict):
             continue
         sent_at, dirty = _parse_observation_float(session.get("last_sent_at"))
-        receipt_account = exact_id(session.get("last_account_id"))
-        receipt_chat = exact_id(session.get("last_chat_id"))
-        receipt_msg = exact_id(session.get("last_msg_id"))
+        receipt_account = _tianxing_exact_id(session.get("last_account_id"))
+        receipt_chat = _tianxing_exact_id(session.get("last_chat_id"))
+        receipt_msg = _tianxing_exact_id(session.get("last_msg_id"))
         command = str(session.get("last_command") or "")
         if (
             dirty or isinstance(session.get("last_sent_at"), bool) or sent_at <= 0
@@ -6673,19 +6706,20 @@ def _adopt_tianxing_farm_receipt(receipt, farm, now):
 
 
 def _tianxing_farm_receipt_matches(receipt, context, now):
-    if not receipt or not context:
+    if not isinstance(receipt, dict) or not isinstance(context, dict):
         return False
     try:
-        owner = int(context.get("send_as_id") or 0)
-        root = int(context.get("root_msg_id") or context.get("reply_to_msg_id") or 0)
-        chat = int(context.get("chat_id") or 0)
+        owner = _tianxing_exact_id(context.get("send_as_id"))
+        root = _tianxing_exact_id(context.get("root_msg_id") or context.get("reply_to_msg_id"))
+        chat = _tianxing_exact_id(context.get("chat_id"))
         started_at, dirty = _parse_observation_float(receipt.get("started_at"))
         return bool(
-            (not owner or owner == get_current_identity_id())
-            and int(receipt.get("account_id") or 0) == get_identity_account(get_current_identity_id())
-            and root > 0 and root == int(receipt.get("msg_id") or 0)
-            and chat and chat == int(receipt.get("chat_id") or 0)
-            and not dirty and started_at > 0 and int(now) >= int(started_at)
+            owner == get_current_identity_id()
+            and _tianxing_exact_id(receipt.get("account_id")) == get_identity_account(get_current_identity_id())
+            and root > 0 and root == _tianxing_exact_id(receipt.get("msg_id"))
+            and chat and chat == _tianxing_exact_id(receipt.get("chat_id"))
+            and not dirty and not isinstance(receipt.get("started_at"), bool)
+            and started_at > 0 and int(now) >= int(started_at)
         )
     except (TypeError, ValueError, OverflowError):
         return False

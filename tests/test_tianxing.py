@@ -7683,12 +7683,14 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     def test_passive_panel_reply_clears_pending_auto_action(self):
         now = 1_780_000_000.0
+        chat_id = -100451001
         with state_module.use_identity(self.identity_id):
             state_module.state["tianxing_enabled"] = True
             state_module.state["tianxing_observation"] = {
                 "auto_pending_action": "panel",
                 "auto_pending_command": ".天机盘",
                 "auto_pending_msg_id": 9101,
+                "auto_pending_chat_id": chat_id,
                 "auto_pending_sent_at": now - 5,
                 "auto_pending_due_at": now + 85,
             }
@@ -7696,6 +7698,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 real_text("tianxing.panel.basic"),
                 now=now,
                 family="tianxing_panel",
+                reply_context={"send_as_id": self.identity_id, "chat_id": chat_id, "root_msg_id": 9101},
             )
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
 
