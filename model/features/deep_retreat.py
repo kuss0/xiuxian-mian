@@ -19,7 +19,7 @@ from ..action_guard import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_miniapp_state_records, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
+from ..state import get_current_identity_id, get_identity_account, get_identity_display_name, get_identity_ids, get_identity_state, get_miniapp_state_records, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -538,8 +538,21 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
     if not _is_deep_retreat_summary_text(text):
         return False
 
+    context = dict(reply_context or {})
+    if event is not None and getattr(event, "chat_id", 0):
+        context["chat_id"] = event.chat_id
+    routed_id = _reply_context_identity(context)
+    farm_handled = False
+    if routed_id:
+        with use_identity(routed_id):
+            farm_handled = note_tianxing_retreat_force_exit_summary(text, now=now, reply_context=context)
+            if farm_handled:
+                save_state()
+
     target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now, reply_context=reply_context)
     if target_id is None:
+        if farm_handled:
+            return True
         archived_id = _match_deep_retreat_post_summary_identity(text, now=now, reply_context=reply_context)
         if archived_id:
             with use_identity(archived_id):
@@ -579,16 +592,20 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
         return False
 
     with use_identity(target_id):
+        identity = get_identity_state(target_id)
+        account_id = get_identity_account(target_id)
         _record_deep_retreat_event(
             "闭关总结确认",
             identity_id=target_id,
             matched_text=text,
             decision="summary_finalized",
         )
-        await finalize_summary_broadcast(DEEP_RETREAT_SPEC, now)
-        _clear_deep_retreat_remote_block_after_summary(now)
-        if note_tianxing_retreat_force_exit_summary(text, now=now):
+        if not farm_handled and note_tianxing_retreat_force_exit_summary(text, now=now, reply_context=context):
             save_state()
+        await finalize_summary_broadcast(DEEP_RETREAT_SPEC, now)
+        if not has_identity(target_id) or get_identity_state(target_id) is not identity or get_identity_account(target_id) != account_id:
+            return True
+        _clear_deep_retreat_remote_block_after_summary(now)
     return True
 
 

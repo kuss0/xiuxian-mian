@@ -99,6 +99,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R45 | High | Outer Tianxing schedulers use stale identities/configuration after lock/child waits; automatic receipts reopen completed pending work or overwrite new clocks; pause/resume clears dispatched auto pending | Fixed for reproduced outer automatic/daily/follow-up boundaries in candidate; captured controls, post-await auto-state comparisons, queued-plan checks, exact pending receipt ownership and pause-preserved pending pass; unknown auto-send retries, craft/retreat internals and other reducer anchors remain open |
 | R46 | High | Automatic Tianxing clears unknown sends and expired pending, accepts malformed receipts, and closes work on action name alone; timeline/downstream paths can bypass that unresolved action | Fixed for reproduced automatic evidence boundaries in candidate; explicit-unsent classification, retained unknown operations, exact receipt/log correlation, dispatch-time bounds, bounded early-result deduplication and pending-aware route admission pass; legacy no-ID work without authoritative evidence, general reducer freshness and craft/retreat internals remain open |
 | R47 | High | Craft farm and prediction-consumption callers can overlap, retry uncertain sends, overwrite early results or new work, and mistake panel calibration for craft completion; business-denial backoff is ignored | Fixed for reproduced craft lifecycle boundaries in candidate; shared operation lock, pre-dispatch ownership/evidence checks, persisted unknown pending, strict existing-receipt adoption, independent craft/calibration anchors, idempotent last-result handling and preserved business backoff pass; retreat lifecycle, general reducer ordering and R07 durability remain open |
+| R48 | High | Ordinary retreat and its material chain do not claim pending work before sending; scheduler ticks erase reply-wait phases, panel replies complete unrelated work, missing potions loop, and local guard delays lose the intended next action | Fixed for scoped candidate operations; shared farm transport/receipt code, retreat serialization, strict command/quantity/result ownership, retained unknown work, separate calibration, bounded denial/unsent retries and force-exit caller propagation pass; legacy unanchored farm state, general reducer ordering and shared R07 durability remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1146,6 +1147,44 @@ five monitor/control-only contracts need separate behavioral verification.
   restart, push, production configuration/DB mutation or game request occurred;
   user-owned quiz-bank/tool changes remain excluded from this local commit.
 
+- R48 starts from 159 retreat lifecycle cases: 104 failed and 55 passed before
+  changes. Ordinary retreat, potion use, exchange, donation and configured force
+  exit now share the tested farm send/receipt implementation with craft, while
+  keeping separate business reducers and identity locks. The duplicate retreat
+  transport implementation and now-unreachable waiting branch were removed.
+  Pending intent is saved before transport; lock/queue waits recheck the owner,
+  account, controls, parent, deep-retreat occupancy and action prerequisites.
+- Each new retreat-chain mutation retains its original command, operation,
+  account, source module, chat and dispatch time independently of a later panel
+  query. Missing, uncertain, cancelled or malformed transport results do not
+  rearm the action, including across SQLite reload. Explicit-unsent outcomes
+  retain a bounded retry and the original chain action; material preparation
+  is skipped once its known retreat cooldown has elapsed. Local action-guard
+  delays no longer replace potion/exchange/donation with premature retreat.
+- Result reconciliation requires the original command family, root, chat,
+  account, dispatch bound and requested quantity when present. A panel cannot
+  close an unresolved mutation. Early results and late receipts cannot reopen
+  settled work or overwrite newer clocks. Older calibration panels are ignored
+  before changing observations, while a genuinely newer panel remains valid.
+  Missing potions without exchange authorization and resource denials retain
+  their backoff instead of repeating the same resource command every tick.
+- The real force-exit summary caller now forwards reply provenance and records
+  the original farm result before awaiting summary finalization/notification.
+  Exact pending replies can settle after either module is disabled without
+  enabling automation. A replaced/deleted/rebound owner is not mutated after
+  that await. Only unresolved ordinary retreat consumes/reserves the Tianxing
+  route: deep retreat and material preparation do not acquire that effect gate.
+- R48 final verification (2026-09-09): 226 retreat lifecycle cases; the real
+  runtime tests add five command types across 21 admission interleavings each
+  (105 inner and five outer subtests). Related suite: 1273 passed, 259 subtests.
+  Full suite: 5156 passed, 1198 subtests passed, 79.71 seconds. JUnit:
+  `/tmp/xiuxian-rebuild-r48-retreat-final-20260909.xml`.
+  Full configured Ruff, compilation and diff checks pass. This is offline
+  candidate evidence only: no game traffic, production writes, service changes,
+  skill edits, deployment or push. General manual/older-than-last reducer
+  ordering and legacy farm entries without operation provenance remain open;
+  per-farm pending state is not a solution to the shared R07 forced-stop gap.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1239,8 +1278,10 @@ and cleanup code during a code-only rollback.
    authorize a speculative status-query loop or replay of legacy no-ID work.
    R47 now covers both craft entrypoints and their parent callers, including
    early/unknown transport results, separate panel ownership and business
-   backoff. Continue with the ordinary retreat farm's complete lifecycle and
-   general reducer freshness/idempotence (including results after disable,
+   backoff. R48 covers new ordinary-retreat/material operations and the actual
+   force-exit reply caller, with shared farm receipt handling and independent
+   effect admission. Continue with general reducer freshness/idempotence
+   (including legacy farm state without correlation, results after disable,
    older-than-last craft replies and unthreaded scalar guard cleanup). The
    bounded pending/last-result evidence is not a replacement for those broader
    reducer contracts or R07 crash-durable transport ownership.

@@ -5704,7 +5704,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
             )
             farm_after_missing = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["retreat_farm"]
 
-            exchange_msg = SimpleNamespace(id=9304, sent_at=now + 1)
+            exchange_msg = SimpleNamespace(id=9304, chat_id=-1002104, sent_at=now + 1)
             with (
                 patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=exchange_msg)) as exchange_mock,
                 patch.object(tianxing, "save_state"),
@@ -5715,6 +5715,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 "兑换成功！\n你消耗了 1500 点贡献，获得了【合气丹】x10，已放入你的储物袋。",
                 now=now + 2,
                 family="tianxing_retreat_farm",
+                reply_context={"send_as_id": self.identity_id, "chat_id": -1002104, "root_msg_id": 9304},
             )
             farm_after_exchange = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["retreat_farm"]
 
@@ -5763,7 +5764,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 now=now,
                 family="tianxing_retreat_farm",
             )
-            donate_msg = SimpleNamespace(id=9306, sent_at=now + 1)
+            donate_msg = SimpleNamespace(id=9306, chat_id=-1002104, sent_at=now + 1)
             with (
                 patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=donate_msg)) as donate_mock,
                 patch.object(tianxing, "save_state"),
@@ -5774,6 +5775,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 "你向宗门捐献了 【灵石】x200，获得了 1400 点宗门贡献！",
                 now=now + 2,
                 family="tianxing_retreat_farm",
+                reply_context={"send_as_id": self.identity_id, "chat_id": -1002104, "root_msg_id": 9306},
             )
             farm_after_donation = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["retreat_farm"]
 
