@@ -108,6 +108,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R54 | High | Effect deadlines include retry padding or invented lifetimes; cached release/observation fields bypass unresolved calibration, while partial effect replies lose native pending/guard ownership and late originals cannot settle after calibration timeout | Fixed for scoped expiry, downstream admission and retained-operation reconciliation in candidate; exact effect clocks, owned complete panels, partial/final native replay, late success/CD/refusal and SQLite reload are covered; general field provenance and post-completion chronology remain open |
 | R55 | High | Native effects use local receipt time, stale replies overwrite newer effects, route results acknowledge unrelated mutations, and replay batches select revisions by arrival rather than server order; calibration helpers bypass effect provenance | Fixed for scoped native event/replay paths in candidate; server timestamps, per-effect evidence, genuine versus repeated edits, corruption repair, retained mutation ownership and SQLite replay are covered; counters/resource deltas and legacy route-result log readers remain open |
 | R56 | High | Legacy rift recovery trusts a bare message ID and log arrival time, accepts unrelated/untrusted replies, and replays stale edits or old commands as fresh work | Fixed for the scoped log readers in candidate; owned command/root/chat correlation, trusted server-timed revisions, ambiguity rejection, bounded reads and SQLite pending reload are covered; scalar live anchors, uncertain-send retry policy and panel-only outcome inference remain open |
+| R57 | High | Rift timeouts erase in-flight ownership and later resend; cached panels falsely prove execution or non-execution; uncertain query receipts and UI/startup resets can revive completed or replaced work | Fixed for timeout/query/recovery boundaries in candidate; retained unknown work, bounded owned replay, one-shot persisted queries, native late result/CD handling, account/operation checks and pause/reload retention pass; original rift dispatch awaits, legacy scalar anchors and post-completion resource idempotence remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1453,6 +1454,49 @@ five monitor/control-only contracts need separate behavioral verification.
   This is still offline candidate work; production, skill, listener, flags,
   configuration and live DB are untouched. No deployment, restart or push.
 
+### R57 Evidence
+
+- The initial unknown-lifecycle reproducer recorded **26 failed, 2 passed**;
+  JUnit: `/tmp/xiuxian-rebuild-r57-repro-20260909.xml`. The resumed focused
+  run found **178 passed, 1 failed**, with the remaining old assertion still
+  expecting a one-tick pause. It now verifies persisted legacy migration,
+  one notification and no retry on later scheduler ticks.
+- Known command IDs and no-ID unknown operations survive timeouts, UI off/on,
+  initial checks and SQLite reload. Incomplete result edits keep their original
+  result anchor. Elapsed time does not clear pending work, invent a complete
+  game cooldown or consume Tianxing effects. Legacy unknown summaries block
+  Tianxing downstream work even before the rift scheduler migrates them.
+- An exactly owned panel may update effect observations, but never establishes
+  that this rift executed or was unsent. Query state is saved before awaiting
+  transport; cancellation retains it, an unknown query is not repeated, and
+  only an explicitly unsent query becomes retryable after backoff. Save failure
+  prevents dispatch. No CommandAttempt recovery/controller behavior was added.
+- Additional fault tests reproduced **9 failures** in parent/query ownership,
+  operation-ID aliasing, cross-account receipt adoption, pre-query receipts,
+  unknown start-anchor retention and pre-dispatch result clocks. These checks
+  now retain the original identity object/account and immutable operation ID,
+  and preserve exact root/chat/server-time evidence. Command route lookup uses
+  only bounded log tails, not the runtime helper's full daily-file fallback.
+- Eight native message/edit and pending-log replay cases exercise final results
+  and cooldown replies with the module disabled. They close the original work
+  at the server event's clock without enabling the module; repeat delivery does
+  not change business state or notify again. The stale-start/final-edit sequence
+  and cancelled query are also tested across a real temporary SQLite reload.
+- The first full suite found **6198 passed, 1 failed, 1198 subtests passed**;
+  JUnit: `/tmp/xiuxian-rebuild-r57-full-20260909.xml`. The obsolete startup test
+  expected in-flight IDs to be erased. It now asserts retention, alongside a
+  separate fresh-identity initial-scheduling regression.
+- Final full suite: **6200 passed, 1198 subtests passed**, 85.40 seconds;
+  JUnit: `/tmp/xiuxian-rebuild-r57-final-20260909.xml`. Full selected-rule Ruff,
+  changed-file compilation, `pip check` and diff checks pass. Production,
+  configuration/DB, listener, skill and automation switches remain untouched;
+  no deployment, restart, game request or push was performed.
+- R57 does not certify the original `CMD_EXPLORE_RIFT` dispatch await. That
+  caller still lacks pre-dispatch persisted operation ownership, can overwrite
+  an early result with a late receipt, and needs cancellation/queue/rebind
+  tests. General scalar reply ownership and post-completion resource-delta
+  deduplication remain separate open requirements.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1600,14 +1644,14 @@ and cleanup code during a code-only rollback.
    ownership, not all rift behavior. Continue through the live scalar result
    anchors, post-completion item-delta deduplication, and registered account
    ownership across rebinds. Tail truncation is missing evidence, not failure.
-7. Rift's known-message timeout still clears pending and permits a later
-   command retry; the no-ID/non-Tianxing pause also becomes retryable later.
-   `_reconcile_unknown_rift_from_panel` relies on latest action/time plus merged
-   effect fields, without proving this query observed the same effects before
-   expiry or excluding other consumers. Unchanged effects do not establish
-   that a risky command was unsent. Repair these lifecycle/outcome-inference
-   paths with multi-tick and crash/reload tests; R56 log validation does not
-   certify them, and the candidate is not approved for production deployment.
+7. R57 covers rift timeout retention, panel-only outcome inference, query
+   ownership, legacy unknown-state migration and native late-result recovery.
+   Continue with the original rift send await: persist ownership before
+   dispatch, prevent receipt/unknown-send paths from overwriting early results,
+   and verify queue cancellation, account rebinding and restart before receipt.
+   The rebirth branch, general scalar live anchors, unknown-operation replay
+   after retention expiry and post-completion item deltas also remain open.
+   The candidate is not approved for production deployment.
 
 ## Completion Gate
 

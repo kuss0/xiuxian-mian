@@ -224,6 +224,7 @@ from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
 from .features.explore_rift import (
     clear_explore_rift_state,
+    has_unresolved_explore_rift,
     get_explore_rift_status_text as get_explore_rift_feature_status_text,
     schedule_explore_rift_initial_check,
 )
@@ -2029,12 +2030,16 @@ def _clear_explore_rift_runtime():
 
 def _manual_disable_explore_rift_module_state():
     state["explore_rift_enabled"] = False
+    if has_unresolved_explore_rift():
+        return
     _clear_explore_rift_runtime()
     clear_explore_rift_state(persist=False, keep_last_error=True)
 
 
 def _manual_enable_explore_rift_module_state(now):
     state["explore_rift_enabled"] = True
+    if has_unresolved_explore_rift():
+        return
     if float(state.get("next_explore_rift_time", 0) or 0) > now:
         state["explore_rift_manual_required"] = False
         return

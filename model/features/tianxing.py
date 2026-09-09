@@ -5936,6 +5936,10 @@ def _command_tianxing_route(command):
 def _tianxing_route_has_pending_downstream(route):
     route = _normalize_route_choice(route, "")
     if route == "探索":
+        from .explore_rift import _has_unknown_rift
+
+        if _has_unknown_rift():
+            return True
         return any(
             int(state.get(key, 0) or 0) > 0
             for key in (

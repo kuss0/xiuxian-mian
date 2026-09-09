@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -50,9 +51,8 @@ from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
-    mark_tianxing_route_result_unknown,
     normalize_tianxing_observation,
-    reconcile_tianxing_route_consumption,
+    parse_tianxing_text,
     run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
 )
@@ -79,7 +79,6 @@ EXPLORE_RIFT_RECOVERY_MAX_SEC = 180
 EXPLORE_RIFT_FALLBACK_CD_SEC = EXPLORE_RIFT_CD
 EXPLORE_RIFT_FAST_CD_SEC = 9 * 3600
 EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC = 60
-EXPLORE_RIFT_TIANXING_TIMEOUT_RETRY_SEC = 100
 EXPLORE_RIFT_TIANJI_WAIT_BUFFER_SEC = 5 * 60
 EXPLORE_RIFT_TIANJI_WAIT_MAX_SEC = 2 * 3600
 EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC = 10 * 60
@@ -288,12 +287,19 @@ def _clear_explore_rift_rebirth_state():
     state["explore_rift_rebirth_last_error"] = ""
 
 
-def _set_explore_rift_pending_result(result_msg_id, now=None):
+def _set_explore_rift_pending_result(result_msg_id, now=None, *, reply_context=None):
     result_msg_id = int(result_msg_id or 0)
     if result_msg_id <= 0:
         return False
     now = float(now if now is not None else time.time())
     changed = False
+    if _has_unknown_rift() and isinstance(reply_context, dict):
+        _observed, snapshot = _unknown_rift_snapshot()
+        snapshot.update(
+            command_msg_id=_rift_log_id(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id")),
+            command_chat_id=_rift_log_id(reply_context.get("chat_id")),
+        )
+        _store_unknown_rift_snapshot(snapshot)
     if int(state.get("explore_rift_reply_to_msg_id", 0) or 0) != 0:
         state["explore_rift_reply_to_msg_id"] = 0
         changed = True
@@ -739,13 +745,57 @@ def _is_unknown_send_summary(value):
         summary.startswith("发送状态未知，等待被动回复")
         or summary.startswith("发送状态未知，等待天机盘消费校准")
         or summary.startswith("天机盘校准超时，等待迟到盘面")
+        or summary.startswith("发送状态未知且未捞到反馈")
+        or summary.startswith("天机盘校准矛盾")
+        or summary.startswith("天机盘校准：探索保护均未消费")
+    )
+
+
+def _has_unknown_rift():
+    observed = state.get("tianxing_observation")
+    return (
+        isinstance(observed, dict) and "explore_rift_unknown_snapshot" in observed
+    ) or _is_unknown_send_summary(state.get("explore_rift_last_result"))
+
+
+def has_unresolved_explore_rift():
+    return _has_unknown_rift() or any(_rift_log_id(state.get(key)) > 0 for key in (
+        "explore_rift_reply_to_msg_id", "explore_rift_pending_result_msg_id",
+        "explore_rift_fatal_msg_id", "explore_rift_rebirth_request_msg_id",
+        "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id",
+    ))
+
+
+def _store_unknown_rift_snapshot(snapshot):
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    observed["explore_rift_unknown_snapshot"] = dict(snapshot)
+    state["tianxing_observation"] = observed
+    mark_dirty()
+
+
+def _unknown_rift_owner_matches(snapshot):
+    identity_id = get_current_identity_id()
+    return has_identity(identity_id) and all(
+        key not in snapshot or _rift_log_id(snapshot[key]) == expected
+        for key, expected in (
+            ("identity_id", identity_id), ("account_id", get_identity_account(identity_id)),
+        )
     )
 
 
 def _mark_explore_rift_send_unknown(now):
     wait_until = float(now or 0) + EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    observed["explore_rift_unknown_snapshot"] = {
+    _observed, snapshot = _unknown_rift_snapshot(observed)
+    msg_id = _rift_log_id(state.get("explore_rift_reply_to_msg_id"))
+    command = _known_rift_command(msg_id, now) if msg_id > 0 and not snapshot else {}
+    snapshot = snapshot or {
+        "op_id": uuid4().hex,
+        "identity_id": get_current_identity_id(),
+        "account_id": get_identity_account(get_current_identity_id()),
+        "command_msg_id": msg_id,
+        "command_chat_id": command.get("chat_id", 0),
+        "command_started_at": command.get("event_at", 0),
         "recorded_at": float(now or 0),
         "prediction": str(observed.get("current_prediction") or "").strip(),
         "prediction_set_at": float(observed.get("current_prediction_set_at", 0) or 0),
@@ -754,12 +804,13 @@ def _mark_explore_rift_send_unknown(now):
         "panel_sent_at": 0.0,
         "panel_msg_id": 0,
     }
-    state["tianxing_observation"] = observed
-    _clear_explore_rift_pending()
+    _store_unknown_rift_snapshot(snapshot)
     state["explore_rift_last_result"] = "发送状态未知，等待被动回复或冷却校准"
     state["explore_rift_last_error"] = "探寻裂缝发送状态未知，先等待被动结果，避免重复消耗"
     state["next_explore_rift_time"] = max(float(state.get("next_explore_rift_time", 0) or 0), wait_until)
     state["explore_rift_reply_due_at"] = wait_until
+    state["explore_rift_tianxing_prepare_retry_at"] = 0
+    state["explore_rift_manual_required"] = True
     return wait_until
 
 
@@ -777,110 +828,130 @@ def _clear_unknown_rift_snapshot(observed=None):
     )
     observed.pop("explore_rift_unknown_snapshot", None)
     state["tianxing_observation"] = observed
+    mark_dirty()
     return observed
 
 
-def _reconcile_unknown_rift_from_panel(now):
-    observed, snapshot = _unknown_rift_snapshot()
-    panel_sent_at = float(snapshot.get("panel_sent_at", 0) or 0)
-    if panel_sent_at <= 0:
-        return ""
-    if str(observed.get("last_action") or "").strip() != "天机盘":
-        return ""
-    if float(observed.get("last_observed_at", 0) or 0) + 0.001 < panel_sent_at:
-        return ""
-
-    previous_prediction = str(snapshot.get("prediction") or "").strip()
-    previous_change = str(snapshot.get("change") or "").strip()
-    current_prediction = str(observed.get("current_prediction") or "").strip()
-    current_change = str(observed.get("current_change") or "").strip()
-    prediction_consumed = previous_prediction == "探索" and current_prediction != "探索"
-    change_consumed = previous_change == "探索" and current_change != "探索"
-
-    _clear_explore_rift_pending()
-    state["explore_rift_tianxing_prepare_retry_at"] = 0
-    if prediction_consumed:
-        reconcile_tianxing_route_consumption(
-            "探索",
-            prediction_consumed=True,
-            change_consumed=change_consumed,
-            now=now,
-            reason="探寻裂缝 unknown 后由天机盘确认真实消费",
-        )
-        action_at = float(snapshot.get("recorded_at", 0) or now)
-        state["next_explore_rift_time"] = max(
-            float(now + 60),
-            float(action_at + _resolve_cd_sec() + CD_BUFFER_SEC),
-        )
-        if previous_change == "探索" and change_consumed:
-            state["explore_rift_last_result"] = "天机盘校准：探索推命与改命均已消费，确认裂缝已执行并触发改命"
-        elif previous_change == "探索":
-            state["explore_rift_last_result"] = "天机盘校准：探索推命已消费、改命仍在，确认裂缝已执行且未触发改命"
-        else:
-            state["explore_rift_last_result"] = "天机盘校准：探索推命已消费，确认裂缝已执行"
-        state["explore_rift_last_error"] = "裂缝最终文案未留存，已按真实盘面消费保守写入完整冷却"
-        state["explore_rift_manual_required"] = False
-        _clear_unknown_rift_snapshot()
-        return "confirmed"
-
-    if previous_prediction == "探索" and current_prediction == "探索" and (
-        previous_change != "探索" or current_change == "探索"
+def _unknown_rift_reply_matches(context, result_msg_id, now):
+    if not isinstance(context, dict) or _rift_log_id(context.get("send_as_id")) != get_current_identity_id():
+        return False
+    root = _rift_log_id(context.get("root_msg_id") or context.get("reply_to_msg_id"))
+    chat = _rift_log_id(context.get("chat_id"))
+    event_at = _rift_log_time(context.get("server_event_at"))
+    if (
+        root <= 0 or not chat or _rift_log_id(context.get("msg_id")) != result_msg_id
+        or context.get("event_type") not in ("message", "edit")
+        or not 0 < event_at <= max(now, _rift_log_time(context.get("processed_at"))) + 1
+        or (context.get("reply_to_msg_id") and _rift_log_id(context["reply_to_msg_id"]) != root)
     ):
-        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
-        state["explore_rift_last_result"] = "天机盘校准：探索保护均未消费，按裂缝未执行低频重试"
-        state["explore_rift_last_error"] = "盘面证明前置保护未消费；保留推命与改命，不立即重发"
-        state["explore_rift_manual_required"] = False
-        _clear_unknown_rift_snapshot(observed)
-        return "not_sent"
+        return False
+    _observed, snapshot = _unknown_rift_snapshot()
+    if not _unknown_rift_owner_matches(snapshot):
+        return False
+    expected_id = _rift_log_id(snapshot.get("command_msg_id")) or _rift_log_id(state.get("explore_rift_reply_to_msg_id"))
+    expected_chat = _rift_log_id(snapshot.get("command_chat_id"))
+    started_at = _rift_log_time(snapshot.get("command_started_at"))
+    if expected_id and not expected_chat:
+        command = _known_rift_command(expected_id, now)
+        expected_chat = command.get("chat_id", 0)
+        started_at = started_at or command.get("event_at", 0)
+    if not expected_id:
+        command = _find_recent_logged_explore_rift_command(now)
+        if not command:
+            return False
+        expected_id, expected_chat = command["msg_id"], command["chat_id"]
+        started_at = command.get("event_at", 0)
+    return root == expected_id and chat == expected_chat and started_at <= event_at + 1
 
-    state["next_explore_rift_time"] = float(now + _resolve_cd_sec() + CD_BUFFER_SEC)
-    state["explore_rift_last_result"] = "天机盘校准矛盾，裂缝保持人工确认"
-    state["explore_rift_last_error"] = "推命/改命盘面变化无法唯一证明裂缝结果，已冻结自动重发"
+
+def _finish_unknown_rift():
+    _clear_unknown_rift_snapshot()
+    state["explore_rift_manual_required"] = False
+
+
+def _reconcile_unknown_rift_from_panel(now):
+    _observed, snapshot = _unknown_rift_snapshot()
+    evidence = snapshot.get("panel_evidence")
+    if not isinstance(evidence, dict) or evidence.get("key") == snapshot.get("panel_reported_key"):
+        return ""
+    event_at = _rift_log_time(evidence.get("at"))
+    if not 0 < event_at <= now + 1 or not evidence.get("complete"):
+        return ""
+    # A panel describes effects, not whether this particular rift executed.
+    snapshot["panel_reported_key"] = evidence.get("key")
+    _store_unknown_rift_snapshot(snapshot)
+    state["explore_rift_last_result"] = "裂缝结果未知，天机盘已校准；等待原命令回包"
+    state["explore_rift_last_error"] = "盘面变化不能唯一证明裂缝结果，不自动重发探寻裂缝"
     state["explore_rift_manual_required"] = True
-    _clear_unknown_rift_snapshot(observed)
     return "unresolved_hold"
 
 
 async def _request_unknown_rift_panel(now):
-    observed, snapshot = _unknown_rift_snapshot()
-    if not snapshot:
+    _observed, snapshot = _unknown_rift_snapshot()
+    identity_id = get_current_identity_id()
+    identity = get_identity_state(identity_id)
+    account_id = get_identity_account(identity_id)
+    if (
+        not snapshot or not _unknown_rift_owner_matches(snapshot)
+        or not get_global_enabled() or not get_identity_enabled(identity_id)
+        or not identity.get("explore_rift_enabled") or not identity.get("tianxing_enabled")
+        or snapshot.get("panel_status") in ("sending", "sent", "unknown")
+        or _rift_log_time(snapshot.get("panel_sent_at")) > 0
+        or _rift_log_time(snapshot.get("panel_next_time")) > now
+    ):
         return False
+    operation_id = snapshot.setdefault("op_id", uuid4().hex)
+    query_id = uuid4().hex
+    snapshot.update(panel_status="sending", panel_started_at=now, panel_op_id=query_id)
+    _store_unknown_rift_snapshot(snapshot)
+    state["explore_rift_reply_due_at"] = now + EXPLORE_RIFT_UNKNOWN_PANEL_REPLY_SEC
+    state["next_explore_rift_time"] = max(_rift_log_time(state.get("next_explore_rift_time")), state["explore_rift_reply_due_at"])
+    if not save_state():
+        snapshot.update(panel_status="unsent", panel_next_time=now + RETRY_MAX_SEC)
+        _store_unknown_rift_snapshot(snapshot)
+        state["explore_rift_last_error"] = "查盘等待状态未保存，本次未发送"
+        return False
+
+    def owns_query():
+        if not has_identity(identity_id) or get_identity_state(identity_id) is not identity or get_identity_account(identity_id) != account_id:
+            return False
+        _latest, current = _unknown_rift_snapshot()
+        return current.get("op_id") == operation_id and current.get("panel_op_id") == query_id
+
+    def can_send():
+        if not owns_query():
+            return False
+        _latest, current = _unknown_rift_snapshot()
+        return current.get("panel_status") == "sending" and get_global_enabled() and get_identity_enabled(identity_id) and bool(identity.get("explore_rift_enabled")) and bool(identity.get("tianxing_enabled"))
+
     msg = await send_game_command(
         CMD_TIANXING_PANEL,
         track=False,
         max_retry=0,
         priority="chain",
         source_module="探寻裂缝",
+        op_id=query_id,
+        operation_check=can_send,
     )
-    # 发送期间让出了事件循环，被动盘面（app.py 的 apply_tianxing_passive）可能已经
-    # 改写过 tianxing_observation。重读最新快照后只并回本次真正修改的字段，避免用
-    # await 之前的副本整块覆盖掉期间到达的观测。
-    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    if not msg:
-        send_block = classify_game_send_block(get_current_identity_id(), CMD_TIANXING_PANEL)
-        if str(send_block.get("status") or "") == "unknown":
-            snapshot["panel_sent_at"] = float(now)
-            snapshot["panel_msg_id"] = 0
-            observed["explore_rift_unknown_snapshot"] = snapshot
-            state["tianxing_observation"] = observed
-            state["explore_rift_reply_due_at"] = float(now + EXPLORE_RIFT_UNKNOWN_PANEL_REPLY_SEC)
-            state["next_explore_rift_time"] = state["explore_rift_reply_due_at"]
-            state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
-            state["explore_rift_last_error"] = "天机盘发送状态未知，等待被动盘面；不会重复查盘"
-            return True
-        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
-        state["explore_rift_reply_due_at"] = float(now + RETRY_MAX_SEC)
-        state["explore_rift_last_error"] = "裂缝状态未知，天机盘校准命令未发送，稍后低频重试"
+    if not owns_query():
         return False
-    sent_at = float(getattr(msg, "sent_at", 0) or now)
-    snapshot["panel_sent_at"] = sent_at
-    snapshot["panel_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    observed["explore_rift_unknown_snapshot"] = snapshot
-    state["tianxing_observation"] = observed
-    state["explore_rift_reply_due_at"] = sent_at + EXPLORE_RIFT_UNKNOWN_PANEL_REPLY_SEC
-    state["next_explore_rift_time"] = state["explore_rift_reply_due_at"]
+    _observed, snapshot = _unknown_rift_snapshot()
+    msg_id = _rift_log_id(getattr(msg, "id", 0))
+    sent_at = _rift_log_time(getattr(msg, "sent_at", 0))
+    if not msg and _is_explore_rift_unsent_block(classify_game_send_block(identity_id, CMD_TIANXING_PANEL)):
+        snapshot.update(panel_status="unsent", panel_next_time=now + RETRY_MAX_SEC)
+        _store_unknown_rift_snapshot(snapshot)
+        state["explore_rift_last_error"] = "裂缝状态未知，天机盘校准命令未发送，稍后低频重试"
+        save_state()
+        return False
+    if msg_id > 0 and sent_at > 0:
+        snapshot.update(panel_status="sent", panel_sent_at=sent_at, panel_msg_id=msg_id, panel_chat_id=_rift_log_id(getattr(msg, "chat_id", 0)))
+    else:
+        snapshot["panel_status"] = "unknown"
+    _store_unknown_rift_snapshot(snapshot)
     state["explore_rift_last_result"] = "发送状态未知，等待天机盘消费校准"
-    state["explore_rift_last_error"] = "裂缝最终回包未捞到，已低频查询天机盘确认真实消费"
+    state["explore_rift_last_error"] = "查盘仅校准保护状态，裂缝仍等待原命令结果；不会重复查盘"
+    save_state()
     return True
 
 
@@ -927,15 +998,17 @@ def _rift_log_command_owners(entries, command, now):
     for key, pending in state.get("pending_tasks", {}).items():
         if not isinstance(pending, dict) or pending.get("cmd") != command:
             continue
+        if "account_id" in pending and _rift_log_id(pending["account_id"]) != account_id:
+            continue
         try:
             chat_id, msg_id = message_key_parts(key, pending)
         except (TypeError, ValueError, OverflowError):
             continue
         sent_at = _rift_log_time(pending.get("sent_at"))
         started_at = _rift_log_time(pending.get("send_started_at"))
-        if not chat_id or not 0 < sent_at <= now + 1 or started_at > sent_at:
+        if not chat_id or msg_id <= 0 or not 0 < sent_at <= now + 1 or started_at > sent_at:
             continue
-        owners[chat_id, msg_id] = {"chat_id": chat_id, "msg_id": msg_id, "ts": sent_at, "event_at": started_at, "text": command}
+        owners[chat_id, msg_id] = {"chat_id": chat_id, "msg_id": msg_id, "ts": sent_at, "event_at": started_at, "text": command, "op_id": pending.get("op_id", "")}
     for entry in entries:
         if entry.get("event_type") not in ("sent", "message") or str(entry.get("text") or "").strip() != command:
             continue
@@ -955,8 +1028,25 @@ def _rift_log_command_owners(entries, command, now):
             "chat_id": chat_id, "msg_id": msg_id, "text": command,
             "ts": min(entry["ts_epoch"], previous.get("ts", entry["ts_epoch"])),
             "event_at": event_at or previous.get("event_at", 0),
+            "op_id": entry.get("op_id") or previous.get("op_id", ""),
         }
     return owners
+
+
+def _known_rift_command(msg_id, now):
+    owners = _rift_log_command_owners([], CMD_EXPLORE_RIFT, now)
+    for key, sent_at in state.get("my_msg_ids", {}).items():
+        try:
+            chat_id, recorded_id = message_key_parts(key)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if chat_id and recorded_id == msg_id and _rift_log_time(sent_at):
+            owners.setdefault((chat_id, msg_id), {"chat_id": chat_id, "msg_id": msg_id})
+    matches = [entry for entry in owners.values() if entry["msg_id"] == msg_id]
+    if not matches:
+        entries = _rift_log_entries(now, EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC)
+        matches = [entry for entry in _rift_log_command_owners(entries, CMD_EXPLORE_RIFT, now).values() if entry["msg_id"] == msg_id]
+    return matches[0] if len(matches) == 1 else {}
 
 
 def _find_owned_rift_log_reply(command, now, *, command_msg_id=0, command_chat_id=0, result_msg_id=0):
@@ -1019,23 +1109,45 @@ def _find_logged_explore_rift_reply(command_msg_id, now, *, command_chat_id=0):
 
 
 def _recover_unknown_rift_panel_from_message_log(now):
-    observed, snapshot = _unknown_rift_snapshot()
+    _observed, snapshot = _unknown_rift_snapshot()
+    if not _unknown_rift_owner_matches(snapshot):
+        return False
+    if not _rift_log_id(snapshot.get("panel_msg_id")) and snapshot.get("panel_op_id"):
+        owners = _rift_log_command_owners(_rift_log_entries(now, EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC), CMD_TIANXING_PANEL, now)
+        started_at = _rift_log_time(snapshot.get("panel_started_at"))
+        matches = [entry for entry in owners.values() if (
+            entry.get("op_id") == snapshot["panel_op_id"]
+            and 0 < started_at <= (entry.get("event_at") or entry["ts"]) <= now + 1
+        )]
+        if len(matches) == 1:
+            entry = matches[0]
+            snapshot.update(panel_msg_id=entry["msg_id"], panel_chat_id=entry["chat_id"], panel_sent_at=entry["ts"], panel_status="sent")
+            _store_unknown_rift_snapshot(snapshot)
     panel_msg_id = _rift_log_id(snapshot.get("panel_msg_id"))
     panel_sent_at = _rift_log_time(snapshot.get("panel_sent_at"))
     if panel_msg_id <= 0 or not 0 < panel_sent_at <= now + 1:
         return False
-    if (
-        str(observed.get("last_action") or "").strip() == "天机盘"
-        and float(observed.get("last_observed_at", 0) or 0) + 0.001 >= panel_sent_at
-    ):
-        return False
-    found = _find_owned_rift_log_reply(CMD_TIANXING_PANEL, now, command_msg_id=panel_msg_id)
+    found = _find_owned_rift_log_reply(CMD_TIANXING_PANEL, now, command_msg_id=panel_msg_id, command_chat_id=_rift_log_id(snapshot.get("panel_chat_id")))
     if not found:
         return False
-    return bool(apply_tianxing_passive(
+    evidence_key = f"{found['chat_id']}:{found['ts']}:{_make_result_key(found['msg_id'], 'panel', found['text'])}"
+    evidence = snapshot.get("panel_evidence")
+    if isinstance(evidence, dict) and evidence.get("key") == evidence_key:
+        return False
+    if not apply_tianxing_passive(
         found["text"], now=found["ts"], family="tianxing_panel",
         reply_context=_rift_log_reply_context(found, now, "tianxing_panel"),
-    ))
+    ):
+        return False
+    parsed = parse_tianxing_text(found["text"], now=found["ts"], family="tianxing_panel") or {}
+    complete = all(
+        field in parsed and (not parsed[field] or _rift_log_time(parsed.get(f"{field}_until")) > found["ts"])
+        for field in ("current_prediction", "current_change")
+    )
+    _observed, snapshot = _unknown_rift_snapshot()
+    snapshot["panel_evidence"] = {"key": evidence_key, "at": found["ts"], "complete": complete}
+    _store_unknown_rift_snapshot(snapshot)
+    return True
 
 
 def _find_logged_explore_rift_result_message(result_msg_id, now):
@@ -1047,7 +1159,11 @@ def _find_logged_explore_rift_result_message(result_msg_id, now):
 
 async def _recover_explore_rift_from_message_log(now, *, command_msg_id=0):
     command_msg_id = int(command_msg_id or 0)
-    command_chat_id = 0
+    _observed, snapshot = _unknown_rift_snapshot()
+    if not _unknown_rift_owner_matches(snapshot):
+        return ""
+    command_msg_id = command_msg_id or _rift_log_id(snapshot.get("command_msg_id"))
+    command_chat_id = _rift_log_id(snapshot.get("command_chat_id"))
     if command_msg_id <= 0:
         command_entry = _find_recent_logged_explore_rift_command(now)
         if not command_entry:
@@ -1057,6 +1173,9 @@ async def _recover_explore_rift_from_message_log(now, *, command_msg_id=0):
     reply_entry = _find_logged_explore_rift_reply(command_msg_id, now, command_chat_id=command_chat_id)
     if not reply_entry:
         return ""
+    if _has_unknown_rift() and not snapshot.get("command_msg_id"):
+        snapshot.update(command_msg_id=command_msg_id, command_chat_id=reply_entry["chat_id"])
+        _store_unknown_rift_snapshot(snapshot)
     reply_to = SimpleNamespace(id=command_msg_id, chat_id=reply_entry["chat_id"], raw_text=CMD_EXPLORE_RIFT)
     handled = await handle_explore_rift_reply(
         reply_entry["text"],
@@ -1086,7 +1205,7 @@ async def _recover_pending_explore_rift_result_from_message_log(now):
             state["explore_rift_reply_due_at"] = retry_at
             save_state()
         return "pending"
-    if _explore_rift_final_title(reply_entry["text"]):
+    if _explore_rift_final_title(reply_entry["text"]) or (EXPLORE_RIFT_CD_KEYWORD in reply_entry["text"] and has_wait_time(reply_entry["text"])):
         reply_to = SimpleNamespace(id=reply_entry["root_msg_id"], chat_id=reply_entry["chat_id"], raw_text=CMD_EXPLORE_RIFT)
         handled = await handle_explore_rift_reply(
             reply_entry["text"],
@@ -1105,21 +1224,21 @@ async def _recover_pending_explore_rift_result_from_message_log(now):
             save_state()
         return "pending"
 
-    if state.get("tianxing_enabled"):
-        mark_tianxing_route_result_unknown(
-            "探索",
-            now=now,
-            reason="探寻裂缝结果编辑未留存，下一次探索前重新预检推命/改命",
-        )
-    _clear_explore_rift_pending()
-    fallback_next_time = float((reply_entry["ts"] or now) + _resolve_cd_sec() + CD_BUFFER_SEC)
-    if float(state.get("next_explore_rift_time", 0) or 0) < fallback_next_time:
-        state["next_explore_rift_time"] = fallback_next_time
-    state["explore_rift_last_msg_id"] = result_msg_id
-    state["explore_rift_last_result"] = f"结果编辑未留存，已按裂缝冷却恢复，原消息ID={result_msg_id}"
-    state["explore_rift_last_error"] = ""
-    state["explore_rift_tianxing_prepare_retry_at"] = 0
-    return "stale"
+    _observed, snapshot = _unknown_rift_snapshot()
+    notify = not snapshot.get("result_wait_notified")
+    if notify:
+        if not snapshot:
+            _mark_explore_rift_send_unknown(now)
+            _observed, snapshot = _unknown_rift_snapshot()
+        snapshot.update(command_msg_id=reply_entry["root_msg_id"], command_chat_id=reply_entry["chat_id"], result_wait_notified=True)
+        _store_unknown_rift_snapshot(snapshot)
+    state["explore_rift_reply_due_at"] = now + RETRY_MAX_SEC
+    state["explore_rift_last_error"] = "探寻已开始，但最终编辑未留存；保留原消息等待结果，不按超时重发"
+    state["explore_rift_manual_required"] = True
+    save_state()
+    if notify:
+        await send_audit_log(f"⚠️ 探寻裂缝最终编辑未留存，消息ID={result_msg_id}；保留等待，不自动重发。", scope="identity", limit=220)
+    return "pending"
 
 
 def _log_explore_rift_recovery(recovered):
@@ -1410,7 +1529,7 @@ async def _run_rebirth_scheduler(now):
 
 
 async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0, *, reply_context=None):
-    if not state.get("explore_rift_enabled") and not state.get("explore_rift_rebirth_required") and not int(state.get("explore_rift_fatal_msg_id", 0) or 0):
+    if not state.get("explore_rift_enabled") and not state.get("explore_rift_rebirth_required") and not has_unresolved_explore_rift():
         return False
     if not _is_explore_rift_reply(reply_to, matched_family=matched_family):
         return False
@@ -1425,6 +1544,14 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         if handled_rebirth:
             return True
 
+    if _has_unknown_rift() and not _unknown_rift_reply_matches(reply_context, result_msg_id, now):
+        return False
+    if isinstance(reply_context, dict) and "server_event_at" in reply_context:
+        event_at = _rift_log_time(reply_context["server_event_at"])
+        if not 0 < event_at <= max(now, _rift_log_time(reply_context.get("processed_at"))) + 1:
+            return False
+        now = event_at
+
     if EXPLORE_RIFT_CD_KEYWORD in raw_text and has_wait_time(raw_text):
         wait_sec = parse_wait_time(raw_text)
         state["next_explore_rift_time"] = float(now + wait_sec + CD_BUFFER_SEC)
@@ -1432,6 +1559,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         state["explore_rift_last_msg_id"] = result_msg_id or int(getattr(reply_to, "id", 0) or 0)
         state["explore_rift_last_result"] = "冷却中"
         state["explore_rift_last_error"] = ""
+        _finish_unknown_rift()
         save_state()
         await send_audit_log(f"🕳 探寻裂缝 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
@@ -1440,7 +1568,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         if _has_terminal_result_for_msg(result_msg_id):
             return True
         if result_msg_id > 0:
-            _set_explore_rift_pending_result(result_msg_id, now=now)
+            _set_explore_rift_pending_result(result_msg_id, now=now, reply_context=reply_context)
         state["explore_rift_last_result"] = "探寻中"
         state["explore_rift_last_error"] = ""
         save_state()
@@ -1448,8 +1576,12 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
 
     final_title = _explore_rift_final_title(raw_text)
     if final_title:
+        resolving_unknown = _has_unknown_rift()
+        _finish_unknown_rift()
         result_key = _make_result_key(result_msg_id, final_title, raw_text)
         if state.get("explore_rift_last_result_key") == result_key:
+            if resolving_unknown:
+                save_state()
             return True
         _apply_tianxing_explore_rift_result(raw_text, now, reply_context=reply_context)
         if final_title == EXPLORE_RIFT_FATAL_TITLE:
@@ -1504,7 +1636,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         if _has_terminal_result_for_msg(result_msg_id):
             return True
         if result_msg_id > 0:
-            _set_explore_rift_pending_result(result_msg_id, now=now)
+            _set_explore_rift_pending_result(result_msg_id, now=now, reply_context=reply_context)
         state["explore_rift_last_result"] = "探寻中"
         state["explore_rift_last_error"] = ""
         save_state()
@@ -1512,6 +1644,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
 
     if any(keyword in raw_text for keyword in ("境界不足", "元婴初期", "元婴期", "未到元婴", "修为不足", "主魂的一缕分神")):
         _clear_explore_rift_pending()
+        _finish_unknown_rift()
         _set_explore_rift_error("境界/修为/分神限制，延后探寻", next_delay=RETRY_MAX_SEC, now=now)
         await send_audit_log("🕳 探寻裂缝被拦截：境界/修为/分神限制，已延后。", scope="identity", limit=180)
         return True
@@ -1524,6 +1657,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         _clear_explore_rift_pending()
         state["explore_rift_last_result"] = "冷却中"
         state["explore_rift_last_error"] = ""
+        _finish_unknown_rift()
         save_state()
         await send_audit_log(f"🕳 探寻裂缝 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
@@ -1652,7 +1786,7 @@ async def _run_explore_rift_scheduler_unlocked(now):
         return
     if (
         state.get("explore_rift_manual_required")
-        and str(state.get("explore_rift_last_result") or "").startswith("天机盘校准矛盾")
+        and not has_unresolved_explore_rift()
     ):
         return
 
@@ -1660,73 +1794,63 @@ async def _run_explore_rift_scheduler_unlocked(now):
     reply_due_at = float(state.get("explore_rift_reply_due_at", 0) or 0)
     pending_result_msg_id = int(state.get("explore_rift_pending_result_msg_id", 0) or 0)
     if reply_to_msg_id <= 0 and pending_result_msg_id > 0:
+        if reply_due_at > now:
+            return
         recovered = await _recover_pending_explore_rift_result_from_message_log(now)
         if recovered == "pending":
             return
         if recovered:
             save_state()
-            if recovered == "stale":
-                await send_audit_log(
-                    f"🕳 探寻裂缝结果编辑未留存：已清理等待状态，按冷却恢复，原消息ID={pending_result_msg_id}。",
-                    scope="identity",
-                    priority="high",
-                    limit=260,
-                )
-            else:
-                _log_explore_rift_recovery(recovered)
+            _log_explore_rift_recovery(recovered)
             return
-    if reply_to_msg_id <= 0 and _is_unknown_send_summary(state.get("explore_rift_last_result")):
-        unknown_summary = str(state.get("explore_rift_last_result") or "")
-        if unknown_summary.startswith(("发送状态未知，等待天机盘消费校准", "天机盘校准超时，等待迟到盘面")):
-            _recover_unknown_rift_panel_from_message_log(now)
-        reconciled = _reconcile_unknown_rift_from_panel(now)
-        if reconciled:
-            save_state()
-            await send_audit_log(
-                f"🌌 {state.get('explore_rift_last_result')}。",
-                scope="identity",
-                priority="high",
-                limit=280,
-            )
+    if _has_unknown_rift():
+        if reply_due_at > now:
             return
-        recovered = await _recover_explore_rift_from_message_log(now)
+        identity_id = get_current_identity_id()
+        identity = get_identity_state(identity_id)
+        account_id = get_identity_account(identity_id)
+        _observed, snapshot = _unknown_rift_snapshot()
+        if not _unknown_rift_owner_matches(snapshot):
+            return
+        recovered = await _recover_explore_rift_from_message_log(now, command_msg_id=reply_to_msg_id)
         if recovered:
-            _clear_unknown_rift_snapshot()
             save_state()
             _log_explore_rift_recovery(recovered)
             return
-        if reply_due_at > now:
-            return
-        if unknown_summary.startswith(("发送状态未知，等待天机盘消费校准", "天机盘校准超时，等待迟到盘面")):
-            state["explore_rift_reply_due_at"] = float(now + RETRY_MAX_SEC)
-            state["next_explore_rift_time"] = state["explore_rift_reply_due_at"]
-            state["explore_rift_last_result"] = "天机盘校准超时，等待迟到盘面"
-            state["explore_rift_last_error"] = "天机盘回包未留存，继续被动等待；不会重发查盘或裂缝"
-            save_state()
-            return
+        _observed, snapshot = _unknown_rift_snapshot()
+        if not snapshot:
+            snapshot = {"op_id": uuid4().hex, "legacy_unanchored": True, "panel_status": "unknown"}
+            _store_unknown_rift_snapshot(snapshot)
+        _recover_unknown_rift_panel_from_message_log(now)
+        panel_changed = _reconcile_unknown_rift_from_panel(now)
+        requested = False
+        operation_id = snapshot.get("op_id")
         if state.get("tianxing_enabled"):
             requested = await _request_unknown_rift_panel(now)
-            save_state()
-            if requested:
-                await send_audit_log(
-                    "🌌 探寻裂缝最终回包未捞到，已查询一次天机盘校准推命/改命真实消费。",
-                    scope="identity",
-                    priority="high",
-                    limit=260,
-                )
+        if (
+            not has_identity(identity_id) or get_identity_state(identity_id) is not identity
+            or get_identity_account(identity_id) != account_id
+        ):
             return
-        _clear_explore_rift_pending()
-        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
-        state["explore_rift_tianxing_prepare_retry_at"] = 0
-        state["explore_rift_last_result"] = "发送状态未知且未捞到反馈，已暂停本轮"
-        state["explore_rift_last_error"] = "探寻裂缝发送状态未知，消息日志未捞到反馈"
+        if not _has_unknown_rift():
+            return
+        _observed, snapshot = _unknown_rift_snapshot()
+        if operation_id is not None and snapshot.get("op_id") != operation_id:
+            return
+        should_notify = not snapshot.get("notified_at") or bool(panel_changed)
+        if should_notify:
+            snapshot["notified_at"] = now
+            _store_unknown_rift_snapshot(snapshot)
+        if not requested:
+            state["explore_rift_reply_due_at"] = now + RETRY_MAX_SEC
+            if not panel_changed and not snapshot.get("panel_evidence"):
+                state["explore_rift_last_result"] = "裂缝结果未知，等待原命令回包"
+                state["explore_rift_last_error"] = "未捞到可归属的最终反馈；保留在途记录，不自动重发"
+        state["next_explore_rift_time"] = max(_rift_log_time(state.get("next_explore_rift_time")), state["explore_rift_reply_due_at"])
+        state["explore_rift_manual_required"] = True
         save_state()
-        await send_audit_log(
-            "🌌 探寻裂缝发送状态未知：日志未捞到反馈，已暂停本轮高风险动作并等待下轮天星预检。",
-            scope="identity",
-            priority="high",
-            limit=260,
-        )
+        if should_notify:
+            await send_audit_log(f"⚠️ {state.get('explore_rift_last_result')}；不会自动重发探寻裂缝。", scope="identity", priority="high", limit=260)
         return
     if reply_to_msg_id > 0:
         if reply_due_at > now:
@@ -1736,16 +1860,13 @@ async def _run_explore_rift_scheduler_unlocked(now):
             save_state()
             _log_explore_rift_recovery(recovered)
             return
-        _clear_explore_rift_pending()
-        retry_delay = RETRY_MAX_SEC
-        if _tianxing_explore_change_ready(now):
-            retry_delay = EXPLORE_RIFT_TIANXING_TIMEOUT_RETRY_SEC
-            state["explore_rift_tianxing_prepare_retry_at"] = 0
-            state["explore_rift_last_result"] = "天星探索已放行，探寻裂缝吞回复短重试"
-        state["next_explore_rift_time"] = float(now + retry_delay)
-        state["explore_rift_last_error"] = "探寻裂缝回复超时"
+        _mark_explore_rift_send_unknown(now)
+        _observed, snapshot = _unknown_rift_snapshot()
+        snapshot["notified_at"] = now
+        _store_unknown_rift_snapshot(snapshot)
+        state["explore_rift_last_error"] = "探寻裂缝回复超时，保留原命令等待最终反馈"
         save_state()
-        await send_audit_log(f"⚠️ 探寻裂缝回复超时，消息ID={reply_to_msg_id}，稍后重试。", scope="identity", limit=220)
+        await send_audit_log(f"⚠️ 探寻裂缝回复超时，消息ID={reply_to_msg_id}，继续等待原回包，不自动重发。", scope="identity", limit=220)
         return
 
     realm = _profile_realm()
@@ -1864,6 +1985,8 @@ async def run_explore_rift_scheduler(now):
 
 
 def schedule_explore_rift_initial_check(now, *, persist=False, keep_last_error=True):
+    if has_unresolved_explore_rift():
+        return
     last_error = state.get("explore_rift_last_error") if keep_last_error else ""
     _clear_explore_rift_pending()
     state["explore_rift_last_error"] = last_error or ""
@@ -1887,6 +2010,7 @@ __all__ = [
     "get_explore_rift_status_text",
     "get_rebirth_choice_config",
     "handle_explore_rift_reply",
+    "has_unresolved_explore_rift",
     "is_explore_rift_reply_text",
     "parse_explore_rift_result_summary",
     "parse_rebirth_options",
