@@ -29,7 +29,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
-| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration and native effect chronology repaired in candidate; resource-delta idempotence, legacy log readers and remaining modules still pending |
+| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, native effect chronology and rift log replay repaired in candidate; resource-delta idempotence, legacy farm results, rift outcome inference and remaining modules still pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
@@ -107,6 +107,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R53 | High | Active Tianxing timeline steps confirm from merged cached fields, accept unowned negative replies, and recover a nearby bot reply without an actual reply root | Fixed for active-step reply confirmation in candidate; operation receipts precede state writes, direct and panel-query evidence is correlated, early results replay from bounded trusted logs, and partial calibration fields remain pending; downstream release/calibration shortcuts and general reducer chronology remain open |
 | R54 | High | Effect deadlines include retry padding or invented lifetimes; cached release/observation fields bypass unresolved calibration, while partial effect replies lose native pending/guard ownership and late originals cannot settle after calibration timeout | Fixed for scoped expiry, downstream admission and retained-operation reconciliation in candidate; exact effect clocks, owned complete panels, partial/final native replay, late success/CD/refusal and SQLite reload are covered; general field provenance and post-completion chronology remain open |
 | R55 | High | Native effects use local receipt time, stale replies overwrite newer effects, route results acknowledge unrelated mutations, and replay batches select revisions by arrival rather than server order; calibration helpers bypass effect provenance | Fixed for scoped native event/replay paths in candidate; server timestamps, per-effect evidence, genuine versus repeated edits, corruption repair, retained mutation ownership and SQLite replay are covered; counters/resource deltas and legacy route-result log readers remain open |
+| R56 | High | Legacy rift recovery trusts a bare message ID and log arrival time, accepts unrelated/untrusted replies, and replays stale edits or old commands as fresh work | Fixed for the scoped log readers in candidate; owned command/root/chat correlation, trusted server-timed revisions, ambiguity rejection, bounded reads and SQLite pending reload are covered; scalar live anchors, uncertain-send retry policy and panel-only outcome inference remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1416,6 +1417,42 @@ five monitor/control-only contracts need separate behavioral verification.
   checks pass. No production deployment, restart, push,
   game request, configuration/DB write, listener start or skill edit occurred.
 
+### R56 Evidence
+
+- Initial offline reproducer: **59 failed, 5 passed**. Wrong chats, unrelated
+  identities/commands, missing bot provenance, invalid server clocks, duplicate
+  IDs, late originals and conflicting edits reached rift or Tianxing state.
+  JUnit: `/tmp/xiuxian-rebuild-r56-repro-20260909.xml`.
+- All three legacy readers now require a matching identity-owned command in
+  the same chat, from registered pending evidence or an actual outgoing log
+  record. Manual command messages require their real server clock and actor;
+  an explicit logged account mismatch is rejected. Existing sent logs and
+  pending rows do not universally record historical account ownership, so this
+  does not close account-rebind/lifecycle work under R07/R11.
+- Reply selection reuses R55's trusted-bot/server-version checks. A later
+  arrival cannot replace a newer server edit; conflicting same-second edits
+  and multiple eligible chat/root pairs remain unresolved. The newest version
+  is chosen before checking result text, so an unrecognized latest edit cannot
+  reveal an obsolete final result. Both direct-root and pending-result replay
+  preserve identity, chat, root, message, server time and processing time.
+- Local receipt times are only used for bounded log lookup, not effect/CD
+  deadlines. A command's actual server/dispatch time controls recent-send
+  discovery when available; a delayed old command cannot become a new unknown
+  send merely by arriving now. Follow-up corruption tests reproduced **6 more
+  failures** before checking query IDs/clocks without coercing invalid values.
+- Reads are capped at 512 KiB per daily file over at most 36 hours. Missing
+  evidence outside the retained tails is not reconstructed. A future indexed
+  history may improve coverage, but reopening unbounded daily scans on every
+  scheduler tick is not an accepted fallback. Five old fixtures now include
+  their outgoing command/source/server clock instead of accepting bare IDs.
+- Focused regression set: **316 passed, 5 subtests passed**, 2.83 seconds;
+  includes SQLite reload and a real reply that preceded the local send receipt.
+  Final full suite: **6145 passed, 1198 subtests passed**, 85.62 seconds;
+  JUnit: `/tmp/xiuxian-rebuild-r56-final-20260909.xml`.
+  Full selected-rule Ruff, changed-file compilation and diff checks pass.
+  This is still offline candidate work; production, skill, listener, flags,
+  configuration and live DB are untouched. No deployment, restart or push.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1559,10 +1596,18 @@ and cleanup code during a code-only rollback.
 6. R55 covers native effect chronology and the shared Tianxing replay paths,
    not all observation fields. Next review resource/counter deltas after
    pending completion, out-of-order absolute panels, and legacy farm results.
-   `explore_rift._recover_unknown_rift_panel_from_message_log` still supplies
-   log receipt time to the reducer without server metadata; its result-log
-   readers also need strict chat/account/source ownership and real event time.
-   Do not infer their correctness from the now-correct live rift caller.
+   R56 repairs the legacy rift readers' server clocks and identity/chat/command
+   ownership, not all rift behavior. Continue through the live scalar result
+   anchors, post-completion item-delta deduplication, and registered account
+   ownership across rebinds. Tail truncation is missing evidence, not failure.
+7. Rift's known-message timeout still clears pending and permits a later
+   command retry; the no-ID/non-Tianxing pause also becomes retryable later.
+   `_reconcile_unknown_rift_from_panel` relies on latest action/time plus merged
+   effect fields, without proving this query observed the same effects before
+   expiry or excluding other consumers. Unchanged effects do not establish
+   that a risky command was unsent. Repair these lifecycle/outcome-inference
+   paths with multi-tick and crash/reload tests; R56 log validation does not
+   certify them, and the candidate is not approved for production deployment.
 
 ## Completion Gate
 

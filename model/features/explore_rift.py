@@ -1,6 +1,7 @@
 import asyncio
 import json
 import hashlib
+import math
 import random
 import re
 import time
@@ -25,10 +26,13 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
+from ..message_keys import message_key_parts
+from ..message_log_recovery import _read_log_tail_lines
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     REALM_SORT_INDEX,
     get_current_identity_id,
+    get_game_group_ids,
     get_global_enabled,
     get_identity_account,
     get_identity_enabled,
@@ -41,6 +45,7 @@ from ..state import (
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
 from .tianxing import (
+    _latest_tianxing_log_replies,
     apply_tianxing_passive,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
@@ -82,7 +87,6 @@ EXPLORE_RIFT_UNKNOWN_PANEL_REPLY_SEC = 180
 EXPLORE_RIFT_PENDING_RESULT_STALE_SEC = 10 * 60
 EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC = 36 * 3600
-EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC = 10
 _EXPLORE_RIFT_LOCKS = {}
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
@@ -169,16 +173,15 @@ def _iter_message_log_entries_between(start_ts, end_ts):
     day = start_dt
     while day <= end_dt:
         log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
-        if log_path.exists():
-            with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    try:
-                        payload = json.loads(line)
-                    except (TypeError, ValueError):
-                        continue
-                    yield payload
+        for line in _read_log_tail_lines(log_path, max_bytes=512 * 1024):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                yield payload
         day += timedelta(days=1)
 
 
@@ -891,119 +894,177 @@ def _explore_rift_block_label(send_block):
     return f"{code}: {reason}" if reason else code
 
 
-def _find_recent_logged_explore_rift_command(now):
-    send_as_id = int(get_current_identity_id() or 0)
-    if send_as_id <= 0:
+def _rift_log_id(value):
+    return value if type(value) is int else 0
+
+
+def _rift_log_time(value):
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        return 0.0
+    try:
+        return float(value) if math.isfinite(value) and value > 0 else 0.0
+    except (ValueError, OverflowError):
+        return 0.0
+
+
+def _rift_log_entries(now, lookback):
+    start = max(0.0, now - lookback)
+    entries = []
+    for entry in _iter_message_log_entries_between(start, now + 1):
+        received_at = _parse_message_log_ts(entry.get("ts"))
+        if start <= received_at <= now + 1:
+            entries.append(dict(entry, ts_epoch=received_at))
+    return entries
+
+
+def _rift_log_command_owners(entries, command, now):
+    identity_id = get_current_identity_id()
+    if identity_id <= 0 or not has_identity(identity_id):
+        return {}
+    account_id = get_identity_account(identity_id)
+    allowed_chats = set(get_game_group_ids())
+    owners = {}
+    for key, pending in state.get("pending_tasks", {}).items():
+        if not isinstance(pending, dict) or pending.get("cmd") != command:
+            continue
+        try:
+            chat_id, msg_id = message_key_parts(key, pending)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        sent_at = _rift_log_time(pending.get("sent_at"))
+        started_at = _rift_log_time(pending.get("send_started_at"))
+        if not chat_id or not 0 < sent_at <= now + 1 or started_at > sent_at:
+            continue
+        owners[chat_id, msg_id] = {"chat_id": chat_id, "msg_id": msg_id, "ts": sent_at, "event_at": started_at, "text": command}
+    for entry in entries:
+        if entry.get("event_type") not in ("sent", "message") or str(entry.get("text") or "").strip() != command:
+            continue
+        chat_id = _rift_log_id(entry.get("chat_id"))
+        msg_id = _rift_log_id(entry.get("message_id"))
+        sender_id = _rift_log_id(entry.get("sender_id"))
+        if chat_id not in allowed_chats or msg_id <= 0 or not _identity_sender_matches(sender_id, identity_id):
+            continue
+        if "account_id" in entry and _rift_log_id(entry["account_id"]) != account_id:
+            continue
+        event_at = _rift_log_time(entry.get("server_event_at"))
+        if entry["event_type"] == "message" and not 0 < event_at <= entry["ts_epoch"] + 1:
+            continue
+        key = chat_id, msg_id
+        previous = owners.get(key, {})
+        owners[key] = {
+            "chat_id": chat_id, "msg_id": msg_id, "text": command,
+            "ts": min(entry["ts_epoch"], previous.get("ts", entry["ts_epoch"])),
+            "event_at": event_at or previous.get("event_at", 0),
+        }
+    return owners
+
+
+def _find_owned_rift_log_reply(command, now, *, command_msg_id=0, command_chat_id=0, result_msg_id=0):
+    entries = _rift_log_entries(now, EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC)
+    owners = _rift_log_command_owners(entries, command, now)
+    if command_msg_id:
+        owners = {key: value for key, value in owners.items() if key[1] == command_msg_id and (not command_chat_id or key[0] == command_chat_id)}
+        if len(owners) != 1:
+            return None
+    replies = []
+    for entry in _latest_tianxing_log_replies(entries, now):
+        root = _rift_log_id(entry.get("reply_to_msg_id"))
+        owner = owners.get((entry["chat_id"], root))
+        if not owner or (result_msg_id and entry["message_id"] != result_msg_id):
+            continue
+        if owner["event_at"] > float(entry["server_event_at"]) + 1:
+            continue
+        raw_text = str(entry.get("text") or "").strip()
+        if command == CMD_TIANXING_PANEL:
+            if "【天机盘】" not in raw_text:
+                continue
+        elif not is_explore_rift_reply_text(raw_text):
+            continue
+        replies.append({
+            "ts": float(entry["server_event_at"]), "server_event_at": float(entry["server_event_at"]),
+            "msg_id": entry["message_id"], "chat_id": entry["chat_id"], "root_msg_id": root,
+            "event_type": entry["event_type"], "text": raw_text,
+        })
+    if len({(reply["chat_id"], reply["root_msg_id"]) for reply in replies}) != 1:
         return None
-    wait_until = float(state.get("explore_rift_reply_due_at", 0) or 0)
-    start_ts = wait_until - EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC - 60 if wait_until > 0 else float(now or 0) - EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC
-    end_ts = float(now or 0) + EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC
-    found = None
-    seen = set()
-    for entry in _iter_message_log_entries_between(max(0.0, start_ts), end_ts):
-        msg_id = int((entry or {}).get("message_id") or 0)
-        if msg_id in seen:
-            continue
-        seen.add(msg_id)
-        if not _identity_sender_matches((entry or {}).get("sender_id"), send_as_id):
-            continue
-        raw_text = str((entry or {}).get("text") or "").strip()
-        if raw_text != CMD_EXPLORE_RIFT:
-            continue
-        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
-        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
-            continue
-        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text}
-    return found
+    return replies[0]
 
 
-def _find_logged_explore_rift_reply(command_msg_id, now):
-    command_msg_id = int(command_msg_id or 0)
+def _rift_log_reply_context(entry, now, family):
+    return {
+        "send_as_id": get_current_identity_id(), "family": family,
+        "chat_id": entry["chat_id"], "root_msg_id": entry["root_msg_id"],
+        "reply_to_msg_id": entry["root_msg_id"], "msg_id": entry["msg_id"],
+        "server_event_at": entry["server_event_at"], "event_type": entry["event_type"],
+        "processed_at": now,
+    }
+
+
+def _find_recent_logged_explore_rift_command(now):
+    wait_until = _rift_log_time(state.get("explore_rift_reply_due_at"))
+    start_ts = wait_until - EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC - 60 if wait_until > 0 else now - EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC
+    _observed, snapshot = _unknown_rift_snapshot()
+    start_ts = _rift_log_time(snapshot.get("recorded_at")) or start_ts
+    entries = _rift_log_entries(now, EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC)
+    owners = _rift_log_command_owners(entries, CMD_EXPLORE_RIFT, now)
+    candidates = [entry for entry in owners.values() if start_ts - 1 <= (entry["event_at"] or entry["ts"]) <= now + 1]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _find_logged_explore_rift_reply(command_msg_id, now, *, command_chat_id=0):
+    command_msg_id = _rift_log_id(command_msg_id)
     if command_msg_id <= 0:
         return None
-    end_ts = float(now or 0) + EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, end_ts - EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC)
-    found = None
-    for entry in _iter_message_log_entries_between(start_ts, end_ts):
-        if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
-            continue
-        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
-        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
-            continue
-        raw_text = str((entry or {}).get("text") or "").strip()
-        if not is_explore_rift_reply_text(raw_text):
-            continue
-        msg_id = int((entry or {}).get("message_id") or 0)
-        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text}
-    return found
+    return _find_owned_rift_log_reply(CMD_EXPLORE_RIFT, now, command_msg_id=command_msg_id, command_chat_id=command_chat_id)
 
 
 def _recover_unknown_rift_panel_from_message_log(now):
     observed, snapshot = _unknown_rift_snapshot()
-    panel_msg_id = int(snapshot.get("panel_msg_id", 0) or 0)
-    panel_sent_at = float(snapshot.get("panel_sent_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_sent_at <= 0:
+    panel_msg_id = _rift_log_id(snapshot.get("panel_msg_id"))
+    panel_sent_at = _rift_log_time(snapshot.get("panel_sent_at"))
+    if panel_msg_id <= 0 or not 0 < panel_sent_at <= now + 1:
         return False
     if (
         str(observed.get("last_action") or "").strip() == "天机盘"
         and float(observed.get("last_observed_at", 0) or 0) + 0.001 >= panel_sent_at
     ):
         return False
-    end_ts = float(now or 0) + EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, panel_sent_at - 60)
-    found = None
-    for entry in _iter_message_log_entries_between(start_ts, end_ts):
-        if int((entry or {}).get("reply_to_msg_id") or 0) != panel_msg_id:
-            continue
-        raw_text = str((entry or {}).get("text") or "").strip()
-        if "【天机盘】" not in raw_text:
-            continue
-        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
-        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
-            continue
-        found = (entry_ts, raw_text)
+    found = _find_owned_rift_log_reply(CMD_TIANXING_PANEL, now, command_msg_id=panel_msg_id)
     if not found:
         return False
-    return bool(apply_tianxing_passive(found[1], now=found[0], family="tianxing_panel"))
+    return bool(apply_tianxing_passive(
+        found["text"], now=found["ts"], family="tianxing_panel",
+        reply_context=_rift_log_reply_context(found, now, "tianxing_panel"),
+    ))
 
 
 def _find_logged_explore_rift_result_message(result_msg_id, now):
-    result_msg_id = int(result_msg_id or 0)
+    result_msg_id = _rift_log_id(result_msg_id)
     if result_msg_id <= 0:
         return None
-    end_ts = float(now or 0) + EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, end_ts - EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC)
-    found = None
-    for entry in _iter_message_log_entries_between(start_ts, end_ts):
-        if int((entry or {}).get("message_id") or 0) != result_msg_id:
-            continue
-        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
-        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
-            continue
-        raw_text = str((entry or {}).get("text") or "").strip()
-        if not is_explore_rift_reply_text(raw_text):
-            continue
-        found = {"ts": entry_ts, "msg_id": result_msg_id, "text": raw_text}
-    return found
+    return _find_owned_rift_log_reply(CMD_EXPLORE_RIFT, now, result_msg_id=result_msg_id)
 
 
 async def _recover_explore_rift_from_message_log(now, *, command_msg_id=0):
     command_msg_id = int(command_msg_id or 0)
+    command_chat_id = 0
     if command_msg_id <= 0:
         command_entry = _find_recent_logged_explore_rift_command(now)
         if not command_entry:
             return ""
         command_msg_id = int(command_entry.get("msg_id") or 0)
-    reply_entry = _find_logged_explore_rift_reply(command_msg_id, now)
+        command_chat_id = command_entry["chat_id"]
+    reply_entry = _find_logged_explore_rift_reply(command_msg_id, now, command_chat_id=command_chat_id)
     if not reply_entry:
         return ""
-    reply_to = SimpleNamespace(id=command_msg_id, raw_text=CMD_EXPLORE_RIFT)
+    reply_to = SimpleNamespace(id=command_msg_id, chat_id=reply_entry["chat_id"], raw_text=CMD_EXPLORE_RIFT)
     handled = await handle_explore_rift_reply(
         reply_entry["text"],
         reply_entry["ts"] or now,
         reply_to=reply_to,
         matched_family="explore_rift",
         result_msg_id=reply_entry["msg_id"],
+        reply_context=_rift_log_reply_context(reply_entry, now, "explore_rift"),
     )
     if not handled:
         return ""
@@ -1026,13 +1087,14 @@ async def _recover_pending_explore_rift_result_from_message_log(now):
             save_state()
         return "pending"
     if _explore_rift_final_title(reply_entry["text"]):
-        reply_to = SimpleNamespace(id=0, raw_text=CMD_EXPLORE_RIFT)
+        reply_to = SimpleNamespace(id=reply_entry["root_msg_id"], chat_id=reply_entry["chat_id"], raw_text=CMD_EXPLORE_RIFT)
         handled = await handle_explore_rift_reply(
             reply_entry["text"],
             reply_entry["ts"] or now,
             reply_to=reply_to,
             matched_family="explore_rift",
             result_msg_id=result_msg_id,
+            reply_context=_rift_log_reply_context(reply_entry, now, "explore_rift"),
         )
         if handled:
             return "result"

@@ -79,6 +79,13 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
     def _log_ts(self, ts):
         return datetime.fromtimestamp(float(ts), config.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8")
 
+    def _logged_command(self, identity_id, msg_id, ts, command=config.CMD_EXPLORE_RIFT):
+        return {
+            "ts": self._log_ts(ts), "event_type": "sent",
+            "message_id": msg_id, "chat_id": -1001680975844,
+            "sender_id": identity_id, "text": command,
+        }
+
     def _write_message_log(self, log_dir, entries, now):
         day = datetime.fromtimestamp(float(now), config.TZ_LOCAL).date().isoformat()
         log_path = Path(log_dir) / f"{day}.log"
@@ -647,8 +654,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self._write_message_log(
                 log_dir,
                 [
+                    self._logged_command(identity_id, 22027, pending_ts - 1),
                     {
                         "ts": self._log_ts(pending_ts),
+                        "server_event_at": pending_ts,
                         "event_type": "message",
                         "message_id": 22028,
                         "chat_id": -1001680975844,
@@ -722,8 +731,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self._write_message_log(
                 log_dir,
                 [
+                    self._logged_command(identity_id, 22027, now - 10),
                     {
                         "ts": self._log_ts(now - 8),
+                        "server_event_at": now - 8,
                         "event_type": "message",
                         "message_id": 22028,
                         "chat_id": -1001680975844,
@@ -734,6 +745,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                     },
                     {
                         "ts": self._log_ts(now - 1),
+                        "server_event_at": now - 1,
                         "event_type": "edit",
                         "message_id": 22028,
                         "chat_id": -1001680975844,
@@ -1701,8 +1713,12 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         now = 1_700_000_000.0
         result_ts = now - 5
         entries = [
+            self._logged_command(identity_id, 22027, result_ts - 1),
             {
                 "ts": self._log_ts(result_ts),
+                "server_event_at": result_ts,
+                "chat_id": -1001680975844,
+                "sender_id": 8400307678,
                 "event_type": "edit",
                 "message_id": 22028,
                 "reply_to_msg_id": 22027,
@@ -1749,6 +1765,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         entries = [
             {
                 "ts": self._log_ts(command_ts),
+                "server_event_at": command_ts,
+                "chat_id": -1001680975844,
                 "event_type": "message",
                 "message_id": 33001,
                 "sender_id": identity_id,
@@ -1757,6 +1775,9 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             },
             {
                 "ts": self._log_ts(result_ts),
+                "server_event_at": result_ts,
+                "chat_id": -1001680975844,
+                "sender_id": 8400307678,
                 "event_type": "message",
                 "message_id": 33002,
                 "reply_to_msg_id": 33001,
@@ -2010,8 +2031,11 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         identity_id = self._prepare_identity(xiuwei_current=500000)
         now = 1_700_000_000.0
         panel_sent_at = now - 30
-        entries = [{
+        entries = [self._logged_command(identity_id, 44006, panel_sent_at, config.CMD_TIANXING_PANEL), {
             "ts": self._log_ts(now - 20),
+            "server_event_at": now - 20,
+            "chat_id": -1001680975844,
+            "sender_id": 8400307678,
             "event_type": "message",
             "message_id": 44007,
             "reply_to_msg_id": 44006,
