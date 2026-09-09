@@ -260,9 +260,35 @@ def logged_reply(**updates):
     return dict({
         "message_id": 4602, "reply_to_msg_id": 4601, "chat_id": CHAT_ID,
         "sender_id": BOT_ID, "sender_is_bot": True, "event_type": "message",
-        "ts_epoch": NOW,
+        "ts_epoch": NOW, "server_event_at": updates.get("ts_epoch", NOW),
         "text": get_real_message_text(SAMPLES, "tianxing.clear_calamity.basic"),
     }, **updates)
+
+
+def test_auto_recovery_uses_server_revision_order_not_delivery_order(env):
+    observed = pending(env)
+    env.lookup.return_value = [
+        logged_reply(event_type="edit", server_event_at=NOW, ts_epoch=NOW + 1),
+        logged_reply(text="\u53f8\u547d\u76d8\u6b63\u5728\u63a8\u6f14\u3002", server_event_at=NOW - 1, ts_epoch=NOW + 2),
+    ]
+    with state_module.use_identity(IDENTITY_ID):
+        assert tianxing._recover_tianxing_pending_reply_from_message_log(observed, NOW + 3)
+    assert not env.identity["tianxing_observation"]["auto_pending_action"]
+    assert env.identity["tianxing_observation"]["calamity_count"] == 1
+    env.send.assert_not_awaited()
+
+
+def test_auto_recovery_does_not_guess_order_of_conflicting_same_second_edits(env):
+    observed = pending(env)
+    env.lookup.return_value = [
+        logged_reply(event_type="edit", server_event_at=NOW, ts_epoch=NOW + 1),
+        logged_reply(event_type="edit", text="\u53f8\u547d\u76d8\u6b63\u5728\u63a8\u6f14\u3002", server_event_at=NOW, ts_epoch=NOW + 2),
+    ]
+    with state_module.use_identity(IDENTITY_ID):
+        assert not tianxing._recover_tianxing_pending_reply_from_message_log(observed, NOW + 3)
+    assert env.identity["tianxing_observation"]["auto_pending_action"]
+    assert env.identity["tianxing_observation"]["calamity_count"] == 2
+    env.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize("invalid", [
@@ -461,7 +487,7 @@ def test_real_dispatcher_passes_pending_reply_ownership(env, monkeypatch, path, 
     if not exact:
         context["root_msg_id"] += 1
     context["reply_to_msg_id"] = context["root_msg_id"]
-    event = SimpleNamespace(id=4602, chat_id=CHAT_ID, sender_id=BOT_ID)
+    event = SimpleNamespace(id=4602, chat_id=CHAT_ID, sender_id=BOT_ID, server_event_at=NOW)
     text = get_real_message_text(SAMPLES, "tianxing.clear_calamity.basic")
     if path == "routed":
         reply = SimpleNamespace(id=context["root_msg_id"], chat_id=CHAT_ID, raw_text=tianxing.CMD_TIANXING_CLEAR_CALAMITY)

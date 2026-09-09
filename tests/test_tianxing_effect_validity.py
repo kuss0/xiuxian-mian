@@ -441,8 +441,9 @@ def test_native_reply_path_retains_partial_calibration_until_final_edit(env, mon
             return await app._replay_pending_log_replies(IDENTITY_ID, root_id, pending, [{
                 "chat_id": CHAT_ID, "message_id": result_id, "sender_id": bot_id,
                 "reply_to_msg_id": root_id, "text": text, "ts_epoch": now, "event_type": event_kind,
+                "server_event_at": now,
             }], now)
-        event = SimpleNamespace(id=result_id, chat_id=CHAT_ID, sender_id=bot_id, raw_text=text)
+        event = SimpleNamespace(id=result_id, chat_id=CHAT_ID, sender_id=bot_id, raw_text=text, server_event_at=now)
         reply = SimpleNamespace(id=root_id, chat_id=CHAT_ID, raw_text=command)
         return await app._handle_routed_reply_event(event, text, now, reply, ctx, event_kind=event_kind)
 

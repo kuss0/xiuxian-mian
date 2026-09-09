@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from .forum_topic import resolve_topic_id
 from types import SimpleNamespace
 
-from .verified_event import VerifiedGameEvent, clean_event_type, delivery_kind_for_event_type
+from .verified_event import VerifiedGameEvent, clean_event_type, delivery_kind_for_event_type, telegram_event_timestamp
 
 
 def _safe_int(value):
@@ -72,6 +72,7 @@ class MessageFact:
     route_source: str = ""
     source: str = "telegram_event"
     ingest_seq: int = 0
+    server_event_at: float = 0.0
 
     @property
     def is_edit(self):
@@ -110,6 +111,7 @@ class MessageFact:
             root_msg_id=self.root_msg_id,
             route_source=self.route_source,
             reply_to_sender_id=self.reply_to_sender_id,
+            server_event_at=self.server_event_at,
         )
 
 
@@ -304,6 +306,7 @@ def build_message_fact_from_event(
         family=family,
         route_source=route_source,
         source=str(source or "telegram_event"),
+        server_event_at=telegram_event_timestamp(event, normalized_event_type),
     )
 
 
@@ -449,6 +452,7 @@ def shadow_compare_verified_event(fact, verified):
         "root_msg_id": fact.root_msg_id == verified.root_msg_id,
         "route_source": fact.route_source == verified.route_source,
         "reply_to_sender_id": fact.reply_to_sender_id == verified.reply_to_sender_id,
+        "server_event_at": fact.server_event_at == verified.server_event_at,
     }
 
 

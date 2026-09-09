@@ -110,6 +110,7 @@ from .features.trial_runtime import handle_trial_miniapp_entry
 from .features.tree_runtime import handle_tree_miniapp_entry
 from .features.tianxing import (
     TIANXING_REPLY_GUARD_FAMILIES,
+    _latest_tianxing_log_replies,
     apply_tianxing_passive,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
@@ -230,7 +231,7 @@ from .message_box import (
     build_message_fact_from_event,
     write_message_box_snapshot_payload,
 )
-from .verified_event import from_telegram_event, is_new_delivery
+from .verified_event import from_telegram_event, is_new_delivery, telegram_event_timestamp
 from .runtime import (
     MAINTENANCE_PAUSE_SOURCE,
     _fire_and_forget,
@@ -1834,6 +1835,7 @@ def _logged_reply_event(entry, command, send_as_id):
         raw_text=str((entry or {}).get("text") or ""),
         reply_to=reply_header,
         message=SimpleNamespace(buttons=None),
+        server_event_at=(entry or {}).get("server_event_at", 0),
     )
     reply_to = SimpleNamespace(id=root_msg_id, chat_id=event.chat_id, raw_text=str(command or ""), sender_id=int(send_as_id or 0))
     return event, reply_to
@@ -1883,6 +1885,17 @@ async def _replay_early_replies_after_sent(
         return False
 
     family = resolve_reply_family(command) or ""
+    if family in TIANXING_REPLY_GUARD_FAMILIES:
+        evidence = [{
+            "chat_id": getattr(item.get("event"), "chat_id", 0),
+            "message_id": item.get("event_id", 0),
+            "sender_id": getattr(item.get("event"), "sender_id", 0),
+            "event_type": item.get("event_kind", "message"), "text": item.get("text", ""),
+            "ts_epoch": item.get("event_at", 0),
+            "server_event_at": telegram_event_timestamp(item.get("event"), item.get("event_kind")),
+            "cached_reply": item,
+        } for item in items]
+        items = [entry["cached_reply"] for entry in _latest_tianxing_log_replies(evidence, time.time())]
     replayed = False
     for item in sorted(items, key=lambda value: (float(value.get("event_at", 0) or 0), int(value.get("event_id", 0) or 0))):
         event = item.get("event")
@@ -3197,6 +3210,10 @@ async def _handle_routed_reply_event(
     if routed_identity_id <= 0:
         return False
 
+    reply_context = dict(
+        reply_context or {}, server_event_at=telegram_event_timestamp(event, event_kind),
+        processed_at=max(now, time.time()), event_type=event_kind,
+    )
     if not replay:
         _remember_early_routed_reply(event, text, now, reply_to, reply_context, event_kind=event_kind)
 
@@ -3438,7 +3455,10 @@ async def _handle_routed_reply_event(
             handled_any = await handle_small_world_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_refine_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_barrier_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_explore_rift_reply(text, now, reply_to, matched_family=matched_family, result_msg_id=event.id) or handled_any
+            handled_any = await handle_explore_rift_reply(
+                text, now, reply_to, matched_family=matched_family, result_msg_id=event.id,
+                reply_context=dict(reply_context, chat_id=event.chat_id, msg_id=event.id),
+            ) or handled_any
             handled_any = await handle_divination_reply(
                 text,
                 now,
@@ -3517,6 +3537,8 @@ async def _handle_routed_reply_event(
 async def _replay_pending_log_replies(send_as_id, msg_id, pending, replies, now):
     command = str(pending.get("cmd") or "")
     family = resolve_reply_family(command) or ""
+    if family in TIANXING_REPLY_GUARD_FAMILIES:
+        replies = _latest_tianxing_log_replies(replies, now)
     handled_any = False
     applied = dict(pending.get("reply_recovery_applied") or {})
     for entry in sorted(replies, key=lambda row: (
@@ -3532,6 +3554,9 @@ async def _replay_pending_log_replies(send_as_id, msg_id, pending, replies, now)
             "reply_to_msg_id": msg_id,
             "root_msg_id": msg_id,
             "matched_via": "pending_log_replay",
+            "server_event_at": telegram_event_timestamp(event, entry.get("event_type")),
+            "processed_at": max(now, time.time()),
+            "event_type": entry.get("event_type", "message"),
         })
         event_at = float(entry.get("ts_epoch") or now)
         event_kind = str(entry.get("event_type") or "message")

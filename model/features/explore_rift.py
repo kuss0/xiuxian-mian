@@ -525,9 +525,9 @@ async def _send_tianxing_explore_rift_result_audit(raw_text, result_summary):
     return True
 
 
-def _apply_tianxing_explore_rift_result(raw_text, now):
+def _apply_tianxing_explore_rift_result(raw_text, now, *, reply_context=None):
     if looks_like_tianxing_route_result(raw_text):
-        apply_tianxing_passive(raw_text, now=now)
+        apply_tianxing_passive(raw_text, now=now, family="explore_rift", reply_context=reply_context)
 
 
 def _is_explore_rift_terminal_success(raw_text):
@@ -1347,7 +1347,7 @@ async def _run_rebirth_scheduler(now):
     return True
 
 
-async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0):
+async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0, *, reply_context=None):
     if not state.get("explore_rift_enabled") and not state.get("explore_rift_rebirth_required") and not int(state.get("explore_rift_fatal_msg_id", 0) or 0):
         return False
     if not _is_explore_rift_reply(reply_to, matched_family=matched_family):
@@ -1389,7 +1389,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         result_key = _make_result_key(result_msg_id, final_title, raw_text)
         if state.get("explore_rift_last_result_key") == result_key:
             return True
-        _apply_tianxing_explore_rift_result(raw_text, now)
+        _apply_tianxing_explore_rift_result(raw_text, now, reply_context=reply_context)
         if final_title == EXPLORE_RIFT_FATAL_TITLE:
             _clear_explore_rift_pending()
             state["explore_rift_fatal_msg_id"] = result_msg_id

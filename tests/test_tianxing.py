@@ -1260,7 +1260,7 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertNotIn("探索", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
 
-    def test_route_result_clears_unconfirmed_same_route_timeline_step(self):
+    def test_route_result_retains_unconfirmed_same_route_timeline_step(self):
         now = 1_780_000_000.0
         text = (
             "【野外历练 · 改命脱险】\n"
@@ -1304,10 +1304,10 @@ class TianxingManualPlanTests(unittest.TestCase):
             self.assertTrue(tianxing.apply_tianxing_passive(text, now=now))
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertEqual("blocked_replan", timeline["phase"])
-        self.assertEqual({}, timeline["active_step"])
-        self.assertEqual("consumed_by_route_result", timeline["steps"][0]["status"])
-        self.assertEqual("unconfirmed_step_consumed_by_route_result", timeline["audit"][-1]["event"])
+        self.assertEqual("ack_timeout", timeline["phase"])
+        self.assertEqual(active_step, timeline["active_step"])
+        self.assertEqual(active_step, timeline["steps"][0])
+        self.assertEqual([], timeline["audit"])
 
     def test_route_preflight_does_not_block_non_tianxing_identity(self):
         now = 1_780_000_000.0
@@ -2795,7 +2795,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "event_type": "message", "chat_id": context["chat_id"],
                 "message_id": context["msg_id"], "reply_to_msg_id": context["root_msg_id"],
                 "sender_id": 880530002, "text": real_text("tianxing.change_fate.basic"),
-                "ts_epoch": now + 20,
+                "ts_epoch": now + 20, "server_event_at": now + 20,
             }]
             with (
                 patch.object(tianxing, "save_state"),
@@ -7702,7 +7702,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "sender_username": "hantianzun21_bot",
             "event_type": "message",
             "text": "你将今日命轨定在 【太阴】。\n主趋吉避祸，探索更易避祸，斗法更善脱身，但闭关悟性略降。",
-            "ts_epoch": now - 5,
+            "ts_epoch": now - 5, "server_event_at": now - 5,
         }
         with state_module.use_identity(self.identity_id):
             state_module.state["tianxing_enabled"] = True
@@ -8581,7 +8581,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
     def test_passive_inbox_updates_tianxing_from_reply_context(self):
         send_as_id = self._prepare_identity()
         state_module.set_identity_account(send_as_id, 7491)
-        event = SimpleNamespace(chat_id=-1001680975844, id=9706484)
+        event = SimpleNamespace(chat_id=-1001680975844, id=9706484, server_event_at=1_780_000_000.0)
         with state_module.use_identity(send_as_id):
             state_module.state["tianxing_observation"] = {
                 "current_prediction": "炼制",
@@ -8622,7 +8622,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
 
     def test_passive_inbox_can_route_at_tagged_modifier_without_reply_context(self):
         send_as_id = self._prepare_identity(username="PeggyArmstrong_a776")
-        event = SimpleNamespace(chat_id=-1001680975844, id=9707995)
+        event = SimpleNamespace(chat_id=-1001680975844, id=9707995, server_event_at=1_780_000_000.0)
 
         with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
@@ -8645,7 +8645,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
 
         with state_module.use_identity(send_as_id):
             state_module.state["tianxing_observation"] = {
-                "current_prediction": "炼制",
+                "current_prediction": "探索",
                 "current_prediction_until": now + 3600,
                 "current_change": "探索",
                 "current_change_until": now + 7200,
@@ -8658,7 +8658,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
         self.assertEqual("prediction_miss", observed["last_result"])
         self.assertEqual("", observed["current_prediction"])
         self.assertEqual(0, observed["current_prediction_until"])
-        self.assertEqual("炼制", observed["prediction_consumed_route"])
+        self.assertEqual("探索", observed["prediction_consumed_route"])
         self.assertEqual(now, observed["prediction_consumed_at"])
         self.assertEqual("探索", observed["current_change"])
         self.assertGreater(observed["current_change_until"], now)
@@ -8671,7 +8671,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
                 "current_change": "探索",
                 "current_change_until": now + 7200,
             })
-            changed = tianxing.apply_tianxing_passive(real_text("tianxing.modifier.change_triggered"), now=now)
+            changed = tianxing.apply_tianxing_passive(real_text("tianxing.modifier.change_triggered"), now=now + 1)
             observed = state_module.state["tianxing_observation"]
 
         self.assertTrue(changed)
@@ -8679,7 +8679,7 @@ class TianxingPassiveInboxTests(unittest.TestCase):
         self.assertEqual("", observed["current_prediction"])
         self.assertEqual(0, observed["current_prediction_until"])
         self.assertEqual("探索", observed["prediction_consumed_route"])
-        self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertEqual(now + 1, observed["prediction_consumed_at"])
         self.assertEqual("", observed["current_change"])
         self.assertEqual(0, observed["current_change_until"])
 

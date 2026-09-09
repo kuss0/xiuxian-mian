@@ -29,7 +29,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
-| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry and calibration repaired in candidate; general reducer chronology and remaining modules still pending |
+| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration and native effect chronology repaired in candidate; resource-delta idempotence, legacy log readers and remaining modules still pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
@@ -106,6 +106,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R52 | High | Auto/craft/retreat replies update authoritative Tianxing fields before validating the pending operation, so rejected roots/chats/accounts/arguments still change effects, resources and timestamps | Fixed for pending auto/farm operations in candidate; ownership and terminal-command checks run before observation writes, including exact integral references and early receipt adoption; active timeline provenance and general post-completion ordering remain open |
 | R53 | High | Active Tianxing timeline steps confirm from merged cached fields, accept unowned negative replies, and recover a nearby bot reply without an actual reply root | Fixed for active-step reply confirmation in candidate; operation receipts precede state writes, direct and panel-query evidence is correlated, early results replay from bounded trusted logs, and partial calibration fields remain pending; downstream release/calibration shortcuts and general reducer chronology remain open |
 | R54 | High | Effect deadlines include retry padding or invented lifetimes; cached release/observation fields bypass unresolved calibration, while partial effect replies lose native pending/guard ownership and late originals cannot settle after calibration timeout | Fixed for scoped expiry, downstream admission and retained-operation reconciliation in candidate; exact effect clocks, owned complete panels, partial/final native replay, late success/CD/refusal and SQLite reload are covered; general field provenance and post-completion chronology remain open |
+| R55 | High | Native effects use local receipt time, stale replies overwrite newer effects, route results acknowledge unrelated mutations, and replay batches select revisions by arrival rather than server order; calibration helpers bypass effect provenance | Fixed for scoped native event/replay paths in candidate; server timestamps, per-effect evidence, genuine versus repeated edits, corruption repair, retained mutation ownership and SQLite replay are covered; counters/resource deltas and legacy route-result log readers remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1360,6 +1361,61 @@ five monitor/control-only contracts need separate behavioral verification.
   `git diff --check` pass. No deployment, restart, push, production write,
   game request, listener start or skill edit was performed.
 
+### R55 Evidence
+
+- Resumed the existing 14-case failing run and collected its terminal result:
+  twelve native message/edit cases used delivery time for effect deadlines,
+  and two route-result cases erased an unrelated pending mutation and guard.
+  Removed the route-only acknowledgement branch; a result can consume its
+  matching released route without confirming a different predict/change send.
+- Added explicit `server_event_at` metadata from Telegram `date`/`edit_date`
+  through routed delivery, `VerifiedGameEvent`, MessageBox and logged replay.
+  Log `ts`/`ts_epoch` remains local receipt time for file lookup and other
+  modules' existing contracts. Missing/invalid server clocks are not relabeled
+  receipt times; Tianxing retains pending work until valid evidence arrives.
+  Native edits without `edit_date` cannot borrow the original message date.
+- Prediction and change each retain bounded evidence: server time, chat/message,
+  revision kind, completeness and a small semantic signature. Older effects,
+  explicit absence and consumption cannot be overwritten by delayed native
+  replies. Same-second message ordering is local to a chat. An unchanged
+  complete reply cannot extend an effect, but a genuine panel edit can update
+  it. Additional tests reproduced seven failures around edited panels,
+  cross-route consumption and newer same-second panel evidence before fixing
+  those paths. Absence evidence survives SQLite reload.
+- Effect fields are written by the observation reducer, not copied again by
+  timeline/guard confirmation. A correlated old query may acknowledge its
+  operation without replacing newer effects. Corrupt evidence does not
+  authorize downstream work; a complete, owned panel dispatched after the
+  previous observation can repair the affected field. The first ten corrupt
+  metadata reproducers all failed before the checks; expanded cases cover
+  invalid containers, records, clocks, revision kinds, signatures and IDs.
+- Shared Tianxing revision selection now serves automatic/timeline recovery,
+  native pending-log replay, and cached/logged replies that arrived before
+  send registration. Five dedicated recovery failures and six native replay
+  failures reproduced arrival-order selection of an obsolete result. Selection
+  requires a trusted bot and real event clock, keeps the latest revision per
+  chat/message, and does not guess between conflicting edits in one server
+  second. This does not create retries or transfer recovery to CommandAttempt.
+- Full-suite review caught a rift integration failure: the known exploration
+  family was not passed to the Tianxing parser. Live routed rift replies now
+  carry both their family and server-time context. The legacy rift log readers
+  are still a separate unresolved source/ownership review, not certified by
+  this native-path correction.
+- Expanded regression set: **1974 passed, 147 subtests passed**, 12.43 seconds.
+  The first full run found **6031 passed, 1 failed, 1198 subtests passed**,
+  85.60 seconds; the rift failure above was corrected afterward. Its JUnit is
+  `/tmp/xiuxian-rebuild-r55-first-full-20260909.xml`.
+  The next full run had **6064 passed, 1 failed, 1198 subtests passed**:
+  the storage-transfer routed-rift mock still asserted the old call contract.
+  Its fixture now supplies original/edit server dates and checks the complete
+  identity/chat/root/time context, without removing the implementation guard.
+  Related storage-transfer, event-time and observation tests: **189 passed**.
+  Final full suite: **6065 passed, 1198 subtests passed**, 85.90 seconds;
+  JUnit: `/tmp/xiuxian-rebuild-r55-verified-20260909.xml`.
+  Full selected-rule Ruff, changed-file compilation, `pip check` and diff
+  checks pass. No production deployment, restart, push,
+  game request, configuration/DB write, listener start or skill edit occurred.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1375,6 +1431,10 @@ Legacy effect state without a valid `set_at` or reported expiry can no longer
 authorize downstream work through a release-cache fallback. Resolve it from
 existing anchored evidence or separately approved calibration before deployment;
 do not manufacture effect clocks from a last-action label or current time.
+Old Telegram log rows without `server_event_at` do not establish effect clocks
+or qualify for native Tianxing replay. Before any deployment, reconcile retained
+operations using available authoritative message dates or separately approved
+fresh queries. Do not backfill this field from log receipt timestamps.
 Checkin cleanup JSON also changes from bare IDs to chat/message pairs; even
 without a same-ID collision, that data must not be handed to the old loader
 and cleanup code during a code-only rollback.
@@ -1496,6 +1556,13 @@ and cleanup code during a code-only rollback.
    observation or replace general chronological reconciliation.
    Replies after pending completion, older-than-last farm results and old
    prediction results still need durable idempotence and chronology tests.
+6. R55 covers native effect chronology and the shared Tianxing replay paths,
+   not all observation fields. Next review resource/counter deltas after
+   pending completion, out-of-order absolute panels, and legacy farm results.
+   `explore_rift._recover_unknown_rift_panel_from_message_log` still supplies
+   log receipt time to the reducer without server metadata; its result-log
+   readers also need strict chat/account/source ownership and real event time.
+   Do not infer their correctness from the now-correct live rift caller.
 
 ## Completion Gate
 

@@ -12,7 +12,7 @@ from ..persistence import save_state
 from ..message_keys import find_message_key
 from ..state import get_identity_account, get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import get_day_key, has_wait_time, parse_wait_time
-from ..verified_event import VerifiedGameEvent
+from ..verified_event import VerifiedGameEvent, telegram_event_timestamp
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
 from . import heavenly_ban as heavenly_ban_mod
@@ -1355,7 +1355,7 @@ def _normalize_passive_module_card_input(text, reply_context=None, event=None, e
         context["root_msg_id"] = verified.root_msg_id
     if verified.reply_to_sender_id and not context.get("reply_to_sender_id"):
         context["reply_to_sender_id"] = verified.reply_to_sender_id
-    normalized_event = SimpleNamespace(id=verified.msg_id, chat_id=verified.chat_id)
+    normalized_event = SimpleNamespace(id=verified.msg_id, chat_id=verified.chat_id, server_event_at=verified.server_event_at)
     return verified.text, context, normalized_event, verified.event_type
 
 
@@ -1632,7 +1632,11 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
         if family.startswith("tianxing_") or (not family and tianxing_mod.looks_like_tianxing_text(raw_text)):
             module_changed = tianxing_mod.apply_tianxing_passive(
                 raw_text, now, family,
-                reply_context=dict(reply_context or {}, send_as_id=target_id, chat_id=observed_chat_id, msg_id=observed_msg_id, processed_at=max(now, time.time())),
+                reply_context=dict(
+                    reply_context or {}, send_as_id=target_id, chat_id=observed_chat_id,
+                    msg_id=observed_msg_id, processed_at=max(now, time.time()),
+                    server_event_at=telegram_event_timestamp(event, event_type), event_type=event_type,
+                ),
             )
             if module_changed:
                 changed_modules.append("tianxing")

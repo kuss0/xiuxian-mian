@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -619,7 +620,11 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_routed_explore_rift_final_edit_replays_after_start_notice_consumed(self):
         state_module.get_identity_state(self.target_id)["explore_rift_enabled"] = True
-        event = SimpleNamespace(id=10425944, sender_id=8757550896, chat_id=-1001680975844)
+        event = SimpleNamespace(
+            id=10425944, sender_id=8757550896, chat_id=-1001680975844,
+            date=datetime.fromtimestamp(970, timezone.utc),
+            edit_date=datetime.fromtimestamp(980, timezone.utc),
+        )
         reply_to = SimpleNamespace(id=10425942, raw_text=".探寻裂缝")
         reply_context = {
             "send_as_id": self.target_id,
@@ -635,6 +640,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(app, "handle_explore_rift_reply", new=AsyncMock(return_value=True)) as rift_mock, \
+                patch("model.app.time.time", return_value=1060.0), \
                 patch.object(app, "schedule_cleanup", new=AsyncMock()):
             handled = await app._handle_routed_reply_event(
                 event,
@@ -652,6 +658,14 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             reply_to,
             matched_family="explore_rift",
             result_msg_id=10425944,
+            reply_context={
+                **reply_context,
+                "chat_id": event.chat_id,
+                "msg_id": event.id,
+                "server_event_at": 980.0,
+                "processed_at": 1060.0,
+                "event_type": "edit",
+            },
         )
 
     async def test_routed_wendao_final_edit_replays_after_start_notice_consumed(self):

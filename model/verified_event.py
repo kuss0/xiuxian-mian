@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import math
 
 DELIVERY_NEW = "New"
 DELIVERY_EDITED = "Edited"
@@ -30,6 +32,30 @@ def is_edited_delivery(value):
     return delivery_kind_for_event_type(value) == DELIVERY_EDITED
 
 
+def telegram_event_timestamp(event, event_type="message"):
+    """Return server evidence time, never a local receipt-time fallback."""
+    if hasattr(event, "server_event_at"):
+        value = getattr(event, "server_event_at")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        try:
+            return float(value) if math.isfinite(value) and value > 0 else 0.0
+        except (ValueError, OverflowError):
+            return 0.0
+    field = "edit_date" if clean_event_type(event_type) == "edit" else "date"
+    value = getattr(event, field, None)
+    if value is None:
+        value = getattr(getattr(event, "message", None), field, None)
+    if not isinstance(value, datetime):
+        return 0.0
+    try:
+        value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+        stamp = value.timestamp()
+        return stamp if math.isfinite(stamp) and stamp > 0 else 0.0
+    except (ValueError, OverflowError, OSError):
+        return 0.0
+
+
 @dataclass(frozen=True)
 class VerifiedGameEvent:
     event_type: str
@@ -43,6 +69,7 @@ class VerifiedGameEvent:
     root_msg_id: int
     route_source: str
     reply_to_sender_id: int
+    server_event_at: float = 0.0
 
     @property
     def delivery_kind(self):
@@ -78,6 +105,7 @@ def from_telegram_event(event, text, reply_context, event_kind="message", root_m
         root_msg_id=resolved_root_msg_id,
         route_source=f"{event_type}:reply_context",
         reply_to_sender_id=_safe_int(context.get("reply_to_sender_id")),
+        server_event_at=telegram_event_timestamp(event, event_type),
     )
 
 
@@ -90,4 +118,5 @@ __all__ = [
     "from_telegram_event",
     "is_edited_delivery",
     "is_new_delivery",
+    "telegram_event_timestamp",
 ]

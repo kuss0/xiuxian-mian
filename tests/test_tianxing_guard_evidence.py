@@ -269,7 +269,7 @@ def test_dispatchers_do_not_bypass_tianxing_guard_evidence(env, monkeypatch, pat
     elif case == "incomplete":
         text = "\u3010\u5929\u673a\u76d8\u3011"
     ctx["reply_to_msg_id"] = ctx["root_msg_id"]
-    event = SimpleNamespace(id=ctx["msg_id"], chat_id=ctx["chat_id"], sender_id=880490001)
+    event = SimpleNamespace(id=ctx["msg_id"], chat_id=ctx["chat_id"], sender_id=880490001, server_event_at=NOW)
     state_module.set_game_bot_ids([event.sender_id])
     if path == "routed":
         reply = SimpleNamespace(id=ctx["root_msg_id"], chat_id=ctx["chat_id"], raw_text=COMMANDS[action])
@@ -309,7 +309,7 @@ def test_real_runtime_receipt_and_log_replay_preserve_query_order(env, monkeypat
     with state_module.use_identity(IDENTITY_ID):
         assert tianxing._apply_tianxing_log_reply({
             "chat_id": CHAT_ID, "reply_to_msg_id": 4902, "message_id": 4999,
-            "ts_epoch": NOW, "text": PANEL,
+            "ts_epoch": NOW, "server_event_at": NOW, "text": PANEL,
         }, family="tianxing_panel")
     assert ("tianxing_predict" in sessions()) is older_query
     assert "tianxing_panel" not in sessions()

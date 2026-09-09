@@ -130,7 +130,7 @@ def event_context(kind):
 
 
 async def deliver(kind, text, now, *, path="routed", edit=False, pending=None):
-    event = SimpleNamespace(id=RESULT_ID, chat_id=CHAT_ID, sender_id=BOT_ID, raw_text=text)
+    event = SimpleNamespace(id=RESULT_ID, chat_id=CHAT_ID, sender_id=BOT_ID, raw_text=text, server_event_at=now)
     context = event_context(kind)
     event_kind = "edit" if edit else "message"
     if path == "routed":
@@ -141,6 +141,7 @@ async def deliver(kind, text, now, *, path="routed", edit=False, pending=None):
     return await app._replay_pending_log_replies(IDENTITY_ID, ROOT_ID, pending, [{
         "chat_id": CHAT_ID, "message_id": RESULT_ID, "sender_id": BOT_ID,
         "reply_to_msg_id": ROOT_ID, "text": text, "ts_epoch": now, "event_type": event_kind,
+        "server_event_at": now,
     }], now)
 
 
@@ -150,6 +151,56 @@ def business_pending(env, kind):
     farm_key = "craft_farm" if kind == "craft" else "retreat_farm"
     pending_key = "pending_craft" if kind == "craft" else "pending_command"
     return env.identity["tianxing_timeline_state"][farm_key][pending_key]
+
+
+@pytest.mark.parametrize("kind", ["panel", "observe"])
+@pytest.mark.parametrize("latest_complete", [False, True])
+@pytest.mark.parametrize("path", ["pending", "early_cache", "early_log"])
+def test_batch_log_replay_uses_latest_server_revision_before_clearing_pending(env, monkeypatch, kind, latest_complete, path):
+    pending = seed(env, kind)
+    older = {
+        "chat_id": CHAT_ID, "message_id": RESULT_ID, "sender_id": BOT_ID, "reply_to_msg_id": ROOT_ID,
+        "event_type": "message", "server_event_at": NOW - 1, "ts_epoch": NOW + 2,
+        "text": text_for(kind, not latest_complete),
+    }
+    latest = dict(older, event_type="edit", server_event_at=NOW, ts_epoch=NOW + 1, text=text_for(kind, latest_complete))
+    if path == "pending":
+        handled = asyncio.run(app._replay_pending_log_replies(IDENTITY_ID, ROOT_ID, pending, [latest, older], NOW + 3))
+    else:
+        monkeypatch.setattr(app, "_EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC", 0)
+        monkeypatch.setattr(app, "_early_routed_replies", {})
+        monkeypatch.setattr(app, "console_log", Mock())
+        monkeypatch.setattr(app, "find_message_log_replies_tail", Mock(return_value=[latest, older]))
+        if path == "early_cache":
+            items = []
+            for entry in (latest, older):
+                event, reply = app._logged_reply_event(entry, COMMANDS[kind], IDENTITY_ID)
+                items.append({
+                    "event": event, "reply_to": reply, "event_id": RESULT_ID,
+                    "event_kind": entry["event_type"], "event_at": entry["ts_epoch"],
+                    "text": entry["text"], "remembered_at": app.time.time(),
+                })
+            app._early_routed_replies[(CHAT_ID, IDENTITY_ID, ROOT_ID)] = items
+        handled = asyncio.run(app._replay_early_replies_after_sent(
+            IDENTITY_ID, COMMANDS[kind], NOW - 10, ROOT_ID, game_group_id=CHAT_ID, allow_log_fallback=True,
+        ))
+    assert handled
+    assert bool(business_pending(env, kind)) is not latest_complete
+    assert ((CHAT_ID, ROOT_ID) in env.identity["pending_tasks"]) is not latest_complete
+    env.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["panel", "observe"])
+def test_legacy_log_without_server_time_keeps_pending_for_fresh_evidence(env, kind):
+    pending = seed(env, kind)
+    entry = {
+        "chat_id": CHAT_ID, "message_id": RESULT_ID, "sender_id": BOT_ID, "reply_to_msg_id": ROOT_ID,
+        "event_type": "message", "ts_epoch": NOW + 2, "text": text_for(kind, True),
+    }
+    assert not asyncio.run(app._replay_pending_log_replies(IDENTITY_ID, ROOT_ID, pending, [entry], NOW + 3))
+    assert business_pending(env, kind)
+    assert (CHAT_ID, ROOT_ID) in env.identity["pending_tasks"]
+    env.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize("path", ["routed", "passive", "log"])

@@ -243,6 +243,31 @@ def _tianxing_exact_id(value):
         return 0
 
 
+def _tianxing_effect_record(observed, effect):
+    evidence = observed.get("effect_evidence", {})
+    if not isinstance(evidence, dict):
+        return None
+    record = evidence.get(effect, {})
+    if not isinstance(record, dict):
+        return None
+    if not record:
+        return {}
+    at, dirty = _parse_observation_float(record.get("at"))
+    signature = record.get("signature")
+    if (
+        dirty or at <= 0 or type(record.get("complete")) is not bool
+        or type(record.get("chat_id")) is not int or type(record.get("msg_id")) is not int
+        or record["msg_id"] < 0 or bool(record["chat_id"]) != bool(record["msg_id"])
+        or not isinstance(record.get("event_type"), str)
+        or record.get("event_type") not in {"message", "edit"}
+        or not isinstance(signature, list) or len(signature) != 4
+        or any(value is not None and not isinstance(value, str) for value in signature[:3])
+    ):
+        return None
+    duration, dirty = _parse_observation_float(signature[3])
+    return None if dirty or duration < 0 else record
+
+
 def _dirty_tianxing_time_fields(value=None):
     if not isinstance(value, dict):
         return []
@@ -251,6 +276,9 @@ def _dirty_tianxing_time_fields(value=None):
         _parsed, dirty = _parse_observation_float(value.get(key, 0))
         if dirty:
             dirty_fields.append(key)
+    for effect in ("prediction", "change"):
+        if _tianxing_effect_record(value, effect) is None:
+            dirty_fields.append(f"effect_evidence.{effect}")
     return dirty_fields
 
 
@@ -298,6 +326,7 @@ def _default_tianxing_observation():
         "current_prediction_set_at": 0,
         "prediction_consumed_route": "",
         "prediction_consumed_at": 0,
+        "effect_evidence": {},
         "current_change": "",
         "current_change_until": 0,
         "current_change_set_at": 0,
@@ -1623,7 +1652,9 @@ def parse_tianxing_text(text, now=None, family=""):
         if star_match:
             star_effect = f"{star_match.group('star').strip()} {star_match.group('desc').strip()}".strip()
         parsed.update(action="命盘偏转", result=result, summary=_short_summary(raw_text), last_star_effect=star_effect)
-        route = _infer_route_from_modifier_text(raw_text)
+        route = _infer_route_from_modifier_text(raw_text) or {
+            "explore_rift": "探索", "wild_training": "探索", "duel": "斗法",
+        }.get(family, "")
         if route:
             parsed["last_route"] = route
         tianji_gain_match = RE_TIANJI_GAIN.search(raw_text)
@@ -1740,6 +1771,9 @@ def is_tianxing_waiting_reply(text, now=None, family="", *, command=None, reply_
     if family not in TIANXING_REPLY_GUARD_FAMILIES:
         return False
     now = float(now if now is not None else time.time())
+    now = _tianxing_reply_event_time(now, reply_context)
+    if now <= 0:
+        return True
     parsed = parse_tianxing_text(text, now=now, family=family)
     if family == "tianxing_panel" and isinstance(reply_context, dict):
         identity_id = _tianxing_exact_id(reply_context.get("send_as_id"))
@@ -1802,6 +1836,19 @@ def _tianxing_reply_processing_time(now, reply_context):
     context = reply_context if isinstance(reply_context, dict) else {}
     processed_at, dirty = _parse_observation_float(context.get("processed_at"))
     return max(now, processed_at) if not dirty else now
+
+
+def _tianxing_reply_event_time(now, reply_context):
+    context = reply_context if isinstance(reply_context, dict) else {}
+    if "server_event_at" not in context:
+        return now
+    value = context["server_event_at"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    event_at, dirty = _parse_observation_float(value)
+    if dirty or event_at > _tianxing_reply_processing_time(now, context) + 1:
+        return 0.0
+    return event_at
 
 
 def _update_retreat_farm_from_parsed(parsed, observed, now, family="", *, reply_context=None):
@@ -2374,12 +2421,87 @@ async def run_tianxing_timeline_followup_scheduler(now):
     return await _run_tianxing_auto_locked(now, _run_tianxing_timeline_followup_scheduler_unlocked)
 
 
+def _tianxing_effect_signature(effect, parsed, now):
+    field = f"current_{effect}"
+    until = float(parsed.get(f"{field}_until") or 0)
+    return [
+        parsed.get("action"), parsed.get("result"), parsed.get(field),
+        round(until - now, 6) if until > 0 else 0,
+    ]
+
+
+def _tianxing_effect_evidence_is_newer(observed, effect, now, reply_context, parsed):
+    previous = _tianxing_effect_record(observed, effect)
+    if previous is None:
+        field = f"current_{effect}"
+        if parsed.get("action") != "天机盘" or field not in parsed:
+            return False
+        if parsed[field] and float(parsed.get(f"{field}_until") or 0) <= now:
+            return False
+        query = _tianxing_reply_guard_operations(now, reply_context).get("panel", {})
+        floor = max(float(observed.get(key) or 0) for key in (
+            "last_observed_at", f"{field}_set_at", "prediction_consumed_at",
+        ))
+        return float(query.get("dispatch_at") or 0) > 0 and query["dispatch_at"] >= floor
+    previous_at, dirty = _parse_observation_float(previous.get("at"))
+    if dirty:
+        return False
+    floor = max(previous_at, float(observed.get(f"current_{effect}_set_at") or 0))
+    if effect == "prediction":
+        floor = max(floor, float(observed.get("prediction_consumed_at") or 0))
+    else:
+        cleared_at, dirty = _parse_observation_float(observed.get("stale_change_cleared_at"))
+        if dirty:
+            return False
+        floor = max(floor, cleared_at)
+    if now < floor:
+        return False
+    context = reply_context if isinstance(reply_context, dict) else {}
+    chat_id = _tianxing_exact_id(context.get("chat_id"))
+    msg_id = _tianxing_exact_id(context.get("msg_id"))
+    previous_chat = _tianxing_exact_id(previous.get("chat_id"))
+    previous_msg = _tianxing_exact_id(previous.get("msg_id"))
+    same_chat = chat_id and chat_id == previous_chat
+    if same_chat and msg_id > 0 and msg_id == previous_msg:
+        if previous.get("signature") == _tianxing_effect_signature(effect, parsed, now):
+            return False
+        if not previous.get("complete", True):
+            return True
+        if not previous.get("signature"):
+            return False
+        return now > previous_at or (
+            previous.get("event_type") == "message" and context.get("event_type") == "edit"
+        )
+    if now > floor or not previous:
+        return True
+    return bool(same_chat and previous_msg > 0 and msg_id > previous_msg)
+
+
+def _note_tianxing_effect_evidence(observed, effect, now, reply_context, parsed, *, complete=True):
+    context = reply_context if isinstance(reply_context, dict) else {}
+    evidence = observed.get("effect_evidence", {})
+    if not isinstance(evidence, dict):
+        evidence = {key: {"invalid": True} for key in ("prediction", "change") if observed.get(f"current_{key}")}
+    observed["effect_evidence"] = {
+        key: value for key, value in evidence.items() if key in {"prediction", "change"}
+    }
+    observed["effect_evidence"][effect] = {
+        "at": float(now), "chat_id": _tianxing_exact_id(context.get("chat_id")),
+        "msg_id": _tianxing_exact_id(context.get("msg_id")), "complete": bool(complete),
+        "event_type": "edit" if context.get("event_type") == "edit" else "message",
+        "signature": _tianxing_effect_signature(effect, parsed, now),
+    }
+
+
 def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     now = float(now if now is not None else time.time())
     if reply_context is not None and (
         not isinstance(reply_context, dict)
         or _tianxing_exact_id(reply_context.get("send_as_id")) != get_current_identity_id()
     ):
+        return False
+    now = _tianxing_reply_event_time(now, reply_context)
+    if now <= 0:
         return False
     parsed = parse_tianxing_text(text, now=now, family=family)
     if not parsed:
@@ -2413,7 +2535,7 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     ):
         settled = farm[result_key]
         if action in actions and _tianxing_farm_receipt_matches(settled, reply_context, now):
-            _close_tianxing_guards_from_reply(parsed, state.get("tianxing_observation") or {}, now, reply_context=reply_context)
+            _close_tianxing_guards_from_reply(parsed, now, reply_context=reply_context)
             return True
         if action != "天机盘" or not settled or farm["last_command"] != CMD_TIANXING_PANEL:
             continue
@@ -2442,7 +2564,7 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
                 if observed["auto_next_time"] == due_at:
                     observed["auto_next_time"] = now + 60
             state["tianxing_observation"] = observed
-        _close_tianxing_guards_from_reply(parsed, observed, now, reply_context=reply_context)
+        _close_tianxing_guards_from_reply(parsed, now, reply_context=reply_context)
         return True
     if seen_key:
         # Retain evidence until this operation is resolved, even before the
@@ -2455,10 +2577,20 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     previous_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
     previous_change = _normalize_route_choice(observed.get("current_change"), "")
     previous_change_until = float(observed.get("current_change_until", 0) or 0)
+    effect_allowed = {
+        effect: _tianxing_effect_evidence_is_newer(observed, effect, now, reply_context, parsed)
+        for effect in ("prediction", "change")
+    }
+    parsed_route = _normalize_route_choice(parsed.get("last_route") or parsed.get("action"), "")
+    if parsed.get("action") == "命盘偏转" or _normalize_route_choice(parsed.get("action"), "") in TIANXING_ROUTES:
+        for effect, previous_route in (("prediction", previous_prediction), ("change", previous_change)):
+            if previous_route and parsed_route != previous_route:
+                effect_allowed[effect] = False
+    updated_effects = set()
     prediction_reward_this_text = False
     today_key = get_day_key(now)
-    observed["last_observed_at"] = now
-    for key in ("last_action", "last_result", "last_summary", "last_error", "fixed_star", "current_prediction", "current_change", "last_route", "last_star_effect", "available_stars_source"):
+    observed["last_observed_at"] = max(observed["last_observed_at"], now)
+    for key in ("last_action", "last_result", "last_summary", "last_error", "fixed_star", "last_route", "last_star_effect", "available_stars_source"):
         source_key = key
         if key == "last_action":
             source_key = "action"
@@ -2482,43 +2614,43 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
             observed["fixed_star_day"] = today_key
         else:
             observed["fixed_star_day"] = ""
-    for key in ("current_prediction_until", "current_change_until"):
+    for effect in ("prediction", "change"):
+        key = f"current_{effect}"
+        if not effect_allowed[effect]:
+            continue
         if key in parsed:
-            observed[key] = float(parsed.get(key) or 0)
-    if parsed.get("action") == "推命":
-        predicted_route = _normalize_route_choice(parsed.get("current_prediction") or parsed.get("last_route"), "")
-        if parsed.get("result") in {"success", "cooldown"} and predicted_route:
-            observed["current_prediction_set_at"] = now
-            if _normalize_route_choice(observed.get("prediction_consumed_route"), "") == predicted_route:
-                observed["prediction_consumed_route"] = ""
-                observed["prediction_consumed_at"] = 0
-    if parsed.get("action") in {"改命", "天机盘"}:
-        changed_route = _normalize_route_choice(parsed.get("current_change") or parsed.get("last_route"), "")
-        if changed_route and float(observed.get("current_change_until", 0) or 0) > now:
-            observed["current_change_set_at"] = now
-        elif "current_change" in parsed or "current_change_until" in parsed:
-            observed["current_change_set_at"] = 0
+            observed[key] = parsed[key]
+            if parsed.get("action") in {"推命", "改命", "天机盘"}:
+                observed[f"{key}_set_at"] = now if parsed[key] else 0
+            updated_effects.add(effect)
+        if f"{key}_until" in parsed:
+            observed[f"{key}_until"] = float(parsed.get(f"{key}_until") or 0)
+            updated_effects.add(effect)
+    if (
+        effect_allowed["prediction"] and parsed.get("action") in {"推命", "天机盘"}
+        and parsed.get("current_prediction")
+        and float(parsed.get("current_prediction_until") or 0) > now
+        and observed.get("prediction_consumed_route") == parsed["current_prediction"]
+    ):
+        observed["prediction_consumed_route"] = ""
+        observed["prediction_consumed_at"] = 0
     raw_text_for_prediction = str(text or "")
     prediction_hit_text = "【推命命中】" in raw_text_for_prediction
     prediction_miss_text = "【推命落空】" in raw_text_for_prediction
-    parsed_route = _normalize_route_choice(parsed.get("last_route"), "")
     previous_release_basis = _tianxing_release_basis_for_route(timeline_before, parsed_route)
-    if parsed.get("result") in {"prediction_hit", "prediction_miss", "change_triggered"} and (prediction_hit_text or prediction_miss_text):
-        consumed_route = previous_prediction or _normalize_route_choice(parsed.get("last_route"), "") or _normalize_route_choice(observed.get("current_prediction"), "")
+    if effect_allowed["prediction"] and parsed.get("result") in {"prediction_hit", "prediction_miss", "change_triggered"} and (prediction_hit_text or prediction_miss_text):
+        consumed_route = parsed_route or previous_prediction
         if consumed_route:
             _consume_tianxing_released_route(consumed_route, now)
             prediction_reward_this_text = True
-            if prediction_miss_text:
-                observed["prediction_consumed_route"] = consumed_route
-                observed["prediction_consumed_at"] = now
-            elif prediction_hit_text:
-                observed["prediction_consumed_route"] = consumed_route
-                observed["prediction_consumed_at"] = now
-        if prediction_miss_text or prediction_hit_text:
+            observed["prediction_consumed_route"] = consumed_route
+            observed["prediction_consumed_at"] = now
+            updated_effects.add("prediction")
+        if not previous_prediction or previous_prediction == consumed_route:
             observed["current_prediction"] = ""
             observed["current_prediction_until"] = 0
     elif (
-        parsed.get("result") in {"success", "failure"}
+        effect_allowed["prediction"] and parsed.get("result") in {"success", "failure"}
         and _normalize_route_choice(parsed.get("action"), "") in TIANXING_ROUTES
     ):
         observed_route = _normalize_route_choice(parsed.get("last_route"), "")
@@ -2526,17 +2658,19 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
             _consume_tianxing_released_route(observed_route, now, reason="route_result_observed_without_prediction")
             observed["prediction_consumed_route"] = observed_route
             observed["prediction_consumed_at"] = now
-    elif parsed.get("result") in {"modifier", "change_triggered"}:
+            updated_effects.add("prediction")
+    elif effect_allowed["prediction"] and parsed.get("result") in {"modifier", "change_triggered"}:
         observed_route = _normalize_route_choice(parsed.get("last_route"), "")
         if observed_route:
             _consume_tianxing_released_route(observed_route, now, reason="route_result_observed_without_prediction")
         if observed_route and previous_prediction == observed_route:
             observed["current_prediction"] = ""
             observed["current_prediction_until"] = 0
-            observed["prediction_consumed_route"] = ""
-            observed["prediction_consumed_at"] = 0
+            observed["prediction_consumed_route"] = observed_route
+            observed["prediction_consumed_at"] = now
+            updated_effects.add("prediction")
     if (
-        parsed_route
+        effect_allowed["change"] and parsed_route
         and previous_change == parsed_route
         and previous_change_until > now
         and previous_release_basis == "change_fate"
@@ -2551,15 +2685,20 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
         observed["stale_change_cleared_route"] = parsed_route
         observed["stale_change_cleared_at"] = now
         observed["last_error"] = f"{parsed_route} 改命未被真实结果文案确认，已清理本地 stale 改命状态。"
+        updated_effects.add("change")
     elif (
-        parsed_route
+        effect_allowed["change"] and parsed_route
         and previous_change == parsed_route
         and float(observed.get("current_change_until", 0) or 0) > now
         and "【改命待发】" in raw_text_for_prediction
     ):
         observed["current_change_set_at"] = now
-    if "current_change" in parsed and not _normalize_route_choice(observed.get("current_change"), ""):
+        updated_effects.add("change")
+    if effect_allowed["change"] and "current_change" in parsed and not _normalize_route_choice(observed.get("current_change"), ""):
         observed["current_change_set_at"] = 0
+    for effect in updated_effects:
+        complete = not observed.get(f"current_{effect}") or float(observed.get(f"current_{effect}_until") or 0) > 0
+        _note_tianxing_effect_evidence(observed, effect, now, reply_context, parsed, complete=complete)
     for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain"):
         if parsed.get(key) is not None:
             observed[key] = int(parsed.get(key) or 0)
@@ -2595,13 +2734,13 @@ def apply_tianxing_passive(text, now=None, family="", *, reply_context=None):
     })
     observed["recent"] = observed["recent"][-8:]
     state["tianxing_observation"] = observed
-    _prune_tianxing_released_routes(observed, now)
+    _prune_tianxing_released_routes(observed, _tianxing_reply_processing_time(now, reply_context))
     _update_retreat_farm_from_parsed(parsed, observed, now, family, reply_context=reply_context)
     _update_craft_farm_from_parsed(parsed, observed, now, family, reply_context=reply_context)
     _update_tianxing_timeline_from_negative_observation(parsed, now, reply_context=reply_context)
     confirmed, _timeline = _confirm_tianxing_timeline_from_observation(now, parsed=parsed, reply_context=reply_context)
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    _close_tianxing_guards_from_reply(parsed, observed, now, reply_context=reply_context)
+    _close_tianxing_guards_from_reply(parsed, now, reply_context=reply_context)
     if confirmed:
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     state["tianxing_observation"] = observed
@@ -2885,8 +3024,33 @@ def _apply_tianxing_log_reply(entry, *, family="", processed_at=0):
             "root_msg_id": (entry or {}).get("reply_to_msg_id", 0),
             "msg_id": (entry or {}).get("message_id", 0),
             "processed_at": processed_at,
+            "server_event_at": (entry or {}).get("server_event_at", 0),
+            "event_type": (entry or {}).get("event_type", "message"),
         },
     )
+
+
+def _latest_tianxing_log_replies(entries, now):
+    latest = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict) or entry.get("event_type") not in ("message", "edit"):
+            continue
+        if not _is_logged_game_bot_reply(entry):
+            continue
+        key = _tianxing_exact_id(entry.get("chat_id")), _tianxing_exact_id(entry.get("message_id"))
+        received_at, dirty = _parse_observation_float(entry.get("ts_epoch"))
+        event_at = _tianxing_reply_event_time(now, {"server_event_at": entry.get("server_event_at")})
+        if not key[0] or key[1] <= 0 or dirty or not 0 < received_at <= now + 1 or not 0 < event_at <= received_at + 1:
+            continue
+        revision = (event_at, entry["event_type"] == "edit")
+        previous = latest.get(key)
+        if previous is None or revision > previous[0]:
+            latest[key] = (revision, entry)
+        elif revision == previous[0] and (previous[1] is None or previous[1].get("text") != entry.get("text")):
+            # Two different edits in one server second have no proven order.
+            latest[key] = (revision, None)
+    ordered = sorted(latest.items(), key=lambda item: (item[1][0][0], *item[0], item[1][0][1]), reverse=True)
+    return [entry for _key, (_revision, entry) in ordered if entry is not None]
 
 
 def _recover_tianxing_pending_reply_from_message_log(observed, now):
@@ -2913,29 +3077,15 @@ def _recover_tianxing_pending_reply_from_message_log(observed, now):
     )
     if not replies:
         return False
-    seen_messages = set()
-    for entry in reversed(replies):
-        if not isinstance(entry, dict):
-            continue
-        try:
-            message_key = int(entry.get("chat_id") or 0), int(entry.get("message_id") or 0)
-            if not message_key[0] or message_key[1] <= 0 or message_key in seen_messages:
-                continue
-        except (TypeError, ValueError, OverflowError):
-            continue
-        seen_messages.add(message_key)
-        if entry.get("event_type") not in {"message", "edit"} or not _is_logged_game_bot_reply(entry):
-            continue
-        entry_ts, dirty = _parse_observation_float(entry.get("ts_epoch"))
-        if dirty or entry_ts <= 0 or entry_ts > float(now) + 1:
-            continue
+    for entry in _latest_tianxing_log_replies(replies, now):
+        entry_ts = float(entry["server_event_at"])
         parsed = parse_tianxing_text(entry.get("text"), now=entry_ts, family=family)
         context = {
             "send_as_id": get_current_identity_id(), "chat_id": entry.get("chat_id", 0),
-            "root_msg_id": entry.get("reply_to_msg_id", 0),
+            "root_msg_id": entry.get("reply_to_msg_id", 0), "processed_at": now,
         }
         if _auto_pending_matches_parsed(observed, parsed, entry_ts, reply_context=context):
-            if _apply_tianxing_log_reply(entry, family=family):
+            if _apply_tianxing_log_reply(entry, family=family, processed_at=now):
                 save_state()
                 return not bool(normalize_tianxing_observation(state.get("tianxing_observation"))["auto_pending_action"])
     return False
@@ -2966,19 +3116,11 @@ def _recover_tianxing_timeline_reply_from_message_log(now):
         lookback_sec=min(24 * 3600, max(900, int(max(0.0, now - dispatch_at) + 300))),
         predicate=_tianxing_log_reply_predicate, max_bytes=512 * 1024,
     )
-    seen = set()
-    for entry in reversed(entries):
-        if not isinstance(entry, dict):
-            continue
+    for entry in _latest_tianxing_log_replies(entries, now):
         key = _tianxing_exact_id(entry.get("chat_id")), _tianxing_exact_id(entry.get("message_id"))
-        if key[0] != chat_id or key[1] <= 0 or key in seen:
+        if key[0] != chat_id:
             continue
-        seen.add(key)
-        if entry.get("event_type") not in {"message", "edit"} or not _is_logged_game_bot_reply(entry):
-            continue
-        entry_ts, dirty = _parse_observation_float(entry.get("ts_epoch"))
-        if dirty or entry_ts <= 0 or entry_ts > now + 1:
-            continue
+        entry_ts = float(entry["server_event_at"])
         parsed = parse_tianxing_text(entry.get("text"), now=entry_ts, family=family)
         context = {
             "send_as_id": get_current_identity_id(), "chat_id": key[0],
@@ -3045,10 +3187,13 @@ def _recover_tianxing_daily_observe_from_message_log(observed, now):
             chat_id=int(command.get("chat_id") or get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=identity_id)),
             predicate=_tianxing_log_reply_predicate,
         )
-        for reply in reversed(replies):
-            parsed = parse_tianxing_text(reply.get("text") or "", now=float(reply.get("ts_epoch") or now), family="tianxing_observe")
+        for reply in _latest_tianxing_log_replies(replies, now):
+            reply_at = float(reply["server_event_at"])
+            if get_day_key(reply_at) != get_day_key(now):
+                continue
+            parsed = parse_tianxing_text(reply.get("text") or "", now=reply_at, family="tianxing_observe")
             if parsed and parsed.get("action") == "观命" and parsed.get("available_stars"):
-                return _apply_tianxing_log_reply(reply, family="tianxing_observe")
+                return _apply_tianxing_log_reply(reply, family="tianxing_observe", processed_at=now)
     return False
 
 
@@ -3786,6 +3931,9 @@ def _has_fresh_prediction_evidence(route, observed, timeline, now):
     if route not in TIANXING_ROUTES:
         return False
     observed = normalize_tianxing_observation(observed)
+    record = _tianxing_effect_record(observed, "prediction")
+    if record is None or (record and (not record["complete"] or float(record["at"]) > now)):
+        return False
     if str(observed.get("current_prediction") or "").strip() != route:
         return False
     if _prediction_effective_until(route, observed, now) <= float(now):
@@ -3805,6 +3953,9 @@ def _has_fresh_change_evidence(route, observed, timeline, now):
     if route not in TIANXING_ROUTES:
         return False
     observed = normalize_tianxing_observation(observed)
+    record = _tianxing_effect_record(observed, "change")
+    if record is None or (record and (not record["complete"] or float(record["at"]) > now)):
+        return False
     if _normalize_route_choice(observed.get("current_change"), "") != route:
         return False
     if float(observed.get("current_change_until", 0) or 0) <= float(now):
@@ -3992,13 +4143,12 @@ def _tianxing_reply_guard_operations(now, reply_context):
     return pending_by_action
 
 
-def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
+def _close_tianxing_guards_from_reply(parsed, now, *, reply_context):
     from .. import action_guard
 
     pending_by_action = _tianxing_reply_guard_operations(now, reply_context)
     if not pending_by_action:
         return 0
-    observed = observed if isinstance(observed, dict) else {}
     send_as_id = get_current_identity_id()
     root_id = _tianxing_exact_id(reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id"))
 
@@ -4049,8 +4199,6 @@ def _close_tianxing_guards_from_reply(parsed, observed, now, *, reply_context):
                     elif float(parsed.get(f"{field}_until") or 0) <= now:
                         continue
                     if close(target, "tianxing_correlated_panel"):
-                        if target_action != "set_star":
-                            observed[f"{field}_set_at"] = max(float(observed.get(f"{field}_set_at") or 0), target["auto_pending_sent_at"])
                         closed += 1
         closed += int(close(pending, "tianxing_correlated_reply"))
     return closed
@@ -4065,11 +4213,14 @@ def close_tianxing_reply_guards(text, now, family, reply_context):
         return 0
     if not has_identity(identity_id):
         return 0
+    now = _tianxing_reply_event_time(now, reply_context)
+    if now <= 0:
+        return 0
     parsed = parse_tianxing_text(text, now=now, family=family)
     if not parsed:
         return 0
     with use_identity(identity_id):
-        return _close_tianxing_guards_from_reply(parsed, state.get("tianxing_observation") or {}, now, reply_context=reply_context)
+        return _close_tianxing_guards_from_reply(parsed, now, reply_context=reply_context)
 
 
 def _tianxing_reply_family_for_action(action):
@@ -4233,24 +4384,6 @@ def _consume_tianxing_released_route(route, now, reason="route_result_consumed")
         timeline["last_error"] = f"{route} 放行已被下游动作消费，需重算时间线。"
         timeline["updated_at"] = float(now or time.time())
         _timeline_audit(timeline, now, "released_step_consumed", route=route)
-        changed = True
-    elif (
-        active_action in {"predict", "change_fate"}
-        and active_status in {"sending", "sent_waiting_ack", "ack_timeout", "send_blocked"}
-        and active_route == route
-    ):
-        active_step["status"] = "consumed_by_route_result"
-        active_step["consumed_at"] = float(now or time.time())
-        active_step["last_error"] = f"{route} 路线结果已出现，未确认前置步骤停止校准。"
-        _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
-        _close_tianxing_guard_for_timeline_step(active_step, now, reason="route_result_consumed")
-        timeline["phase"] = "blocked_replan"
-        timeline["active_step_index"] = -1
-        timeline["active_step"] = {}
-        timeline["blocked_until"] = float(now or time.time())
-        timeline["last_error"] = f"{route} 路线结果已出现，需重算时间线。"
-        timeline["updated_at"] = float(now or time.time())
-        _timeline_audit(timeline, now, "unconfirmed_step_consumed_by_route_result", route=route, action=active_action, status=active_status)
         changed = True
     if changed:
         state["tianxing_timeline_state"] = timeline
@@ -5071,13 +5204,6 @@ def _confirm_tianxing_timeline_from_observation(now, *, parsed=None, reply_conte
         target.update(status="confirmed", confirmed_at=float(now))
         timeline["steps"][target_index] = target
         step["terminal_after_confirm"] = False
-        if field != "fixed_star":
-            query = _tianxing_reply_guard_operations(now, reply_context)["panel"]
-            observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-            observed[field] = parsed[field]
-            observed[f"{field}_until"] = parsed[f"{field}_until"]
-            observed[f"{field}_set_at"] = max(float(observed.get(f"{field}_set_at") or 0), query["dispatch_at"])
-            state["tianxing_observation"] = normalize_tianxing_observation(observed)
     if not _timeline_step_is_confirmed(step, parsed, now):
         field = {"predict": "current_prediction", "change_fate": "current_change", "set_star": "fixed_star"}.get(action)
         if (
@@ -5099,11 +5225,6 @@ def _confirm_tianxing_timeline_from_observation(now, *, parsed=None, reply_conte
             state["tianxing_timeline_state"] = timeline
             return True, timeline
         return False, timeline
-    if evidence_kind == "panel" and action in {"predict", "change_fate"}:
-        observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-        field = "current_prediction_set_at" if action == "predict" else "current_change_set_at"
-        observed[field] = max(float(observed.get(field) or 0), float(step["sent_at"]))
-        state["tianxing_observation"] = observed
     step["status"] = "confirmed"
     step["confirmed_at"] = float(now)
     timeline["phase"] = "state_confirmed"

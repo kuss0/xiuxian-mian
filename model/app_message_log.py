@@ -30,6 +30,7 @@ from .state import (
     state,
 )
 from .webapp_core import summarize_webapp_url
+from .verified_event import telegram_event_timestamp
 
 _MESSAGE_LOG_BUTTON_MAX_ROWS = 20
 _MESSAGE_LOG_BUTTON_MAX_COLS = 20
@@ -150,6 +151,7 @@ def _build_message_log_payload(event, *, event_type="message"):
     payload = {
         "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
         "event_type": event_type,
+        "server_event_at": telegram_event_timestamp(event, event_type),
         "message_id": int(getattr(event, "id", 0) or 0),
         "chat_id": int(getattr(event, "chat_id", 0) or 0),
         "sender_id": int(getattr(event, "sender_id", 0) or 0),

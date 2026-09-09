@@ -315,7 +315,7 @@ def test_log_recovery_requires_trusted_exact_reply_and_latest_edit(env, monkeypa
     entry = {
         "chat_id": CHAT_ID, "message_id": ROOT_ID + 1, "reply_to_msg_id": ROOT_ID,
         "sender_id": BOT_ID, "sender_is_bot": True, "text": reply_text(action),
-        "event_type": "message", "ts_epoch": NOW,
+        "event_type": "message", "ts_epoch": NOW, "server_event_at": NOW,
     }
     if case == "unthreaded":
         entry["reply_to_msg_id"] = 0
@@ -325,9 +325,10 @@ def test_log_recovery_requires_trusted_exact_reply_and_latest_edit(env, monkeypa
         entry["sender_id"] += 1
     elif case == "before_dispatch":
         entry["ts_epoch"] = NOW - 25
+        entry["server_event_at"] = NOW - 25
     entries = [entry]
     if case == "latest_edit_incomplete":
-        entries.append(dict(entry, event_type="edit", text="\u53f8\u547d\u76d8\u6b63\u5728\u63a8\u6f14\u3002", ts_epoch=NOW + 1))
+        entries.append(dict(entry, event_type="edit", text="\u53f8\u547d\u76d8\u6b63\u5728\u63a8\u6f14\u3002", ts_epoch=NOW + 1, server_event_at=NOW + 1))
     find = Mock(return_value=entries)
     monkeypatch.setattr(tianxing, "find_message_log_replies_tail", find)
     before = copy.deepcopy(env.identity)
@@ -342,6 +343,29 @@ def test_log_recovery_requires_trusted_exact_reply_and_latest_edit(env, monkeypa
     else:
         assert env.identity["tianxing_timeline_state"] == before["tianxing_timeline_state"]
         assert env.identity["tianxing_observation"] == before["tianxing_observation"]
+    env.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("action", ["predict", "change_fate"])
+@pytest.mark.parametrize("latest_complete", [False, True])
+def test_timeline_recovery_uses_server_revision_order(env, monkeypatch, action, latest_complete):
+    seed(env, action)
+    incomplete = "\u53f8\u547d\u76d8\u6b63\u5728\u63a8\u6f14\u3002"
+    older = {
+        "chat_id": CHAT_ID, "message_id": ROOT_ID + 1, "reply_to_msg_id": ROOT_ID,
+        "sender_id": BOT_ID, "event_type": "message", "ts_epoch": NOW + 2,
+        "server_event_at": NOW - 1, "text": incomplete if latest_complete else reply_text(action),
+    }
+    latest = dict(
+        older, event_type="edit", server_event_at=NOW, ts_epoch=NOW + 1,
+        text=reply_text(action) if latest_complete else incomplete,
+    )
+    monkeypatch.setattr(tianxing, "find_message_log_replies_tail", Mock(return_value=[latest, older]))
+    with state_module.use_identity(IDENTITY_ID):
+        changed = tianxing._recover_tianxing_timeline_reply_from_message_log(NOW + 3)
+    assert changed is latest_complete
+    expected_status = "confirmed" if latest_complete else "sent_waiting_ack"
+    assert env.identity["tianxing_timeline_state"]["active_step"]["status"] == expected_status
     env.send.assert_not_awaited()
 
 
@@ -366,7 +390,7 @@ def test_real_send_receipt_replays_early_result_without_guessing_or_resending(en
             entries.append({
                 "event_type": "message", "chat_id": CHAT_ID, "message_id": ROOT_ID + 1,
                 "reply_to_msg_id": ROOT_ID, "sender_id": BOT_ID, "text": reply_text("predict"),
-                "ts_epoch": NOW + 1,
+                "ts_epoch": NOW + 1, "server_event_at": NOW + 1,
             })
         return SimpleNamespace(id=return_id, chat_id=CHAT_ID, send_started_at=NOW + 0.5, sent_at=NOW + 2)
 
@@ -419,14 +443,14 @@ def test_partial_terminal_panel_waits_for_target_field_in_final_edit(env):
     assert env.identity["tianxing_timeline_state"]["phase"] == "blocked_replan"
 
 
-def test_confirmed_panel_preserves_correlated_guard_effect_timestamp(env):
+def test_confirmed_panel_uses_snapshot_time_not_correlated_guard_send_time(env):
     seed(env, "panel", send_msg_id=ROOT_ID + 10, send_started_at=NOW - 6, sent_at=NOW - 5)
     env.identity["tianxing_observation"].update(current_prediction="", current_prediction_set_at=0)
     action_guard.note_sent(COMMANDS["predict"], IDENTITY_ID, ROOT_ID, sent_at=NOW - 19, chat_id=CHAT_ID)
     ctx = record_panel_query(env)
     assert apply("panel", ctx=ctx, text=PANEL)
     assert env.identity["tianxing_timeline_state"]["active_step"]["status"] == "confirmed"
-    assert env.identity["tianxing_observation"]["current_prediction_set_at"] == NOW - 19
+    assert env.identity["tianxing_observation"]["current_prediction_set_at"] == NOW
 
 
 @pytest.mark.parametrize("action", tuple(COMMANDS))
@@ -454,12 +478,13 @@ def test_routed_timeline_reply_preserves_native_pending_until_real_terminal_resu
     ctx = context(family=f"tianxing_{action}", reply_to_msg_id=ROOT_ID)
     reply = SimpleNamespace(id=ROOT_ID, chat_id=CHAT_ID, raw_text=COMMANDS[action])
     incomplete = "\u53f8\u547d\u76d8\u6b63\u5728\u63a8\u6f14\u3002"
-    event = SimpleNamespace(id=ROOT_ID + 1, chat_id=CHAT_ID, sender_id=BOT_ID, raw_text=incomplete)
+    event = SimpleNamespace(id=ROOT_ID + 1, chat_id=CHAT_ID, sender_id=BOT_ID, raw_text=incomplete, server_event_at=NOW)
     asyncio.run(app._handle_routed_reply_event(event, incomplete, NOW, reply, ctx))
     assert (CHAT_ID, ROOT_ID) in env.identity["pending_tasks"]
     assert env.identity["tianxing_timeline_state"]["active_step"]["status"] == "sent_waiting_ack"
     assert not app._has_runtime_message_consumed(event, ctx["family"])
     event.raw_text = reply_text(action)
+    event.server_event_at = NOW + 1
     assert asyncio.run(app._handle_routed_reply_event(event, event.raw_text, NOW + 1, reply, ctx, event_kind="edit"))
     assert env.identity["tianxing_timeline_state"]["active_step"]["status"] == "confirmed"
     assert (CHAT_ID, ROOT_ID) not in env.identity["pending_tasks"]
