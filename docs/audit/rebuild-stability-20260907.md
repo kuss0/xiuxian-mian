@@ -104,6 +104,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R50 | High | Empty Tianxing panels, craft-start acknowledgements and zero-quantity results clear pending work before the final edit; an early result followed by its transport receipt loses business completion or leaves a new guard stranded | Fixed in candidate; shared terminal classification preserves incomplete work, exact late receipts close once without repeating reducers, farm/material guards use the module evidence contract, and malformed pending/context cases fail closed; general reducer ordering and R07 durability remain open |
 | R51 | High | Observation normalization deletes prediction-consumption evidence based solely on the latest action label, resurrecting an old effect and permitting downstream release after restart | Fixed in candidate; normalization preserves consumption and only a strictly newer prediction timestamp supersedes it; real unrelated replies, read-only status, route admission and SQLite reload are covered; parsed-result provenance and chronology remain open |
 | R52 | High | Auto/craft/retreat replies update authoritative Tianxing fields before validating the pending operation, so rejected roots/chats/accounts/arguments still change effects, resources and timestamps | Fixed for pending auto/farm operations in candidate; ownership and terminal-command checks run before observation writes, including exact integral references and early receipt adoption; active timeline provenance and general post-completion ordering remain open |
+| R53 | High | Active Tianxing timeline steps confirm from merged cached fields, accept unowned negative replies, and recover a nearby bot reply without an actual reply root | Fixed for active-step reply confirmation in candidate; operation receipts precede state writes, direct and panel-query evidence is correlated, early results replay from bounded trusted logs, and partial calibration fields remain pending; downstream release/calibration shortcuts and general reducer chronology remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1284,6 +1285,41 @@ five monitor/control-only contracts need separate behavioral verification.
   diff checks pass. This does not certify active timeline-step confirmation,
   legacy unscoped state, manual-operation arbitration, or old replies after
   their pending operation has completed. No live/production changes or push.
+- R53 begins with 118 timeline ownership/completion cases, 97 failing before
+  implementation. These expose source-less cache confirmation, cross-chat and
+  wrong-root results, unbound/rebound operation ownership, negative-result
+  mutation and early replies accepted before a transport receipt exists.
+  Follow-up review reproduces another 36 failures for empty sending accounts
+  and missing, boolean, nonfinite, reversed or not-yet-available receipt times.
+- Timeline sends now retain a unique operation ID, original account, queue
+  time and actual dispatch/receipt metadata. Existing registered transport
+  receipts can be adopted by the same operation; neither an unanchored reply
+  nor an invalid message ID becomes evidence that an action completed.
+  Processing time is used only to adopt an existing receipt; game-effect
+  timestamps retain the original event time.
+- Active-step admission runs before authoritative observation writes. Success
+  and refusal/CD transitions use the actual parsed reply, with exact
+  account/chat/root and command-argument checks. A later panel can calibrate
+  a target only through its own verified query record and dispatch ordering;
+  absent fields cannot borrow cached values or imply a negative result.
+  Guard closure and timeline confirmation share query ownership inspection.
+- Scheduler-side cache confirmation and the bot-only unthreaded recovery
+  heuristic are removed. Recovery uses the existing bounded log-tail reader
+  (512 KiB per day, at most two days), configured game-bot evidence and the
+  exact reply root, retaining the latest edit. This also replays a result
+  that arrived before the send call returned, without another game request.
+  Standalone results without attributable roots remain unresolved.
+- R53 verification includes 261 new cases: direct and negative results,
+  invalid references/clocks, early detached receipts, verified/partial/older
+  panels, native routed pending cleanup, latest-edit replay, real send-call
+  interleaving and SQLite reload/account rebinding. Existing positive tests
+  now supply actual receipt/context fixtures instead of source-free cached
+  success; two bare AsyncMock receipts now have explicit integral IDs.
+- R53 final verification (2026-09-09): full suite **5798 passed, 1198 subtests
+  passed**, 86.19 seconds. JUnit:
+  /tmp/xiuxian-rebuild-r53-final-20260909.xml. Selected Ruff, compilation and
+  diff checks pass. No deployment, service restart, push, game request,
+  production configuration/DB write or skill edit was performed.
 
 ## Deployment Constraint
 
@@ -1292,6 +1328,10 @@ same message ID for one identity, old loaders collapse those rows in memory.
 Any later deployment needs a verified database snapshot and an explicit rollback
 procedure; do not run the old code against newly written multi-chat state.
 This candidate has not migrated the production database.
+Legacy active Tianxing steps without account/chat/receipt metadata are not
+silently attributed to the current account. Their registered evidence must be
+reconciled before any later deployment; inventing missing receipt fields is
+not an approved migration strategy.
 Checkin cleanup JSON also changes from bare IDs to chat/message pairs; even
 without a same-ID collision, that data must not be handed to the old loader
 and cleanup code during a code-only rollback.
@@ -1403,10 +1443,14 @@ and cleanup code during a code-only rollback.
    replies and new panels that must not borrow a cached field. Do not infer
    global reducer correctness from safe read-only normalization.
    R52 adds pre-write ownership checks for pending automatic/craft/retreat
-   operations. The active timeline still confirms from a merged observation;
-   review its own reply/source metadata and partial-field semantics next.
-   Replies after pending completion and older-than-last farm results also
-   still need durable idempotence and chronology tests.
+   operations. R53 extends this to active timeline reply confirmation, direct
+   refusal/CD handling, query-based calibration and bounded receipt replay.
+   Continue with downstream admission: the separate calibration-release
+   shortcut, route-result invalidation and fresh-effect helpers still read
+   merged snapshots or cached timestamp fallbacks. R53 does not establish
+   field-level provenance for every observation or prove those release paths.
+   Replies after pending completion, older-than-last farm results and old
+   prediction results still need durable idempotence and chronology tests.
 
 ## Completion Gate
 

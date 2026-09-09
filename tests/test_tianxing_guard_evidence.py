@@ -70,7 +70,7 @@ def env(monkeypatch):
     monkeypatch.setattr(tianxing, "send_game_command", send)
     monkeypatch.setattr(tianxing, "save_state", Mock())
     monkeypatch.setattr(action_guard, "mark_dirty", Mock())
-    monkeypatch.setattr(tianxing, "_recover_tianxing_timeline_unthreaded_reply_from_message_log", lambda *_args: False)
+    monkeypatch.setattr(tianxing, "_recover_tianxing_timeline_reply_from_message_log", lambda *_args: False)
     yield SimpleNamespace(identity=identity, send=send)
     state_module._meta_state.clear()
     state_module._meta_state.update(saved)

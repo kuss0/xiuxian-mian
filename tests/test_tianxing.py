@@ -29,6 +29,23 @@ def local_ts(hour, minute=0, *, year=2026, month=6, day=29):
     return time.mktime((year, month, day, hour, minute, 0, 0, 0, -1))
 
 
+def record_timeline_test_receipt(identity_id, chat_id=-100530002):
+    timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+    step = dict(timeline["active_step"])
+    account_id = state_module.get_identity_account(identity_id)
+    assert account_id > 0 and step["send_msg_id"] > 0 and step["sent_at"] > 0
+    step.update(
+        send_account_id=account_id, send_chat_id=chat_id,
+        send_started_at=step.get("send_started_at") or step["sent_at"],
+    )
+    tianxing._set_timeline_step(timeline, tianxing._timeline_active_index(timeline), step)
+    state_module.state["tianxing_timeline_state"] = timeline
+    return {
+        "send_as_id": identity_id, "chat_id": chat_id,
+        "root_msg_id": step["send_msg_id"], "msg_id": step["send_msg_id"] + 1,
+    }
+
+
 class TianxingParserTests(unittest.TestCase):
     def test_panel_parses_stars_counts_and_calamity(self):
         parsed = tianxing.parse_tianxing_text(
@@ -1141,6 +1158,7 @@ class TianxingManualPlanTests(unittest.TestCase):
             "ack_due_at": now + 88,
         }
         with state_module.use_identity(self.identity_id):
+            state_module.set_identity_account(self.identity_id, 7532)
             state_module.state["tianxing_enabled"] = True
             state_module.state["tianxing_observation"] = {
                 "last_observed_at": now - 60,
@@ -1165,7 +1183,10 @@ class TianxingManualPlanTests(unittest.TestCase):
                 "released_routes": {},
             }
 
-            self.assertTrue(tianxing.apply_tianxing_passive(text, now=now, family="tianxing_change_fate"))
+            self.assertTrue(tianxing.apply_tianxing_passive(
+                text, now=now, family="tianxing_change_fate",
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            ))
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
@@ -2251,6 +2272,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["send_as_profiles"] = {}
         self.identity_id = 2103
         state_module.ensure_identity_registered(self.identity_id)
+        state_module.set_identity_account(self.identity_id, 7532)
         state_module.update_send_as_profile(
             self.identity_id,
             username="tianxing_timeline",
@@ -2564,7 +2586,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 }],
             }
 
-            changed = tianxing.apply_tianxing_passive("你将今日命轨定在【贪狼】。", now=now + 5, family="tianxing_set_star")
+            changed = tianxing.apply_tianxing_passive(
+                "你将今日命轨定在【贪狼】。", now=now + 5, family="tianxing_set_star",
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            )
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
@@ -2612,7 +2637,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("sent_waiting_ack", waiting["phase"])
             self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 5))
 
-            tianxing.apply_tianxing_passive("你为【闭关】推下一段命数，司命盘微微转动。", now=now + 6)
+            tianxing.apply_tianxing_passive(
+                "你为【闭关】推下一段命数，司命盘微微转动。", now=now + 6,
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
             self.assertEqual("state_confirmed", timeline["phase"])
 
@@ -2759,7 +2787,19 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "blocked_until": now + 300,
                 "last_error": "天星前置命令回复超时，等待查盘校准；不放行下游。",
             }
-            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
+            context = record_timeline_test_receipt(self.identity_id)
+            state_module.set_game_bot_ids([880530002])
+            replies = [{
+                "event_type": "message", "chat_id": context["chat_id"],
+                "message_id": context["msg_id"], "reply_to_msg_id": context["root_msg_id"],
+                "sender_id": 880530002, "text": real_text("tianxing.change_fate.basic"),
+                "ts_epoch": now + 20,
+            }]
+            with (
+                patch.object(tianxing, "save_state"),
+                patch.object(tianxing, "find_message_log_replies_tail", return_value=replies),
+                patch.object(tianxing, "send_game_command") as send_mock,
+            ):
                 result = await tianxing.run_tianxing_timeline_scheduler(now + 60)
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
@@ -3093,6 +3133,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "此命星并未在你今日观命结果中显化，请先 .观命。",
                 now=now + 1,
                 family="tianxing_set_star",
+                reply_context=record_timeline_test_receipt(self.identity_id),
             )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
             observed_after_reject = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
@@ -3142,6 +3183,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "你已有一道关于 【闭关】 的推命尚未应验，还需等待 7小时33分钟。",
                 now=now + 1,
                 family="tianxing_predict",
+                reply_context=record_timeline_test_receipt(self.identity_id),
             )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
@@ -3185,6 +3227,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "你已有一道关于 【探索】 的改命尚未耗尽，还可维持 21小时57分钟。",
                 now=now + 1,
                 family="tianxing_change_fate",
+                reply_context=record_timeline_test_receipt(self.identity_id),
             )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
@@ -3228,6 +3271,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "你已有一道关于 【闭关】 的改命尚未耗尽，还可维持 21小时57分钟。",
                 now=now + 1,
                 family="tianxing_change_fate",
+                reply_context=record_timeline_test_receipt(self.identity_id),
             )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
@@ -3277,6 +3321,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "你的天机值不足，施展改命至少需要 3 点天机值。",
                 now=now + 1,
                 family="tianxing_change_fate",
+                reply_context=record_timeline_test_receipt(self.identity_id),
             )
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
@@ -3363,6 +3408,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "你已有一道关于 【闭关】 的推命尚未应验，还需等待 7小时33分钟。",
                 now=now + 1,
                 family="tianxing_predict",
+                reply_context=record_timeline_test_receipt(self.identity_id),
             )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
             craft = timeline["craft_farm"]
@@ -3439,7 +3485,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(tianxing, "save_state"),
-                patch.object(tianxing, "send_game_command") as send_mock,
+                patch.object(tianxing, "send_game_command", return_value=SimpleNamespace(id=9101, chat_id=-100530002, sent_at=now)) as send_mock,
             ):
                 result = await tianxing.run_tianxing_timeline_scheduler(now, windows=windows)
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
@@ -3907,7 +3953,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["tianxing_observation"]["current_change"] = "闭关"
             state_module.state["tianxing_observation"]["current_change_until"] = now + 12 * 3600
             state_module.state["tianxing_observation"]["current_change_set_at"] = now - 120
-            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=SimpleNamespace(id=9101, chat_id=-100530002, sent_at=now)) as send_mock:
                 result = await tianxing.run_tianxing_timeline_scheduler(
                     now,
                     windows=[{
@@ -4012,6 +4058,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 ],
             }
 
+            self.assertTrue(tianxing.apply_tianxing_passive(
+                "你为【探索】推下一段命数，司命盘微微转动。", now=now - 1,
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            ))
             with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
                 result = await tianxing.run_tianxing_timeline_scheduler(now)
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
@@ -4271,6 +4321,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "steps": [dict(predict_step), dict(panel_step), dict(release_step)],
                 "blocked_until": 0,
             }
+            self.assertTrue(tianxing.apply_tianxing_passive(
+                "【天机盘】\n当前推命: 无\n当前改命: 无\n天机值: 12\n逆命劫: 0", now=now - 1,
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            ))
             windows = tianxing.build_tianxing_consume_window(
                 "探索",
                 now=now,
@@ -4313,7 +4367,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("release_downstream", [step.get("action") for step in timeline["steps"]])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 77))
 
-    async def test_ack_timeout_accepts_fresh_external_panel_without_second_query(self):
+    async def test_ack_timeout_ignores_external_panel_cache_without_source(self):
         now = 1_780_000_000.0
         sent_at = now - 120
         with state_module.use_identity(self.identity_id):
@@ -4352,13 +4406,11 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             changed, timeline = tianxing._confirm_tianxing_timeline_from_observation(now)
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertTrue(changed)
-        self.assertEqual("blocked_replan", timeline["phase"])
-        self.assertEqual({}, timeline["active_step"])
-        self.assertEqual("calibration_not_confirmed", timeline["steps"][0]["status"])
-        self.assertIn("天机盘未证明", timeline["last_error"])
+        self.assertFalse(changed)
+        self.assertEqual("ack_timeout", timeline["phase"])
+        self.assertEqual("ack_timeout", timeline["active_step"]["status"])
 
-    def test_timeline_replays_unique_unthreaded_prediction_reply_from_log(self):
+    def test_timeline_rejects_unique_unthreaded_prediction_reply_from_log(self):
         now = 1_780_000_000.0
         sent_at = now - 120
         reply_text = (
@@ -4385,28 +4437,32 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 },
                 "steps": [],
             }
+            record_timeline_test_receipt(self.identity_id)
+            state_module.set_game_bot_ids([880530002])
             with patch.object(
                 tianxing,
-                "find_recent_message_log_commands",
+                "find_message_log_replies_tail",
                 return_value=[
                     {
                         "event_type": "message",
                         "message_id": 426446,
                         "reply_to_msg_id": 0,
+                        "chat_id": -100530002,
+                        "sender_id": 880530002,
                         "sender_is_bot": True,
                         "text": reply_text,
                         "ts_epoch": now - 119,
                     }
                 ],
             ), patch.object(tianxing, "save_state"):
-                changed = tianxing._recover_tianxing_timeline_unthreaded_reply_from_message_log(now)
+                changed = tianxing._recover_tianxing_timeline_reply_from_message_log(now)
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertTrue(changed)
-        self.assertEqual("斗法", observed["current_prediction"])
-        self.assertEqual("state_confirmed", timeline["phase"])
-        self.assertEqual("confirmed", timeline["active_step"]["status"])
+        self.assertFalse(changed)
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("ack_timeout", timeline["phase"])
+        self.assertEqual("ack_timeout", timeline["active_step"]["status"])
 
     async def test_timeline_panel_calibration_timeout_replans_without_repeat_panel(self):
         now = 1_780_000_000.0
@@ -4509,7 +4565,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=first_msg):
                 await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now))
 
-            tianxing.apply_tianxing_passive("你为【闭关】推下一段命数，司命盘微微转动。", now=now - 5)
+            tianxing.apply_tianxing_passive(
+                "你为【闭关】推下一段命数，司命盘微微转动。", now=now - 5,
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
         self.assertEqual("sent_waiting_ack", timeline["phase"])
@@ -4529,7 +4588,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 timed_out = await tianxing.run_tianxing_timeline_scheduler(now + 16, windows=self._farm_windows(now))
             self.assertEqual("ack_timeout", timed_out["phase"])
 
-            tianxing.apply_tianxing_passive("你为【闭关】推下一段命数，司命盘微微转动。", now=now + 20)
+            tianxing.apply_tianxing_passive(
+                "你为【闭关】推下一段命数，司命盘微微转动。", now=now + 20,
+                reply_context=record_timeline_test_receipt(self.identity_id),
+            )
             self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 20))
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
             self.assertEqual("state_confirmed", timeline["phase"])
