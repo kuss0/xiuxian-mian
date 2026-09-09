@@ -242,6 +242,12 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
                     reply_to=SimpleNamespace(id=10380515, raw_text=".探寻裂缝"),
                     matched_family="explore_rift",
                     result_msg_id=10380517,
+                    reply_context={
+                        "send_as_id": send_as_id, "chat_id": -1001680975844,
+                        "root_msg_id": 10380515, "reply_to_msg_id": 10380515,
+                        "msg_id": 10380517, "server_event_at": now,
+                        "processed_at": now, "event_type": "edit",
+                    },
                 )
 
             self.assertTrue(handled)
@@ -283,6 +289,12 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
                             reply_to=SimpleNamespace(id=reply_to_msg_id, raw_text=".探寻裂缝"),
                             matched_family="explore_rift",
                             result_msg_id=result_msg_id,
+                            reply_context={
+                                "send_as_id": send_as_id, "chat_id": -1001680975844,
+                                "root_msg_id": reply_to_msg_id, "reply_to_msg_id": reply_to_msg_id,
+                                "msg_id": result_msg_id, "server_event_at": now,
+                                "processed_at": now, "event_type": "edit",
+                            },
                         )
 
                     self.assertTrue(handled)
@@ -316,6 +328,12 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
                     reply_to=SimpleNamespace(id=10410001, raw_text=".探寻裂缝"),
                     matched_family="explore_rift",
                     result_msg_id=10410003,
+                    reply_context={
+                        "send_as_id": send_as_id, "chat_id": -1001680975844,
+                        "root_msg_id": 10410001, "reply_to_msg_id": 10410001,
+                        "msg_id": 10410003, "server_event_at": now,
+                        "processed_at": now, "event_type": "edit",
+                    },
                 )
 
             self.assertTrue(handled)

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import hashlib
 import math
@@ -39,8 +40,10 @@ from ..state import (
     get_identity_enabled,
     get_identity_state,
     get_send_as_profile,
+    get_storage_bag_records,
     has_identity,
     infer_realm_from_xiuwei_max,
+    set_storage_bag_records,
     state,
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
@@ -86,6 +89,9 @@ EXPLORE_RIFT_UNKNOWN_PANEL_REPLY_SEC = 180
 EXPLORE_RIFT_PENDING_RESULT_STALE_SEC = 10 * 60
 EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC = 36 * 3600
+EXPLORE_RIFT_RESULT_LIMIT = 64
+EXPLORE_RIFT_RESULT_RETENTION_SEC = 72 * 3600
+EXPLORE_RIFT_RESULT_CHAT_LIMIT = 32
 _EXPLORE_RIFT_LOCKS = {}
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
@@ -207,6 +213,181 @@ def _make_result_key(result_msg_id, title, text):
     return f"{int(result_msg_id or 0)}:{title}:{digest}"
 
 
+def _rift_result_context(reply_to, context, result_msg_id, now):
+    if not isinstance(context, dict) or not has_identity(get_current_identity_id()):
+        return None
+    root = _rift_log_id(context.get("root_msg_id"))
+    chat = _rift_log_id(context.get("chat_id"))
+    event_at = _rift_log_time(context.get("server_event_at"))
+    if (
+        _rift_log_id(context.get("send_as_id")) != get_current_identity_id()
+        or ("account_id" in context and (
+            type(context["account_id"]) is not int
+            or context["account_id"] != get_identity_account(get_current_identity_id())
+        ))
+        or root <= 0 or not chat or result_msg_id <= 0
+        or _rift_log_id(context.get("msg_id")) != result_msg_id
+        or context.get("event_type") not in ("message", "edit")
+        or not 0 < event_at <= max(now, _rift_log_time(context.get("processed_at"))) + 1
+        or _rift_log_id(context.get("reply_to_msg_id")) != root
+        or (reply_to is not None and _rift_log_id(getattr(reply_to, "id", 0)) != root)
+        or (getattr(reply_to, "chat_id", 0) and _rift_log_id(reply_to.chat_id) != chat)
+    ):
+        return None
+    return {
+        "chat_id": chat, "root_msg_id": root, "msg_id": result_msg_id,
+        "account_id": get_identity_account(get_current_identity_id()),
+        "event_at": event_at, "event_type": context["event_type"],
+    }
+
+
+def _rift_result_stage(raw_text):
+    title = _explore_rift_final_title(raw_text)
+    if title:
+        return title
+    if (
+        EXPLORE_RIFT_PENDING_KEYWORD in raw_text
+        or any(word in raw_text for word in ("时空异兽", "探寻机缘", "成功捕获了几缕逸散的法则本源"))
+    ):
+        return "pending"
+    if has_wait_time(raw_text) and (EXPLORE_RIFT_CD_KEYWORD in raw_text or "风暴" in raw_text):
+        return "cooldown"
+    if any(word in raw_text for word in ("境界不足", "元婴初期", "元婴期", "未到元婴", "修为不足", "主魂的一缕分神")):
+        return "blocked"
+    return ""
+
+
+def _plan_rift_result(raw_text, stage, evidence):
+    ledger = state.get("explore_rift_result_evidence")
+    if not isinstance(ledger, dict):
+        return None
+    ledger = copy.deepcopy(ledger)
+    if not ledger and state.get("explore_rift_last_result_key"):
+        legacy_id = _parse_int(str(state["explore_rift_last_result_key"]).split(":", 1)[0])
+        if legacy_id <= 0:
+            return None
+        ledger["legacy_result_msg_id"] = legacy_id
+    legacy_id = ledger.get("legacy_result_msg_id", 0)
+    if type(legacy_id) is not int or legacy_id < 0:
+        return None
+    # A bare legacy ID cannot distinguish chats or prove which rewards were
+    # already saved. Keep it unresolved instead of treating an edit as new.
+    if legacy_id == evidence["msg_id"]:
+        return None
+    records = ledger.setdefault("receipts", {})
+    retired = ledger.setdefault("retired_roots", {})
+    latest = ledger.get("latest", {})
+    if not all(isinstance(value, dict) for value in (records, retired, latest)):
+        return None
+    if len(records) > EXPLORE_RIFT_RESULT_LIMIT or len(retired) > EXPLORE_RIFT_RESULT_CHAT_LIMIT:
+        return None
+    for chat_key, root in retired.items():
+        if not isinstance(chat_key, str) or not re.fullmatch(r"-?[1-9]\d*", chat_key) or type(root) is not int or root < 0:
+            return None
+    for record_key, row in records.items():
+        if not isinstance(row, dict):
+            return None
+        chat = _rift_log_id(row.get("chat_id"))
+        root = _rift_log_id(row.get("root_msg_id"))
+        items = row.get("items")
+        if (
+            not chat or root <= 0 or record_key != f"{chat}:{root}"
+            or _rift_log_id(row.get("msg_id")) <= 0
+            or type(row.get("account_id")) is not int or row["account_id"] < 0
+            or not 0 < _rift_log_time(row.get("first_at")) <= _rift_log_time(row.get("event_at"))
+            or row.get("event_type") not in ("message", "edit")
+            or row.get("stage") not in (*EXPLORE_RIFT_FINAL_TITLES, "pending", "cooldown", "blocked")
+            or not isinstance(row.get("digest"), str) or not re.fullmatch(r"[0-9a-f]{64}", row["digest"])
+            or not isinstance(items, dict) or len(items) > 128
+            or any(not isinstance(name, str) or len(name) > 240 or type(count) is not int or count < 0 for name, count in items.items())
+        ):
+            return None
+    if latest:
+        latest_record = records.get(latest.get("key")) if isinstance(latest.get("key"), str) else None
+        if not latest_record or any(latest.get(field) != latest_record[field] for field in ("chat_id", "root_msg_id", "first_at")):
+            return None
+    key = f"{evidence['chat_id']}:{evidence['root_msg_id']}"
+    previous = records.get(key, {})
+    if not isinstance(previous, dict):
+        return None
+    if previous and previous.get("account_id") != evidence["account_id"]:
+        return None
+    if not previous and evidence["root_msg_id"] <= _rift_log_id(retired.get(str(evidence["chat_id"]))):
+        return {"ignored": True}
+    if not previous and str(evidence["chat_id"]) not in retired and len(retired) >= EXPLORE_RIFT_RESULT_CHAT_LIMIT:
+        return None
+    digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    if previous:
+        old_stage = previous.get("stage")
+        old_at = _rift_log_time(previous.get("event_at"))
+        if old_at <= 0:
+            return None
+        if evidence["event_at"] < old_at:
+            return {"ignored": True}
+        if evidence["event_at"] == old_at:
+            if digest == previous.get("digest"):
+                return {"ignored": True}
+            if evidence["event_type"] == previous.get("event_type"):
+                return None
+            if evidence["event_type"] != "edit":
+                return {"ignored": True}
+        if old_stage not in {"pending", EXPLORE_RIFT_FATAL_TITLE}:
+            if stage != old_stage or evidence["msg_id"] != previous.get("msg_id"):
+                return {"ignored": True}
+            if evidence["event_type"] != "edit":
+                return {"ignored": True}
+        elif old_stage == EXPLORE_RIFT_FATAL_TITLE and stage == "pending":
+            return {"ignored": True}
+    is_revision = bool(previous and previous.get("stage") == stage)
+    first_at = _rift_log_time(previous.get("first_at")) or evidence["event_at"]
+    apply_state = not latest or latest.get("key") == key or first_at > _rift_log_time(latest.get("first_at"))
+    if latest.get("chat_id") == evidence["chat_id"]:
+        apply_state = evidence["root_msg_id"] >= latest.get("root_msg_id", 0)
+    pending_root = _rift_log_id(state.get("explore_rift_reply_to_msg_id"))
+    if pending_root and pending_root != evidence["root_msg_id"]:
+        apply_state = False
+    items = parse_explore_rift_result_summary(raw_text)[1] if stage in EXPLORE_RIFT_SUCCESS_TITLES else {}
+    if len(items) > 128 or any(len(name) > 240 for name in items):
+        return None
+    old_items = previous.get("items", {})
+    if not isinstance(old_items, dict) or any(type(count) is not int for count in old_items.values()):
+        return None
+    deltas = {name: items.get(name, 0) - old_items.get(name, 0) for name in items.keys() | old_items.keys()}
+    record = {**evidence, "first_at": first_at, "stage": stage, "digest": digest, "items": items}
+    records[key] = record
+    retired.setdefault(str(evidence["chat_id"]), 0)
+    if apply_state:
+        ledger["latest"] = {"key": key, "chat_id": evidence["chat_id"], "root_msg_id": evidence["root_msg_id"], "first_at": first_at}
+    # Retired command roots are tombstones: an old edit cannot become a new
+    # reward when its detailed receipt ages out or is evicted for capacity.
+    cutoff = max((row.get("event_at", 0) for row in records.values()), default=0) - EXPLORE_RIFT_RESULT_RETENTION_SEC
+    for old_key, old in sorted(records.items(), key=lambda item: item[1].get("event_at", 0)):
+        if old_key == key or old_key == (ledger.get("latest") or {}).get("key"):
+            continue
+        if len(records) <= EXPLORE_RIFT_RESULT_LIMIT and old.get("event_at", 0) >= cutoff:
+            continue
+        old_chat = str(old["chat_id"])
+        retired[old_chat] = max(retired.get(old_chat, 0), old["root_msg_id"])
+        records.pop(old_key)
+    return {
+        "ledger": ledger, "key": key, "record": record, "previous": previous,
+        "revision": is_revision, "apply_state": apply_state, "deltas": deltas,
+    }
+
+
+def _stage_rift_result(plan):
+    state["explore_rift_result_evidence"] = plan["ledger"]
+    mark_dirty()
+    deltas = plan["deltas"]
+    if not any(deltas.values()):
+        return
+    record = get_storage_bag_records().get(str(get_current_identity_id()), {})
+    snapshot_at = _rift_log_time(record.get("updated_at")) if isinstance(record, dict) else 0
+    # A newer absolute inventory snapshot already contains these rewards.
+    if snapshot_at < plan["record"]["event_at"]:
+        apply_storage_bag_item_deltas(get_current_identity_id(), deltas, persist=False)
+
+
 def _profile_field(name, default=None):
     profile = get_send_as_profile(get_current_identity_id()) or {}
     return profile.get(name, default)
@@ -323,14 +504,11 @@ def _set_explore_rift_pending_result(result_msg_id, now=None, *, reply_context=N
     return changed
 
 
-def _has_terminal_result_for_msg(result_msg_id):
-    result_msg_id = int(result_msg_id or 0)
-    if result_msg_id <= 0:
-        return False
-    return str(state.get("explore_rift_last_result_key") or "").startswith(f"{result_msg_id}:")
-
-
 def clear_explore_rift_state(*, persist=False, keep_last_error=False):
+    legacy_key = state.get("explore_rift_last_result_key")
+    if legacy_key and not state.get("explore_rift_result_evidence"):
+        legacy_id = _parse_int(str(legacy_key).split(":", 1)[0])
+        state["explore_rift_result_evidence"] = {"legacy_result_msg_id": legacy_id if legacy_id > 0 else -1}
     last_error = state.get("explore_rift_last_error") if keep_last_error else ""
     state["next_explore_rift_time"] = 0
     _clear_explore_rift_pending()
@@ -1439,7 +1617,7 @@ async def _handle_rebirth_reply(raw_text, now, incoming_msg_id=0):
     return False
 
 
-async def _handle_escape_weak(raw_text, now, result_msg_id):
+def _set_escape_weak(raw_text, now, result_msg_id):
     wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else 6 * 3600
     _clear_explore_rift_pending()
     _clear_explore_rift_fatal_pending()
@@ -1454,12 +1632,7 @@ async def _handle_escape_weak(raw_text, now, result_msg_id):
     state["explore_rift_rebirth_last_error"] = ""
     state["explore_rift_manual_required"] = False
     _schedule_next_explore_rift(now)
-    save_state()
-    await send_audit_log(
-        f"🕳 元婴遁逃虚弱→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}，普通探寻暂停，虚弱结束后尝试夺舍重生。",
-        scope="identity",
-        limit=360,
-    )
+    return f"🕳 元婴遁逃虚弱→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}，普通探寻暂停，虚弱结束后尝试夺舍重生。"
 
 
 async def _confirm_pending_fatal(now):
@@ -1547,141 +1720,116 @@ async def _run_rebirth_scheduler(now):
     return True
 
 
+def _apply_rift_result_state(raw_text, stage, plan, *, reply_context):
+    now = plan["record"]["event_at"]
+    result_msg_id = plan["record"]["msg_id"]
+    if plan["revision"] or not plan["apply_state"]:
+        if plan["revision"] and plan["apply_state"] and stage in EXPLORE_RIFT_SUCCESS_TITLES:
+            state["explore_rift_last_result"] = parse_explore_rift_result_summary(raw_text)[0]
+            state["explore_rift_last_result_key"] = _make_result_key(result_msg_id, stage, raw_text)
+        return "", 0, ""
+    if stage == "pending":
+        _set_explore_rift_pending_result(result_msg_id, now=now, reply_context=reply_context)
+        state["explore_rift_last_result"] = "探寻中"
+        state["explore_rift_last_error"] = ""
+        return "", 0, ""
+
+    _clear_explore_rift_pending()
+    _finish_unknown_rift()
+    if stage == "cooldown":
+        wait_sec = parse_wait_time(raw_text)
+        state["next_explore_rift_time"] = float(now + wait_sec + CD_BUFFER_SEC)
+        state["explore_rift_last_msg_id"] = result_msg_id
+        state["explore_rift_last_result"] = "冷却中"
+        state["explore_rift_last_error"] = ""
+        return f"🕳 探寻裂缝 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", 220, ""
+    if stage == "blocked":
+        _set_explore_rift_error("境界/修为/分神限制，延后探寻", next_delay=RETRY_MAX_SEC, now=now, persist=False)
+        return "🕳 探寻裂缝被拦截：境界/修为/分神限制，已延后。", 180, ""
+
+    _apply_tianxing_explore_rift_result(raw_text, now, reply_context=reply_context)
+    state["explore_rift_last_result_key"] = _make_result_key(result_msg_id, stage, raw_text)
+    if stage == EXPLORE_RIFT_FATAL_TITLE:
+        state["explore_rift_fatal_msg_id"] = result_msg_id
+        state["explore_rift_fatal_confirm_due_at"] = float(now + EXPLORE_RIFT_FATAL_GRACE_SEC)
+        state["explore_rift_last_msg_id"] = result_msg_id
+        state["explore_rift_last_result"] = EXPLORE_RIFT_FATAL_TITLE
+        state["explore_rift_last_error"] = ""
+        return "🕳 探寻裂缝大凶，短暂等待是否元婴遁逃。", 240, ""
+    if stage == EXPLORE_RIFT_ESCAPE_WEAK_TITLE:
+        return _set_escape_weak(raw_text, now, result_msg_id), 360, ""
+
+    result_summary, _items = parse_explore_rift_result_summary(raw_text)
+    _clear_explore_rift_fatal_pending()
+    state["explore_rift_last_msg_id"] = result_msg_id
+    state["explore_rift_last_result"] = result_summary
+    state["explore_rift_last_error"] = ""
+    state["explore_rift_manual_required"] = False
+    _schedule_next_explore_rift(now)
+    return f"🕳 探寻裂缝结果：{result_summary}", 220, result_summary
+
+
 async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0, *, reply_context=None):
+    if not has_identity(get_current_identity_id()):
+        return False
     if not state.get("explore_rift_enabled") and not state.get("explore_rift_rebirth_required") and not has_unresolved_explore_rift():
         return False
     if not _is_explore_rift_reply(reply_to, matched_family=matched_family):
         return False
 
     raw_text = str(text or "").strip()
-    result_msg_id = int(result_msg_id or 0)
+    result_msg_id = _rift_log_id(result_msg_id)
     if not raw_text:
         return False
+    evidence = _rift_result_context(reply_to, reply_context, result_msg_id, now)
+    if evidence is None:
+        return False
+    identity_id = get_current_identity_id()
+    identity = get_identity_state(identity_id)
+    account_id = get_identity_account(identity_id)
+
+    def owner_is_current():
+        return (
+            has_identity(identity_id) and get_identity_state(identity_id) is identity
+            and get_identity_account(identity_id) == account_id
+        )
 
     if _is_rebirth_reply_context(reply_to, raw_text):
-        handled_rebirth = await _handle_rebirth_reply(raw_text, now, incoming_msg_id=result_msg_id)
+        handled_rebirth = await _handle_rebirth_reply(raw_text, evidence["event_at"], incoming_msg_id=result_msg_id)
         if handled_rebirth:
             return True
 
     if _has_unknown_rift() and not _unknown_rift_reply_matches(reply_context, result_msg_id, now):
         return False
-    if isinstance(reply_context, dict) and "server_event_at" in reply_context:
-        event_at = _rift_log_time(reply_context["server_event_at"])
-        if not 0 < event_at <= max(now, _rift_log_time(reply_context.get("processed_at"))) + 1:
-            return False
-        now = event_at
-
-    if EXPLORE_RIFT_CD_KEYWORD in raw_text and has_wait_time(raw_text):
-        wait_sec = parse_wait_time(raw_text)
-        state["next_explore_rift_time"] = float(now + wait_sec + CD_BUFFER_SEC)
-        _clear_explore_rift_pending()
-        state["explore_rift_last_msg_id"] = result_msg_id or int(getattr(reply_to, "id", 0) or 0)
-        state["explore_rift_last_result"] = "冷却中"
-        state["explore_rift_last_error"] = ""
-        _finish_unknown_rift()
-        save_state()
-        await send_audit_log(f"🕳 探寻裂缝 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
-        return True
-
-    if EXPLORE_RIFT_PENDING_KEYWORD in raw_text:
-        if _has_terminal_result_for_msg(result_msg_id):
-            return True
-        if result_msg_id > 0:
-            _set_explore_rift_pending_result(result_msg_id, now=now, reply_context=reply_context)
-        state["explore_rift_last_result"] = "探寻中"
-        state["explore_rift_last_error"] = ""
-        save_state()
-        return True
-
-    final_title = _explore_rift_final_title(raw_text)
-    if final_title:
-        resolving_unknown = _has_unknown_rift()
-        _finish_unknown_rift()
-        result_key = _make_result_key(result_msg_id, final_title, raw_text)
-        if state.get("explore_rift_last_result_key") == result_key:
-            if resolving_unknown:
-                save_state()
-            return True
-        _apply_tianxing_explore_rift_result(raw_text, now, reply_context=reply_context)
-        if final_title == EXPLORE_RIFT_FATAL_TITLE:
-            _clear_explore_rift_pending()
-            state["explore_rift_fatal_msg_id"] = result_msg_id
-            state["explore_rift_fatal_confirm_due_at"] = float(now + EXPLORE_RIFT_FATAL_GRACE_SEC)
-            state["explore_rift_last_msg_id"] = result_msg_id or int(getattr(reply_to, "id", 0) or 0)
-            state["explore_rift_last_result"] = EXPLORE_RIFT_FATAL_TITLE
-            state["explore_rift_last_error"] = ""
-            save_state()
-            await send_audit_log("🕳 探寻裂缝大凶，短暂等待是否元婴遁逃。", scope="identity", limit=240)
-            return True
-        if final_title == EXPLORE_RIFT_ESCAPE_WEAK_TITLE:
-            await _handle_escape_weak(raw_text, now, result_msg_id)
-            state["explore_rift_last_result_key"] = result_key
-            save_state()
-            return True
-
-    if _is_explore_rift_terminal_success(raw_text):
-        result_summary, item_deltas = parse_explore_rift_result_summary(raw_text)
-        _clear_explore_rift_pending()
-        _clear_explore_rift_fatal_pending()
-        state["explore_rift_last_msg_id"] = result_msg_id or int(getattr(reply_to, "id", 0) or 0)
-        state["explore_rift_last_result"] = result_summary
-        state["explore_rift_last_error"] = ""
-        state["explore_rift_last_result_key"] = _make_result_key(result_msg_id, final_title or _strip_title(raw_text), raw_text)
-        state["explore_rift_manual_required"] = False
-        _schedule_next_explore_rift(now)
-        save_state()
-        if item_deltas:
-            apply_storage_bag_item_deltas(get_current_identity_id(), item_deltas)
+    stage = _rift_result_stage(raw_text)
+    if not stage:
+        return False
+    plan = _plan_rift_result(raw_text, stage, evidence)
+    if plan is None:
+        return False
+    if plan.get("ignored"):
+        return save_state() is not False
+    before = copy.deepcopy(identity)
+    previous_inventory = get_storage_bag_records()
+    try:
+        audit_text, audit_limit, result_summary = _apply_rift_result_state(
+            raw_text, stage, plan, reply_context=reply_context,
+        )
+        _stage_rift_result(plan)
+    except Exception:
+        # There is no await in this transaction. A reducer/item parse failure
+        # must not leave a completion marker without its matching effects.
+        identity.clear()
+        identity.update(before)
+        set_storage_bag_records(previous_inventory)
+        raise
+    if save_state() is False:
+        return False
+    if result_summary:
         await _send_tianxing_explore_rift_result_audit(raw_text, result_summary)
-        await send_audit_log(f"🕳 探寻裂缝结果：{result_summary}", scope="identity", limit=220)
-        return True
-
-    if _is_explore_rift_terminal_failure(raw_text):
-        result_summary, _item_deltas = parse_explore_rift_result_summary(raw_text)
-        _clear_explore_rift_pending()
-        _clear_explore_rift_fatal_pending()
-        state["explore_rift_last_msg_id"] = result_msg_id or int(getattr(reply_to, "id", 0) or 0)
-        state["explore_rift_last_result"] = result_summary
-        state["explore_rift_last_error"] = ""
-        state["explore_rift_last_result_key"] = _make_result_key(result_msg_id, final_title or _strip_title(raw_text), raw_text)
-        state["explore_rift_manual_required"] = False
-        _schedule_next_explore_rift(now)
-        save_state()
-        await _send_tianxing_explore_rift_result_audit(raw_text, result_summary)
-        await send_audit_log(f"🕳 探寻裂缝结果：{result_summary}", scope="identity", limit=220)
-        return True
-
-    if any(keyword in raw_text for keyword in ("时空异兽", "探寻机缘", "成功捕获了几缕逸散的法则本源")):
-        if _has_terminal_result_for_msg(result_msg_id):
-            return True
-        if result_msg_id > 0:
-            _set_explore_rift_pending_result(result_msg_id, now=now, reply_context=reply_context)
-        state["explore_rift_last_result"] = "探寻中"
-        state["explore_rift_last_error"] = ""
-        save_state()
-        return True
-
-    if any(keyword in raw_text for keyword in ("境界不足", "元婴初期", "元婴期", "未到元婴", "修为不足", "主魂的一缕分神")):
-        _clear_explore_rift_pending()
-        _finish_unknown_rift()
-        _set_explore_rift_error("境界/修为/分神限制，延后探寻", next_delay=RETRY_MAX_SEC, now=now)
-        await send_audit_log("🕳 探寻裂缝被拦截：境界/修为/分神限制，已延后。", scope="identity", limit=180)
-        return True
-
-    if "空间裂缝尚未稳定" in raw_text or "风暴" in raw_text:
-        if not has_wait_time(raw_text):
-            return False
-        wait_sec = parse_wait_time(raw_text)
-        state["next_explore_rift_time"] = float(now + wait_sec + CD_BUFFER_SEC)
-        _clear_explore_rift_pending()
-        state["explore_rift_last_result"] = "冷却中"
-        state["explore_rift_last_error"] = ""
-        _finish_unknown_rift()
-        save_state()
-        await send_audit_log(f"🕳 探寻裂缝 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
-        return True
-
-    return False
+    if audit_text and owner_is_current():
+        await send_audit_log(audit_text, scope="identity", limit=audit_limit)
+    return True
 
 
 async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):

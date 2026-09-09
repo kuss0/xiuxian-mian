@@ -29,8 +29,8 @@ proof that gameplay is healthy. Production files have not been changed.
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
-| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, effect chronology and rift dispatch/unknown recovery repaired in candidate; resource-delta idempotence, legacy farm/scalar results, rebirth and remaining modules still pending |
-| Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
+| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, effect chronology, rift dispatch/unknown recovery and new scoped rift-result accounting repaired in candidate; legacy resource/farm/scalar results, rebirth and remaining modules still pending |
+| Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history, delta recovery snapshots and atomic rift-result/inventory commits repaired; shared forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
 | Final review | Revisit every finding and changed contract; record real residual limits | Full suite, targeted fault replay, diff review, deployment comparison | Not started |
@@ -110,6 +110,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R56 | High | Legacy rift recovery trusts a bare message ID and log arrival time, accepts unrelated/untrusted replies, and replays stale edits or old commands as fresh work | Fixed for the scoped log readers in candidate; owned command/root/chat correlation, trusted server-timed revisions, ambiguity rejection, bounded reads and SQLite pending reload are covered; scalar live anchors, uncertain-send retry policy and panel-only outcome inference remain open |
 | R57 | High | Rift timeouts erase in-flight ownership and later resend; cached panels falsely prove execution or non-execution; uncertain query receipts and UI/startup resets can revive completed or replaced work | Fixed for timeout/query/recovery boundaries in candidate; retained unknown work, bounded owned replay, one-shot persisted queries, native late result/CD handling, account/operation checks and pause/reload retention pass; original rift dispatch awaits, legacy scalar anchors and post-completion resource idempotence remain open |
 | R58 | High | Original rift dispatch is not persisted before transport, overwrites early replies with late receipts, admits invalidated queued work and can adopt another manual command; Tianxing loses unresolved-rift exclusion when its release lease expires | Fixed for new original-rift dispatch operations in candidate; saved intent, immutable operation ownership, current business/effect admission, strict receipts, cancellation/reload, early results and exact-operation log recovery pass; legacy scalar reducers, rebirth and shared transport durability remain open |
+| R59 | High | Rift final-result deduplication remembers only the last text hash; interleaved results and edits repeat rewards or regress cooldowns, same IDs collide across chats, completion and inventory save separately, and escape handling writes after an awaited notification | Fixed for new scoped rift-result evidence in candidate; bounded command receipts, ordered revisions, atomic completion/inventory saves, rollback/reload, notification cancellation and native replay pass; pre-migration accounting, legacy scalar ownership and rebirth operations remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1544,6 +1545,62 @@ five monitor/control-only contracts need separate behavioral verification.
   rebirth reducers' internal awaits. The new per-operation intent is not a
   substitute for reviewing those paths or the remaining project matrix.
 
+### R59 Evidence
+
+- Initial result-lifecycle reproducer: **60 failed, 24 passed**; JUnit:
+  `/tmp/xiuxian-rebuild-r59-repro-20260909.xml`. Failures include A/B/A reward
+  replay, same-operation wording edits, chat-ID collisions, stale clocks,
+  missing/mismatched routing evidence, split commits and post-notify writes.
+- Added `explore_rift_result_evidence` to identity runtime JSON. Receipts are
+  scoped by chat and original command with an exact account owner, result ID,
+  server-event order, digest and cumulative item amounts. Older delivery cannot
+  reopen a terminal outcome; a newer same-result reward edit applies only its
+  difference without extending the original cooldown. Distinct same-ID chats
+  remain distinct operations. Conflicting same-second edits are not guessed.
+- Normal result transition and inventory delta now precede one `save_state()`.
+  The inventory helper stages a copy of the affected role and supports an
+  explicit deferred save; existing callers keep immediate-save behavior.
+  Synchronous reducer exceptions restore the original identity/inventory, and
+  temporary SQLite write-failure tests prove rollback of both halves followed
+  by an exactly-once replay. Save failure can also retry from retained memory.
+  Newer absolute inventory snapshots are not incremented by older rewards.
+- Escape completion is synchronous through its commit. Notifications run only
+  afterwards, with no trailing result writes; deletion, replacement, rebinding,
+  newer results and notification cancellation cannot corrupt another role.
+  The second result notification rechecks the captured owner after the first.
+- Detailed receipts retain up to **64 operations**, pruning detail older than
+  **72 hours** as fresh evidence advances while keeping the current/latest
+  receipt. Per-chat
+  retired-root watermarks prevent old edits from becoming new rewards after
+  expiry/eviction; watermark metadata is capped at 32 chats and new untracked
+  chats are rejected at capacity. Corrupt evidence is not silently reset.
+  Retention tests reload real temporary SQLite state before replaying old edits.
+  Evidence outside this retained detail cannot be reconstructed by inference.
+- Preexisting unit/real-message fixtures now carry the native router's scope
+  and server-event fields. The original assertions on cooldowns, resources and
+  Tianxing behavior remain; independent same-second examples use distinct
+  commands instead of presenting contradictory texts as one operation.
+  Focused original/new rift regression checkpoint: **350 passed, 5 subtests**.
+  Additional native/corruption/schema tests: **129 passed, 2 subtests**;
+  `/tmp/xiuxian-rebuild-r59-native-20260909.xml`. Final focused checkpoint with
+  real wording and legacy holds: **381 passed, 7 subtests**;
+  `/tmp/xiuxian-rebuild-r59-final-focus-20260909.xml`.
+- Pre-commit review retained the old last-result ID as an explicitly unscoped
+  hold, including after clearing module state, accepting a new result or SQLite
+  reload. It is not assigned a guessed chat or treated as an unclaimed reward.
+  Older pre-ledger history still needs reconciliation before deployment.
+- Final full suite: **6362 passed, 1198 subtests passed**, 89.91 seconds; JUnit:
+  `/tmp/xiuxian-rebuild-r59-final-20260909.xml`. This includes 118 new result
+  lifecycle cases, legacy-schema upgrade and the final clear-before-migration
+  regression. Full selected-rule Ruff, changed-file compilation and diff
+  checks pass.
+- R59 does not establish what an old unscoped result already awarded before
+  this receipt ledger existed, or repair shared R07 unknown-send durability,
+  legacy scalar anchors, rebirth request/select sends or every Tianxing counter.
+  Those are still review work, not permission to deploy this candidate.
+  No production file/configuration/database, service, skill, listener, game
+  request, remote branch or automation switch was changed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1566,6 +1623,11 @@ fresh queries. Do not backfill this field from log receipt timestamps.
 Checkin cleanup JSON also changes from bare IDs to chat/message pairs; even
 without a same-ID collision, that data must not be handed to the old loader
 and cleanup code during a code-only rollback.
+The rift result ledger adds an identity-runtime JSON column. The temporary-DB
+schema addition is tested; a missing old ledger is not evidence that historical
+rewards were never applied. Reconcile pre-migration results and inventory before
+deployment. Do not run the older single-result-hash reducer against new receipt
+state as a code-only rollback: it can replay rewards already committed here.
 
 ## Next Review Priorities
 
@@ -1699,6 +1761,12 @@ and cleanup code during a code-only rollback.
    resource deltas and result recovery across owner changes. Shared R07
    durability and unknown-operation evidence beyond retention also remain
    open. The candidate is not approved for production deployment.
+8. R59 covers new scoped rift-result accounting, bounded replay evidence and
+   atomic reward/completion saves. Next reproduce rebirth requests without IDs
+   ignoring their backoff, request/select cancellation and early-result races,
+   stale or unrelated rebirth prompts, and late escape edits after recovery.
+   Continue legacy scalar/pre-migration accounting reconciliation and module-wide
+   resource idempotence separately; do not infer those guarantees from R59.
 
 ## Completion Gate
 

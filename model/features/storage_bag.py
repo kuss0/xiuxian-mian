@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import random
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 
 from ..config import MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
-from ..persistence import save_state
+from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client_with_account as _runtime_get_identity_client_with_account
 from ..runtime import _run_account_rpc, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
@@ -1046,17 +1047,22 @@ def _adjust_storage_bag_identity_item(records, identity_id, item_name, delta):
     return True
 
 
-def apply_storage_bag_item_deltas(identity_id, item_deltas):
+def apply_storage_bag_item_deltas(identity_id, item_deltas, *, persist=True):
     identity_id = int(identity_id or 0)
     if identity_id <= 0 or not isinstance(item_deltas, dict):
         return False
-    records = get_storage_bag_records()
+    records = dict(get_storage_bag_records())
+    if str(identity_id) in records:
+        records[str(identity_id)] = copy.deepcopy(records[str(identity_id)])
     changed = False
     for item_name, delta in item_deltas.items():
         changed = _adjust_storage_bag_identity_item(records, identity_id, item_name, delta) or changed
     if changed:
         set_storage_bag_records(records)
-        save_state()
+        if persist:
+            save_state()
+        else:
+            mark_dirty()
     return changed
 
 

@@ -78,6 +78,22 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         )
         return identity_id
 
+    async def _deliver_rift_reply(self, text, now, *, reply_to, result_msg_id, **kwargs):
+        # Match the native router's scope and server clock in legacy fixtures.
+        context = kwargs.pop("reply_context", None)
+        if context is None:
+            context = {
+                "send_as_id": state_module.get_current_identity_id(),
+                "chat_id": getattr(reply_to, "chat_id", -1001680975844),
+                "root_msg_id": reply_to.id, "reply_to_msg_id": reply_to.id,
+                "msg_id": result_msg_id, "server_event_at": now,
+                "processed_at": now, "event_type": "message",
+            }
+        return await explore_rift.handle_explore_rift_reply(
+            text, now, reply_to=reply_to, result_msg_id=result_msg_id,
+            reply_context=context, **kwargs,
+        )
+
     def _log_ts(self, ts):
         return datetime.fromtimestamp(float(ts), config.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8")
 
@@ -368,7 +384,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
                 patch.object(explore_rift.random, "uniform", return_value=0),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     fatal_text,
                     now,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
@@ -379,7 +395,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(22028, state_module.state["explore_rift_fatal_msg_id"])
                 self.assertEqual(now + explore_rift.EXPLORE_RIFT_FATAL_GRACE_SEC, state_module.state["explore_rift_fatal_confirm_due_at"])
 
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     escape_text,
                     now + 4,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
@@ -538,7 +554,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     options_text,
                     now,
                     reply_to=SimpleNamespace(id=33001, raw_text=".夺舍重生"),
@@ -564,7 +580,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "夺舍成功！你的神魂与新肉身完美融合，所有被封存的神通宝物已尽数回归！",
                     now,
                     reply_to=SimpleNamespace(id=33002, raw_text=".重生 1"),
@@ -616,7 +632,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(storage_bag, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "【改命回天】\n"
                     "命盘【太阴】照命，改命待发。\n"
                     "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
@@ -799,7 +815,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(storage_bag, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "【改命回天】\n"
                     "命盘【贪狼】照命，改命待发。\n"
                     "你避开虚空噬体，修为未损，并平安带回：【法则碎片·木】x2。",
@@ -832,21 +848,21 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(storage_bag, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                pending = await explore_rift.handle_explore_rift_reply(
+                pending = await self._deliver_rift_reply(
                     "你运转全身法力，撕开一道漆黑的空间裂缝，将元婴送入其中探寻机缘...",
                     now,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
                     matched_family="explore_rift",
                     result_msg_id=22028,
                 )
-                terminal = await explore_rift.handle_explore_rift_reply(
+                terminal = await self._deliver_rift_reply(
                     "【探寻成功】\n你的元婴满载而归，为你带来了：【法则碎片·木】, 【九天神雷木】！",
                     now + 5,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
                     matched_family="explore_rift",
                     result_msg_id=22028,
                 )
-                late_pending = await explore_rift.handle_explore_rift_reply(
+                late_pending = await self._deliver_rift_reply(
                     "元婴在无尽的虚空中穿行，成功捕获了几缕逸散的法则本源！",
                     now + 6,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
@@ -898,7 +914,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(storage_bag, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "【探寻成功】\n"
                     "命盘【太阴】照命，主趋吉避凶，探索更易避祸，斗法更善脱身。\n"
                     "【改命待发】此道改命尚可维持 16小时22分钟\n"
@@ -1454,7 +1470,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_reply_due_at"] = now + 30
             state_module.state["next_explore_rift_time"] = now + 30
             with patch.object(explore_rift, "save_state"):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "你运转全身法力，撕开一道漆黑的空间裂缝，将元婴送入其中探寻机缘...",
                     now,
                     reply_to=SimpleNamespace(id=10425942, raw_text=".探寻裂缝"),
@@ -2233,7 +2249,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(storage_bag, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "【探寻成功】\n"
                     "你的元婴满载而归，为你带来了：【法则碎片·火】, 【法则碎片·金】, 【法则碎片·水】！",
                     now,
@@ -2268,7 +2284,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     real_text("explore_rift.failure.storm"),
                     now,
                     reply_to=SimpleNamespace(id=10425942, raw_text=".探寻裂缝"),
@@ -2297,7 +2313,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     real_text("explore_rift.failure.beast_defeat"),
                     now,
                     reply_to=SimpleNamespace(id=10426277, raw_text=".探寻裂缝"),
@@ -2328,7 +2344,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(storage_bag, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     real_text("explore_rift.beast_victory.space_core"),
                     now,
                     reply_to=SimpleNamespace(id=10410001, raw_text=".探寻裂缝"),
@@ -2359,7 +2375,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "空间裂缝尚未稳定，其中的空间风暴仍在肆虐。请在 1小时20分钟31秒 后再行探寻。",
                     now,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
@@ -2374,25 +2390,25 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
     async def test_realm_period_and_sub_soul_limit_replies_delay_without_retry_storm(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
-        for text in (
+        for index, text in enumerate((
             "你的境界尚未达到元婴期，无法探寻空间裂缝。",
             "你只是主魂的一缕分神，无法承受空间裂缝之力。",
-        ):
+        )):
             with self.subTest(text=text):
                 with state_module.use_identity(identity_id):
                     state_module.state["explore_rift_enabled"] = True
-                    state_module.state["explore_rift_reply_to_msg_id"] = 22027
+                    state_module.state["explore_rift_reply_to_msg_id"] = 22027 + index * 10
                     state_module.state["explore_rift_reply_due_at"] = now + 30
                     with (
                         patch.object(explore_rift, "save_state"),
                         patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
                     ):
-                        handled = await explore_rift.handle_explore_rift_reply(
+                        handled = await self._deliver_rift_reply(
                             text,
                             now,
-                            reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
+                            reply_to=SimpleNamespace(id=22027 + index * 10, raw_text=".探寻裂缝"),
                             matched_family="explore_rift",
-                            result_msg_id=22028,
+                            result_msg_id=22028 + index * 10,
                         )
 
                     self.assertTrue(handled)
@@ -2411,7 +2427,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
             ):
-                handled = await explore_rift.handle_explore_rift_reply(
+                handled = await self._deliver_rift_reply(
                     "【探寻成功】\n你的元婴满载而归，为你带来了：【法则碎片·金】！",
                     now,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
