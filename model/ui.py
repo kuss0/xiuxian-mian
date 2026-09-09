@@ -20,6 +20,7 @@ from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from .message_keys import message_key_parts
+from .profile_observation import apply_profile_observation, timestamp as profile_timestamp
 
 try:
     import segno
@@ -1163,6 +1164,7 @@ _storage_bag_api_state = {
     "dao_path_updated_count": 0,
     "dao_path_skipped_count": 0,
 }
+_storage_bag_api_config_generation = 0
 _STORAGE_BAG_API_KEEPALIVE_INTERVAL_SEC = 30 * 60
 _STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC = 10 * 60
 _STORAGE_BAG_PINNED_ITEM_ORDER = ("天雷竹", "二级妖丹", "金精矿")
@@ -1387,11 +1389,11 @@ def get_storage_bag_sync_snapshot():
 
 
 def _is_storage_bag_api_busy():
-    return bool(_storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"))
+    return bool(_storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running") or _storage_bag_api_state.get("dao_path_request"))
 
 
 def _is_tianjige_manual_api_busy():
-    return bool(_storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"))
+    return _is_storage_bag_api_busy()
 
 
 def _storage_bag_api_set_running_kind(kind=""):
@@ -2523,7 +2525,7 @@ def _tianjige_profile_updates_from_row(row):
     )
     if username:
         updates["username"] = username.lstrip("@")
-    role_label = _tianjige_string(row.get("role_name") or row.get("role") or row.get("name") or row.get("display_name"))
+    role_label = next((row[key].strip() for key in ("role_name", "role", "name", "display_name") if isinstance(row.get(key), str) and row[key].strip()), "")
     if role_label:
         updates["label"] = role_label
     dao_name = _tianjige_string(row.get("dao_name") or row.get("daohao"))
@@ -2544,7 +2546,6 @@ def _tianjige_profile_updates_from_row(row):
         updates["sect_name"] = sect_name
     if any(key in row for key in _TIANJIGE_SECT_CONTRIBUTION_KEYS):
         updates["sect_contribution"] = _tianjige_first_number(row, _TIANJIGE_SECT_CONTRIBUTION_KEYS)
-        updates["sect_contribution_updated_at"] = time.time()
     root_text = _tianjige_string(row.get("spirit_root") or row.get("spiritual_root") or row.get("spiritual_root_type"))
     if root_text:
         root_type, root_attrs = _tianjige_spirit_root_parts(root_text)
@@ -2578,13 +2579,53 @@ def _tianjige_profile_updates_from_row(row):
     return updates
 
 
-def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
+def _tianjige_profile_row_owner(row, fallback_identity_id=0):
+    primary_keys = ("identity_id", "send_as_id", "telegram_id", "telegram_user_id", "tg_id", "user_id", "character_id")
+    id_keys = primary_keys if any(key in row for key in primary_keys) else ("cultivator_id", "owner_id", "id")
+    explicit_ids = set()
+    for key in id_keys:
+        if key not in row or row[key] is None or row[key] == "":
+            continue
+        value = row[key]
+        if type(value) is not int and not (isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip())):
+            return 0, ""
+        explicit_ids.add(int(value))
+    if len(explicit_ids) > 1 or explicit_ids == {0}:
+        return 0, ""
+    identity_id = next(iter(explicit_ids), 0)
+    username_keys = ("owner_username", "username", "telegram_username")
+    owner_keys = (*username_keys, "owner", "dao_name", "daohao", "label", "role_name", "name")
+    names = [row[key].strip().lstrip("@") for key in owner_keys if isinstance(row.get(key), str) and row[key].strip()]
+    owner_text = names[0] if names else ""
+    local_ids = get_identity_ids()
+    if identity_id and identity_id not in local_ids:
+        return 0, owner_text
+    lookup = {}
+    for local_id in local_ids:
+        profile = get_send_as_profile(local_id)
+        candidates = [
+            profile.get("username"), profile.get("label"), profile.get("daohao"),
+            *(profile.get("username_aliases") or []), str(local_id), get_identity_ui_display_name(local_id),
+        ]
+        for value in candidates:
+            key = str(value or "").strip().lstrip("@").casefold()
+            if key:
+                lookup.setdefault(key, set()).add(local_id)
+    if identity_id:
+        for key in username_keys:
+            matched = lookup.get(str(row.get(key) or "").strip().lstrip("@").casefold(), set())
+            if matched and identity_id not in matched:
+                return 0, owner_text
+        return identity_id, owner_text
+    if names:
+        matched = lookup.get(names[0].casefold(), set())
+        return (next(iter(matched)) if len(matched) == 1 else 0), owner_text
+    return int(fallback_identity_id or 0), owner_text
+
+
+def _tianjige_dao_path_record_from_row(row, *, observed_at, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
     row = _tianjige_flatten_api_row(row)
-    identity_id, owner_text = _storage_bag_api_extract_owner_fields(row)
-    lookup = _storage_bag_api_identity_lookup()
-    identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
-    if identity_id == 0 and int(fallback_identity_id or 0):
-        identity_id = int(fallback_identity_id or 0)
+    identity_id, owner_text = _tianjige_profile_row_owner(row, fallback_identity_id)
     if not owner_text:
         owner_text = fallback_owner_text
     allowed_ids = {int(item or 0) for item in allowed_identity_ids or []} if allowed_identity_ids is not None else None
@@ -2592,21 +2633,25 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         return None
     if allowed_ids is not None and identity_id not in allowed_ids:
         return None
+    previous = get_tianjige_dao_path_records().get(str(identity_id), {})
+    if isinstance(previous, dict) and observed_at <= profile_timestamp(previous.get("updated_at")):
+        return None
     current_profile = get_send_as_profile(identity_id)
     profile_updates = _tianjige_profile_updates_from_row(row)
     if str(current_profile.get("username") or "").strip():
         profile_updates.pop("username", None)
-    if profile_updates:
-        profile_updates["sect_updated_at"] = time.time()
-        profile = update_send_as_profile(identity_id, **profile_updates)
-    else:
-        profile = current_profile
-    username = _tianjige_string(row.get("username") or profile.get("username"))
-    dao_name = _tianjige_string(row.get("dao_name") or row.get("daohao") or profile.get("daohao"))
-    cultivation_level = _tianjige_string(row.get("cultivation_level") or row.get("level") or profile.get("realm"))
-    sect_name = _tianjige_clean_sect_name(row.get("sect_name") or row.get("sect") or profile.get("sect_name"))
-    spirit_root = _tianjige_string(row.get("spirit_root") or row.get("spiritual_root") or profile.get("spiritual_root_type"))
-    now = time.time()
+    if apply_profile_observation(
+        identity_id, profile_updates, int(observed_at), evidence={"source": "api", "requested_at": observed_at},
+    ) is None:
+        return None
+    profile = get_send_as_profile(identity_id)
+    username = _tianjige_string(profile.get("username"))
+    dao_name = _tianjige_string(profile.get("daohao"))
+    cultivation_level = _tianjige_string(profile.get("realm"))
+    sect_name = _tianjige_clean_sect_name(profile.get("sect_name"))
+    spirit_root = _tianjige_string(profile.get("spiritual_root_type"))
+    if profile.get("spiritual_root_attrs"):
+        spirit_root += f"({profile['spiritual_root_attrs']})"
     status_text = _tianjige_string(row.get("status"))
     combat_status = _tianjige_string(row.get("combat_status"))
     state_label = _tianjige_state_label(status_text, combat_status)
@@ -2621,10 +2666,10 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         "binding_kind": _tianjige_string(row.get("binding_kind")),
         "binding_kind_label": _tianjige_string(row.get("binding_kind_label")),
         "cultivation_level": cultivation_level,
-        "cultivation_points": _tianjige_number(row.get("cultivation_points") or row.get("points")),
+        "cultivation_points": profile.get("xiuwei_current", 0) if "xiuwei_current" in profile_updates else _tianjige_number(row.get("cultivation_points") or row.get("points")),
         "sect_id": _tianjige_number(row.get("sect_id"), default=0),
         "sect_name": sect_name,
-        "sect_contribution": _tianjige_first_number(row, _TIANJIGE_SECT_CONTRIBUTION_KEYS),
+        "sect_contribution": profile.get("sect_contribution", 0),
         "spirit_root": spirit_root,
         "status": status_text,
         "combat_status": combat_status,
@@ -2636,8 +2681,8 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         "cave_lingqi": _tianjige_cave_lingqi_text(cave),
         "cave": cave,
         "status_fields": _tianjige_extract_known_fields(row, _DAO_PATH_STATUS_KEYS),
-        "updated_at": float(now),
-        "updated_at_text": fmt_abs_ts(now),
+        "updated_at": float(observed_at),
+        "updated_at_text": fmt_abs_ts(observed_at),
         "source": source,
         "raw_keys": sorted(str(key) for key in row.keys()),
     }
@@ -2657,7 +2702,7 @@ def _tianjige_binding_summary(payload):
     }
 
 
-def _tianjige_apply_dao_path_payload(payload, *, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
+def _tianjige_apply_dao_path_payload(payload, *, observed_at, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
     payload = payload if isinstance(payload, dict) else {}
     if isinstance(payload.get("data"), dict):
         payload = payload.get("data") or {}
@@ -2667,7 +2712,7 @@ def _tianjige_apply_dao_path_payload(payload, *, fallback_identity_id=0, fallbac
     updated_identity_ids = set()
     rows = []
     if isinstance(payload.get("characters"), list):
-        rows.extend(row for row in payload.get("characters") or [] if isinstance(row, dict))
+        rows.extend((row, 0) for row in payload.get("characters") or [] if isinstance(row, dict))
     candidate_payload = _tianjige_flatten_api_row(payload)
     if any(key in candidate_payload for key in (
         "username",
@@ -2685,33 +2730,35 @@ def _tianjige_apply_dao_path_payload(payload, *, fallback_identity_id=0, fallbac
         "dongfu",
         "cave",
     )):
-        rows.append(payload)
+        rows.append((payload, fallback_identity_id if source == "tianjige_cultivator" else 0))
     if not rows:
         skipped += 1
-    for row in rows:
+    for row, fallback_id in rows:
         record = _tianjige_dao_path_record_from_row(
             row,
-            fallback_identity_id=fallback_identity_id,
+            observed_at=observed_at,
+            fallback_identity_id=fallback_id,
             fallback_owner_text=fallback_owner_text,
             source=source,
             allowed_identity_ids=allowed_identity_ids,
         )
-        if not record:
+        if not record or int(record["identity_id"]) in updated_identity_ids:
             skipped += 1
             continue
         records[str(record["identity_id"])] = record
         updated += 1
         updated_identity_ids.add(int(record["identity_id"]))
     meta = records.get("_meta") if isinstance(records.get("_meta"), dict) else {}
-    if payload.get("binding"):
+    binding_updated = bool(payload.get("binding") and allowed_identity_ids and observed_at > profile_timestamp(meta.get("updated_at")))
+    if binding_updated:
         meta = {
             **meta,
             "binding": _tianjige_binding_summary(payload),
-            "updated_at": time.time(),
-            "updated_at_text": fmt_abs_ts(time.time()),
+            "updated_at": observed_at,
+            "updated_at_text": fmt_abs_ts(observed_at),
         }
         records["_meta"] = meta
-    if updated > 0 or payload.get("binding"):
+    if updated > 0 or binding_updated:
         set_tianjige_dao_path_records(records)
         save_state()
     return {"updated_count": updated, "skipped_count": skipped, "updated_identity_ids": sorted(updated_identity_ids), "records": records}
@@ -2768,6 +2815,7 @@ def get_tianjige_dao_path_snapshot():
 
 
 def ui_set_storage_bag_api_config(payload):
+    global _storage_bag_api_config_generation
     payload = payload if isinstance(payload, dict) else {}
     current = get_storage_bag_api_config()
     base_url = str(payload.get("base_url") or current.get("base_url") or "https://asc.aiopenai.app").strip().rstrip("/")
@@ -2780,6 +2828,8 @@ def ui_set_storage_bag_api_config(payload):
         or bool(input_token and input_token != current.get("api_token"))
         or bool(base_url and base_url != current.get("base_url"))
     )
+    if reset_verified:
+        _storage_bag_api_config_generation += 1
     next_config = {
         "base_url": base_url,
         "api_token": next_api_token,
@@ -3103,6 +3153,10 @@ async def ui_refresh_storage_bag_from_api(payload=None, *, notify_log_group=Fals
     return ok, message, get_storage_bag_api_snapshot()
 
 
+class _TianjigeProfileReadChanged(Exception):
+    pass
+
+
 async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_identity_id=None, refresh_all=False):
     if _is_storage_bag_api_busy():
         return False, "天机阁读取正在进行中", get_storage_bag_api_snapshot()
@@ -3119,27 +3173,77 @@ async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_i
             return False, "身份不存在", get_storage_bag_api_snapshot()
         if target_identity_id <= 0 or target_identity_id not in get_identity_ids():
             return False, "身份不存在", get_storage_bag_api_snapshot()
+    local_identity_ids = [int(identity_id) for identity_id in get_identity_ids()]
+    allowed_identity_ids = {int(target_identity_id)} if target_identity_id is not None else set(local_identity_ids)
+    owners = {identity_id: (get_identity_state(identity_id), get_identity_account(identity_id)) for identity_id in allowed_identity_ids}
+    active_config = dict(config)
     _storage_bag_api_state["running"] = True
     _storage_bag_api_set_running_kind("dao_path_all" if refresh_all else "dao_path_single")
+    request_token = object()
+    _storage_bag_api_state["dao_path_request"] = request_token
+    config_generation = _storage_bag_api_config_generation
+
+    def owned_ids():
+        return {
+            identity_id for identity_id, (identity, account_id) in owners.items()
+            if identity_id in get_identity_ids() and get_identity_state(identity_id) is identity
+            and get_identity_account(identity_id) == account_id
+        }
+
+    def config_key(value):
+        return tuple(value.get(key) for key in ("base_url", "cookie", "api_token"))
+
+    def request_current():
+        return (
+            _storage_bag_api_state.get("dao_path_request") is request_token
+            and config_generation == _storage_bag_api_config_generation
+            and config_key(get_storage_bag_api_config()) == config_key(active_config)
+        )
+
+    def require_current():
+        if not request_current() or not owned_ids():
+            raise _TianjigeProfileReadChanged("读取期间身份或 API 配置已变更，已丢弃旧结果")
+
+    async def fetch_owned(path, identity_id=None):
+        nonlocal active_config
+        require_current()
+        if identity_id is not None and identity_id not in owned_ids():
+            return None, 0
+        # No API server clock is supplied. Request start bounds freshness;
+        # response arrival must not outrank a newer Telegram observation.
+        observed_at = time.time()
+        try:
+            result = await fetch_storage_bag_result(active_config, path)
+        except StorageBagApiError as exc:
+            require_current()
+            if identity_id is not None and identity_id not in owned_ids():
+                return None, observed_at
+            active_config = _storage_bag_api_store_session(exc.cookie, exc.api_token)
+            raise
+        require_current()
+        if identity_id is not None and identity_id not in owned_ids():
+            return None, observed_at
+        if result.path != path:
+            raise _TianjigeProfileReadChanged("天机阁返回路径与本次资料查询不符，已丢弃结果")
+        active_config = _storage_bag_api_store_session(result.cookie, result.api_token)
+        return result, observed_at
+
     ok = False
     message = ""
+    total_updated = 0
+    total_skipped = 0
     try:
-        active_config = dict(config)
         updated_identity_ids = set()
-        total_updated = 0
-        total_skipped = 0
-        local_identity_ids = [int(identity_id or 0) for identity_id in get_identity_ids()]
-        allowed_identity_ids = {int(target_identity_id)} if target_identity_id is not None else set(local_identity_ids)
         if refresh_all:
-            me_result = await fetch_storage_bag_result(active_config, STORAGE_BAG_API_REFRESH_PATH)
-            active_config = _storage_bag_api_store_session(me_result.cookie, me_result.api_token)
+            me_result, observed_at = await fetch_owned(STORAGE_BAG_API_REFRESH_PATH)
             me_payload = me_result.payload
             if isinstance(me_payload, dict) and me_payload.get("ok") is False:
                 raise StorageBagApiError(str(me_payload.get("error") or "天机阁道途 API 返回失败"))
             me_result_data = _tianjige_apply_dao_path_payload(
                 me_payload if isinstance(me_payload, dict) else {},
+                observed_at=observed_at,
                 source="tianjige_me",
-                allowed_identity_ids=allowed_identity_ids,
+                allowed_identity_ids=owned_ids(),
             )
             updated_identity_ids.update(me_result_data.get("updated_identity_ids") or [])
             total_updated += int(me_result_data.get("updated_count") or 0)
@@ -3149,7 +3253,8 @@ async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_i
         for identity_id in target_ids:
             if identity_id <= 0 or identity_id in updated_identity_ids:
                 continue
-            if identity_id not in allowed_identity_ids:
+            if identity_id not in owned_ids():
+                total_skipped += 1
                 continue
             candidates = _storage_bag_api_cultivator_candidates(identity_id)
             if not candidates:
@@ -3159,17 +3264,19 @@ async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_i
             candidate_success = False
             for candidate in candidates:
                 try:
-                    api_result = await fetch_storage_bag_result(active_config, build_cultivator_path(candidate))
-                    active_config = _storage_bag_api_store_session(api_result.cookie, api_result.api_token)
+                    api_result, observed_at = await fetch_owned(build_cultivator_path(candidate), identity_id)
+                    if api_result is None:
+                        break
                     api_payload = api_result.payload
                     if isinstance(api_payload, dict) and api_payload.get("ok") is False:
                         raise StorageBagApiError(str(api_payload.get("error") or "天机阁道途 API 返回失败"))
                     result = _tianjige_apply_dao_path_payload(
                         api_payload if isinstance(api_payload, dict) else {},
-                        fallback_identity_id=identity_id,
+                        observed_at=observed_at,
+                        fallback_identity_id=identity_id if _tianjige_profile_row_owner({"username": candidate})[0] == identity_id else 0,
                         fallback_owner_text=candidate,
                         source="tianjige_cultivator",
-                        allowed_identity_ids=allowed_identity_ids,
+                        allowed_identity_ids={identity_id},
                     )
                     total_updated += int(result.get("updated_count") or 0)
                     total_skipped += int(result.get("skipped_count") or 0)
@@ -3178,25 +3285,22 @@ async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_i
                         candidate_success = True
                         break
                 except StorageBagApiError as exc:
-                    _storage_bag_api_store_session(exc.cookie, exc.api_token)
-                    active_config = get_storage_bag_api_config()
                     if exc.auth_failed or exc.rate_limited:
                         raise
-                    if exc.status_code == 404:
-                        continue
                     continue
-            if not candidate_success and not refresh_all:
-                me_result = await fetch_storage_bag_result(active_config, STORAGE_BAG_API_REFRESH_PATH)
-                active_config = _storage_bag_api_store_session(me_result.cookie, me_result.api_token)
+            if not candidate_success and not refresh_all and identity_id in owned_ids():
+                me_result, observed_at = await fetch_owned(STORAGE_BAG_API_REFRESH_PATH, identity_id)
+                if me_result is None:
+                    total_skipped += 1
+                    continue
                 me_payload = me_result.payload
                 if isinstance(me_payload, dict) and me_payload.get("ok") is False:
                     raise StorageBagApiError(str(me_payload.get("error") or "天机阁道途 API 返回失败"))
                 result = _tianjige_apply_dao_path_payload(
                     me_payload if isinstance(me_payload, dict) else {},
-                    fallback_identity_id=identity_id,
-                    fallback_owner_text=candidates[0] if candidates else "",
+                    observed_at=observed_at,
                     source="tianjige_me",
-                    allowed_identity_ids=allowed_identity_ids,
+                    allowed_identity_ids={identity_id},
                 )
                 total_updated += int(result.get("updated_count") or 0)
                 total_skipped += int(result.get("skipped_count") or 0)
@@ -3215,18 +3319,22 @@ async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_i
             "dao_path_skipped_count": int(total_skipped),
         })
     except Exception as exc:
-        _storage_bag_api_store_failure(exc, time.time())
+        if request_current() and owned_ids() and isinstance(exc, StorageBagApiError):
+            _storage_bag_api_store_failure(exc, time.time())
         message = f"天机阁道途读取失败: {exc}"
-        _storage_bag_api_state.update({
-            "dao_path_last_ok": False,
-            "dao_path_last_message": message,
-            "dao_path_last_updated_at": time.time(),
-            "dao_path_updated_count": 0,
-            "dao_path_skipped_count": 0,
-        })
+        if _storage_bag_api_state.get("dao_path_request") is request_token:
+            _storage_bag_api_state.update({
+                "dao_path_last_ok": False,
+                "dao_path_last_message": message,
+                "dao_path_last_updated_at": time.time(),
+                "dao_path_updated_count": int(total_updated),
+                "dao_path_skipped_count": int(total_skipped),
+            })
     finally:
-        _storage_bag_api_state["running"] = False
-        _storage_bag_api_set_running_kind("")
+        if _storage_bag_api_state.get("dao_path_request") is request_token:
+            _storage_bag_api_state.pop("dao_path_request", None)
+            _storage_bag_api_state["running"] = False
+            _storage_bag_api_set_running_kind("")
     return ok, message, get_storage_bag_api_snapshot()
 
 

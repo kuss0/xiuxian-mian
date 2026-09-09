@@ -7,6 +7,7 @@ from uuid import uuid4
 from .config import format_battle_power_command, format_identity_info_command
 from .message_keys import find_message_key, message_key_parts
 from .persistence import mark_dirty
+from .profile_observation import valid_evidence
 from .state import (
     get_game_group_id, get_identity_account, get_identity_state, has_identity,
 )
@@ -78,11 +79,16 @@ def request_for(identity_id):
         ):
             return None
         payload = record.get("payload", {})
+        evidence = record.get("profile_evidence")
         if (
             not isinstance(payload, dict) or payload.keys() - PROFILE_TEXT_FIELDS - PROFILE_NUMBER_FIELDS
             or any(not isinstance(value, str) or len(value) > 512 for key, value in payload.items() if key in PROFILE_TEXT_FIELDS)
             or any(type(value) is not int or value < 0 for key, value in payload.items() if key in PROFILE_NUMBER_FIELDS)
             or (record["status"] == "complete" and (record["reply_at"] <= 0 or not payload))
+            or (evidence is not None and (
+                not valid_evidence(evidence, record["reply_at"]) or evidence.get("source") != "telegram"
+                or evidence.get("chat_id") != request["chat_id"] or evidence.get("msg_id") not in record["reply_ids"]
+            ))
         ):
             return None
         seen.add((kind, attempt))

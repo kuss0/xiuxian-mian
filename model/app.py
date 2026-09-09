@@ -2064,6 +2064,8 @@ async def _dispatch_broadcast_handlers(event, text, now, handlers, *, reply_to=N
             continue
         if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS:
             result = await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
+        elif handler is handle_realm_breakthrough_broadcast:
+            result = await handler(text, now, event=from_telegram_event(event, text, reply_context, event_kind="message"))
         elif handler in _BROADCAST_REPLY_CONTEXT_HANDLERS:
             result = await handler(text, now, event, reply_to=reply_to)
         elif handler in _BROADCAST_EVENT_HANDLERS:
@@ -2273,6 +2275,8 @@ async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, rep
             continue
         if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS:
             result = await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
+        elif handler is handle_realm_breakthrough_broadcast:
+            result = await handler(text, now, event=from_telegram_event(event, text, reply_context, event_kind="edit"))
         elif handler in _MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS:
             result = await _run_for_all_identities(handler, text, now, False)
         elif handler in _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS:

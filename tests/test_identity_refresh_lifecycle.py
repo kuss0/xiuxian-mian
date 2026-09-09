@@ -457,6 +457,76 @@ def test_stale_reply_does_not_append_tracking_or_change_clocks(env):
     assert env.identity == before
 
 
+@pytest.mark.parametrize("passive_first", [False, True])
+def test_same_second_refresh_result_uses_recorded_reply_order(env, passive_first):
+    assert asyncio.run(control.refresh_identity_info(IDENTITY))[0]
+    newer = COMBINED_CARD.replace("445955", "900000")
+    event = passive_event(NOW + 20)
+    event.id = ROOT + 101
+
+    async def observe_newer():
+        assert await control.handle_passive_identity_profile_card(newer, NOW + 30, event=event)
+
+    async def scenario():
+        if passive_first:
+            await observe_newer()
+        assert await deliver(at=NOW + 20, reply_id=ROOT + 100)
+        if not passive_first:
+            await observe_newer()
+
+    asyncio.run(scenario())
+    record = identity_refresh.request_for(IDENTITY)["commands"][0]
+    assert record["profile_evidence"]["msg_id"] == ROOT + 100
+    assert record["profile_evidence"]["chat_id"] == CHAT
+    assert state_module.get_send_as_profile(IDENTITY)["xiuwei_current"] == 900000
+
+
+def test_same_second_older_card_cannot_replace_request_payload_or_tracking(env):
+    assert asyncio.run(control.refresh_identity_info(IDENTITY))[0]
+    newer = PARTIAL_CARD.replace("445955", "900000")
+    assert asyncio.run(deliver(newer, at=NOW + 20, reply_id=ROOT + 102))
+    before = copy.deepcopy(env.identity)
+    assert not asyncio.run(deliver(PARTIAL_CARD, at=NOW + 20, reply_id=ROOT + 101))
+    assert env.identity == before
+
+
+def test_same_second_native_edit_completes_partial_profile(env):
+    assert asyncio.run(control.refresh_identity_info(IDENTITY))[0]
+    assert asyncio.run(deliver(PARTIAL_CARD, at=NOW + 20, reply_id=ROOT + 102))
+    event = SimpleNamespace(
+        id=ROOT + 102, chat_id=CHAT, sender_id=BOT,
+        date=datetime.fromtimestamp(NOW + 20, timezone.utc),
+        edit_date=datetime.fromtimestamp(NOW + 20, timezone.utc),
+    )
+    reply = SimpleNamespace(id=ROOT, chat_id=CHAT, sender_id=IDENTITY, raw_text=CMD_IDENTITY_INFO)
+    context = {"send_as_id": IDENTITY, "chat_id": CHAT, "family": "identity_info", "root_msg_id": ROOT, "reply_to_msg_id": ROOT}
+    assert asyncio.run(app._handle_routed_reply_event(event, COMBINED_CARD, NOW + 20, reply, context, event_kind="edit"))
+    assert identity_refresh.request_for(IDENTITY)["status"] == "complete"
+    assert state_module.get_send_as_profile(IDENTITY)["xiuwei_current"] == 445955
+
+
+def test_unparsed_same_second_packets_do_not_evict_last_profile_evidence(env):
+    assert asyncio.run(control.refresh_identity_info(IDENTITY))[0]
+    assert asyncio.run(deliver(PARTIAL_CARD, at=NOW + 20, reply_id=ROOT + 100))
+    for offset in range(1, 12):
+        assert not asyncio.run(deliver("unrelated", at=NOW + 20, reply_id=ROOT + 100 + offset))
+    request = identity_refresh.request_for(IDENTITY)
+    assert request is not None
+    assert request["commands"][0]["profile_evidence"]["msg_id"] in request["commands"][0]["reply_ids"]
+
+
+def test_identical_later_card_advances_order_without_repeating_notification(env):
+    assert asyncio.run(control.refresh_identity_info(IDENTITY))[0]
+    assert asyncio.run(deliver(at=NOW + 20, reply_id=ROOT + 100))
+    assert asyncio.run(deliver(at=NOW + 20, reply_id=ROOT + 102))
+    before = copy.deepcopy(env.identity)
+    older = COMBINED_CARD.replace("445955", "100000")
+    assert not asyncio.run(deliver(older, at=NOW + 20, reply_id=ROOT + 101))
+    assert env.identity == before
+    assert identity_refresh.request_for(IDENTITY)["commands"][0]["profile_evidence"]["msg_id"] == ROOT + 102
+    control.send_audit_log.assert_awaited_once()
+
+
 def test_completed_request_and_profile_clocks_reload_idempotently(env, monkeypatch, tmp_path):
     monkeypatch.setattr(persistence, "DB_FILE", str(tmp_path / "completed_refresh.db"))
     assert asyncio.run(control.refresh_identity_info(IDENTITY))[0]

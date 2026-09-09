@@ -12,6 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import identity_refresh as _refresh
+from .profile_observation import (
+    apply_profile_observation, field_clocks, observation_is_newer,
+    telegram_profile_evidence, valid_evidence,
+)
 from .message_keys import find_message_key, message_key_parts, pop_message_record
 from .message_log_recovery import sender_matches_identity
 from .verified_event import telegram_event_timestamp
@@ -5175,18 +5179,13 @@ def _merge_identity_refresh_payload(base_payload, overlay_payload):
     return merged_payload
 
 
-def _update_identity_profile_from_refresh_payload(send_as_id, payload, now):
+def _update_identity_profile_from_refresh_payload(send_as_id, payload, now, *, evidence=None):
     raw_payload = payload or {}
     normalized_payload = _normalize_identity_refresh_payload(payload or {})
     has_xiuwei = int(normalized_payload.get("xiuwei_max") or 0) > 0
     has_battle_power = bool(normalized_payload.get("battle_power_text"))
     has_spiritual_root = bool(normalized_payload.get("spiritual_root_type"))
     has_realm = bool(normalized_payload.get("realm")) and ("realm" in raw_payload or has_xiuwei)
-    identity = get_identity_state(send_as_id)
-    clocks = identity.get("identity_profile_observed_at", {})
-    if not isinstance(clocks, dict) or _refresh.number(now) <= 0:
-        return None
-    clocks = dict(clocks)
     groups = (
         ("daohao", bool(normalized_payload["daohao"]), ("daohao",)),
         ("realm", has_realm, ("realm",)),
@@ -5195,23 +5194,12 @@ def _update_identity_profile_from_refresh_payload(send_as_id, payload, now):
         ("xiuwei", has_xiuwei, ("xiuwei_current", "xiuwei_max")),
         ("battle_power", has_battle_power, ("battle_power_text", "battle_power_value")),
     )
-    if clocks.keys() - {key for key, _present, _fields in groups} or any(
-        type(value) not in {int, float} or value < 0 or _refresh.number(value) != value
-        for value in clocks.values()
-    ):
-        return None
     changes = {}
-    for key, present, fields in groups:
-        if present and now > _refresh.number(clocks.get(key, 0)):
+    for _key, present, fields in groups:
+        if present:
             changes.update({field: normalized_payload[field] for field in fields})
-            clocks[key] = now
-    if changes:
-        update_send_as_profile(
-            send_as_id, **changes,
-            sect_updated_at=max(now, _refresh.number(get_send_as_profile(send_as_id).get("sect_updated_at", 0))),
-        )
-        identity["identity_profile_observed_at"] = clocks
-        mark_dirty()
+    if apply_profile_observation(send_as_id, changes, now, evidence=evidence) is None:
+        return None
     return normalized_payload
 
 
@@ -5220,7 +5208,9 @@ def _finalize_identity_refresh_success(send_as_id):
     if request is not None:
         for record in sorted(request["commands"], key=lambda item: item["reply_at"]):
             if record.get("payload"):
-                if _update_identity_profile_from_refresh_payload(send_as_id, record["payload"], record["reply_at"]) is None:
+                if _update_identity_profile_from_refresh_payload(
+                    send_as_id, record["payload"], record["reply_at"], evidence=record.get("profile_evidence"),
+                ) is None:
                     _refresh.finish(request, error="身份资料时间记录异常，保留回包等待核对")
                     return None, []
     final_payload = _normalize_identity_refresh_payload(get_send_as_profile(send_as_id))
@@ -5296,7 +5286,9 @@ async def handle_passive_identity_profile_card(text, now, *, event=None):
         for key in ("daohao", "realm", "spiritual_root_type", "sect_name", "xiuwei_max", "battle_power_text")
     ):
         return False
-    if _update_identity_profile_from_refresh_payload(target_id, merged_payload, observed_at) is None:
+    if _update_identity_profile_from_refresh_payload(
+        target_id, merged_payload, observed_at, evidence=telegram_profile_evidence(event),
+    ) is None:
         return False
     enforce_identity_module_availability(target_id, persist=False)
     save_state()
@@ -5304,24 +5296,22 @@ async def handle_passive_identity_profile_card(text, now, *, event=None):
 
 
 def match_realm_breakthrough_identity(text):
-    compact_text = RE_WHITESPACE.sub("", text or "")
-    if "灵光一闪" not in compact_text or "成功突破至【" not in compact_text:
+    raw_text = str(text or "")
+    if "灵光一闪" not in raw_text or "成功突破至【" not in raw_text:
         return None, None
 
-    realm_match = RE_REALM_BREAKTHROUGH.search(text or "")
+    realm_match = RE_REALM_BREAKTHROUGH.search(raw_text)
     if not realm_match:
         return None, None
     realm = (realm_match.group(1) or "").strip()
     if not realm:
         return None, None
 
+    subject = raw_text.split("灵光一闪", 1)[0]
     matched_ids = []
     for identity_id in get_identity_ids():
         tags = get_send_as_tags(identity_id)
-        if not tags:
-            continue
-        compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
-        if any(tag in compact_text for tag in compact_tags):
+        if any(re.search(r"(?<![\w@])" + re.escape(tag) + r"(?!\w)", subject, re.IGNORECASE) for tag in tags):
             matched_ids.append(identity_id)
 
     if len(matched_ids) == 1:
@@ -5329,33 +5319,40 @@ def match_realm_breakthrough_identity(text):
     return None, realm
 
 
-async def handle_realm_breakthrough_broadcast(text, now):
+async def handle_realm_breakthrough_broadcast(text, now, *, event=None):
     target_id, realm = match_realm_breakthrough_identity(text)
     if target_id is None or not realm:
         return False
+    observed_at = telegram_event_timestamp(event, getattr(event, "event_type", "message"))
+    evidence = telegram_profile_evidence(event)
+    clocks = field_clocks(target_id)
+    if (
+        getattr(event, "sender_id", 0) not in get_game_bot_ids()
+        or getattr(event, "chat_id", 0) not in get_game_group_ids()
+        or observed_at <= 0 or observed_at > max(now, time.time()) + 1
+        or clocks is None or not valid_evidence(evidence, observed_at)
+    ):
+        return False
+    if not observation_is_newer(clocks.get("realm", 0), clocks["_evidence"].get("realm"), observed_at, evidence):
+        return True
 
     profile = get_send_as_profile(target_id)
     old_realm = (profile.get("realm") or "").strip()
-    if old_realm == realm:
-        return True
     old_index = get_realm_sort_index(old_realm) if old_realm else len(REALM_SORT_ORDER)
     new_index = get_realm_sort_index(realm)
     if old_index < len(REALM_SORT_ORDER) and new_index < len(REALM_SORT_ORDER) and new_index < old_index:
+        return True
+
+    if apply_profile_observation(target_id, {"realm": realm}, observed_at, evidence=evidence) is None:
+        return False
+    enforce_identity_module_availability(target_id, persist=False)
+    save_state()
+    if old_realm != realm:
         await send_audit_log(
-            f"⚠️ 忽略疑似反向境界广播：{old_realm}→{realm}",
+            f"🌟 境界突破：{old_realm or '未获取'}→{realm}",
             scope="identity",
             send_as_id=target_id,
         )
-        return True
-
-    update_send_as_profile(target_id, realm=realm)
-    enforce_identity_module_availability(target_id, persist=False)
-    save_state()
-    await send_audit_log(
-        f"🌟 境界突破：{old_realm or '未获取'}→{realm}",
-        scope="identity",
-        send_as_id=target_id,
-    )
     return True
 
 
@@ -5592,17 +5589,27 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id, *, rep
         primary_parsed = _parse_identity_info_partial(text)
         battle_parsed = _parse_battle_power_info(text)
         parsed = _merge_identity_refresh_payload(primary_parsed or {}, battle_parsed or {}) if primary_parsed or battle_parsed else None
+        evidence = {
+            "source": "telegram", "chat_id": chat_id, "msg_id": current_msg_id,
+            "edited": str(context.get("event_type", "message")).lower() in {"edit", "edited", "message_edited"},
+        }
+        if not valid_evidence(evidence, reply_at):
+            return False
+        digest = hashlib.blake2s(text.encode("utf-8"), digest_size=12).hexdigest()
+        same_payload = digest == record.get("reply_hash")
+        if parsed and not observation_is_newer(record["reply_at"], record.get("profile_evidence"), reply_at, evidence):
+            return reply_at == record["reply_at"] and same_payload
         if current_msg_id not in record["reply_ids"]:
             record["reply_ids"] = [*record["reply_ids"], current_msg_id][-8:]
+            payload_msg_id = (record.get("profile_evidence") or {}).get("msg_id")
+            if payload_msg_id and payload_msg_id not in record["reply_ids"]:
+                record["reply_ids"] = [payload_msg_id, *record["reply_ids"][-7:]]
             _refresh.sync_tracking(request)
         if not parsed:
             return False
         if record["kind"] == "followup" and not battle_parsed:
             return False
-        digest = hashlib.blake2s(text.encode("utf-8"), digest_size=12).hexdigest()
-        if reply_at == record["reply_at"] and digest == record.get("reply_hash"):
-            return True
-        record.update(status="complete", reply_at=reply_at, reply_hash=digest, payload=parsed)
+        record.update(status="complete", reply_at=reply_at, reply_hash=digest, payload=parsed, profile_evidence=evidence)
         _refresh.clear_pending(request, kind=record["kind"])
         merged_payload = {}
         for item in sorted(request["commands"], key=lambda item: item["reply_at"]):
@@ -5633,7 +5640,7 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id, *, rep
     if not final_payload:
         # The primary card was consumed; the follow-up owns the missing fields.
         return True
-    if trigger_msg_ids:
+    if trigger_msg_ids and not same_payload:
         try:
             await send_audit_log(
                 f"🪪 已更新身份信息：{final_payload['daohao']}｜{final_payload['realm']}｜{final_payload['sect_name']}",

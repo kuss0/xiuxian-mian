@@ -31,7 +31,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, effect chronology, rift dispatch/unknown recovery, scoped result accounting and rebirth lifecycle repaired in candidate; legacy resource/farm/scalar results and remaining modules still pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history, delta recovery snapshots and atomic rift-result/inventory commits repaired; shared forced-stop durability and capacity still pending |
-| UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI and scoped profile-refresh lifecycle repaired in candidate; remaining profile writers, API/browser and supplemental-read contracts pending |
+| UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI, scoped profile-refresh lifecycle, breakthrough chronology and manual profile API ownership repaired in candidate; remaining profile/resource writers, API/browser and supplemental-read contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
 | Final review | Revisit every finding and changed contract; record real residual limits | Full suite, targeted fault replay, diff review, deployment comparison | Not started |
 
@@ -114,6 +114,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R60 | High | Rebirth request/select operations lack durable ownership before send, retry unknown requests, overwrite early outcomes, accept unrelated prompts and can block later deaths or reopen an already restored body | Fixed for new scoped rebirth operations in candidate; saved intent, strict receipts/parent ownership, cancellation/reload, known-unsent backoff, one-shot blind choice, authoritative server auto-choice, new-death admission, late-edit rejection and paused native replay pass; unowned legacy operations and shared R07 transport durability remain open |
 | R61 | High | Second-soul replies rely on scalar IDs, lose early results, repeat uncertain purge spending, overwrite newer cultivation after manual reads, and cross account/lifecycle boundaries; old warnings renew their choice window and passive handling bypasses direct checks | Fixed for scoped new operations in candidate; persisted command ownership, one direct/passive reply contract, strict native/replay clocks, bounded unknown recovery, manual/automatic coexistence, owner-aware UI reads and choice admission pass; full suite 6621 passed/1198 subtests, while legacy evidence/shared R07 remain open |
 | R62 | High | Explicit profile refresh reenters before its first receipt, loses early cards, accepts wrong-chat/account/stale replies, clears unrelated pending work and lets followup/retry awaits write through changed requests; passive cards can bypass routing and overwrite newer observations | Fixed for scoped profile requests in candidate; bounded request/command ownership, native early replay, one owned retry, guarded cleanup, per-field server clocks and temporary-SQLite reload covered; remaining profile writers, supplemental module flows and shared R07 stay open |
+| R63 | High | Breakthrough broadcasts and manual profile API writes bypass field chronology, match username prefixes or ambiguous fallback owners, and apply late responses after identity/credential changes; same-second cards can regress request payloads and evict their own evidence | Fixed for these profile observations in candidate; native new/edit provenance, bounded per-field source order, exact identity/request/config ownership, conservative API freshness, corruption/reload and same-second request/reply retention pass; resource reducers, other API workflows and shared R07 remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1812,6 +1813,71 @@ five monitor/control-only contracts need separate behavioral verification.
   durability remain open. No production files/config/DB, service, listener,
   remote branch, inventory API, skill or live automation switch changed.
 
+### R63 Evidence
+
+- Added 61 regression cases across profile observations and the existing
+  refresh lifecycle tests. The initial 25-case suite had 24 failures on R62:
+  native breakthrough rollback, prefix/case mismatches, untrusted broadcasts,
+  identity replacement/rebinding, stale credentials and wrong-role API fallback.
+  Evidence: `/tmp/xiuxian-rebuild-r63-reproduced-20260910.xml`. Further review
+  reproduced same-second ordering, malformed/ambiguous API owners, nested role
+  labels, duplicate row counts, lost partial progress and profile-evidence
+  eviction; those regressions are now covered, not waived.
+- `profile_observation.py` admits observations only for existing identities.
+  The existing profile-clock JSON retains nine bounded field groups and at most
+  one source descriptor per group. Telegram descriptors carry chat, message ID
+  and edit kind; API descriptors carry the original request start. Neither
+  unknown sources nor malformed clocks authorize an update. Existing scalar
+  clocks remain readable without inventing message/source metadata.
+- New-message and edited breakthrough dispatchers supply actual server-time
+  context. Exact, unique tags replace substring matching; previous username
+  aliases and case-insensitive matches remain supported. Wrong senders/chats,
+  missing/future server clocks and stale promotions cannot update the profile.
+  An unchanged realm still advances valid evidence, so an older card cannot
+  subsequently lower it. Ignored backward/stale broadcasts do not emit repeated
+  warnings. Accepted changes are saved before notification.
+- Same-second new Telegram messages are ordered only inside the same chat;
+  edits outrank their own original message, not unrelated same-second edits.
+  Cross-chat ties remain unresolved. API request starts are lower-bound local
+  observations, not server timestamps: their field clocks use whole seconds,
+  Telegram evidence wins a tie, and response arrival never manufactures
+  freshness. This does not certify the external API's caching behavior.
+- R62 command records retain the exact source of their current parsed payload.
+  A same-second older card cannot rewrite payload/pending/followup state.
+  Bounded unparsed-reply tracking cannot evict that payload's evidence ID.
+  Identical newer cards advance order without repeating the success notification;
+  genuine native edits still complete a partial card. SQLite save/reload retains
+  this evidence and the per-field chronology.
+- Explicit profile API reads capture each identity object/account, a local
+  request token, and credential generation/signature. They recheck before and
+  after every HTTP await, including errors. Changed owners stop further reads;
+  other still-owned roles in a bulk request continue. Old responses cannot
+  replace newer UI credentials, status or request ownership, including a UI
+  credential change away and back. Cancellation releases only the owned slot.
+- Returned IDs must be valid and unambiguous. A nameless payload may fall back
+  only through a unique selected cultivator query; `/api/me` and character lists
+  never inherit the selected identity. Shared display names can be resolved by
+  an explicit ID, but conflicting owners cannot. Current usernames are not
+  overwritten by API aliases. Profile updates and snapshots retain newer shared
+  values; duplicate rows count once and nested objects never become labels.
+  A later read failure preserves already committed progress; local parsing
+  failures do not mark the external login unhealthy. Inventory remains untouched.
+- Final focused tests: **181 passed, 5 subtests**, 1.72 seconds;
+  `/tmp/xiuxian-rebuild-r63-targeted-reviewed-20260910.xml`.
+  Initial full checkpoint: **6732 passed, 1202 subtests**, 92.14 seconds;
+  `/tmp/xiuxian-rebuild-r63-full-review-20260910.xml`.
+  Final full revalidation: **6738 passed, 1202 subtests**, 89.21 seconds;
+  `/tmp/xiuxian-rebuild-r63-full-reviewed-20260910.xml`.
+  Full selected-rule Ruff, model/test/tool compilation, dependency `pip check`
+  and diff checks pass.
+- This is profile observation and explicit read ownership, not an R07 transport
+  controller. Checkin sect changes, duel/Yinluo cultivation deltas and other
+  writers still require their own chronology/accounting review. API verification,
+  inventory refresh and keepalive use separate workflows and are not certified
+  by these profile-read tests. R11, remaining MiniApp workers, browser/operations
+  and whole-project final acceptance remain open. No production code/config/DB,
+  service, listener, remote branch, inventory API, skill or live switch changed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1856,6 +1922,11 @@ Legacy scalar-only UI followups do not acquire an account or original chat by
 guessing; they wait for explicit reconciliation or a new explicit read. Other
 profile writers have not all joined this chronological contract. These changes
 do not authorize a production schema migration, code-only rollback or deployment.
+R63 adds bounded `_evidence` descriptors inside the existing profile-clock JSON
+and an optional `profile_evidence` entry in R62 command records. No further SQL
+column is added. Older code does not understand the source descriptors; any
+future rollback needs a tested data-compatible procedure, not a code-only swap.
+Existing timestamp-only observations do not acquire guessed chat/message IDs.
 
 ## Next Review Priorities
 
@@ -2004,12 +2075,17 @@ do not authorize a production schema migration, code-only rollback or deployment
    R62 now covers explicit profile refresh reentry, early profile replies,
    request-scoped timeout/cleanup and followup/retry scheduler awaits. Revisit
    legacy second-soul evidence and notification/replay limits before deployment.
-10. R62 does not certify every profile writer or the supplemental modules'
-    independent state machines. Next inspect breakthrough/rebirth and other
-    profile writes for server-time provenance and cross-source ordering, then
-    remaining UI refresh/save contracts and MiniApp workers. Do not infer
-    complete UI or gameplay health from the scoped profile tests. R07 still
-    requires separate approval; do not introduce its shared controller here.
+10. R63 covers breakthrough broadcasts and explicit profile API observations,
+    including same-second ordering and request/config ownership. It does not
+    certify every profile writer or the supplemental modules' state machines.
+    Next inspect `features/checkin.py` sect writes and `features/duel.py` /
+    `features/yinluo.py` cultivation reducers for authoritative chronology and
+    idempotent accounting. Resource deltas must not be treated as absolute
+    profile snapshots just to reuse the observation helper. Separately audit
+    API verification, inventory refresh and keepalive awaits, then remaining
+    UI refresh/save contracts and MiniApp workers. Do not infer complete UI or
+    gameplay health from these tests. R07 still requires separate approval;
+    do not introduce its shared controller here.
 
 ## Completion Gate
 

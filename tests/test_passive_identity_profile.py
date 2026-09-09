@@ -283,12 +283,12 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(control, "save_state") as mock_save, \
              patch.object(control, "send_audit_log") as mock_audit:
-            handled = await control.handle_realm_breakthrough_broadcast(text, 1_700_000_000)
+            handled = await control.handle_realm_breakthrough_broadcast(text, 1_700_000_000, event=self._profile_event())
 
         self.assertTrue(handled)
         self.assertEqual("结丹后期", state_module.get_send_as_profile(1001)["realm"])
         mock_save.assert_not_called()
-        mock_audit.assert_awaited_once()
+        mock_audit.assert_not_awaited()
 
     async def test_realm_breakthrough_updates_forward_profile(self):
         state_module.update_send_as_profile(1001, daohao="空尘子", realm="结丹中期")
@@ -296,7 +296,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(control, "save_state") as mock_save, \
              patch.object(control, "send_audit_log") as mock_audit:
-            handled = await control.handle_realm_breakthrough_broadcast(text, 1_700_000_000)
+            handled = await control.handle_realm_breakthrough_broadcast(text, 1_700_000_000, event=self._profile_event())
 
         self.assertTrue(handled)
         self.assertEqual("结丹后期", state_module.get_send_as_profile(1001)["realm"])
