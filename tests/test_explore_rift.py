@@ -1290,6 +1290,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 "current_change_set_at": now - 120,
                 "current_prediction": "探索",
                 "current_prediction_until": now + 1800,
+                "current_prediction_set_at": now - 180,
                 "tianji_value": 9,
             }
             state_module.state["tianxing_auto_config"] = {

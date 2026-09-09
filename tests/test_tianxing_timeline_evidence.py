@@ -406,15 +406,16 @@ def test_timeline_receipt_survives_sqlite_reload_and_rejects_rebound_account(env
 
 def test_partial_terminal_panel_waits_for_target_field_in_final_edit(env):
     target = copy.deepcopy(seed(env, "predict", status="ack_timeout"))
-    panel = copy.deepcopy(seed(env, "panel", terminal_after_confirm=True))
+    panel = copy.deepcopy(seed(env, "panel", terminal_after_confirm=True, send_msg_id=ROOT_ID + 10, send_started_at=NOW - 6, sent_at=NOW - 5))
     env.identity["tianxing_timeline_state"].update(
         active_step_index=1, steps=[target, panel],
     )
+    ctx = record_panel_query(env)
     before = copy.deepcopy(env.identity["tianxing_timeline_state"])
-    assert apply("panel", ctx=context(), text=PARTIAL_PANEL)
+    assert apply("panel", ctx=ctx, text=PARTIAL_PANEL)
     assert env.identity["tianxing_timeline_state"] == before
     text = "\u3010\u5929\u673a\u76d8\u3011\n\u5f53\u524d\u63a8\u547d: \u65e0\n\u5929\u673a\u503c: 23"
-    assert apply("panel", ctx=context(), text=text, now=NOW + 5)
+    assert apply("panel", ctx=ctx, text=text, now=NOW + 5)
     assert env.identity["tianxing_timeline_state"]["phase"] == "blocked_replan"
 
 

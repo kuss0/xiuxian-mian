@@ -29,7 +29,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
-| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Pending |
+| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry and calibration repaired in candidate; general reducer chronology and remaining modules still pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
@@ -105,6 +105,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R51 | High | Observation normalization deletes prediction-consumption evidence based solely on the latest action label, resurrecting an old effect and permitting downstream release after restart | Fixed in candidate; normalization preserves consumption and only a strictly newer prediction timestamp supersedes it; real unrelated replies, read-only status, route admission and SQLite reload are covered; parsed-result provenance and chronology remain open |
 | R52 | High | Auto/craft/retreat replies update authoritative Tianxing fields before validating the pending operation, so rejected roots/chats/accounts/arguments still change effects, resources and timestamps | Fixed for pending auto/farm operations in candidate; ownership and terminal-command checks run before observation writes, including exact integral references and early receipt adoption; active timeline provenance and general post-completion ordering remain open |
 | R53 | High | Active Tianxing timeline steps confirm from merged cached fields, accept unowned negative replies, and recover a nearby bot reply without an actual reply root | Fixed for active-step reply confirmation in candidate; operation receipts precede state writes, direct and panel-query evidence is correlated, early results replay from bounded trusted logs, and partial calibration fields remain pending; downstream release/calibration shortcuts and general reducer chronology remain open |
+| R54 | High | Effect deadlines include retry padding or invented lifetimes; cached release/observation fields bypass unresolved calibration, while partial effect replies lose native pending/guard ownership and late originals cannot settle after calibration timeout | Fixed for scoped expiry, downstream admission and retained-operation reconciliation in candidate; exact effect clocks, owned complete panels, partial/final native replay, late success/CD/refusal and SQLite reload are covered; general field provenance and post-completion chronology remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1321,6 +1322,44 @@ five monitor/control-only contracts need separate behavioral verification.
   diff checks pass. No deployment, service restart, push, game request,
   production configuration/DB write or skill edit was performed.
 
+### R54 Evidence
+
+- Initial expiry/admission tests reproduced 38 failures among 53 cases before
+  implementation. Effect deadlines no longer receive the 60-second retry
+  buffer or default eight/twenty-four-hour lifetimes. `change pending` timers
+  are parsed only from their own text segment, not unrelated business CD text.
+- Freshness requires a valid effect timestamp and reported future deadline.
+  Last-action labels, whole-panel observation times and release records cannot
+  fill missing timestamps. Unknown-lifetime predictions still block conflicting
+  routes, without authorizing consumption or inventing an expiration time.
+  Dirty/future/boolean clocks cannot authorize duel or wild-training release.
+  Deep retreat remains independent of Tianxing effects.
+- Removed both cache-based calibration/route-result shortcuts. An unresolved
+  timeline mutation prevents downstream release and cannot be discarded for
+  a newly planned send after its calibration query times out. A complete
+  query must retain the same account/chat, its root and actual dispatch order;
+  a target-matching panel confirms the original operation rather than treating
+  it as unconfirmed. Original success or refusal/CD can reconcile the retained
+  operation, including after `active_step` has been cleared.
+- Native routed/log replay reproduced eight partial-effect failures: the
+  original mutation's native pending or guard was cleared before the final
+  edit. Terminal result matching now requires the reported effect deadline;
+  retained mutation steps participate in pending detection during calibration.
+  A follow-up two-case reproducer caught abandoned read-only steps keeping
+  completed queries pending; historical scanning is limited to mutations.
+- The 122-case R54 suite includes SQLite roundtrips between partial/final
+  replies on both native paths, and before/after late success, same-route CD
+  and conflicting-route refusal. Invalid original receipt clocks, cached
+  fields, effect-expiration boundaries and continued deep-retreat availability
+  are covered. Positive legacy fixtures now supply actual effect times and
+  receipt evidence; tests for removed shortcuts assert retained uncertainty.
+- Related regression set: **1015 passed, 20 subtests passed** in 6.40 seconds.
+  Final full suite (2026-09-09): **5920 passed, 1198 subtests passed**, 85.59
+  seconds. JUnit: `/tmp/xiuxian-rebuild-r54-final-20260909.xml`.
+  Selected Ruff checks over model/tests/tools, changed-file compilation and
+  `git diff --check` pass. No deployment, restart, push, production write,
+  game request, listener start or skill edit was performed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1332,6 +1371,10 @@ Legacy active Tianxing steps without account/chat/receipt metadata are not
 silently attributed to the current account. Their registered evidence must be
 reconciled before any later deployment; inventing missing receipt fields is
 not an approved migration strategy.
+Legacy effect state without a valid `set_at` or reported expiry can no longer
+authorize downstream work through a release-cache fallback. Resolve it from
+existing anchored evidence or separately approved calibration before deployment;
+do not manufacture effect clocks from a last-action label or current time.
 Checkin cleanup JSON also changes from bare IDs to chat/message pairs; even
 without a same-ID collision, that data must not be handed to the old loader
 and cleanup code during a code-only rollback.
@@ -1445,10 +1488,12 @@ and cleanup code during a code-only rollback.
    R52 adds pre-write ownership checks for pending automatic/craft/retreat
    operations. R53 extends this to active timeline reply confirmation, direct
    refusal/CD handling, query-based calibration and bounded receipt replay.
-   Continue with downstream admission: the separate calibration-release
-   shortcut, route-result invalidation and fresh-effect helpers still read
-   merged snapshots or cached timestamp fallbacks. R53 does not establish
-   field-level provenance for every observation or prove those release paths.
+   R54 removes the separate cache-based calibration-release and route-result
+   invalidation shortcuts, requires explicit effect clocks for downstream
+   admission and retains unresolved mutation ownership through partial replies
+   and calibration timeout. Native reply/edit and SQLite reload tests cover
+   these paths; they do not establish field-level provenance for every
+   observation or replace general chronological reconciliation.
    Replies after pending completion, older-than-last farm results and old
    prediction results still need durable idempotence and chronology tests.
 

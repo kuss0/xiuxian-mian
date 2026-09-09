@@ -46,6 +46,7 @@ from .cave_treasure_runtime import (
 )
 from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
 from .tianxing import (
+    _has_fresh_change_evidence,
     _has_fresh_prediction_evidence,
     apply_tianxing_passive,
     build_tianxing_consume_window,
@@ -218,23 +219,16 @@ def _has_active_tianxing_explore_change(now):
     if not state.get("tianxing_enabled"):
         return False
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    return (
-        str(observed.get("current_change") or "").strip() == "探索"
-        and float(observed.get("current_change_until", 0) or 0) > float(now or 0)
-    )
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    return _has_fresh_change_evidence("探索", observed, timeline, now)
 
 
 def _has_active_tianxing_explore_prediction(now):
     if not state.get("tianxing_enabled"):
         return False
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
-    if str(observed.get("current_prediction") or "").strip() != "探索":
-        return False
-    if float(observed.get("current_prediction_until", 0) or 0) <= float(now or 0):
-        return False
-    consumed_at = float(observed.get("prediction_consumed_at", 0) or 0)
-    set_at = float(observed.get("current_prediction_set_at", 0) or 0)
-    return consumed_at <= 0 or consumed_at < set_at
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    return _has_fresh_prediction_evidence("探索", observed, timeline, now)
 
 
 def _effective_wild_training_strategy(now):

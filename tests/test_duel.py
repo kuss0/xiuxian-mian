@@ -2312,8 +2312,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 "fixed_star": "贪狼",
                 "current_change": "斗法",
                 "current_change_until": now + 3600,
+                "current_change_set_at": now - 60,
                 "current_prediction": "斗法",
                 "current_prediction_until": now + 1800,
+                "current_prediction_set_at": now - 60,
                 "tianji_value": 9,
             }
             state_module.state["tianxing_auto_config"] = {

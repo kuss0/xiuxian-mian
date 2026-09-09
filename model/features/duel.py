@@ -28,7 +28,8 @@ from ..state import (
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .tianxing import (
-    _has_active_unconsumed_prediction,
+    _has_fresh_prediction_evidence,
+    _tianxing_timeline_mutation_pending,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     normalize_tianxing_auto_config,
@@ -520,7 +521,8 @@ def _prepared_tianxing_duel_priority_owner(target, now):
             observed = normalize_tianxing_observation(state.get("tianxing_observation"))
             if str(observed.get("current_prediction") or "").strip() != "斗法":
                 continue
-            if not _has_active_unconsumed_prediction("斗法", observed, now):
+            timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+            if _tianxing_timeline_mutation_pending(timeline) or not _has_fresh_prediction_evidence("斗法", observed, timeline, now):
                 continue
             prediction_set_at = float(observed.get("current_prediction_set_at", 0) or 0)
             candidates.append((max(now, due_at), prediction_set_at or now, identity_id))

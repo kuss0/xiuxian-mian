@@ -388,6 +388,7 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["tianxing_observation"] = {
                 "current_change": "探索",
                 "current_change_until": now + 3600,
+                "current_change_set_at": now - 60,
             }
             self.assertEqual("深入", wild_training._effective_wild_training_strategy(now))
 
@@ -403,6 +404,7 @@ class WildTrainingMiniAppTests(unittest.IsolatedAsyncioTestCase):
                 "prediction_consumed_at": now - 10,
                 "current_change": "探索",
                 "current_change_until": now + 6 * 3600,
+                "current_change_set_at": now - 10,
             }
             self.assertFalse(wild_training._has_active_tianxing_explore_prediction(now))
             self.assertTrue(wild_training._has_active_tianxing_explore_change(now))

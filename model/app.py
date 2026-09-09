@@ -3208,6 +3208,7 @@ async def _handle_routed_reply_event(
     ) or is_identity_info_waiting_reply or is_tianxing_waiting_reply(
         text, now=now, family=matched_family,
         command=getattr(reply_to, "raw_text", None) if int(getattr(reply_to, "id", 0) or 0) == int((reply_context or {}).get("root_msg_id") or 0) else None,
+        reply_context=dict(reply_context or {}, chat_id=event.chat_id),
     )
     claimed = _claim_runtime_event(event, scope=_routed_reply_scope(reply_context, event_kind, text, replay=replay))
     if not claimed:

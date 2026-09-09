@@ -346,19 +346,30 @@ def test_late_receipt_preserves_unrelated_farm_bookkeeping(timeline_env):
 
 
 @pytest.mark.parametrize("change", ["removed", "replaced", "rebound", "module_disabled", "plan"])
-def test_scheduler_rechecks_after_calibration_await(timeline_env, monkeypatch, change):
+def test_scheduler_rechecks_after_actual_calibration_send(timeline_env, change):
     expected = None
+    timeline = timeline_env.identity["tianxing_timeline_state"]
+    panel = dict(timeline["active_step"], action="panel", arg="", route="", command=tianxing.CMD_TIANXING_PANEL)
+    timeline.update(active_step=panel, steps=[copy.deepcopy(panel)])
 
-    async def calibration(timeline, *_args, **_kwargs):
+    async def calibration(*_args, **_kwargs):
         nonlocal expected
         invalidate(timeline_env, change)
         expected = copy.deepcopy(state_module._meta_state)
-        return False, timeline
+        return SimpleNamespace(id=4491, sent_at=NOW, chat_id=CHAT_ID)
 
-    monkeypatch.setattr(tianxing, "_release_tianxing_calibration_if_route_ready", calibration)
+    timeline_env.send.side_effect = calibration
     asyncio.run(run_scheduler())
-    timeline_env.send.assert_not_awaited()
-    assert state_module._meta_state == expected
+    timeline_env.send.assert_awaited_once()
+    if change == "module_disabled":
+        current = copy.deepcopy(state_module._meta_state)
+        actual_timeline = current["identity_states"][IDENTITY_ID].pop("tianxing_timeline_state")
+        expected["identity_states"][IDENTITY_ID].pop("tianxing_timeline_state")
+        assert current == expected
+        assert actual_timeline["active_step"]["send_msg_id"] == 4491
+        assert actual_timeline["active_step"]["status"] == "sent_waiting_ack"
+    else:
+        assert state_module._meta_state == expected
 
 
 def test_paused_parent_cancels_queued_tianxing_step(timeline_env, monkeypatch):
@@ -431,10 +442,10 @@ def test_unknown_sending_survives_sqlite_reload_without_resending(timeline_env, 
     timeline_env.send.assert_not_awaited()
 
 
-def test_missing_prediction_expiry_keeps_existing_set_time_inference():
+def test_missing_prediction_expiry_cannot_be_inferred_from_set_time():
     assert tianxing._prediction_effective_until("探索", {
         "current_prediction": "探索", "current_prediction_set_at": NOW - 60,
-    }, NOW) == NOW - 60 + tianxing.TIANXING_PREDICTION_SEC
+    }, NOW) == 0
 
 
 @pytest.mark.parametrize("until", [NOW - 1, NOW + 30])
