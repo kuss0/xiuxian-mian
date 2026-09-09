@@ -739,6 +739,63 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual("unsent", block["status"])
                     self.assertNotIn("private-value", str(block))
 
+    async def test_profile_refresh_uses_real_preparation_and_owner_guards(self):
+        from model import control, identity_refresh
+
+        identity_id = 301299112
+        notify = runtime._notify_game_command_sent_observers
+
+        class ProfileClient(_FakeClient):
+            async def __call__(self, request):
+                await super().__call__(request)
+                return SimpleNamespace(id=910000 + len(self.sent_requests))
+
+        for mode in ("keep", "replace", "rebind", "request"):
+            with self.subTest(mode=mode):
+                client = ProfileClient([])
+                original_resolve = client.get_input_entity
+                captured = {}
+
+                async def resolve(entity_id):
+                    result = await original_resolve(entity_id)
+                    if entity_id == identity_id and mode != "keep" and not captured:
+                        if mode == "replace":
+                            state_module._meta_state["identity_states"][identity_id] = copy.deepcopy(identity)
+                        elif mode == "rebind":
+                            state_module.set_identity_account(identity_id, 7002)
+                        else:
+                            identity_refresh.begin(identity_id, runtime.time.time())
+                        captured.update(copy.deepcopy(state_module.get_identity_state(identity_id)))
+                    return result
+
+                client.get_input_entity = resolve
+                with (
+                    self._prepared_send_context(client),
+                    state_module.use_identity(identity_id) as identity,
+                    patch.object(control, "save_state", return_value=True),
+                    patch.object(control, "send_game_command", runtime.send_game_command),
+                    patch.object(control, "remember_second_soul_status_read", new=AsyncMock(return_value=True)),
+                    patch.object(identity_refresh, "get_game_group_id", return_value=123456),
+                    patch.object(identity_refresh, "_owners", {}),
+                    patch.object(identity_refresh, "_live_calls", set()),
+                    patch.object(runtime, "_notify_game_command_sent_observers", notify),
+                    patch.object(runtime, "_GAME_COMMAND_SENT_OBSERVERS", [identity_refresh.observe_sent]),
+                    patch.object(runtime, "_GAME_COMMAND_PRE_SEND_GUARDS", [identity_refresh.pre_send_guard]),
+                ):
+                    identity.clear()
+                    identity.update(copy.deepcopy(state_module.IDENTITY_STATE_TEMPLATE))
+                    ok, _message = await control.refresh_identity_info(identity_id)
+                    if mode == "keep":
+                        self.assertTrue(ok)
+                        self.assertEqual(3, len(client.sent_requests))
+                        request = identity_refresh.request_for(identity_id)
+                        self.assertEqual(910001, request["commands"][0]["msg_id"])
+                        self.assertEqual(request["id"], identity["pending_tasks"][(123456, 910001)]["chain_id"])
+                    else:
+                        self.assertFalse(ok)
+                        self.assertEqual([], client.sent_requests)
+                        self.assertEqual(captured, state_module.get_identity_state(identity_id))
+
     async def test_explicit_send_for_already_disabled_identity_keeps_existing_manual_behavior(self):
         identity_id = 301299112
         client = _FakeClient(["ok"])

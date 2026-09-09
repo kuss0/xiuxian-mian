@@ -31,7 +31,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
 | Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, effect chronology, rift dispatch/unknown recovery, scoped result accounting and rebirth lifecycle repaired in candidate; legacy resource/farm/scalar results and remaining modules still pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history, delta recovery snapshots and atomic rift-result/inventory commits repaired; shared forced-stop durability and capacity still pending |
-| UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
+| UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI and scoped profile-refresh lifecycle repaired in candidate; remaining profile writers, API/browser and supplemental-read contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
 | Final review | Revisit every finding and changed contract; record real residual limits | Full suite, targeted fault replay, diff review, deployment comparison | Not started |
 
@@ -113,6 +113,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R59 | High | Rift final-result deduplication remembers only the last text hash; interleaved results and edits repeat rewards or regress cooldowns, same IDs collide across chats, completion and inventory save separately, and escape handling writes after an awaited notification | Fixed for new scoped rift-result evidence in candidate; bounded command receipts, ordered revisions, atomic completion/inventory saves, rollback/reload, notification cancellation and native replay pass; pre-migration accounting, legacy scalar ownership and rebirth operations remain open |
 | R60 | High | Rebirth request/select operations lack durable ownership before send, retry unknown requests, overwrite early outcomes, accept unrelated prompts and can block later deaths or reopen an already restored body | Fixed for new scoped rebirth operations in candidate; saved intent, strict receipts/parent ownership, cancellation/reload, known-unsent backoff, one-shot blind choice, authoritative server auto-choice, new-death admission, late-edit rejection and paused native replay pass; unowned legacy operations and shared R07 transport durability remain open |
 | R61 | High | Second-soul replies rely on scalar IDs, lose early results, repeat uncertain purge spending, overwrite newer cultivation after manual reads, and cross account/lifecycle boundaries; old warnings renew their choice window and passive handling bypasses direct checks | Fixed for scoped new operations in candidate; persisted command ownership, one direct/passive reply contract, strict native/replay clocks, bounded unknown recovery, manual/automatic coexistence, owner-aware UI reads and choice admission pass; full suite 6621 passed/1198 subtests, while legacy evidence/shared R07 remain open |
+| R62 | High | Explicit profile refresh reenters before its first receipt, loses early cards, accepts wrong-chat/account/stale replies, clears unrelated pending work and lets followup/retry awaits write through changed requests; passive cards can bypass routing and overwrite newer observations | Fixed for scoped profile requests in candidate; bounded request/command ownership, native early replay, one owned retry, guarded cleanup, per-field server clocks and temporary-SQLite reload covered; remaining profile writers, supplemental module flows and shared R07 stay open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1755,6 +1756,62 @@ five monitor/control-only contracts need separate behavioral verification.
   remain open. No production code/config/DB, service, listener, remote branch,
   inventory API, skill or live automation switch changed.
 
+### R62 Evidence
+
+- Added 55 dedicated lifecycle/record/parse/replay cases and one actual
+  transport-preparation test with four subtests. The first 14 regressions
+  failed on the previous candidate, including early-card loss, pre-receipt
+  double-click admission, followup reentry, cross-chat cleanup, account changes,
+  unknown/cancelled sends and treating zero current cultivation as missing.
+  Initial evidence: `/tmp/xiuxian-rebuild-r62-reproduced-20260910.xml`.
+- `identity_info_refresh` retains one explicit request, with identity, account,
+  original chat and an independent request ID. Primary and followup reads each
+  have at most two command records; each command retains at most eight reply
+  IDs. Save-before-dispatch reserves the operation. Caller and queue checks use
+  the original identity object, request generation and immutable route/command
+  fields, including after awaits and at the existing final RPC admission.
+  Header or record rewrites do not become a new owner merely by reusing a dict.
+- Normal transport receipts use the existing sent observer. The actual early
+  reply cache/replayer test first rejects an unconfirmed root, then applies the
+  card after its exact receipt, without resending. A late receipt after caller
+  cancellation can likewise complete the retained read. Normal completion does
+  not cancel the two existing supplemental level reads; they keep the same
+  request owner and original route. R61 still owns the second-soul read reducer.
+- Profile and battle-power requests retain their existing one-retry limit.
+  Only their source-tagged pending rows enter the scoped retry reservation.
+  Concurrent retries, an already completed original result, request replacement
+  and owner changes stop queued work. Unknown retry outcomes remain held;
+  definitely-unsent retries honor backoff without charging a sent retry. New
+  explicit refreshes retire the old owned rows' retry permission, not another
+  chat's rows. Unrelated sender/retry families and Attempt decisions are unchanged.
+- Direct results require the exact request account, chat, command sender/root
+  and server event time. Cleanup uses original chat/message pairs and rechecks
+  ownership inside the account RPC and after its await. The broad same-family
+  pending deletion and receipt-time request-generation resets were removed.
+  Old incomplete edits no longer postpone an already scheduled followup.
+- Native passive cards now carry verified source context and server clocks;
+  the fallback does not reapply a rejected automatic profile reply. Valid
+  manual/unthreaded cards and prior username aliases remain supported. Six
+  bounded per-field clocks keep newer profile observations from being overwritten
+  by delayed primary/followup data; a followup does not restamp primary values.
+  Malformed requests cannot authorize sends; malformed clocks cannot be reported
+  as a successful profile refresh. Confirmed results are saved before notification, and
+  notifier failure cannot put the query back in flight.
+- Dedicated and related final tests: **371 passed, 308 subtests**, 11.61 seconds;
+  `/tmp/xiuxian-rebuild-r62-targeted-reviewed-20260910.xml`. Initial full
+  checkpoint: **6665 passed, 1198 subtests**, 92.03 seconds;
+  `/tmp/xiuxian-rebuild-r62-full-review-20260910.xml`.
+  Final full revalidation after immutable-operation and native-preparation
+  review: **6677 passed, 1202 subtests**, 89.91 seconds;
+  `/tmp/xiuxian-rebuild-r62-full-reviewed-20260910.xml`. Full selected-rule
+  Ruff, code/test/tool compilation and diff checks pass.
+- This is a bounded, read-only business lifecycle, not an R07 shared durable
+  send controller. Other profile writers (including breakthrough/rebirth and
+  API-derived updates), supplemental modules' independent retry/reply flows,
+  remaining MiniApp workers, UI/operational acceptance and forced-stop transport
+  durability remain open. No production files/config/DB, service, listener,
+  remote branch, inventory API, skill or live automation switch changed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1793,6 +1850,12 @@ are retained for explicit reconciliation; switching on or restarting does not
 erase them. An old no-account warning cannot authorize a new-account choice.
 Resolve these holds before any approved deployment rather than inventing
 owners, dropping pending work or interpreting missing evidence as failure.
+Profile refresh adds two identity-runtime JSON columns for its bounded request
+and field clocks. The candidate tests save/reload against temporary SQLite only.
+Legacy scalar-only UI followups do not acquire an account or original chat by
+guessing; they wait for explicit reconciliation or a new explicit read. Other
+profile writers have not all joined this chronological contract. These changes
+do not authorize a production schema migration, code-only rollback or deployment.
 
 ## Next Review Priorities
 
@@ -1938,10 +2001,15 @@ owners, dropping pending work or interpreting missing evidence as failure.
    resource idempotence separately; do not infer those guarantees from R59/R60.
 9. R61 covers second-soul operation/reply/choice ownership, unknown spending,
    server clocks, manual-result coexistence and the UI level-read owner chain.
-   It does not certify all `control.py` refresh behavior: continue through
-   simultaneous refreshes before the first receipt, early profile replies,
-   request-scoped timeout/cleanup and followup scheduler awaits. Revisit legacy
-   second-soul evidence and notification/replay limits before deployment.
+   R62 now covers explicit profile refresh reentry, early profile replies,
+   request-scoped timeout/cleanup and followup/retry scheduler awaits. Revisit
+   legacy second-soul evidence and notification/replay limits before deployment.
+10. R62 does not certify every profile writer or the supplemental modules'
+    independent state machines. Next inspect breakthrough/rebirth and other
+    profile writes for server-time provenance and cross-source ordering, then
+    remaining UI refresh/save contracts and MiniApp workers. Do not infer
+    complete UI or gameplay health from the scoped profile tests. R07 still
+    requires separate approval; do not introduce its shared controller here.
 
 ## Completion Gate
 

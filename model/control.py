@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import html
 import json
 import math
@@ -10,7 +11,10 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import identity_refresh as _refresh
 from .message_keys import find_message_key, message_key_parts, pop_message_record
+from .message_log_recovery import sender_matches_identity
+from .verified_event import telegram_event_timestamp
 from .module_manifest import get_module_manifest, is_module_archived
 from .config import (
     ADMIN_IDS,
@@ -271,6 +275,7 @@ from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
     build_ui_login_url,
+    classify_game_send_block,
     clear_identity_runtime_tracking,
     clear_pending_tasks_by_commands,
     flush_low_priority_audit_summary,
@@ -281,6 +286,8 @@ from .runtime import (
     console_log,
     should_pause_for_bot_health,
     issue_ui_login_token,
+    register_game_command_pre_send_guard,
+    register_game_command_sent_observer,
     reply_log_group_message,
     send_audit_log,
     send_game_command,
@@ -293,6 +300,8 @@ from .state import (
     get_current_identity_id,
     get_dungeon_join_run_state,
     get_game_group_id,
+    get_game_group_ids,
+    get_game_bot_ids,
     get_identity_account,
     get_identity_display_name,
     get_identity_enabled,
@@ -4950,6 +4959,14 @@ def _is_identity_refresh_command(command):
 
 
 def _get_identity_refresh_tracking_ids():
+    request = _refresh.request_for(get_current_identity_id())
+    if request is not None:
+        if request["status"] != "active":
+            return set()
+        return {
+            msg_id for record in request["commands"]
+            for msg_id in [record["msg_id"], *record["reply_ids"]] if msg_id > 0
+        }
     tracked_ids = {
         int(msg_id)
         for msg_id in state.get("identity_info_reply_msg_ids", [])
@@ -4961,45 +4978,9 @@ def _get_identity_refresh_tracking_ids():
     return tracked_ids
 
 
-def _collect_identity_refresh_trigger_msg_ids():
-    return sorted(
-        msg_id for msg_id in _get_identity_refresh_tracking_ids()
-        if find_message_key(state.get("my_msg_ids", {}), msg_id) is not None
-    )
-
-
-def _track_identity_refresh_message(msg_id):
-    msg_id = int(msg_id or 0)
-    if msg_id <= 0:
-        return
-    tracked_ids = _get_identity_refresh_tracking_ids()
-    if msg_id not in tracked_ids:
-        tracked_ids.add(msg_id)
-        state["identity_info_reply_msg_ids"] = sorted(tracked_ids)
-    state["last_identity_info_msg_id"] = msg_id
-    mark_dirty()
-
-
-def _clear_identity_refresh_runtime(*, error="", clear_pending=True):
-    state["last_identity_info_msg_id"] = 0
-    state["identity_info_reply_msg_ids"] = []
-    state["identity_info_followup_due_at"] = 0
-    state["identity_info_primary_payload"] = {}
-    state["identity_info_last_error"] = (error or "").strip()
-    if clear_pending:
-        remove_ids = [
-            msg_id
-            for msg_id, pending in state.get("pending_tasks", {}).items()
-            if _is_identity_refresh_command(get_pending_command(pending))
-        ]
-        for msg_id in remove_ids:
-            state["pending_tasks"].pop(msg_id, None)
-    mark_dirty()
-
-
 def _schedule_identity_refresh_followup(now):
     current_due_at = float(state.get("identity_info_followup_due_at", 0) or 0)
-    if current_due_at > now:
+    if current_due_at > 0:
         return current_due_at
     due_at = now + random.randint(IDENTITY_INFO_FOLLOWUP_DELAY_MIN_SEC, IDENTITY_INFO_FOLLOWUP_DELAY_MAX_SEC)
     state["identity_info_followup_due_at"] = due_at
@@ -5010,7 +4991,24 @@ def _schedule_identity_refresh_followup(now):
 def _get_identity_info_refresh_status(send_as_id, now=None):
     if now is None:
         now = time.time()
+    if not has_identity(send_as_id):
+        return {"pending": False, "error": "身份不存在"}
     with use_identity(send_as_id):
+        request = _refresh.request_for(send_as_id)
+        if request is not None:
+            live = _refresh.has_live_call(request)
+            pending = request["status"] == "active" or live
+            last_activity = max([
+                request["requested_at"],
+                *(max(record["started_at"], record["sent_at"]) for record in request["commands"]),
+            ])
+            expired = pending and not live and now - last_activity >= IDENTITY_INFO_REFRESH_TIMEOUT_SEC
+            return {
+                "pending": pending and not expired,
+                "error": IDENTITY_INFO_REFRESH_ERROR_TEXT if expired else state.get("identity_info_last_error", ""),
+            }
+        if state.get("identity_info_refresh"):
+            return {"pending": False, "error": "刷新归属已变更或记录异常，请重新获取"}
         requested_at = float(state.get("identity_info_last_requested_at", 0) or 0)
         has_pending_cmd = any(_is_identity_refresh_command(get_pending_command(pending)) for pending in state["pending_tasks"].values())
         waiting_reply = bool(_get_identity_refresh_tracking_ids())
@@ -5184,52 +5182,51 @@ def _update_identity_profile_from_refresh_payload(send_as_id, payload, now):
     has_battle_power = bool(normalized_payload.get("battle_power_text"))
     has_spiritual_root = bool(normalized_payload.get("spiritual_root_type"))
     has_realm = bool(normalized_payload.get("realm")) and ("realm" in raw_payload or has_xiuwei)
-    update_send_as_profile(
-        send_as_id,
-        daohao=normalized_payload["daohao"] if normalized_payload["daohao"] else None,
-        realm=normalized_payload["realm"] if has_realm else None,
-        spiritual_root_type=normalized_payload["spiritual_root_type"] if has_spiritual_root else None,
-        spiritual_root_attrs=normalized_payload["spiritual_root_attrs"] if has_spiritual_root else None,
-        replica_professions=normalized_payload["replica_professions"] if has_spiritual_root else None,
-        sect_name=normalized_payload["sect_name"] if normalized_payload["sect_name"] else None,
-        xiuwei_current=normalized_payload.get("xiuwei_current", 0) if has_xiuwei else None,
-        xiuwei_max=normalized_payload.get("xiuwei_max", 0) if has_xiuwei else None,
-        battle_power_text=normalized_payload.get("battle_power_text", "") if has_battle_power else None,
-        battle_power_value=normalized_payload.get("battle_power_value", 0) if has_battle_power else None,
-        sect_updated_at=now,
+    identity = get_identity_state(send_as_id)
+    clocks = identity.get("identity_profile_observed_at", {})
+    if not isinstance(clocks, dict) or _refresh.number(now) <= 0:
+        return None
+    clocks = dict(clocks)
+    groups = (
+        ("daohao", bool(normalized_payload["daohao"]), ("daohao",)),
+        ("realm", has_realm, ("realm",)),
+        ("spiritual_root", has_spiritual_root, ("spiritual_root_type", "spiritual_root_attrs", "replica_professions")),
+        ("sect_name", bool(normalized_payload["sect_name"]), ("sect_name",)),
+        ("xiuwei", has_xiuwei, ("xiuwei_current", "xiuwei_max")),
+        ("battle_power", has_battle_power, ("battle_power_text", "battle_power_value")),
     )
+    if clocks.keys() - {key for key, _present, _fields in groups} or any(
+        type(value) not in {int, float} or value < 0 or _refresh.number(value) != value
+        for value in clocks.values()
+    ):
+        return None
+    changes = {}
+    for key, present, fields in groups:
+        if present and now > _refresh.number(clocks.get(key, 0)):
+            changes.update({field: normalized_payload[field] for field in fields})
+            clocks[key] = now
+    if changes:
+        update_send_as_profile(
+            send_as_id, **changes,
+            sect_updated_at=max(now, _refresh.number(get_send_as_profile(send_as_id).get("sect_updated_at", 0))),
+        )
+        identity["identity_profile_observed_at"] = clocks
+        mark_dirty()
     return normalized_payload
 
 
-def _begin_identity_refresh_runtime(now):
-    state["identity_info_last_error"] = ""
-    state["identity_info_last_requested_at"] = float(now or 0)
-    state["identity_info_reply_msg_ids"] = []
-    state["last_identity_info_msg_id"] = 0
-    state["identity_info_followup_due_at"] = 0
-    state["identity_info_primary_payload"] = {}
-    mark_dirty()
-
-
-def _record_identity_refresh_message(msg_id, *, requested_at=None, clear_followup=False):
-    sent_msg_id = int(msg_id or 0)
-    tracked_ids = _get_identity_refresh_tracking_ids()
-    if sent_msg_id > 0:
-        tracked_ids.add(sent_msg_id)
-    if requested_at is not None:
-        state["identity_info_last_requested_at"] = float(requested_at or 0)
-    if clear_followup:
-        state["identity_info_followup_due_at"] = 0
-    state["last_identity_info_msg_id"] = sent_msg_id
-    state["identity_info_reply_msg_ids"] = sorted(tracked_ids)
-    state["identity_info_last_error"] = ""
-    mark_dirty()
-
-
-def _finalize_identity_refresh_success(send_as_id, payload, now):
-    final_payload = _update_identity_profile_from_refresh_payload(send_as_id, payload, now)
-    trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
-    _clear_identity_refresh_runtime()
+def _finalize_identity_refresh_success(send_as_id):
+    request = _refresh.request_for(send_as_id)
+    if request is not None:
+        for record in sorted(request["commands"], key=lambda item: item["reply_at"]):
+            if record.get("payload"):
+                if _update_identity_profile_from_refresh_payload(send_as_id, record["payload"], record["reply_at"]) is None:
+                    _refresh.finish(request, error="身份资料时间记录异常，保留回包等待核对")
+                    return None, []
+    final_payload = _normalize_identity_refresh_payload(get_send_as_profile(send_as_id))
+    trigger_msg_ids = _refresh.trigger_keys(request) if request is not None else []
+    if request is not None:
+        _refresh.finish(request)
     return final_payload, trigger_msg_ids
 
 
@@ -5237,7 +5234,7 @@ def _get_identity_refresh_missing_fields(payload):
     missing_fields = []
     for field_name in IDENTITY_REFRESH_REQUIRED_FIELDS:
         if field_name == "xiuwei":
-            if int(payload.get("xiuwei_current") or 0) <= 0 or int(payload.get("xiuwei_max") or 0) <= 0:
+            if int(payload.get("xiuwei_current") or 0) < 0 or int(payload.get("xiuwei_max") or 0) <= 0:
                 missing_fields.append(field_name)
             continue
         if not str(payload.get(field_name) or "").strip():
@@ -5274,7 +5271,7 @@ def _match_identity_profile_owner(text):
     return matched[0] if len(matched) == 1 else None
 
 
-async def handle_passive_identity_profile_card(text, now):
+async def handle_passive_identity_profile_card(text, now, *, event=None):
     primary_payload = _parse_identity_info_partial(text)
     battle_payload = _parse_battle_power_info(text)
     if not primary_payload and not battle_payload:
@@ -5282,13 +5279,25 @@ async def handle_passive_identity_profile_card(text, now):
     target_id = _match_identity_profile_owner(text)
     if target_id is None:
         return False
+    context = getattr(event, "reply_context", {})
+    context = context if isinstance(context, dict) else {}
+    observed_at = telegram_event_timestamp(event, getattr(event, "event_type", "message"))
+    if (
+        getattr(event, "sender_id", 0) not in get_game_bot_ids()
+        or getattr(event, "chat_id", 0) not in get_game_group_ids()
+        or observed_at <= 0 or observed_at > max(now, time.time()) + 1
+        or (context.get("send_as_id") and context["send_as_id"] != target_id)
+        or (context.get("family") == "identity_info" and context.get("source") != "manual_game_command")
+    ):
+        return False
     merged_payload = _merge_identity_refresh_payload(primary_payload or {}, battle_payload or {})
     if not any(
         merged_payload.get(key)
         for key in ("daohao", "realm", "spiritual_root_type", "sect_name", "xiuwei_max", "battle_power_text")
     ):
         return False
-    _update_identity_profile_from_refresh_payload(target_id, merged_payload, now)
+    if _update_identity_profile_from_refresh_payload(target_id, merged_payload, observed_at) is None:
+        return False
     enforce_identity_module_availability(target_id, persist=False)
     save_state()
     return True
@@ -5369,50 +5378,92 @@ def get_identity_info_refresh_error(send_as_id=None):
     return get_identity_info_refresh_state(send_as_id)["error"]
 
 
-async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
+async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True, owner=None):
     send_as_id = int(send_as_id)
-    msg_id = int(msg_id or 0)
-    if msg_id <= 0:
+    owner = owner or _refresh.capture(send_as_id)
+    if not _refresh.owns(owner):
         return
+    request = owner[2]
+    try:
+        chat_id, message_id = message_key_parts(msg_id)
+    except (TypeError, ValueError, OverflowError):
+        return
+    chat_id = chat_id or request["chat_id"]
+    key = (chat_id, message_id)
+    if key not in _refresh.trigger_keys(request):
+        return
+    original = owner[1]["my_msg_ids"].get(key)
     if is_auto_delete_sent_messages_enabled():
         try:
-            from .runtime import _get_identity_client_with_account, _run_account_rpc, get_pending_message_chat_id
+            from .runtime import _get_identity_client_with_account, _run_account_rpc
             account_id, client = _get_identity_client_with_account(send_as_id)
-            chat_id = get_pending_message_chat_id(
-                send_as_id,
-                msg_id,
-                default=0,
-            )
-            if chat_id:
-                await _run_account_rpc(
-                    client.delete_messages(chat_id, [msg_id]),
-                    account_id=account_id,
-                    client_obj=client,
-                )
+            if account_id != request["account_id"]:
+                return
+
+            async def delete_if_owned():
+                if _refresh.owns(owner) and owner[1]["my_msg_ids"].get(key) == original:
+                    await client.delete_messages(chat_id, [message_id])
+
+            await _run_account_rpc(delete_if_owned(), account_id=account_id, client_obj=client)
         except Exception as e:
             console_log(
-                f"❌ 删除身份信息触发消息失败：{e}｜msg={msg_id}",
+                f"❌ 删除身份信息触发消息失败：{type(e).__name__}｜msg={message_id}",
                 scope="identity",
                 send_as_id=send_as_id,
             )
+    if not _refresh.owns(owner) or owner[1]["my_msg_ids"].get(key) != original:
+        return
     with use_identity(send_as_id):
-        pop_message_record(state["my_msg_ids"], msg_id)
-        if state.get("last_identity_info_msg_id", 0) == msg_id:
-            state["last_identity_info_msg_id"] = 0
-        state["identity_info_reply_msg_ids"] = [
-            tracked_msg_id
-            for tracked_msg_id in state.get("identity_info_reply_msg_ids", [])
-            if int(tracked_msg_id or 0) != msg_id
-        ]
+        pop_message_record(state["my_msg_ids"], key)
+        mark_dirty()
         if persist:
             save_state()
 
 
-def _set_identity_info_error(send_as_id, message, *, persist=True):
-    with use_identity(send_as_id):
-        _clear_identity_refresh_runtime(error=message)
-        if persist:
+async def _send_identity_refresh_read(owner, kind, now):
+    if not _refresh.owns(owner):
+        return False
+    send_as_id, identity, request = owner[:3]
+    record = _refresh.reserve(request, kind, now)
+    if record is None:
+        return False
+    owns_operation = _refresh.operation_owner_check(owner, record)
+    if save_state() is False:
+        _refresh.fail_send(owner, record, definitely_unsent=True)
+        _refresh.finish(request, error="刷新记录保存失败，未发送请求")
+        return False
+    try:
+        msg = await send_game_command(
+            record["command"], send_as_id=send_as_id, max_retry=1,
+            **_refresh.send_args(owner, record),
+        )
+    except asyncio.CancelledError:
+        if owns_operation():
+            _refresh.fail_send(owner, record)
             save_state()
+        raise
+    except Exception:
+        if owns_operation():
+            _refresh.fail_send(owner, record)
+            identity["identity_info_last_error"] = "刷新发送状态未知，等待原请求回包"
+            save_state()
+        return False
+    if not owns_operation():
+        return False
+    if msg:
+        _refresh.note_receipt(send_as_id, record["op_id"], msg)
+    if record["msg_id"]:
+        save_state()
+        return True
+    block = classify_game_send_block(send_as_id, record["command"], max_age_sec=60)
+    unsent = block.get("status") == "unsent" and _refresh.number(block.get("at")) >= record["started_at"]
+    _refresh.fail_send(owner, record, definitely_unsent=unsent)
+    if unsent:
+        _refresh.finish(request, error="刷新请求未发送，请稍后重新获取")
+    else:
+        identity["identity_info_last_error"] = "刷新发送状态未知，等待原请求回包"
+    save_state()
+    return False
 
 
 async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
@@ -5422,61 +5473,55 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
     if is_identity_info_refresh_pending(send_as_id):
         return True, "该身份信息正在更新中，请稍后刷新查看"
 
-    command = format_identity_info_command()
     requested_at = time.time()
-    identity = get_identity_state(send_as_id)
-    account_id = get_identity_account(send_as_id)
-
-    with use_identity(send_as_id):
-        _begin_identity_refresh_runtime(requested_at)
-
-    def owns_refresh():
-        return bool(
-            has_identity(send_as_id) and get_identity_state(send_as_id) is identity
-            and get_identity_account(send_as_id) == account_id
-            and identity.get("identity_info_last_requested_at") == requested_at
-        )
-
+    request = _refresh.begin(send_as_id, requested_at)
+    if request is None:
+        return False, "身份缺少有效账号或游戏群，未发送刷新请求"
+    owner = _refresh.capture(send_as_id)
+    _identity_id, identity, request = owner[:3]
+    account_id = request["account_id"]
     invalidated_message = "身份或刷新请求已变更，已停止本次后续读取"
-    msg = await send_game_command(command, send_as_id=send_as_id, max_retry=1, operation_check=owns_refresh)
-    if not owns_refresh():
-        return False, invalidated_message
-    if not msg:
-        _set_identity_info_error(send_as_id, "获取请求发送失败，请手动重新获取")
-        return False, "角色信息获取发送失败，请手动重新获取"
-
-    with use_identity(send_as_id):
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at)
-        requested_at = sent_at
-
-    extra_commands = (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS)
     extra_sent = []
     extra_failed = []
-    for extra_command in extra_commands:
-        if not owns_refresh():
-            return False, invalidated_message
-        extra_requested_at = time.time()
-        extra_msg = await send_game_command(extra_command, send_as_id=send_as_id, max_retry=1, operation_check=owns_refresh)
-        if not owns_refresh():
-            return False, invalidated_message
-        if extra_msg:
-            extra_sent.append(extra_command)
-            if extra_command == CMD_SECOND_SOUL_STATUS:
-                await remember_second_soul_status_read(
-                    extra_msg, send_as_id=send_as_id, identity_state=identity,
-                    account_id=account_id, requested_at=extra_requested_at,
-                )
-                if not owns_refresh():
-                    return False, invalidated_message
-        else:
-            extra_failed.append(extra_command)
+    _refresh.live_call(request, True)
+    try:
+        if not await _send_identity_refresh_read(owner, "primary", requested_at):
+            if not _refresh.owns(owner):
+                return False, invalidated_message
+            return False, identity["identity_info_last_error"] or "角色信息获取未确认，请稍后查看"
+        for extra_command in (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS):
+            if not _refresh.owns(owner):
+                return False, invalidated_message
+            extra_requested_at = time.time()
+            extra_msg = await send_game_command(
+                extra_command, send_as_id=send_as_id, max_retry=1,
+                target_chat_id=request["chat_id"], operation_check=lambda: _refresh.owns(owner),
+            )
+            if not _refresh.owns(owner):
+                return False, invalidated_message
+            if extra_msg:
+                extra_sent.append(extra_command)
+                if extra_command == CMD_SECOND_SOUL_STATUS:
+                    await remember_second_soul_status_read(
+                        extra_msg, send_as_id=send_as_id, identity_state=identity,
+                        account_id=account_id, requested_at=extra_requested_at,
+                    )
+                    if not _refresh.owns(owner):
+                        return False, invalidated_message
+            else:
+                extra_failed.append(extra_command)
+    finally:
+        _refresh.live_call(request, False)
+        if _refresh.owns(owner):
+            save_state()
+    if not _refresh.owns(owner):
+        return False, invalidated_message
 
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
     extra_suffix = f"，附加读取：{'、'.join(extra_sent)}" if extra_sent else ""
     failed_suffix = f"，失败：{'、'.join(extra_failed)}" if extra_failed else ""
     console_log(
-        f"🪪 已发起身份信息刷新：{command}{extra_suffix}{failed_suffix}，来源：{source}{actor_suffix}",
+        f"🪪 已发起身份信息刷新：{format_identity_info_command()}{extra_suffix}{failed_suffix}，来源：{source}{actor_suffix}",
         scope="identity",
         send_as_id=send_as_id,
     )
@@ -5487,107 +5532,120 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
 
 async def run_identity_info_followup_scheduler(now):
     for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
             continue
-
-        trigger_msg_ids = []
-        command = ""
-        with use_identity(identity_id):
-            due_at = float(state.get("identity_info_followup_due_at", 0) or 0)
-            if due_at <= 0 or due_at > now:
-                continue
-
-            primary_payload = _normalize_identity_refresh_payload(state.get("identity_info_primary_payload") or {})
-            missing_fields = _get_identity_refresh_missing_fields(primary_payload)
-            if not missing_fields:
-                _final_payload, trigger_msg_ids = _finalize_identity_refresh_success(identity_id, primary_payload, now)
-                save_state()
-            elif any(_is_identity_refresh_command(get_pending_command(pending)) for pending in state["pending_tasks"].values()):
-                continue
-            else:
-                command = format_battle_power_command()
-
-        if trigger_msg_ids:
-            for trigger_msg_id in trigger_msg_ids:
-                await delete_identity_info_trigger_msg(identity_id, trigger_msg_id, persist=False)
-            save_state()
+        owner = _refresh.capture(identity_id)
+        if owner is None:
             continue
-        if not command:
+        _identity_id, identity, request = owner[:3]
+        due_at = float(identity.get("identity_info_followup_due_at", 0) or 0)
+        if (
+            request["status"] != "active" or _refresh.has_live_call(request)
+            or due_at <= 0 or due_at > now
+            or any(record["kind"] == "followup" for record in request["commands"])
+        ):
             continue
-
-        msg = await send_game_command(command, send_as_id=identity_id, max_retry=1)
-        if not msg:
-            with use_identity(identity_id):
-                _clear_identity_refresh_runtime(error="角色信息补全请求发送失败，请手动重新获取")
-                save_state()
-            continue
-
-        with use_identity(identity_id):
-            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-            _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at, clear_followup=True)
-
-        console_log(
-            f"🪪 已触发身份信息补全：{command}",
-            scope="identity",
-            send_as_id=identity_id,
-        )
+        identity["identity_info_followup_due_at"] = 0
+        if await _send_identity_refresh_read(owner, "followup", now) and _refresh.owns(owner):
+            console_log(
+                f"🪪 已触发身份信息补全：{format_battle_power_command()}",
+                scope="identity", send_as_id=identity_id,
+            )
 
 
-async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
+async def handle_identity_info_reply(text, now, reply_to, current_msg_id, *, reply_context=None):
     reply_msg_id = int(getattr(reply_to, "id", 0) or 0)
     current_msg_id = int(current_msg_id or 0)
     if not reply_msg_id or not current_msg_id:
         return False
 
     send_as_id = get_current_identity_id()
+    owner = _refresh.capture(send_as_id)
+    context = reply_context if isinstance(reply_context, dict) else {}
+    if owner is None:
+        return False
+    request = owner[2]
+    chat_id = context.get("chat_id")
+    root = context.get("root_msg_id")
+    reply_at = _refresh.number(context.get("server_event_at"))
+    if (
+        context.get("send_as_id") != send_as_id or chat_id != request["chat_id"]
+        or (getattr(reply_to, "chat_id", 0) and reply_to.chat_id != chat_id)
+        or context.get("reply_to_msg_id", reply_msg_id) != reply_msg_id
+        or reply_at <= 0 or reply_at > max(now, time.time()) + 1
+    ):
+        return False
+    record = next((item for item in request["commands"] if item["msg_id"] == root and root), None)
+    if record is None:
+        return False
+    if (
+        reply_msg_id != root and reply_msg_id not in record["reply_ids"]
+        or (reply_msg_id == root and getattr(reply_to, "sender_id", 0) and not sender_matches_identity(reply_to.sender_id, send_as_id))
+        or reply_at < (record["dispatch_at"] or record["started_at"]) - 1
+        or reply_at < record["reply_at"]
+        or (reply_msg_id == root and str(getattr(reply_to, "raw_text", "") or "").strip() not in {"", record["command"]})
+    ):
+        return False
     final_payload = None
     trigger_msg_ids = []
     with use_identity(send_as_id):
-        reply_msg_ids = _get_identity_refresh_tracking_ids()
-        if reply_msg_id not in reply_msg_ids:
-            return False
-
         primary_parsed = _parse_identity_info_partial(text)
-        battle_parsed = None if primary_parsed else _parse_battle_power_info(text)
-        is_followup_reply = bool(battle_parsed)
-        parsed = primary_parsed or battle_parsed
+        battle_parsed = _parse_battle_power_info(text)
+        parsed = _merge_identity_refresh_payload(primary_parsed or {}, battle_parsed or {}) if primary_parsed or battle_parsed else None
+        if current_msg_id not in record["reply_ids"]:
+            record["reply_ids"] = [*record["reply_ids"], current_msg_id][-8:]
+            _refresh.sync_tracking(request)
         if not parsed:
-            _track_identity_refresh_message(current_msg_id)
             return False
-
-        normalized_payload = _normalize_identity_refresh_payload(parsed)
-        missing_fields = _get_identity_refresh_missing_fields(normalized_payload)
-        _track_identity_refresh_message(current_msg_id)
+        if record["kind"] == "followup" and not battle_parsed:
+            return False
+        digest = hashlib.blake2s(text.encode("utf-8"), digest_size=12).hexdigest()
+        if reply_at == record["reply_at"] and digest == record.get("reply_hash"):
+            return True
+        record.update(status="complete", reply_at=reply_at, reply_hash=digest, payload=parsed)
+        _refresh.clear_pending(request, kind=record["kind"])
+        merged_payload = {}
+        for item in sorted(request["commands"], key=lambda item: item["reply_at"]):
+            merged_payload = _merge_identity_refresh_payload(merged_payload, item.get("payload", {}))
+        state["identity_info_primary_payload"] = merged_payload
         state["identity_info_last_error"] = ""
-
-        if not is_followup_reply:
-            state["identity_info_primary_payload"] = dict(normalized_payload)
-            if missing_fields:
-                _schedule_identity_refresh_followup(now)
-                mark_dirty()
-            else:
-                final_payload, trigger_msg_ids = _finalize_identity_refresh_success(send_as_id, normalized_payload, now)
+        missing_fields = _get_identity_refresh_missing_fields(merged_payload)
+        if not missing_fields:
+            final_payload, trigger_msg_ids = _finalize_identity_refresh_success(send_as_id)
+        elif record["kind"] == "primary" and request["status"] == "active" and not any(
+            item["kind"] == "followup" for item in request["commands"]
+        ):
+            _schedule_identity_refresh_followup(now)
+        elif record["kind"] == "followup":
+            _refresh.finish(request, error="角色信息补全仍缺少必要字段，请稍后重新获取")
         else:
-            state["identity_info_followup_due_at"] = 0
-            primary_payload = _normalize_identity_refresh_payload(state.get("identity_info_primary_payload") or {})
-            merged_payload = _merge_identity_refresh_payload(primary_payload, normalized_payload)
-            final_payload, trigger_msg_ids = _finalize_identity_refresh_success(send_as_id, merged_payload, now)
+            mark_dirty()
     enforce_identity_module_availability(send_as_id, persist=False)
-
+    save_state()
     if trigger_msg_ids:
         for trigger_msg_id in trigger_msg_ids:
-            await delete_identity_info_trigger_msg(send_as_id, trigger_msg_id, persist=False)
-    save_state()
+            if not _refresh.owns(owner):
+                return True
+            await delete_identity_info_trigger_msg(send_as_id, trigger_msg_id, persist=False, owner=owner)
+        if not _refresh.owns(owner):
+            return True
+        save_state()
     if not final_payload:
         # The primary card was consumed; the follow-up owns the missing fields.
         return True
     if trigger_msg_ids:
-        await send_audit_log(
-            f"🪪 已更新身份信息：{final_payload['daohao']}｜{final_payload['realm']}｜{final_payload['sect_name']}",
-            scope="identity",
-            send_as_id=send_as_id,
-        )
+        try:
+            await send_audit_log(
+                f"🪪 已更新身份信息：{final_payload['daohao']}｜{final_payload['realm']}｜{final_payload['sect_name']}",
+                scope="identity", send_as_id=send_as_id,
+            )
+        except Exception as exc:
+            console_log(f"身份信息已更新，通知失败：{type(exc).__name__}", scope="identity", send_as_id=send_as_id)
     return True
+
+
+register_game_command_sent_observer(_refresh.observe_sent)
+register_game_command_pre_send_guard(_refresh.pre_send_guard)
 
 
 async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, account_id=None):

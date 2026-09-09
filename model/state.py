@@ -75,9 +75,9 @@ IDENTITY_RUNTIME_COLUMNS = [
     "second_soul_purge_msg_id", "second_soul_purge_status_msg_id", "second_soul_purge_attempts", "second_soul_purge_due_at", "second_soul_purge_last_at", "second_soul_last_error",
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_yindao_resend_count", "taiyi_search_resend_count", "taiyi_last_error",
     "weak_reason", "weak_source", "weak_last_block_log_at",
-    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
+    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload", "identity_info_refresh", "identity_profile_observed_at",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "sect_teach_completed_message_keys", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "wanxin_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders", "mulan_report_texts", "duel_daily_limited_targets", "explore_rift_result_evidence", "explore_rift_rebirth_operation", "second_soul_commands"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "sect_teach_completed_message_keys", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "identity_info_refresh", "identity_profile_observed_at", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "wanxin_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders", "mulan_report_texts", "duel_daily_limited_targets", "explore_rift_result_evidence", "explore_rift_rebirth_operation", "second_soul_commands"}
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "mulan_enabled", "wanxin_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_high_stock_silence_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "duel_unequip_prepared", "fishing_enabled",
@@ -846,6 +846,8 @@ IDENTITY_STATE_TEMPLATE = {
     "identity_info_last_requested_at": 0,
     "identity_info_followup_due_at": 0,
     "identity_info_primary_payload": {},
+    "identity_info_refresh": {},
+    "identity_profile_observed_at": {},
     "startup_module_alerts": [],
 
     # 元婴阻塞日志去重

@@ -855,6 +855,8 @@ _SCHEMA_COLUMNS = {
         ("identity_info_last_requested_at", "REAL NOT NULL DEFAULT 0"),
         ("identity_info_followup_due_at", "REAL NOT NULL DEFAULT 0"),
         ("identity_info_primary_payload", "TEXT NOT NULL DEFAULT '{}' "),
+        ("identity_info_refresh", "TEXT NOT NULL DEFAULT '{}'"),
+        ("identity_profile_observed_at", "TEXT NOT NULL DEFAULT '{}'"),
         ("second_soul_phase", "TEXT NOT NULL DEFAULT 'idle'"),
         ("second_soul_commands", "TEXT NOT NULL DEFAULT '{}'"),
         ("second_soul_choice_strategy", "TEXT NOT NULL DEFAULT 'stable'"),
@@ -1731,7 +1733,9 @@ def init_db():
             identity_info_last_error TEXT NOT NULL DEFAULT '',
             identity_info_last_requested_at REAL NOT NULL DEFAULT 0,
             identity_info_followup_due_at REAL NOT NULL DEFAULT 0,
-            identity_info_primary_payload TEXT NOT NULL DEFAULT '{}'
+            identity_info_primary_payload TEXT NOT NULL DEFAULT '{}',
+            identity_info_refresh TEXT NOT NULL DEFAULT '{}',
+            identity_profile_observed_at TEXT NOT NULL DEFAULT '{}'
         );
 
         CREATE TABLE IF NOT EXISTS pending_tasks (

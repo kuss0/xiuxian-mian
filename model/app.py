@@ -3380,7 +3380,10 @@ async def _handle_routed_reply_event(
             handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_formation_event(text, now, event, reply_to=reply_to, reply_context=reply_context) or handled_any
-            handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
+            handled_any = await handle_identity_info_reply(
+                text, now, reply_to, event.id,
+                reply_context=dict(reply_context or {}, chat_id=event.chat_id),
+            ) or handled_any
             deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)
             handled_any = handled_any or deep_retreat_done
             if not deep_retreat_done:
@@ -3789,7 +3792,9 @@ async def on_message(event):
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
-        await handle_passive_identity_profile_card(text, now)
+        await handle_passive_identity_profile_card(
+            text, now, event=from_telegram_event(event, text, reply_context, event_kind="message"),
+        )
         await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="message"), now)
         await handle_storage_bag_reply(text, now, reply_to)
 
@@ -3950,7 +3955,9 @@ async def on_message_edited(event):
         await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
-        await handle_passive_identity_profile_card(text, now)
+        await handle_passive_identity_profile_card(
+            text, now, event=from_telegram_event(event, text, reply_context, event_kind="edit"),
+        )
         await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="edit"), now)
     except Exception:
         print(traceback.format_exc())

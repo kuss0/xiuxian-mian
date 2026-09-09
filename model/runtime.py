@@ -5432,7 +5432,7 @@ async def _recover_pending_reply_from_message_log(identity_id, msg_id, item, now
 
 
 def _refresh_identity_info_retry_tracking(identity_state, new_msg_id, now):
-    if new_msg_id <= 0:
+    if new_msg_id <= 0 or identity_state.get("identity_info_refresh"):
         return
     tracked_ids = {
         *(int(tracked_id or 0) for tracked_id in identity_state.get("identity_info_reply_msg_ids", [])),
@@ -5446,6 +5446,9 @@ def _refresh_identity_info_retry_tracking(identity_state, new_msg_id, now):
 
 
 async def run_retry_scheduler(now, send_as_id=None):
+    from . import identity_refresh
+    from .persistence import save_state
+
     if should_pause_for_bot_health():
         return
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
@@ -5537,8 +5540,11 @@ async def run_retry_scheduler(now, send_as_id=None):
                         mark_dirty()
                         continue
                     chat_id, root_msg_id = message_key_parts(msg_id, current_item)
-                    if (
+                    if current_item.get("source_module") == identity_refresh.SOURCE:
+                        identity_refresh.timeout(identity_id, msg_id, current_item, IDENTITY_INFO_REFRESH_ERROR_TEXT)
+                    elif (
                         retry_limit > 0 and chat_id and _is_identity_refresh_command(cmd)
+                        and not identity_state.get("identity_info_refresh")
                         and int(identity_state.get("last_identity_info_msg_id") or 0) == root_msg_id
                         and get_sent_message_chat_id(root_msg_id, default=0, send_as_id=identity_id) == chat_id
                     ):
@@ -5560,6 +5566,15 @@ async def run_retry_scheduler(now, send_as_id=None):
                 if _handoff_module_managed_pending_timeout(identity_id, msg_id, module_managed_timeout_item, family, now):
                     continue
 
+            refresh_retry = None
+            if current_item.get("source_module") == identity_refresh.SOURCE:
+                refresh_retry = identity_refresh.retry_plan(identity_id, msg_id, current_item, now)
+                if refresh_retry is None:
+                    continue
+                if save_state() is False:
+                    identity_refresh.fail_send(refresh_retry[0], refresh_retry[1], definitely_unsent=True)
+                    continue
+
             console_log(
                 f"⚠️ 指令 {_truncate_log_text(cmd, limit=40)} 超时 {threshold}s，正在补发。",
                 scope="identity",
@@ -5574,15 +5589,29 @@ async def run_retry_scheduler(now, send_as_id=None):
                 reply_to_kwargs["target_chat_id"] = target_chat_id
             retry_item = current_item
             retry_snapshot = dict(current_item)
-            new_msg = await send_game_command(
-                cmd,
-                send_as_id=identity_id,
-                priority=SEND_PRIORITY_RETRY,
-                max_retry=retry_limit,
-                reply_timeout=threshold,
-                **reply_to_kwargs,
-                **_pending_send_intent_kwargs(current_item),
-            )
+            retry_kwargs = {**reply_to_kwargs, **_pending_send_intent_kwargs(current_item)}
+            if refresh_retry is not None:
+                retry_kwargs.update(refresh_retry[2])
+            try:
+                new_msg = await send_game_command(
+                    cmd, send_as_id=identity_id, priority=SEND_PRIORITY_RETRY,
+                    max_retry=retry_limit, reply_timeout=threshold, **retry_kwargs,
+                )
+            except (asyncio.CancelledError, Exception):
+                if refresh_retry is not None and refresh_retry[3]():
+                    identity_refresh.fail_send(refresh_retry[0], refresh_retry[1])
+                    save_state()
+                raise
+            if refresh_retry is not None and refresh_retry[3]():
+                if new_msg:
+                    identity_refresh.note_receipt(identity_id, refresh_retry[1]["op_id"], new_msg)
+                else:
+                    block = classify_game_send_block(identity_id, cmd, max_age_sec=60)
+                    identity_refresh.fail_send(
+                        refresh_retry[0], refresh_retry[1],
+                        definitely_unsent=bool(block.get("status") == "unsent" and block.get("at", 0) >= now),
+                    )
+                save_state()
             if not has_identity(identity_id):
                 continue
             with use_identity(identity_id) as identity_state:

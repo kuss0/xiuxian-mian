@@ -2,6 +2,7 @@ import atexit
 import copy
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -38,6 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import app
 from model import control
+from model import identity_refresh
 from model.config import CMD_IDENTITY_INFO, CMD_SECOND_SOUL_STATUS, CMD_YUANYING_STATUS
 from model import state as state_module
 
@@ -77,15 +79,35 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
         state_module.ensure_identity_registered(1001)
+        state_module.set_identity_account(1001, 101)
+        state_module.set_game_group_route_config({"primary_group_id": -1001680975844})
+        state_module.set_game_bot_ids([8567800706, 8388633812])
         state_module.set_send_as_profile(1001, username="jfdffdddd", label="jfdffdddd")
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
+    def _profile_event(self):
+        return SimpleNamespace(
+            id=500, chat_id=-1001680975844, sender_id=8567800706,
+            date=datetime.fromtimestamp(1_700_000_000, timezone.utc), reply_context={},
+        )
+
+    def _refresh_command(self, root):
+        request = identity_refresh.begin(1001, 1000.0)
+        record = identity_refresh.reserve(request, "primary", 1000.0)
+        msg = SimpleNamespace(id=root, chat_id=-1001680975844, sent_at=1000.0)
+        self.assertTrue(identity_refresh.note_receipt(1001, record["op_id"], msg))
+        state_module.get_identity_state(1001)["pending_tasks"][(msg.chat_id, root)] = {
+            "cmd": CMD_IDENTITY_INFO, "sent_at": 1000.0, "retry": 0, "timeout": 60,
+            "reply_to_msg_id": 0, "priority": "normal", "max_retry": 1, "chat_id": msg.chat_id,
+            "op_id": record["op_id"], "chain_id": request["id"], "source_module": identity_refresh.SOURCE,
+        }
+
     async def test_combined_identity_and_battle_card_updates_profile(self):
         with patch.object(control, "save_state"):
-            handled = await control.handle_passive_identity_profile_card(COMBINED_CARD, 1_700_000_000)
+            handled = await control.handle_passive_identity_profile_card(COMBINED_CARD, 1_700_000_000, event=self._profile_event())
 
         self.assertTrue(handled)
         profile = state_module.get_send_as_profile(1001)
@@ -106,7 +128,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
             username_aliases=["jfdffdddd"],
         )
         with patch.object(control, "save_state"):
-            handled = await control.handle_passive_identity_profile_card(COMBINED_CARD, 1_700_000_000)
+            handled = await control.handle_passive_identity_profile_card(COMBINED_CARD, 1_700_000_000, event=self._profile_event())
 
         self.assertTrue(handled)
         profile = state_module.get_send_as_profile(1001)
@@ -115,9 +137,9 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_identity_info_sends_level_read_commands(self):
         messages = [
-            SimpleNamespace(id=11, sent_at=100.0),
-            SimpleNamespace(id=12, sent_at=101.0),
-            SimpleNamespace(id=13, sent_at=102.0),
+            SimpleNamespace(id=11, chat_id=-1001680975844, sent_at=100.0),
+            SimpleNamespace(id=12, chat_id=-1001680975844, sent_at=101.0),
+            SimpleNamespace(id=13, chat_id=-1001680975844, sent_at=102.0),
         ]
         with (
             patch.object(control.time, "time", return_value=100.0),
@@ -137,19 +159,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, call.kwargs["max_retry"])
 
     async def test_routed_identity_info_waiting_reply_keeps_refresh_pending_without_gap(self):
-        with state_module.use_identity(1001) as identity_state:
-            identity_state["pending_tasks"][501] = {
-                "cmd": CMD_IDENTITY_INFO,
-                "sent_at": 1000.0,
-                "retry": 0,
-                "timeout": 60,
-                "reply_to_msg_id": 0,
-                "priority": "normal",
-                "max_retry": 1,
-            }
-            identity_state["last_identity_info_msg_id"] = 501
-            identity_state["identity_info_reply_msg_ids"] = [501]
-            identity_state["identity_info_last_requested_at"] = 1000.0
+        self._refresh_command(501)
 
         reply_to = SimpleNamespace(id=501, raw_text=CMD_IDENTITY_INFO)
         reply_context = {
@@ -162,7 +172,8 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(app, "record_unhandled_routed_reply") as gap_mock, \
                 patch.object(app, "schedule_cleanup", new=AsyncMock()):
             handled = await app._handle_routed_reply_event(
-                SimpleNamespace(id=502, chat_id=-1001680975844, sender_id=8567800706),
+                SimpleNamespace(id=502, chat_id=-1001680975844, sender_id=8567800706,
+                                edit_date=datetime.fromtimestamp(1001, timezone.utc)),
                 "正在为你绘制 @jfdffdddd 的身份玉牒...",
                 1001.0,
                 reply_to,
@@ -173,24 +184,12 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handled)
         gap_mock.assert_not_called()
         with state_module.use_identity(1001) as identity_state:
-            self.assertIn(501, identity_state["pending_tasks"])
+            self.assertIn((-1001680975844, 501), identity_state["pending_tasks"])
             self.assertIn(502, identity_state["identity_info_reply_msg_ids"])
             self.assertEqual(502, identity_state["last_identity_info_msg_id"])
 
     async def test_routed_incomplete_identity_card_schedules_followup_without_gap(self):
-        with state_module.use_identity(1001) as identity_state:
-            identity_state["pending_tasks"][503] = {
-                "cmd": CMD_IDENTITY_INFO,
-                "sent_at": 1000.0,
-                "retry": 0,
-                "timeout": 60,
-                "reply_to_msg_id": 0,
-                "priority": "normal",
-                "max_retry": 1,
-            }
-            identity_state["last_identity_info_msg_id"] = 503
-            identity_state["identity_info_reply_msg_ids"] = [503]
-            identity_state["identity_info_last_requested_at"] = 1000.0
+        self._refresh_command(503)
 
         reply_to = SimpleNamespace(id=503, raw_text=CMD_IDENTITY_INFO)
         reply_context = {
@@ -213,7 +212,8 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(control.random, "randint", return_value=20), \
                 patch.object(control, "save_state"):
             handled = await app._handle_routed_reply_event(
-                SimpleNamespace(id=504, chat_id=-1001680975844, sender_id=8388633812),
+                SimpleNamespace(id=504, chat_id=-1001680975844, sender_id=8388633812,
+                                date=datetime.fromtimestamp(1001, timezone.utc)),
                 text,
                 1001.0,
                 reply_to,
@@ -223,7 +223,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         gap_mock.assert_not_called()
         with state_module.use_identity(1001) as identity_state:
-            self.assertNotIn(503, identity_state["pending_tasks"])
+            self.assertNotIn((-1001680975844, 503), identity_state["pending_tasks"])
             self.assertIn(504, identity_state["identity_info_reply_msg_ids"])
             self.assertEqual(504, identity_state["last_identity_info_msg_id"])
             self.assertEqual(1021.0, identity_state["identity_info_followup_due_at"])
@@ -235,6 +235,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
             handled = await control.handle_passive_identity_profile_card(
                 COMBINED_CARD.replace("@jfdffdddd", "@someone_else"),
                 1_700_000_000,
+                event=self._profile_event(),
             )
 
         self.assertFalse(handled)
@@ -259,7 +260,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
  - 灵根【天灵根(火)】: +32.4万"""
 
         with patch.object(control, "save_state"):
-            handled = await control.handle_passive_identity_profile_card(battle_only, 1_700_000_000)
+            handled = await control.handle_passive_identity_profile_card(battle_only, 1_700_000_000, event=self._profile_event())
 
         self.assertTrue(handled)
         profile = state_module.get_send_as_profile(1001)
@@ -273,7 +274,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
     async def test_wild_training_battle_text_is_ignored(self):
         text = "战力对比：你方 333.8万，妖兽 320万。"
         with patch.object(control, "save_state"):
-            handled = await control.handle_passive_identity_profile_card(text, 1_700_000_000)
+            handled = await control.handle_passive_identity_profile_card(text, 1_700_000_000, event=self._profile_event())
         self.assertFalse(handled)
 
     async def test_realm_breakthrough_does_not_downgrade_profile(self):
