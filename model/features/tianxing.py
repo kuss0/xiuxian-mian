@@ -6015,7 +6015,19 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
             and _owns_tianxing_retreat_dispatch(intent.get("op_id"))
             and str(command or "").strip() == CMD_NORMAL_RETREAT
         )
+        from .explore_rift import _has_unknown_rift, _owns_explore_rift_dispatch
+
+        own_rift_dispatch = bool(
+            str(command or "").strip() == CMD_EXPLORE_RIFT and source_module == "探寻裂缝"
+            and isinstance(intent, dict) and _owns_explore_rift_dispatch(intent.get("op_id"))
+        )
         effect_command = str(command or "").split(maxsplit=1)[:1]
+        if _has_unknown_rift() and not own_rift_dispatch and (
+            command_route or (effect_command and effect_command[0] in {
+                CMD_TIANXING_PREDICT, CMD_TIANXING_CHANGE_FATE, CMD_TIANXING_SET_STAR, CMD_TIANXING_CLEAR_CALAMITY,
+            })
+        ):
+            return {"allowed": False, "code": "tianxing_rift_pending", "reason": "裂缝结果仍未核销，等待原命令回包，不重复消费天星效果。"}
         if _tianxing_pending_craft() and not own_craft_dispatch and (
             command_route or (effect_command and effect_command[0] in {
                 CMD_TIANXING_PREDICT, CMD_TIANXING_CHANGE_FATE, CMD_TIANXING_SET_STAR, CMD_TIANXING_CLEAR_CALAMITY,
@@ -6057,6 +6069,7 @@ def tianxing_route_pre_send_guard(command, *, send_as_id=0, priority="", intent=
             return {"allowed": True}
         has_pending_downstream = _tianxing_route_has_pending_downstream(route) and not (
             (own_craft_dispatch and route == "炼制") or (own_retreat_dispatch and route == "闭关")
+            or (own_rift_dispatch and route == "探索")
         )
         if has_pending_downstream:
             if not command_route:
@@ -6325,7 +6338,7 @@ def _route_preflight_prepare(route, stage, plan, now, deadline_at, reason=""):
     )
 
 
-def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None, require_change_fate=False, craft_op_id=None, retreat_op_id=None):
+def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None, require_change_fate=False, craft_op_id=None, retreat_op_id=None, rift_op_id=None):
     now = float(now if now is not None else time.time())
     route = _normalize_route_choice(route, "")
     deadline_at = float(deadline_at or 0)
@@ -6351,6 +6364,13 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
     effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     route_reason = str(reason or route).strip() or route
+    from .explore_rift import _has_unknown_rift, _owns_explore_rift_dispatch
+
+    if _has_unknown_rift() and not (route == "探索" and _owns_explore_rift_dispatch(rift_op_id)):
+        return _route_preflight_result(
+            route, "rift_pending", False, "裂缝结果仍未核销，等待真实回包，不推进下游。",
+            deadline_at=deadline_at, now=now, blocked_until=now + 60,
+        )
     if _tianxing_pending_craft() and not (route == "炼制" and _owns_tianxing_craft_dispatch(craft_op_id)):
         return _route_preflight_result(
             route, "craft_pending", False, "炼制结果仍未核销，等待真实回包，不推进下游。",

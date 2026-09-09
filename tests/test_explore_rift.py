@@ -31,6 +31,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self.enterContext(patch.object(explore_rift.time, "time", return_value=1_700_000_000.0))
+        self.enterContext(patch.object(explore_rift, "send_audit_log", new=AsyncMock()))
 
     def tearDown(self):
         explore_rift._EXPLORE_RIFT_LOCKS.clear()
@@ -924,14 +926,14 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_enabled"] = True
             state_module.state["next_explore_rift_time"] = now - 1
             state_module.state["tianxing_enabled"] = False
-            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            fake_msg = SimpleNamespace(id=22027, chat_id=state_module.get_game_group_id(), sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝", op_id=ANY, operation_check=ANY)
             self.assertEqual(22027, state_module.state["explore_rift_reply_to_msg_id"])
             self.assertEqual(now + explore_rift.EXPLORE_RIFT_REPLY_TIMEOUT_SEC, state_module.state["explore_rift_reply_due_at"])
             self.assertEqual("已发送", state_module.state["explore_rift_last_result"])
@@ -954,7 +956,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 "strategy_dry_run_enabled": False,
                 "star_priority": ["太阴", "贪狼"],
             }
-            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            fake_msg = SimpleNamespace(id=22027, chat_id=state_module.get_game_group_id(), sent_at=now)
             with (
                 patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "sent_waiting_ack", "changed": True})) as timeline_mock,
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
@@ -1273,7 +1275,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 "timeline_dry_run_enabled": False,
                 "min_tianji_for_change": 3,
             }
-            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            fake_msg = SimpleNamespace(id=22027, chat_id=state_module.get_game_group_id(), sent_at=now)
             with (
                 patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
@@ -1282,7 +1284,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 await explore_rift.run_explore_rift_scheduler(now)
 
             timeline_mock.assert_not_awaited()
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝", op_id=ANY, operation_check=ANY)
             self.assertEqual(22027, state_module.state["explore_rift_reply_to_msg_id"])
 
     async def test_scheduler_sends_explore_rift_directly_when_tianxing_timeline_released(self):
@@ -1316,7 +1318,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                     "探索": {"released_at": now - 5, "plan_id": "test", "reason": "confirmed", "basis": "change_fate"},
                 },
             }
-            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            fake_msg = SimpleNamespace(id=22027, chat_id=state_module.get_game_group_id(), sent_at=now)
             with (
                 patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
@@ -1325,7 +1327,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 await explore_rift.run_explore_rift_scheduler(now)
 
             timeline_mock.assert_not_awaited()
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝", op_id=ANY, operation_check=ANY)
             self.assertEqual(22027, state_module.state["explore_rift_reply_to_msg_id"])
 
     async def test_scheduler_blocks_explore_rift_when_other_prediction_active(self):
@@ -1564,14 +1566,14 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 "timeline_enabled": True,
                 "strategy_dry_run_enabled": False,
             }
-            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            fake_msg = SimpleNamespace(id=22027, chat_id=state_module.get_game_group_id(), sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝", op_id=ANY, operation_check=ANY)
             self.assertEqual(22027, state_module.state["explore_rift_reply_to_msg_id"])
             self.assertEqual("已发送", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
@@ -1607,7 +1609,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝", op_id=ANY, operation_check=ANY)
             audit_mock.assert_awaited_once()
             self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
@@ -2168,7 +2170,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 "timeline_enabled": True,
                 "strategy_dry_run_enabled": False,
             }
-            fake_msg = SimpleNamespace(id=22028, sent_at=now)
+            fake_msg = SimpleNamespace(id=22028, chat_id=state_module.get_game_group_id(), sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "console_log") as console_mock,
@@ -2176,7 +2178,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝", op_id=ANY, operation_check=ANY)
             self.assertEqual(22028, state_module.state["explore_rift_reply_to_msg_id"])
             self.assertEqual("已发送", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])

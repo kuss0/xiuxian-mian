@@ -25,11 +25,11 @@ proof that gameplay is healthy. Production files have not been changed.
 | Area | Required behavior | Evidence required | Status |
 | --- | --- | --- | --- |
 | Lifecycle | Startup, shutdown, reconnect, and task cancellation preserve pending work and release resources | Supervisor and async lifecycle failure tests; bounded live observation | Candidate shutdown and guarded tower/dwelling thread draining repaired; other flows, reconnect and forced-stop durability review still pending |
-| Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Identity admission and Nanlong queued-operation checks repaired in candidate; no-ID crash durability and other modules' business admission still pending |
+| Sending | No duplicate side effects after queue expiry, uncertain send, toggle-off, or cancellation | Reproducers spanning enqueue, await, transport result, and business transition | Identity admission, Nanlong and rift queued-operation checks repaired in candidate; shared no-ID crash durability and other modules' business admission still pending |
 | Reply routing | Exact identity/chat ownership; manual actions and edits reconcile once; broadcasts do not establish send health | Cross-chat, multi-account, out-of-order and duplicate-event replay | Shared pending/history routing repaired in candidate; module scalar anchors and final integration still pending |
 | Scheduling | Every active module honors its own switch, authoritative cooldown, prerequisites, and mutual exclusion | Module inventory; enabled/disabled and resource-boundary tests | Normal/phaseful and queued fast-due owner invalidation fixed in candidate; module-wide switch/CD and internal-await review still pending |
 | MiniApp | Current public entry, bounded reconnect, shared rate limits, isolated sessions; no blind mutation replay | HTTP/browser fault tests; public-entry and scheduler integration tests | Generic HTTP policy, tower/public-entry ownership, stargazer/small-world thread draining and confirmed-result retention, and bounded owner-aware pool leases fixed in candidate; other per-game retry/reentry and current-entry integration still pending |
-| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, native effect chronology and rift log replay repaired in candidate; resource-delta idempotence, legacy farm results, rift outcome inference and remaining modules still pending |
+| Gameplay | Tianxing, duel, retreat, Yinluo/Wanxin, concubine, small world, fishing, tree, tower, trials, and remaining modules close their state transitions correctly | Per-module review and realistic response fixtures, including failure paths | Scoped Tianxing ownership, expiry, calibration, effect chronology and rift dispatch/unknown recovery repaired in candidate; resource-delta idempotence, legacy farm/scalar results, rebirth and remaining modules still pending |
 | Persistence | Atomic saves, compatible reloads, bounded history, no secret/test-state leakage | Crash/reload, corrupted-state, retention, and test-isolation checks | Chat-scoped pending/history and delta recovery snapshots repaired; forced-stop durability and capacity still pending |
 | UI/control | Saved settings match runtime behavior; no stale-response overwrite or unintended send; access controls hold | API and browser/control contract checks | Public-entry UI lifecycle repaired in candidate; remaining API/browser control contracts pending |
 | Operations | Reproducible dependencies, usable diagnostics, distinguish business failure from transport failure | Clean-environment tests and current health evidence | Pending |
@@ -109,6 +109,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R55 | High | Native effects use local receipt time, stale replies overwrite newer effects, route results acknowledge unrelated mutations, and replay batches select revisions by arrival rather than server order; calibration helpers bypass effect provenance | Fixed for scoped native event/replay paths in candidate; server timestamps, per-effect evidence, genuine versus repeated edits, corruption repair, retained mutation ownership and SQLite replay are covered; counters/resource deltas and legacy route-result log readers remain open |
 | R56 | High | Legacy rift recovery trusts a bare message ID and log arrival time, accepts unrelated/untrusted replies, and replays stale edits or old commands as fresh work | Fixed for the scoped log readers in candidate; owned command/root/chat correlation, trusted server-timed revisions, ambiguity rejection, bounded reads and SQLite pending reload are covered; scalar live anchors, uncertain-send retry policy and panel-only outcome inference remain open |
 | R57 | High | Rift timeouts erase in-flight ownership and later resend; cached panels falsely prove execution or non-execution; uncertain query receipts and UI/startup resets can revive completed or replaced work | Fixed for timeout/query/recovery boundaries in candidate; retained unknown work, bounded owned replay, one-shot persisted queries, native late result/CD handling, account/operation checks and pause/reload retention pass; original rift dispatch awaits, legacy scalar anchors and post-completion resource idempotence remain open |
+| R58 | High | Original rift dispatch is not persisted before transport, overwrites early replies with late receipts, admits invalidated queued work and can adopt another manual command; Tianxing loses unresolved-rift exclusion when its release lease expires | Fixed for new original-rift dispatch operations in candidate; saved intent, immutable operation ownership, current business/effect admission, strict receipts, cancellation/reload, early results and exact-operation log recovery pass; legacy scalar reducers, rebirth and shared transport durability remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1497,6 +1498,52 @@ five monitor/control-only contracts need separate behavioral verification.
   tests. General scalar reply ownership and post-completion resource-delta
   deduplication remain separate open requirements.
 
+### R58 Evidence
+
+- Initial original-dispatch lifecycle reproducer: **31 failed**; JUnit:
+  `/tmp/xiuxian-rebuild-r58-repro-20260909.xml`. Missing pre-send persistence,
+  cancelled sends, overwritten early start/final/CD replies, changed owners,
+  queue admission, malformed receipts and unrelated manual-command adoption
+  all reproduced against the R57 candidate.
+- New rift operations persist their identity/account, immutable operation ID,
+  request-start clock and sending phase inside the existing observation JSON
+  before calling transport. Save failure does not dispatch. Real transport
+  receipts retain their root/chat; unknown, malformed or cancelled outcomes
+  retain the operation instead of rearming a command. No DB column or general
+  recovery controller was introduced; CommandAttempt remains shadow-only.
+- The original identity object/account is checked after the module lock and
+  preparation waits. Actual queued dispatch checks the current switches,
+  manual hold, cooldown snapshot, realm/resources and Tianxing protection.
+  A valid receipt is still retained after post-dispatch pause, but does not
+  enable the module or overwrite an early start/final/CD transition.
+- Modern no-ID replay requires the persisted command operation ID, not just
+  a nearby manual command. A cancelled operation can recover from a detached
+  receipt and final edit after a real temporary SQLite reload. Reads remain
+  bounded to the existing 512 KiB per daily-file tails over at most 36 hours;
+  missing evidence after retention expiry remains unresolved.
+- Unresolved rifts now block competing Tianxing consumers and mutations even
+  without a current release lease. Only the original module/operation while
+  actually in its sending phase may pass that exclusion, and it still needs
+  valid effects. Deep retreat remains outside Tianxing consumption blocking.
+  Additional positive-admission tests caught a self-blocking high-resource
+  branch, and a queued manual-hold test caught a missing control check; both
+  were corrected without weakening the unknown-operation guard.
+- Focused rift regression set: **249 passed, 5 subtests passed**, 1.91 seconds;
+  JUnit: `/tmp/xiuxian-rebuild-r58-focus-verified-20260909.xml`. Old fixtures now
+  include the actual runtime receipt chat, explicit test clocks and the
+  operation-check call contract. Audit notifications are mocked in that legacy
+  class so a malformed test receipt cannot attempt to use a disconnected
+  notification client.
+- Full suite: **6244 passed, 1198 subtests passed**, 86.65 seconds; JUnit:
+  `/tmp/xiuxian-rebuild-r58-full-20260909.xml`. Full selected-rule Ruff,
+  changed-file compilation and diff checks pass. This remains local candidate
+  work; no deployment, restart, push, live game request, production config/DB
+  change, listener start, skill edit or automation-switch change occurred.
+- This does not prove shared R07 transport durability, old unscoped scalar
+  result ownership, resource-delta idempotence after completion, or the fatal/
+  rebirth reducers' internal awaits. The new per-operation intent is not a
+  substitute for reviewing those paths or the remaining project matrix.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1646,12 +1693,12 @@ and cleanup code during a code-only rollback.
    ownership across rebinds. Tail truncation is missing evidence, not failure.
 7. R57 covers rift timeout retention, panel-only outcome inference, query
    ownership, legacy unknown-state migration and native late-result recovery.
-   Continue with the original rift send await: persist ownership before
-   dispatch, prevent receipt/unknown-send paths from overwriting early results,
-   and verify queue cancellation, account rebinding and restart before receipt.
-   The rebirth branch, general scalar live anchors, unknown-operation replay
-   after retention expiry and post-completion item deltas also remain open.
-   The candidate is not approved for production deployment.
+   R58 covers new original-rift dispatch intent, queue admission, early-result
+   retention and operation-scoped replay. Continue with the fatal/rebirth
+   reducers and their internal awaits, legacy scalar result anchors, duplicate
+   resource deltas and result recovery across owner changes. Shared R07
+   durability and unknown-operation evidence beyond retention also remain
+   open. The candidate is not approved for production deployment.
 
 ## Completion Gate
 
