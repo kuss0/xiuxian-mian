@@ -1667,6 +1667,23 @@ five monitor/control-only contracts need separate behavioral verification.
   No production code/config/DB, service, remote branch, listener, skill or
   automation switch changed; World Boss and incense refinement stay closed.
 
+### R07 Revalidation After R60
+
+- Both original forced-stop cases remain unsafe at candidate `a5db2b32`:
+  tracked checkin and rift send again after no-ID process loss, even after a
+  successful isolated state save. These are confirmed open failures.
+- Expanded `tools/lab_send_crash_probe.py` with `--crash-point after_id`,
+  `--untracked` and isolated `--advance-seconds`. Untracked checkin also sends
+  twice after receipt registration but before the caller receives it.
+  Untracked rift repeats after a 24-hour clock advance, despite a saved
+  attempt-one guard. Merely deleting a durable marker on receipt or extending
+  a temporary guard would leave the handoff defect unresolved.
+- The separate proposal and acceptance contract are in
+  `docs/audit/R07-transport-ownership-design-20260910.md`. Approval for a
+  behavior-changing offline shared-send implementation has been requested;
+  no runtime fence/controller or Attempt decision reader was added here.
+  R07 remains open; independent module/UI review can proceed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the

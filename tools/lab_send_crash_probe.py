@@ -8,11 +8,13 @@ from pathlib import Path
 import tempfile
 
 
-def _worker(state_dir, phase, command_name, output):
+def _worker(state_dir, phase, command_name, output, crash_point, tracked, advance_seconds):
     import asyncio
     from contextlib import ExitStack
     import copy
     import sys
+    import threading
+    import time
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, patch
 
@@ -65,21 +67,38 @@ def _worker(state_dir, phase, command_name, output):
 
         async def __call__(self, _request):
             self.calls += 1
-            if phase == "first":
-                # Even a successful save after dispatch cannot persist an absent receipt.
-                saved = persistence.save_state()
-                identity = state_module.get_identity_state(identity_id)
-                output.send({
-                    "phase": phase, "transport_calls": self.calls, "saved": saved,
-                    "pending_count": len(identity["pending_tasks"]),
-                    "guard_attempts": [row.get("attempt", 0) for row in identity["action_guard_sessions"].values()],
-                })
+            if phase == "first" and crash_point == "before_id":
+                report_boundary(self.calls, 0)
                 await asyncio.Future()
             return SimpleNamespace(id=910001)
+
+    def report_boundary(calls, message_id):
+        saved = persistence.save_state()
+        identity = state_module.get_identity_state(identity_id)
+        output.send({
+            "phase": phase, "transport_calls": calls, "saved": saved,
+            "message_id": message_id, "pending_count": len(identity["pending_tasks"]),
+            "guard_attempts": [row.get("attempt", 0) for row in identity["action_guard_sessions"].values()],
+        })
 
     async def run():
         client = FakeClient()
         with ExitStack() as stack:
+            if phase == "reload" and advance_seconds:
+                real_time = time.time
+                stack.enter_context(patch.object(runtime.time, "time", lambda: real_time() + advance_seconds))
+            if phase == "first" and crash_point == "after_id":
+                finalize = runtime._finalize_game_send_receipt
+
+                def intercept_receipt(*args, **kwargs):
+                    message = finalize(*args, **kwargs)
+                    report_boundary(client.calls, int(getattr(message, "id", 0) or 0))
+                    # Stop between transport registration and the business caller.
+                    # Only the parent process can kill this isolated worker.
+                    threading.Event().wait()
+                    return message
+
+                stack.enter_context(patch.object(runtime, "_finalize_game_send_receipt", intercept_receipt))
             for name, value in (
                 ("get_registered_client", client), ("is_account_offline", False),
                 ("get_game_group_id", 123456), ("get_game_group_ids", [123456]),
@@ -93,7 +112,7 @@ def _worker(state_dir, phase, command_name, output):
             stack.enter_context(patch.object(runtime, "send_audit_log", new=AsyncMock()))
             stack.enter_context(patch.object(runtime, "_append_sent_message_log"))
             stack.enter_context(patch.object(runtime, "_notify_game_command_sent_observers"))
-            message = await runtime.send_game_command(command, send_as_id=identity_id, max_retry=0)
+            message = await runtime.send_game_command(command, send_as_id=identity_id, track=tracked, max_retry=0)
             output.send({
                 "phase": phase, "transport_calls": client.calls,
                 "message_id": int(getattr(message, "id", 0) or 0),
@@ -106,13 +125,19 @@ def _worker(state_dir, phase, command_name, output):
         output.close()
 
 
-def probe(command_name="rift"):
+def probe(command_name="rift", *, crash_point="before_id", tracked=True, advance_seconds=0):
+    if command_name not in ("checkin", "rift") or crash_point not in ("before_id", "after_id"):
+        raise ValueError("unsupported isolated probe case")
+    if type(tracked) is not bool or type(advance_seconds) not in (int, float) or not 0 <= advance_seconds <= 31 * 86400:
+        raise ValueError("invalid isolated probe options")
     context = multiprocessing.get_context("spawn")
     with tempfile.TemporaryDirectory(prefix="xiuxian-send-crash-") as state_dir:
         observations = []
         for phase in ("first", "reload"):
             receiver, sender = context.Pipe(duplex=False)
-            process = context.Process(target=_worker, args=(state_dir, phase, command_name, sender))
+            process = context.Process(target=_worker, args=(
+                state_dir, phase, command_name, sender, crash_point, tracked, advance_seconds,
+            ))
             process.start()
             sender.close()
             try:
@@ -134,14 +159,24 @@ def probe(command_name="rift"):
                 receiver.close()
         if not observations[0]["saved"]:
             raise RuntimeError("crash probe did not persist its initial state")
-        return {"command": command_name, "observations": observations, "safe": observations[1]["transport_calls"] == 0}
+        return {
+            "command": command_name, "crash_point": crash_point, "tracked": tracked,
+            "advance_seconds": advance_seconds, "observations": observations,
+            "safe": observations[1]["transport_calls"] == 0,
+        }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--command", choices=("checkin", "rift"), default="rift")
+    parser.add_argument("--crash-point", choices=("before_id", "after_id"), default="before_id")
+    parser.add_argument("--untracked", action="store_true")
+    parser.add_argument("--advance-seconds", type=float, default=0)
     parser.add_argument("--assert-safe", action="store_true")
     args = parser.parse_args()
-    result = probe(args.command)
+    result = probe(
+        args.command, crash_point=args.crash_point, tracked=not args.untracked,
+        advance_seconds=args.advance_seconds,
+    )
     print(json.dumps(result, sort_keys=True))
     raise SystemExit(1 if args.assert_safe and not result["safe"] else 0)
