@@ -895,18 +895,10 @@ def choose_safe_rebirth_option(options, config=None):
 
 def _is_rebirth_reply_context(reply_to, raw_text):
     reply_command = str(getattr(reply_to, "raw_text", "") or "").strip() if reply_to else ""
-    if reply_command == CMD_REBIRTH_REQUEST:
-        return True
-    if reply_command == CMD_REBIRTH_SELECT_PREFIX or reply_command.startswith(f"{CMD_REBIRTH_SELECT_PREFIX} "):
-        return True
-    reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0) if reply_to else 0
-    if reply_to_msg_id > 0 and reply_to_msg_id in {
-        int(state.get("explore_rift_rebirth_request_msg_id", 0) or 0),
-        int(state.get("explore_rift_rebirth_select_msg_id", 0) or 0),
-        int(state.get("explore_rift_rebirth_options_msg_id", 0) or 0),
-    }:
-        return True
-    return classify_rebirth_text(raw_text) != "unknown"
+    return classify_rebirth_text(raw_text) != "unknown" and (
+        not reply_command or reply_command == CMD_REBIRTH_REQUEST
+        or reply_command in tuple(f"{CMD_REBIRTH_SELECT_PREFIX} {index}" for index in (1, 2, 3))
+    )
 
 
 def is_explore_rift_reply_text(text):
@@ -940,7 +932,8 @@ def _has_unknown_rift():
 
 
 def has_unresolved_explore_rift():
-    return _has_unknown_rift() or any(_rift_log_id(state.get(key)) > 0 for key in (
+    operation = _rebirth_operation()
+    return operation is None or bool(operation and operation["status"] != "complete") or _has_unknown_rift() or any(_rift_log_id(state.get(key)) > 0 for key in (
         "explore_rift_reply_to_msg_id", "explore_rift_pending_result_msg_id",
         "explore_rift_fatal_msg_id", "explore_rift_rebirth_request_msg_id",
         "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id",
@@ -1504,7 +1497,308 @@ def get_explore_rift_status_text():
     return "\n".join(lines)
 
 
-async def _mark_rebirth_restored(result_text, now):
+def _valid_rebirth_operation(raw, *, parent=False):
+    if not isinstance(raw, dict) or not raw or len(raw) > 32:
+        return False
+    if (
+        type(raw.get("identity_id")) is not int or raw["identity_id"] != get_current_identity_id()
+        or type(raw.get("account_id")) is not int or raw["account_id"] != get_identity_account(get_current_identity_id())
+        or not isinstance(raw.get("op_id"), str) or not raw["op_id"]
+        or raw.get("kind") not in ("request", "select")
+        or raw.get("status") not in ("sending", "sent", "unknown", "unsent", "options", "weak", "complete", "failed")
+        or _rift_log_time(raw.get("started_at")) <= 0
+        or type(raw.get("msg_id", 0)) is not int or raw.get("msg_id", 0) < 0
+        or type(raw.get("chat_id", 0)) is not int
+        or type(raw.get("legacy", False)) is not bool
+        or type(raw.get("blind", False)) is not bool
+        or not isinstance(raw.get("options_text", ""), str) or len(raw.get("options_text", "")) > 32768
+    ):
+        return False
+    expected = CMD_REBIRTH_REQUEST if raw["kind"] == "request" else f"{CMD_REBIRTH_SELECT_PREFIX} {raw.get('index')}"
+    if raw.get("command") != expected or (
+        raw["kind"] == "select" and (type(raw.get("index")) is not int or raw["index"] not in (1, 2, 3))
+    ):
+        return False
+    for key in ("cause_msg_id", "cause_chat_id", "cause_root_msg_id"):
+        if type(raw.get(key, 0)) is not int or (key != "cause_chat_id" and raw.get(key, 0) < 0):
+            return False
+    request = raw.get("request")
+    if parent or raw["kind"] == "request":
+        if raw["kind"] != "request" or "request" in raw:
+            return False
+    elif not (request is None and raw.get("legacy")):
+        if not (
+            _valid_rebirth_operation(request, parent=True)
+            and request["status"] in ("options", "sent")
+            and request["chat_id"] == raw["chat_id"] and request["msg_id"] > 0
+            and request["started_at"] <= raw["started_at"]
+            and request["op_id"] != raw["op_id"]
+        ):
+            return False
+    reply = raw.get("reply", {})
+    if not isinstance(reply, dict):
+        return False
+    if raw["status"] in ("options", "weak", "complete", "failed") and not reply:
+        return False
+    parent_result = bool(
+        request and reply and raw["kind"] == "select"
+        and _rift_log_id(reply.get("root_msg_id")) == request["msg_id"]
+        and _rift_log_id(reply.get("chat_id")) == request["chat_id"]
+        and reply.get("kind") in ("success", "body_intact")
+    )
+    if raw.get("msg_id"):
+        sent_at = _rift_log_time(raw.get("sent_at"))
+        if not raw.get("chat_id") or sent_at <= 0 or sent_at < raw["started_at"] - 1:
+            return False
+    elif raw["status"] not in ("sending", "unknown", "unsent") and not (raw["status"] == "complete" and parent_result):
+        return False
+    anchor = request if parent_result else raw
+    reply_at = _rift_log_time(reply.get("at"))
+    if reply and (
+        reply_at <= 0 or reply_at < anchor["started_at"] - 1
+        or _rift_log_id(reply.get("msg_id")) <= 0
+        or _rift_log_id(reply.get("root_msg_id", anchor["msg_id"])) != anchor["msg_id"]
+        or _rift_log_id(reply.get("chat_id", anchor["chat_id"])) != anchor["chat_id"]
+        or reply.get("event_type") not in ("message", "edit")
+        or reply.get("kind") not in ("weak", "searching", "options", "body_intact", "success", "failure")
+        or not isinstance(reply.get("digest"), str) or not re.fullmatch(r"[0-9a-f]{64}", reply["digest"])
+    ):
+        return False
+    return True
+
+
+def _rebirth_operation():
+    raw = state.get("explore_rift_rebirth_operation")
+    if raw == {}:
+        return {}
+    if not _valid_rebirth_operation(raw):
+        return None
+    return copy.deepcopy(raw)
+
+
+def _store_rebirth_operation(operation):
+    state["explore_rift_rebirth_operation"] = copy.deepcopy(operation)
+    mark_dirty()
+
+
+def _sync_rebirth_receipt(operation):
+    if operation["kind"] == "request":
+        state["explore_rift_rebirth_request_msg_id"] = operation["msg_id"]
+        state["explore_rift_rebirth_select_msg_id"] = 0
+    else:
+        state["explore_rift_rebirth_request_msg_id"] = 0
+        state["explore_rift_rebirth_select_msg_id"] = operation["msg_id"]
+        state["explore_rift_rebirth_selected_index"] = operation["index"]
+
+
+def _rebirth_cause():
+    ledger = state.get("explore_rift_result_evidence")
+    latest = ledger.get("latest") if isinstance(ledger, dict) else None
+    records = ledger.get("receipts") if isinstance(ledger, dict) else None
+    record = records.get(latest.get("key")) if isinstance(records, dict) and isinstance(latest, dict) and isinstance(latest.get("key"), str) else None
+    if not isinstance(record, dict):
+        return {}
+    return {
+        "cause_msg_id": _rift_log_id(record.get("msg_id")),
+        "cause_chat_id": _rift_log_id(record.get("chat_id")),
+        "cause_root_msg_id": _rift_log_id(record.get("root_msg_id")),
+    }
+
+
+def _begin_rebirth_cycle(record):
+    operation = _rebirth_operation()
+    if operation is None:
+        return False
+    if operation:
+        # A late edit of the death that caused this recovery cannot undo it.
+        same_cause = (operation.get("cause_chat_id"), operation.get("cause_root_msg_id")) == (record["chat_id"], record["root_msg_id"])
+        if same_cause:
+            return operation["status"] != "complete"
+        restored_at = _rift_log_time((operation.get("reply") or {}).get("at")) if operation["status"] == "complete" else 0
+        if record["first_at"] <= max(operation["started_at"], restored_at):
+            return False
+    _clear_explore_rift_rebirth_state()
+    _store_rebirth_operation({})
+    return True
+
+
+def _load_rebirth_operation(now):
+    operation = _rebirth_operation()
+    if operation is None or operation:
+        return operation
+    select_id = _rift_log_id(state.get("explore_rift_rebirth_select_msg_id"))
+    request_id = _rift_log_id(state.get("explore_rift_rebirth_request_msg_id"))
+    msg_id = select_id or request_id
+    if not msg_id:
+        phase = str(state.get("explore_rift_rebirth_phase") or "")
+        return None if phase in ("requesting", "selecting", "blind_selecting", "manual_required") else {}
+    commands = [f"{CMD_REBIRTH_SELECT_PREFIX} {index}" for index in (1, 2, 3)] if select_id else [CMD_REBIRTH_REQUEST]
+    entries = _rift_log_entries(now, EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC)
+    matches = [receipt for command in commands for receipt in _rift_log_command_owners(entries, command, now).values() if receipt["msg_id"] == msg_id]
+    if len(matches) != 1:
+        return None
+    receipt = matches[0]
+    migrated = {
+        "op_id": receipt.get("op_id") or uuid4().hex, "identity_id": get_current_identity_id(),
+        "account_id": get_identity_account(get_current_identity_id()), "kind": "select" if select_id else "request",
+        "command": receipt["text"], "started_at": receipt.get("event_at") or receipt["ts"],
+        "sent_at": receipt["ts"], "msg_id": msg_id, "chat_id": receipt["chat_id"], "status": "sent",
+        "index": int(receipt["text"].rsplit(" ", 1)[-1]) if select_id else 0,
+        "legacy": True,
+    }
+    return migrated if _valid_rebirth_operation(migrated) else None
+
+
+def _rebirth_can_act(now):
+    identity_id = get_current_identity_id()
+    return (
+        has_identity(identity_id) and get_global_enabled() and get_identity_enabled(identity_id)
+        and bool(state.get("explore_rift_enabled")) and bool(state.get("explore_rift_rebirth_required"))
+        and not state.get("explore_rift_manual_required")
+        and _rift_log_time(state.get("explore_rift_nascent_escape_weak_until")) <= now
+    )
+
+
+def _adopt_rebirth_receipt(operation, now):
+    if operation.get("msg_id") and operation.get("chat_id"):
+        return operation
+    commands = _rift_log_command_owners(
+        _rift_log_entries(now, EXPLORE_RIFT_PENDING_RESULT_LOG_LOOKBACK_SEC), operation["command"], now,
+    )
+    matches = [receipt for receipt in commands.values() if (
+        receipt.get("op_id") == operation["op_id"]
+        and receipt["ts"] >= operation["started_at"] - 1
+        and (not operation.get("msg_id") or receipt["msg_id"] == operation["msg_id"])
+        and (not operation.get("chat_id") or receipt["chat_id"] == operation["chat_id"])
+    )]
+    if len(matches) != 1:
+        return operation
+    receipt = matches[0]
+    return {**operation, "msg_id": receipt["msg_id"], "chat_id": receipt["chat_id"], "sent_at": receipt["ts"]}
+
+
+async def _dispatch_rebirth(kind, now, *, selected=None, blind=False, index=0):
+    now = max(float(now), time.time())
+    previous = _rebirth_operation()
+    if previous is None or not _rebirth_can_act(now):
+        return False
+    if kind == "request":
+        if previous and (previous["status"] not in ("unsent", "weak") or (previous["kind"] == "select" and previous["status"] == "unsent")):
+            return False
+        parent = {}
+        command = CMD_REBIRTH_REQUEST
+    else:
+        parent = previous if previous.get("kind") == "request" else previous.get("request", {})
+        if not isinstance(parent, dict) or not parent.get("msg_id") or not parent.get("chat_id"):
+            return False
+        if previous.get("kind") == "select" and previous["status"] != "unsent":
+            return False
+        if not blind and parent.get("status") != "options":
+            return False
+        if blind and parent.get("status") != "sent":
+            return False
+        command = f"{CMD_REBIRTH_SELECT_PREFIX} {index}"
+    if _rift_log_time(state.get("explore_rift_rebirth_due_at")) > now and previous.get("status") == "unsent":
+        return False
+    identity_id = get_current_identity_id()
+    identity = get_identity_state(identity_id)
+    account_id = get_identity_account(identity_id)
+    operation_id = uuid4().hex
+    cause = _rebirth_cause()
+    cause.update({key: previous[key] for key in ("cause_msg_id", "cause_chat_id", "cause_root_msg_id") if key in previous})
+    operation = {
+        "op_id": operation_id, "identity_id": identity_id, "account_id": account_id,
+        "kind": kind, "command": command, "started_at": now, "status": "sending",
+        "msg_id": 0, "chat_id": parent.get("chat_id", 0), "index": index,
+        "blind": bool(blind), **cause,
+    }
+    if parent:
+        operation["request"] = copy.deepcopy(parent)
+    config = get_rebirth_choice_config()
+    _store_rebirth_operation(operation)
+    phase = "requesting" if kind == "request" else ("blind_selecting" if blind else "selecting")
+    state["explore_rift_rebirth_phase"] = phase
+    state["explore_rift_rebirth_due_at"] = now + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC
+    _sync_rebirth_receipt(operation)
+
+    def owns_operation():
+        if (
+            not has_identity(identity_id) or get_identity_state(identity_id) is not identity
+            or get_identity_account(identity_id) != account_id
+        ):
+            return False
+        current = _rebirth_operation()
+        return bool(current and current["op_id"] == operation_id)
+
+    def can_send():
+        return bool(
+            owns_operation() and _rebirth_operation()["status"] == "sending"
+            and _rebirth_can_act(max(now, time.time())) and get_rebirth_choice_config() == config
+        )
+
+    def unsent(reason):
+        current = _rebirth_operation()
+        current["status"] = "unsent"
+        _store_rebirth_operation(current)
+        state["explore_rift_rebirth_due_at"] = max(now, time.time()) + RETRY_MAX_SEC
+        state["explore_rift_rebirth_last_error"] = reason
+        save_state()
+
+    if save_state() is False:
+        unsent("重生在途状态未保存，本次未发送")
+        return False
+    try:
+        msg = await send_game_command(
+            command, track=False, max_retry=0, source_module="探寻裂缝", op_id=operation_id,
+            target_chat_id=operation["chat_id"] or None, operation_check=can_send,
+        )
+    except (asyncio.CancelledError, Exception):
+        if owns_operation() and _rebirth_operation()["status"] == "sending":
+            current = _rebirth_operation()
+            current["status"] = "unknown"
+            _store_rebirth_operation(current)
+            state["explore_rift_rebirth_last_error"] = "重生发送中断，保留原操作等待反馈"
+            save_state()
+        raise
+    if not owns_operation() or _rebirth_operation()["status"] != "sending":
+        return True
+    if not msg:
+        block = classify_game_send_block(identity_id, command)
+        if _is_explore_rift_unsent_block(block):
+            unsent(f"重生未发送：{_explore_rift_block_label(block)}")
+            return False
+    msg_id = _rift_log_id(getattr(msg, "id", 0))
+    chat_id = _rift_log_id(getattr(msg, "chat_id", 0))
+    sent_at = _rift_log_time(getattr(msg, "sent_at", 0))
+    current = _rebirth_operation()
+    if (
+        msg_id <= 0 or not chat_id or not now - 1 <= sent_at <= max(now, time.time()) + 1
+        or (operation["chat_id"] and operation["chat_id"] != chat_id)
+    ):
+        current["status"] = "unknown"
+        _store_rebirth_operation(current)
+        state["explore_rift_rebirth_last_error"] = "重生发送结果未知，保留原操作，不自动重发"
+        save_state()
+        return True
+    current.update(status="sent", msg_id=msg_id, chat_id=chat_id, sent_at=sent_at)
+    _store_rebirth_operation(current)
+    _sync_rebirth_receipt(current)
+    state["explore_rift_rebirth_due_at"] = sent_at + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC
+    state["explore_rift_rebirth_last_result"] = "已发送夺舍重生" if kind == "request" else f"已选择肉身 {index}"
+    state["explore_rift_rebirth_last_error"] = ""
+    if save_state() is False:
+        return False
+    if kind == "select" and owns_operation():
+        selected = selected or {}
+        text = f"🕳 夺舍选项回复超时，已盲选肉身：{command}" if blind else (
+            f"🕳 自动重生选择稳妥之身：{index}｜{selected.get('name') or '未知肉身'}｜"
+            f"{selected.get('root_text') or '未知灵根'}"
+        )
+        await send_audit_log(text, scope="identity", priority="high" if blind else "auto", limit=360)
+    return True
+
+
+def _mark_rebirth_restored(result_text, now):
     state["explore_rift_nascent_escape_weak_until"] = 0
     state["explore_rift_rebirth_required"] = False
     state["explore_rift_rebirth_phase"] = "restored"
@@ -1513,8 +1807,7 @@ async def _mark_rebirth_restored(result_text, now):
     state["explore_rift_rebirth_last_error"] = ""
     state["explore_rift_manual_required"] = False
     state["next_explore_rift_time"] = max(float(state.get("next_explore_rift_time", 0) or 0), float(now + RETRY_MAX_SEC))
-    save_state()
-    await send_audit_log(f"🕳 夺舍恢复完成：{state['explore_rift_rebirth_last_result']}", scope="identity", limit=240)
+    return f"🕳 夺舍恢复完成：{state['explore_rift_rebirth_last_result']}"
 
 
 async def _send_rebirth_select(index, now, *, selected=None, blind=False):
@@ -1524,42 +1817,93 @@ async def _send_rebirth_select(index, now, *, selected=None, blind=False):
         index = 0
     if index not in {1, 2, 3}:
         return False
-    command = f"{CMD_REBIRTH_SELECT_PREFIX} {index}"
-    msg = await send_game_command(command, track=False, max_retry=0, source_module="探寻裂缝")
-    if not msg:
-        state["explore_rift_rebirth_phase"] = "manual_required"
-        state["explore_rift_manual_required"] = True
-        state["explore_rift_rebirth_last_error"] = "重生命令发送失败"
-        save_state()
-        await send_audit_log("❌ 重生命令发送失败，请人工处理。", scope="identity", priority="high", limit=240)
-        return True
+    return await _dispatch_rebirth("select", now, selected=selected, blind=blind, index=index)
 
-    state["explore_rift_rebirth_phase"] = "blind_selecting" if blind else "selecting"
-    state["explore_rift_rebirth_select_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["explore_rift_rebirth_selected_index"] = index
-    state["explore_rift_rebirth_due_at"] = float(now + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC)
-    if blind:
-        state["explore_rift_rebirth_last_result"] = f"已盲选肉身 {index}"
-        audit_text = f"🕳 夺舍选项回复超时，已盲选肉身：{command}"
-    else:
-        selected = selected or {}
-        state["explore_rift_rebirth_last_result"] = (
-            f"已选稳妥 {index}｜{selected.get('name') or '未知肉身'}｜{selected.get('root_text') or '未知灵根'}"
+
+async def _handle_rebirth_reply(raw_text, now, *, reply_to, reply_context):
+    if len(raw_text) > 32768:
+        return False
+    operation = _load_rebirth_operation(max(now, _rift_log_time(reply_context.get("processed_at"))))
+    if not operation:
+        return False
+    operation = _adopt_rebirth_receipt(operation, max(now, _rift_log_time(reply_context.get("processed_at"))))
+    root = reply_context["root_msg_id"]
+    chat = reply_context["chat_id"]
+    reply_command = str(getattr(reply_to, "raw_text", "") or "").strip()
+    parent = operation.get("request")
+    parent_result = isinstance(parent, dict) and (parent["msg_id"], parent["chat_id"]) == (root, chat)
+    rebirth_kind = classify_rebirth_text(raw_text)
+    anchor = parent if parent_result else operation
+    if (
+        (anchor.get("msg_id"), anchor.get("chat_id")) != (root, chat)
+        or now < anchor["started_at"] - 1
+        or now < anchor.get("sent_at", 0) - 1
+        or (operation["status"] == "unsent" and not parent_result)
+        or (reply_command and reply_command != anchor["command"])
+    ):
+        return False
+    if parent_result:
+        # An old options/searching replay cannot choose again. The server can
+        # still finish the parent request with its own automatic body choice.
+        if rebirth_kind not in ("success", "body_intact"):
+            return save_state() is not False
+        if now < _rift_log_time((parent.get("reply") or {}).get("at")):
+            return save_state() is not False
+    if operation["kind"] == "select" and rebirth_kind in ("searching", "options"):
+        return False
+    previous_reply = operation.get("reply") or {}
+    digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    if previous_reply:
+        if now < previous_reply["at"] or digest == previous_reply["digest"]:
+            return save_state() is not False
+        if now == previous_reply["at"]:
+            if previous_reply["event_type"] == reply_context["event_type"]:
+                return False
+            if reply_context["event_type"] != "edit":
+                return save_state() is not False
+        if operation["status"] == "options" and rebirth_kind == "searching":
+            return save_state() is not False
+    if operation["status"] == "complete":
+        return save_state() is not False
+    if operation["status"] in ("weak", "failed") and not (
+        previous_reply and rebirth_kind in ("body_intact", "success")
+        and reply_context["event_type"] == "edit" and reply_context["msg_id"] == previous_reply["msg_id"]
+    ):
+        return save_state() is not False
+    operation["reply"] = {
+        "at": now, "msg_id": reply_context["msg_id"], "digest": digest,
+        "kind": rebirth_kind, "event_type": reply_context["event_type"],
+        "root_msg_id": root, "chat_id": chat,
+    }
+    identity = get_identity_state(get_current_identity_id())
+    before = copy.deepcopy(identity)
+    try:
+        audit_text, audit_limit = _apply_rebirth_reply(operation, raw_text, now, reply_context)
+        saved = save_state()
+    except Exception:
+        identity.clear()
+        identity.update(before)
+        mark_dirty()
+        raise
+    if saved is False:
+        return False
+    if rebirth_kind == "options" and operation["status"] == "options":
+        selected = choose_safe_rebirth_option(parse_rebirth_options(raw_text))
+        await _send_rebirth_select(
+            selected["index"], max(now, _rift_log_time(reply_context.get("processed_at"))), selected=selected,
         )
-        audit_text = (
-            f"🕳 自动重生选择稳妥之身：{index}｜{selected.get('name') or '未知肉身'}｜"
-            f"{selected.get('root_text') or '未知灵根'}"
-        )
-    state["explore_rift_rebirth_last_error"] = ""
-    state["explore_rift_manual_required"] = False
-    save_state()
-    await send_audit_log(audit_text, scope="identity", priority="high" if blind else "auto", limit=360)
+    elif audit_text:
+        await send_audit_log(audit_text, scope="identity", limit=audit_limit)
     return True
 
 
-async def _handle_rebirth_reply(raw_text, now, incoming_msg_id=0):
-    rebirth_kind = classify_rebirth_text(raw_text)
+def _apply_rebirth_reply(operation, raw_text, now, reply_context):
+    incoming_msg_id = reply_context["msg_id"]
+    rebirth_kind = operation["reply"]["kind"]
+    _sync_rebirth_receipt(operation)
     if rebirth_kind == "weak":
+        operation["status"] = "weak"
+        _store_rebirth_operation(operation)
         wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else 6 * 3600
         state["explore_rift_nascent_escape_weak_until"] = float(now + wait_sec + CD_BUFFER_SEC)
         state["explore_rift_rebirth_required"] = True
@@ -1568,22 +1912,25 @@ async def _handle_rebirth_reply(raw_text, now, incoming_msg_id=0):
         state["explore_rift_rebirth_last_result"] = "虚弱温养中"
         state["explore_rift_rebirth_last_error"] = ""
         state["explore_rift_manual_required"] = False
-        save_state()
-        await send_audit_log(f"🕳 元婴虚弱→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity", limit=220)
-        return True
+        return f"🕳 元婴虚弱→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", 220
 
     if rebirth_kind == "searching":
+        operation["status"] = "sent"
+        _store_rebirth_operation(operation)
         state["explore_rift_rebirth_phase"] = "requesting"
         if incoming_msg_id > 0:
             state["explore_rift_rebirth_options_msg_id"] = int(incoming_msg_id)
         state["explore_rift_rebirth_last_result"] = "寻找肉身中"
         state["explore_rift_rebirth_last_error"] = ""
-        save_state()
-        return True
+        state["explore_rift_rebirth_due_at"] = operation["sent_at"] + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC
+        return "", 0
 
     if rebirth_kind == "options":
         options = parse_rebirth_options(raw_text)
         selected = choose_safe_rebirth_option(options)
+        operation["status"] = "options" if selected else "failed"
+        operation["options_text"] = raw_text
+        _store_rebirth_operation(operation)
         state["explore_rift_rebirth_options_text"] = raw_text
         state["explore_rift_rebirth_options_msg_id"] = int(incoming_msg_id or 0)
         if not selected:
@@ -1591,30 +1938,25 @@ async def _handle_rebirth_reply(raw_text, now, incoming_msg_id=0):
             state["explore_rift_rebirth_phase"] = "manual_required"
             state["explore_rift_manual_required"] = True
             state["explore_rift_rebirth_last_error"] = "夺舍选项无法自动定位稳妥之身"
-            _clear_explore_rift_rebirth_pending()
-            save_state()
-            await send_audit_log(f"⚠️ 夺舍选项无法自动定位稳妥之身，请人工处理：\n{raw_text}", scope="identity", limit=900)
-            return True
-
-        await _send_rebirth_select(int(selected["index"]), now, selected=selected, blind=False)
-        return True
+            return f"⚠️ 夺舍选项无法自动定位稳妥之身，请人工处理：\n{raw_text}", 900
+        return "", 0
 
     if rebirth_kind in {"body_intact", "success"}:
+        operation["status"] = "complete"
+        _store_rebirth_operation(operation)
         first_line = raw_text.splitlines()[0].strip() if raw_text.splitlines() else "夺舍成功"
-        await _mark_rebirth_restored(first_line, now)
-        return True
+        return _mark_rebirth_restored(first_line, now), 240
 
     if rebirth_kind == "failure":
+        operation["status"] = "failed"
+        _store_rebirth_operation(operation)
         state["explore_rift_rebirth_required"] = True
         state["explore_rift_rebirth_phase"] = "manual_required"
         state["explore_rift_manual_required"] = True
-        _clear_explore_rift_rebirth_pending()
         state["explore_rift_rebirth_last_error"] = raw_text[:160]
-        save_state()
-        await send_audit_log(f"⚠️ 夺舍恢复失败，请人工处理：{raw_text}", scope="identity", limit=700)
-        return True
+        return f"⚠️ 夺舍恢复失败，请人工处理：{raw_text}", 700
 
-    return False
+    return "", 0
 
 
 def _set_escape_weak(raw_text, now, result_msg_id):
@@ -1663,59 +2005,87 @@ async def _confirm_pending_fatal(now):
 
 
 async def _send_rebirth_request(now):
-    msg = await send_game_command(CMD_REBIRTH_REQUEST, track=False, max_retry=0, source_module="探寻裂缝")
-    if not msg:
-        state["explore_rift_rebirth_due_at"] = float(now + RETRY_MAX_SEC)
-        state["explore_rift_rebirth_last_error"] = "夺舍重生发送失败"
-        save_state()
-        await send_audit_log("❌ 夺舍重生发送失败，稍后重试。", scope="identity", limit=240)
-        return False
-    state["explore_rift_rebirth_phase"] = "requesting"
-    state["explore_rift_rebirth_request_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["explore_rift_rebirth_due_at"] = float(now + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC)
-    state["explore_rift_rebirth_last_result"] = "已发送夺舍重生"
-    state["explore_rift_rebirth_last_error"] = ""
-    state["explore_rift_manual_required"] = False
-    save_state()
-    console_log(f"🕳 夺舍重生已发送，等待回复→{fmt_abs_ts(state['explore_rift_rebirth_due_at'])}", scope="identity", limit=180)
-    return True
+    return await _dispatch_rebirth("request", now)
 
 
 async def _run_rebirth_scheduler(now):
+    operation = _load_rebirth_operation(now)
+    if operation is None:
+        return bool(state.get("explore_rift_rebirth_required") or state.get("explore_rift_rebirth_operation"))
+    if operation and not state.get("explore_rift_rebirth_operation"):
+        _store_rebirth_operation(operation)
+        _sync_rebirth_receipt(operation)
+        if save_state() is False:
+            return True
     weak_until = float(state.get("explore_rift_nascent_escape_weak_until", 0) or 0)
     if weak_until > now:
         if state.get("explore_rift_rebirth_phase") != "weak":
             state["explore_rift_rebirth_phase"] = "weak"
             mark_dirty()
         return True
-    if not state.get("explore_rift_rebirth_required"):
+    if not state.get("explore_rift_rebirth_required") and (not operation or operation["status"] == "complete"):
         return False
-    if str(state.get("explore_rift_rebirth_phase") or "") == "manual_required":
-        return True
-
-    request_msg_id = int(state.get("explore_rift_rebirth_request_msg_id", 0) or 0)
-    select_msg_id = int(state.get("explore_rift_rebirth_select_msg_id", 0) or 0)
     due_at = float(state.get("explore_rift_rebirth_due_at", 0) or 0)
-    if (request_msg_id > 0 or select_msg_id > 0) and due_at > now:
+    if operation.get("status") == "options":
+        selected = choose_safe_rebirth_option(parse_rebirth_options(operation.get("options_text")))
+        if selected:
+            await _send_rebirth_select(selected["index"], now, selected=selected)
         return True
-
-    if select_msg_id > 0:
-        _clear_explore_rift_rebirth_pending()
-        state["explore_rift_rebirth_phase"] = "manual_required"
-        state["explore_rift_manual_required"] = True
-        state["explore_rift_rebirth_last_error"] = "重生选择已发送但未读到确认，停止自动重试"
+    if due_at > now:
+        return True
+    if operation and operation["status"] in ("sending", "sent", "unknown"):
+        identity_id = get_current_identity_id()
+        identity = get_identity_state(identity_id)
+        account_id = get_identity_account(identity_id)
+        operation_id = operation["op_id"]
+        adopted = _adopt_rebirth_receipt(operation, now)
+        if adopted.get("msg_id") and adopted.get("chat_id"):
+            operation = adopted
+            if operation["status"] in ("sending", "unknown"):
+                operation["status"] = "sent"
+            _store_rebirth_operation(operation)
+            _sync_rebirth_receipt(operation)
+            state["explore_rift_rebirth_due_at"] = operation["sent_at"] + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC
+            if save_state() is False:
+                return True
+            reply = _find_owned_rift_log_reply(
+                operation["command"], now, command_msg_id=operation["msg_id"], command_chat_id=operation["chat_id"],
+            )
+            if reply:
+                await handle_explore_rift_reply(
+                    reply["text"], reply["ts"], result_msg_id=reply["msg_id"], matched_family="explore_rift",
+                    reply_to=SimpleNamespace(id=reply["root_msg_id"], chat_id=reply["chat_id"], raw_text=operation["command"]),
+                    reply_context=_rift_log_reply_context(reply, now, "explore_rift"),
+                )
+                if (
+                    not has_identity(identity_id) or get_identity_state(identity_id) is not identity
+                    or get_identity_account(identity_id) != account_id
+                ):
+                    return True
+                operation = _rebirth_operation()
+                if not operation or operation["op_id"] != operation_id or operation["status"] not in ("sending", "sent", "unknown"):
+                    return True
+            if _rift_log_time(state.get("explore_rift_rebirth_due_at")) > now:
+                return True
+        if operation["kind"] == "request" and operation["status"] == "sent":
+            await _send_rebirth_select(get_rebirth_choice_config()["blind_index"], now, blind=True)
+            return True
+        state["explore_rift_rebirth_due_at"] = now + RETRY_MAX_SEC
+        state["explore_rift_rebirth_last_error"] = "重生结果未知，保留原操作，停止自动重试"
+        if operation["kind"] == "select":
+            state["explore_rift_rebirth_phase"] = "manual_required"
+            state["explore_rift_manual_required"] = True
         save_state()
-        await send_audit_log("⚠️ 重生选择已发送但未读到确认，已停止自动重试，请人工确认。", scope="identity", priority="high", limit=260)
         return True
-
-    if request_msg_id > 0:
-        _clear_explore_rift_rebirth_pending()
-        state["explore_rift_rebirth_phase"] = "idle"
-        state["explore_rift_rebirth_last_error"] = "夺舍选项回复超时，准备盲选"
-        save_state()
-        await _send_rebirth_select(get_rebirth_choice_config()["blind_index"], now, blind=True)
+    if operation.get("status") in ("complete", "failed"):
         return True
-
+    if operation.get("kind") == "select" and operation["status"] == "unsent":
+        parent = operation.get("request", {})
+        selected = choose_safe_rebirth_option(parse_rebirth_options(parent.get("options_text")))
+        blind = bool(operation.get("blind"))
+        index = get_rebirth_choice_config()["blind_index"] if blind else (selected or {}).get("index", 0)
+        await _send_rebirth_select(index, now, selected=selected, blind=blind)
+        return True
     await _send_rebirth_request(now)
     return True
 
@@ -1727,6 +2097,8 @@ def _apply_rift_result_state(raw_text, stage, plan, *, reply_context):
         if plan["revision"] and plan["apply_state"] and stage in EXPLORE_RIFT_SUCCESS_TITLES:
             state["explore_rift_last_result"] = parse_explore_rift_result_summary(raw_text)[0]
             state["explore_rift_last_result_key"] = _make_result_key(result_msg_id, stage, raw_text)
+        return "", 0, ""
+    if stage in (EXPLORE_RIFT_FATAL_TITLE, EXPLORE_RIFT_ESCAPE_WEAK_TITLE) and not _begin_rebirth_cycle(plan["record"]):
         return "", 0, ""
     if stage == "pending":
         _set_explore_rift_pending_result(result_msg_id, now=now, reply_context=reply_context)
@@ -1772,12 +2144,17 @@ def _apply_rift_result_state(raw_text, stage, plan, *, reply_context):
 async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0, *, reply_context=None):
     if not has_identity(get_current_identity_id()):
         return False
-    if not state.get("explore_rift_enabled") and not state.get("explore_rift_rebirth_required") and not has_unresolved_explore_rift():
+    raw_text = str(text or "").strip()
+    rebirth_reply = classify_rebirth_text(raw_text) != "unknown"
+    if (
+        not state.get("explore_rift_enabled") and not state.get("explore_rift_rebirth_required")
+        and not has_unresolved_explore_rift()
+        and not (rebirth_reply and state.get("explore_rift_rebirth_operation"))
+    ):
         return False
     if not _is_explore_rift_reply(reply_to, matched_family=matched_family):
         return False
 
-    raw_text = str(text or "").strip()
     result_msg_id = _rift_log_id(result_msg_id)
     if not raw_text:
         return False
@@ -1794,10 +2171,12 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
             and get_identity_account(identity_id) == account_id
         )
 
-    if _is_rebirth_reply_context(reply_to, raw_text):
-        handled_rebirth = await _handle_rebirth_reply(raw_text, evidence["event_at"], incoming_msg_id=result_msg_id)
-        if handled_rebirth:
-            return True
+    if rebirth_reply:
+        if not _is_rebirth_reply_context(reply_to, raw_text):
+            return False
+        return await _handle_rebirth_reply(
+            raw_text, evidence["event_at"], reply_to=reply_to, reply_context=reply_context,
+        )
 
     if _has_unknown_rift() and not _unknown_rift_reply_matches(reply_context, result_msg_id, now):
         return False

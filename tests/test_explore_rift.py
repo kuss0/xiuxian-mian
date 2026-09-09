@@ -104,6 +104,14 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             "sender_id": identity_id, "text": command,
         }
 
+    def _remember_rebirth_command(self, command, msg_id, sent_at):
+        log_dir = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.object(explore_rift, "MESSAGES_DIR", log_dir))
+        state_module.state["explore_rift_enabled"] = True
+        self._write_message_log(log_dir, [self._logged_command(
+            state_module.get_current_identity_id(), msg_id, sent_at, command,
+        )], sent_at)
+
     def _write_message_log(self, log_dir, entries, now):
         day = datetime.fromtimestamp(float(now), config.TZ_LOCAL).date().isoformat()
         log_path = Path(log_dir) / f"{day}.log"
@@ -430,14 +438,17 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["explore_rift_rebirth_phase"])
             self.assertIn("待夺舍恢复", state_module.state["explore_rift_last_result"])
 
-            fake_msg = SimpleNamespace(id=33001, sent_at=now + 5)
+            fake_msg = SimpleNamespace(id=33001, chat_id=-1001680975844, sent_at=now + 5)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
             ):
                 await explore_rift.run_explore_rift_scheduler(now + 5)
 
-            send_mock.assert_awaited_once_with(".夺舍重生", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(
+                ".夺舍重生", track=False, max_retry=0, source_module="探寻裂缝",
+                op_id=ANY, target_chat_id=None, operation_check=ANY,
+            )
             self.assertEqual(33001, state_module.state["explore_rift_rebirth_request_msg_id"])
 
     async def test_rebirth_scheduler_sends_request_after_weak_period(self):
@@ -448,14 +459,17 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_rebirth_required"] = True
             state_module.state["explore_rift_rebirth_phase"] = "weak"
             state_module.state["explore_rift_nascent_escape_weak_until"] = now - 1
-            fake_msg = SimpleNamespace(id=33001, sent_at=now)
+            fake_msg = SimpleNamespace(id=33001, chat_id=-1001680975844, sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".夺舍重生", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(
+                ".夺舍重生", track=False, max_retry=0, source_module="探寻裂缝",
+                op_id=ANY, target_chat_id=None, operation_check=ANY,
+            )
             self.assertEqual(33001, state_module.state["explore_rift_rebirth_request_msg_id"])
             self.assertEqual("requesting", state_module.state["explore_rift_rebirth_phase"])
 
@@ -468,7 +482,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_rebirth_phase"] = "requesting"
             state_module.state["explore_rift_rebirth_request_msg_id"] = 33001
             state_module.state["explore_rift_rebirth_due_at"] = now - 1
-            fake_msg = SimpleNamespace(id=33002, sent_at=now)
+            self._remember_rebirth_command(".夺舍重生", 33001, now - explore_rift.EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC - 1)
+            fake_msg = SimpleNamespace(id=33002, chat_id=-1001680975844, sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
@@ -476,7 +491,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".重生 1", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(
+                ".重生 1", track=False, max_retry=0, source_module="探寻裂缝",
+                op_id=ANY, target_chat_id=-1001680975844, operation_check=ANY,
+            )
             self.assertEqual(0, state_module.state["explore_rift_rebirth_request_msg_id"])
             self.assertEqual(33002, state_module.state["explore_rift_rebirth_select_msg_id"])
             self.assertEqual(1, state_module.state["explore_rift_rebirth_selected_index"])
@@ -492,7 +510,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_rebirth_request_msg_id"] = 33001
             state_module.state["explore_rift_rebirth_due_at"] = now - 1
             state_module.state["explore_rift_rebirth_blind_index"] = 2
-            fake_msg = SimpleNamespace(id=33002, sent_at=now)
+            self._remember_rebirth_command(".夺舍重生", 33001, now - explore_rift.EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC - 1)
+            fake_msg = SimpleNamespace(id=33002, chat_id=-1001680975844, sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
@@ -500,7 +519,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".重生 2", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(
+                ".重生 2", track=False, max_retry=0, source_module="探寻裂缝",
+                op_id=ANY, target_chat_id=-1001680975844, operation_check=ANY,
+            )
             self.assertEqual(2, state_module.state["explore_rift_rebirth_selected_index"])
 
     async def test_rebirth_scheduler_stops_after_rebirth_choice_confirmation_timeout(self):
@@ -513,6 +535,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_rebirth_select_msg_id"] = 33002
             state_module.state["explore_rift_rebirth_selected_index"] = 1
             state_module.state["explore_rift_rebirth_due_at"] = now - 1
+            self._remember_rebirth_command(".重生 1", 33002, now - explore_rift.EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC - 1)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(explore_rift, "save_state"),
@@ -521,7 +544,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 await explore_rift.run_explore_rift_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual(0, state_module.state["explore_rift_rebirth_select_msg_id"])
+            self.assertEqual(33002, state_module.state["explore_rift_rebirth_select_msg_id"])
             self.assertTrue(state_module.state["explore_rift_manual_required"])
             self.assertEqual("manual_required", state_module.state["explore_rift_rebirth_phase"])
             self.assertIn("停止自动重试", state_module.state["explore_rift_rebirth_last_error"])
@@ -548,7 +571,8 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_rebirth_required"] = True
             state_module.state["explore_rift_rebirth_phase"] = "requesting"
             state_module.state["explore_rift_rebirth_request_msg_id"] = 33001
-            fake_msg = SimpleNamespace(id=33002, sent_at=now)
+            self._remember_rebirth_command(".夺舍重生", 33001, now - 10)
+            fake_msg = SimpleNamespace(id=33002, chat_id=-1001680975844, sent_at=now)
             with (
                 patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
                 patch.object(explore_rift, "save_state"),
@@ -563,7 +587,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".重生 1", track=False, max_retry=0, source_module="探寻裂缝")
+            send_mock.assert_awaited_once_with(
+                ".重生 1", track=False, max_retry=0, source_module="探寻裂缝",
+                op_id=ANY, target_chat_id=-1001680975844, operation_check=ANY,
+            )
             self.assertEqual(33002, state_module.state["explore_rift_rebirth_select_msg_id"])
             self.assertEqual(1, state_module.state["explore_rift_rebirth_selected_index"])
             self.assertEqual("selecting", state_module.state["explore_rift_rebirth_phase"])
@@ -576,6 +603,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_rebirth_phase"] = "selecting"
             state_module.state["explore_rift_rebirth_select_msg_id"] = 33002
             state_module.state["explore_rift_rebirth_due_at"] = now + 30
+            self._remember_rebirth_command(".重生 1", 33002, now - 10)
             with (
                 patch.object(explore_rift, "save_state"),
                 patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
