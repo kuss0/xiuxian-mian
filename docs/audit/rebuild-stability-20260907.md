@@ -112,6 +112,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R58 | High | Original rift dispatch is not persisted before transport, overwrites early replies with late receipts, admits invalidated queued work and can adopt another manual command; Tianxing loses unresolved-rift exclusion when its release lease expires | Fixed for new original-rift dispatch operations in candidate; saved intent, immutable operation ownership, current business/effect admission, strict receipts, cancellation/reload, early results and exact-operation log recovery pass; legacy scalar reducers, rebirth and shared transport durability remain open |
 | R59 | High | Rift final-result deduplication remembers only the last text hash; interleaved results and edits repeat rewards or regress cooldowns, same IDs collide across chats, completion and inventory save separately, and escape handling writes after an awaited notification | Fixed for new scoped rift-result evidence in candidate; bounded command receipts, ordered revisions, atomic completion/inventory saves, rollback/reload, notification cancellation and native replay pass; pre-migration accounting, legacy scalar ownership and rebirth operations remain open |
 | R60 | High | Rebirth request/select operations lack durable ownership before send, retry unknown requests, overwrite early outcomes, accept unrelated prompts and can block later deaths or reopen an already restored body | Fixed for new scoped rebirth operations in candidate; saved intent, strict receipts/parent ownership, cancellation/reload, known-unsent backoff, one-shot blind choice, authoritative server auto-choice, new-death admission, late-edit rejection and paused native replay pass; unowned legacy operations and shared R07 transport durability remain open |
+| R61 | High | Second-soul replies rely on scalar IDs, lose early results, repeat uncertain purge spending, overwrite newer cultivation after manual reads, and cross account/lifecycle boundaries; old warnings renew their choice window and passive handling bypasses direct checks | Fixed for scoped new operations in candidate; persisted command ownership, one direct/passive reply contract, strict native/replay clocks, bounded unknown recovery, manual/automatic coexistence, owner-aware UI reads and choice admission pass; full suite 6621 passed/1198 subtests, while legacy evidence/shared R07 remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1684,6 +1685,76 @@ five monitor/control-only contracts need separate behavioral verification.
   no runtime fence/controller or Attempt decision reader was added here.
   R07 remains open; independent module/UI review can proceed.
 
+### R61 Evidence
+
+- Revalidated the prior handoff's **141 passed, 7 subtests** result from its
+  actual test process. Added **54 failing follow-up cases** before their
+  corresponding fixes, covering corrupt queued records, wrong-chat records,
+  identity deletion/replacement/rebind at all three UI reads, unowned legacy
+  pending work, original warning/settlement clocks, definitely-unsent purge
+  scheduling, manual-result coexistence, cross-identity choice admission,
+  legacy purge retries after disable, older replies after newer broadcasts
+  and the duplicate passive text reducer bypassing direct reply checks.
+- `second_soul_commands` is bounded to five module-specific records:
+  status, training, purge, demon status and explicit UI status reads. New
+  automatic operations save their identity/account, original chat/command and
+  operation ID before dispatch. Existing transport operation checks reject
+  stale owners, switches, business snapshots or changed/corrupt records.
+  This is not a shared-send controller and does not read Attempt for decisions.
+- Cancellation and uncertain receipts preserve the original operation. Late
+  receipts cannot undo an early outcome. Only definitely-unsent work gets a
+  resend backoff; purge and post-purge query backoffs retain their next action,
+  rather than returning to ordinary status/training and skipping mitigation.
+  Disabling automation retains outcome evidence and disables retry admission,
+  including existing tracked purge and demon-status requests.
+- Native replies and message-log recovery require the exact identity, account,
+  command, chat and root. Final edits use server event time, with dispatch time
+  rather than delayed RPC receipt time as the lower bound. Duplicate training
+  results do not extend the 24-hour cooldown. Queries reporting no second soul
+  enter the existing seven-day backoff. Recovery clears only its exact pending
+  root; another group's same-ID/same-command work remains intact. A reply older
+  than the latest accepted broadcast cannot roll the business state backward.
+- Removed the independent second-soul text reducer in `passive_inbox`. Passive
+  delivery now uses the module's same anchored handlers and server clock, and
+  skips replies already handled by the direct route. Missing/wrong roots or
+  chats cannot clear a pending purge through a copied panel. Added raw and
+  `VerifiedGameEvent` coverage, completed-result replay, module-off completion
+  and identity deletion during the newly awaited passive handler.
+- A high-moran read cannot prove an uncertain purge failed or authorize another
+  spend. A later low-moran read can calibrate that operation; unresolved work
+  stays held beyond the one-hour log lookup window. No missing reply is treated
+  as permission to purge again. The configured threshold stays **60** and the
+  automatic purge cap stays **2**. A read or manual purge during cultivation,
+  injury or heart-demon work updates observed moran without scheduling training
+  or another purge. A stale manual command edit cannot restart the cooldown.
+- UI level reads still work while second-soul automation is disabled and do
+  not interrupt an unresolved purge. The actual `refresh_identity_info` caller
+  captures one identity object/account/request generation for all reads, and
+  rechecks ownership at queue admission and after awaits. A current manual
+  training result is not blocked by a separate unfinished UI status read.
+  General identity-refresh reentry, early-result tracking, followup scheduling
+  and all other UI contracts remain under separate review.
+- Heart-demon choice admission uses the warning owner's context, not the
+  callback's ambient identity. Original message creation bounds the choice
+  deadline; delayed edits cannot renew it. Settlement uses the original server
+  event time. Newer training is not replaced by an older return/warning.
+  Auto-choice disable, identity replacement/rebind/deletion and expired windows
+  stop queued choices. Legacy warning records never acquire an account by
+  guessing from the current binding.
+- Targeted final result: **202 passed, 7 subtests**, 1.67 seconds;
+  `/tmp/xiuxian-rebuild-r61-targeted-reviewed-20260910.xml`. The first full
+  checkpoint passed **6601 tests, 1198 subtests**, 93.18 seconds;
+  `/tmp/xiuxian-rebuild-r61-full-review-20260910.xml`. Final full revalidation
+  after the passive-contract and ownership review: **6621 passed, 1198
+  subtests**, 90.49 seconds;
+  `/tmp/xiuxian-rebuild-r61-full-reviewed-20260910.xml`. Full selected-rule
+  Ruff, module/test/tool compilation and diff checks pass. The old failed
+  `/tmp/xiuxian-rebuild-r61-full-final-20260910.xml` is not acceptance evidence.
+- The broad R07 crash windows, old unowned scalar operations, pre-ledger
+  resource accounting, remaining MiniApp workers, UI and operational acceptance
+  remain open. No production code/config/DB, service, listener, remote branch,
+  inventory API, skill or live automation switch changed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -1715,6 +1786,13 @@ schema addition is tested; a missing old ledger is not evidence that historical
 rewards were never applied. Reconcile pre-migration results and inventory before
 deployment. Do not run the older single-result-hash reducer against new receipt
 state as a code-only rollback: it can replay rewards already committed here.
+Second-soul runtime adds the bounded command JSON and warning-account columns.
+New-operation save/reload is tested against temporary SQLite. Legacy training,
+purge and heart-demon operations without owned account/chat/receipt evidence
+are retained for explicit reconciliation; switching on or restarting does not
+erase them. An old no-account warning cannot authorize a new-account choice.
+Resolve these holds before any approved deployment rather than inventing
+owners, dropping pending work or interpreting missing evidence as failure.
 
 ## Next Review Priorities
 
@@ -1724,7 +1802,9 @@ state as a code-only rollback: it can replay rewards already committed here.
    is now tested end-to-end; it does not prove every module's ownership rules.
    Jiyin/quiz/Tianji routing, second-soul heart-demon broadcasts and the
    checkin/teaching, judgement and Nanlong routes are covered; remaining
-   second-soul scalar reply guards and wrapped send calls still require review.
+   second-soul scalar reply guards and wrapped sends are now covered for new
+   operations by R61, including their passive fallback. Unowned legacy state
+   and other module scalar anchors still require review.
    Nanlong's send-in-flight reentry and unknown-send automatic retry are now
    covered by R22, and trusted cross-group unthreaded result recovery and exact
    terminal pending cleanup by R24. Result-before-receipt and late detached
@@ -1856,6 +1936,12 @@ state as a code-only rollback: it can replay rewards already committed here.
    resolve shared R07 crash durability or general R11 scalar ownership.
    Continue legacy scalar/pre-migration accounting reconciliation and module-wide
    resource idempotence separately; do not infer those guarantees from R59/R60.
+9. R61 covers second-soul operation/reply/choice ownership, unknown spending,
+   server clocks, manual-result coexistence and the UI level-read owner chain.
+   It does not certify all `control.py` refresh behavior: continue through
+   simultaneous refreshes before the first receipt, early profile replies,
+   request-scoped timeout/cleanup and followup scheduler awaits. Revisit legacy
+   second-soul evidence and notification/replay limits before deployment.
 
 ## Completion Gate
 

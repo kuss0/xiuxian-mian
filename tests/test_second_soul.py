@@ -1,9 +1,10 @@
 import copy
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,10 +23,33 @@ from model.config import (
 from model.features import second_soul
 
 
+def _register_identity(identity_id):
+    state_module.set_identity_account(identity_id, 7601)
+
+
+def _command_reply(identity_id, kind, msg_id, now, *, status="sent"):
+    command = second_soul.SECOND_SOUL_COMMANDS[kind][0]
+    identity = state_module.get_identity_state(identity_id)
+    identity["second_soul_commands"][kind] = {
+        "op_id": f"test-{kind}-{msg_id}", "identity_id": identity_id, "account_id": 7601,
+        "command": command, "started_at": now - 1, "sent_at": now - 1,
+        "msg_id": msg_id, "chat_id": -1002, "status": status,
+    }
+    return SimpleNamespace(
+        id=msg_id, chat_id=-1002, raw_text=command, sender_id=identity_id,
+        date=datetime.fromtimestamp(now - 1, timezone.utc),
+    )
+
+
 class _StateIsolationMixin:
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+        state_module.set_game_group_route_config({"primary_group_id": -1002})
+        state_module.set_game_bot_ids([880610001])
+        self.enterContext(patch.object(second_soul.time, "time", return_value=0))
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -37,14 +61,14 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_status_panel_writes_level_for_ui_even_when_module_disabled(self):
         send_as_id = 8659059188
         now = 500.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = False
 
             handled = await second_soul.handle_second_soul_status_reply(
                 "【你的第二元神：金之元神】\n状态: 窍中温养\n等级: 34 级\n五子同心魔: 5/5 | 同心 100 | 魔染 40",
                 now,
-                reply_to=SimpleNamespace(raw_text=CMD_SECOND_SOUL_STATUS),
+                reply_to=_command_reply(send_as_id, "status", 90, now),
                 matched_family="second_soul_status",
             )
 
@@ -58,7 +82,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         send_as_id = 8659059191
         now = 1000.0
         event_msg_id = 8798378
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.update_send_as_profile(send_as_id, username="WalterWA2000")
 
         with state_module.use_identity(send_as_id):
@@ -88,7 +112,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             reply_to=event_msg_id,
             target_chat_id=-1002,
             send_as_id=send_as_id,
-            priority="reactive",
+            priority="reactive", operation_check=ANY,
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("heart_demon_pending", state_module.state["second_soul_phase"])
@@ -99,12 +123,13 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_stable_choice_result_enters_train_queue(self):
         send_as_id = 8659059192
         now = 2000.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "heart_demon_pending"
             state_module.state["second_soul_heart_demon_msg_id"] = 123
             state_module.state["second_soul_heart_demon_chat_id"] = -1002
+            state_module.state["second_soul_heart_demon_account_id"] = 7601
 
         with (
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
@@ -113,7 +138,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             handled = await second_soul.handle_second_soul_choice_result_broadcast(
                 "【稳扎稳打·成功】\n你稳固道心，成功渡过心魔试炼。",
                 now,
-                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786, edit_date=datetime.fromtimestamp(now, timezone.utc)),
             )
 
         self.assertTrue(handled)
@@ -124,7 +149,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
     def test_broadcast_username_matching_is_exact_and_case_insensitive(self):
         for identity_id, username in ((990927, "SoulUser"), (990928, "SoulUser1")):
-            state_module.ensure_identity_registered(identity_id)
+            _register_identity(identity_id)
             state_module.update_send_as_profile(identity_id, username=username)
             state_module.get_identity_state(identity_id)["second_soul_enabled"] = True
         for username in ("SoulUser1", "souluser1"):
@@ -136,7 +161,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_panel_before_warning_still_captures_and_uses_the_warning_anchor(self):
         identity_id = 990929
-        state_module.ensure_identity_registered(identity_id)
+        _register_identity(identity_id)
         state_module.update_send_as_profile(identity_id, username="PanelSoul")
         state_module.get_identity_state(identity_id)["second_soul_enabled"] = True
         with (
@@ -147,7 +172,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             with state_module.use_identity(identity_id):
                 self.assertTrue(await second_soul.handle_second_soul_status_reply(
                     "【你的第二元神：金之元神】\n状态: 心魔试炼中", 2000,
-                    reply_to=SimpleNamespace(id=10, chat_id=-1002, raw_text=CMD_SECOND_SOUL_STATUS),
+                    reply_to=_command_reply(identity_id, "status", 10, 2000),
                     matched_family="second_soul_status",
                 ))
             await second_soul.handle_second_soul_heart_demon_warning_broadcast(
@@ -156,17 +181,17 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             sender.assert_awaited_once_with(
                 CMD_SECOND_SOUL_CHOICE_STABLE, track=False, reply_to=123,
-                target_chat_id=-1002, send_as_id=identity_id, priority="reactive",
+                target_chat_id=-1002, send_as_id=identity_id, priority="reactive", operation_check=ANY,
             )
             self.assertTrue(await second_soul.handle_second_soul_choice_result_broadcast(
                 "【稳扎稳打·成功】\n成功化解了心魔。", 2002,
-                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786, edit_date=datetime.fromtimestamp(2002, timezone.utc)),
             ))
         self.assertEqual("ready_to_train", state_module.get_identity_state(identity_id)["second_soul_phase"])
 
     async def test_legacy_warning_can_gain_a_chat_anchor_without_resending(self):
         identity_id = 990930
-        state_module.ensure_identity_registered(identity_id)
+        _register_identity(identity_id)
         state_module.update_send_as_profile(identity_id, username="LegacySoul")
         identity = state_module.get_identity_state(identity_id)
         identity["second_soul_enabled"] = True
@@ -190,7 +215,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         send_as_id = 8659059193
         now = 3000.0
         event_msg_id = 8798379
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.update_send_as_profile(send_as_id, username="NoAutoSoul")
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
@@ -214,7 +239,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         send_as_id = 8659059194
         now = 4000.0
         event_msg_id = 8798380
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.update_send_as_profile(send_as_id, username="BreakSoul")
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
@@ -236,17 +261,18 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             reply_to=event_msg_id,
             target_chat_id=-1002,
             send_as_id=send_as_id,
-            priority="reactive",
+            priority="reactive", operation_check=ANY,
         )
 
     async def test_unrelated_result_cannot_claim_the_only_waiting_identity(self):
         identity_id = 990921
-        state_module.ensure_identity_registered(identity_id)
+        _register_identity(identity_id)
         with state_module.use_identity(identity_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "heart_demon_pending"
             state_module.state["second_soul_heart_demon_msg_id"] = 12137042
             state_module.state["second_soul_heart_demon_chat_id"] = -1001680975844
+            state_module.state["second_soul_heart_demon_account_id"] = 7601
         text = "【稳扎稳打·成功】\n你选择了稳固道心，成功化解了心魔。第二元神获得了 5337 点经验。\n主魂获得了 70177 点修为。"
         for chat_id, msg_id in ((-1001680975844, 12138357), (-1002, 12137042), (0, 12137042)):
             with (
@@ -266,26 +292,27 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_terminal_edit_selects_exact_identity_among_waiting_roles(self):
         for identity_id, chat_id in ((990921, -1001), (990922, -1002)):
-            state_module.ensure_identity_registered(identity_id)
+            _register_identity(identity_id)
             with state_module.use_identity(identity_id):
                 state_module.state["second_soul_enabled"] = True
                 state_module.state["second_soul_phase"] = "heart_demon_pending"
                 state_module.state["second_soul_heart_demon_msg_id"] = 123
                 state_module.state["second_soul_heart_demon_chat_id"] = chat_id
+                state_module.state["second_soul_heart_demon_account_id"] = 7601
         with (
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
         ):
             self.assertTrue(await second_soul.handle_second_soul_choice_result_broadcast(
                 "【稳扎稳打·成功】\n你稳固道心，成功渡过心魔试炼。", 2000,
-                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786, edit_date=datetime.fromtimestamp(2000, timezone.utc)),
             ))
         self.assertEqual("heart_demon_pending", state_module.get_identity_state(990921)["second_soul_phase"])
         self.assertEqual("ready_to_train", state_module.get_identity_state(990922)["second_soul_phase"])
 
     async def test_warning_without_chat_cannot_send_a_choice_to_primary(self):
         identity_id = 990923
-        state_module.ensure_identity_registered(identity_id)
+        _register_identity(identity_id)
         state_module.update_send_as_profile(identity_id, username="MissingChatSoul")
         with state_module.use_identity(identity_id):
             state_module.state["second_soul_enabled"] = True
@@ -301,7 +328,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_toggle_off_during_warning_audit_prevents_choice_send(self):
         identity_id = 990924
-        state_module.ensure_identity_registered(identity_id)
+        _register_identity(identity_id)
         state_module.update_send_as_profile(identity_id, username="PauseSoul")
         with state_module.use_identity(identity_id):
             state_module.state["second_soul_enabled"] = True
@@ -321,7 +348,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_terminal_edit_during_send_preserves_the_completed_state(self):
         identity_id = 990925
-        state_module.ensure_identity_registered(identity_id)
+        _register_identity(identity_id)
         state_module.update_send_as_profile(identity_id, username="EarlySoul")
         with state_module.use_identity(identity_id):
             state_module.state["second_soul_enabled"] = True
@@ -329,7 +356,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         async def send(*_args, **_kwargs):
             await second_soul.handle_second_soul_choice_result_broadcast(
                 "【稳扎稳打·成功】\n成功化解了心魔。", 2001,
-                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786),
+                event=SimpleNamespace(id=123, chat_id=-1002, reply_to_msg_id=7310786, edit_date=datetime.fromtimestamp(2001, timezone.utc)),
             )
             return SimpleNamespace(id=124, chat_id=-1002)
 
@@ -349,7 +376,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         identity_id = 990926
         for boundary in ("audit", "send"):
             with self.subTest(boundary=boundary):
-                state_module.ensure_identity_registered(identity_id)
+                _register_identity(identity_id)
                 state_module.update_send_as_profile(identity_id, username="RemovedSoul")
                 state_module.get_identity_state(identity_id)["second_soul_enabled"] = True
 
@@ -379,7 +406,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_return_broadcast_high_moran_sends_single_purge_and_dedupes(self):
         send_as_id = 8659059195
         now = 5000.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.update_send_as_profile(send_as_id, username="MoranSoul")
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
@@ -393,7 +420,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=61, sent_at=now + 1))) as send_mock,
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=61, chat_id=-1002, sent_at=now + 1))) as send_mock,
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
         ):
@@ -406,7 +433,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             CMD_SECOND_SOUL_PURGE,
             track=False,
             send_as_id=send_as_id,
-            priority="chain",
+            priority="chain", max_retry=0, source_module="第二元神",
+            op_id=ANY, target_chat_id=-1002, operation_check=ANY,
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("purge_pending", state_module.state["second_soul_phase"])
@@ -417,7 +445,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_return_broadcast_purges_at_default_threshold_boundary(self):
         send_as_id = 8659059295
         now = 5050.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.update_send_as_profile(send_as_id, username="ThresholdSoul")
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
@@ -430,7 +458,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             "五子流转：同心 100→100，魔染 58→60。"
         )
         with (
-            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=62, sent_at=now + 1))) as send_mock,
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=62, chat_id=-1002, sent_at=now + 1))) as send_mock,
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
         ):
@@ -441,7 +469,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             CMD_SECOND_SOUL_PURGE,
             track=False,
             send_as_id=send_as_id,
-            priority="chain",
+            priority="chain", max_retry=0, source_module="第二元神",
+            op_id=ANY, target_chat_id=-1002, operation_check=ANY,
         )
 
     async def test_return_broadcast_below_threshold_or_unknown_does_not_purge(self):
@@ -449,7 +478,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             send_as_id = 8659059296 + offset
             username = f"SafeThresholdSoul{offset}"
             now = 5100.0 + offset
-            state_module.ensure_identity_registered(send_as_id)
+            _register_identity(send_as_id)
             state_module.update_send_as_profile(send_as_id, username=username)
             with state_module.use_identity(send_as_id):
                 state_module.state["second_soul_enabled"] = True
@@ -475,7 +504,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_purge_no_reply_queries_demon_status_once(self):
         send_as_id = 8659059196
         now = 6000.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "purge_pending"
@@ -483,9 +512,10 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["second_soul_purge_attempts"] = 1
             state_module.state["second_soul_purge_msg_id"] = 71
             state_module.state["second_soul_purge_due_at"] = now - 1
+            _command_reply(send_as_id, "purge", 71, now - 120)
 
         with (
-            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=72, sent_at=now + 1))) as send_mock,
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=72, chat_id=-1002, sent_at=now + 1))) as send_mock,
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
             state_module.use_identity(send_as_id),
@@ -496,7 +526,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             CMD_SECOND_SOUL_DEMON_STATUS,
             track=False,
             send_as_id=send_as_id,
-            priority="chain",
+            priority="chain", max_retry=0, source_module="第二元神",
+            op_id=ANY, target_chat_id=-1002, operation_check=ANY,
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("purge_status_pending", state_module.state["second_soul_phase"])
@@ -506,17 +537,17 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_demon_status_high_moran_sends_second_purge_only_once(self):
         send_as_id = 8659059197
         now = 7000.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "purge_status_pending"
             state_module.state["second_soul_purge_attempts"] = 1
             state_module.state["second_soul_purge_status_msg_id"] = 81
 
-        reply_to = SimpleNamespace(id=81, raw_text=CMD_SECOND_SOUL_DEMON_STATUS)
+        reply_to = _command_reply(send_as_id, "demon_status", 81, now)
         text = "【你的第二元神：金之元神】\n状态: 窍中温养\n等级: 34 级\n五子同心魔: 5/5 | 调度 修炼 | 同心 100 | 魔染 91"
         with (
-            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=82, sent_at=now + 1))) as send_mock,
+            patch.object(second_soul, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=82, chat_id=-1002, sent_at=now + 1))) as send_mock,
             patch.object(second_soul, "send_audit_log", new=AsyncMock()),
             patch.object(second_soul, "save_state"),
             state_module.use_identity(send_as_id),
@@ -533,7 +564,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             CMD_SECOND_SOUL_PURGE,
             track=False,
             send_as_id=send_as_id,
-            priority="chain",
+            priority="chain", max_retry=0, source_module="第二元神",
+            op_id=ANY, target_chat_id=-1002, operation_check=ANY,
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("purge_pending", state_module.state["second_soul_phase"])
@@ -543,7 +575,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_demon_status_low_moran_resumes_train_queue_without_purge(self):
         send_as_id = 8659059198
         now = 8000.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.set_tianjige_dao_path_records({str(send_as_id): {"second_soul_level": "33级"}})
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
@@ -551,7 +583,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["second_soul_purge_attempts"] = 1
             state_module.state["second_soul_purge_status_msg_id"] = 91
 
-        reply_to = SimpleNamespace(id=91, raw_text=CMD_SECOND_SOUL_DEMON_STATUS)
+        reply_to = _command_reply(send_as_id, "demon_status", 91, now)
         text = "【你的第二元神：金之元神】\n状态: 窍中温养\n五子同心魔: 5/5 | 同心 100 | 魔染 40"
         with (
             patch.object(second_soul, "send_game_command", new=AsyncMock()) as send_mock,
@@ -578,7 +610,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_demon_status_does_not_update_second_soul_level(self):
         send_as_id = 8659059200
         now = 8100.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         state_module.set_tianjige_dao_path_records({str(send_as_id): {"second_soul_level": "33级"}})
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = False
@@ -597,7 +629,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_busy_training_without_remaining_is_short_recheck_not_end_time(self):
         send_as_id = 8659059201
         now = 8200.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "train_pending"
@@ -611,7 +643,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             handled = await second_soul.handle_second_soul_train_reply(
                 "你的第二元神正在(修炼中)，无法分心修炼。",
                 now,
-                reply_to=SimpleNamespace(id=101, raw_text=".元神修炼"),
+                reply_to=_command_reply(send_as_id, "train", 101, now),
                 matched_family="second_soul_train",
             )
             status_text = second_soul.get_second_soul_status_text()
@@ -626,7 +658,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_heart_demon_missing_deadline_is_repaired(self):
         send_as_id = 8659059202
         now = 8300.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "heart_demon_pending"
@@ -646,14 +678,14 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_purge_reply_low_moran_clears_purge(self):
         send_as_id = 8659059199
         now = 9000.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "purge_pending"
             state_module.state["second_soul_purge_attempts"] = 1
             state_module.state["second_soul_purge_msg_id"] = 101
 
-        reply_to = SimpleNamespace(id=101, raw_text=CMD_SECOND_SOUL_PURGE)
+        reply_to = _command_reply(send_as_id, "purge", 101, now)
         text = "【元神镇魔】\n你耗去 5000 点修为，强行镇压识海中翻腾的五魔。\n魔染度: 91 → 39\n同心度: 100 → 100"
         with (
             patch.object(second_soul, "send_game_command", new=AsyncMock()) as send_mock,
@@ -678,7 +710,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_status_send_timeout_stays_pending_for_late_reply(self):
         send_as_id = 8659059203
         now = 9100.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "idle"
@@ -695,7 +727,10 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         ):
             await second_soul.run_second_soul_scheduler(now)
 
-        send_mock.assert_awaited_once_with(CMD_SECOND_SOUL_STATUS, track=False, priority="chain")
+        send_mock.assert_awaited_once_with(
+            CMD_SECOND_SOUL_STATUS, track=False, priority="chain", send_as_id=send_as_id,
+            max_retry=0, source_module="第二元神", op_id=ANY, target_chat_id=-1002, operation_check=ANY,
+        )
         with state_module.use_identity(send_as_id):
             self.assertEqual("status_pending", state_module.state["second_soul_phase"])
             self.assertEqual(0, state_module.state["second_soul_status_msg_id"])
@@ -706,7 +741,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_train_send_timeout_stays_pending_for_late_reply(self):
         send_as_id = 8659059204
         now = 9200.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "ready_to_train"
@@ -723,7 +758,10 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         ):
             await second_soul.run_second_soul_scheduler(now)
 
-        send_mock.assert_awaited_once_with(CMD_SECOND_SOUL_TRAIN, track=False, priority="chain")
+        send_mock.assert_awaited_once_with(
+            CMD_SECOND_SOUL_TRAIN, track=False, priority="chain", send_as_id=send_as_id,
+            max_retry=0, source_module="第二元神", op_id=ANY, target_chat_id=-1002, operation_check=ANY,
+        )
         with state_module.use_identity(send_as_id):
             self.assertEqual("train_pending", state_module.state["second_soul_phase"])
             self.assertEqual(0, state_module.state["second_soul_train_msg_id"])
@@ -734,7 +772,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_train_send_queue_timeout_returns_to_ready(self):
         send_as_id = 8659059205
         now = 9300.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "ready_to_train"
@@ -759,7 +797,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_train_global_recovery_hold_is_not_a_business_error(self):
         send_as_id = 8659059210
         now = 9350.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "ready_to_train"
@@ -785,11 +823,13 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
     async def test_train_timeout_recovers_unknown_send_and_logged_reply(self):
         send_as_id = 8659059206
         now = 9400.0
-        state_module.ensure_identity_registered(send_as_id)
+        _register_identity(send_as_id)
         recovered_command = {
             "message_id": 301,
             "text": CMD_SECOND_SOUL_TRAIN,
             "ts_epoch": now - 40,
+            "chat_id": -1002, "account_id": 7601, "sender_id": send_as_id,
+            "op_id": "test-train-0", "source_module": "第二元神", "event_type": "sent",
         }
         recovered_reply = {
             "message_id": 302,
@@ -797,6 +837,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             "event_type": "message",
             "chat_id": state_module.get_game_group_id(),
             "sender_is_bot": True,
+            "sender_id": 880610001, "server_event_at": now - 39,
             "text": "你的第二元神已开始闭关修炼，本次修炼将持续24小时。",
             "ts_epoch": now - 39,
         }
@@ -805,6 +846,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["second_soul_phase"] = "train_pending"
             state_module.state["next_second_soul_time"] = now - 1
             state_module.state["second_soul_train_msg_id"] = 0
+            _command_reply(send_as_id, "train", 0, now - 40, status="unknown")
 
         with (
             patch.object(second_soul, "recover_sent_command_from_message_log", return_value=recovered_command),

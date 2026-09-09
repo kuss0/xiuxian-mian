@@ -32,6 +32,7 @@ class PendingCleanupScopeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_second_soul_timeout_does_not_clear_another_identity(self):
         self.pending_pair(second_soul.CMD_SECOND_SOUL_STATUS)
+        state_module.set_identity_account(991301, 7601)
         with (
             state_module.use_identity(991301) as current,
             patch.object(second_soul, "_recover_second_soul_pending_from_message_log", new=AsyncMock(return_value=False)),
@@ -40,6 +41,11 @@ class PendingCleanupScopeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(second_soul, "save_state"),
         ):
             current.update(second_soul_enabled=True, second_soul_phase="status_pending", next_second_soul_time=10)
+            current["second_soul_commands"] = {"status": {
+                "identity_id": 991301, "account_id": 7601, "op_id": "scope-test",
+                "command": second_soul.CMD_SECOND_SOUL_STATUS, "chat_id": -991301,
+                "msg_id": 7001, "started_at": 1.0, "sent_at": 1.0, "status": "sent",
+            }}
             await second_soul.run_second_soul_scheduler(1000)
         self.assert_only_current_identity_cleared()
 

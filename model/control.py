@@ -66,6 +66,7 @@ from .config import (
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
     CMD_SECOND_SOUL_DEMON_STATUS,
+    CMD_SECOND_SOUL_PURGE,
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
     CMD_TIANTI_CLIMB,
@@ -220,7 +221,7 @@ from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.world_boss import clear_world_boss_identity_state, get_world_boss_status_text
-from .features.second_soul import get_second_soul_status_text
+from .features.second_soul import get_second_soul_status_text, remember_second_soul_status_read, restore_second_soul_runtime
 from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
 from .features.explore_rift import (
     clear_explore_rift_state,
@@ -295,6 +296,7 @@ from .state import (
     get_identity_account,
     get_identity_display_name,
     get_identity_enabled,
+    get_identity_state,
     get_identity_ids,
     get_identity_ui_display_name,
     get_global_enabled,
@@ -1216,17 +1218,14 @@ def _disable_tree_module_state():
 
 def _disable_second_soul_module_state():
     state["second_soul_enabled"] = False
-    state["second_soul_phase"] = "idle"
-    state["next_second_soul_time"] = 0
-    state["second_soul_heart_demon_msg_id"] = 0
-    state["second_soul_heart_demon_chat_id"] = 0
-    state["second_soul_heart_demon_choice_msg_id"] = 0
-    state["second_soul_heart_demon_deadline"] = 0
-    state["second_soul_heart_demon_notified"] = False
-    state["second_soul_status_msg_id"] = 0
-    state["second_soul_train_msg_id"] = 0
-    state["second_soul_last_error"] = ""
-    _clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN, CMD_SECOND_SOUL_CHOICE_BREAK, CMD_SECOND_SOUL_CHOICE_STABLE})
+    # Stop admission, not reconciliation of a command already sent.
+    commands = {
+        CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN, CMD_SECOND_SOUL_PURGE,
+        CMD_SECOND_SOUL_DEMON_STATUS, CMD_SECOND_SOUL_CHOICE_BREAK, CMD_SECOND_SOUL_CHOICE_STABLE,
+    }
+    for pending in state.get("pending_tasks", {}).values():
+        if isinstance(pending, dict) and pending.get("cmd") in commands:
+            pending["max_retry"] = 0
 
 
 def _disable_taiyi_module_state():
@@ -2250,6 +2249,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_DIVINATION_EXCHANGE: "卜筮问天",
     CMD_SECOND_SOUL_STATUS: "第二元神",
     CMD_SECOND_SOUL_TRAIN: "第二元神",
+    CMD_SECOND_SOUL_PURGE: "第二元神",
+    CMD_SECOND_SOUL_DEMON_STATUS: "第二元神",
     CMD_SECOND_SOUL_CHOICE_BREAK: "第二元神",
     CMD_SECOND_SOUL_CHOICE_STABLE: "第二元神",
     CMD_YINDAO: "太一",
@@ -4080,6 +4081,8 @@ def _restore_tree_runtime(now):
 
 def _restore_second_soul_runtime(now):
     """启动恢复时：异常 phase 让 bootstrap_check 处理；idle 时立即调度查询。"""
+    if restore_second_soul_runtime(now):
+        return
     phase = state.get("second_soul_phase", "idle")
     # pending 残留（上次进程被 kill 时卡的）：清掉，重启后先查状态，不补发修炼指令
     if phase in ("status_pending", "train_pending"):
@@ -5421,11 +5424,23 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
 
     command = format_identity_info_command()
     requested_at = time.time()
+    identity = get_identity_state(send_as_id)
+    account_id = get_identity_account(send_as_id)
 
     with use_identity(send_as_id):
         _begin_identity_refresh_runtime(requested_at)
 
-    msg = await send_game_command(command, send_as_id=send_as_id, max_retry=1)
+    def owns_refresh():
+        return bool(
+            has_identity(send_as_id) and get_identity_state(send_as_id) is identity
+            and get_identity_account(send_as_id) == account_id
+            and identity.get("identity_info_last_requested_at") == requested_at
+        )
+
+    invalidated_message = "身份或刷新请求已变更，已停止本次后续读取"
+    msg = await send_game_command(command, send_as_id=send_as_id, max_retry=1, operation_check=owns_refresh)
+    if not owns_refresh():
+        return False, invalidated_message
     if not msg:
         _set_identity_info_error(send_as_id, "获取请求发送失败，请手动重新获取")
         return False, "角色信息获取发送失败，请手动重新获取"
@@ -5433,14 +5448,27 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
     with use_identity(send_as_id):
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
         _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at)
+        requested_at = sent_at
 
     extra_commands = (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS)
     extra_sent = []
     extra_failed = []
     for extra_command in extra_commands:
-        extra_msg = await send_game_command(extra_command, send_as_id=send_as_id, max_retry=1)
+        if not owns_refresh():
+            return False, invalidated_message
+        extra_requested_at = time.time()
+        extra_msg = await send_game_command(extra_command, send_as_id=send_as_id, max_retry=1, operation_check=owns_refresh)
+        if not owns_refresh():
+            return False, invalidated_message
         if extra_msg:
             extra_sent.append(extra_command)
+            if extra_command == CMD_SECOND_SOUL_STATUS:
+                await remember_second_soul_status_read(
+                    extra_msg, send_as_id=send_as_id, identity_state=identity,
+                    account_id=account_id, requested_at=extra_requested_at,
+                )
+                if not owns_refresh():
+                    return False, invalidated_message
         else:
             extra_failed.append(extra_command)
 

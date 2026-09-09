@@ -2199,15 +2199,16 @@ async def _dispatch_concubine_affinity_fallbacks(event, text, now):
 
 async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="second_soul_return"):
-        await handle_second_soul_return_broadcast(text, now)
+        await handle_second_soul_return_broadcast(text, now, event=event)
     if _claim_runtime_event(event, scope="second_soul_heart_demon_warning"):
         await handle_second_soul_heart_demon_warning_broadcast(
             text, now, event.id, event_chat_id=getattr(event, "chat_id", 0),
+            event=event,
         )
     if _claim_runtime_event(event, scope="second_soul_choice_result"):
         await handle_second_soul_choice_result_broadcast(text, now, event=event)
     if _claim_runtime_event(event, scope="second_soul_recovery"):
-        await handle_second_soul_recovery_broadcast(text, now)
+        await handle_second_soul_recovery_broadcast(text, now, event=event)
 
 
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
@@ -3482,10 +3483,11 @@ async def _handle_routed_reply_event(
                 reply_context=reply_context,
                 current_msg_id=event.id,
             ) or handled_any
-            handled_any = await handle_second_soul_purge_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_second_soul_demon_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            soul_context = dict(reply_context or {}, chat_id=event.chat_id)
+            handled_any = await handle_second_soul_purge_reply(text, now, reply_to, matched_family=matched_family, reply_context=soul_context) or handled_any
+            handled_any = await handle_second_soul_demon_status_reply(text, now, reply_to, matched_family=matched_family, reply_context=soul_context) or handled_any
+            handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family, reply_context=soul_context) or handled_any
+            handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family, reply_context=soul_context) or handled_any
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_search_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_define_reply(text, now, reply_to, matched_family=matched_family) or handled_any

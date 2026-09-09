@@ -817,49 +817,24 @@ def _apply_tianti_passive(text, now, family, reply_context=None):
     return changed
 
 
-def _apply_second_soul_passive(text, now, family):
-    raw_text = str(text or "")
-    changed = False
-    moran = second_soul_mod._remember_moran_from_text(raw_text)
-    if moran is not None:
-        changed = True
-    purge_phase_active = second_soul_mod._phase() in {"purge_pending", "purge_status_pending"}
-    if second_soul_mod._is_second_soul_panel(raw_text):
-        status, remain_sec = second_soul_mod._parse_status_field(raw_text)
-        if status == "窍中温养":
-            if not purge_phase_active:
-                second_soul_mod._mark_ready_to_train(now)
-                changed = True
-        elif status == "修炼中":
-            second_soul_mod._set_phase("cultivating")
-            second_soul_mod._reset_purge_state(keep_moran=True)
-            second_soul_mod._clear_heart_demon()
-            second_soul_mod._clear_pending_msg_ids()
-            state["next_second_soul_time"] = now + remain_sec + second_soul_mod.CD_BUFFER_SEC if remain_sec > 0 else now + second_soul_mod.SECOND_SOUL_RECHECK_MAX
-            changed = True
-        elif status == "受伤":
-            second_soul_mod._set_phase("injured")
-            second_soul_mod._reset_purge_state(keep_moran=True)
-            second_soul_mod._clear_heart_demon()
-            second_soul_mod._clear_pending_msg_ids()
-            state["next_second_soul_time"] = now + remain_sec + second_soul_mod.CD_BUFFER_SEC if remain_sec > 0 else now + second_soul_mod.SECOND_SOUL_INJURED_NO_REMAIN_CD_SEC
-            changed = True
-        elif status == "心魔试炼中":
-            second_soul_mod._set_phase("heart_demon_pending")
-            state["second_soul_heart_demon_deadline"] = state.get("second_soul_heart_demon_deadline", 0) or now + second_soul_mod.SECOND_SOUL_HEART_DEMON_DEADLINE_SEC
-            second_soul_mod._clear_pending_msg_ids()
-            changed = True
-    if "你的第二元神已开始闭关修炼" in raw_text and "24小时" in raw_text:
-        second_soul_mod._set_phase("cultivating")
-        second_soul_mod._reset_purge_state(keep_moran=True)
-        state["next_second_soul_time"] = now + second_soul_mod.SECOND_SOUL_TRAIN_CD_SEC + second_soul_mod.CD_BUFFER_SEC
-        state["second_soul_last_train_started_at"] = now
-        second_soul_mod._clear_heart_demon()
-        second_soul_mod._clear_pending_msg_ids()
-        changed = True
-    if changed:
-        state["second_soul_last_error"] = ""
-    return changed
+async def _apply_second_soul_passive(text, now, family, reply_context, event, event_type):
+    if _routed_reply_already_handled(reply_context):
+        return False
+    context = dict(reply_context or {})
+    context["chat_id"] = _event_int(getattr(event, "chat_id", 0))
+    context["server_event_at"] = telegram_event_timestamp(event, event_type)
+    root = _context_msg_id(context, "root_msg_id") or _context_msg_id(context, "reply_to_msg_id")
+    reply_to = SimpleNamespace(id=root, chat_id=context["chat_id"], raw_text="")
+    # Passive delivery uses the same receipt contract, never a second text reducer.
+    for handler in (
+        second_soul_mod.handle_second_soul_purge_reply,
+        second_soul_mod.handle_second_soul_demon_status_reply,
+        second_soul_mod.handle_second_soul_status_reply,
+        second_soul_mod.handle_second_soul_train_reply,
+    ):
+        if await handler(text, now, reply_to, matched_family=family, reply_context=context):
+            return True
+    return False
 
 
 def _apply_pet_passive(text, now, family):
@@ -1555,7 +1530,9 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tianti")
             changed = module_changed or changed
         if family.startswith("second_soul") or second_soul_mod._is_second_soul_panel(raw_text):
-            module_changed = _apply_second_soul_passive(raw_text, now, family)
+            module_changed = await _apply_second_soul_passive(raw_text, now, family, reply_context, event, event_type)
+            if not owner_is_current():
+                return changed or module_changed
             if module_changed:
                 changed_modules.append("second_soul")
             changed = module_changed or changed
