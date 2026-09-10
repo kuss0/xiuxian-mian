@@ -116,7 +116,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R62 | High | Explicit profile refresh reenters before its first receipt, loses early cards, accepts wrong-chat/account/stale replies, clears unrelated pending work and lets followup/retry awaits write through changed requests; passive cards can bypass routing and overwrite newer observations | Fixed for scoped profile requests in candidate; bounded request/command ownership, native early replay, one owned retry, guarded cleanup, per-field server clocks and temporary-SQLite reload covered; remaining profile writers, supplemental module flows and shared R07 stay open |
 | R63 | High | Breakthrough broadcasts and manual profile API writes bypass field chronology, match username prefixes or ambiguous fallback owners, and apply late responses after identity/credential changes; same-second cards can regress request payloads and evict their own evidence | Fixed for these profile observations in candidate; native new/edit provenance, bounded per-field source order, exact identity/request/config ownership, conservative API freshness, corruption/reload and same-second request/reply retention pass; resource reducers, other API workflows and shared R07 remain open |
 | R64 | High | Stale or unproven no-sect checkin replies overwrite newer membership, disable modules and delete unrelated pending/receipts; passive handling bypasses ownership, text-only dedupe drops newer edits, and notification awaits let old routed callbacks clear replacement work | Fixed for no-sect checkin observations and checkin availability cleanup in candidate; exact official command ownership, server/source chronology, native manual/channel and log replay, retained sibling pending/anchors, retry suppression, owner-aware completion and SQLite reload pass; positive checkin/teaching provenance, other resource writers and shared R07 remain open |
-| R65 | High | Duel/Yinluo cultivation deltas are not reconciled with absolute profile observations; cross-chat scalar IDs omit losses, interleaved/duplicate Yinluo results charge twice, and delayed snapshots can restore spent cultivation | Open; candidate Telegram cultivation ledger, profile projection and native/manual/edited duel accounting now pass isolated tests, including source enrichment, corrected amounts, unknown evidence and queued resource ownership; Yinluo cultivation/sha writers, MiniApp snapshot authority, pre-migration reconciliation and operational retention remain incomplete |
+| R65 | High | Duel/Yinluo cultivation deltas are not reconciled with absolute profile observations; cross-chat scalar IDs omit losses, interleaved/duplicate Yinluo results charge twice, and delayed snapshots can restore spent cultivation | Open; candidate Telegram cultivation/profile/duel accounting and offline-only Yinluo facts/replay/projection pass isolated tests; old Yinluo/Wanxin financial writers have not been replaced, and reservations, MiniApp snapshot authority, pre-migration reconciliation and operational retention remain incomplete |
 | R66 | High | The read-only Tianjige banner bridge invokes the mutation reducer, can debit cultivation, clear reservations and rearm scheduling; delayed reads write through changed owners or business state, and cancellation releases the entry lock while HTTP continues | Fixed for the scoped read-only bridge in candidate; panel-only synchronization, pending/partial rejection, owner and business snapshot checks, and thread draining pass focused and full tests; generic Yinluo accounting remains R65 |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
@@ -2110,6 +2110,58 @@ five monitor/control-only contracts need separate behavioral verification.
   resource facts. Empty collection semantics and cleanly truncated/cached
   panels also need evidence before this path can supply a spending baseline.
 
+### R65 Offline Yinluo Facts And Projection
+
+- Construction follows `docs/audit/R65-yinluo-resource-contract-20260910.md`.
+  Only the financial fact/ownership stage is closed. The staged book is a
+  partial implementation of the projection stage, not runtime acceptance.
+  The old Yinluo/Wanxin reducers, resource pre-debit, whole-snapshot rollback,
+  send lifecycle and passive caller remain unchanged by this checkpoint.
+- Strict original-command admission checks the official bot, game chat,
+  native command/message clocks, unedited original, unique managed sender and
+  account/hint types. The real native resolver supplies the tested metadata.
+  Unresolved routing hints do not reject an otherwise proved original sender;
+  conflicting hints and edited originals do not create fallback authority.
+- Cost/income components preserve unknown amounts, actual server-reported
+  conversion costs and separate summon start/backlash phases. Observed 1362
+  summon backlash and provider-only 500-cultivation/120-sha strip backlash are
+  represented explicitly. A success format without its cost does not inherit
+  the old 50/80/120/400/1000 planning defaults as a transaction.
+- The caller-supplied cultivation ledger is projected with sha/soul facts as
+  one returned value, without duplicate storage or state writes. Native
+  snapshots reconcile earlier/later deltas; source-scoped edits and unknown
+  fields cannot silently become zero. Record A/B/A, cross-chat equal IDs,
+  corrected amounts, duplicate soothe, source enrichment, old bonus removal,
+  renamed/ambiguous participants, changed soul types, sparse panels and
+  charge/progress/outcome permutations are covered. Existing duel entries
+  remain intact during Yinluo projection.
+- Empty or contextless native edits of retained official messages invalidate
+  only the proved old owner, never credit new text through the fallback.
+  Projection-cache disagreement, unknown legacy provenance and account
+  rebinding cannot supply spendable values. JSON roundtrip is covered; this
+  is not the pending SQLite transaction/reload acceptance.
+- Input and history are bounded. Book overflow/command conflict retains the
+  old facts and creates a hold, not an evict-and-retry policy. Source-count
+  overflow uses the existing scalar-ledger coverage contract. Operational
+  archival, reservation retention and projection latency still need review.
+- The full 256-receipt scenario exposed repeated whole-ledger copying. Folding
+  each command/component locally before merging the resource projection
+  reduced that offline test from 6.08 to 0.49 seconds on this host. Uncovered
+  shared cultivation entries remain protected; appending a duel entry or
+  retiring an already-covered entry does not falsely invalidate the cache.
+  This is a bounded construction test, not a live scheduler latency guarantee.
+- Final focused run: **407 passed**, 2.45 seconds,
+  `/tmp/xiuxian-rebuild-r65-yinluo-foundation-focused-20260910.xml`.
+  Final full isolated run: **7328 passed, 1202 subtests**, 91.28 seconds,
+  `/tmp/xiuxian-rebuild-r65-yinluo-foundation-full-final-20260910.xml`.
+  Ruff, `compileall`, `pip check` and whitespace checks passed. The new
+  Yinluo-only suites contain 331 cases; the focused total also includes the
+  existing shared resource and cultivation suites.
+- No production state, setting, service or skill was changed. The new modules
+  are not referenced by runtime callers, and CommandAttempt remains shadow-only.
+  R65 stays open; do not promote this pure-layer checkpoint into a claim that
+  the real conversion, refining or assistance chains have been fixed.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -2338,6 +2390,11 @@ code against new receipt state during a code-only rollback.
     R65 with native command/result ownership and the complete sha writer set;
     keep R07's unapproved shared architecture and CommandAttempt control out
     of that work.
+    The new R65 facts/replay/book modules are offline foundations only. Finish
+    reservations and bounded latency/retention, then switch all financial
+    writers together and prove native/replay/SQLite integration. Do not wire
+    the new projection into only conversion while old pre-debit/refund or
+    Wanxin resource writers continue changing the same balance independently.
 
 ## Completion Gate
 
