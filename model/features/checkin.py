@@ -2,6 +2,7 @@ import random
 import re
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from ..config import (
     CMD_CHECKIN,
@@ -30,23 +31,32 @@ from ..config import (
     SECT_TEACH_DELAY_MIN_SEC,
 )
 from ..persistence import mark_dirty, save_state
+from ..profile_observation import apply_profile_observation, field_clocks, timestamp, valid_evidence
 from ..message_keys import find_message_key, get_message_record, message_key, message_key_parts, pop_message_record
-from ..runtime import _get_identity_client, classify_game_send_block, console_log, send_audit_log, send_game_command
+from ..action_guard import close_by_family as close_action_guard_by_family
+from ..runtime import (
+    _get_identity_client, _resolve_identity_from_message_sender, classify_game_send_block,
+    clear_pending_by_reply, console_log, send_audit_log, send_game_command,
+)
 from ..state import (
     format_window_text,
+    get_active_identity_id,
     get_current_identity_id,
+    get_game_bot_ids,
     get_game_group_id,
+    get_game_group_ids,
     get_identity_account,
     get_identity_enabled,
     get_identity_state,
     get_module_window_hours,
     get_pending_command,
+    get_send_as_profile,
     has_identity,
     is_module_available,
     is_auto_delete_sent_messages_enabled,
     state,
-    update_send_as_profile,
 )
+from ..verified_event import clean_event_type, telegram_event_timestamp
 from ..timing import (
     fmt_abs_ts,
     fmt_remaining,
@@ -146,32 +156,22 @@ def is_no_sect_checkin_text(text):
     return any(keyword in raw_text for keyword in NO_SECT_CHECKIN_HINTS)
 
 
-def _clear_pending_tasks_by_commands(identity_state, commands):
+def _stop_pending_retries(identity_state, commands):
     pending_tasks = identity_state.get("pending_tasks", {})
     if not isinstance(pending_tasks, dict):
         return False
     changed = False
     normalized_commands = {str(command or "").strip() for command in commands}
-    for msg_id, pending in list(pending_tasks.items()):
+    for pending in pending_tasks.values():
         command = get_pending_command(pending)
-        if command in normalized_commands:
-            pending_tasks.pop(msg_id, None)
-            identity_state.get("my_msg_ids", {}).pop(msg_id, None)
+        if isinstance(pending, dict) and command in normalized_commands and pending.get("max_retry") != 0:
+            pending["max_retry"] = 0
             changed = True
     return changed
 
 
-def disable_sect_modules_for_current_identity(now=None):
-    identity_state = get_identity_state()
-    send_as_id = get_current_identity_id()
-    changed = False
-
-    def set_field(name, value):
-        nonlocal changed
-        if identity_state.get(name) != value:
-            identity_state[name] = value
-            changed = True
-
+def _disable_sect_scheduling(identity_state):
+    disabled = False
     for field_name in (
         "checkin_enabled",
         "sect_teach_enabled",
@@ -184,96 +184,122 @@ def disable_sect_modules_for_current_identity(now=None):
         "taiyi_enabled",
         "taiyi_node_search_enabled",
     ):
-        set_field(field_name, False)
+        disabled = bool(identity_state.get(field_name)) or disabled
+        identity_state[field_name] = False
+    identity_state["next_checkin_time"] = 0
+    identity_state["next_sect_teach_time"] = 0
+    # Stopping new work is not evidence that already-sent work did not execute.
+    _stop_pending_retries(identity_state, SECT_DEPENDENT_PENDING_COMMANDS)
+    mark_dirty()
+    return disabled
 
-    for field_name in (
-        "next_checkin_time",
-        "next_sect_teach_time",
-        "sect_teach_reply_to_msg_id",
-        "sect_teach_reply_chat_id",
-        "last_checkin_msg_id",
-        "last_checkin_chat_id",
-        "last_sect_teach_msg_id",
-        "last_sect_teach_chat_id",
-        "next_tower_time",
-        "last_tower_msg_id",
-        "tower_reply_due_at",
-        "tower_retry_count",
-        "next_irr_time",
-        "next_guard_time",
-        "next_ranch_time",
-        "ranch_reply_to_msg_id",
-        "ranch_reply_due_at",
-        "ranch_last_msg_id",
-        "next_stargazer_panel_time",
-        "stargazer_collect_due_at",
-        "stargazer_last_panel_msg_id",
-        "stargazer_followup_due_at",
-        "guanxing_last_query_msg_id",
-        "guanxing_last_panel_msg_id",
-        "guanxing_last_shift_msg_id",
-        "next_tianti_status_time",
-        "next_tianti_wenxin_time",
-        "next_tianti_climb_time",
-        "next_tianti_gangfeng_time",
-        "tianti_status_reply_to_msg_id",
-        "tianti_last_status_msg_id",
-        "tianti_last_wenxin_msg_id",
-        "tianti_last_climb_msg_id",
-        "tianti_last_gangfeng_msg_id",
-        "next_taiyi_cycle_time",
-        "taiyi_phase_entered_at",
-        "taiyi_freeze_until",
-        "taiyi_yindao_msg_id",
-        "taiyi_node_search_msg_id",
-        "taiyi_node_define_msg_id",
+
+def _no_sect_reply_evidence(now, reply_to, reply_context, event, event_type):
+    identity_id = get_active_identity_id()
+    if not identity_id or not has_identity(identity_id) or not isinstance(reply_context, dict):
+        return None
+    context = reply_context
+    chat_id = getattr(event, "chat_id", 0)
+    evidence = {
+        "source": "telegram", "chat_id": chat_id, "msg_id": getattr(event, "id", 0),
+        "edited": clean_event_type(event_type) == "edit",
+    }
+    observed_at = telegram_event_timestamp(event, event_type)
+    if (
+        type(getattr(event, "sender_id", None)) is not int or event.sender_id not in get_game_bot_ids()
+        or chat_id not in get_game_group_ids() or not valid_evidence(evidence, observed_at)
+        or observed_at > max(timestamp(now), time.time()) + 1
+        or type(context.get("send_as_id", identity_id)) is not int
+        or context.get("send_as_id", identity_id) != identity_id
+        or context.get("family") not in (None, "", "checkin")
     ):
-        set_field(field_name, 0)
-
-    for field_name in (
-        "checkin_cleanup_msg_ids",
-        "ranch_return_pending",
-        "is_maturing",
-        "is_invading",
-        "is_harvested",
-        "pending_irrigation",
-        "tree_bootstrap_check_needed",
-        "stargazer_wait_full_collect",
-        "stargazer_collect_ready",
-        "stargazer_soothe_before_collect",
+        return None
+    refs = [getattr(reply_to, "id", None), getattr(getattr(event, "reply_to", None), "reply_to_msg_id", None)]
+    refs.extend(context[key] for key in ("root_msg_id", "reply_to_msg_id") if key in context)
+    refs = [value for value in refs if value is not None]
+    if not refs or any(type(value) is not int or value <= 0 or value != refs[0] for value in refs):
+        return None
+    root_id = refs[0]
+    if evidence["msg_id"] <= root_id:
+        return None
+    for value in (getattr(reply_to, "chat_id", None), context.get("chat_id")):
+        if value is not None and (type(value) is not int or value != chat_id):
+            return None
+    senders = [getattr(reply_to, "sender_id", None), context.get("reply_to_sender_id")]
+    has_sender = False
+    for sender in senders:
+        if sender is None:
+            continue
+        if type(sender) is not int:
+            return None
+        if sender == 0:
+            continue
+        if _resolve_identity_from_message_sender(SimpleNamespace(sender_id=sender))[0] != identity_id:
+            return None
+        has_sender = True
+    commands = [getattr(reply_to, "raw_text", None), context.get("reply_to_command")]
+    commands = [command for command in commands if command not in (None, "")]
+    if any(not isinstance(command, str) or command.strip() != CMD_CHECKIN for command in commands):
+        return None
+    command_at = telegram_event_timestamp(reply_to)
+    context_at = timestamp(context.get("reply_to_server_at"))
+    if "reply_to_server_at" in context and (
+        type(context["reply_to_server_at"]) not in {int, float} or context_at != context["reply_to_server_at"]
     ):
-        empty_value = [] if field_name == "checkin_cleanup_msg_ids" else False
-        set_field(field_name, empty_value)
+        return None
+    if command_at and context_at and command_at != context_at:
+        return None
+    command_at = command_at or context_at
+    identity = get_identity_state(identity_id)
+    pending_key = find_message_key(identity.get("pending_tasks", {}), root_id, chat_id=chat_id)
+    pending = identity.get("pending_tasks", {}).get(pending_key)
+    if pending is not None:
+        if (
+            not isinstance(pending, dict) or get_pending_command(pending) != CMD_CHECKIN
+            or message_key_parts(pending_key, pending)[0] != chat_id
+            or pending.get("account_id", get_identity_account(identity_id)) != get_identity_account(identity_id)
+        ):
+            return None
+        command_at = command_at or timestamp(pending.get("send_started_at")) or timestamp(pending.get("sent_at"))
+    elif not (has_sender and commands):
+        return None
+    if not command_at or command_at > observed_at + 1:
+        return None
+    return identity_id, root_id, observed_at, evidence
 
-    for field_name, value in (
-        ("ranch_last_result", ""),
-        ("ranch_last_error", "散修无宗门，已停止放养"),
-        ("stargazer_last_action", ""),
-        ("guanxing_panel_slot_key", ""),
-        ("guanxing_last_shift_slot_key", ""),
-        ("guanxing_last_shift_target", ""),
-        ("guanxing_last_error", "散修无宗门，已停止观星"),
-        ("tianti_cooldown_text", "散修无宗门"),
-        ("tianti_wenxin_status", "散修无宗门"),
-        ("tianti_gangfeng_status", "散修无宗门"),
-        ("tianti_last_skip_reason", "散修无宗门"),
-        ("tianti_last_error", "散修无宗门，已停止登天阶"),
-        ("taiyi_phase", "idle"),
-        ("taiyi_pending_node_name", ""),
-        ("taiyi_freeze_reason", "散修无宗门"),
-        ("taiyi_last_error", "散修无宗门，已停止太一"),
-    ):
-        set_field(field_name, value)
 
-    if _clear_pending_tasks_by_commands(identity_state, SECT_DEPENDENT_PENDING_COMMANDS):
-        changed = True
-
-    profile = update_send_as_profile(send_as_id, sect_name="散修", sect_updated_at=float(now or time.time()))
-    if profile.get("sect_name") == "散修":
-        changed = True
-
+async def _apply_no_sect_checkin(text, now, reply_to=None, *, reply_context, event, event_type):
+    """None rejects evidence; otherwise return whether owned state changed."""
+    if not is_no_sect_checkin_text(text):
+        return None
+    owned = _no_sect_reply_evidence(now, reply_to, reply_context, event, event_type)
+    if owned is None:
+        return None
+    identity_id, root_id, observed_at, evidence = owned
+    clocks = field_clocks(identity_id)
+    if clocks is None:
+        return None
+    legacy_at = timestamp(get_send_as_profile(identity_id).get("sect_updated_at")) if "sect_name" not in clocks else 0
+    accepted = {} if observed_at <= legacy_at else apply_profile_observation(
+        identity_id, {"sect_name": "散修"}, observed_at, evidence=evidence,
+    )
+    if accepted is None:
+        return None
+    disabled = _disable_sect_scheduling(get_identity_state(identity_id)) if accepted else False
+    cleanup = clear_pending_by_reply(send_as_id=identity_id, reply_context={
+        "send_as_id": identity_id, "family": "checkin", "chat_id": evidence["chat_id"],
+        "root_msg_id": root_id, "reply_to_msg_id": root_id,
+    })
+    closed = close_action_guard_by_family(
+        "checkin", send_as_id=identity_id, expected_msg_id=root_id, expected_chat_id=evidence["chat_id"],
+        reason="no_sect_reply", now=now,
+    )
+    changed = bool(accepted or cleanup["removed_ids"] or closed)
     if changed:
-        mark_dirty()
+        save_state()
+    if disabled:
+        await send_audit_log("⚠️ 当前身份无宗门，已关闭点卯、传功及宗门限定模块。", scope="identity", send_as_id=identity_id)
+        console_log("⚠️ 散修无需点卯，已停止宗门功能。", scope="identity", send_as_id=identity_id)
     return changed
 
 
@@ -284,9 +310,7 @@ def _clear_unavailable_checkin_modules():
     if identity_state.get("checkin_enabled") and not is_module_available("点卯"):
         identity_state["checkin_enabled"] = False
         identity_state["next_checkin_time"] = 0
-        identity_state["last_checkin_msg_id"] = 0
-        identity_state["last_checkin_chat_id"] = 0
-        _clear_pending_tasks_by_commands(identity_state, {CMD_CHECKIN})
+        _stop_pending_retries(identity_state, {CMD_CHECKIN})
         disabled_modules.append("点卯")
 
     if identity_state.get("sect_teach_enabled") and not is_module_available("宗门传功"):
@@ -294,13 +318,10 @@ def _clear_unavailable_checkin_modules():
         identity_state["next_sect_teach_time"] = 0
         identity_state["sect_teach_reply_to_msg_id"] = 0
         identity_state["sect_teach_reply_chat_id"] = 0
-        identity_state["last_sect_teach_msg_id"] = 0
-        identity_state["last_sect_teach_chat_id"] = 0
-        _clear_pending_tasks_by_commands(identity_state, {CMD_SECT_TEACH})
+        _stop_pending_retries(identity_state, {CMD_SECT_TEACH})
         disabled_modules.append("宗门传功")
 
     if disabled_modules:
-        identity_state["checkin_cleanup_msg_ids"] = []
         mark_dirty()
     return disabled_modules
 
@@ -408,9 +429,7 @@ def schedule_sect_teach_chain(now, reply_to_msg_id, *, reply_chat_id=0):
         state["next_sect_teach_time"] = 0
         state["sect_teach_reply_to_msg_id"] = 0
         state["sect_teach_reply_chat_id"] = 0
-        state["last_sect_teach_msg_id"] = 0
-        state["last_sect_teach_chat_id"] = 0
-        _clear_pending_tasks_by_commands(state, {CMD_SECT_TEACH})
+        _stop_pending_retries(state, {CMD_SECT_TEACH})
         save_state()
         return False
 
@@ -546,19 +565,15 @@ async def _notify_sect_teach_completed(*, send_as_id):
         print(f"notify_sect_teach_completed failed: {e}")
 
 
-async def handle_checkin_reply(text, now, reply_to, matched_family=None):
+async def handle_checkin_reply(text, now, reply_to, matched_family=None, *, event=None, reply_context=None):
     if not _is_checkin_reply(reply_to, matched_family=matched_family):
         return False
 
     if is_no_sect_checkin_text(text):
-        state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
-        state["last_checkin_chat_id"] = int(getattr(reply_to, "chat_id", 0) or 0)
-        remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"], chat_id=state["last_checkin_chat_id"])
-        disable_sect_modules_for_current_identity(now)
-        save_state()
-        await send_audit_log("⚠️ 当前身份无宗门，已关闭点卯、传功及宗门限定模块。", scope="identity")
-        console_log("⚠️ 散修无需点卯，已停止宗门功能。")
-        return True
+        return (await _apply_no_sect_checkin(
+            text, now, reply_to, reply_context=reply_context, event=event,
+            event_type=reply_context.get("event_type", "message") if isinstance(reply_context, dict) else "message",
+        )) is not None
 
     if not state["checkin_enabled"]:
         return False
@@ -785,5 +800,4 @@ __all__ = [
     "remember_checkin_cleanup_msg_id",
     "run_checkin_scheduler",
     "schedule_sect_teach_chain",
-    "disable_sect_modules_for_current_identity",
 ]

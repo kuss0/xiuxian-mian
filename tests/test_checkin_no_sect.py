@@ -56,6 +56,8 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
     def _prepare_identity(self, send_as_id=991001):
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(send_as_id)
+        state_module.set_game_bot_ids([88991001])
+        state_module.set_game_group_route_config({"primary_group_id": -100991001})
         state_module.update_send_as_profile(send_as_id, username="loose", sect_name="星宫")
         with state_module.use_identity(send_as_id) as identity_state:
             for field_name in (
@@ -85,11 +87,28 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
                 999: {"cmd": config.CMD_PET, "sent_at": now, "retry": 0},
             }
             identity_state["my_msg_ids"] = {101: now, 102: now, 103: now, 104: now, 999: now}
+            for pending in identity_state["pending_tasks"].values():
+                pending["chat_id"] = -100991001
         return send_as_id, now
+
+    def _no_sect_event(self, send_as_id, now):
+        reply = SimpleNamespace(
+            id=101, raw_text=config.CMD_CHECKIN, chat_id=-100991001, sender_id=send_as_id,
+            date=datetime.fromtimestamp(now, timezone.utc),
+        )
+        event = SimpleNamespace(
+            id=201, chat_id=reply.chat_id, sender_id=88991001,
+            date=datetime.fromtimestamp(now, timezone.utc),
+        )
+        context = {
+            "send_as_id": send_as_id, "family": "checkin", "chat_id": reply.chat_id,
+            "reply_to_msg_id": reply.id, "root_msg_id": reply.id,
+        }
+        return reply, event, context
 
     async def test_no_sect_checkin_reply_disables_sect_modules(self):
         send_as_id, now = self._prepare_identity()
-        reply = SimpleNamespace(id=101, raw_text=config.CMD_CHECKIN)
+        reply, event, context = self._no_sect_event(send_as_id, now)
 
         with state_module.use_identity(send_as_id), \
              patch.object(checkin, "save_state"), \
@@ -98,6 +117,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
                 "散修无需点卯，速速寻一宗门拜入吧。",
                 now,
                 reply,
+                event=event, reply_context=context,
             )
 
         self.assertTrue(handled)
@@ -117,20 +137,27 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(identity_state[field_name], field_name)
             self.assertEqual(0, identity_state["next_checkin_time"])
             self.assertEqual(0, identity_state["next_sect_teach_time"])
-            self.assertEqual(0, identity_state["next_tower_time"])
-            self.assertEqual({999: {"cmd": config.CMD_PET, "sent_at": now, "retry": 0}}, identity_state["pending_tasks"])
-            self.assertEqual({999: now}, identity_state["my_msg_ids"])
+            self.assertEqual(now + 20, identity_state["next_tower_time"])
+            self.assertEqual({102, 103, 104, 999}, set(identity_state["pending_tasks"]))
+            for msg_id in (102, 103, 104):
+                self.assertEqual(0, identity_state["pending_tasks"][msg_id]["max_retry"])
+            self.assertNotIn("max_retry", identity_state["pending_tasks"][999])
+            self.assertEqual({101: now, 102: now, 103: now, 104: now, 999: now}, identity_state["my_msg_ids"])
 
         self.assertEqual("散修", state_module.get_send_as_profile(send_as_id)["sect_name"])
 
     async def test_passive_no_sect_checkin_does_not_schedule_next_checkin(self):
         send_as_id, now = self._prepare_identity(send_as_id=991002)
+        _reply, event, context = self._no_sect_event(send_as_id, now)
 
-        with state_module.use_identity(send_as_id):
+        with state_module.use_identity(send_as_id), \
+             patch.object(checkin, "save_state"), \
+             patch.object(checkin, "send_audit_log", new=AsyncMock()):
             changed = await passive_inbox._apply_checkin_passive(
                 "散修无需点卯，速速寻一宗门拜入吧。",
                 now,
                 "checkin",
+                context, event=event,
             )
 
         self.assertTrue(changed)
@@ -142,7 +169,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_sect_reply_still_disables_when_checkin_already_off(self):
         send_as_id, now = self._prepare_identity(send_as_id=991003)
-        reply = SimpleNamespace(id=101, raw_text=config.CMD_CHECKIN)
+        reply, event, context = self._no_sect_event(send_as_id, now)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["checkin_enabled"] = False
             self.assertTrue(identity_state["tower_enabled"])
@@ -154,6 +181,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
                 "散修无需点卯，速速寻一宗门拜入吧。",
                 now,
                 reply,
+                event=event, reply_context=context,
             )
 
         self.assertTrue(handled)
@@ -303,7 +331,7 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
-    async def test_scheduler_clears_sanxiu_checkin_and_teach_before_send(self):
+    async def test_scheduler_stops_sanxiu_checkin_and_teach_without_losing_receipts(self):
         send_as_id = 991006
         now = datetime(2026, 6, 20, 2, 30, tzinfo=timezone.utc).timestamp()
         state_module.ensure_identity_registered(send_as_id)
@@ -339,8 +367,12 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, identity_state["next_checkin_time"])
             self.assertEqual(0, identity_state["next_sect_teach_time"])
             self.assertEqual(0, identity_state["sect_teach_reply_to_msg_id"])
-            self.assertEqual({9999: {"cmd": config.CMD_PET, "sent_at": now - 1, "retry": 0}}, identity_state["pending_tasks"])
-            self.assertEqual({9999: now - 1}, identity_state["my_msg_ids"])
+            self.assertEqual({8801, 8802, 9999}, set(identity_state["pending_tasks"]))
+            self.assertEqual(0, identity_state["pending_tasks"][8801]["max_retry"])
+            self.assertEqual(0, identity_state["pending_tasks"][8802]["max_retry"])
+            self.assertEqual(8801, identity_state["last_checkin_msg_id"])
+            self.assertEqual(8802, identity_state["last_sect_teach_msg_id"])
+            self.assertEqual({8801: now - 10, 8802: now - 5, 9999: now - 1}, identity_state["my_msg_ids"])
 
 
 if __name__ == "__main__":

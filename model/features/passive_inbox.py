@@ -1186,13 +1186,15 @@ def _apply_tower_passive(text, now, family):
     return False
 
 
-async def _apply_checkin_passive(text, now, family, reply_context=None, *, chat_id=0):
+async def _apply_checkin_passive(text, now, family, reply_context=None, *, chat_id=0, event=None, event_type="message"):
     raw_text = str(text or "")
     reply_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
     chat_id = int(chat_id or _context_msg_id(reply_context, "chat_id"))
     if family == "checkin":
         if checkin_mod.is_no_sect_checkin_text(raw_text):
-            return checkin_mod.disable_sect_modules_for_current_identity(now)
+            return bool(await checkin_mod._apply_no_sect_checkin(
+                raw_text, now, reply_context=reply_context, event=event, event_type=event_type,
+            ))
         if not checkin_mod.is_checkin_completion_text(raw_text):
             return False
         return checkin_mod.apply_checkin_completion(now, reply_id, chat_id=chat_id)
@@ -1330,7 +1332,10 @@ def _normalize_passive_module_card_input(text, reply_context=None, event=None, e
         context["root_msg_id"] = verified.root_msg_id
     if verified.reply_to_sender_id and not context.get("reply_to_sender_id"):
         context["reply_to_sender_id"] = verified.reply_to_sender_id
-    normalized_event = SimpleNamespace(id=verified.msg_id, chat_id=verified.chat_id, server_event_at=verified.server_event_at)
+    normalized_event = SimpleNamespace(
+        id=verified.msg_id, chat_id=verified.chat_id, sender_id=verified.sender_id,
+        server_event_at=verified.server_event_at,
+    )
     return verified.text, context, normalized_event, verified.event_type
 
 
@@ -1346,9 +1351,11 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     observed_msg_id = _event_int(getattr(event, "id", 0))
     observed_chat_id = _event_int(getattr(event, "chat_id", 0))
     event_type = str(event_type or "").strip()
-    if not _mark_observed_passive_event(observed_chat_id, observed_msg_id, raw_text, now=now):
-        return False
     family = _family_from_reply_context(reply_context)
+    no_sect_reply = family == "checkin" and checkin_mod.is_no_sect_checkin_text(raw_text)
+    # This reducer persists source order; text-only dedupe would discard newer edits.
+    if not no_sect_reply and not _mark_observed_passive_event(observed_chat_id, observed_msg_id, raw_text, now=now):
+        return False
     target_id = _identity_from_reply_context(reply_context)
     context_route_source = _route_source(event_type, "reply_context")
     passive_route_source = _route_source(event_type, "passive_match")
@@ -1641,7 +1648,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tree")
             changed = module_changed or changed
         if family in {"checkin", "sect_teach"}:
-            module_changed = await _apply_checkin_passive(raw_text, now, family, reply_context, chat_id=observed_chat_id)
+            module_changed = await _apply_checkin_passive(
+                raw_text, now, family, reply_context, chat_id=observed_chat_id,
+                event=event, event_type=event_type,
+            )
             if not owner_is_current():
                 return changed or module_changed
             if module_changed:
@@ -1659,6 +1669,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             changed = module_changed or changed
         if (
             changed and family and family != "concubine_heart"
+            and not (family == "checkin" and checkin_mod.is_no_sect_checkin_text(raw_text))
             and family not in tianxing_mod.TIANXING_REPLY_GUARD_FAMILIES
         ):
             close_action_guard_by_family(family, send_as_id=target_id, reason="passive_state_changed", now=now)

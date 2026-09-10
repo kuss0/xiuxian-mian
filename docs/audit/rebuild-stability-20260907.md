@@ -115,6 +115,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R61 | High | Second-soul replies rely on scalar IDs, lose early results, repeat uncertain purge spending, overwrite newer cultivation after manual reads, and cross account/lifecycle boundaries; old warnings renew their choice window and passive handling bypasses direct checks | Fixed for scoped new operations in candidate; persisted command ownership, one direct/passive reply contract, strict native/replay clocks, bounded unknown recovery, manual/automatic coexistence, owner-aware UI reads and choice admission pass; full suite 6621 passed/1198 subtests, while legacy evidence/shared R07 remain open |
 | R62 | High | Explicit profile refresh reenters before its first receipt, loses early cards, accepts wrong-chat/account/stale replies, clears unrelated pending work and lets followup/retry awaits write through changed requests; passive cards can bypass routing and overwrite newer observations | Fixed for scoped profile requests in candidate; bounded request/command ownership, native early replay, one owned retry, guarded cleanup, per-field server clocks and temporary-SQLite reload covered; remaining profile writers, supplemental module flows and shared R07 stay open |
 | R63 | High | Breakthrough broadcasts and manual profile API writes bypass field chronology, match username prefixes or ambiguous fallback owners, and apply late responses after identity/credential changes; same-second cards can regress request payloads and evict their own evidence | Fixed for these profile observations in candidate; native new/edit provenance, bounded per-field source order, exact identity/request/config ownership, conservative API freshness, corruption/reload and same-second request/reply retention pass; resource reducers, other API workflows and shared R07 remain open |
+| R64 | High | Stale or unproven no-sect checkin replies overwrite newer membership, disable modules and delete unrelated pending/receipts; passive handling bypasses ownership, text-only dedupe drops newer edits, and notification awaits let old routed callbacks clear replacement work | Fixed for no-sect checkin observations and checkin availability cleanup in candidate; exact official command ownership, server/source chronology, native manual/channel and log replay, retained sibling pending/anchors, retry suppression, owner-aware completion and SQLite reload pass; positive checkin/teaching provenance, other resource writers and shared R07 remain open |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1877,6 +1878,64 @@ five monitor/control-only contracts need separate behavioral verification.
   by these profile-read tests. R11, remaining MiniApp workers, browser/operations
   and whole-project final acceptance remain open. No production code/config/DB,
   service, listener, remote branch, inventory API, skill or live switch changed.
+
+### R64 Evidence
+
+- Added 70 regression cases. The first 26 cases had 25 failures on R63,
+  reproducing stale direct/passive/edit membership rollback, untrusted or
+  wrongly owned denials, cross-chat pending deletion, duplicate disabling and
+  destructive scheduler availability cleanup. Evidence:
+  `/tmp/xiuxian-rebuild-r64-reproduced-20260910.xml`.
+  Follow-up review reproduced discarded newer edits, malformed context inputs
+  and replacement/rebinding during notification, rather than treating the first
+  passing reproducer suite as final acceptance.
+- Both no-sect paths now use one reducer. It requires an existing active
+  identity, an official sender in a configured game group, a positive server
+  timestamp and exact checkin command/root ownership. Native command text,
+  sender and creation time are retained for passive/manual processing, including
+  channel senders. Owned pending records support log replay without guessing
+  a missing server result time. Conflicting roots, chats, commands or owners,
+  malformed values and corrupt profile clocks cannot authorize a mutation.
+- Membership is an absolute profile observation using R63 field/source order.
+  Older or incomparable same-second evidence cannot replace a newer sect or
+  disable its modules. Legacy profile timestamps remain conservative when the
+  sect-specific clock is absent. Stale but owned terminal replies can settle
+  their own pending; they do not reset another operation's schedule or guard.
+- Removed the unproven public disable helper and its broad business-state
+  reset. A fresh accepted denial stops sect switches and future checkin/teaching
+  scheduling, not already-sent work. Sibling pending rows and sent receipts,
+  other modules' cooldowns, scalar reply anchors and in-progress phases survive.
+  Existing affected pending rows receive `max_retry=0`; only the exact denied
+  checkin root is completed. Scheduler and teaching availability checks likewise
+  stop new work without deleting unrelated receipts or last-result anchors.
+  This does not introduce a new pending-retention controller: later shared
+  timeout retirement and R07 forced-stop durability still require review.
+- Native no-sect edits may revisit a previously consumed message; passive
+  no-sect observations use durable source chronology instead of a text-only
+  cache. Duplicate observations do not re-disable a later UI choice or repeat
+  notifications. Newer native edits still advance the membership clock. The
+  reducer distinguishes rejected evidence, handled observations and actual
+  changes so passive diagnostics do not manufacture changes on duplicates.
+- State is saved before notification. Cancellation/failure at notification
+  retains the committed sect, switches and exact pending completion after
+  temporary SQLite reload. The routed callback rejects missing identities and
+  checks its captured identity object/account after the checkin await; it cannot
+  continue cleanup into a replacement or rebound owner. Passive handling keeps
+  its existing owner check. No new retry/recovery authority was added.
+- Final focused tests: **357 passed, 19 subtests**, 2.31 seconds;
+  `/tmp/xiuxian-rebuild-r64-targeted-reviewed-20260910.xml`.
+  First full run exposed a new test fixture leaking passive diagnostic counters
+  into the small-world suite; the fixture now isolates counters and their file
+  writes, without changing the small-world assertion or production behavior.
+  Final full revalidation: **6808 passed, 1202 subtests**, 92.90 seconds;
+  `/tmp/xiuxian-rebuild-r64-full-reviewed-20260910.xml`.
+  Full selected-rule Ruff, model/test/tool compilation, dependency `pip check`
+  and diff checks pass.
+- Positive checkin/teaching observation provenance, duel/Yinluo resource deltas,
+  other availability-control cleanup, remaining MiniApp/API workers, R11,
+  operations/capacity and whole-project final acceptance remain open. No
+  production code/config/DB, service, listener, remote branch, inventory API,
+  skill or live switch changed.
 
 ## Deployment Constraint
 

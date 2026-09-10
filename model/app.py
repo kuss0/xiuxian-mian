@@ -51,7 +51,7 @@ from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_a
 from .control import clear_transient_send_failures_for_global_recovery, enforce_identity_module_availability, extend_global_recovery_throttle_for_spread, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .game_bot_registry import GameBotCandidateRegistry
 from .module_manifest import is_module_archived
-from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
+from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, is_no_sect_checkin_text, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
 from .features.deep_retreat import (
     handle_deep_retreat_running_reply,
@@ -1760,6 +1760,8 @@ async def _resolve_event_reply(event):
         chat_id=int(getattr(event, "chat_id", 0) or 0),
     )
     if reply_to is not None:
+        reply_context["reply_to_command"] = str(getattr(reply_to, "raw_text", "") or "")
+        reply_context["reply_to_server_at"] = telegram_event_timestamp(reply_to)
         try:
             reply_context["reply_to_sender_id"] = int(getattr(reply_to, "sender_id", 0) or 0)
         except (TypeError, ValueError):
@@ -3212,7 +3214,7 @@ async def _handle_routed_reply_event(
 ):
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
     matched_family = (reply_context or {}).get("family") or None
-    if routed_identity_id <= 0:
+    if routed_identity_id <= 0 or not has_identity(routed_identity_id):
         return False
 
     reply_context = dict(
@@ -3255,8 +3257,11 @@ async def _handle_routed_reply_event(
         "wendao",
         "wild_training",
     }
+    if kind_scope == "edit" and matched_family == "checkin" and is_no_sect_checkin_text(text):
+        allow_reprocessed_edit = True
     already_consumed = bool(matched_family) and not allow_reprocessed_edit and _has_runtime_message_consumed(event, matched_family)
-    with use_identity(routed_identity_id):
+    with use_identity(routed_identity_id) as routed_identity_state:
+        routed_account_id = get_identity_account(routed_identity_id)
         is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id) or (
             int((reply_context or {}).get("reply_to_msg_id") or 0) > 0
             and int((reply_context or {}).get("send_as_id") or 0) == routed_identity_id
@@ -3364,7 +3369,15 @@ async def _handle_routed_reply_event(
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_formation_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_ranch_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_checkin_reply(
+                text, now, reply_to, matched_family=matched_family, event=event, reply_context=reply_context,
+            ) or handled_any
+            if (
+                not has_identity(routed_identity_id)
+                or get_identity_state(routed_identity_id) is not routed_identity_state
+                or get_identity_account(routed_identity_id) != routed_account_id
+            ):
+                return handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
