@@ -116,6 +116,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R62 | High | Explicit profile refresh reenters before its first receipt, loses early cards, accepts wrong-chat/account/stale replies, clears unrelated pending work and lets followup/retry awaits write through changed requests; passive cards can bypass routing and overwrite newer observations | Fixed for scoped profile requests in candidate; bounded request/command ownership, native early replay, one owned retry, guarded cleanup, per-field server clocks and temporary-SQLite reload covered; remaining profile writers, supplemental module flows and shared R07 stay open |
 | R63 | High | Breakthrough broadcasts and manual profile API writes bypass field chronology, match username prefixes or ambiguous fallback owners, and apply late responses after identity/credential changes; same-second cards can regress request payloads and evict their own evidence | Fixed for these profile observations in candidate; native new/edit provenance, bounded per-field source order, exact identity/request/config ownership, conservative API freshness, corruption/reload and same-second request/reply retention pass; resource reducers, other API workflows and shared R07 remain open |
 | R64 | High | Stale or unproven no-sect checkin replies overwrite newer membership, disable modules and delete unrelated pending/receipts; passive handling bypasses ownership, text-only dedupe drops newer edits, and notification awaits let old routed callbacks clear replacement work | Fixed for no-sect checkin observations and checkin availability cleanup in candidate; exact official command ownership, server/source chronology, native manual/channel and log replay, retained sibling pending/anchors, retry suppression, owner-aware completion and SQLite reload pass; positive checkin/teaching provenance, other resource writers and shared R07 remain open |
+| R65 | High | Duel/Yinluo cultivation deltas are not reconciled with absolute profile observations; cross-chat scalar IDs omit losses, interleaved/duplicate Yinluo results charge twice, and delayed snapshots can restore spent cultivation | Open; five isolated reducer probes reproduced on `8cd733ee`; native/MiniApp provenance, snapshot-plus-delta accounting, correction/idempotence and bounded retention must be designed and tested together before replacing these writers |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1936,6 +1937,50 @@ five monitor/control-only contracts need separate behavioral verification.
   operations/capacity and whole-project final acceptance remain open. No
   production code/config/DB, service, listener, remote branch, inventory API,
   skill or live switch changed.
+
+### R65 Review Evidence (Open)
+
+- Candidate checked: `8cd733ee`. The isolated reproducer is
+  `/tmp/xiuxian-rebuild-r65-resource-probe-20260910.py`.
+  It runs `tests/conftest.py` before model imports, uses synthetic identities
+  and fixtures, patches module saves, and does not start clients, send requests
+  or touch production state. Run with the candidate venv and
+  `XIUXIAN_ALLOW_LIVE_TEST_DB=0`; exit code 1 records the known mismatches.
+- Five reducer-level probes failed:
+  1. Two 60,000 cultivation losses in different chats, where the second chat's
+     message ID is smaller: initial 500,000, expected 380,000, actual 440,000.
+  2. An old 60,000 loss arrives after an absolute snapshot already reporting
+     200,000: expected 200,000, actual 140,000.
+  3. A 60,000 loss at T+20 is applied, then the T+10 absolute snapshot arrives:
+     expected 440,000, actual 500,000. Dedupe alone cannot repair this case.
+  4. Yinluo conversion A, B, then replay A after the passive-cache TTL:
+     expected cultivation 80,000 and sha 4,300; actual 70,000 and 6,300.
+  5. The same 50-cost soothe result twice: initial 1,000, expected 950,
+     actual 900.
+- Current source explains those results: `_record_managed_duel_loss` keeps one
+  `resource_last_loss_msg_id` without chat identity or a snapshot baseline.
+  Yinluo conversion remembers only its last result key; soothe directly deducts
+  on every success. `apply_profile_observation` correctly orders absolute
+  observations against other absolute observations, but does not project later
+  known deltas over an earlier arriving snapshot.
+- These probes establish reducer defects, not their live frequency or
+  production losses. Before implementation, trace the real duel reply/manual
+  call paths and both Yinluo inputs: mutating results through `passive_inbox`
+  and banner snapshots through
+  `cave_treasure_runtime._sync_cave_tianjige_read_only_message`. The latter is
+  a read-only panel caller, not a mutation receipt. Preserve command/identity/
+  chat/server-time or owned MiniApp-read evidence rather than inventing it at
+  receipt time.
+- Required design: separate absolute baseline observations from owned deltas;
+  account each semantic action once, allow distinct out-of-order deltas, retain
+  newer deltas when a delayed baseline arrives, reject older corrections and
+  define bounded retention without re-enabling evicted charges. Corrupt/legacy
+  provenance must not authorize spending from an overestimated balance.
+  This is business accounting, not permission to implement R07 transport
+  persistence, CommandAttempt recovery or automatic retry control.
+- No R65 runtime implementation or correction is claimed. R64's full suite
+  remains 6808 passed/1202 subtests; it does not cover or resolve these newly
+  reproduced accounting defects. Whole-project final acceptance remains open.
 
 ## Deployment Constraint
 
