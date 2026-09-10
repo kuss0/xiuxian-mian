@@ -23,6 +23,7 @@ from ..runtime import send_game_command
 from ..state import (
     REALM_SORT_INDEX,
     get_current_identity_id,
+    get_pending_command,
     get_send_as_profile,
     has_identity,
     infer_realm_from_xiuwei_max,
@@ -1132,6 +1133,107 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
         "result": "observed",
         "summary": _short_summary(raw_text),
         "last_error": "",
+    }
+
+
+def sync_yinluo_miniapp_status(text, now):
+    """Accept an idle banner panel without accounting or completing an action."""
+    previous = state.get("yinluo_observation")
+    if not isinstance(previous, dict):
+        return {"handled": False, "reason": "invalid_observation", "summary": {}}
+    pending_tasks = state.get("pending_tasks")
+    if not isinstance(pending_tasks, dict):
+        return {"handled": False, "reason": "invalid_pending", "summary": {}}
+    mutating_commands = {
+        CMD_YINLUO_BLOOD_FOREST, CMD_YINLUO_COLLECT, CMD_YINLUO_CONVERT,
+        CMD_YINLUO_DAILY_SACRIFICE, CMD_YINLUO_DEMON_SUMMON, CMD_YINLUO_REFINE, CMD_YINLUO_SOOTHE,
+    }
+    for pending in pending_tasks.values():
+        if not isinstance(pending, dict):
+            return {"handled": False, "reason": "invalid_pending", "summary": {}}
+        family = str(pending.get("family") or "")
+        command = get_pending_command(pending).split()
+        if (family.startswith("yinluo_") and family != "yinluo_banner") or (command and command[0] in mutating_commands):
+            return {"handled": False, "reason": "active_pending", "summary": {}}
+    if (
+        any(previous.get(key) for key in ("auto_collect_pending", "auto_refine_pending", "auto_soothe_pending"))
+        or str(previous.get("last_result") or "") == "pending"
+    ):
+        return {"handled": False, "reason": "active_pending", "summary": {}}
+    if _safe_float(previous.get("last_observed_at")) > float(now):
+        return {"handled": False, "reason": "stale_observation", "summary": {}}
+
+    try:
+        parsed = parse_yinluo_text(text, now=now, family="yinluo_banner")
+    except (TypeError, ValueError, OverflowError):
+        parsed = None
+    if not parsed or parsed.get("action") != "阴罗幡" or parsed.get("result") != "panel":
+        return {"handled": False, "reason": "unparsed_panel", "summary": {}}
+    lines = [line.translate(str.maketrans("", "", "*_`")).strip() for line in str(text).splitlines()]
+    panel_text = "\n".join(lines)
+    slots = [RE_SLOT_LINE.match(line) for line in lines if re.match(r"^(?:[-+]\s*)?\d+号槽", line)]
+    slot_numbers = [
+        number for key in ("ready_slot_numbers", "refining_slot_numbers", "empty_slot_numbers", "exhausted_slot_numbers")
+        for number in parsed[key]
+    ]
+    if (
+        len(RE_BANNER_TITLE.findall(panel_text)) != 1
+        or len(RE_SHA_POOL.findall(panel_text)) != 1
+        or int(parsed.get("sha_max", 0)) <= 0
+        or not slots
+        or not all(slots)
+        or any(match.group("status") not in {"精华已成", "炼化中", "空闲", "魂力枯竭"} for match in slots)
+        or len(slot_numbers) != len(slots)
+        or len(set(slot_numbers)) != len(slot_numbers)
+        or any(number < 1 or number > 99 for number in slot_numbers)
+    ):
+        return {"handled": False, "reason": "incomplete_panel", "summary": {}}
+
+    # The generic reducer also spends resources, clears pending work and rearms
+    # timers. This bridge copies only fields actually reported by a panel.
+    observed = copy.deepcopy(previous)
+    for key in (
+        "banner_owner", "banner_name", "banner_rank", "sha_current", "sha_max", "sha_percent",
+        "banner_status", "main_soul_path", "soul_total", "battle_bonus_percent",
+        "ready_slots", "ready_slot_numbers", "ready_slots_detail",
+        "refining_slots", "refining_slot_numbers", "refining_slots_detail",
+        "empty_slots", "empty_slot_numbers", "exhausted_slot_numbers",
+    ):
+        if key in parsed:
+            observed[key] = copy.deepcopy(parsed[key])
+    for key, heading, pattern in (
+        ("soul_stocks", "魂魄储备", RE_SOUL_STOCK),
+        ("soul_lineage", "幡魂谱系", RE_SOUL_LINEAGE),
+        ("banner_traits", "当前特性", RE_BANNER_TRAIT),
+    ):
+        starts = [index for index, line in enumerate(lines) if line.startswith(heading)]
+        if not starts:
+            continue
+        rows = []
+        for line in lines[starts[0] + 1:]:
+            if not line:
+                continue
+            if not line.startswith("-"):
+                break
+            rows.append(pattern.fullmatch(line))
+        if len(starts) != 1 or not rows or not all(rows) or len(rows) != len(parsed[key]):
+            return {"handled": False, "reason": "incomplete_panel", "summary": {}}
+        observed[key] = copy.deepcopy(parsed[key])
+    observed.update({
+        "last_observed_at": float(now), "last_action": "阴罗幡",
+        "last_result": "panel", "last_summary": "阴罗幡状态",
+    })
+    state["yinluo_observation"] = observed
+    save_state()
+    return {
+        "handled": True,
+        "reason": "",
+        "summary": {
+            "sha_current": observed["sha_current"],
+            "sha_max": observed["sha_max"],
+            "ready_slots": list(observed["ready_slot_numbers"]),
+            "refining_slots": list(observed["refining_slot_numbers"]),
+        },
     }
 
 

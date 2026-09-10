@@ -4504,7 +4504,7 @@ async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=No
 
 
 def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
-    """Replay supported read-only Tianjige panels through their existing reducer."""
+    """Apply supported Tianjige panels through status-only module bridges."""
     if command not in {".我的阴罗幡", ".我的侍妾"}:
         return {"supported": False, "handled": False, "summary": {}}
 
@@ -4526,26 +4526,12 @@ def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now)
                 "summary": summary,
                 "detail": detail,
             }
-        handled = bool(
-            yinluo.apply_yinluo_passive(
-                message,
-                now=now,
-                family="yinluo_banner",
-                event_context={"source": "cave_tianjige_read_only"},
-            )
-        )
-        if handled:
-            yinluo.save_state()
-        observed = dict((yinluo.get_yinluo_ui_state(now=now).get("observed") or {}))
-    summary = {
-        "sha_current": int(observed.get("sha_current", 0) or 0),
-        "sha_max": int(observed.get("sha_max", 0) or 0),
-        "ready_slots": list(observed.get("ready_slot_numbers") or []),
-        "refining_slots": list(observed.get("refining_slot_numbers") or []),
-    }
+        sync_result = yinluo.sync_yinluo_miniapp_status(message, now)
+    summary = dict(sync_result.get("summary") or {})
     return {
         "supported": True,
-        "handled": handled,
+        "handled": bool(sync_result.get("handled")),
+        "reason": str(sync_result.get("reason") or ""),
         "summary": summary,
         "detail": (
             f"煞气 {summary.get('sha_current', 0)}/{summary.get('sha_max', 0)}"
@@ -4576,7 +4562,8 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             return {"ok": False, "message": "洞府天机阁只读命令不在白名单", "extra": {}}
     except Exception:
         return {"ok": False, "message": "洞府天机阁只读命令无效", "extra": {}}
-    if identity_id <= 0:
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if identity_id <= 0 or owner is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
@@ -4585,17 +4572,43 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    entry_observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+    prefix = {".我的阴罗幡": "yinluo_", ".我的侍妾": "concubine_"}.get(normalized_command)
+
+    def business_snapshot():
+        return {
+            key: deepcopy(value) for key, value in owner.identity.items()
+            if prefix and (key.startswith(prefix) or key == f"next_{prefix}time")
+        }
+
+    snapshot = business_snapshot()
+
+    def can_continue():
+        return (
+            owner.is_current()
+            and is_cave_public_identity_available(identity_id)
+            and _public_entry_allowed()
+            and (entry_observation is None or entry_observation.permits(identity_id, token))
+            and business_snapshot() == snapshot
+        )
+
+    cancelled = {"ok": False, "message": "洞府天机阁只读操作已取消或状态已变更", "extra": {"status": "cancelled"}}
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
+        if not can_continue():
+            return cancelled
         session = await _load_cave_public_identity_session(
             identity_id,
             token,
             webview_url,
             now=now,
             capture_source=f"cave_public_tianjige_read_only_start:{identity_id}",
+            operation_check=can_continue,
         )
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             message = f"洞府天机阁只读身份读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"📖 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
@@ -4609,10 +4622,14 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             player_id=session.get("player_id"),
             capture_sink=_capture_store(now),
             capture_source=f"cave_public_tianjige_read_only:{identity_id}",
+            operation_check=can_continue,
         )
+        if not can_continue():
+            return cancelled
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        action_result = data.get("actionResult") if isinstance(data.get("actionResult"), dict) else {}
         message = extract_cave_tianjige_command_message(data)
-        if not result.get("ok") or not message:
+        if not result.get("ok") or data.get("ok") is False or action_result.get("ok") is False or not message:
             final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
             await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
             return {"ok": False, "message": final_message, "extra": {"raw_message": message}}

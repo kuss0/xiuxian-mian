@@ -2091,6 +2091,7 @@ async def run_cave_tianjige_command_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     """Execute one verified Tianjige command without HTTP retries.
 
@@ -2101,12 +2102,15 @@ async def run_cave_tianjige_command_production_flow(
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
+        require_miniapp_operation(operation_check)
         request = build_cave_tianjige_command_request(
             command,
             token=token,
@@ -2114,15 +2118,20 @@ async def run_cave_tianjige_command_production_flow(
             player_id=player_id,
             adapter=adapter,
         )
-        result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            request,
-            _flow_transport(transport, identity_id),
-            backoff_sec=(),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"command_center:{normalize_cave_tianjige_command(command)}",
+        def run(operation):
+            return execute_miniapp_http_request(
+                request,
+                _flow_transport(transport, identity_id, operation_check=operation.check),
+                backoff_sec=(),
+                sleeper=operation.sleep,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                step_key=f"command_center:{normalize_cave_tianjige_command(command)}",
+                operation_check=operation.check,
+            )
+
+        result = await run_miniapp_blocking_flow(
+            run, operation_check=operation_check, sleeper=sleeper,
         )
         if not result.ok:
             return _flow_result(False, "failed", error=result.error, events=[{"step": "command_center", "ok": False}])

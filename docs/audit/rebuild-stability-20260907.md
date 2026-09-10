@@ -117,6 +117,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R63 | High | Breakthrough broadcasts and manual profile API writes bypass field chronology, match username prefixes or ambiguous fallback owners, and apply late responses after identity/credential changes; same-second cards can regress request payloads and evict their own evidence | Fixed for these profile observations in candidate; native new/edit provenance, bounded per-field source order, exact identity/request/config ownership, conservative API freshness, corruption/reload and same-second request/reply retention pass; resource reducers, other API workflows and shared R07 remain open |
 | R64 | High | Stale or unproven no-sect checkin replies overwrite newer membership, disable modules and delete unrelated pending/receipts; passive handling bypasses ownership, text-only dedupe drops newer edits, and notification awaits let old routed callbacks clear replacement work | Fixed for no-sect checkin observations and checkin availability cleanup in candidate; exact official command ownership, server/source chronology, native manual/channel and log replay, retained sibling pending/anchors, retry suppression, owner-aware completion and SQLite reload pass; positive checkin/teaching provenance, other resource writers and shared R07 remain open |
 | R65 | High | Duel/Yinluo cultivation deltas are not reconciled with absolute profile observations; cross-chat scalar IDs omit losses, interleaved/duplicate Yinluo results charge twice, and delayed snapshots can restore spent cultivation | Open; candidate Telegram cultivation ledger, profile projection and native/manual/edited duel accounting now pass isolated tests, including source enrichment, corrected amounts, unknown evidence and queued resource ownership; Yinluo cultivation/sha writers, MiniApp snapshot authority, pre-migration reconciliation and operational retention remain incomplete |
+| R66 | High | The read-only Tianjige banner bridge invokes the mutation reducer, can debit cultivation, clear reservations and rearm scheduling; delayed reads write through changed owners or business state, and cancellation releases the entry lock while HTTP continues | Fixed for the scoped read-only bridge in candidate; panel-only synchronization, pending/partial rejection, owner and business snapshot checks, and thread draining pass focused and full tests; generic Yinluo accounting remains R65 |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -2064,6 +2065,51 @@ five monitor/control-only contracts need separate behavioral verification.
   and capacity/replay behavior before enabling this candidate. A conservative
   hold is not proof that those automation paths are complete.
 
+### R66 Candidate Read-Only Tianjige Boundary
+
+- Work continues in the offline candidate only. Production, service processes,
+  live state/database, listener and skill remain untouched. No game requests,
+  automatic inventory reads, deployment, restart or push were performed.
+- Reproducers in `tests/test_cave_tianjige_read_only.py` showed that asking for
+  `.我的阴罗幡` could accept conversion, soothe, sacrifice or refine wording
+  through `apply_yinluo_passive`. Ordinary panels also cleared refine pending,
+  changed automatic timers and erased collections absent from the response.
+  Owner deletion raised a KeyError, while rebinding, replacement, disable and
+  newer business observations did not stop the delayed write.
+- The bridge now calls `sync_yinluo_miniapp_status`, which copies panel fields
+  without invoking resource deltas, completing an operation, clearing a
+  reservation, changing resource-recovery requests or rescheduling automation.
+  Active collect/refine/soothe and pending outcomes, plus unanswered mutating
+  commands in the identity's pending map, retain their state. Unrelated pending
+  work does not prevent a banner read.
+- Title-only, missing pool/slot fields, duplicate or unknown slots and partially
+  parsed collections cannot replace a snapshot. Missing optional collections
+  stay unchanged; a declared empty/unrecognized collection is not guessed to
+  mean zero. Both existing real banner fixtures pass. Their server-reported
+  sha above capacity remains intact, including `269465 / 25000 (100%)`.
+- Read-only requests retain the identity object/account and relevant business
+  snapshot, and recheck them before/after session initialization and command
+  execution. Entry invalidation and explicit game rejection stop synchronization.
+  HTTP admission receives the same check. Existing channel-freeze and
+  maintenance-only MiniApp exceptions remain available.
+- The command-center flow uses the existing guarded thread-drain helper and
+  still makes no HTTP retry. Cancellation before admission prevents dispatch;
+  cancellation during HTTP keeps the public-entry lock until the worker ends,
+  propagates cancellation and does not save or announce the abandoned read.
+  This does not certify mutating callers' result recovery or implement R07.
+- Final focused run: **275 passed, 5 subtests**, 2.06 seconds,
+  `/tmp/xiuxian-rebuild-r66-final-focused-20260910.xml`.
+  Final full isolated run: **6997 passed, 1202 subtests**, 91.28 seconds,
+  `/tmp/xiuxian-rebuild-r66-full-final-20260910.xml`.
+  Ruff, `compileall`, `pip check` and whitespace checks passed.
+- R65 is still open: this is a status/ownership boundary, not a reconciled sha
+  ledger, an authoritative MiniApp resource timestamp or a migration strategy.
+  Review conversion, soothe, sacrifice, refine reservation/rollback and Wanxin
+  external spending together. Native event provenance is still discarded by
+  the Yinluo passive caller; generic reducers still need ordered, idempotent
+  resource facts. Empty collection semantics and cleanly truncated/cached
+  panels also need evidence before this path can supply a spending baseline.
+
 ## Deployment Constraint
 
 The chat-key migration is not a code-only rollback. Once two chats contain the
@@ -2286,6 +2332,12 @@ code against new receipt state during a code-only rollback.
     trust, other resource consumers, MiniApp/API workers and the remaining
     acceptance matrix. Resolve migration/retention limits before any production
     validation; passing offline tests does not authorize deployment.
+12. R66 repairs only the read-only Tianjige banner boundary and the shared
+    command-center worker's admission/draining contract. Do not count it as
+    completion of Yinluo automation or other public-entry workers. Continue
+    R65 with native command/result ownership and the complete sha writer set;
+    keep R07's unapproved shared architecture and CommandAttempt control out
+    of that work.
 
 ## Completion Gate
 
