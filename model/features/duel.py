@@ -2,9 +2,14 @@ import random
 import re
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, localcontext
 from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_DUEL, TZ_LOCAL
+from ..cultivation_accounting import apply_cultivation_delta, cultivation_balance, has_cultivation_result
+from ..profile_observation import timestamp
+from ..resource_accounting import valid_point
+from ..verified_event import VerifiedGameEvent
 from ..message_log_recovery import (
     find_message_log_message,
     find_message_log_replies,
@@ -17,13 +22,17 @@ from ..state import (
     REALM_SORT_ORDER,
     get_current_identity_id,
     get_duel_target_cooldowns,
+    get_game_bot_ids,
     get_game_group_id,
+    get_game_group_ids,
+    get_identity_account,
     get_identity_enabled,
     get_identity_ids,
+    get_identity_state,
     get_send_as_profile,
+    has_identity,
     set_duel_target_cooldowns,
     state,
-    update_send_as_profile,
     use_identity,
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
@@ -132,7 +141,8 @@ DUEL_TARGET_CONSUMING_TERMINAL_KEYWORDS = (
 RE_DUEL_WINNER = re.compile(r"(?:胜者[:：]\s*|胜者：)(@[^\s|]+)")
 RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
 RE_DUEL_WEAKNESS = re.compile(r"虚弱状态】?\s*(?P<wait>\d+\s*(?:天|小时|分钟|秒)(?:\d+\s*(?:小时|分钟|秒))*)")
-RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>万)?")
+RE_DUEL_XIUWEI_LOSS = re.compile(r"损失修为\s*-\s*(?P<amount>\d+(?:\.\d+)?)[ \t]*(?P<unit>万|亿|兆)?(?=[ \t]*(?:[|｜]|\r?\n|$))")
+RE_DUEL_XIUWEI_GAIN = re.compile(r"净得修为\s*\+\s*(?P<amount>\d+(?:\.\d+)?)[ \t]*(?P<unit>万|亿|兆)?(?=[ \t]*(?:[|｜]|\r?\n|$))")
 RE_DUEL_DAILY_LIMIT_TARGET = re.compile(r"今日对\s+(?P<target>@[^\s，。！？、；：:,.!?]+)\s+出手次数过多")
 RE_DUEL_ROLLING_LIMIT_TARGET = re.compile(
     r"你与\s*(?P<target>@[^\s，。！？、；：:,.!?]+)\s*在\s*24\s*小时内已交锋过多"
@@ -345,7 +355,7 @@ def _clear_target_reservation(target, command_msg_id=0):
             "resource_depleted_at",
             "resource_depleted_xiuwei",
             "resource_recovery_xiuwei",
-            "resource_last_loss_msg_id",
+            "resource_last_loss_at",
         )
         if record.get(field)
     }
@@ -371,14 +381,8 @@ def _managed_target_identity_id(target):
     target_key = _username_key(target)
     if not target_key:
         return 0
-    for identity_id in get_identity_ids():
-        profile = get_send_as_profile(identity_id) or {}
-        if _username_key(profile.get("username")) == target_key:
-            return int(identity_id)
-    for identity_id in get_identity_ids():
-        if target_key in _profile_username_keys(identity_id):
-            return int(identity_id)
-    return 0
+    matches = [identity_id for identity_id in get_identity_ids() if target_key in _profile_username_keys(identity_id)]
+    return int(matches[0]) if len(matches) == 1 else 0
 
 
 def _active_pair_batch_record(target, now):
@@ -1009,10 +1013,10 @@ def _duel_day_log_entries(now):
     start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     entries = []
     for entry, entry_ts in iter_message_log_entries_between(start, float(now) + DUEL_LOG_REPLAY_LOOKAHEAD_SEC):
-        text = str((entry or {}).get("text") or "").strip()
-        if not text:
+        if not isinstance(entry, dict):
             continue
-        if not (
+        text = str((entry or {}).get("text") or "").strip()
+        business_text = bool(text) and (
             text.startswith(CMD_DUEL)
             or text.startswith(".卸下法宝")
             or text.startswith(".装备 ")
@@ -1020,9 +1024,21 @@ def _duel_day_log_entries(now):
             or _has_duel_terminal_attempt_keyword(text)
             or _loadout_unequip_reply(text)
             or _parse_current_equipment(text)
-        ):
+        )
+        official_context = (
+            type(entry.get("sender_id")) is int and entry["sender_id"] in get_game_bot_ids()
+            and entry.get("chat_id") in get_game_group_ids()
+            and entry.get("event_type") in {"message", "edit"}
+            and (entry["event_type"] == "edit" or (type(entry.get("reply_to_msg_id")) is int and entry["reply_to_msg_id"] > 0))
+        )
+        if not business_text and not official_context:
             continue
         item = dict(entry)
+        if not business_text and entry.get("event_type") == "message":
+            # Preserve only the native parent link, not unrelated panel text.
+            item = {key: entry.get(key) for key in ("event_type", "chat_id", "message_id", "reply_to_msg_id", "sender_id", "server_event_at")}
+            item["text"] = ""
+            item["resource_context_only"] = True
         item["ts_epoch"] = float(entry_ts)
         entries.append(item)
     _DUEL_DAY_LOG_CACHE.update(day=day_key, refreshed_at=float(now), entries=entries)
@@ -1225,8 +1241,9 @@ def reconcile_duel_from_message_log(now, *, force=False):
     previous_day = str(state.get("duel_log_reconcile_day") or "")
     prior_runtime_error = str(state.get("duel_last_error") or "").strip()
     prior_next_duel_time = float(state.get("next_duel_time", 0) or 0)
-    evidence = _derive_duel_log_evidence(_duel_day_log_entries(now), get_current_identity_id(), now=now)
-    changed = False
+    entries = _duel_day_log_entries(now)
+    changed = reconcile_duel_cultivation_entries(entries, now=now)
+    evidence = _derive_duel_log_evidence(entries, get_current_identity_id(), now=now)
     if previous_day != day_key and int(state.get("duel_observed_baseline_count", 0) or 0) != 0:
         state["duel_observed_baseline_count"] = 0
         changed = True
@@ -1627,9 +1644,12 @@ def _duel_resource_gate_reason(identity_id, *, role):
     with use_identity(identity_id):
         profile = get_send_as_profile(identity_id) or {}
         username = str(profile.get("username") or identity_id).strip().lstrip("@")
-        current = _parse_int(profile.get("xiuwei_current", 0))
+        balance = cultivation_balance(identity_id)
+        current = balance["value"]
         reserve = get_duel_reserve_xiuwei()
         risk = _duel_loss_risk_for_identity(identity_id)
+    if balance["status"] != "ready":
+        return f"{role} @{username} 修为账本待校准（{balance['status']}），暂不斗法"
     record = _duel_resource_record_for_identity(identity_id)
     depleted_at = float(record.get("resource_depleted_at", 0) or 0)
     depleted_xiuwei = _parse_int(record.get("resource_depleted_xiuwei", 0))
@@ -1644,8 +1664,6 @@ def _duel_resource_gate_reason(identity_id, *, role):
             f"当前={current or '未知'}，需恢复至至少 {depleted_xiuwei + recovery}"
         )
     minimum = reserve + risk
-    if current <= 0:
-        return f"{role} @{username} 剩余修为未知，暂不斗法"
     if current < minimum:
         return f"{role} @{username} 剩余修为不足，需至少 {minimum}（保留 {reserve} + 风险 {risk}），当前={current}"
     return ""
@@ -1654,7 +1672,6 @@ def _duel_resource_gate_reason(identity_id, *, role):
 def _profile_gate_reason():
     profile = get_send_as_profile(get_current_identity_id()) or {}
     realm = str(profile.get("realm") or "").strip()
-    xiuwei_current = _parse_int(profile.get("xiuwei_current", 0))
     realm_reason = _realm_gate_reason(realm)
     if realm_reason:
         return realm_reason
@@ -1978,7 +1995,12 @@ def _target_gate_reason(target):
     current_id = str(get_current_identity_id() or "").strip()
     if current_id and target == current_id:
         return f"斗法目标不能是自己：{target}"
-    target_id = _managed_target_identity_id(target)
+    target_ids = [identity_id for identity_id in get_identity_ids() if _username_key(target) in _profile_username_keys(identity_id)]
+    if len(target_ids) > 1:
+        return f"斗法目标 {target} 对应多个本地身份，需先核实用户名"
+    target_id = target_ids[0] if target_ids else 0
+    if target_id == get_current_identity_id():
+        return f"斗法目标不能是自己：{target}"
     if target_id > 0:
         resource_reason = _duel_resource_gate_reason(target_id, role="守方")
         if resource_reason:
@@ -2257,60 +2279,218 @@ def _duel_xiuwei_loss_fact(text):
     loss = RE_DUEL_XIUWEI_LOSS.search(raw)
     if not loser or not loss:
         return "", 0
-    amount = float(loss.group("amount") or 0)
-    if loss.group("unit"):
-        amount *= 10_000
-    amount = max(0, int(round(amount)))
-    return normalize_duel_target(loser.group(1)), amount
+    return normalize_duel_target(loser.group(1)), _duel_resource_amount(loss) or 0
 
 
-def _apply_duel_xiuwei_loss(text):
-    loser, amount = _duel_xiuwei_loss_fact(text)
-    profile = get_send_as_profile(get_current_identity_id()) or {}
-    username = str(profile.get("username") or "").strip().lstrip("@").casefold()
-    if not username or loser.strip().lstrip("@").casefold() != username:
-        return 0
-    current = _parse_int(profile.get("xiuwei_current", 0))
-    if amount <= 0 or current <= 0:
-        return 0
-    update_send_as_profile(get_current_identity_id(), xiuwei_current=max(0, current - amount))
-    return amount
+def _duel_resource_amount(match):
+    if match is None or len(match.group("amount")) > 30:
+        return None
+    try:
+        with localcontext() as context:
+            context.prec = 64
+            amount = Decimal(match.group("amount")) * {None: 1, "万": 10000, "亿": 100000000, "兆": 1000000000000}[match.group("unit")]
+        return int(amount) if amount.is_finite() and amount >= 0 and amount == int(amount) else None
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
 
 
-def _record_managed_duel_loss(text, now, *, result_msg_id=0, apply_profile_loss=True):
-    loser, amount = _duel_xiuwei_loss_fact(text)
-    loser_id = _managed_target_identity_id(loser)
-    if loser_id <= 0 or amount <= 0:
-        return False, 0
-    current_id = int(get_current_identity_id() or 0)
+def _duel_resource_evidence(event, now):
+    if not isinstance(event, VerifiedGameEvent):
+        return None
+    end = {
+        "at": event.server_event_at,
+        "evidence": {"source": "telegram", "chat_id": event.chat_id, "msg_id": event.msg_id, "edited": event.is_edited_delivery},
+    }
+    if (
+        not valid_point(end, telegram_only=True) or event.event_type not in {"message", "edit"}
+        or type(event.sender_id) is not int or event.sender_id not in get_game_bot_ids()
+        or event.chat_id not in get_game_group_ids()
+        or event.server_event_at > timestamp(now) + 1
+    ):
+        return None
+    context = event.reply_context if isinstance(event.reply_context, dict) else {}
+    command = context.get("reply_to_command")
+    root_id = context.get("reply_to_msg_id", 0)
+    command_at = timestamp(context.get("reply_to_server_at"))
+    start = None
+    key = f"duel:result:{event.chat_id}:{event.msg_id}"
+    attacker = RE_DUEL_ATTACKER.search(event.text)
+    defender = RE_DUEL_DEFENDER.search(event.text)
+    if (
+        isinstance(command, str) and command.startswith(f"{CMD_DUEL} ")
+        and not context.get("reply_to_command_edited", False)
+        and type(root_id) is int and 0 < root_id < event.msg_id
+        and context.get("root_msg_id", root_id) == root_id
+        and event.root_msg_id in {0, root_id}
+        and context.get("chat_id", event.chat_id) == event.chat_id
+        and command_at > 0 and command_at <= event.server_event_at
+        and type(context.get("reply_to_sender_id")) is int and context["reply_to_sender_id"] != 0
+        and context["reply_to_sender_id"] not in get_game_bot_ids()
+        and attacker and defender
+    ):
+        command_target = _username_key(command[len(CMD_DUEL):].strip())
+        defender_id = _managed_target_identity_id(defender.group("username"))
+        defender_keys = _profile_username_keys(defender_id) if defender_id else {_username_key(defender.group("username"))}
+        attacker_id = _managed_target_identity_id(attacker.group("username"))
+        if command_target in defender_keys and (
+            not attacker_id or sender_matches_identity(context["reply_to_sender_id"], attacker_id)
+        ):
+            key = f"duel:command:{event.chat_id}:{root_id}"
+            start = {
+                "at": command_at,
+                "evidence": {"source": "telegram", "chat_id": event.chat_id, "msg_id": root_id, "edited": False},
+            }
+    return key, start, end
+
+
+def _record_managed_duel_loss_metadata(loser_id, amount, observed_at):
     with use_identity(loser_id):
         profile = get_send_as_profile(loser_id) or {}
-        canonical_loser = normalize_duel_target(profile.get("username") or loser)
-        current = _parse_int(profile.get("xiuwei_current", 0))
+        canonical_loser = normalize_duel_target(profile.get("username") or "")
+        current = cultivation_balance(loser_id)["value"]
         reserve = get_duel_reserve_xiuwei()
     key = _target_cooldown_key(canonical_loser)
     records = dict(get_duel_target_cooldowns())
     record = dict(records.get(key) or {})
-    result_msg_id = int(result_msg_id or 0)
-    if result_msg_id > 0 and result_msg_id <= int(record.get("resource_last_loss_msg_id", 0) or 0):
-        return False, 0
-    if apply_profile_loss and current > 0:
-        current = max(0, current - amount)
-        update_send_as_profile(loser_id, xiuwei_current=current)
     if amount >= DUEL_MIN_USEFUL_TRANSFER_XIUWEI:
-        record["recent_loss_xiuwei"] = amount
-    else:
+        record["recent_loss_xiuwei"] = max(amount, _parse_int(record.get("recent_loss_xiuwei", 0)))
+    elif observed_at > timestamp(record.get("resource_last_loss_at", 0)):
         recent_loss = max(DUEL_MAX_LOSS_XIUWEI, _parse_int(record.get("recent_loss_xiuwei", 0)))
         record.update(
-            resource_depleted_at=float(now),
-            resource_depleted_xiuwei=current,
+            resource_depleted_at=observed_at,
+            resource_depleted_xiuwei=current if current is not None else 0,
             resource_recovery_xiuwei=max(DUEL_RESOURCE_RECOVERY_XIUWEI, reserve, recent_loss),
         )
-    if result_msg_id > 0:
-        record["resource_last_loss_msg_id"] = result_msg_id
+    record["resource_last_loss_at"] = max(observed_at, timestamp(record.get("resource_last_loss_at", 0)))
     records[key] = record
     set_duel_target_cooldowns(records)
-    return True, amount if loser_id == current_id else 0
+
+
+def _duel_cultivation_participants(text):
+    roles = {
+        "winner": list(RE_DUEL_WINNER.finditer(text)), "loser": list(RE_DUEL_LOSER.finditer(text)),
+        "attacker": list(RE_DUEL_ATTACKER.finditer(text)), "defender": list(RE_DUEL_DEFENDER.finditer(text)),
+    }
+    candidates = {}
+    owners = {}
+    for name, matches in roles.items():
+        for match in matches:
+            username = _username_key(match.group(1))
+            ids = [identity_id for identity_id in get_identity_ids() if username in _profile_username_keys(identity_id)]
+            candidates.update({identity_id: None for identity_id in ids})
+            owners[name] = ("identity", ids[0]) if len(ids) == 1 else (("username", username) if not ids else None)
+    if (
+        len(roles["winner"]) != 1 or len(roles["loser"]) != 1
+        or any(owner is None for owner in owners.values())
+        or owners["winner"] == owners["loser"]
+    ):
+        return candidates
+    if roles["attacker"] or roles["defender"]:
+        if (
+            len(roles["attacker"]) != 1 or len(roles["defender"]) != 1
+            or {owners["winner"], owners["loser"]} != {owners["attacker"], owners["defender"]}
+        ):
+            return candidates
+    for role, pattern, direction in (("loser", RE_DUEL_XIUWEI_LOSS, -1), ("winner", RE_DUEL_XIUWEI_GAIN, 1)):
+        if owners[role][0] != "identity":
+            continue
+        participant = roles[role][0]
+        line = text[participant.start():].splitlines()[0]
+        amount = _duel_resource_amount(pattern.search(line))
+        candidates[owners[role][1]] = direction * amount if amount is not None else None
+    return candidates
+
+
+def observe_duel_cultivation(event, *, now, persist=True):
+    """Reconcile real battles even when automation or the active batch is off."""
+    if not isinstance(event, VerifiedGameEvent):
+        return False
+    is_report = _is_duel_report_text(event.text)
+    if not is_report and not event.is_edited_delivery:
+        return False
+    receipt = _duel_resource_evidence(event, now)
+    if receipt is None:
+        return False
+    key, start, end = receipt
+    parsed = _duel_cultivation_participants(event.text) if is_report else {}
+    # A newer edit can remove a participant or the complete report. Retained
+    # source ownership still invalidates the old spendable amount in that case.
+    owners = {
+        identity_id for identity_id in get_identity_ids()
+        if has_cultivation_result(identity_id, key, start, end)
+    }
+    changed = False
+    for identity_id in owners | parsed.keys():
+        delta = parsed.get(identity_id)
+        if apply_cultivation_delta(identity_id, key, delta, start, end):
+            if delta is not None and delta < 0:
+                _record_managed_duel_loss_metadata(identity_id, -delta, event.server_event_at)
+            changed = True
+    if changed and persist:
+        save_state()
+    return changed
+
+
+def reconcile_duel_cultivation_entries(entries, *, now):
+    """Use the existing bounded log batch, not local receipt times or live reads."""
+    originals = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("event_type") != "message":
+            continue
+        chat_id, msg_id = entry.get("chat_id"), entry.get("message_id")
+        if (
+            type(chat_id) is not int or chat_id not in get_game_group_ids()
+            or type(msg_id) is not int or msg_id <= 0
+        ):
+            continue
+        key = chat_id, msg_id
+        facts = {name: entry.get(name) for name in ("sender_id", "text", "server_event_at")}
+        facts["reply_to_msg_id"] = entry.get("reply_to_msg_id", 0) or 0
+        if key in originals and originals[key] != facts:
+            originals[key] = None
+        else:
+            originals[key] = facts
+
+    def resolve_command(entry):
+        chat_id, child_id, child_at = entry.get("chat_id"), entry.get("message_id"), timestamp(entry.get("server_event_at"))
+        parent_id = entry.get("reply_to_msg_id", 0)
+        for _ in range(8):
+            if type(parent_id) is not int or not 0 < parent_id < child_id:
+                break
+            parent = originals.get((chat_id, parent_id)) or {}
+            parent_at = timestamp(parent.get("server_event_at"))
+            sender_id, command = parent.get("sender_id"), parent.get("text")
+            if type(sender_id) is not int or sender_id == 0 or not 0 < parent_at <= child_at:
+                break
+            if isinstance(command, str) and command.startswith(f"{CMD_DUEL} ") and sender_id not in get_game_bot_ids():
+                return parent_id, parent
+            if sender_id not in get_game_bot_ids():
+                break
+            child_id, child_at, parent_id = parent_id, parent_at, parent.get("reply_to_msg_id", 0)
+        return 0, {}
+
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("event_type") not in {"message", "edit"}:
+            continue
+        chat_id, msg_id = entry.get("chat_id"), entry.get("message_id")
+        if type(chat_id) is not int or type(msg_id) is not int:
+            continue
+        root, command = resolve_command(entry)
+        event = VerifiedGameEvent(
+            event_type=entry["event_type"], chat_id=chat_id, msg_id=msg_id,
+            sender_id=entry.get("sender_id"), text=str(entry.get("text") or ""),
+            reply_context={
+                "chat_id": chat_id, "reply_to_msg_id": root, "root_msg_id": root,
+                "reply_to_command": command.get("text"), "reply_to_server_at": command.get("server_event_at"),
+                "reply_to_sender_id": command.get("sender_id"),
+                "resource_direct_reply_id": entry.get("reply_to_msg_id", 0),
+            },
+            identity_id=0, family="duel", root_msg_id=root, route_source="resource_log",
+            reply_to_sender_id=command.get("sender_id"), server_event_at=entry.get("server_event_at"),
+        )
+        changed = observe_duel_cultivation(event, now=now, persist=False) or changed
+    return changed
 
 
 def _duel_next_time_blocks(now):
@@ -2680,7 +2860,8 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     pending_command_msg_id = _parse_int(state.get("duel_reply_to_msg_id", 0))
     summary = parse_duel_result_summary(raw_text)
     weak_or_unknown = _is_weak_or_unknown_result(raw_text)
-    _, xiuwei_loss = _record_managed_duel_loss(raw_text, now, result_msg_id=result_msg_id)
+    loser, amount = _duel_xiuwei_loss_fact(raw_text)
+    xiuwei_loss = amount if _managed_target_identity_id(loser) == get_current_identity_id() else 0
     _clear_duel_pending()
     state["duel_last_msg_id"] = int(result_msg_id or 0)
     state["duel_last_result"] = summary
@@ -2843,6 +3024,18 @@ async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
         chat_id=get_sent_message_chat_id(reply_to_msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
         predicate=_is_duel_reply_log_entry,
     )
+    if any(_is_duel_report_text(str(entry.get("text") or "")) for entry in replies):
+        original = find_message_log_message(
+            reply_to_msg_id, now, lookback_sec=DUEL_LOG_REPLAY_LOOKBACK_SEC,
+            chat_id=get_sent_message_chat_id(reply_to_msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
+            predicate=lambda entry: (
+                entry.get("event_type") == "message" and timestamp(entry.get("server_event_at")) > 0
+                and str(entry.get("text") or "").startswith(f"{CMD_DUEL} ")
+                and sender_matches_identity(entry.get("sender_id"), get_current_identity_id())
+            ),
+        )
+        if reconcile_duel_cultivation_entries([original, *replies], now=now):
+            save_state()
     for entry in replies:
         await handle_duel_reply(
             entry.get("text") or "",
@@ -2855,6 +3048,9 @@ async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
 
 
 async def run_duel_scheduler(now):
+    identity_id = get_current_identity_id()
+    owner = get_identity_state(identity_id)
+    account_id = get_identity_account(identity_id)
     # Reconcile real battle evidence before scheduling the next batch so a
     # consumed duel prediction cannot remain leased and block another route.
     _reconcile_consumed_duel_prediction_from_last_report(now)
@@ -2886,7 +3082,12 @@ async def run_duel_scheduler(now):
         state["duel_last_result"] = f"今日可用斗法目标均已封顶；次日批次→{fmt_abs_ts(state['next_duel_time'])}"
         save_state()
         return
-    target_gate_reason = _target_gate_reason(target)
+    has_pending = _parse_int(state.get("duel_reply_to_msg_id")) > 0
+    target_identity_id = _managed_target_identity_id(target)
+    target_owner = get_identity_state(target_identity_id) if target_identity_id else None
+    target_account_id = get_identity_account(target_identity_id) if target_identity_id else 0
+    target_username = _username_key(get_send_as_profile(target_identity_id).get("username")) if target_identity_id else ""
+    target_gate_reason = "" if has_pending else _target_gate_reason(target)
     if target_gate_reason:
         if not _duel_next_time_blocks(now):
             _set_duel_error(target_gate_reason, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
@@ -2894,7 +3095,7 @@ async def run_duel_scheduler(now):
         save_state()
         return
 
-    gate_reason = _profile_gate_reason()
+    gate_reason = "" if has_pending else _profile_gate_reason()
     if gate_reason:
         if not _duel_next_time_blocks(now):
             _set_duel_error(gate_reason, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
@@ -2928,7 +3129,7 @@ async def run_duel_scheduler(now):
         if completion["restoring"]:
             await send_audit_log("✅ 今日神念已耗尽，开始恢复原法宝配装。", scope="identity", limit=200)
         return
-    if total_count <= 0:
+    if total_count <= 0 and reply_to_msg_id <= 0:
         if not _duel_next_time_blocks(now):
             _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
@@ -3040,7 +3241,31 @@ async def run_duel_scheduler(now):
         return
 
     command = build_duel_command(target)
-    msg = await send_game_command(command, track=False, max_retry=0, source_module="斗法")
+
+    def resources_still_allow_send():
+        if (
+            not has_identity(identity_id) or get_identity_state(identity_id) is not owner
+            or get_identity_account(identity_id) != account_id
+            or _managed_target_identity_id(target) != target_identity_id
+        ):
+            return False
+        if target_identity_id and (
+            get_identity_state(target_identity_id) is not target_owner
+            or get_identity_account(target_identity_id) != target_account_id
+            or _username_key(get_send_as_profile(target_identity_id).get("username")) != target_username
+        ):
+            return False
+        with use_identity(identity_id):
+            return bool(
+                state.get("duel_enabled") and _target_token(time.time()) == target
+                and not _profile_gate_reason() and not _target_gate_reason(target)
+            )
+
+    if not resources_still_allow_send():
+        return
+    msg = await send_game_command(
+        command, track=False, max_retry=0, source_module="斗法", operation_check=resources_still_allow_send,
+    )
     if not msg:
         send_block = classify_game_send_block(get_current_identity_id(), command)
         if send_block.get("status") == "unsent":

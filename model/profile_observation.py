@@ -89,6 +89,8 @@ def telegram_profile_evidence(event):
 
 def apply_profile_observation(identity_id, changes, observed_at, *, evidence=None):
     """Apply newer field groups, returning accepted fields or None on invalid evidence."""
+    from .resource_accounting import MAX_BALANCE, evaluate
+
     clocks = field_clocks(identity_id)
     observed_at = timestamp(observed_at)
     if (
@@ -100,12 +102,24 @@ def apply_profile_observation(identity_id, changes, observed_at, *, evidence=Non
             else (not isinstance(value, str) or len(value) > 512)
             for field, value in changes.items()
         )
+        or any(changes.get(field, 0) > MAX_BALANCE for field in ("xiuwei_current", "xiuwei_max"))
     ):
         return None
+    # Import here because the pure ledger also uses this module's point-order
+    # helpers. Snapshot and projected balance are committed without an await.
+    from .cultivation_accounting import commit_profile_snapshot, stage_profile_snapshot
+
+    resource_snapshot = None
+    if "xiuwei_current" in changes and evidence and evidence["source"] == "telegram":
+        resource_snapshot = stage_profile_snapshot(identity_id, changes["xiuwei_current"], observed_at, evidence)
     accepted = {}
     for group, fields in FIELD_GROUPS.items():
         present = {field: changes[field] for field in fields if field in changes}
         if present and observation_is_newer(clocks.get(group, 0), clocks["_evidence"].get(group), observed_at, evidence):
+            if group == "xiuwei" and "xiuwei_current" in present and resource_snapshot is not None:
+                balance = evaluate(resource_snapshot)
+                if balance["status"] == "ready":
+                    present["xiuwei_current"] = balance["value"]
             accepted.update(present)
             clocks[group] = observed_at
             if evidence is None:
@@ -119,4 +133,6 @@ def apply_profile_observation(identity_id, changes, observed_at, *, evidence=Non
         update_send_as_profile(identity_id, **accepted, **metadata)
         get_identity_state(identity_id)["identity_profile_observed_at"] = clocks
         mark_dirty()
+    if resource_snapshot is not None:
+        commit_profile_snapshot(identity_id, resource_snapshot, profile_applied="xiuwei_current" in accepted)
     return accepted

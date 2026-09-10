@@ -4,15 +4,16 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import control
+from model import control, profile_observation
 from model import state as state_module
 from model.features import duel
+from model.verified_event import VerifiedGameEvent
 
 
 class DuelTests(unittest.IsolatedAsyncioTestCase):
@@ -32,17 +33,41 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         super().tearDown()
 
     def _prepare_identity(self, identity_id=8659059191, *, realm="元婴后期", xiuwei_current=700000):
-        state_module.ensure_identity_registered(identity_id)
+        state_module.set_identity_account(identity_id, 6501)
         state_module.update_send_as_profile(
             identity_id,
             username="walterwa2000",
             realm=realm,
             xiuwei_current=xiuwei_current,
         )
+        self._observe_xiuwei(identity_id, xiuwei_current)
         with state_module.use_identity(identity_id):
             state_module.state["duel_unequip_prepared"] = True
             state_module.state["duel_last_result"] = "斗法配装:battle_ready"
         return identity_id
+
+    def _observe_xiuwei(self, identity_id, amount, at=None):
+        clocks = state_module.get_identity_state(identity_id).get("identity_profile_observed_at", {})
+        at = float(at if at is not None else clocks.get("xiuwei", 0) + 1)
+        return profile_observation.apply_profile_observation(identity_id, {"xiuwei_current": amount}, at, evidence={
+            "source": "telegram", "chat_id": state_module.get_game_group_id(), "msg_id": 1, "edited": False,
+        })
+
+    def _record_loss(self, text, now, msg_id, attacker_id, target):
+        username = state_module.get_send_as_profile(attacker_id)["username"]
+        text += f"\n攻方：@{username}\n守方：{target}"
+        event = VerifiedGameEvent(
+            event_type="message", chat_id=state_module.get_game_group_id(), msg_id=msg_id,
+            sender_id=next(iter(state_module.get_game_bot_ids())), text=text,
+            reply_context={
+                "reply_to_msg_id": msg_id - 1, "root_msg_id": msg_id - 1,
+                "reply_to_command": f".斗法 {target}", "reply_to_server_at": now - 1,
+                "reply_to_sender_id": attacker_id,
+            }, identity_id=attacker_id, family="duel", root_msg_id=msg_id - 1,
+            route_source="native", reply_to_sender_id=attacker_id, server_event_at=now,
+        )
+        with patch.object(duel, "save_state"):
+            return duel.observe_duel_cultivation(event, now=now)
 
     async def test_manual_reenable_starts_a_new_completed_batch(self):
         identity_id = self._prepare_identity()
@@ -696,10 +721,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         identity_id = self._prepare_identity(xiuwei_current=700000)
         text = "【天道战报·文字版】\n胜者：@ccahen\n败者：@walterwa2000 | 损失修为 -6.0万"
         with state_module.use_identity(identity_id):
-            loss = duel._apply_duel_xiuwei_loss(text)
+            changed = self._record_loss(text, 1700000000.0, 4001, identity_id, "@ccahen")
             profile = state_module.get_send_as_profile(identity_id)
 
-        self.assertEqual(60000, loss)
+        self.assertTrue(changed)
         self.assertEqual(640000, profile["xiuwei_current"])
 
     async def test_scheduler_blocks_realm_and_xiuwei_gate_without_sending(self):
@@ -802,11 +827,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with state_module.use_identity(attacker_id):
-            changed, current_loss = duel._record_managed_duel_loss(text, now, result_msg_id=4001)
+            changed = self._record_loss(text, now, 4001, attacker_id, "@low_target")
             reason = duel._target_gate_reason("@low_target")
 
         self.assertTrue(changed)
-        self.assertEqual(0, current_loss)
         self.assertIn("可转移修为已接近耗尽", reason)
         target_profile = state_module.get_send_as_profile(target_id)
         self.assertEqual(699880, target_profile["xiuwei_current"])
@@ -815,7 +839,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(699880, record["resource_depleted_xiuwei"])
         self.assertEqual(duel.DUEL_RESOURCE_RECOVERY_XIUWEI, record["resource_recovery_xiuwei"])
 
-        state_module.update_send_as_profile(target_id, xiuwei_current=899880)
+        self._observe_xiuwei(target_id, 899880, now + 1)
         with state_module.use_identity(attacker_id):
             self.assertEqual("", duel._target_gate_reason("@low_target"))
 
@@ -847,13 +871,12 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with state_module.use_identity(attacker_id):
-            changed, current_loss = duel._record_managed_duel_loss(text, now, result_msg_id=4002)
+            changed = self._record_loss(text, now, 4002, attacker_id, "@low_target")
             self.assertTrue(changed)
-            self.assertEqual(0, current_loss)
 
         record = state_module.get_duel_target_cooldowns()["@low_target"]
         self.assertEqual(240000, record["recent_loss_xiuwei"])
-        state_module.update_send_as_profile(target_id, xiuwei_current=430000)
+        self._observe_xiuwei(target_id, 430000, now + 1)
         with state_module.use_identity(attacker_id):
             reason = duel._target_gate_reason("@low_target")
         self.assertIn("需至少 440000", reason)
@@ -870,11 +893,11 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with state_module.use_identity(attacker_id):
-            first = duel._record_managed_duel_loss(text, 1_700_000_000.0, result_msg_id=4010)
-            second = duel._record_managed_duel_loss(text, 1_700_000_010.0, result_msg_id=4010)
+            first = self._record_loss(text, 1_700_000_000.0, 4010, attacker_id, "@low_target")
+            second = self._record_loss(text, 1_700_000_000.0, 4010, attacker_id, "@low_target")
 
-        self.assertEqual((True, 0), first)
-        self.assertEqual((False, 0), second)
+        self.assertTrue(first)
+        self.assertFalse(second)
         self.assertEqual(640000, state_module.get_send_as_profile(target_id)["xiuwei_current"])
 
     def test_window_normalize_label_and_bounds(self):
@@ -1282,7 +1305,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await duel.run_duel_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".斗法 @cupaopao", track=False, max_retry=0, source_module="斗法")
+            send_mock.assert_awaited_once_with(".斗法 @cupaopao", track=False, max_retry=0, source_module="斗法", operation_check=ANY)
             self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
             self.assertEqual(now + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
             self.assertEqual("已发送", state_module.state["duel_last_result"])
@@ -1978,7 +2001,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await duel.run_duel_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".斗法 @beta", track=False, max_retry=0, source_module="斗法")
+            send_mock.assert_awaited_once_with(".斗法 @beta", track=False, max_retry=0, source_module="斗法", operation_check=ANY)
             self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
 
     async def test_scheduler_blocks_self_target(self):
@@ -2340,7 +2363,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now)
 
             timeline_mock.assert_not_awaited()
-            send_mock.assert_awaited_once_with(".斗法 @cupaopao", track=False, max_retry=0, source_module="斗法")
+            send_mock.assert_awaited_once_with(".斗法 @cupaopao", track=False, max_retry=0, source_module="斗法", operation_check=ANY)
             self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
 
     async def test_scheduler_does_not_insert_tianxing_duel_route_by_default(self):
@@ -2378,7 +2401,7 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 await duel.run_duel_scheduler(now)
 
             timeline_mock.assert_not_awaited()
-            send_mock.assert_awaited_once_with(".斗法 @cupaopao", track=False, max_retry=0, source_module="斗法")
+            send_mock.assert_awaited_once_with(".斗法 @cupaopao", track=False, max_retry=0, source_module="斗法", operation_check=ANY)
             self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
 
     async def test_scheduler_blocks_duel_when_other_tianxing_prediction_active(self):
@@ -2507,6 +2530,10 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(root_msg_id, state_module.state["duel_reply_to_msg_id"])
                 self.assertEqual(226302, state_module.state["duel_open_msg_id"])
 
+                self._record_loss(
+                    "【天道战报·文字版】\n胜者：@ccahen\n败者：@Lpprceqei | 损失修为 -6.0万",
+                    now + 61, 226309, identity_id, "@ccahen",
+                )
                 final_handled = await duel.handle_duel_reply(
                     "【天道战报·文字版】\n"
                     "攻方：@Lpprceqei · 元婴后期\n"

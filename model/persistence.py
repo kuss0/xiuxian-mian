@@ -857,6 +857,7 @@ _SCHEMA_COLUMNS = {
         ("identity_info_primary_payload", "TEXT NOT NULL DEFAULT '{}' "),
         ("identity_info_refresh", "TEXT NOT NULL DEFAULT '{}'"),
         ("identity_profile_observed_at", "TEXT NOT NULL DEFAULT '{}'"),
+        ("xiuwei_accounting", "TEXT NOT NULL DEFAULT '{}'"),
         ("second_soul_phase", "TEXT NOT NULL DEFAULT 'idle'"),
         ("second_soul_commands", "TEXT NOT NULL DEFAULT '{}'"),
         ("second_soul_choice_strategy", "TEXT NOT NULL DEFAULT 'stable'"),
@@ -1735,7 +1736,8 @@ def init_db():
             identity_info_followup_due_at REAL NOT NULL DEFAULT 0,
             identity_info_primary_payload TEXT NOT NULL DEFAULT '{}',
             identity_info_refresh TEXT NOT NULL DEFAULT '{}',
-            identity_profile_observed_at TEXT NOT NULL DEFAULT '{}'
+            identity_profile_observed_at TEXT NOT NULL DEFAULT '{}',
+            xiuwei_accounting TEXT NOT NULL DEFAULT '{}'
         );
 
         CREATE TABLE IF NOT EXISTS pending_tasks (
@@ -1902,6 +1904,11 @@ def init_db():
 
 
 def _serialize_db_value(key, value):
+    if key == "xiuwei_accounting":
+        try:
+            return json.dumps(value, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError, OverflowError):
+            return '{"invalid":true}'
     if key in IDENTITY_JSON_COLUMNS:
         if value is None:
             default_value = IDENTITY_STATE_TEMPLATE.get(key)
@@ -1913,6 +1920,11 @@ def _serialize_db_value(key, value):
 
 
 def _deserialize_db_value(key, value):
+    if key == "xiuwei_accounting":
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
     default_value = IDENTITY_STATE_TEMPLATE.get(key)
     if value is None:
         if isinstance(default_value, list):

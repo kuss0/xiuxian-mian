@@ -194,7 +194,7 @@ from .features.yuanying import (
     run_yuanying_scheduler,
 )
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
-from .features.duel import handle_duel_broadcast, handle_duel_reply, handle_duel_target_observation, run_duel_scheduler
+from .features.duel import handle_duel_broadcast, handle_duel_reply, handle_duel_target_observation, observe_duel_cultivation, run_duel_scheduler
 from .features.fishing_runtime import (
     handle_fishing_miniapp_entry,
     handle_fishing_reply,
@@ -1762,6 +1762,7 @@ async def _resolve_event_reply(event):
     if reply_to is not None:
         reply_context["reply_to_command"] = str(getattr(reply_to, "raw_text", "") or "")
         reply_context["reply_to_server_at"] = telegram_event_timestamp(reply_to)
+        reply_context["reply_to_command_edited"] = getattr(reply_to, "edit_date", None) is not None
         try:
             reply_context["reply_to_sender_id"] = int(getattr(reply_to, "sender_id", 0) or 0)
         except (TypeError, ValueError):
@@ -3714,6 +3715,7 @@ async def on_message(event):
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
         _bind_command_attempt_shadow(event, text, now, reply_context, event_kind="message")
+        observe_duel_cultivation(from_telegram_event(event, text, reply_context, event_kind="message"), now=now)
         _record_message_box_shadow(
             event,
             text,
@@ -3870,6 +3872,7 @@ async def on_message_edited(event):
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
         _bind_command_attempt_shadow(event, text, now, reply_context, event_kind="edit")
+        observe_duel_cultivation(from_telegram_event(event, text, reply_context, event_kind="edit"), now=now)
         _record_message_box_shadow(
             event,
             text,

@@ -116,7 +116,7 @@ proof that gameplay is healthy. Production files have not been changed.
 | R62 | High | Explicit profile refresh reenters before its first receipt, loses early cards, accepts wrong-chat/account/stale replies, clears unrelated pending work and lets followup/retry awaits write through changed requests; passive cards can bypass routing and overwrite newer observations | Fixed for scoped profile requests in candidate; bounded request/command ownership, native early replay, one owned retry, guarded cleanup, per-field server clocks and temporary-SQLite reload covered; remaining profile writers, supplemental module flows and shared R07 stay open |
 | R63 | High | Breakthrough broadcasts and manual profile API writes bypass field chronology, match username prefixes or ambiguous fallback owners, and apply late responses after identity/credential changes; same-second cards can regress request payloads and evict their own evidence | Fixed for these profile observations in candidate; native new/edit provenance, bounded per-field source order, exact identity/request/config ownership, conservative API freshness, corruption/reload and same-second request/reply retention pass; resource reducers, other API workflows and shared R07 remain open |
 | R64 | High | Stale or unproven no-sect checkin replies overwrite newer membership, disable modules and delete unrelated pending/receipts; passive handling bypasses ownership, text-only dedupe drops newer edits, and notification awaits let old routed callbacks clear replacement work | Fixed for no-sect checkin observations and checkin availability cleanup in candidate; exact official command ownership, server/source chronology, native manual/channel and log replay, retained sibling pending/anchors, retry suppression, owner-aware completion and SQLite reload pass; positive checkin/teaching provenance, other resource writers and shared R07 remain open |
-| R65 | High | Duel/Yinluo cultivation deltas are not reconciled with absolute profile observations; cross-chat scalar IDs omit losses, interleaved/duplicate Yinluo results charge twice, and delayed snapshots can restore spent cultivation | Open; five isolated reducer probes reproduced on `8cd733ee`; native/MiniApp provenance, snapshot-plus-delta accounting, correction/idempotence and bounded retention must be designed and tested together before replacing these writers |
+| R65 | High | Duel/Yinluo cultivation deltas are not reconciled with absolute profile observations; cross-chat scalar IDs omit losses, interleaved/duplicate Yinluo results charge twice, and delayed snapshots can restore spent cultivation | Open; candidate Telegram cultivation ledger, profile projection and native/manual/edited duel accounting now pass isolated tests, including source enrichment, corrected amounts, unknown evidence and queued resource ownership; Yinluo cultivation/sha writers, MiniApp snapshot authority, pre-migration reconciliation and operational retention remain incomplete |
 
 Baseline inventory: 284 tracked Python files, approximately 271k lines including tests;
 no duplicate top-level Python definitions found by AST inspection. Static
@@ -1978,9 +1978,91 @@ five monitor/control-only contracts need separate behavioral verification.
   provenance must not authorize spending from an overestimated balance.
   This is business accounting, not permission to implement R07 transport
   persistence, CommandAttempt recovery or automatic retry control.
-- No R65 runtime implementation or correction is claimed. R64's full suite
-  remains 6808 passed/1202 subtests; it does not cover or resolve these newly
-  reproduced accounting defects. Whole-project final acceptance remains open.
+- At that review-only checkpoint, no R65 implementation was claimed. R64's
+  6808 passed/1202 subtests did not cover the newly reproduced accounting
+  defects. The following candidate work is partial implementation, not closure
+  of R65 or whole-project acceptance.
+
+### R65 Candidate Cultivation and Duel Accounting
+
+- Work is confined to the offline candidate. The production tree, services,
+  switches, database and skill are unchanged. No game requests, inventory API
+  reads, listener startup, deployment or push were performed.
+- `resource_accounting.py` separates absolute snapshots from signed resource
+  facts. Each fact retains an original-command lower bound when proved, a
+  result upper bound, revision evidence and an amount-change floor. A baseline
+  overlapping execution or a correction is not guessed to include the delta.
+  Changed-then-restored amounts cannot let an older identical result shrink
+  that floor. Same-second incomparable observations remain unresolved.
+- `cultivation_accounting.py` owns the runtime JSON
+  `{account_id, ledger, profile_value}` under `xiuwei_accounting`. It reconciles
+  accepted Telegram profile snapshots and later deltas without an await.
+  Account changes, corrupt state, external profile writes, and API display
+  updates cannot silently become verified spending balances. An API request
+  start does not establish the server's balance revision, so API reads remain
+  display observations, not resource baselines in this candidate.
+- The new JSON column is included in normal and delta persistence. Invalid
+  JSON remains invalid rather than loading as empty history. Temporary-SQLite
+  tests verify that projected profile values and ledger writes roll back
+  together on a rejected write, and that source ownership, withdrawn results
+  and deduplication survive reload. This is not atomic send/result persistence
+  and does not implement R07 or promote CommandAttempt beyond shadow-only.
+- Native new/edit events enter duel accounting before later awaited handlers.
+  Official group/sender and Telegram server clocks are required. Manual
+  battles and results after module/global disable still reconcile facts;
+  they do not enable any automation. The old scalar-ID/raw-subtraction duel
+  helpers are removed. Both managed winners and losers are accounted for.
+- A message first seen without its original command can later acquire that
+  evidence without creating a second debit. Duplicate final messages tied to
+  one command likewise share an operation. Retained message sources still
+  identify the previous owners after a newer edit removes a participant or
+  all result text. Unknown amounts, duplicate/conflicting roles and ambiguous
+  username aliases invalidate spending authority instead of assuming zero or
+  choosing the first identity. Literal zero is a real correction. Decimal
+  quantities and supported units are parsed exactly, not through binary float
+  or an accepted prefix of an unrecognized numeric token. An out-of-range
+  projected balance is not written to SQLite integer profile fields or allowed
+  for spending; unpersistable cultivation snapshots are rejected as well.
+- Existing daily-log scans retain official edits, including empty/non-report
+  edits, and metadata-only intermediate reply nodes. Resource replay follows
+  at most eight decreasing message IDs in one group, with official parent
+  senders and native nondecreasing server times, to the original command.
+  Player links, cycles, conflicting originals, missing clocks and `sent`
+  bookkeeping rows do not supply that proof. `ts_epoch` remains local log
+  time and is not used as resource evidence. No new remote history reads or
+  speculative status requests were added. An edited parent command fetched
+  natively is marked as edited and does not prove its original command text.
+- A ledger is limited to 256 operation entries and 16 message sources per
+  operation. Uncovered overflow blocks spending; only a sufficiently later
+  verified baseline clears the gap. Covered entries may be retired, and old
+  covered replay does not apply a new debit. Duplicate persisted operation or
+  source ownership is rejected. These tests establish bounded ledger behavior,
+  not a complete archive/operational-capacity policy.
+- New duel dispatch checks both balances and preserves the sending identity
+  object/account plus the managed target object/account/username through
+  preparation and the existing queue `operation_check`. Ambiguous target
+  aliases cannot bypass defender checks as an external target. Missing balance
+  evidence does not prevent recovery of an already-sent duel. Equipment,
+  manual count/CD reconciliation and other internal awaits still need their
+  own ownership review; this does not certify the whole duel state machine.
+- Boundary probes found and repaired missing-participant withdrawals, duplicate
+  facts after source enrichment, filtered-out edits, source-capacity replay,
+  changed-back amounts, malformed numeric prefixes and changed target owners.
+  Final focused run: **254 passed, 6 subtests**, 2.00 seconds,
+  `/tmp/xiuxian-rebuild-r65-final-focused-20260910.xml`.
+  Full isolated run after final integer-range review: **6942 passed,
+  1202 subtests**, 91.47 seconds,
+  `/tmp/xiuxian-rebuild-r65-full-final-20260910.xml`.
+  Ruff, `compileall`, `pip check` and whitespace checks passed.
+- R65 remains open. Yinluo conversion/soothe still have their old cultivation
+  writers; its sha pool additionally involves sacrifice income, refine
+  reservation/rollback, external spending and MiniApp banner panels. Those
+  writers must be reconciled together, not mixed with a partially projected
+  sha balance. Other resource writers also remain outside this integration.
+  Review first-seen results after retired source evidence, cross-day original
+  command availability, real MiniApp snapshot authority, account migration,
+  and capacity/replay behavior before enabling this candidate. A conservative
+  hold is not proof that those automation paths are complete.
 
 ## Deployment Constraint
 
@@ -2031,6 +2113,13 @@ and an optional `profile_evidence` entry in R62 command records. No further SQL
 column is added. Older code does not understand the source descriptors; any
 future rollback needs a tested data-compatible procedure, not a code-only swap.
 Existing timestamp-only observations do not acquire guessed chat/message IDs.
+R65 adds `xiuwei_accounting` as another identity-runtime JSON column. Existing
+profile numbers alone do not populate its verified baseline, and external
+legacy resource writes leave the balance unverified. A later deployment needs
+explicit reconciliation from authoritative evidence and an approved retention
+and migration procedure. Do not clear this ledger to bypass a hold, silently
+attribute old results to a newly bound account, or run old raw-subtraction
+code against new receipt state during a code-only rollback.
 
 ## Next Review Priorities
 
@@ -2190,6 +2279,13 @@ Existing timestamp-only observations do not acquire guessed chat/message IDs.
     UI refresh/save contracts and MiniApp workers. Do not infer complete UI or
     gameplay health from these tests. R07 still requires separate approval;
     do not introduce its shared controller here.
+11. R64 covers negative sect-checkin observation/cleanup. R65 now contains the
+    scoped Telegram cultivation ledger and duel source/revision integration
+    described above, but is still open. Continue with Yinluo cultivation and
+    sha accounting as one reviewed contract, then legacy duel count/CD/log
+    trust, other resource consumers, MiniApp/API workers and the remaining
+    acceptance matrix. Resolve migration/retention limits before any production
+    validation; passing offline tests does not authorize deployment.
 
 ## Completion Gate
 
