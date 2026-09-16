@@ -42,4 +42,25 @@ commission contracts. Configured Ruff and whitespace checks passed.
 Report: `/tmp/xiuxian-yinluo-trust-20260916.xml` (also copied to the private
 release directory). No live test database or manual gameplay request was used.
 
-Post-deploy observation is recorded below after restarting the service.
+## Production Verification
+
+Code commit `41a4aeef` was fast-forwarded to production main and pushed with
+the rebuild branch. Before restart, the stopped-service database was backed up
+to `/root/xiuxian-release-20260916/pre-yinluo-trust-hotfix.db` (0600).
+Service started at 09:27:47 UTC+8 and worker initialization completed at
+09:28:32. UI returned HTTP 200; service restart count remained zero.
+The global source list, global enable, Yinluo, World Boss and small-world
+refinement switches match the pre-hotfix snapshot.
+
+At 09:28:56, the retained `.我的阴罗幡` operation (message 1123504) was complete,
+as was a naturally scheduled `.每日献祭` (message 1123684). The retained
+observation reported sha=600, max=350000, empty error and empty accounting hold.
+This exercises real receipt/recovery and subsequent scheduling, not just a
+healthy process. No manual command or database calibration was used. Existing
+startup cleanup removed one expired transport pending row; the owned resource
+operation and its evidence were retained and subsequently completed.
+
+The post-restart observation found no new trust-set exceptions or tracebacks.
+The health observer and soft watchdog remain active. Separately, startup public
+entrance history collection timed out and `myios17` fate-cards again reported
+`fate_read_failed`; neither is certified fixed by this scoped Yinluo patch.
