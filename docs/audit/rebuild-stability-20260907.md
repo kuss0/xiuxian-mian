@@ -1,5 +1,19 @@
 # Full Stability Review and Rebuild
 
+## Current Production Addendum (2026-09-16)
+
+The dated offline statements below are historical. The authorized
+[bounded release](rebuild-release-20260916.md) is deployed. Subsequent live
+evidence confirms [R67 selected-player retreat starts for all 19 channels](R67-channel-retreat-live-20260916.md)
+and the [tower/fate repairs](channel-tower-fate-fixes-20260916.md).
+Retreat settlement and future tower windows remain observation items;
+deployment does not close all C1-C6 acceptance packages.
+
+The next bounded debt slice is [heart admission and fishing diagnostics](heart-fishing-debt-20260916.md).
+Its own verification/deployment section is authoritative for that slice.
+Do not use the older candidate-only wording below to reopen already verified
+startup fixes or infer that every module has completed live acceptance.
+
 ## Objective and Evidence
 
 Complete Review -> Rebuild -> Test -> Final Review for the whole automation
