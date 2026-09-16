@@ -2804,6 +2804,11 @@ def _record_cave_deep_retreat_state(identity_id, action, result, sync_result, *,
         "outcome_unknown": unresolved,
         "sync": dict(sync_result or {}),
     }
+    # Retain only typed gameplay fields for diagnosing rejected snapshots.
+    # Never persist the raw dwelling response, authentication or inventory.
+    if verified:
+        snapshot = extract_cave_deep_seclusion_state(data)
+        payload["snapshot"] = {key: value for key, value in snapshot.items() if key != "message"}
     if unresolved:
         if previous_state.get("outcome_unknown"):
             payload["unknown_action"] = str(previous_state.get("unknown_action") or previous_state.get("action") or action)

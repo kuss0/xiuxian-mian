@@ -475,6 +475,51 @@ def test_delayed_deep_settlement_cannot_run_after_manual_new_retreat(background)
     assert not ui._cave_public_background_retry_at
 
 
+def test_frozen_channel_legacy_retreat_is_rebaselined_read_only_before_old_deadline(background):
+    h = background
+    h.identity.update(deep_retreat_enabled=True, deep_retreat_phase="running", next_deep_retreat_time=h.now[0] + 14400)
+    state_module.set_identity_enabled(h.identity_id, False)
+    state_module.set_channel_send_as_health({"status": "closed", "restore_identity_ids": [h.identity_id]})
+    record = {"source": "cave_dwelling_miniapp", "state": {"ok": True, "action": "status"}}
+    state_module.set_miniapp_state_records({f"{h.identity_id}:cave_deep_retreat": record})
+    state_module.set_miniapp_auto_config({**h.config, "cave_public_stargazer_enabled": False,
+                                         "cave_public_deep_status_enabled": True})
+    before = copy.deepcopy(h.identity)
+
+    async def run():
+        worker = await queue_background(h)
+        assert ui._cave_public_background_operation.action == "deep_status"
+        await worker
+
+    asyncio.run(run())
+    assert h.run.await_args.args[1] == "deep_status"
+    assert h.identity == before
+    assert not state_module.get_identity_enabled(h.identity_id)
+
+
+@pytest.mark.parametrize("change", ["verified", "failed", "unknown", "disabled", "retry"])
+def test_legacy_rebaseline_respects_current_evidence_switch_and_backoff(background, change):
+    h = background
+    h.identity.update(deep_retreat_enabled=True, deep_retreat_phase="running", next_deep_retreat_time=h.now[0] + 14400)
+    record = {"source": "cave_dwelling_miniapp", "state": {"ok": True}}
+    if change == "verified":
+        record["state"]["identity_verified"] = True
+    elif change == "failed":
+        record["state"]["ok"] = False
+    elif change == "unknown":
+        record["state"]["outcome_unknown"] = True
+    elif change == "disabled":
+        h.identity["deep_retreat_enabled"] = False
+    else:
+        ui._cave_public_background_retry_at[("deep_status", h.identity_id)] = h.now[0] + 900
+    state_module.set_miniapp_state_records({f"{h.identity_id}:cave_deep_retreat": record})
+    config = {**h.config, "cave_public_stargazer_enabled": False, "cave_public_deep_status_enabled": True}
+    state_module.set_miniapp_auto_config(config)
+    result = asyncio.run(ui._run_cave_public_background_scheduler(h.now[0], config))
+    assert not result["started"]
+    assert not h.queued
+
+
 def test_unrelated_config_save_does_not_cancel_admitted_operation(background):
     h = background
 

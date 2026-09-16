@@ -409,6 +409,19 @@ def test_conflicting_deep_snapshot_cannot_change_business_state(env, panel):
     assert env.identity == before
 
 
+def test_verified_conflict_records_only_safe_diagnostic_fields(env):
+    raw = payload(text="fixture-private-message", deep={"active": True, "canStart": True})
+    raw["initData"] = "fixture-private-auth"
+    raw["inventory"] = {"private": "fixture-private-bag"}
+    env.flow.return_value = {"ok": True, "status": "status", "action_dispatched": True, "data": raw}
+    assert not run("status")["ok"]
+    record = state_module.get_miniapp_state_records()["1001:cave_deep_retreat"]["state"]
+    assert record["identity_verified"]
+    assert record["snapshot"]["conflicting"]
+    assert record["snapshot"]["active"] is True
+    assert "fixture-private" not in repr(record)
+
+
 def test_rejected_start_text_does_not_count_as_a_success(env):
     raw = payload()
     raw["actionResult"]["ok"] = False
