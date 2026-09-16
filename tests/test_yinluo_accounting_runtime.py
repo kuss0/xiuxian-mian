@@ -110,6 +110,49 @@ def test_native_conversions_reconcile_shared_cultivation_and_replayed_results(ru
     assert state_module.get_send_as_profile(IDENTITY)["xiuwei_current"] == 480000
 
 
+def test_mixed_configured_senders_do_not_poison_native_resource_replies(runtime):
+    from model.config import GAME_BOT_IDS
+
+    configured = sorted({*GAME_BOT_IDS, BOT})
+    assert any(sender < 0 for sender in configured)
+    state_module.set_game_bot_ids(configured)
+    assert observe(event(".化功为煞 10000", CONVERT))
+    assert value() == {"status": "ready", "value": 4000}
+    assert state_module.get_game_bot_ids() == configured
+
+
+def test_mixed_configured_senders_allow_owned_replay_once(runtime):
+    state_module.set_game_bot_ids([-1003983937918, BOT])
+    rows = logs_for(event(".化功为煞 10000", CONVERT))
+    assert yinluo.recover_yinluo_resources(IDENTITY, 140, entries=rows)
+    assert not yinluo.recover_yinluo_resources(IDENTITY, 140, entries=rows)
+    assert value() == {"status": "ready", "value": 4000}
+
+
+@pytest.mark.parametrize("bots", [[-1003983937918, BOT], [-1003983937918]])
+def test_channel_source_cannot_authorize_a_resource_reply(runtime, bots):
+    state_module.set_game_bot_ids(bots)
+    received = replace(event(".化功为煞 10000", CONVERT), sender_id=-1003983937918)
+    before = copy.deepcopy(runtime)
+    assert not observe(received)
+    assert not yinluo.recover_yinluo_resources(IDENTITY, 140, entries=logs_for(received))
+    assert runtime == before
+
+
+def test_pending_scheduler_with_mixed_senders_does_not_crash_or_resend(runtime, monkeypatch):
+    state_module.set_game_bot_ids([-1003983937918, BOT])
+    operation = prepare(".化功为煞 10000")
+    bind(operation)
+    runtime["yinluo_observation"]["auto_next_time"] = 0
+    monkeypatch.setattr(yinluo, "read_yinluo_log_batch", lambda *_args, **_kwargs: [])
+    send = AsyncMock(side_effect=AssertionError("pending recovery must not resend"))
+    monkeypatch.setattr(yinluo, "send_owned_yinluo_command", send)
+    with state_module.use_identity(IDENTITY):
+        asyncio.run(yinluo.run_yinluo_scheduler(140))
+    assert not send.called
+    assert accounting.current_operation(IDENTITY, operation["op_id"])["phase"] == "sent"
+
+
 def test_reservation_is_not_a_debit_and_shared_duel_gate_sees_it(runtime):
     before = copy.deepcopy(runtime["yinluo_observation"])
     record = prepare(".化功为煞 10000")

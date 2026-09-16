@@ -269,9 +269,12 @@ def identity_usernames():
 
 
 def event_trust(now):
+    # The shared source list also contains broadcast channels. Only configured
+    # bot users can authorize Yinluo resource replies or replay intermediates.
+    game_bots = [sender for sender in get_game_bot_ids() if type(sender) is int and sender > 0]
     return {
         "identity_accounts": {identity_id: get_identity_account(identity_id) for identity_id in get_identity_ids()},
-        "game_chats": get_game_group_ids(), "game_bots": get_game_bot_ids(), "now": now,
+        "game_chats": get_game_group_ids(), "game_bots": game_bots, "now": now,
     }
 
 
