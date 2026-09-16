@@ -259,8 +259,10 @@ def _fate_state_contract_error(root, record, state):
     if not state["choice_key"]:
         return ""
     quest = record.get("quest")
-    if not isinstance(quest, dict) or not state["quest"]["key"] or not state["quest"]["started_at"]:
+    if not isinstance(quest, dict) or not state["quest"]["key"]:
         return "quest_identity_missing"
+    if not state["quest"]["started_at"]:
+        return "quest_started_at_missing"
     if quest.get("key") and record.get("questKey") and quest["key"] != record["questKey"]:
         return "quest_identity_conflict"
     if quest.get("choiceKey") and quest["choiceKey"] != state["choice_key"]:

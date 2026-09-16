@@ -94,6 +94,23 @@ def test_invalid_start_exposes_only_safe_contract_reason():
     assert "SECRET" not in str(result)
 
 
+@pytest.mark.parametrize("field,expected", [
+    ("key", "quest_identity_missing"),
+    ("startedAt", "quest_started_at_missing"),
+])
+def test_quest_identity_diagnostics_distinguish_optional_time_from_key(field, expected):
+    raw = native()
+    raw["record"]["quest"][field] = None
+    if field == "key":
+        raw["record"]["questKey"] = ""
+    result = api.run_fate_cards_start_probe(
+        token="fate_FIXTURE", init_data="fixture",
+        transport=lambda _request: (200, raw), sleeper=lambda _seconds: None,
+    )
+    assert result["ok"] is False
+    assert result["data"]["contract_error"] == expected
+
+
 @pytest.mark.parametrize("reason,expected", [
     ("quest_counter_invalid", "fate_read_failed:quest_counter_invalid"),
     ("token=SECRET", "fate_read_failed"),
