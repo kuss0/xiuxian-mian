@@ -2081,9 +2081,11 @@ def extract_cave_deep_seclusion_state(data):
 
     remaining_seconds = optional_nonnegative_int(remaining_raw)
     end_ms = optional_nonnegative_int(end_ms_raw)
-    completed = optional_bool(action_result, "completed")
-    if completed is None:
-        completed = optional_bool(deep_state, "completed")
+    # Command-center completed acknowledges the command, not the retreat.
+    # Keep the older direct deep-action format only when no panel/command exists.
+    completed = optional_bool(deep_state, "completed")
+    if not deep_state and "command" not in action_result:
+        completed = optional_bool(action_result, "completed")
     active = optional_bool(action_result, "active")
     if active is None:
         active = optional_bool(deep_state, "active")
@@ -2800,6 +2802,7 @@ def _record_cave_deep_retreat_state(identity_id, action, result, sync_result, *,
         "ok": bool((result or {}).get("ok")),
         "status": str((result or {}).get("status") or ""),
         "identity_verified": verified,
+        "parser_version": 2,
         "action_dispatched": (result or {}).get("action_dispatched"),
         "outcome_unknown": unresolved,
         "sync": dict(sync_result or {}),

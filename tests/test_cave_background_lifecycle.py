@@ -520,6 +520,23 @@ def test_legacy_rebaseline_respects_current_evidence_switch_and_backoff(backgrou
     assert not h.queued
 
 
+@pytest.mark.parametrize("version,expected", [(None, True), (2, False)])
+def test_old_parser_conflict_rechecked_once_without_clearing_unknown(background, version, expected):
+    h = background
+    h.identity.update(deep_retreat_enabled=True, deep_retreat_phase="launching", next_deep_retreat_time=h.now[0] + 1800)
+    recorded = {"source": "cave_dwelling_miniapp", "state": {
+        "identity_verified": True, "ok": False, "outcome_unknown": True,
+        "unknown_action": "settle", "sync": {"reason": "conflicting_deep_snapshot"},
+    }}
+    if version is not None:
+        recorded["state"]["parser_version"] = version
+    state_module.set_miniapp_state_records({f"{h.identity_id}:cave_deep_retreat": recorded})
+    before = copy.deepcopy(state_module.get_miniapp_state_records())
+    assert ui._cave_public_background_action_due("deep_status", h.identity_id, h.now[0]) is expected
+    assert ui._cave_public_background_deep_action(h.identity_id, h.now[0]) == "deep_status"
+    assert state_module.get_miniapp_state_records() == before
+
+
 def test_unrelated_config_save_does_not_cancel_admitted_operation(background):
     h = background
 

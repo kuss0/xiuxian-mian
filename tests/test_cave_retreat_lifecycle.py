@@ -422,6 +422,44 @@ def test_verified_conflict_records_only_safe_diagnostic_fields(env):
     assert "fixture-private" not in repr(record)
 
 
+@pytest.mark.parametrize("panel,phase", [
+    ({"active": False, "completed": False, "canStart": True, "canSettle": False, "remainingSeconds": 0}, "post_summary_wait"),
+    ({"active": True, "completed": False, "canStart": False, "canSettle": False, "remainingSeconds": 1200}, "running"),
+    ({"active": True, "completed": True, "canStart": False, "canSettle": True, "remainingSeconds": 0}, "summary_due"),
+])
+def test_command_completion_is_not_retreat_completion(env, panel, phase):
+    raw = payload(text="", deep=panel)
+    raw["actionResult"].update(command=".查看闭关", completed=True)
+    result = asyncio.run(cave.sync_cave_deep_seclusion_action_result(1001, "status", raw, now=NOW))
+    assert result["handled"]
+    assert env.identity["deep_retreat_phase"] == phase
+    assert cave.extract_cave_deep_seclusion_state(raw)["completed"] is panel["completed"]
+
+
+def test_command_ack_without_retreat_panel_does_not_authorize_settlement(env):
+    raw = payload(text="")
+    raw["actionResult"].update(command=".查看闭关", completed=True)
+    before = copy.deepcopy(env.identity)
+    result = asyncio.run(cave.sync_cave_deep_seclusion_action_result(1001, "status", raw, now=NOW))
+    assert not result["handled"]
+    assert env.identity == before
+
+
+def test_false_conflict_unknown_settle_reconciles_only_from_verified_idle_panel(env):
+    state_module.set_miniapp_state_records({"1001:cave_deep_retreat": {"state": {
+        "identity_verified": True, "outcome_unknown": True, "unknown_action": "settle",
+        "sync": {"reason": "conflicting_deep_snapshot"},
+    }}})
+    raw = payload(text="", deep={"active": False, "completed": False, "canStart": True, "canSettle": False})
+    raw["actionResult"].update(command=".查看闭关", completed=True)
+    env.flow.return_value = {"ok": True, "status": "status", "action_dispatched": True, "data": raw}
+    assert run("status")["ok"]
+    assert env.flow.await_args.kwargs["action"] == "status"
+    record = state_module.get_miniapp_state_records()["1001:cave_deep_retreat"]["state"]
+    assert not record["outcome_unknown"]
+    assert record["parser_version"] == 2
+
+
 def test_rejected_start_text_does_not_count_as_a_success(env):
     raw = payload()
     raw["actionResult"]["ok"] = False

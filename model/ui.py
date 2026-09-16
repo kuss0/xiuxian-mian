@@ -8909,14 +8909,20 @@ async def ui_start_trial_miniapp_batch_run(payload=None):
     }
 
 
-def _cave_deep_legacy_baseline_due(identity_id):
+def _cave_deep_rebaseline_due(identity_id):
     record = get_miniapp_state_records().get(f"{int(identity_id)}:cave_deep_retreat")
     if not isinstance(record, dict) or record.get("source") != "cave_dwelling_miniapp":
         return False
     recorded = record.get("state")
-    return (
-        isinstance(recorded, dict) and recorded.get("ok") is True
-        and "identity_verified" not in recorded
+    if not isinstance(recorded, dict):
+        return False
+    sync = recorded.get("sync")
+    old_conflict = (
+        recorded.get("identity_verified") is True and recorded.get("parser_version") != 2
+        and isinstance(sync, dict) and sync.get("reason") == "conflicting_deep_snapshot"
+    )
+    return old_conflict or (
+        recorded.get("ok") is True and "identity_verified" not in recorded
         and not recorded.get("outcome_unknown")
     )
 
@@ -8941,7 +8947,7 @@ def _cave_public_background_action_due(action, identity_id, now):
             )
         if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             return bool(state.get("deep_retreat_enabled")) and (
-                action == "deep_status" and _cave_deep_legacy_baseline_due(identity_id)
+                action == "deep_status" and _cave_deep_rebaseline_due(identity_id)
                 or float(state.get("next_deep_retreat_time", 0) or 0) <= now
             )
         if action == "treasure":
@@ -9034,7 +9040,7 @@ def _cave_public_background_action_due(action, identity_id, now):
 
 
 def _cave_public_background_deep_action(identity_id, now):
-    if _cave_deep_legacy_baseline_due(identity_id):
+    if _cave_deep_rebaseline_due(identity_id):
         return "deep_status"
     with use_identity(identity_id):
         phase = str(state.get("deep_retreat_phase") or "idle")
