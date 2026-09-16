@@ -2374,6 +2374,14 @@ five monitor/control-only contracts need separate behavioral verification.
 
 ### R67 Public-Entry Channel Retreat Identity
 
+**2026-09-16 production closeout:** the selected-role fix is deployed. Follow-up
+commits `27c48d40` and `d864cacd` correct legacy-record rebaseline admission and
+command-acknowledgement parsing. At 10:59:35 UTC+8 all 19 channel roles have
+independently verified, active new eight-hour retreats, with matching selected
+start captures. See [live acceptance](R67-channel-retreat-live-20260916.md).
+The historical checks below describe the earlier, undeployed state. Future
+settlement and other MiniApp workflows are not certified by this closeout.
+
 - The user's report that Jfdffdddd's other identities had not actually been
   retreating prompted read-only production inspection. The service was active
   with `NRestarts=0`; the 19 channel identities were send-as frozen but eligible
