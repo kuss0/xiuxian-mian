@@ -71,3 +71,57 @@ records, owned operations, accounting journals and Yinluo archives.
 Actual deployment hash, timestamps and post-start evidence will be appended
 after verification. The 19 subordinate identities' natural cultivation remains
 a per-role observation item, not completed solely by passing offline tests.
+
+## Executed Release
+
+- Implementation release: `e0e210943992d28ea2ecb787fe63285133af8a2c`.
+  Both production main and the rebuild branch were pushed to `xiuxian-mian`;
+  `ls-remote` confirmed both refs. A later documentation-only commit records
+  this outcome and requires no further runtime restart.
+- Main service stopped cleanly at 09:04:29 UTC+8 and restarted at 09:05:52.
+  Worker reported successful state restoration and startup at 09:06:12.
+- Final backup: `predeploy.db`, `predeploy-local-state.tar` and
+  `predeploy-source.bundle` under the private release root. Bundle verification
+  passed and includes both the prior main and candidate histories. The archive
+  contains local environment, sessions, supporting state and both user-owned
+  files. It excludes monitor output directories and the old backup directory.
+  Tar reported the state directory mtime changing while independent observers
+  remained active; required archive members were verified. The dedicated
+  SQLite backup is the authoritative consistent database snapshot, not the
+  changing directory metadata or observer state in the archive.
+- `quiesced_final.json` records a second successful migration rehearsal on the
+  final stopped-service backup, with all original-table invariants passing.
+- `postdeploy_observation.json` contains five read-only checks from 09:08:31
+  through 09:10:33. Main PID stayed 1777563, `NRestarts=0`, UI HTTP 200,
+  SQLite quick_check OK, 24 identities retained, enabled identities and global
+  enable unchanged, and module settings unchanged. Daily completion facts are
+  excluded from live configuration comparisons; `last_tower_day` legitimately
+  changed from yesterday to empty during normal window initialization.
+- World Boss enabled count remains 0; small-world refinement enabled count
+  remains 0. Quiz and personal tool hashes match the handoff in both worktrees.
+- Health observer and soft watchdog stayed active without restarts; listener
+  remains inactive. Health score was 100, but it is not gameplay acceptance.
+  Existing service environment still enables Attempt shadow write/bind only;
+  report-only recovery and all control module/identity flags remain disabled.
+- Dynamic public entrance collection and natural treasure daily-limit handling
+  were observed. No manual gameplay probes, inventory reads or forced retries
+  were issued by the release procedure.
+
+## Explicit Residuals At Closeout
+
+1. `myios17` fate-cards reported `fate_read_failed` at 09:06:27. Existing local
+   capture shows HTTP 200 and parsed JSON at the start endpoint; this is not
+   proof of a dead entrance. Later result validation/lifecycle needs a bounded
+   follow-up with the retained evidence, not blind retry or reopening everything.
+2. One `.我的阴罗幡` query sent naturally at 09:06:24 remained pending during
+   the observation window, without duplicate sends. No success is claimed and
+   no cooldown/pending evidence was cleared to make the report green.
+3. Nineteen channel identities retain their existing group-send freeze. Their
+   per-role MiniApp cultivation is not proven by this deployment.
+4. Remote CI status could not be read because `gh` is not authenticated. Local
+   full-suite evidence and Git push/ref verification are complete; remote CI
+   success is not claimed.
+
+The open-ended goal remains non-running (`blocked` in the available goal API),
+not falsely marked whole-project complete. This release ends the foreground
+work; the existing health/watchdog services continue independently.
