@@ -274,15 +274,26 @@ def parse_yinluo_resource_reply(command_text, text):
         if "你的煞气不足" in text or "魂魄袋中没有【" in text or ("炼化槽正在运转中" in text and "无法囚禁" in text):
             return denied()
     elif action in {"assist_banner", "assist_strip"}:
-        if "阴罗幡煞气不足" in text or "你与对方没有有效的咒契协定" in text or "咒源尚未辨明" in text:
-            return denied()
-        success = (action == "assist_banner" and "【借幡镇魂】" in text) or (
-            action == "assist_strip" and ("【剥离咒源成功】" in text or "剥下一段阴罗残咒" in text or "剥离阴罗残咒" in text)
-        )
         failed = action == "assist_strip" and "【剥离咒源失败】" in text
-        if success and failed:
+        success = (action == "assist_banner" and "【借幡镇魂】" in text) or (
+            action == "assist_strip" and ("【剥离咒源成功】" in text or (
+                not failed and ("剥下一段阴罗残咒" in text or "剥离阴罗残咒" in text)
+            ))
+        )
+        action_name = "借幡镇魂" if action == "assist_banner" else "剥离咒源"
+        rejected = any(marker in text for marker in (
+            "阴罗幡煞气不足", "你与对方没有有效的咒契协定", "咒源尚未辨明",
+        )) or (
+            action_name in text and "冷却" in text
+            and re.search(r"请在\s*[^\n]+?\s*后再试", text) is not None
+        )
+        if (success and failed) or (rejected and (success or failed or any(
+            marker in text for marker in ("幡面煞气被削去", "阴罗幡煞气被吞去", "修为折损")
+        ))):
             issues.append("conflicting_outcomes")
             return finish("conflict")
+        if rejected:
+            return denied()
         if success or failed:
             actors = set(re.findall(r"@([A-Za-z0-9_]{1,32})\s+(?:借阴罗幡|以阴罗幡|替\s+@)", text))
             targets = set(re.findall(r"(?:替\s+@|@)([A-Za-z0-9_]{1,32})\s+(?:剥下一段|剥离阴罗残咒|魂封\s*[+\-])", text))

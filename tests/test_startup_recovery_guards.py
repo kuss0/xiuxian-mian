@@ -1127,7 +1127,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual([], state_module.state["taiyi_failure_history"])
             self.assertEqual("", state_module.state["taiyi_last_error"])
 
-    def test_concubine_heart_only_identity_restores_runtime(self):
+    def test_concubine_heart_only_identity_preserves_unowned_pending_runtime(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
         with state_module.use_identity(send_as_id):
@@ -1143,22 +1143,22 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             state_module.state["concubine_heart_choice_round"] = 1
             state_module.state["concubine_heart_choice_sent_at"] = now - 30
             state_module.state["next_concubine_time"] = 0
+            expected = {
+                key: copy.deepcopy(value) for key, value in state_module.state.items()
+                if key.startswith("concubine_") or key == "next_concubine_time"
+            }
 
-        with patch.object(concubine.random, "uniform", return_value=90):
+        with patch.object(concubine, "_fire_and_forget") as schedule_mock:
             control.initialize_identity_runtime(send_as_id, now)
 
         with state_module.use_identity(send_as_id):
-            self.assertEqual("idle", state_module.state["concubine_phase"])
-            self.assertEqual(0, state_module.state["concubine_heart_msg_id"])
-            self.assertEqual(0, state_module.state["concubine_heart_prompt_msg_id"])
-            self.assertEqual(0, state_module.state["concubine_heart_round"])
-            self.assertEqual(0, state_module.state["concubine_heart_choice_prompt_msg_id"])
-            self.assertEqual(0, state_module.state["concubine_heart_choice_round"])
-            self.assertEqual(0, state_module.state["concubine_heart_choice_sent_at"])
-            expected_due = now - 30 + config.CONCUBINE_HEART_CD_SEC + config.CD_BUFFER_SEC
-            self.assertEqual(expected_due, state_module.state["concubine_heart_due_at"])
-            self.assertEqual(expected_due + 90, state_module.state["next_concubine_time"])
-            self.assertNotEqual("发送 .共历心劫 失败", state_module.state["concubine_heart_last_error"])
+            actual = {
+                key: copy.deepcopy(value) for key, value in state_module.state.items()
+                if key.startswith("concubine_") or key == "next_concubine_time"
+            }
+            self.assertEqual(expected, actual)
+            self.assertEqual("legacy_pending", concubine.heart_actions.block_reason())
+        schedule_mock.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from ..persistence import save_state
 from ..message_keys import find_message_key
 from ..state import get_identity_account, get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import get_day_key, has_wait_time, parse_wait_time
-from ..verified_event import VerifiedGameEvent, telegram_event_timestamp
+from ..verified_event import VerifiedGameEvent, from_telegram_event, telegram_event_timestamp
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
 from . import heavenly_ban as heavenly_ban_mod
@@ -544,80 +544,11 @@ def _looks_like_concubine_heart_reply(text):
     )
 
 
-def _resolve_concubine_heart_identity_from_context(raw_text, reply_context, observed_msg_id):
-    if _family_from_reply_context(reply_context) != "concubine_heart" or not _looks_like_concubine_heart_reply(raw_text):
-        return None, ""
-
-    observed_msg_id = int(observed_msg_id or 0)
-    reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
-    root_msg_id = _context_msg_id(reply_context, "root_msg_id")
-    context_ids = {msg_id for msg_id in (reply_to_msg_id, root_msg_id) if msg_id > 0}
-    matched = []
-    for identity_id in get_identity_ids():
-        try:
-            identity_state = get_identity_state(identity_id)
-        except KeyError:
-            continue
-        if not identity_state.get("concubine_heart_enabled"):
-            continue
-        phase = str(identity_state.get("concubine_phase") or "").strip()
-        if phase not in concubine_mod.CONCUBINE_HEART_ACTIVE_PHASES and int(identity_state.get("concubine_heart_prompt_msg_id", 0) or 0) <= 0:
-            continue
-        prompt_msg_id = int(identity_state.get("concubine_heart_prompt_msg_id", 0) or 0)
-        start_msg_id = int(identity_state.get("concubine_heart_msg_id", 0) or 0)
-        choice_prompt_msg_id = int(identity_state.get("concubine_heart_choice_prompt_msg_id", 0) or 0)
-        if (
-            (observed_msg_id > 0 and observed_msg_id in {prompt_msg_id, choice_prompt_msg_id})
-            or (prompt_msg_id > 0 and prompt_msg_id in context_ids)
-            or (start_msg_id > 0 and start_msg_id in context_ids)
-        ):
-            matched.append(int(identity_id))
-    matched = sorted(set(matched))
-    if len(matched) == 1:
-        return matched[0], "concubine_heart_chain"
-    return None, ""
-
-
-def _resolve_active_concubine_heart_identity(raw_text):
-    if not concubine_mod._is_heart_anchor_lost_text(raw_text):
-        return None, ""
-    matched = []
-    for identity_id in get_identity_ids():
-        try:
-            identity_state = get_identity_state(identity_id)
-        except KeyError:
-            continue
-        if not identity_state.get("concubine_heart_enabled"):
-            continue
-        phase = str(identity_state.get("concubine_phase") or "").strip()
-        if phase not in concubine_mod.CONCUBINE_HEART_ACTIVE_PHASES:
-            continue
-        if int(identity_state.get("concubine_heart_prompt_msg_id", 0) or 0) <= 0:
-            continue
-        matched.append(int(identity_id))
-    matched = sorted(set(matched))
-    if len(matched) == 1:
-        return matched[0], "concubine_heart_active"
-    return None, ""
 
 
 def _concubine_pending_context_specs(family):
     family = str(family or "").strip()
     specs = {
-        "concubine_status": (
-            {
-                "state_key": "concubine_status_msg_id",
-                "phases": {"status_pending"},
-                "handler": concubine_mod.handle_concubine_status_reply,
-                "current_msg_id": True,
-            },
-            {
-                "state_key": "concubine_gift_status_msg_id",
-                "phases": {"gift_status_pending"},
-                "handler": concubine_mod.handle_concubine_status_reply,
-                "current_msg_id": True,
-            },
-        ),
         "concubine_greet": (
             {
                 "state_key": "concubine_greet_msg_id",
@@ -640,27 +571,6 @@ def _concubine_pending_context_specs(family):
                 "handler": concubine_mod.handle_concubine_gift_reply,
             },
         ),
-        "concubine_dream": (
-            {
-                "state_key": "concubine_dream_msg_id",
-                "phases": {"dream_pending"},
-                "handler": concubine_mod.handle_concubine_dream_reply,
-            },
-        ),
-        "concubine_fragment": (
-            {
-                "state_key": "concubine_fragment_msg_id",
-                "phases": {"fragment_pending"},
-                "handler": concubine_mod.handle_concubine_fragment_reply,
-            },
-        ),
-        "concubine_puzzle": (
-            {
-                "state_key": "concubine_puzzle_msg_id",
-                "phases": {"puzzle_pending"},
-                "handler": concubine_mod.handle_concubine_puzzle_reply,
-            },
-        ),
         "concubine_reacquire": (
             {
                 "state_key": "concubine_reacquire_msg_id",
@@ -673,13 +583,6 @@ def _concubine_pending_context_specs(family):
                 "state_key": "concubine_tianji_msg_id",
                 "phases": {"tianji_pending"},
                 "handler": concubine_mod.handle_concubine_tianji_reply,
-            },
-        ),
-        "concubine_voyage": (
-            {
-                "state_key": "concubine_voyage_msg_id",
-                "phases": concubine_mod.CONCUBINE_VOYAGE_PENDING_PHASES,
-                "handler": concubine_mod.handle_concubine_voyage_reply,
             },
         ),
     }
@@ -768,53 +671,25 @@ def _missing_identity_reason(raw_text, family, reply_to_sender_id=0):
     return "reply_context_no_identity" if str(family or "").strip() else "no_reply_context"
 
 
-def _apply_tianti_passive(text, now, family, reply_context=None):
-    raw_text = str(text or "")
-    if _routed_reply_already_handled(reply_context) and str(family or "").startswith("tianti_"):
+async def _apply_tianti_passive(text, now, family, reply_context, event, event_type):
+    if _routed_reply_already_handled(reply_context):
         return False
-    changed = False
-    panel_payload = tianti_mod._parse_tianti_panel(raw_text)
-    if panel_payload:
-        changed = tianti_mod._mark_tianti_status_synced(now) or changed
-        changed = tianti_mod._apply_tianti_panel_payload(panel_payload, now=now) or changed
-        tianti_mod._calc_tianti_wenxin_plan(now)
-    # Wenxin replies are owned by the routed active handler. Replaying them here
-    # duplicates the same success close-out when multiple clients see one reply.
-    if family == "tianti_gangfeng":
-        fail_match = tianti_mod.RE_TIANTI_GANGFENG_FAIL.search(raw_text)
-        result_match = tianti_mod.RE_TIANTI_GANGFENG_RESULT.search(raw_text)
-        if tianti_mod.RE_TIANTI_GANGFENG_PANEL.search(raw_text) and result_match:
-            state["tianti_gangfeng_level"] = int(result_match.group(1) or 0)
-            state["tianti_gangfeng_total"] = int(result_match.group(2) or 0)
-            state["tianti_gangfeng_status"] = "已施展，下次登天阶成功率显著提高"
-            tianti_mod._schedule_tianti_gangfeng_retry(now, persist=False)
-            changed = True
-        elif fail_match:
-            wait_text = str(fail_match.group(1) or "").strip()
-            wait_sec = parse_wait_time(wait_text) if has_wait_time(wait_text) else 0
-            if wait_sec > 0:
-                tianti_mod._schedule_tianti_gangfeng_retry(now, wait_sec=wait_sec, persist=False)
-                changed = True
-    climb_cost_match = tianti_mod.RE_TIANTI_CLIMB_COST.search(raw_text)
-    climb_gain_match = tianti_mod.RE_TIANTI_CLIMB_GAIN.search(raw_text)
-    climb_cycle_match = tianti_mod.RE_TIANTI_CLIMB_CYCLE.search(raw_text)
-    climb_result_match = tianti_mod.RE_TIANTI_CLIMB_RESULT.search(raw_text)
-    if climb_cost_match and climb_result_match:
-        state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
-        state["tianti_last_gain_xiuwei"] = int(climb_gain_match.group(1) or 0) if climb_gain_match else 0
-        state["tianti_last_gain_contrib"] = int(climb_gain_match.group(2) or 0) if climb_gain_match else 0
-        if climb_cycle_match:
-            state["tianti_cycle_count"] = int(climb_cycle_match.group(1) or 0)
-        state["tianti_progress_current"] = int(climb_result_match.group(1) or 0)
-        state["tianti_progress_total"] = int(climb_result_match.group(2) or 0)
-        state["tianti_gangfeng_level"] = int(climb_result_match.group(3) or 0)
-        state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
-        tianti_mod._schedule_tianti_climb_retry(now, persist=False)
-        tianti_mod._calc_tianti_wenxin_plan(now)
-        changed = True
-    if changed:
-        state["tianti_last_error"] = ""
-    return changed
+    context = dict(
+        reply_context or {},
+        chat_id=_event_int(getattr(event, "chat_id", 0)),
+        msg_id=_event_int(getattr(event, "id", 0)),
+        sender_id=_event_int(getattr(event, "sender_id", 0)),
+        server_event_at=telegram_event_timestamp(event, event_type),
+    )
+    root = _context_msg_id(context, "root_msg_id") or _context_msg_id(context, "reply_to_msg_id")
+    context["root_msg_id"] = root
+    reply_to = SimpleNamespace(
+        id=root, chat_id=context["chat_id"], raw_text=context.get("reply_to_command", ""),
+        sender_id=context.get("reply_to_sender_id", 0), server_event_at=context.get("reply_to_server_at", 0),
+    )
+    return await tianti_mod.handle_tianti_reply(
+        text, now, reply_to, matched_family=family, reply_context=context,
+    )
 
 
 async def _apply_second_soul_passive(text, now, family, reply_context, event, event_type):
@@ -974,62 +849,6 @@ async def _apply_small_world_passive(text, now, family="", reply_context=None):
         return True
     state["small_world_last_error"] = ""
     return True
-
-
-def _apply_concubine_passive(text, now, family, current_msg_id=0, current_chat_id=0):
-    raw_text = str(text or "")
-    parsed = concubine_mod._parse_status_panel(raw_text, now)
-    if parsed:
-        concubine_mod._apply_status_snapshot(parsed, now)
-        current_msg_id = _event_int(current_msg_id)
-        if current_msg_id > 0:
-            state["concubine_last_panel_msg_id"] = current_msg_id
-            state["concubine_last_panel_chat_id"] = _event_int(current_chat_id)
-        return True
-    voyage = concubine_mod._parse_voyage_text(raw_text, now)
-    if voyage:
-        concubine_mod._apply_voyage_snapshot(voyage, now)
-        return True
-    progress = concubine_mod._parse_fragment_progress(raw_text)
-    changed = False
-    if progress and ("入梦寻图" in raw_text or "虚天残图" in raw_text or "残图" in raw_text):
-        state["concubine_fragment_count"] = progress[0]
-        state["concubine_fragment_total"] = progress[1]
-        state["concubine_dream_due_at"] = float(now + concubine_mod.CONCUBINE_DREAM_CD_SEC + concubine_mod.CD_BUFFER_SEC)
-        state["concubine_last_error"] = ""
-        changed = True
-    if family == "concubine_dream" and concubine_mod._is_dream_cooldown_text(raw_text):
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else concubine_mod.CONCUBINE_DREAM_CD_SEC
-        state["concubine_dream_due_at"] = float(now + max(wait_sec + concubine_mod.CD_BUFFER_SEC, concubine_mod.CONCUBINE_DREAM_MIN_RETRY_SEC))
-        state["concubine_last_error"] = ""
-        state["concubine_phase"] = "idle"
-        state["concubine_dream_msg_id"] = 0
-        changed = True
-    if family == "concubine_tianji" and "【天机代卜链】" in raw_text:
-        gua_match = concubine_mod.RE_TIANJI_GUA.search(raw_text)
-        state["concubine_tianji_chain"] = gua_match.group("name").strip() if gua_match else ""
-        state["concubine_tianji_due_at"] = float(now + concubine_mod.CONCUBINE_TIANJI_CD_SEC + concubine_mod.CD_BUFFER_SEC)
-        state["concubine_tianji_chain_due_at"] = state["concubine_tianji_due_at"]
-        state["concubine_tianji_last_error"] = ""
-        changed = True
-    if family == "concubine_tianji" and "天机链路尚未重铸" in raw_text:
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else concubine_mod.CONCUBINE_TIANJI_CD_SEC
-        state["concubine_tianji_due_at"] = float(now + wait_sec + concubine_mod.CD_BUFFER_SEC)
-        concubine_mod._clear_expired_tianji_chain(now)
-        state["concubine_tianji_last_error"] = ""
-        state["concubine_phase"] = "idle"
-        state["concubine_tianji_msg_id"] = 0
-        changed = True
-    if family == "concubine_heart" and "【坠魔心劫·结算】" in raw_text:
-        state["concubine_heart_due_at"] = float(now + concubine_mod.CONCUBINE_HEART_CD_SEC + 20 * 60)
-        state["concubine_heart_last_error"] = ""
-        state["concubine_heart_prompt_msg_id"] = 0
-        state["concubine_heart_round"] = 0
-        state["concubine_heart_choice_prompt_msg_id"] = 0
-        state["concubine_heart_choice_round"] = 0
-        state["concubine_heart_choice_sent_at"] = 0
-        changed = True
-    return changed
 
 
 def _is_tree_panel_text(text):
@@ -1339,8 +1158,199 @@ def _normalize_passive_module_card_input(text, reply_context=None, event=None, e
     return verified.text, context, normalized_event, verified.event_type
 
 
+async def _apply_owned_heart_passive(text, now, family, reply_context, event, event_type):
+    heart = family == "concubine_heart" or (not family and _looks_like_concubine_heart_reply(text))
+    probe = family == "concubine_status"
+    if not heart and not probe:
+        return None
+    context = dict(reply_context or {})
+    root = concubine_mod._query_int(context.get("reply_to_msg_id")) or concubine_mod._query_int(context.get("root_msg_id"))
+    chat = concubine_mod._query_int(getattr(event, "chat_id", 0))
+    msg_id = concubine_mod._query_int(getattr(event, "id", 0))
+    hint = concubine_mod._query_int(context.get("send_as_id")) or None
+    if "send_as_id" in context and hint is None:
+        return False
+    candidates = []
+    for identity_id in ([hint] if hint is not None else get_identity_ids()):
+        if not has_identity(identity_id):
+            continue
+        with use_identity(identity_id):
+            actions = concubine_mod.heart_actions
+            matched = actions.owns_probe(root, chat, now) if probe else actions.matches_reply(root, msg_id, chat, now)
+        if matched:
+            candidates.append(identity_id)
+    if len(candidates) != 1:
+        return False if heart or candidates or context.get("source_module") == "concubine_heart" else None
+    identity_id = candidates[0]
+    with use_identity(identity_id):
+        return await concubine_mod.heart_actions.handle_reply(
+            text, now, SimpleNamespace(id=root, chat_id=chat,
+                                      raw_text=context.get("reply_to_command") or context.get("command", ""),
+                                      sender_id=context.get("reply_to_sender_id", 0)),
+            current_msg_id=msg_id, current_chat_id=chat, observed_at=telegram_event_timestamp(event, event_type),
+            reply_context=dict(context, sender_id=getattr(event, "sender_id", 0), event_type=event_type),
+            probe=probe,
+        )
+
+
+async def _apply_owned_concubine_action_passive(text, now, family, reply_context, event, event_type):
+    if heavenly_ban_mod.is_heavenly_ban_text(text) or heavenly_ban_mod.is_heavenly_pardon_text(text):
+        # Account safety routing is independent of mutation completion.
+        return None
+    command = (reply_context or {}).get("reply_to_command") or (reply_context or {}).get("command", "")
+    if not family and isinstance(command, str) and command.strip() == concubine_mod.CMD_CONCUBINE_STATUS:
+        family = "concubine_status"
+    heart_result = await _apply_owned_heart_passive(text, now, family, reply_context, event, event_type)
+    if heart_result is not None:
+        return heart_result
+    if family not in {"storage_bag", "concubine_gift", "concubine_greet", "concubine_fragment", "concubine_status", "concubine_dream", "concubine_puzzle", "concubine_voyage", "concubine_tianji", "concubine_reacquire"}:
+        return None
+    fragment = family == "concubine_fragment"
+    voyage = family == "concubine_voyage"
+    divination = family == "concubine_tianji"
+    reacquire = family == "concubine_reacquire"
+    mutation = family in {"concubine_dream", "concubine_puzzle"} or voyage or divination or reacquire
+    query_kinds = ({"fragment"} if fragment else {"voyage_status"} if voyage else
+                   {"status", "gift_status"} if family == "concubine_status" else set())
+    root = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
+    chat_id, msg_id = _event_int(getattr(event, "chat_id", 0)), _event_int(getattr(event, "id", 0))
+    if reacquire or family == "concubine_status":
+        chat_id = concubine_mod._query_int(getattr(event, "chat_id", 0))
+        msg_id = concubine_mod._query_int(getattr(event, "id", 0))
+    target_id = _identity_from_reply_context(reply_context)
+    if target_id is None and mutation:
+        if "send_as_id" in (reply_context or {}):
+            return False
+        candidates = []
+        for identity_id in get_identity_ids():
+            with use_identity(identity_id):
+                if reacquire:
+                    item = concubine_mod.reacquire_actions.record()
+                    records = [(item, concubine_mod.reacquire_actions.SOURCE)] if item else []
+                elif divination:
+                    item = concubine_mod.divination_actions.record()
+                    records = [(item, concubine_mod.divination_actions.SOURCE)] if item else []
+                elif voyage:
+                    records = [(item, concubine_mod.voyage_actions.SOURCE)
+                               for item in (concubine_mod.voyage_actions.records() or {}).values()]
+                    query = concubine_mod._status_query_record()
+                    if query and query["kind"] == "voyage_status":
+                        records.append((query, concubine_mod.CONCUBINE_QUERY_SOURCE))
+                else:
+                    record = (concubine_mod.fragment_actions.records() or {}).get(family.removeprefix("concubine_"))
+                    records = [(record, concubine_mod.fragment_actions.SOURCE)] if record else []
+                for record, source in records:
+                    if record["account_id"] != get_identity_account(identity_id):
+                        continue
+                    record = concubine_mod._adopt_status_query_receipt(
+                        record, now, source_module=source, include_logs=False,
+                    )
+                    if root > 0 and (chat_id, root) == (record["chat_id"], record["msg_id"]):
+                        candidates.append(identity_id)
+        if len(candidates) != 1:
+            return False
+        target_id = candidates[0]
+    elif target_id is None and query_kinds:
+        if "send_as_id" in (reply_context or {}):
+            return False
+        candidates = []
+        unresolved_in_chat = False
+        for identity_id in get_identity_ids():
+            with use_identity(identity_id):
+                record = concubine_mod._status_query_record()
+                if not record or record["kind"] not in query_kinds or record["account_id"] != get_identity_account(identity_id):
+                    continue
+                unresolved_in_chat |= record["chat_id"] == chat_id and record["status"] in concubine_mod.CONCUBINE_QUERY_UNRESOLVED
+                record = concubine_mod._adopt_status_query_receipt(record, now, include_logs=False)
+                if root > 0 and (chat_id, root) == (record["chat_id"], record["msg_id"]):
+                    candidates.append(identity_id)
+        if len(candidates) > 1 or (fragment and not candidates):
+            return False
+        if voyage and not candidates:
+            if command == concubine_mod.CMD_CONCUBINE_VOYAGE_STATUS or unresolved_in_chat:
+                return False
+            return None
+        if candidates:
+            target_id = candidates[0]
+        else:
+            target_id = _identity_from_reply_sender_id((reply_context or {}).get("reply_to_sender_id"))
+            if target_id is None:
+                target_id, _route, _spec = _resolve_concubine_pending_identity_from_context(family, reply_context)
+            if target_id is None:
+                # An early unbound reply must remain replayable once its receipt arrives.
+                if unresolved_in_chat:
+                    return False
+                if family != "concubine_status":
+                    return None
+    elif target_id is None:
+        target_id, _route, _spec = _resolve_concubine_pending_identity_from_context(family, reply_context)
+    if target_id is None or not has_identity(target_id):
+        if family == "concubine_status":
+            sender = (reply_context or {}).get("reply_to_sender_id", 0)
+            record_passive_inbox_event(
+                "skipped", module="concubine", family=family,
+                reason=_missing_identity_reason(text, family, sender),
+                decision="skip_missing_identity", chat_id=chat_id, msg_id=msg_id,
+                reply_to_msg_id=root, reply_to_sender_id=sender, event_type=event_type,
+                source_message_id=msg_id,
+            )
+        return False if fragment or mutation or family == "concubine_status" else None
+    with use_identity(target_id) as owner:
+        account_id = get_identity_account(target_id)
+        if not query_kinds and not mutation and not concubine_mod.owns_concubine_affinity_reply(family, root, chat_id):
+            return None
+        handler = {
+            "storage_bag": concubine_mod.handle_concubine_storage_bag_reply,
+            "concubine_gift": concubine_mod.handle_concubine_gift_reply,
+            "concubine_greet": concubine_mod.handle_concubine_greet_reply,
+            "concubine_fragment": concubine_mod.handle_concubine_fragment_reply,
+            "concubine_status": concubine_mod.handle_concubine_status_reply,
+            "concubine_dream": concubine_mod.handle_concubine_dream_reply,
+            "concubine_puzzle": concubine_mod.handle_concubine_puzzle_reply,
+            "concubine_voyage": concubine_mod.handle_concubine_voyage_reply,
+            "concubine_tianji": concubine_mod.handle_concubine_tianji_reply,
+            "concubine_reacquire": concubine_mod.handle_concubine_reacquire_reply,
+        }[family]
+        query = concubine_mod._status_query_record() if family == "concubine_status" else None
+        observed_status = family == "concubine_status" and query is not None and (
+            not query or query["status"] not in concubine_mod.CONCUBINE_QUERY_UNRESOLVED)
+        route = "reply_context" if _identity_from_reply_context(reply_context) is not None else "concubine_pending_chain"
+        if (reply_context or {}).get("matched_via") == "reply_sender" or (
+            route != "reply_context" and _identity_from_reply_sender_id((reply_context or {}).get("reply_to_sender_id")) == target_id
+        ):
+            route = "reply_sender"
+        handled = await handler(
+            text, now, SimpleNamespace(
+                id=root, chat_id=chat_id,
+                raw_text=(reply_context or {}).get("reply_to_command") or (reply_context or {}).get("command", ""),
+                sender_id=(reply_context or {}).get("reply_to_sender_id", 0),
+            ), matched_family=family, current_msg_id=msg_id,
+            current_chat_id=chat_id, observed_at=telegram_event_timestamp(event, event_type),
+            reply_context=dict(reply_context or {},
+                               sender_id=getattr(event, "sender_id", 0) if reacquire or family == "concubine_status" else _event_int(getattr(event, "sender_id", 0)),
+                               event_type=event_type,
+                               forwarded=bool((reply_context or {}).get("forwarded") or getattr(event, "fwd_from", None) or getattr(getattr(event, "message", None), "fwd_from", None))),
+        )
+        if (handled and has_identity(target_id) and get_identity_state(target_id) is owner
+                and get_identity_account(target_id) == account_id):
+            try:
+                _record_passive_event(
+                    "changed", module="concubine", identity_id=target_id, summary=family,
+                    decision="observed_query_result" if observed_status else "owned_reacquire_result" if reacquire else "owned_divination_result" if divination else "owned_voyage_result" if voyage else "owned_fragment_result" if mutation else "owned_query_result" if query_kinds else "owned_affinity_result", chat_id=chat_id, msg_id=msg_id,
+                    reply_to_msg_id=root, event_type=event_type, source_message_id=msg_id,
+                    route_source=_route_source(event_type, route),
+                )
+            except Exception as exc:
+                concubine_mod.console_log(f"Concubine result saved; passive diagnostic failed ({type(exc).__name__})")
+        return handled
+
+
 async def handle_passive_module_card(text, now=None, reply_context=None, event=None, event_type=""):
     now = float(now or time.time())
+    resource_event = text if isinstance(text, VerifiedGameEvent) else from_telegram_event(
+        event, text, reply_context, event_kind=event_type or "message",
+    )
+    resource_changed = yinluo_mod.observe_yinluo_resources(resource_event, now=now)
     raw_text, reply_context, event, event_type = _normalize_passive_module_card_input(
         text,
         reply_context=reply_context,
@@ -1352,10 +1362,14 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     observed_chat_id = _event_int(getattr(event, "chat_id", 0))
     event_type = str(event_type or "").strip()
     family = _family_from_reply_context(reply_context)
+    # Owned actions and proven reads commit before generic inventory/text dedupe.
+    owned_concubine_handled = await _apply_owned_concubine_action_passive(raw_text, now, family, reply_context, event, event_type)
+    if owned_concubine_handled is not None:
+        return owned_concubine_handled or resource_changed
     no_sect_reply = family == "checkin" and checkin_mod.is_no_sect_checkin_text(raw_text)
     # This reducer persists source order; text-only dedupe would discard newer edits.
     if not no_sect_reply and not _mark_observed_passive_event(observed_chat_id, observed_msg_id, raw_text, now=now):
-        return False
+        return resource_changed
     target_id = _identity_from_reply_context(reply_context)
     context_route_source = _route_source(event_type, "reply_context")
     passive_route_source = _route_source(event_type, "passive_match")
@@ -1464,19 +1478,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             target_id = _match_identity_by_you_line(raw_text)
             if target_id is not None:
                 target_route_source = _route_source(event_type, "passive_you_line")
-    heart_context_resolved = False
     concubine_pending_context_spec = None
-    if target_id is None:
-        target_id, heart_identity_route = _resolve_concubine_heart_identity_from_context(raw_text, reply_context, observed_msg_id)
-        if target_id is not None:
-            heart_context_resolved = True
-            target_route_source = _route_source(event_type, heart_identity_route)
-    if target_id is None:
-        target_id, heart_identity_route = _resolve_active_concubine_heart_identity(raw_text)
-        if target_id is not None:
-            heart_context_resolved = True
-            family = family or "concubine_heart"
-            target_route_source = _route_source(event_type, heart_identity_route)
     if target_id is None:
         target_id, pending_identity_route, concubine_pending_context_spec = _resolve_concubine_pending_identity_from_context(family, reply_context)
         if target_id is not None:
@@ -1516,7 +1518,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 )
         return False
 
-    changed = False
+    changed = resource_changed
     changed_modules = []
     event_recorded_by_handler = False
     if not has_identity(target_id):
@@ -1532,7 +1534,9 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             )
 
         if family.startswith("tianti_") or tianti_mod.RE_TIANTI_PANEL.search(raw_text):
-            module_changed = _apply_tianti_passive(raw_text, now, family, reply_context=reply_context)
+            module_changed = await _apply_tianti_passive(raw_text, now, family, reply_context, event, event_type)
+            if not owner_is_current():
+                return changed or module_changed
             if module_changed:
                 changed_modules.append("tianti")
             changed = module_changed or changed
@@ -1555,24 +1559,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append("small_world")
             changed = module_changed or changed
-        if heart_context_resolved and family == "concubine_heart":
-            reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
-            reply_to = SimpleNamespace(raw_text="", id=reply_to_msg_id) if reply_to_msg_id > 0 else None
-            handler_passive_total_before = int(_passive_stats.get("total", 0) or 0)
-            module_changed = await concubine_mod.handle_concubine_heart_reply(
-                raw_text,
-                now,
-                reply_to,
-                matched_family="concubine_heart",
-                current_msg_id=observed_msg_id,
-            )
-            if not owner_is_current():
-                return changed or module_changed
-            if module_changed:
-                changed_modules.append("concubine")
-                event_recorded_by_handler = int(_passive_stats.get("total", 0) or 0) > handler_passive_total_before
-            changed = module_changed or changed
-        elif concubine_pending_context_spec is not None:
+        if concubine_pending_context_spec is not None:
             reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
             reply_to = SimpleNamespace(raw_text="", id=reply_to_msg_id) if reply_to_msg_id > 0 else None
             handler = concubine_pending_context_spec["handler"]
@@ -1597,17 +1584,6 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append("concubine")
             changed = module_changed or changed
-        elif family.startswith("concubine_"):
-            module_changed = _apply_concubine_passive(
-                raw_text,
-                now,
-                family,
-                current_msg_id=observed_msg_id,
-                current_chat_id=observed_chat_id,
-            )
-            if module_changed:
-                changed_modules.append("concubine")
-            changed = module_changed or changed
         if family.startswith("hehuan_") or (not family and hehuan_mod.looks_like_hehuan_text(raw_text)):
             module_changed = hehuan_mod.apply_hehuan_passive(raw_text, now, family)
             if module_changed:
@@ -1626,18 +1602,11 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tianxing")
             changed = module_changed or changed
         if family.startswith("yinluo_") or (not family and yinluo_mod.looks_like_yinluo_text(raw_text)):
-            module_changed = yinluo_mod.apply_yinluo_passive(
+            module_changed = resource_changed or yinluo_mod.apply_yinluo_passive(
                 raw_text,
                 now,
                 family,
-                event_context={
-                    "identity_id": target_id,
-                    "chat_id": observed_chat_id,
-                    "msg_id": observed_msg_id,
-                    "reply_to_msg_id": (reply_context or {}).get("reply_to_msg_id", 0),
-                    "root_msg_id": (reply_context or {}).get("root_msg_id", 0),
-                    "source_message_id": source_message_id,
-                },
+                event_context=resource_event,
             )
             if module_changed:
                 changed_modules.append("yinluo")
@@ -1671,6 +1640,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             changed and family and family != "concubine_heart"
             and not (family == "checkin" and checkin_mod.is_no_sect_checkin_text(raw_text))
             and family not in tianxing_mod.TIANXING_REPLY_GUARD_FAMILIES
+            and not family.startswith("yinluo_")
+            and family not in {"wanxin_assist_banner", "wanxin_assist_strip"}
         ):
             close_action_guard_by_family(family, send_as_id=target_id, reason="passive_state_changed", now=now)
         if changed:

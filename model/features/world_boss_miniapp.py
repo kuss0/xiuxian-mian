@@ -633,11 +633,13 @@ def execute_nangongque_miniapp_request(
     capture_sink=None,
     capture_source="",
     step_key="",
+    request_budget=None,
+    operation_check=None,
 ):
     """Execute one protocol request with an explicit no-retry budget."""
 
     adapter = adapter or build_nangongque_miniapp_adapter()
-    budget = MiniAppRequestBudget(
+    budget = request_budget if request_budget is not None else MiniAppRequestBudget(
         adapter.request_policy,
         sleeper=sleeper or time.sleep,
     )
@@ -650,6 +652,7 @@ def execute_nangongque_miniapp_request(
         capture_source=capture_source,
         step_key=step_key,
         request_budget=budget,
+        operation_check=operation_check,
     )
 
 

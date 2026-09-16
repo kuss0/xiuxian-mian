@@ -81,6 +81,37 @@ class MiniAppStateTests(unittest.TestCase):
         self.assertNotIn("hunt-session-secret", text)
         save_mock.assert_called_once()
 
+    def test_sanitizer_never_stringifies_deep_or_unsupported_containers(self):
+        secret = "fixture-private-value-abcdef"
+
+        class Unsupported:
+            def __str__(self):
+                return secret
+
+        for value in ({"token": secret}, [{"cookie": secret}], ({"auth": secret},), Unsupported()):
+            with self.subTest(kind=type(value).__name__):
+                source = value
+                for _ in range(6):
+                    source = {"nested": source}
+                sanitized = miniapp_state.sanitize_miniapp_state(source)
+                self.assertNotIn(secret, json.dumps(sanitized))
+
+    def test_sanitizer_preserves_primitive_types_at_depth_boundary(self):
+        for value in (True, False, 0, 42, 1.25, "ready"):
+            with self.subTest(value=value):
+                source = value
+                for _ in range(6):
+                    source = {"nested": source}
+                sanitized = miniapp_state.sanitize_miniapp_state(source)
+                for _ in range(6):
+                    sanitized = sanitized["nested"]
+                self.assertIs(type(sanitized), type(value))
+                self.assertEqual(value, sanitized)
+
+    def test_sanitizer_handles_tuple_children_as_structured_values(self):
+        result = miniapp_state.sanitize_miniapp_state({"rows": ({"token": "fixture-secret", "used": 2},)})
+        self.assertEqual({"rows": [{"used": 2}]}, result)
+
     def test_replay_cave_capture_records_returns_safe_latest_state(self):
         records = [
             {

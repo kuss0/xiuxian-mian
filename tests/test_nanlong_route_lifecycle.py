@@ -36,9 +36,10 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patcher = patch.object(nanlong, target, **kwargs)
             patcher.start()
             self.addCleanup(patcher.stop)
-        patcher = patch.object(runtime, "_reply_chain_tracker", {})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target, value in (("_reply_chain_tracker", {}), ("_bot_waiting_since", 0.0)):
+            patcher = patch.object(runtime, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -642,7 +643,7 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.seed_prompt()
 
         async def send(*_args, **_kwargs):
-            await nanlong.handle_nanlong_prompt(self.prompt_text, self.now + 1, self.event(456, -1002, at=self.now + 1))
+            nanlong._set_nanlong_pending(456, self.now + 180, self.now + 1, chat_id=-1002)
             return SimpleNamespace(id=124, chat_id=-1001, sent_at=self.now)
 
         with state_module.use_identity(self.identity_id), patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)):
@@ -947,3 +948,708 @@ class NanlongRouteLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     def test_ambiguous_mentions_do_not_fall_back_to_username_prefix(self):
         self.assertIsNone(nanlong._find_nanlong_identity_id("南陇侯望向 @NanlongRouteExtra 和 @SomeoneElse"))
+
+    def seed_place_confirmation(self):
+        self.seed_exchange(protected=True)
+        self.identity.update(
+            nanlong_protect_phase="place_pending", nanlong_place_msg_id=124,
+            nanlong_last_command=nanlong.CMD_CONCUBINE_PLACE,
+            nanlong_last_prompt_key="-1001:123",
+        )
+        return (
+            "你已将道侣【墨彩环】安置在洞府的藏娇阁中。",
+            SimpleNamespace(id=124, chat_id=-1001, raw_text=nanlong.CMD_CONCUBINE_PLACE),
+        )
+
+    async def test_expired_prompt_after_confirmed_placement_recalls_once(self):
+        text, reply = self.seed_place_confirmation()
+        self.identity["next_nanlong_time"] = self.now - 1
+        with (
+            self.logged_results([]), state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                id=125, chat_id=-1001, sent_at=self.now,
+            ))) as sender,
+        ):
+            self.assertTrue(await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong"))
+            self.assertFalse(await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong"))
+            self.assertEqual([nanlong.CMD_CONCUBINE_RECALL], [call.args[0] for call in sender.await_args_list])
+            self.assertEqual(-1001, sender.await_args.kwargs["target_chat_id"])
+            self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+            self.assertTrue(await nanlong.handle_nanlong_reply(
+                "你已将道侣【墨彩环】从藏娇阁中召回。", self.now + 1,
+                SimpleNamespace(id=125, chat_id=-1001), matched_family="nanlong",
+            ))
+            await nanlong.run_nanlong_scheduler(self.now + 100)
+        sender.assert_awaited_once()
+        self.assertEqual("", self.identity["nanlong_protect_phase"])
+
+    async def test_delayed_placement_log_uses_recovery_clock_for_followup(self):
+        text, _reply = self.seed_place_confirmation()
+        self.identity["next_nanlong_time"] = self.now + 5
+        observed_at = self.now + 20
+        entry = self.result_entry(chat_id=-1001, reply_id=124, text=text)
+
+        async def send(command, **kwargs):
+            self.assertTrue(kwargs["operation_check"](), command)
+            return SimpleNamespace(id=125, chat_id=-1001, sent_at=observed_at)
+
+        with (
+            self.logged_results([(entry, self.now + 2)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=observed_at),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+        ):
+            self.assertTrue(await nanlong._recover_nanlong_pending_reply_from_log(observed_at))
+        self.assertEqual([nanlong.CMD_CONCUBINE_RECALL], [call.args[0] for call in sender.await_args_list])
+        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+
+    async def test_reject_after_placement_finishes_recall_without_waiting_for_trade_reply(self):
+        text, reply = self.seed_place_confirmation()
+        state_module.set_nanlong_choice(self.identity_id, "reject")
+        with (
+            self.logged_results([]), state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=[
+                SimpleNamespace(id=125, chat_id=-1001, sent_at=self.now),
+                SimpleNamespace(id=126, chat_id=-1001, sent_at=self.now + 1),
+            ])) as sender,
+        ):
+            self.assertTrue(await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong"))
+            self.assertEqual(
+                [nanlong.CMD_NANLONG_REJECT, nanlong.CMD_CONCUBINE_RECALL],
+                [call.args[0] for call in sender.await_args_list],
+            )
+            self.assertEqual(123, sender.await_args_list[0].kwargs["reply_to"])
+            self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+            self.assertTrue(await nanlong.handle_nanlong_reply(
+                "你已将道侣【墨彩环】从藏娇阁中召回。", self.now + 2,
+                SimpleNamespace(id=126, chat_id=-1001), matched_family="nanlong",
+            ))
+            await nanlong.run_nanlong_scheduler(self.now + 100)
+        self.assertEqual(2, sender.await_count)
+        self.assertEqual("", self.identity["nanlong_protect_phase"])
+
+    async def test_expired_placement_cleanup_keeps_unknown_recall_without_resend(self):
+        text, reply = self.seed_place_confirmation()
+        self.identity["next_nanlong_time"] = self.now - 1
+        with (
+            self.logged_results([]), state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=None)) as sender,
+            patch.object(nanlong, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+        ):
+            self.assertTrue(await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong"))
+            await nanlong.run_nanlong_scheduler(self.now + 86400)
+        sender.assert_awaited_once()
+        self.assertEqual(nanlong.CMD_CONCUBINE_RECALL, self.identity["nanlong_last_command"])
+        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+        self.assertEqual(0, self.identity["nanlong_reply_due_at"])
+
+    async def test_unresolved_protected_rejection_is_not_erased_at_prompt_expiry(self):
+        text, reply = self.seed_place_confirmation()
+        state_module.set_nanlong_choice(self.identity_id, "reject")
+        with (
+            self.logged_results([]), state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=None)) as sender,
+            patch.object(nanlong, "classify_game_send_block", return_value={"status": "unknown", "code": "send_timeout"}),
+        ):
+            await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong")
+            before = copy.deepcopy(self.identity)
+            await nanlong.run_nanlong_scheduler(self.now + 86400)
+        sender.assert_awaited_once()
+        self.assertEqual(nanlong.CMD_NANLONG_REJECT, self.identity["nanlong_last_command"])
+        self.assertEqual(before, self.identity)
+
+    async def test_saved_protected_rejection_resumes_only_recall(self):
+        self.seed_place_confirmation()
+        state_module.set_nanlong_choice(self.identity_id, "reject")
+        with state_module.use_identity(self.identity_id):
+            nanlong._set_nanlong_waiting_for_exchange(
+                SimpleNamespace(id=125, chat_id=-1001, sent_at=self.now),
+                nanlong.CMD_NANLONG_REJECT, protected=True,
+            )
+            self.assertEqual("exchange_pending", self.identity["nanlong_protect_phase"])
+            with (
+                self.logged_results([]),
+                patch.object(nanlong.time, "time", return_value=self.now + 100),
+                patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                    id=126, chat_id=-1001, sent_at=self.now + 100,
+                ))) as sender,
+            ):
+                await nanlong.run_nanlong_scheduler(self.now + 100)
+                await nanlong.run_nanlong_scheduler(self.now + 101)
+        self.assertEqual([nanlong.CMD_CONCUBINE_RECALL], [call.args[0] for call in sender.await_args_list])
+        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+
+    async def test_detached_protected_rejection_preserves_cleanup(self):
+        text, reply = self.seed_place_confirmation()
+        state_module.set_nanlong_choice(self.identity_id, "reject")
+        with (
+            self.logged_results([]), state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=None)) as reject_sender,
+            patch.object(nanlong, "classify_game_send_block", return_value={"status": "unknown"}),
+        ):
+            await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong")
+            self.finalize_receipt(
+                reject_sender.await_args.args[0], reject_sender.await_args.kwargs,
+                msg_id=125, sent_at=self.now + 10,
+            )
+            with patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                id=126, chat_id=-1001, sent_at=self.now + 20,
+            ))) as recall_sender:
+                await nanlong.run_nanlong_scheduler(self.now + 20)
+                await nanlong.run_nanlong_scheduler(self.now + 21)
+        reject_sender.assert_awaited_once()
+        self.assertEqual([nanlong.CMD_CONCUBINE_RECALL], [call.args[0] for call in recall_sender.await_args_list])
+        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+
+    async def test_recovery_time_cannot_make_an_old_trade_result_current(self):
+        self.seed_exchange(protected=True)
+        before = copy.deepcopy(self.identity)
+        with (
+            self.logged_results([(self.result_entry(), self.now - 20)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            self.assertFalse(await nanlong._recover_nanlong_pending_reply_from_log(self.now + 20))
+        sender.assert_not_awaited()
+        self.assertEqual(before, self.identity)
+
+    async def test_deferred_recall_keeps_cleanup_backoff_and_unspent_retry(self):
+        baseline = copy.deepcopy(self.identity)
+        for origin in ("expired", "rejected", "trade"):
+            for failure in ("unsent", "save_false", "save_error"):
+                with self.subTest(origin=origin, failure=failure):
+                    self.identity.clear()
+                    self.identity.update(copy.deepcopy(baseline))
+                    state_module.set_nanlong_choice(self.identity_id, "exchange_fabao")
+                    text, reply = self.seed_place_confirmation()
+                    if origin == "expired":
+                        self.identity["next_nanlong_time"] = self.now - 1
+                    elif origin == "rejected":
+                        state_module.set_nanlong_choice(self.identity_id, "reject")
+                    else:
+                        self.seed_exchange(protected=True)
+                        text = self.trade_text
+                        reply.raw_text = nanlong.CMD_NANLONG_EXCHANGE_FABAO
+                    failed, clock, commands = False, self.now, []
+
+                    def save():
+                        nonlocal failed
+                        if (failure.startswith("save") and not failed
+                                and self.identity["nanlong_last_command"] == nanlong.CMD_CONCUBINE_RECALL
+                                and not self.identity["nanlong_last_msg_id"]):
+                            failed = True
+                            if failure == "save_error":
+                                raise OSError("fixture unavailable storage")
+                            return False
+                        return True
+
+                    async def send(command, **kwargs):
+                        nonlocal failed
+                        self.assertTrue(kwargs["operation_check"]())
+                        commands.append(command)
+                        if command == nanlong.CMD_CONCUBINE_RECALL and failure == "unsent" and not failed:
+                            failed = True
+                            return None
+                        return SimpleNamespace(id=125 + len(commands), chat_id=-1001, sent_at=clock)
+
+                    with (
+                        self.logged_results([]), state_module.use_identity(self.identity_id),
+                        patch.object(nanlong.time, "time", side_effect=lambda: clock),
+                        patch.object(nanlong.random, "randint", return_value=30),
+                        patch.object(nanlong, "save_state", side_effect=save),
+                        patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)),
+                        patch.object(nanlong, "classify_game_send_block", return_value={"status": "unsent", "code": "send_queue_timeout"}),
+                    ):
+                        self.assertTrue(await nanlong.handle_nanlong_reply(text, clock, reply, matched_family="nanlong"))
+                        self.assertTrue(failed)
+                        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+                        due_at = self.identity["nanlong_reply_due_at"]
+                        self.assertGreater(due_at, clock)
+                        sent_before = list(commands)
+                        await nanlong.run_nanlong_scheduler(clock + 1)
+                        self.assertEqual(sent_before, commands)
+                        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+                        clock = due_at
+                        await nanlong.run_nanlong_scheduler(clock)
+                        self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+                        self.assertEqual(nanlong.CMD_CONCUBINE_RECALL, self.identity["nanlong_last_command"])
+                        self.assertEqual(0, self.identity["nanlong_retry_count"])
+                        expected = [nanlong.CMD_NANLONG_REJECT] if origin == "rejected" else []
+                        expected += [nanlong.CMD_CONCUBINE_RECALL] * (2 if failure == "unsent" else 1)
+                        self.assertEqual(expected, commands)
+
+    async def test_returned_receipt_survives_post_dispatch_disable(self):
+        from model import control as controls
+
+        baseline = copy.deepcopy(self.identity)
+        for step in ("exchange", "place", "recall", "reject"):
+            for control in ("module", "identity"):
+                with self.subTest(step=step, control=control):
+                    self.identity.clear()
+                    self.identity.update(copy.deepcopy(baseline))
+                    state_module.update_send_as_profile(self.identity_id, enabled=True)
+                    state_module.set_nanlong_choice(self.identity_id, "exchange_fabao")
+                    await self.seed_prompt()
+                    if step == "place":
+                        self.identity["concubine_name"] = "墨彩环"
+                    elif step == "recall":
+                        self.seed_exchange(protected=True)
+                    elif step == "reject":
+                        state_module.set_nanlong_choice(self.identity_id, "reject")
+
+                    async def send(command, **kwargs):
+                        if control == "module":
+                            with patch.object(controls, "save_state"):
+                                ok, message = await controls.set_module_enabled("南陇侯", False, send_as_id=self.identity_id)
+                            self.assertTrue(ok, message)
+                        else:
+                            state_module.update_send_as_profile(self.identity_id, enabled=False)
+                        return self.finalize_receipt(command, kwargs, detached=False)
+
+                    with (
+                        state_module.use_identity(self.identity_id),
+                        patch.object(nanlong.time, "time", return_value=self.now),
+                        patch.object(nanlong, "_get_nanlong_cave_status", return_value=nanlong.NANLONG_CAVE_STATUS_AVAILABLE),
+                        patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=send)) as sender,
+                    ):
+                        if step == "recall":
+                            await nanlong._send_nanlong_recall_after_trade(self.now)
+                        else:
+                            await nanlong.run_nanlong_scheduler(self.now)
+                        await nanlong.run_nanlong_scheduler(self.now + 120)
+                    sender.assert_awaited_once()
+                    if step == "reject":
+                        self.assertEqual(0, self.identity["nanlong_reply_to_msg_id"])
+                    else:
+                        self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                        self.assertEqual(-1001, self.identity["nanlong_last_chat_id"])
+                        self.assertEqual(self.now, self.identity["nanlong_last_sent_at"])
+
+    async def test_disabled_success_records_continuation_without_sending(self):
+        baseline = copy.deepcopy(self.identity)
+        steps = (
+            ("place_pending", nanlong.CMD_CONCUBINE_PLACE, "你已将道侣【墨彩环】安置在洞府的藏娇阁中。", "exchange_pending"),
+            ("exchange_pending", nanlong.CMD_NANLONG_EXCHANGE_FABAO, self.trade_text, "recall_pending"),
+            ("recall_pending", nanlong.CMD_CONCUBINE_RECALL, "你已将道侣【墨彩环】从藏娇阁中召回。", ""),
+        )
+        for phase, command, text, next_phase in steps:
+            for control in ("module", "identity"):
+                with self.subTest(phase=phase, control=control):
+                    self.identity.clear()
+                    self.identity.update(copy.deepcopy(baseline))
+                    state_module.update_send_as_profile(self.identity_id, enabled=True)
+                    self.seed_exchange(protected=True)
+                    self.identity.update(nanlong_protect_phase=phase, nanlong_last_command=command)
+                    if control == "module":
+                        self.identity["nanlong_enabled"] = False
+                    else:
+                        state_module.update_send_as_profile(self.identity_id, enabled=False)
+                    reply = SimpleNamespace(id=124, chat_id=-1001, raw_text=command)
+                    with state_module.use_identity(self.identity_id), patch.object(
+                        nanlong, "send_game_command", new=AsyncMock(),
+                    ) as sender:
+                        self.assertTrue(await nanlong.handle_nanlong_reply(text, self.now, reply, matched_family="nanlong"))
+                        self.assertFalse(await nanlong.handle_nanlong_reply(text, self.now + 1, reply, matched_family="nanlong"))
+                        await nanlong.run_nanlong_scheduler(self.now + 100)
+                    sender.assert_not_awaited()
+                    self.assertEqual(next_phase, self.identity["nanlong_protect_phase"])
+                    self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+                    if next_phase:
+                        self.assertGreater(self.identity["nanlong_reply_due_at"], 0)
+                        self.assertEqual("", self.identity["nanlong_last_command"])
+
+    async def test_disabled_identity_broadcast_records_cleanup_then_resumes_once(self):
+        from model import app
+
+        self.seed_exchange(protected=True)
+        state_module.update_send_as_profile(self.identity_id, enabled=False)
+        with (
+            patch.object(app, "_claim_runtime_event", return_value=True),
+            patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                id=125, chat_id=-1001, sent_at=self.now + 2,
+            ))) as sender,
+        ):
+            await app._dispatch_nanlong_result_broadcast_fallbacks(self.event(900, -1002), self.trade_text, self.now)
+            sender.assert_not_awaited()
+            self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+            self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+            state_module.update_send_as_profile(self.identity_id, enabled=True)
+            with state_module.use_identity(self.identity_id):
+                await nanlong.run_nanlong_scheduler(self.now + 1)
+                await nanlong.run_nanlong_scheduler(self.now + 2)
+        self.assertEqual([nanlong.CMD_CONCUBINE_RECALL], [call.args[0] for call in sender.await_args_list])
+
+    async def test_missing_results_preserve_receipts_without_retries_or_expiry_deletion(self):
+        baseline = copy.deepcopy(self.identity)
+        steps = (
+            ("place_pending", nanlong.CMD_CONCUBINE_PLACE),
+            ("exchange_pending", nanlong.CMD_NANLONG_EXCHANGE_FABAO),
+            ("recall_pending", nanlong.CMD_CONCUBINE_RECALL),
+            ("", nanlong.CMD_NANLONG_EXCHANGE_FABAO),
+        )
+        for phase, command in steps:
+            with self.subTest(phase=phase):
+                self.identity.clear()
+                self.identity.update(copy.deepcopy(baseline))
+                self.seed_exchange(protected=bool(phase))
+                self.identity.update(
+                    nanlong_protect_phase=phase, nanlong_last_command=command,
+                    nanlong_reply_due_at=self.now - 1,
+                )
+                with (
+                    self.logged_results([]), state_module.use_identity(self.identity_id),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                ):
+                    for clock in (self.now, self.now + 61, self.now + 86400):
+                        await nanlong.run_nanlong_scheduler(clock)
+                sender.assert_not_awaited()
+                self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                self.assertEqual(command, self.identity["nanlong_last_command"])
+                self.assertEqual(phase, self.identity["nanlong_protect_phase"])
+                self.assertIn("待核对", self.identity["nanlong_last_error"])
+
+    async def test_new_prompt_cannot_replace_an_unresolved_send_or_result(self):
+        for has_receipt in (False, True):
+            with self.subTest(has_receipt=has_receipt):
+                self.seed_exchange(protected=True)
+                self.identity["nanlong_last_prompt_key"] = "-1001:123"
+                if not has_receipt:
+                    self.identity.update(nanlong_last_msg_id=0, nanlong_reply_due_at=0)
+                before = {key: self.identity.get(key) for key in nanlong._NANLONG_OPERATION_KEYS}
+                with state_module.use_identity(self.identity_id):
+                    await nanlong.handle_nanlong_prompt(self.prompt_text, self.now + 1, self.event(456, -1002, at=self.now + 1))
+                self.assertEqual(before, {key: self.identity.get(key) for key in nanlong._NANLONG_OPERATION_KEYS})
+
+    async def test_original_round_result_is_recovered_after_a_long_disabled_interval(self):
+        self.seed_exchange()
+        original_result_at = self.now + 1
+        resumed_at = self.now + 86400
+        with (
+            self.logged_results([(self.result_entry(), original_result_at)]),
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            await nanlong.run_nanlong_scheduler(resumed_at)
+        sender.assert_not_awaited()
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+        self.assertEqual("", self.identity["nanlong_last_error"])
+
+    async def test_direct_reply_rejects_a_contradictory_command_or_older_source_clock(self):
+        for reply_command, reply_at in ((nanlong.CMD_CONCUBINE_RECALL, self.now), (nanlong.CMD_NANLONG_EXCHANGE_FABAO, self.now - 30)):
+            with self.subTest(command=reply_command, source_at=reply_at):
+                self.seed_exchange()
+                before = copy.deepcopy(self.identity)
+                with state_module.use_identity(self.identity_id):
+                    self.assertFalse(await nanlong.handle_nanlong_reply(
+                        self.trade_text, reply_at,
+                        SimpleNamespace(id=124, chat_id=-1001, raw_text=reply_command), matched_family="nanlong",
+                    ))
+                self.assertEqual(before, self.identity)
+
+    async def test_native_routed_reply_uses_server_time_while_module_disabled(self):
+        from model import app
+
+        self.seed_exchange()
+        self.identity["nanlong_enabled"] = False
+        reply = SimpleNamespace(id=124, chat_id=-1001, sender_id=self.identity_id, raw_text=nanlong.CMD_NANLONG_EXCHANGE_FABAO)
+        context = {"send_as_id": self.identity_id, "family": "nanlong", "root_msg_id": 124, "reply_to_msg_id": 124,
+                   "chat_id": -1001, "matched_via": "my_msg_ids"}
+        self.identity["my_msg_ids"][(-1001, 124)] = self.now - 1
+        event = self.event(900, -1001, at=self.now - 10, reply_id=124)
+        event.sender_id = 7001
+        with (
+            patch.object(app, "_claim_runtime_event", return_value=True),
+            patch.object(app, "_has_runtime_message_consumed", return_value=False),
+            patch.object(app, "_mark_runtime_message_consumed"),
+            patch.object(app, "record_unhandled_routed_reply"),
+            patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+        ):
+            self.assertFalse(await app._handle_routed_reply_event(event, self.trade_text, self.now, reply, context))
+            self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+            event.date = datetime.fromtimestamp(self.now, timezone.utc)
+            self.assertTrue(await app._handle_routed_reply_event(event, self.trade_text, self.now, reply, context))
+        sender.assert_not_awaited()
+        self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    async def test_log_replay_cannot_replace_server_time_with_later_log_time(self):
+        for direct in (False, True):
+            for source_at in (self.now - 30, 0, None, "invalid"):
+                with self.subTest(direct=direct, source_at=source_at):
+                    self.seed_exchange()
+                    entry = self.result_entry(
+                        chat_id=-1001 if direct else -1002, reply_id=124 if direct else 0,
+                        server_event_at=source_at,
+                    )
+                    before = copy.deepcopy(self.identity)
+                    with self.logged_results([(entry, self.now + 1)]), state_module.use_identity(self.identity_id):
+                        self.assertFalse(await nanlong._recover_nanlong_pending_reply_from_log(self.now + 2))
+                    self.assertEqual(before, self.identity)
+
+    async def test_unthreaded_result_requires_a_valid_original_receipt_route(self):
+        changes = (
+            {"nanlong_last_msg_id": "invalid"}, {"nanlong_last_msg_id": -1},
+            {"nanlong_last_msg_id": True}, {"nanlong_last_msg_id": 124.5},
+            {"nanlong_last_chat_id": 0}, {"nanlong_last_sent_at": True},
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                self.seed_exchange()
+                self.identity.update(change)
+                before = copy.deepcopy(self.identity)
+                with state_module.use_identity(self.identity_id), patch.object(nanlong, "get_sent_message_chat_id", return_value=0):
+                    self.assertFalse(await nanlong.handle_nanlong_result_broadcast(self.trade_text, self.now, self.event(900, -1002)))
+                self.assertEqual(before, self.identity)
+
+    async def test_ui_keeps_expired_or_disabled_unresolved_work_visible(self):
+        from model import ui
+
+        self.seed_exchange(protected=True)
+        self.identity.update(nanlong_enabled=False, next_nanlong_time=self.now - 1)
+        self.assertTrue(ui.get_identity_ui_snapshot(self.identity_id)["nanlong_pending"])
+        self.identity.update(nanlong_reply_to_msg_id=0, nanlong_last_msg_id=0, nanlong_last_command="", nanlong_protect_phase="recall_pending")
+        self.assertTrue(ui.get_identity_ui_snapshot(self.identity_id)["nanlong_pending"])
+        with state_module.use_identity(self.identity_id):
+            nanlong.clear_nanlong_state()
+        self.assertFalse(ui.get_identity_ui_snapshot(self.identity_id)["nanlong_pending"])
+
+    async def test_orphan_child_anchor_cannot_send_or_expire_as_an_unused_prompt(self):
+        baseline = copy.deepcopy(self.identity)
+        for child in ("nanlong_place_msg_id", "nanlong_recall_msg_id"):
+            for expired in (False, True):
+                with self.subTest(child=child, expired=expired):
+                    self.identity.clear()
+                    self.identity.update(copy.deepcopy(baseline))
+                    await self.seed_prompt()
+                    self.identity[child] = 124
+                    if expired:
+                        self.identity["next_nanlong_time"] = self.now - 1
+                    with (
+                        state_module.use_identity(self.identity_id),
+                        patch.object(nanlong, "iter_message_log_entries_between", return_value=[]),
+                        patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                    ):
+                        await nanlong.run_nanlong_scheduler(self.now)
+                        await nanlong.run_nanlong_scheduler(self.now + 86400)
+                    sender.assert_not_awaited()
+                    self.assertEqual(124, self.identity[child])
+                    self.assertIn("待核对", self.identity["nanlong_last_error"])
+
+    def seed_native_orphan_receipt(self, command, *, track=False):
+        state_module.set_identity_account(self.identity_id, 7101)
+        with (
+            state_module.use_identity(self.identity_id),
+            patch.object(nanlong.time, "time", return_value=self.now),
+            patch.object(runtime, "MESSAGES_DIR", message_log_recovery.MESSAGES_DIR),
+            patch.object(runtime, "cleanup_message_logs"),
+            patch.object(runtime, "_notify_game_command_sent_observers"),
+        ):
+            nanlong._set_nanlong_pending(123, self.now + 180, self.now - 1, chat_id=-1001)
+            self.identity["nanlong_last_chat_id"] = -1001
+            self.assertTrue(nanlong._prepare_nanlong_send(command, self.now))
+            receipt = runtime._finalize_game_command_sent(
+                command, msg_id=124, sent_at=self.now, send_started_at=self.now,
+                send_as_id=self.identity_id, track=track, max_retry=0,
+                game_group_id=-1001, topic_id=0, send_intent=nanlong._nanlong_send_intent(),
+            )
+            if command == nanlong.CMD_CONCUBINE_PLACE:
+                nanlong._set_nanlong_waiting_for_place(receipt)
+            else:
+                nanlong._set_nanlong_waiting_for_recall(receipt)
+        self.identity.update(nanlong_last_msg_id=0, nanlong_last_command="", nanlong_protect_phase="")
+
+    async def test_owned_orphan_receipt_rejoins_its_original_result_without_resending(self):
+        steps = (
+            (nanlong.CMD_CONCUBINE_PLACE, "你已将道侣【墨彩环】安置在洞府的藏娇阁中。", nanlong.CMD_NANLONG_EXCHANGE_FABAO),
+            (nanlong.CMD_CONCUBINE_RECALL, "你已将道侣【墨彩环】从藏娇阁中召回。", None),
+        )
+        for command, result, successor in steps:
+            with self.subTest(command=command), self.logged_results([]) as append_entry:
+                self.seed_native_orphan_receipt(command)
+                append_entry(self.result_entry(chat_id=-1001, reply_id=124, text=result), self.now + 1)
+                with (
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong.time, "time", return_value=self.now + 61),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(
+                        id=125, chat_id=-1001, sent_at=self.now + 61,
+                    ))) as sender,
+                ):
+                    await nanlong.run_nanlong_scheduler(self.now + 61)
+                    await nanlong.run_nanlong_scheduler(self.now + 62)
+                self.assertEqual([successor] if successor else [], [call.args[0] for call in sender.await_args_list])
+                if successor:
+                    self.assertEqual("exchange_pending", self.identity["nanlong_protect_phase"])
+                    self.assertEqual(125, self.identity["nanlong_last_msg_id"])
+                else:
+                    self.assertEqual(0, self.identity["nanlong_recall_msg_id"])
+                    self.assertEqual("", self.identity["nanlong_last_error"])
+
+    async def test_ui_retains_malformed_nanlong_state_without_breaking_snapshot(self):
+        from model import ui
+
+        for field in ("nanlong_reply_to_msg_id", "next_nanlong_time", "nanlong_reply_due_at"):
+            for value in ("invalid", "nan", True, [123]):
+                with self.subTest(field=field, value=value):
+                    self.seed_exchange()
+                    self.identity[field] = value
+                    before = {key: copy.deepcopy(value) for key, value in self.identity.items() if "nanlong" in key}
+                    snapshot = ui.get_identity_ui_snapshot(self.identity_id)
+                    self.assertTrue(snapshot["nanlong_pending"])
+                    self.assertEqual(before, {key: value for key, value in self.identity.items() if "nanlong" in key})
+                    self.assertIn("异常", snapshot["nanlong_last_error"])
+
+    async def test_orphan_receipt_can_use_native_pending_evidence_without_logs(self):
+        with self.logged_results([]):
+            self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_RECALL, track=True)
+            with (
+                state_module.use_identity(self.identity_id),
+                patch.object(nanlong, "iter_message_log_entries_between", return_value=[]),
+                patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+            ):
+                await nanlong.run_nanlong_scheduler(self.now + 61)
+                self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                self.assertEqual("recall_pending", self.identity["nanlong_protect_phase"])
+                self.assertTrue(await nanlong.handle_nanlong_reply(
+                    "你已将道侣【墨彩环】从藏娇阁中召回。", self.now + 62,
+                    SimpleNamespace(id=124, chat_id=-1001, raw_text=nanlong.CMD_CONCUBINE_RECALL), matched_family="nanlong",
+                ))
+            sender.assert_not_awaited()
+            self.assertNotIn((-1001, 124), self.identity["pending_tasks"])
+
+    async def test_conflicting_orphan_receipts_cannot_override_matching_native_evidence(self):
+        changes = (
+            {"chat_id": -1002}, {"sender_id": self.identity_id + 1}, {"account_id": 7102},
+            {"source_module": "侍妾"}, {"family": "concubine"}, {"chain_id": "different"},
+            {"op_id": "different"}, {"reply_to_msg_id": 123}, {"text": nanlong.CMD_CONCUBINE_PLACE},
+            {"send_started_at": self.now + 10}, {"send_started_at": "invalid"},
+            {"message_id": 125},
+        )
+        for changeset in changes:
+            with self.subTest(changes=changeset), self.logged_results([]) as append_entry:
+                self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_RECALL)
+                entry = next(entry for entry, _ in message_log_recovery.iter_message_log_entries_between(self.now - 1, self.now + 1)
+                             if entry.get("event_type") == "sent")
+                append_entry({**entry, **changeset}, self.now)
+                with state_module.use_identity(self.identity_id), patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender:
+                    await nanlong.run_nanlong_scheduler(self.now + 61)
+                sender.assert_not_awaited()
+                self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+                self.assertEqual(124, self.identity["nanlong_recall_msg_id"])
+                self.assertIn("待核对", self.identity["nanlong_last_error"])
+
+    async def test_orphan_receipt_rejects_unowned_or_contradictory_state(self):
+        changes = (
+            {"nanlong_last_chat_id": -1002}, {"nanlong_reply_chat_id": -1002},
+            {"nanlong_last_prompt_key": "-1001:999"}, {"nanlong_last_prompt_key": ""},
+            {"nanlong_last_sent_at": self.now - 20}, {"nanlong_last_sent_at": self.now + 20},
+            {"nanlong_recall_msg_id": "invalid"}, {"nanlong_recall_msg_id": True},
+            {"nanlong_recall_msg_id": -124}, {"nanlong_last_msg_id": "invalid"},
+            {"nanlong_protect_phase": "invalid"}, {"account": 7102},
+        )
+        for changeset in changes:
+            with self.subTest(changes=changeset), self.logged_results([]):
+                self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_RECALL)
+                if "account" in changeset:
+                    state_module.set_identity_account(self.identity_id, changeset["account"])
+                else:
+                    self.identity.update(changeset)
+                before = copy.deepcopy(self.identity)
+                with state_module.use_identity(self.identity_id), patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender:
+                    await nanlong.run_nanlong_scheduler(self.now + 61)
+                sender.assert_not_awaited()
+                for key in ("nanlong_recall_msg_id", "nanlong_last_msg_id", "nanlong_last_command", "nanlong_last_chat_id"):
+                    self.assertEqual(before[key], self.identity[key])
+
+    async def test_partial_or_contradictory_child_phase_cannot_repeat_a_known_mutation(self):
+        for phase in ("place_pending", "exchange_pending", "recall_pending"):
+            with self.subTest(phase=phase), self.logged_results([]):
+                self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_RECALL)
+                self.identity["nanlong_protect_phase"] = phase
+                with (
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong, "iter_message_log_entries_between", return_value=[]),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                ):
+                    await nanlong.run_nanlong_scheduler(self.now + 61)
+                sender.assert_not_awaited()
+                self.assertEqual(124, self.identity["nanlong_recall_msg_id"])
+                self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+
+    async def test_matching_partial_phase_recovers_from_duplicate_native_pending_and_log_evidence(self):
+        for command, phase in ((nanlong.CMD_CONCUBINE_PLACE, "place_pending"), (nanlong.CMD_CONCUBINE_RECALL, "recall_pending")):
+            with self.subTest(command=command), self.logged_results([]):
+                self.seed_native_orphan_receipt(command, track=True)
+                self.identity["nanlong_protect_phase"] = phase
+                with state_module.use_identity(self.identity_id), patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender:
+                    await nanlong.run_nanlong_scheduler(self.now + 61)
+                    await nanlong.run_nanlong_scheduler(self.now + 62)
+                sender.assert_not_awaited()
+                self.assertEqual(124, self.identity["nanlong_last_msg_id"])
+                self.assertEqual(command, self.identity["nanlong_last_command"])
+                self.assertEqual(phase, self.identity["nanlong_protect_phase"])
+
+    async def test_orphan_recall_with_a_stale_previous_command_cannot_recall_again(self):
+        with self.logged_results([]):
+            self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_RECALL)
+            self.identity.update(nanlong_last_command=nanlong.CMD_NANLONG_EXCHANGE_FABAO, nanlong_protect_phase="recall_pending")
+            with state_module.use_identity(self.identity_id), patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender:
+                await nanlong.run_nanlong_scheduler(self.now + 61)
+            sender.assert_not_awaited()
+            self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+            self.assertEqual(124, self.identity["nanlong_recall_msg_id"])
+
+    async def test_failed_orphan_recovery_save_preserves_evidence_and_does_not_send(self):
+        for failure in (False, OSError("local disk unavailable")):
+            with self.subTest(failure=failure), self.logged_results([]):
+                self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_PLACE)
+                with (
+                    state_module.use_identity(self.identity_id),
+                    patch.object(nanlong, "save_state", return_value=False, side_effect=failure if isinstance(failure, Exception) else None),
+                    patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+                ):
+                    if isinstance(failure, Exception):
+                        with self.assertRaises(OSError):
+                            await nanlong.run_nanlong_scheduler(self.now + 61)
+                    else:
+                        await nanlong.run_nanlong_scheduler(self.now + 61)
+                sender.assert_not_awaited()
+                self.assertEqual(124, self.identity["nanlong_place_msg_id"])
+                self.assertEqual(0, self.identity["nanlong_last_msg_id"])
+                self.assertEqual("", self.identity["nanlong_last_command"])
+
+    async def test_two_owned_child_receipts_resume_the_latest_cleanup_from_bounded_old_windows(self):
+        recalled_at = self.now + 1800
+        with self.logged_results([]) as append_entry:
+            self.seed_native_orphan_receipt(nanlong.CMD_CONCUBINE_PLACE)
+            with (
+                state_module.use_identity(self.identity_id),
+                patch.object(nanlong.time, "time", return_value=recalled_at),
+                patch.object(runtime, "MESSAGES_DIR", message_log_recovery.MESSAGES_DIR),
+                patch.object(runtime, "cleanup_message_logs"),
+                patch.object(runtime, "_notify_game_command_sent_observers"),
+            ):
+                nanlong._clear_nanlong_prompt_anchor()
+                self.assertTrue(nanlong._prepare_nanlong_send(nanlong.CMD_CONCUBINE_RECALL, recalled_at))
+                receipt = runtime._finalize_game_command_sent(
+                    nanlong.CMD_CONCUBINE_RECALL, msg_id=126, sent_at=recalled_at, send_started_at=recalled_at,
+                    send_as_id=self.identity_id, track=False, game_group_id=-1001, topic_id=0,
+                    send_intent=nanlong._nanlong_send_intent(),
+                )
+                nanlong._set_nanlong_waiting_for_recall(receipt)
+            self.identity.update(nanlong_last_msg_id=0, nanlong_last_command="", nanlong_protect_phase="")
+            append_entry(self.result_entry(chat_id=-1001, reply_id=126, text="你已将道侣【墨彩环】从藏娇阁中召回。"), recalled_at + 1)
+            with (
+                state_module.use_identity(self.identity_id),
+                patch.object(nanlong, "iter_message_log_entries_between", wraps=message_log_recovery.iter_message_log_entries_between) as reader,
+                patch.object(nanlong, "send_game_command", new=AsyncMock()) as sender,
+            ):
+                await nanlong.run_nanlong_scheduler(self.now + 86400)
+            sender.assert_not_awaited()
+            self.assertEqual(0, self.identity["nanlong_place_msg_id"])
+            self.assertEqual(0, self.identity["nanlong_recall_msg_id"])
+            self.assertEqual("", self.identity["nanlong_last_error"])
+            self.assertTrue(all(call.args[1] - call.args[0] < 2 * nanlong.NANLONG_LOG_REPLAY_LOOKBACK_SEC for call in reader.call_args_list))

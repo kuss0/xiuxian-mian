@@ -1,5 +1,11 @@
-"""Decode an existing bounded log batch; never fetch history or apply reducers."""
+"""Read/decode bounded existing logs; never fetch Telegram history or apply reducers."""
 
+import json
+from datetime import datetime
+from pathlib import Path
+
+from .config import MESSAGES_DIR, TZ_LOCAL
+from .message_log_recovery import _read_log_tail_lines, parse_message_log_ts
 from .profile_observation import timestamp
 from .verified_event import VerifiedGameEvent
 from .yinluo_resource_facts import admit_yinluo_resource_source, parse_yinluo_resource_command
@@ -7,6 +13,37 @@ from .yinluo_resource_facts import admit_yinluo_resource_source, parse_yinluo_re
 
 MAX_LOG_RECORDS = 8192
 MAX_REPLY_DEPTH = 8
+MAX_LOG_LOOKBACK_SEC = 24 * 3600
+MAX_LOG_BYTES = 1024 * 1024
+
+
+def read_yinluo_log_batch(now, *, since, messages_dir=None):
+    """At most two daily tails and 8192 rows; local clocks only bound IO.
+
+    Missing/truncated original commands cannot be replaced with `sent` rows.
+    The decoder still requires the native clocks and senders on every link.
+    """
+    now, since = timestamp(now), timestamp(since)
+    if not now or not since or since > now:
+        return []
+    since = max(since - 5, now - MAX_LOG_LOOKBACK_SEC)
+    days = {datetime.fromtimestamp(at, TZ_LOCAL).date() for at in (since, now)}
+    result = []
+    for day in sorted(days):
+        path = Path(messages_dir or MESSAGES_DIR) / f"{day.isoformat()}.log"
+        for line in _read_log_tail_lines(path, max_bytes=MAX_LOG_BYTES):
+            try:
+                entry = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(entry, dict) or entry.get("event_type") not in {"message", "edit"}:
+                continue
+            if not since <= parse_message_log_ts(entry.get("ts")) <= now + 1:
+                continue
+            result.append(entry)
+            if len(result) > MAX_LOG_RECORDS:
+                return []
+    return result
 
 
 def owned_yinluo_log_events(entries, *, identity_accounts, game_chats, game_bots, now):

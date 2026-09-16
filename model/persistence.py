@@ -14,6 +14,11 @@ from .delayed_actions import (
     restore_from_state as restore_delayed_actions_from_state,
 )
 from .state import (
+    FISHING_OPERATION_MAX_BYTES,
+    TRIAL_OPERATION_MAX_BYTES,
+    TREASURE_RESULT_MAX_BYTES,
+    TREASURE_OPERATION_MAX_BYTES,
+    TREE_OPERATION_MAX_BYTES,
     IDENTITY_BOOL_FIELDS,
     IDENTITY_JSON_COLUMNS,
     IDENTITY_MODULE_COLUMNS,
@@ -223,6 +228,22 @@ PENDING_TASK_RECOVERY_KEYS = (
     "reply_recovery_retry_at", "reply_recovery_error", "reply_recovery_msg_id",
     "reply_recovery_applied", "send_caller_detached", "send_started_at",
 )
+OWNED_JSON_OBJECT_COLUMNS = frozenset({
+    "concubine_status_query",
+    "concubine_gift_actions",
+    "concubine_greet_action",
+    "concubine_fragment_actions",
+    "concubine_voyage_actions",
+    "concubine_tianji_action",
+    "concubine_heart_session",
+    "concubine_reacquire_action",
+    "concubine_external_observation",
+    "second_soul_commands",
+    "tianti_commands",
+    "explore_rift_rebirth_operation",
+    "explore_rift_result_evidence",
+    "wanxin_observation",
+})
 
 
 def _pending_recovery_fields(value):
@@ -515,6 +536,15 @@ _SCHEMA_COLUMNS = {
         ("concubine_availability", "TEXT NOT NULL DEFAULT 'unknown'"),
         ("concubine_nanlong_strategy", "TEXT NOT NULL DEFAULT 'reacquire_after_loss'"),
         ("concubine_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("concubine_status_query", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_gift_actions", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_greet_action", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_fragment_actions", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_voyage_actions", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_tianji_action", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_heart_session", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_reacquire_action", "TEXT NOT NULL DEFAULT '{}'"),
+        ("concubine_external_observation", "TEXT NOT NULL DEFAULT '{}'"),
         ("concubine_greet_msg_id", "INTEGER NOT NULL DEFAULT 0"),
         ("concubine_last_greet_day", "TEXT NOT NULL DEFAULT ''"),
         ("concubine_greet_retry_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -653,6 +683,7 @@ _SCHEMA_COLUMNS = {
         ("formation_last_error", "TEXT NOT NULL DEFAULT ''"),
         ("formation_last_success_at", "REAL NOT NULL DEFAULT 0"),
         ("tianti_status_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("tianti_commands", "TEXT NOT NULL DEFAULT '{}'"),
         ("tianti_last_status_msg_id", "INTEGER NOT NULL DEFAULT 0"),
         ("tianti_last_status_seen_at", "REAL NOT NULL DEFAULT 0"),
         ("tianti_last_wenxin_msg_id", "INTEGER NOT NULL DEFAULT 0"),
@@ -808,6 +839,12 @@ _SCHEMA_COLUMNS = {
         ("fishing_transfer_due_at", "REAL NOT NULL DEFAULT 0"),
         ("fishing_caught_fish_json", "TEXT NOT NULL DEFAULT ''"),
         ("fishing_valuable_drop_reminders", "TEXT NOT NULL DEFAULT '[]'"),
+        ("fishing_result_pending", "TEXT NOT NULL DEFAULT '{}'"),
+        ("fishing_operation", "TEXT NOT NULL DEFAULT '{}'"),
+        ("trial_operation", "TEXT NOT NULL DEFAULT '{}'"),
+        ("treasure_result", "TEXT NOT NULL DEFAULT '{}'"),
+        ("treasure_operation", "TEXT NOT NULL DEFAULT '{}'"),
+        ("tree_operation", "TEXT NOT NULL DEFAULT '{}'"),
         ("fishing_phase", "TEXT NOT NULL DEFAULT 'idle'"),
         ("fishing_reply_to_msg_id", "INTEGER NOT NULL DEFAULT 0"),
         ("fishing_reply_due_at", "REAL NOT NULL DEFAULT 0"),
@@ -858,6 +895,7 @@ _SCHEMA_COLUMNS = {
         ("identity_info_refresh", "TEXT NOT NULL DEFAULT '{}'"),
         ("identity_profile_observed_at", "TEXT NOT NULL DEFAULT '{}'"),
         ("xiuwei_accounting", "TEXT NOT NULL DEFAULT '{}'"),
+        ("yinluo_accounting", "TEXT NOT NULL DEFAULT '{}'"),
         ("second_soul_phase", "TEXT NOT NULL DEFAULT 'idle'"),
         ("second_soul_commands", "TEXT NOT NULL DEFAULT '{}'"),
         ("second_soul_choice_strategy", "TEXT NOT NULL DEFAULT 'stable'"),
@@ -1409,6 +1447,7 @@ def init_db():
             formation_last_error TEXT NOT NULL DEFAULT '',
             formation_last_success_at REAL NOT NULL DEFAULT 0,
             tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            tianti_commands TEXT NOT NULL DEFAULT '{}',
             tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0,
             tianti_last_status_seen_at REAL NOT NULL DEFAULT 0,
             tianti_last_wenxin_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -1461,6 +1500,15 @@ def init_db():
             concubine_availability TEXT NOT NULL DEFAULT 'unknown',
             concubine_nanlong_strategy TEXT NOT NULL DEFAULT 'reacquire_after_loss',
             concubine_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_status_query TEXT NOT NULL DEFAULT '{}',
+            concubine_gift_actions TEXT NOT NULL DEFAULT '{}',
+            concubine_greet_action TEXT NOT NULL DEFAULT '{}',
+            concubine_fragment_actions TEXT NOT NULL DEFAULT '{}',
+            concubine_voyage_actions TEXT NOT NULL DEFAULT '{}',
+            concubine_tianji_action TEXT NOT NULL DEFAULT '{}',
+            concubine_heart_session TEXT NOT NULL DEFAULT '{}',
+            concubine_reacquire_action TEXT NOT NULL DEFAULT '{}',
+            concubine_external_observation TEXT NOT NULL DEFAULT '{}',
             concubine_greet_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_last_greet_day TEXT NOT NULL DEFAULT '',
             concubine_greet_retry_count INTEGER NOT NULL DEFAULT 0,
@@ -1688,6 +1736,12 @@ def init_db():
             fishing_transfer_due_at REAL NOT NULL DEFAULT 0,
             fishing_caught_fish_json TEXT NOT NULL DEFAULT '',
             fishing_valuable_drop_reminders TEXT NOT NULL DEFAULT '[]',
+            fishing_result_pending TEXT NOT NULL DEFAULT '{}',
+            fishing_operation TEXT NOT NULL DEFAULT '{}',
+            trial_operation TEXT NOT NULL DEFAULT '{}',
+            treasure_result TEXT NOT NULL DEFAULT '{}',
+            treasure_operation TEXT NOT NULL DEFAULT '{}',
+            tree_operation TEXT NOT NULL DEFAULT '{}',
             fishing_phase TEXT NOT NULL DEFAULT 'idle',
             fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             fishing_reply_due_at REAL NOT NULL DEFAULT 0,
@@ -1737,7 +1791,8 @@ def init_db():
             identity_info_primary_payload TEXT NOT NULL DEFAULT '{}',
             identity_info_refresh TEXT NOT NULL DEFAULT '{}',
             identity_profile_observed_at TEXT NOT NULL DEFAULT '{}',
-            xiuwei_accounting TEXT NOT NULL DEFAULT '{}'
+            xiuwei_accounting TEXT NOT NULL DEFAULT '{}',
+            yinluo_accounting TEXT NOT NULL DEFAULT '{}'
         );
 
         CREATE TABLE IF NOT EXISTS pending_tasks (
@@ -1853,6 +1908,37 @@ def init_db():
             PRIMARY KEY (send_as_id, chat_id, msg_id)
         );
 
+        CREATE TABLE IF NOT EXISTS yinluo_archive_commands (
+            identity_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            command_msg_id INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            PRIMARY KEY (identity_id, account_id, chat_id, command_msg_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS yinluo_archive_messages (
+            identity_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            command_msg_id INTEGER NOT NULL,
+            msg_id INTEGER NOT NULL,
+            sender_id INTEGER NOT NULL,
+            PRIMARY KEY (chat_id, msg_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_yinluo_archive_messages_command
+            ON yinluo_archive_messages(identity_id, account_id, chat_id, command_msg_id);
+
+        CREATE TABLE IF NOT EXISTS yinluo_archive_business (
+            identity_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            business_key TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            PRIMARY KEY (identity_id, account_id, business_key)
+        );
+
         CREATE TABLE IF NOT EXISTS official_schedule_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             send_as_id INTEGER NOT NULL,
@@ -1903,8 +1989,43 @@ def init_db():
     _db_initialized = True
 
 
+def _bounded_miniapp_operation(value):
+    pending, visited = [(value, 0)], 0
+    while pending:
+        item, depth = pending.pop()
+        visited += 1
+        if depth > 12 or visited > 10000:
+            return False
+        if isinstance(item, (dict, list)):
+            if len(item) > 10000:
+                return False
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
+    return True
+
+
 def _serialize_db_value(key, value):
-    if key == "xiuwei_accounting":
+    if key in OWNED_JSON_OBJECT_COLUMNS:
+        # None is invalid evidence here, not the empty-record default.
+        return json.dumps(value, ensure_ascii=False)
+    if key == "yinluo_observation" and not isinstance(value, dict):
+        return '{"legacy_pending_invalid":true}'
+    if key in {"fishing_result_pending", "fishing_operation", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
+        try:
+            limit = {"fishing_operation": FISHING_OPERATION_MAX_BYTES, "trial_operation": TRIAL_OPERATION_MAX_BYTES,
+                     "treasure_result": TREASURE_RESULT_MAX_BYTES, "treasure_operation": TREASURE_OPERATION_MAX_BYTES,
+                     "tree_operation": TREE_OPERATION_MAX_BYTES}.get(key)
+            if limit and not _bounded_miniapp_operation(value):
+                return '{"invalid":true}'
+            options = {"separators": (",", ":")} if limit else {}
+            encoded = json.dumps(value if isinstance(value, dict) else {"invalid": True},
+                                 ensure_ascii=False, allow_nan=False, **options)
+            if limit and len(encoded.encode()) > limit:
+                return '{"invalid":true}'
+            return encoded
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return '{"invalid":true}'
+    if key in {"xiuwei_accounting", "yinluo_accounting"}:
         try:
             return json.dumps(value, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError, OverflowError):
@@ -1920,7 +2041,39 @@ def _serialize_db_value(key, value):
 
 
 def _deserialize_db_value(key, value):
-    if key == "xiuwei_accounting":
+    if key in OWNED_JSON_OBJECT_COLUMNS:
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, RecursionError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        # Existing module validators reject this marker. Retain the source
+        # for reconciliation instead of making a corrupt operation idle.
+        if isinstance(value, (bytes, bytearray)):
+            return {"invalid": True, "raw_bytes_hex": value.hex()}
+        return {"invalid": True, "raw_json": value}
+    if key == "yinluo_observation":
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, RecursionError):
+            parsed = None
+        return parsed if isinstance(parsed, dict) else {"legacy_pending_invalid": True}
+    if key in {"fishing_result_pending", "fishing_operation", "trial_operation", "treasure_result", "treasure_operation", "tree_operation"}:
+        try:
+            limit = {"fishing_operation": FISHING_OPERATION_MAX_BYTES, "trial_operation": TRIAL_OPERATION_MAX_BYTES,
+                     "treasure_result": TREASURE_RESULT_MAX_BYTES, "treasure_operation": TREASURE_OPERATION_MAX_BYTES,
+                     "tree_operation": TREE_OPERATION_MAX_BYTES}.get(key)
+            if limit and (not isinstance(value, (str, bytes))
+                    or len(value.encode() if isinstance(value, str) else value) > limit):
+                return {"invalid": True}
+            parsed = json.loads(value)
+            if limit and not _bounded_miniapp_operation(parsed):
+                return {"invalid": True}
+            return parsed if isinstance(parsed, dict) else {"invalid": True}
+        except (TypeError, ValueError, RecursionError):
+            return {"invalid": True}
+    if key in {"xiuwei_accounting", "yinluo_accounting"}:
         try:
             return json.loads(value)
         except (TypeError, ValueError):
@@ -3099,7 +3252,7 @@ def delete_identity_from_db(send_as_id):
 
 
 
-def save_state():
+def save_state(*, yinluo_archive_changes=(), yinluo_business_changes=()):
     global _state_dirty, _last_flush_time
     shadow_sample = None
     conn = None
@@ -3144,6 +3297,26 @@ def save_state():
         )
         deleted_identity_ids = tuple(sorted(existing_ids - current_ids))
 
+        if yinluo_archive_changes or yinluo_business_changes:
+            from .yinluo_archive import apply_changes
+            if yinluo_business_changes:
+                from .yinluo_accounting import _business_change_supported
+                from .yinluo_archive import ArchiveConflict, business_manifest
+                # Native ownership must remain provable under the same writer
+                # lock as the cold index and hot resource projections.
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                for change in yinluo_business_changes:
+                    current = get_identity_state(change.identity_id).get("yinluo_accounting", {})
+                    if not _business_change_supported(current, change, archive_changes=yinluo_archive_changes):
+                        raise ArchiveConflict("unproven_yinluo_business_change")
+                apply_changes(conn, yinluo_archive_changes, business_changes=yinluo_business_changes)
+                for identity_id, account_id in {change.key[:2] for change in yinluo_business_changes}:
+                    expected = get_identity_state(identity_id).get("yinluo_accounting", {}).get("business_archive")
+                    if business_manifest(conn, identity_id, account_id) != expected:
+                        raise ArchiveConflict("yinluo_business_manifest_mismatch")
+            else:
+                apply_changes(conn, yinluo_archive_changes)
         if changed_meta_keys:
             _save_meta_state(conn, changed_meta_keys, snapshot=current_meta_snapshot)
         for send_as_id in deleted_identity_ids:

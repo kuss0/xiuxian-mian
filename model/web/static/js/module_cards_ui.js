@@ -760,6 +760,8 @@
             currentChoiceText('最近动作', wanxin.auto_last_action || '无')+
             currentChoiceText('最近结果', wanxin.auto_last_result || '无')+
             currentChoiceText('最近异常', wanxin.auto_last_error || wxAssist.last_error || '无')+
+            currentChoiceText('未确认动作', wanxin.unresolved_summary || '无')+
+            currentChoiceText('回包复核', wanxin.recovery_next_time || '未设置')+
             '<button type="button" class="btn btn-secondary" data-save-wanxin-config="1">保存设置</button>'
           );
       }else if(module.name === '玄骨考校'){

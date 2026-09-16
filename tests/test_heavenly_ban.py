@@ -148,7 +148,7 @@ class HeavenlyBanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("heavenly_pardon", recent["module"])
         self.assertEqual(identity_id, recent["identity_id"])
 
-    async def test_concubine_dream_heavenly_ban_does_not_schedule_cooldown(self):
+    async def test_unowned_dream_reply_cannot_disable_identity_or_erase_pending(self):
         identity_id = self._prepare_identity(username="iceeet1")
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -157,6 +157,7 @@ class HeavenlyBanTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["concubine_dream_msg_id"] = 777
             state_module.state["concubine_dream_due_at"] = now + 3600
             state_module.state["next_concubine_time"] = now + 3600
+            before = copy.deepcopy(state_module.get_identity_state(identity_id))
 
             with (
                 patch.object(heavenly_ban, "send_audit_log", new=AsyncMock()) as audit_mock,
@@ -170,12 +171,10 @@ class HeavenlyBanTests(unittest.IsolatedAsyncioTestCase):
                     matched_family="concubine_dream",
                 )
 
-            self.assertTrue(handled)
-            self.assertFalse(state_module.get_identity_enabled(identity_id))
-            self.assertEqual(0, state_module.state["concubine_dream_due_at"])
-            self.assertEqual(0, state_module.state["next_concubine_time"])
-            self.assertEqual("idle", state_module.state["concubine_phase"])
-        self.assertEqual(5, audit_mock.await_count)
+            self.assertFalse(handled)
+            self.assertTrue(state_module.get_identity_enabled(identity_id))
+            self.assertEqual(before, state_module.get_identity_state(identity_id))
+        audit_mock.assert_not_awaited()
 
     async def test_concubine_scheduler_recovers_persisted_heavenly_ban_error(self):
         identity_id = self._prepare_identity(username="WalterWA2000")

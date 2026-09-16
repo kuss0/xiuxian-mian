@@ -163,6 +163,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 "wild_experience",
                 mode="unsafe",
                 token="df_SECRET999",
+                player_id=8659059191,
                 init_data="query_id=abc",
             )
 
@@ -214,11 +215,13 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         request = cave_treasure_miniapp.build_cave_small_world_action_request(
             "manifest",
             token="df_SECRET999",
+            player_id=8659059191,
             init_data="query_id=abc&hash=VERY_SECRET",
         )
         self.assertEqual("small_world", request["safe_summary"]["endpoint"])
         self.assertEqual("manifest", request["payload"]["action"])
-        self.assertEqual({"action"}, set(request["payload"]) - {"token", "initData"})
+        self.assertEqual(8659059191, request["payload"]["playerId"])
+        self.assertEqual({"action", "playerId"}, set(request["payload"]) - {"token", "initData"})
         self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
 
         external_request = cave_treasure_miniapp.build_cave_external_action_request(
@@ -375,42 +378,48 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertNotIn("farm_SECRET999", text)
         self.assertNotIn("trial_SECRET999", text)
 
-    def test_cave_deep_seclusion_action_request_is_scoped_to_action_only(self):
+    def test_cave_deep_seclusion_action_request_is_scoped_to_selected_player(self):
         request = cave_treasure_miniapp.build_cave_deep_seclusion_action_request(
             "settle",
             token="df_SECRET999",
+            player_id=-1003581351795,
             init_data="query_id=abc&hash=VERY_SECRET",
         )
 
         self.assertEqual("deep_seclusion", request["safe_summary"]["endpoint"])
         self.assertEqual("df_SECRET999", request["payload"]["token"])
         self.assertEqual("settle", request["payload"]["action"])
+        self.assertEqual(-1003581351795, request["payload"]["playerId"])
         self.assertIn("initData", request["payload"])
-        self.assertEqual({"action"}, set(request["payload"]) - {"token", "initData"})
+        self.assertEqual({"action", "playerId"}, set(request["payload"]) - {"token", "initData"})
         self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
         with self.assertRaises(ValueError):
             cave_treasure_miniapp.build_cave_deep_seclusion_action_request(
                 "unknown",
                 token="df_SECRET999",
+                player_id=-1003581351795,
                 init_data="query_id=abc&hash=VERY_SECRET",
             )
 
     def test_cave_meditation_settle_request_has_no_action_guess(self):
         request = cave_treasure_miniapp.build_cave_meditation_settle_request(
             token="df_SECRET999",
+            player_id=-1003581351795,
             init_data="query_id=abc&hash=VERY_SECRET",
         )
 
         self.assertEqual("meditation", request["safe_summary"]["endpoint"])
         self.assertEqual("df_SECRET999", request["payload"]["token"])
         self.assertIn("initData", request["payload"])
-        self.assertEqual(set(), set(request["payload"]) - {"token", "initData"})
+        self.assertEqual({"playerId"}, set(request["payload"]) - {"token", "initData"})
+        self.assertEqual(-1003581351795, request["payload"]["playerId"])
         self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
 
     def test_cave_tianjige_command_request_is_strictly_whitelisted(self):
         request = cave_treasure_miniapp.build_cave_tianjige_command_request(
             ".元婴出窍",
             token="df_SECRET999",
+            player_id=8659059191,
             init_data="query_id=abc&hash=VERY_SECRET",
         )
 
@@ -418,7 +427,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         self.assertEqual(".元婴出窍", request["payload"]["command"])
         self.assertEqual("df_SECRET999", request["payload"]["token"])
         self.assertIn("initData", request["payload"])
-        self.assertEqual({"command"}, set(request["payload"]) - {"token", "initData"})
+        self.assertEqual({"command", "playerId"}, set(request["payload"]) - {"token", "initData"})
         self.assertNotIn("VERY_SECRET", json.dumps(request["safe_summary"], ensure_ascii=False))
         self.assertNotIn("df_SECRET999", json.dumps(request["safe_summary"], ensure_ascii=False))
 
@@ -434,6 +443,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
         tianti_request = cave_treasure_miniapp.build_cave_tianjige_command_request(
             ".天阶状态",
             token="df_SECRET999",
+            player_id=8659059191,
             init_data="query_id=abc&hash=VERY_SECRET",
         )
         self.assertEqual(".天阶状态", tianti_request["payload"]["command"])
@@ -442,6 +452,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             read_only_request = cave_treasure_miniapp.build_cave_tianjige_command_request(
                 command,
                 token="df_SECRET999",
+                player_id=8659059191,
                 init_data="query_id=abc&hash=VERY_SECRET",
             )
             self.assertEqual(command, read_only_request["payload"]["command"])
@@ -450,6 +461,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             cave_treasure_miniapp.build_cave_tianjige_command_request(
                 ".闭关修炼",
                 token="df_SECRET999",
+                player_id=8659059191,
                 init_data="query_id=abc&hash=VERY_SECRET",
             )
 
@@ -501,7 +513,8 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             sleeper=lambda _delay: None,
             rng=random.Random(12),
         )
-        self.assertEqual(["start", "finish"], fishing_calls)
+        self.assertEqual(["start", "finish", "result"], fishing_calls)
+        self.assertEqual(1, fishing_calls.count("finish"))
 
         cave_calls = []
 
@@ -823,7 +836,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 }
             if endpoint == "finish":
                 submitted.append(dict(request["payload"]["trialProof"]))
-                return 200, {"ok": True}
+                return 200, {"ok": True, "result": {"settled_in_app": True}}
             raise AssertionError(f"unexpected endpoint {endpoint}")
 
         result = trial_miniapp.run_trial_miniapp_lab_flow(
@@ -873,7 +886,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
                 }
             if endpoint == "finish":
                 submitted_proof.update(request["payload"]["trialProof"])
-                return 200, {"ok": True}
+                return 200, {"ok": True, "result": {"settled_in_app": True}}
             raise AssertionError(f"unexpected endpoint {endpoint}")
 
         result = trial_miniapp.run_trial_miniapp_lab_flow(
@@ -1000,6 +1013,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             start_payloads.append(dict(request["payload"]))
             return 200, {
                 "ok": True,
+                "account": {"playerId": -1003820064579},
                 "dwelling": {"hunt": {"used": 3, "limit": 3, "remaining": 0, "actionPoints": 0}},
             }
 
@@ -1091,6 +1105,7 @@ class MiniAppProtocolFlowTests(unittest.TestCase):
             "huntRun": {
                 "sessionId": "hunt-found",
                 "status": "active",
+                "foundMain": True,
                 "size": 2,
                 "ap": 2,
                 "maxAp": 8,

@@ -204,7 +204,7 @@ from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore
 from .features.hehuan import execute_hehuan_manual_action, get_hehuan_status_text
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
-from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
+from .features.nanlong import clear_nanlong_state, get_nanlong_status_text, has_nanlong_pending_action
 from .features import passive_event_ledger
 from .features.passive_inbox import get_passive_inbox_snapshot, get_passive_inbox_status_text
 from .message_box import message_fact_from_dict, write_message_box_snapshot_payload
@@ -239,7 +239,7 @@ from .features.explore_rift import (
 )
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.mulan import clear_mulan_state, get_mulan_status_text, schedule_mulan_initial_check
-from .features.wanxin import clear_wanxin_state, get_wanxin_status_text, schedule_wanxin_initial_check
+from .features.wanxin import get_wanxin_status_text, schedule_wanxin_initial_check
 from .features.duel import (
     apply_duel_config,
     apply_duel_preset_row,
@@ -1618,22 +1618,8 @@ def _disable_mulan_module_state():
 
 
 def _disable_wanxin_module_state():
+    # A pause must retain owned operations, cooldowns and late-reply anchors.
     state["wanxin_enabled"] = False
-    clear_wanxin_state(persist=False)
-    _clear_pending_tasks_by_commands({
-        CMD_WANXIN_STATUS,
-        CMD_WANXIN_HELP,
-        CMD_WANXIN_VISIT,
-        CMD_WANXIN_PROTECT,
-        CMD_WANXIN_DEDUCE,
-        CMD_WANXIN_PUBLISH_COMMISSION,
-        CMD_WANXIN_CANCEL_COMMISSION,
-        CMD_WANXIN_ACCEPT_COMMISSION,
-        CMD_WANXIN_ASSIST_IDENTIFY,
-        CMD_WANXIN_ASSIST_BANNER,
-        CMD_WANXIN_ASSIST_STRIP,
-    })
-    _close_module_action_guard_sessions("婉心封魂")
 
 
 def _disable_duel_module_state():
@@ -1773,7 +1759,8 @@ def _manual_enable_jiyin_module_state(now):
 
 def _disable_nanlong_module_state():
     state["nanlong_enabled"] = False
-    clear_nanlong_state(persist=False, keep_last_error=True)
+    if not has_nanlong_pending_action():
+        clear_nanlong_state(persist=False, keep_last_error=True)
 
 
 def _manual_disable_nanlong_module_state():
@@ -1783,7 +1770,7 @@ def _manual_disable_nanlong_module_state():
 def _manual_enable_nanlong_module_state(now):
     state["nanlong_enabled"] = True
     next_nanlong_time, timer_dirty = _parse_manual_toggle_next_time("南陇侯", "next_nanlong_time")
-    if timer_dirty or next_nanlong_time > now:
+    if timer_dirty or next_nanlong_time > now or has_nanlong_pending_action():
         return
     clear_nanlong_state(persist=False)
 
@@ -1963,7 +1950,6 @@ def _manual_disable_wanxin_module_state():
 
 
 def _manual_enable_wanxin_module_state(now):
-    _close_module_action_guard_sessions("婉心封魂", reason="module_enabled_reset")
     state["wanxin_enabled"] = True
     schedule_wanxin_initial_check(now, persist=False)
 

@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -42,11 +42,46 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import state as state_module
 from model.features import passive_inbox, tianti
 
+CHAT = -100950001
+ACCOUNT = 9501
+BOT = 880950001
+
+
+def run_scheduler_at(now):
+    with patch.object(tianti.time, "time", return_value=now):
+        return asyncio.run(tianti.run_tianti_scheduler(now))
+
+
+def manual_context(reply, now):
+    return {
+        "send_as_id": state_module.get_current_identity_id(), "account_id": ACCOUNT,
+        "chat_id": CHAT, "root_msg_id": reply.id, "msg_id": reply.id + 1, "sender_id": BOT,
+        "server_event_at": now, "source": "manual_game_command",
+        "reply_to_command": reply.raw_text, "reply_to_server_at": now - 1,
+        "reply_to_sender_id": state_module.get_current_identity_id(),
+    }
+
+
+def command_record(kind, send_as_id, root, at):
+    return {
+        "op_id": f"fixture-{kind}-{root}", "identity_id": send_as_id, "account_id": ACCOUNT,
+        "command": tianti.TIANTI_COMMANDS[kind][0], "chat_id": CHAT, "msg_id": root,
+        "started_at": at, "sent_at": at, "dispatch_at": at, "status": "sent", "rank_choice": "普通",
+    }
+
 
 class _StateIsolationMixin:
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module.set_game_group_id(CHAT)
+        state_module.set_game_bot_ids([BOT])
+        for identity_id in range(95001, 95031):
+            state_module.set_identity_account(identity_id, ACCOUNT)
+        for name, replacement in (("_TIANTI_RUN_LOCKS", {}), ("send_audit_log", AsyncMock()), ("save_state", lambda: True)):
+            patcher = patch.object(tianti, name, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -249,7 +284,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
         state_module.ensure_identity_registered(send_as_id)
 
         with state_module.use_identity(send_as_id), \
-                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466030, sent_at=sent_at))), \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466030, chat_id=CHAT, send_started_at=now, sent_at=sent_at))), \
                 patch.object(tianti, "save_state") as save_mock, \
                 patch.object(tianti, "console_log"):
             state_module.state["tianti_enabled"] = True
@@ -261,7 +296,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["tianti_theoretical_max_stage"] = 12
             state_module.state["next_tianti_climb_time"] = next_climb
 
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
             self.assertEqual(9466030, state_module.state["tianti_last_wenxin_msg_id"])
             self.assertEqual(sent_at + tianti.TIANTI_WENXIN_INFLIGHT_GATE_SEC, state_module.state["next_tianti_wenxin_time"])
@@ -278,6 +313,8 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             "reply_to_msg_id": 9466030,
             "chat_id": state_module.get_game_group_id(),
             "sender_is_bot": True,
+            "sender_id": BOT,
+            "server_event_at": now - 30,
             "text": (
                 "【问心台回响】\n"
                 "你于问心台前静坐良久，最终凝出一道【澄明】之印。\n"
@@ -295,9 +332,10 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["tianti_enabled"] = True
             state_module.state["tianti_wenxin_enabled"] = True
             state_module.state["tianti_last_wenxin_msg_id"] = 9466030
+            state_module.state["tianti_commands"] = {"wenxin": command_record("wenxin", send_as_id, 9466030, now - 60)}
             state_module.state["next_tianti_wenxin_time"] = now - 1
 
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
             send_mock.assert_not_awaited()
             self.assertEqual("今日已问心，下次登天阶奖励提升", state_module.state["tianti_wenxin_status"])
@@ -392,7 +430,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 patch.object(tianti, "send_game_command", new=AsyncMock()) as send_mock, \
                 patch.object(tianti, "save_state"), \
                 patch.object(tianti, "console_log"):
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
         send_mock.assert_not_awaited()
 
@@ -409,12 +447,15 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
         }
 
         with state_module.use_identity(send_as_id), \
-                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=1234, sent_at=now))) as send_mock, \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=1234, chat_id=CHAT, send_started_at=now, sent_at=now))) as send_mock, \
                 patch.object(tianti, "save_state"), \
                 patch.object(tianti, "console_log"):
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
-        send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_STATUS, max_retry=1)
+        send_mock.assert_awaited_once_with(
+            tianti.CMD_TIANTI_STATUS, max_retry=0, send_as_id=send_as_id, priority="chain",
+            source_module="登天阶", op_id=ANY, target_chat_id=CHAT, operation_check=ANY,
+        )
 
     def test_available_gangfeng_panel_schedules_pre_climb_timer(self):
         send_as_id = 95026
@@ -458,6 +499,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 now,
                 reply_to,
                 matched_family=None,
+                reply_context=manual_context(reply_to, now),
             ))
 
             self.assertTrue(handled)
@@ -488,7 +530,8 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
                 text,
                 now=now,
-                reply_context={"send_as_id": send_as_id, "family": "tianti_status"},
+                reply_context=dict(manual_context(SimpleNamespace(id=99021, raw_text=".天阶状态"), now), family="tianti_status"),
+                event=SimpleNamespace(id=99022, chat_id=CHAT, sender_id=BOT, server_event_at=now),
             ))
 
             self.assertTrue(handled)
@@ -547,7 +590,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
         state_module.ensure_identity_registered(send_as_id)
 
         with state_module.use_identity(send_as_id), \
-                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466041, sent_at=sent_at))), \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466041, chat_id=CHAT, send_started_at=now, sent_at=sent_at))), \
                 patch.object(tianti, "save_state") as save_mock, \
                 patch.object(tianti, "console_log"):
             state_module.state["tianti_enabled"] = True
@@ -561,7 +604,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["next_tianti_gangfeng_time"] = now - 1
             state_module.state["tianti_last_status_seen_at"] = now
 
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
             self.assertEqual(9466041, state_module.state["tianti_last_gangfeng_msg_id"])
             self.assertEqual(sent_at + tianti.TIANTI_GANGFENG_INFLIGHT_GATE_SEC, state_module.state["next_tianti_gangfeng_time"])
@@ -577,7 +620,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
         state_module.ensure_identity_registered(send_as_id)
 
         with state_module.use_identity(send_as_id), \
-                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466042, sent_at=sent_at))) as send_mock, \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466042, chat_id=CHAT, send_started_at=now, sent_at=sent_at))) as send_mock, \
                 patch.object(tianti, "save_state"), \
                 patch.object(tianti, "console_log"):
             state_module.state["tianti_enabled"] = True
@@ -592,9 +635,12 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["next_tianti_status_time"] = now - 1
             state_module.state["tianti_last_status_seen_at"] = now - tianti.TIANTI_STATUS_FRESH_SEC - 1
 
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
-            send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_GANGFENG, max_retry=1)
+            send_mock.assert_awaited_once_with(
+                tianti.CMD_TIANTI_GANGFENG, max_retry=0, send_as_id=send_as_id, priority="chain",
+                source_module="登天阶", op_id=ANY, target_chat_id=CHAT, operation_check=ANY,
+            )
             self.assertEqual(9466042, state_module.state["tianti_last_gangfeng_msg_id"])
 
     def test_due_climb_disables_transport_retry_after_advancing_local_cd(self):
@@ -604,7 +650,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
         state_module.ensure_identity_registered(send_as_id)
 
         with state_module.use_identity(send_as_id), \
-                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466043, sent_at=sent_at))) as send_mock, \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466043, chat_id=CHAT, send_started_at=now, sent_at=sent_at))) as send_mock, \
                 patch.object(tianti, "save_state"), \
                 patch.object(tianti, "console_log"):
             state_module.state["tianti_enabled"] = True
@@ -615,9 +661,12 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["tianti_last_status_seen_at"] = now
             state_module.state["tianti_cooldown_text"] = "可立即登阶"
 
-            asyncio.run(tianti.run_tianti_scheduler(now))
+            run_scheduler_at(now)
 
-            send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_CLIMB, max_retry=0)
+            send_mock.assert_awaited_once_with(
+                tianti.CMD_TIANTI_CLIMB, max_retry=0, send_as_id=send_as_id, priority="chain",
+                source_module="登天阶", op_id=ANY, target_chat_id=CHAT, operation_check=ANY,
+            )
             self.assertEqual(9466043, state_module.state["tianti_last_climb_msg_id"])
             self.assertGreater(state_module.state["next_tianti_climb_time"], sent_at)
 
@@ -640,6 +689,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 now,
                 reply_to,
                 matched_family="tianti_climb",
+                reply_context=manual_context(reply_to, now),
             ))
 
             self.assertTrue(handled)
@@ -668,6 +718,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 now,
                 reply_to,
                 matched_family="tianti_gangfeng",
+                reply_context=manual_context(reply_to, now),
             ))
 
             self.assertTrue(handled)
@@ -697,6 +748,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 now,
                 reply_to,
                 matched_family="tianti_wenxin",
+                reply_context=manual_context(reply_to, now),
             ))
 
             self.assertTrue(active_handled)
@@ -744,6 +796,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 now,
                 reply_to,
                 matched_family="tianti_climb",
+                reply_context=manual_context(reply_to, now),
             ))
 
             self.assertTrue(handled)
@@ -758,7 +811,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertGreater(state_module.state["next_tianti_climb_time"], now)
             audit_mock.assert_awaited_once()
 
-    def test_climb_result_clears_obsolete_gangfeng_pending_retry(self):
+    def test_climb_result_does_not_clear_unowned_gangfeng_pending(self):
         send_as_id = 95023
         now = 23_000.0
         state_module.ensure_identity_registered(send_as_id)
@@ -785,10 +838,11 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
                 now,
                 reply_to,
                 matched_family="tianti_climb",
+                reply_context=manual_context(reply_to, now),
             ))
 
             self.assertTrue(handled)
-            self.assertEqual({}, state_module.state["pending_tasks"])
+            self.assertIn(16711, state_module.state["pending_tasks"])
 
     def test_passive_climb_no_progress_reply_updates_state(self):
         send_as_id = 95022
@@ -810,7 +864,8 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
                 text,
                 now=now,
-                reply_context={"send_as_id": send_as_id, "family": "tianti_climb"},
+                reply_context=dict(manual_context(SimpleNamespace(id=99022, raw_text=".登天阶"), now), family="tianti_climb"),
+                event=SimpleNamespace(id=99023, chat_id=CHAT, sender_id=BOT, server_event_at=now),
             ))
 
             self.assertTrue(handled)

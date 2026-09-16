@@ -257,9 +257,9 @@ def _rift_result_stage(raw_text):
     return ""
 
 
-def _plan_rift_result(raw_text, stage, evidence):
+def _rift_result_ledger():
     ledger = state.get("explore_rift_result_evidence")
-    if not isinstance(ledger, dict):
+    if not isinstance(ledger, dict) or set(ledger) - {"legacy_result_msg_id", "receipts", "retired_roots", "latest"}:
         return None
     ledger = copy.deepcopy(ledger)
     if not ledger and state.get("explore_rift_last_result_key"):
@@ -269,10 +269,6 @@ def _plan_rift_result(raw_text, stage, evidence):
         ledger["legacy_result_msg_id"] = legacy_id
     legacy_id = ledger.get("legacy_result_msg_id", 0)
     if type(legacy_id) is not int or legacy_id < 0:
-        return None
-    # A bare legacy ID cannot distinguish chats or prove which rewards were
-    # already saved. Keep it unresolved instead of treating an edit as new.
-    if legacy_id == evidence["msg_id"]:
         return None
     records = ledger.setdefault("receipts", {})
     retired = ledger.setdefault("retired_roots", {})
@@ -306,6 +302,20 @@ def _plan_rift_result(raw_text, stage, evidence):
         latest_record = records.get(latest.get("key")) if isinstance(latest.get("key"), str) else None
         if not latest_record or any(latest.get(field) != latest_record[field] for field in ("chat_id", "root_msg_id", "first_at")):
             return None
+    return ledger
+
+
+def _plan_rift_result(raw_text, stage, evidence):
+    ledger = _rift_result_ledger()
+    if ledger is None:
+        return None
+    # A bare legacy ID cannot distinguish chats or prove which rewards were
+    # already saved. Keep it unresolved instead of treating an edit as new.
+    if ledger.get("legacy_result_msg_id", 0) == evidence["msg_id"]:
+        return None
+    records = ledger["receipts"]
+    retired = ledger["retired_roots"]
+    latest = ledger.get("latest", {})
     key = f"{evidence['chat_id']}:{evidence['root_msg_id']}"
     previous = records.get(key, {})
     if not isinstance(previous, dict):
@@ -933,7 +943,7 @@ def _has_unknown_rift():
 
 def has_unresolved_explore_rift():
     operation = _rebirth_operation()
-    return operation is None or bool(operation and operation["status"] != "complete") or _has_unknown_rift() or any(_rift_log_id(state.get(key)) > 0 for key in (
+    return _rift_result_ledger() is None or operation is None or bool(operation and operation["status"] != "complete") or _has_unknown_rift() or any(_rift_log_id(state.get(key)) > 0 for key in (
         "explore_rift_reply_to_msg_id", "explore_rift_pending_result_msg_id",
         "explore_rift_fatal_msg_id", "explore_rift_rebirth_request_msg_id",
         "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id",
@@ -1494,6 +1504,10 @@ def get_explore_rift_status_text():
         lines.append(f"- 最近夺舍：{state.get('explore_rift_rebirth_last_result')}")
     if state.get("explore_rift_rebirth_last_error"):
         lines.append(f"- 夺舍异常：{state.get('explore_rift_rebirth_last_error')}")
+    if _rift_result_ledger() is None:
+        lines.append("- 裂缝结果记录异常：保留原证据，暂停新探寻")
+    if _rebirth_operation() is None:
+        lines.append("- 重生记录异常：保留原证据，暂停自动重生")
     return "\n".join(lines)
 
 
@@ -2231,6 +2245,7 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
             and get_identity_account(identity_id) == account_id
             and get_global_enabled() and get_identity_enabled(identity_id)
             and identity.get("explore_rift_enabled")
+            and _rift_result_ledger() is not None
             and all(identity.get(key) == value for key, value in expected.items())
         )
 
@@ -2356,6 +2371,7 @@ async def _send_explore_rift(now, owner_is_current):
             not owns_operation() or not _owns_explore_rift_dispatch(operation_id)
             or not get_global_enabled() or not get_identity_enabled(identity_id)
             or not identity.get("explore_rift_enabled")
+            or _rift_result_ledger() is None
             or bool(identity.get("tianxing_enabled")) != tianxing_enabled
             or any(identity.get(key) != value for key, value in expected.items())
         ):
@@ -2455,6 +2471,7 @@ async def _run_explore_rift_scheduler_unlocked(now):
         return (
             owner_is_current() and get_global_enabled() and get_identity_enabled(identity_id)
             and bool(identity.get("explore_rift_enabled"))
+            and _rift_result_ledger() is not None
         )
 
     if await _confirm_pending_fatal(now):

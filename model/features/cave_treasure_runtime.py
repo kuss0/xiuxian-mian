@@ -9,19 +9,18 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.parse import urljoin
 
 from telethon import functions
 
 from ..config import CD_BUFFER_SEC, CMD_TIANTI_STATUS, STATE_DIR
-from ..inventory_delta import record_inventory_delta, stable_payload_digest
-from ..miniapp_state import record_miniapp_state
+from ..inventory_delta import prepare_inventory_delta, record_inventory_delta, stable_payload_digest
+from ..miniapp_state import prepare_miniapp_state, record_miniapp_state
 from ..persistence import save_state
 from ..runtime import _get_any_authed_client_with_account, account_rpc_slot, console_log, send_audit_log
-from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_identity_enabled, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_storage_bag_records, state, use_identity
+from ..state import get_game_bot_ids, get_game_group_ids, get_global_enabled, get_global_pause_source, get_identity_account, get_miniapp_auto_config, get_miniapp_state_records, get_send_as_profile, get_storage_bag_records, is_cave_public_identity_available, set_miniapp_auto_config, set_storage_bag_records, state, use_identity
 from ..timing import fmt_abs_ts, get_day_key
-from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, miniapp_retry_after_sec, require_miniapp_operation
+from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, MiniAppRequestBudget, miniapp_retry_after_sec, require_miniapp_operation
 from . import concubine, deep_retreat, fishing_behavior, stargazer, tianti, tree_runtime, yinluo, yuanying
 from .small_world import (
     SMALL_WORLD_PREACH_FAITH_RATIO_TRIGGER,
@@ -30,8 +29,10 @@ from .small_world import (
 )
 from .cave_treasure_miniapp import (
     _parse_cave_journey_overview,
+    _require_cave_action_player_id,
     CAVE_TIANJIGE_READ_ONLY_COMMANDS,
     build_cave_treasure_launch_args,
+    cave_action_player_error,
     extract_cave_treasure_miniapp_launch,
     find_cave_external_app,
     merge_cave_dwelling_snapshot_data,
@@ -49,10 +50,13 @@ from .cave_treasure_miniapp import (
     run_cave_treasure_miniapp_production_flow,
 )
 from .trial_miniapp import build_trial_launch_args
-from .trial_runtime import _format_trial_summary, _record_trial_business_capture, _trial_batch_materials, _trial_result_completed_ok, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
+from .treasure_receipts import project_treasure_settlement, treasure_integer, treasure_quota_exhausted, treasure_session_id
+from .trial_runtime import _format_trial_summary, _record_trial_business_capture, _run_lock as _trial_run_lock, _trial_batch_materials, _trial_has_settlements, _trial_result_completed_ok, _trial_recovery_response, _trial_miniapp_capture_store, run_trial_miniapp_production_flow
+from . import treasure_operations, treasure_results, trial_operations
 from .stargazer_miniapp import build_stargazer_launch_args, run_stargazer_miniapp_production_flow
 from .tree_miniapp import build_tree_launch_args
 from .fishing_miniapp import extract_fishing_miniapp_launch_from_dwelling_payload, run_fishing_miniapp_production_flow
+from . import fishing_operations
 from .tower_miniapp import build_tower_launch_args, format_tower_delta, run_tower_miniapp_production_flow
 from .fate_cards_miniapp import (
     FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY,
@@ -65,12 +69,18 @@ from .fate_cards_miniapp import (
 )
 from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner, append_business_capture, resolve_identity_id as _identity_id
 from .fishing_runtime import (
+    FishingMiniAppCommitError,
+    FishingMiniAppOperation,
     _apply_fishing_miniapp_result,
     _fishing_miniapp_capture_store,
     _fishing_reset_jitter_sec,
+    _fishing_result_commit_response,
+    _fishing_send_lock,
     _record_fishing_business_capture,
     _remaining_miniapp_chain_rounds,
     _send_fishing_daily_completion_summary,
+    fishing_miniapp_has_confirmed_outcome,
+    recover_fishing_result_pending,
 )
 
 
@@ -87,6 +97,7 @@ CAVE_SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 5
 CAVE_SMALL_WORLD_MIN_REQUEST_SEC = 10 * 60
 CAVE_DEEP_STATUS_RECHECK_SEC = 30 * 60
 CAVE_YUANYING_STATUS_RECHECK_SEC = yuanying.YUANYING_SPEC.cd_sec
+CAVE_YUANYING_UNKNOWN_RECHECK_SEC = 30 * 60
 WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC = 60
 FATE_CARDS_WAIT_RETRY_SEC = 30 * 60
 CAVE_PUBLIC_ENTRY_CANARY_LEASE_SEC = 20 * 60
@@ -104,18 +115,23 @@ def _miniapp_result_extra(extra=None, *results):
     if retry_after_sec > 0:
         merged["retry_after_sec"] = retry_after_sec
     shared_rate_limited = False
-    for result in results:
-        if not isinstance(result, dict):
+    pending = list(results)
+    seen = set()
+    while pending:
+        result = pending.pop()
+        if not isinstance(result, (dict, list, tuple)) or id(result) in seen:
             continue
-        if str(result.get("error") or "").strip().lower() == "external_action_rate_limited":
+        seen.add(id(result))
+        if not isinstance(result, dict):
+            pending.extend(result)
+            continue
+        if (
+            result.get("shared_rate_limit") is True
+            or str(result.get("error") or "").strip().lower() == "external_action_rate_limited"
+        ):
             shared_rate_limited = True
             break
-        for event in result.get("events") or ():
-            if isinstance(event, dict) and event.get("shared_rate_limit"):
-                shared_rate_limited = True
-                break
-        if shared_rate_limited:
-            break
+        pending.extend(result.get(key) for key in ("events", "result", "extra"))
     if shared_rate_limited:
         merged["shared_rate_limit"] = True
         if retry_after_sec > 0:
@@ -625,7 +641,9 @@ def _miniapp_http_allowed_during_pause():
 
 def authorize_cave_treasure_miniapp_manual_run(identity_id, *, now=None, ttl_sec=CAVE_TREASURE_MANUAL_AUTH_TTL_SEC):
     identity_id = _identity_id(identity_id)
-    if identity_id <= 0:
+    if (identity_id <= 0 or is_cave_treasure_busy(identity_id) or treasure_results.hold_reason(identity_id)
+            or treasure_operations.hold_reason(identity_id)) and not (
+                identity_id > 0 and not is_cave_treasure_busy(identity_id) and treasure_operations.resume_allowed(identity_id)):
         return 0
     now = float(now or time.time())
     _MANUAL_AUTH_UNTIL[identity_id] = now + max(30, float(ttl_sec or CAVE_TREASURE_MANUAL_AUTH_TTL_SEC))
@@ -649,10 +667,11 @@ def _has_manual_auth(identity_id, now):
 
 def _run_lock(identity_id):
     identity_id = _identity_id(identity_id)
-    lock = _RUN_LOCKS.get(identity_id)
+    account_id = get_identity_account(identity_id) or identity_id
+    lock = _RUN_LOCKS.get(account_id)
     if lock is None:
         lock = asyncio.Lock()
-        _RUN_LOCKS[identity_id] = lock
+        _RUN_LOCKS[account_id] = lock
     return lock
 
 
@@ -663,6 +682,35 @@ def _public_entry_lock(identity_id):
         lock = asyncio.Lock()
         _PUBLIC_ENTRY_LOCKS[identity_id] = lock
     return lock
+
+
+def is_cave_treasure_busy(identity_id):
+    identity_id = _identity_id(identity_id)
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    accounts = {get_identity_account(identity_id) or identity_id}
+    for key in (treasure_results.STATE_KEY, treasure_operations.STATE_KEY):
+        record = owner.identity.get(key) if owner else None
+        if isinstance(record, dict) and type(record.get("account_id")) is int:
+            original_account = record["account_id"] or record.get("identity_id")
+            if type(original_account) is int and original_account > 0:
+                accounts.add(original_account)
+    locks = [_PUBLIC_ENTRY_LOCKS.get(identity_id), *(_RUN_LOCKS.get(account) for account in accounts)]
+    return any(lock is not None and lock.locked() for lock in locks)
+
+
+def recover_cave_treasure_result(identity_id):
+    if is_cave_treasure_busy(identity_id):
+        return {"ok": False, "message": "洞府寻宝仍在执行，未恢复或新建入口",
+                "extra": {"status": "busy", "persistence_only": True}}
+    return _recover_owned_cave_treasure(identity_id)
+
+
+def _recover_owned_cave_treasure(identity_id):
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if owner and treasure_results.pending(owner.identity):
+        return treasure_results.recover_local(identity_id)
+    recovered = treasure_operations.recover_local(identity_id, _commit_cave_treasure_result)
+    return recovered if recovered is not None else treasure_results.recover_local(identity_id)
 
 
 def is_cave_public_entry_busy(identity_id):
@@ -1557,6 +1605,10 @@ def _collect_materials(value, *, rewards=None, gains=None, depth=0):
 
 def _format_material_summary(data):
     rewards, gains = _collect_materials(data or {})
+    return _format_material_counts(rewards, gains)
+
+
+def _format_material_counts(rewards, gains):
     parts = []
     if gains:
         parts.append("收益:" + "、".join(f"{name}+{amount}" for name, amount in sorted(gains.items()) if amount > 0))
@@ -1570,11 +1622,39 @@ def _fate_cards_state_from_result(result):
     return data.get("state") if isinstance(data.get("state"), dict) else {}
 
 
-def _fate_cards_action_confirmed(action, fate_state, *, expected=""):
+def _fate_cards_transition_error(previous, current):
+    if not isinstance(current, dict) or current.get("state_verified") is not True:
+        return "fate_state_unverified"
+    previous = dict(previous or {})
+    if previous.get("challenge_date") and previous["challenge_date"] != current.get("challenge_date"):
+        return "fate_day_changed"
+    if previous.get("record_key") and previous["record_key"] != current.get("record_key"):
+        return "fate_record_changed"
+    for key in ("has_drawn", "has_ai_reading"):
+        if previous.get(key) is True and current.get(key) is not True:
+            return "fate_state_regressed"
+    if previous.get("choice_key") and previous["choice_key"] != current.get("choice_key"):
+        return "fate_choice_changed"
+    old_quest = previous.get("quest") or {}
+    quest = current.get("quest") or {}
+    if previous.get("choice_key"):
+        for key in ("key", "started_at", "metric", "target"):
+            if old_quest.get(key) not in (None, "") and old_quest[key] != quest.get(key):
+                return "fate_quest_changed"
+        if old_quest.get("status") in {"settled", "expired"} and old_quest["status"] != quest.get("status"):
+            return "fate_quest_regressed"
+        if _parse_int(quest.get("progress"), 0) < _parse_int(old_quest.get("progress"), 0):
+            return "fate_progress_regressed"
+    return ""
+
+
+def _fate_cards_action_confirmed(action, fate_state, *, expected="", previous=None):
     action = str(action or "").strip().lower()
     fate_state = dict(fate_state or {})
+    if _fate_cards_transition_error(previous, fate_state):
+        return False
     if action == "draw":
-        return bool(fate_state.get("has_drawn"))
+        return bool(fate_state.get("has_drawn") and (not expected or fate_state.get("question_key") == expected))
     if action == "interpret":
         return bool(fate_state.get("has_ai_reading"))
     if action == "choose":
@@ -1583,6 +1663,29 @@ def _fate_cards_action_confirmed(action, fate_state, *, expected=""):
         quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
         return str(quest.get("status") or "").strip().lower() == "settled"
     return False
+
+
+def _fate_cards_prerequisite_superseded(pending, fate_state):
+    if pending.get("action") not in {"meditation", "deep_start", "deep_settle", "deep_force"}:
+        return False
+    before = pending.get("before") or {}
+    if before.get("state_verified") is not True or _fate_cards_transition_error(before, fate_state):
+        return False
+    if any(not before.get(key) or before[key] != fate_state.get(key) for key in (
+        "challenge_date", "record_key", "choice_key",
+    )):
+        return False
+    old_quest = before.get("quest") or {}
+    quest = fate_state.get("quest") or {}
+    if any(old_quest.get(key) in (None, "") or old_quest[key] != quest.get(key) for key in (
+        "key", "started_at", "metric", "target",
+    )):
+        return False
+    progress, target = quest.get("progress"), quest.get("target")
+    return quest.get("status") in {"settled", "expired"} or (
+        quest.get("can_settle") is True and type(progress) is int
+        and type(target) is int and target > 0 and progress >= target
+    )
 
 
 def _fate_cards_retry_after_sec(fate_state):
@@ -1595,11 +1698,14 @@ def _fate_cards_retry_after_sec(fate_state):
     return FATE_CARDS_WAIT_RETRY_SEC
 
 
-def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=None, meditation=None, deep_retreat=None):
+def _record_fate_cards_state(
+    identity_id, fate_state, *, now, status, reward=None, meditation=None, deep_retreat=None,
+    base_record=None, pending=None, receipts=None, owner_account_id=None, unconfirmed_prerequisite=None,
+):
     fate_state = dict(fate_state or {})
     quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
     challenge_date = str(fate_state.get("challenge_date") or "")
-    previous = dict(get_miniapp_state_records().get(f"{int(identity_id)}:fate_cards") or {})
+    previous = dict(base_record if base_record is not None else get_miniapp_state_records().get(f"{int(identity_id)}:fate_cards") or {})
     previous_state = previous.get("state") if isinstance(previous.get("state"), dict) else {}
     cumulative_gains = {}
     if str(previous_state.get("challenge_date") or "") == challenge_date:
@@ -1638,7 +1744,7 @@ def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=Non
         "status": str(status or ""),
         "question_key": str(fate_state.get("question_key") or fate_state.get("default_question_key") or ""),
         "choice_key": str(fate_state.get("choice_key") or ""),
-        "trace_balance": _parse_int(fate_state.get("trace_balance"), 0),
+        "trace_balance": _parse_int(fate_state["trace_balance"], 0) if fate_state.get("trace_balance") is not None else None,
         "quest": {
             "title": str(quest.get("title") or ""),
             "metric": str(quest.get("metric") or ""),
@@ -1652,6 +1758,12 @@ def _record_fate_cards_state(identity_id, fate_state, *, now, status, reward=Non
         "deep_retreat": dict(deep_retreat or {}),
         "gains": cumulative_gains,
     }
+    if base_record is not None:
+        payload.update({
+            "snapshot": fate_state, "pending": dict(pending or {}),
+            "receipts": dict(receipts or {}), "owner_account_id": owner_account_id,
+            "unconfirmed_prerequisite": dict(unconfirmed_prerequisite or {}),
+        })
     source_id = (
         f"fate_cards:{payload['challenge_date'] or get_day_key(now)}:"
         f"{payload['choice_key'] or '-'}:{stable_payload_digest(payload)}"
@@ -1678,34 +1790,74 @@ async def _run_fate_cards_action_and_reconcile(
     capture_sink,
     capture_source,
     expected="",
+    previous=None,
+    operation_check=None,
+    request_budget=None,
 ):
-    action_result = await run_fate_cards_action_production(
-        identity_id,
-        action,
-        token=token,
-        webview_url=webview_url,
-        init_data=init_data,
-        payload=payload,
-        capture_sink=capture_sink,
-        capture_source=f"{capture_source}:{action}",
-    )
-    probe_result = await run_fate_cards_start_probe_production(
-        identity_id,
-        token=token,
-        webview_url=webview_url,
-        init_data=init_data,
-        capture_sink=capture_sink,
-        capture_source=f"{capture_source}:{action}:reconcile",
-    )
-    fate_state = _fate_cards_state_from_result(probe_result)
-    confirmed = bool(probe_result.get("ok") and _fate_cards_action_confirmed(action, fate_state, expected=expected))
-    return {
+    def current():
+        try:
+            require_miniapp_operation(operation_check)
+            return True
+        except MiniAppRequestAborted:
+            return False
+
+    require_miniapp_operation(operation_check)
+    cancelled = None
+    try:
+        action_result = await run_fate_cards_action_production(
+            identity_id, action, token=token, webview_url=webview_url, init_data=init_data,
+            payload=payload, capture_sink=capture_sink, capture_source=f"{capture_source}:{action}",
+            operation_check=operation_check, request_budget=request_budget,
+        )
+    except MiniAppFlowCancelled as exc:
+        cancelled = exc
+        action_result = exc.result if isinstance(exc.result, dict) else {"outcome_unknown": True}
+    direct_state = _fate_cards_state_from_result(action_result)
+    direct_conflict = ""
+    if action_result.get("ok") and direct_state.get("state_verified"):
+        direct_conflict = _fate_cards_transition_error(previous, direct_state)
+        if action == "draw" and expected and direct_state.get("question_key") != expected:
+            direct_conflict = "fate_question_changed"
+    confirmed = bool(action_result.get("ok") and _fate_cards_action_confirmed(
+        action, direct_state, expected=expected, previous=previous,
+    ))
+    fate_state = direct_state if confirmed else {}
+    probe_result = {}
+    probe_valid = False
+    if cancelled is None and current():
+        try:
+            probe_result = await run_fate_cards_start_probe_production(
+                identity_id, token=token, webview_url=webview_url, init_data=init_data,
+                capture_sink=capture_sink, capture_source=f"{capture_source}:{action}:reconcile",
+                operation_check=operation_check, request_budget=request_budget,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled = exc
+            probe_result = exc.result if isinstance(exc.result, dict) else {}
+        observed = _fate_cards_state_from_result(probe_result)
+        probe_valid = bool(probe_result.get("ok") and not _fate_cards_transition_error(fate_state or previous, observed))
+        if probe_valid and not direct_conflict:
+            fate_state = observed
+            confirmed = _fate_cards_action_confirmed(action, observed, expected=expected, previous=previous)
+    outcome = {
         "ok": confirmed,
         "action_result": action_result,
         "probe_result": probe_result,
         "state": fate_state,
-        "error": "" if confirmed else str(action_result.get("error") or probe_result.get("error") or f"{action}_not_confirmed"),
+        "can_continue": bool(confirmed and probe_valid and not direct_conflict and cancelled is None and current()),
+        "conflict": direct_conflict,
+        "action_dispatched": action_result.get("action_dispatched"),
+        "outcome_unknown": not confirmed and (
+            action_result.get("outcome_unknown") is True
+            or action_result.get("action_dispatched") is not False and (
+                action_result.get("ok") is not False or "outcome_unknown" not in action_result
+            )
+        ),
+        "error": "" if confirmed else str(direct_conflict or action_result.get("error") or probe_result.get("error") or f"{action}_not_confirmed"),
     }
+    if cancelled is not None:
+        raise MiniAppFlowCancelled(outcome) from None
+    return outcome
 
 
 def _cave_public_deep_retry_after(deep_state, *, now):
@@ -1726,94 +1878,111 @@ async def _run_cave_public_deep_action_locked(
     webview_url,
     action,
     session=None,
-    cave_overview=None,
     init_data="",
     now,
     capture_sink=None,
     capture_source="",
+    operation=None,
+    operation_check=None,
 ):
-    """Run one deep-seclusion action while the caller owns the public-entry lock.
-
-    The fate-cards chain and the standalone deep-retreat UI share the same
-    identity lock.  This helper deliberately does not acquire that lock again,
-    and performs authoritative dashboard gates for force/start before sending.
-    """
+    """Reconcile one identity-bound action while retaining the caller's lock."""
     action = str(action or "").strip()
-    deep_state = {}
-    if isinstance(cave_overview, dict):
-        deep_state = dict(cave_overview.get("deep_seclusion") or {})
+    operation = operation or _CaveDeepRetreatOperation.capture(identity_id)
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+    cancelled = {"ok": False, "status": "cancelled", "sent": False, "error": "洞府闭关操作已取消或身份状态已变更", "data": {}}
 
-    if action == "force" and deep_state.get("can_force_exit") is not True:
-        return {
-            "ok": True,
-            "status": "preflight_skip",
-            "sent": False,
-            "reason": "can_force_exit_false",
-            "data": {"deep_seclusion": deep_state},
-            "sync": {"handled": True, "ready": False, "reason": "can_force_exit_false", "phase": ""},
-        }
-    if action == "start" and deep_state.get("can_start") is not True:
-        return {
-            "ok": True,
-            "status": "preflight_skip",
-            "sent": False,
-            "reason": "can_start_false",
-            "data": {"deep_seclusion": deep_state},
-            "sync": {"handled": True, "ready": False, "reason": "can_start_false", "phase": ""},
-        }
+    def can_continue():
+        return (
+            operation is not None and operation.can_dispatch()
+            and (operation_check is None or operation_check() is True)
+            and (observation is None or observation.permits(identity_id, token))
+        )
 
-    if action == "settle" and isinstance(session, dict):
-        preflight = _cave_public_deep_settle_preflight(identity_id, session, now=now)
+    if not can_continue():
+        return cancelled
+    player_id = (session or {}).get("player_id")
+    player_error = cave_action_player_error({"account": {"playerId": player_id}}, identity_id)
+    if player_error:
+        return {"ok": False, "status": "identity_unverified", "sent": False, "error": player_error, "data": {}}
+    if action != "status":
+        preflight = _cave_public_deep_action_preflight(identity_id, session, action)
+        if preflight.get("error"):
+            return {"ok": False, "status": "identity_unverified", "sent": False, "error": preflight["error"], "data": {}}
         if not preflight.get("send"):
-            snapshot = dict(preflight.get("snapshot") or {})
+            raw = preflight["raw"]
+            sync_result = await sync_cave_deep_seclusion_action_result(identity_id, "status", raw, now=now)
+            snapshot = extract_cave_deep_seclusion_state(raw)
+            cannot_restart = sync_result.get("phase") == "post_summary_wait" and snapshot.get("can_start") is not True
+            if not sync_result.get("handled") or cannot_restart:
+                _defer_cave_deep_status(identity_id, now)
+                sync_result = {**sync_result, "phase": "launching"}
+            result = {"ok": True, "status": "preflight_skip", "data": raw, "action_dispatched": False}
+            record = _record_cave_deep_retreat_state(identity_id, action, result, sync_result, now=now)
+            retry_after = max(30, float(operation.owner.identity.get("next_deep_retreat_time") or 0) - now)
             return {
-                "ok": True,
-                "status": "preflight_skip",
-                "sent": False,
-                "reason": str(preflight.get("reason") or "snapshot_missing"),
-                "data": {"deep_seclusion": snapshot},
-                "sync": {
-                    "handled": True,
-                    "ready": False,
-                    "reason": str(preflight.get("reason") or "snapshot_missing"),
-                    "phase": str(preflight.get("phase") or "launching"),
-                    "remaining_seconds": snapshot.get("remaining_seconds"),
-                    "end_ms": snapshot.get("end_ms"),
-                },
+                "ok": True, "status": "preflight_skip", "sent": False,
+                "reason": preflight["reason"], "data": raw, "result": result,
+                "sync": sync_result, "record": record, "retry_after_sec": retry_after,
+                "outcome_unknown": bool((record.get("record", {}).get("state") or {}).get("outcome_unknown")),
             }
-
-    result = await run_cave_deep_seclusion_action_production_flow(
-        identity_id,
-        token=token,
-        webview_url=webview_url,
-        action=action,
-        init_data=init_data,
-        capture_sink=capture_sink,
-        capture_source=f"{capture_source}:deep_{action}",
+    cancelled_flow = None
+    try:
+        result = await run_cave_deep_seclusion_action_production_flow(
+            identity_id, token=token, webview_url=webview_url, action=action,
+            player_id=player_id, init_data=init_data, capture_sink=capture_sink,
+            capture_source=f"{capture_source}:deep_{action}", operation_check=can_continue,
+        )
+    except MiniAppFlowCancelled as exc:
+        cancelled_flow = exc
+        result = exc.result if isinstance(exc.result, dict) else {"error": "cancelled_without_result"}
+    if not operation.result_is_current():
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(cancelled) from None
+        return cancelled
+    dispatched = result.get("action_dispatched") is True
+    dispatch_known = isinstance(result.get("action_dispatched"), bool)
+    if dispatch_known and not dispatched and not can_continue():
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(cancelled) from None
+        return cancelled
+    raw = result.get("data") if isinstance(result.get("data"), dict) else {}
+    sync_result = {"handled": False, "reason": result.get("error") or "action_not_sent"}
+    player_error = str(result.get("error") or "") if result.get("status") == "identity_unverified" else ""
+    if dispatched and result.get("ok"):
+        sync_result = await sync_cave_deep_seclusion_action_result(identity_id, action, raw, now=now)
+        player_error = cave_action_player_error(raw, identity_id)
+        if player_error:
+            result = {**result, "ok": False, "status": "identity_unverified", "error": player_error, "data": {}}
+            raw = {}
+    rejected = extract_cave_deep_seclusion_state(raw).get("ok") is False
+    uncertain = action != "status" and bool(
+        not dispatch_known or result.get("outcome_unknown")
+        or (dispatched and not rejected and not sync_result.get("handled") and (result.get("ok") or player_error))
     )
-    sync_result = await sync_cave_deep_seclusion_action_result(
-        identity_id,
-        action,
-        result.get("data") or {},
-        now=now,
-    )
-    record = _record_cave_deep_retreat_state(
-        identity_id,
-        action,
-        result,
-        sync_result,
-        now=now,
-    )
-    return {
-        "ok": bool(result.get("ok")),
+    result = {
+        **result, "transport_ok": bool(result.get("ok")),
+        "ok": bool(result.get("ok") and sync_result.get("handled")), "outcome_unknown": uncertain,
+    }
+    if uncertain and not result.get("status"):
+        result["status"] = "action_unknown"
+    if not player_error and (uncertain or (dispatched and not sync_result.get("handled"))):
+        _defer_cave_deep_status(identity_id, now)
+        sync_result = {**sync_result, "phase": "launching"}
+    record = _record_cave_deep_retreat_state(identity_id, action, result, sync_result, now=now)
+    response = {
+        "ok": bool(result.get("ok") and sync_result.get("handled")),
         "status": str(result.get("status") or ""),
-        "sent": True,
+        "sent": dispatched,
         "result": result,
         "sync": sync_result,
         "record": record,
         "data": dict(result.get("data") or {}),
-        "error": result.get("error") or "",
+        "error": result.get("error") or ("" if sync_result.get("handled") else sync_result.get("reason")),
+        "outcome_unknown": bool((record.get("record", {}).get("state") or {}).get("outcome_unknown")),
     }
+    if cancelled_flow is not None:
+        raise MiniAppFlowCancelled(response) from None
+    return response
 
 
 def _format_cave_treasure_summary(result):
@@ -1827,13 +1996,16 @@ def _format_cave_treasure_summary(result):
         games_limit = _parse_int(state.get("games_limit"), 0)
         if games_limit > 0:
             games = f"｜游戏 {games_used}/{games_limit}"
+    material_text = _format_material_counts(*_cave_treasure_materials(result))
+    if data.get("material_errors") or any(receipt["material_error"] for receipt in _cave_treasure_receipts(result)):
+        material_text = (material_text + "｜" if material_text else "") + "部分奖励字段无效，未计入"
     if result.get("ok"):
-        material_text = _format_material_summary(data)
         if status == "daily_limit" and not material_text:
             return f"MiniApp {status}{games}｜今日次数已尽"
         return f"MiniApp {status}{games}｜{material_text or '未解析到新增物资'}"
     error = str(result.get("error") or "").strip()
-    return f"MiniApp {status}{games}｜{error or '未完成'}"
+    partial = f"｜已确认{material_text}" if material_text else ""
+    return f"MiniApp {status}{games}{partial}｜{error or '未完成'}"
 
 
 def _iter_nested_dicts(value, *, depth=0):
@@ -1866,23 +2038,20 @@ def extract_cave_deep_seclusion_action_message(data):
     return ""
 
 
+def _cave_deep_payload_parts(data):
+    data = data if isinstance(data, dict) else {}
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    action_result = root.get("actionResult") if isinstance(root.get("actionResult"), dict) else {}
+    dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
+    meditation = dwelling.get("meditation") if isinstance(dwelling.get("meditation"), dict) else {}
+    deep_state = meditation.get("deepSeclusion") or root.get("deep_seclusion") or root.get("deepSeclusion") or {}
+    deep_state = deep_state if isinstance(deep_state, dict) else {}
+    return root, action_result, deep_state
+
+
 def extract_cave_deep_seclusion_state(data):
     """Extract authoritative deep-seclusion fields from action or dwelling payloads."""
-
-    data = data if isinstance(data, dict) else {}
-    action_result = data.get("actionResult") if isinstance(data.get("actionResult"), dict) else {}
-    deep_state = {}
-    for item in _iter_nested_dicts(data):
-        normalized_keys = {_normalize_key(key) for key in item}
-        has_deep_specific_field = bool(
-            normalized_keys.intersection({"remainingseconds", "endms", "canstart", "canforceexit", "statustext"})
-        )
-        has_deep_state_pair = "active" in normalized_keys and bool(
-            normalized_keys.intersection({"completed", "cansettle"})
-        )
-        if has_deep_specific_field or has_deep_state_pair:
-            deep_state = item
-            break
+    _root, action_result, deep_state = _cave_deep_payload_parts(data)
 
     def optional_bool(container, *keys):
         for key in keys:
@@ -1901,8 +2070,17 @@ def extract_cave_deep_seclusion_state(data):
         "endMs",
         action_result.get("end_ms", deep_state.get("endMs", deep_state.get("end_ms"))),
     )
-    remaining_seconds = None if remaining_raw is None else max(0, _parse_int(remaining_raw, 0))
-    end_ms = None if end_ms_raw is None else max(0, _parse_int(end_ms_raw, 0))
+    def optional_nonnegative_int(value):
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return None
+        text = str(value).strip()
+        if len(text) > 16 or not text.isascii() or not text.isdigit():
+            return None
+        parsed = int(text)
+        return parsed if parsed <= 2**53 - 1 else None
+
+    remaining_seconds = optional_nonnegative_int(remaining_raw)
+    end_ms = optional_nonnegative_int(end_ms_raw)
     completed = optional_bool(action_result, "completed")
     if completed is None:
         completed = optional_bool(deep_state, "completed")
@@ -1912,78 +2090,69 @@ def extract_cave_deep_seclusion_state(data):
     can_settle = optional_bool(action_result, "canSettle", "can_settle")
     if can_settle is None:
         can_settle = optional_bool(deep_state, "canSettle", "can_settle")
+    can_start = optional_bool(deep_state, "canStart", "can_start")
+    can_force_exit = optional_bool(deep_state, "canForceExit", "can_force_exit")
+    conflicting = (
+        (can_start is True and (active is True or can_settle is True or completed is True))
+        or ((remaining_seconds or 0) > 0 and (active is False or can_settle is True or completed is True))
+    )
+    message = ""
+    for container in (action_result, deep_state):
+        for key in ("rawMessage", "raw_message", "message", "text", "statusText", "status_text"):
+            if isinstance(container.get(key), str) and container[key].strip():
+                message = container[key].strip()
+                break
+        if message:
+            break
     return {
         "known": bool(action_result or deep_state),
+        "conflicting": bool(conflicting),
         "ok": optional_bool(action_result, "ok"),
         "completed": completed,
         "active": active,
         "can_settle": can_settle,
+        "can_start": can_start,
+        "can_force_exit": can_force_exit,
         "remaining_seconds": remaining_seconds,
         "end_ms": end_ms,
-        "message": extract_cave_deep_seclusion_action_message(data),
+        "message": message,
     }
 
 
-def _cave_public_deep_settle_preflight(identity_id, session, *, now):
-    """Require authoritative dashboard evidence before a settle POST."""
-
+def _cave_public_deep_action_preflight(identity_id, session, action):
+    """A selector or truthy placeholder never grants a mutation permission."""
     result_data = dict((session.get("result") or {}).get("data") or {})
     snapshot_data = result_data.get("raw") if isinstance(result_data.get("raw"), dict) else result_data
+    error = cave_action_player_error(snapshot_data, identity_id)
+    if error:
+        return {"send": False, "error": error}
+    root, _action_result, deep_state = _cave_deep_payload_parts(snapshot_data)
+    snapshot_data = {"account": root["account"], "deep_seclusion": deep_state}
     snapshot = extract_cave_deep_seclusion_state(snapshot_data)
-    if snapshot.get("can_settle") is True or snapshot.get("completed") is True:
-        return {"send": True, "snapshot": snapshot}
+    previous = get_miniapp_state_records().get(f"{identity_id}:cave_deep_retreat") or {}
+    pending = bool((previous.get("state") or {}).get("outcome_unknown"))
+    permission = {"start": "can_start", "settle": "can_settle", "force": "can_force_exit"}.get(action)
+    allowed = snapshot.get(permission) is True
+    if action == "settle" and not any(key in deep_state for key in ("canSettle", "can_settle")):
+        allowed = snapshot.get("completed") is True
+    if action == "start" and (snapshot.get("active") is True or snapshot.get("completed") is True):
+        allowed = False
+    if action == "settle" and (snapshot.get("remaining_seconds") or 0) > 0:
+        allowed = False
+    return {
+        "send": allowed and not pending and not snapshot["conflicting"],
+        "raw": snapshot_data,
+        "reason": "previous_action_unknown" if pending else f"{permission}_not_granted",
+    }
 
-    if snapshot.get("known"):
-        end_ms = int(snapshot.get("end_ms") or 0)
-        remaining_seconds = snapshot.get("remaining_seconds")
-        if end_ms > int(now * 1000):
-            next_time = end_ms / 1000.0 + deep_retreat.CD_BUFFER_SEC
-        elif remaining_seconds is not None and remaining_seconds > 0:
-            next_time = now + remaining_seconds + deep_retreat.CD_BUFFER_SEC
-        else:
-            next_time = now + CAVE_DEEP_STATUS_RECHECK_SEC
 
-        if snapshot.get("active") is True and snapshot.get("can_settle") is not True:
-            with use_identity(identity_id):
-                deep_retreat.mark_deep_retreat_success(now, next_time)
-            return {
-                "send": False,
-                "reason": "still_running",
-                "phase": "running",
-                "snapshot": snapshot,
-                "retry_after_sec": max(30, next_time - now),
-            }
-
+def _defer_cave_deep_status(identity_id, now):
     with use_identity(identity_id):
         deep_retreat.clear_deep_retreat_summary_flags()
         deep_retreat.set_deep_retreat_phase("launching")
         state["deep_retreat_probe_pending"] = False
         state["next_deep_retreat_time"] = now + CAVE_DEEP_STATUS_RECHECK_SEC
         save_state()
-    return {
-        "send": False,
-        "reason": "snapshot_not_actionable" if snapshot.get("known") else "snapshot_missing",
-        "phase": "launching",
-        "snapshot": snapshot,
-        "retry_after_sec": CAVE_DEEP_STATUS_RECHECK_SEC,
-    }
-
-
-def _extract_cave_deep_seclusion_status_message(data):
-    data = data if isinstance(data, dict) else {}
-    for item in _iter_nested_dicts(data or {}):
-        active = bool(item.get("active"))
-        remaining = item.get("remainingSeconds", item.get("remaining_seconds", 0))
-        try:
-            remaining = int(float(remaining or 0))
-        except (TypeError, ValueError, OverflowError):
-            remaining = 0
-        status_text = str(item.get("statusText") or item.get("status_text") or "").strip()
-        if status_text and ("闭关" in status_text or active):
-            return status_text
-        if active and remaining > 0:
-            return f"闭关中，剩余 {remaining} 秒。"
-    return ""
 
 
 def extract_cave_tianjige_command_message(data):
@@ -1993,8 +2162,18 @@ def extract_cave_tianjige_command_message(data):
 
 def _cave_tianjige_action_succeeded(data):
     data = data if isinstance(data, dict) else {}
-    action_result = data.get("actionResult") if isinstance(data.get("actionResult"), dict) else {}
-    return action_result.get("ok") is True
+    if data.get("ok", True) is not True:
+        return False
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    action_result = root.get("actionResult") if isinstance(root.get("actionResult"), dict) else {}
+    return root.get("ok", True) is True and action_result.get("ok") is True and action_result.get("completed", True) is True
+
+
+def _cave_tianjige_session_player_error(session, identity_id):
+    selected = cave_action_player_error({"account": {"playerId": session.get("player_id")}}, identity_id)
+    result = session.get("result") if isinstance(session.get("result"), dict) else {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    return selected or cave_action_player_error(data.get("raw"), identity_id)
 
 
 async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=None):
@@ -2005,8 +2184,11 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
     handles success and explicit cooldown wording only.
     """
     identity_id = _identity_id(identity_id)
+    player_error = cave_action_player_error(data, identity_id)
+    if player_error:
+        return {"handled": False, "ready": False, "reason": player_error, "message": "", "phase": ""}
     message = extract_cave_tianjige_command_message(data)
-    if identity_id <= 0 or not message:
+    if MiniAppIdentityOwner.capture(identity_id) is None or not message:
         return {"handled": False, "reason": "missing_identity_or_message", "message": "", "phase": ""}
 
     command = str(command or yuanying.CMD_YUANYING).strip()
@@ -2021,9 +2203,15 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
             }
 
         plain_message = re.sub(r"[*_`]+", "", message)
+        ready_status = command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*窍中温养", plain_message)
+        retreat_status = command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*元婴闭关", plain_message)
+        if ready_status and (retreat_status or "归来倒计时" in plain_message):
+            return {
+                "handled": False, "ready": False, "reason": "conflicting_yuanying_status",
+                "message": message, "phase": str(state.get("yuanying_phase") or ""),
+            }
         status_ready = bool(
-            command == yuanying.CMD_YUANYING_STATUS
-            and re.search(r"状态\s*[:：]\s*窍中温养", plain_message)
+            ready_status
             and not any(token in plain_message for token in ("不可", "不能", "暂不", "尚未", "冷却", "等待", "休息", "不足"))
         )
         if status_ready:
@@ -2035,12 +2223,13 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
             return {
                 "handled": True,
                 "ready": True,
+                "kind": "ready",
                 "reason": "",
                 "message": message,
                 "phase": str(state.get("yuanying_phase") or ""),
             }
 
-        if command == yuanying.CMD_YUANYING_STATUS and re.search(r"状态\s*[:：]\s*元婴闭关", plain_message):
+        if retreat_status:
             previous_next_time = float(state.get("next_yuanying_time", 0) or 0)
             state["yuanying_probe_pending"] = False
             yuanying.clear_yuanying_summary_flags()
@@ -2054,162 +2243,152 @@ async def sync_cave_tianjige_yuanying_result(identity_id, data, *, now, command=
                 "handled": True,
                 "ready": False,
                 "reason": "active_yuanying_retreat",
+                "kind": "retreat",
                 "message": message,
                 "phase": str(state.get("yuanying_phase") or ""),
             }
 
-        reply_to = SimpleNamespace(raw_text=command, id=0)
-        handled = await yuanying.handle_yuanying_success_reply(
-            message,
-            now,
-            reply_to=reply_to,
-            matched_family="yuanying",
+        launched = (
+            command == yuanying.CMD_YUANYING
+            and "你心念一动" in message and "元婴化作一道流光飞出" in message
         )
-        if handled:
+        cooldown = (
+            any(token in message for token in ("尚未恢复", "冷却", "等待", "不足", "休息", "归来倒计时"))
+            and "窍中温养" not in message and yuanying.has_wait_time(message)
+        )
+        if launched or cooldown:
+            wait_sec = yuanying.parse_wait_time(message)
+            if launched and wait_sec <= 0:
+                wait_sec = yuanying.YUANYING_SPEC.cd_sec
+            yuanying.mark_yuanying_success(now, now + wait_sec + CD_BUFFER_SEC)
+            kind = "running" if wait_sec > 0 and "归来倒计时" in message else "cooldown"
             return {
                 "handled": True,
                 "ready": False,
+                "kind": "launched" if launched else kind,
                 "reason": "",
                 "message": message,
                 "phase": str(state.get("yuanying_phase") or ""),
             }
-
-        cooldown_hint = any(token in message for token in ("尚未恢复", "冷却", "等待", "不足", "休息", "归来倒计时"))
-        if cooldown_hint and "窍中温养" not in message:
-            handled = await yuanying.handle_yuanying_status_reply(
-                message,
-                now,
-                reply_to=reply_to,
-                matched_family="yuanying",
-            )
         return {
-            "handled": bool(handled),
+            "handled": False,
             "ready": False,
-            "reason": "" if handled else "unrecognized_or_nonterminal_message",
+            "reason": "unrecognized_or_nonterminal_message",
             "message": message,
             "phase": str(state.get("yuanying_phase") or ""),
         }
 
 
 async def sync_cave_deep_seclusion_action_result(identity_id, action, data, *, now):
-    """Replay a dwelling MiniApp deep-seclusion result through deep-retreat handlers."""
+    """Apply identity-bound retreat evidence without invoking Telegram handlers."""
 
     identity_id = _identity_id(identity_id)
     action = str(action or "").strip()
+    player_error = cave_action_player_error(data, identity_id)
+    if player_error:
+        return {"handled": False, "reason": player_error, "message_kind": ""}
     snapshot = extract_cave_deep_seclusion_state(data)
-    message = extract_cave_deep_seclusion_action_message(data)
-    if action == "status" and not message:
-        message = _extract_cave_deep_seclusion_status_message(data)
-    if identity_id <= 0 or (not message and not snapshot.get("known")):
+    message = snapshot["message"]
+    if MiniAppIdentityOwner.capture(identity_id) is None or (not message and not snapshot.get("known")):
         return {"handled": False, "reason": "missing_identity_or_message", "message_kind": ""}
+    if snapshot["conflicting"]:
+        return {"handled": False, "reason": "conflicting_deep_snapshot", "message_kind": ""}
+    previous = get_miniapp_state_records().get(f"{identity_id}:cave_deep_retreat") or {}
+    pending = previous.get("state") or {}
+    if action == "status" and pending.get("outcome_unknown") and not _cave_deep_unknown_postcondition(pending, snapshot):
+        return {"handled": False, "reason": "previous_action_unknown", "message_kind": ""}
 
     with use_identity(identity_id):
+        remaining = snapshot.get("remaining_seconds")
+        end_ms = snapshot.get("end_ms")
+        started = (
+            "你已进入深度闭关状态" in message and "神魂将自行吐纳" in message
+            and snapshot.get("ok") is not False and snapshot.get("active") is not False
+        )
+        running = (
+            snapshot.get("active") is True and snapshot.get("can_settle") is not True
+            and snapshot.get("completed") is not True
+        ) or (remaining is not None and remaining > 0)
+        running = running or "你已在深度闭关之中" in message or (
+            ("闭关中" in message and "剩余" in message)
+            or ("预计还需" in message and "即可功成圆满" in message)
+        )
+        summary = deep_retreat._is_deep_retreat_summary_text(message) or (
+            snapshot.get("ok") is True and snapshot.get("active") is False and snapshot.get("can_start") is True
+        )
+        if action in {"settle", "force"} and summary and snapshot.get("ok") is not False and not running:
+            deep_retreat.begin_post_summary_wait(deep_retreat.DEEP_RETREAT_SPEC, now, confirmed=True)
+            state["last_deep_retreat_command_time"] = now
+            save_state()
+            return {"handled": True, "reason": "", "message_kind": "summary", "phase": "post_summary_wait"}
+        if started or running:
+            wait_sec = remaining if remaining is not None and remaining > 0 else deep_retreat.parse_wait_time(message)
+            next_time = (
+                end_ms / 1000.0 + deep_retreat.CD_BUFFER_SEC
+                if end_ms and end_ms > now * 1000
+                else now + (wait_sec if wait_sec > 0 else CAVE_DEEP_STATUS_RECHECK_SEC) + deep_retreat.CD_BUFFER_SEC
+            )
+            deep_retreat.mark_deep_retreat_success(now, next_time)
+            return {
+                "handled": True, "ready": False, "reason": "still_running" if running else "",
+                "message_kind": "start" if action == "start" else "status" if action == "status" else "running",
+                "phase": "running", "remaining_seconds": remaining,
+            }
+        if deep_retreat._is_deep_retreat_short_cd_text(message):
+            deep_retreat.clear_deep_retreat_summary_flags()
+            deep_retreat.set_deep_retreat_phase("idle")
+            state["deep_retreat_probe_pending"] = False
+            state["last_deep_retreat_command_time"] = now
+            state["next_deep_retreat_time"] = now + deep_retreat.parse_wait_time(message) + deep_retreat.CD_BUFFER_SEC
+            save_state()
+            return {"handled": True, "reason": "cooldown", "message_kind": "status", "phase": "idle"}
+        if action == "status" and (
+            snapshot.get("can_settle") is True
+            or (snapshot.get("can_settle") is None and snapshot.get("completed") is True)
+        ):
+            deep_retreat.set_deep_retreat_phase("summary_due")
+            state["deep_retreat_probe_pending"] = False
+            state["next_deep_retreat_time"] = now + deep_retreat.CD_BUFFER_SEC
+            save_state()
+            return {"handled": True, "ready": True, "reason": "settlement_due", "message_kind": "status", "phase": "summary_due"}
+        if action == "status" and (
+            snapshot.get("can_start") is True
+            or (snapshot.get("can_start") is None and "未处于深度闭关" in message and snapshot.get("ok") is not False)
+        ):
+            deep_retreat.begin_post_summary_wait(deep_retreat.DEEP_RETREAT_SPEC, now, confirmed=True)
+            return {"handled": True, "reason": "not_running", "message_kind": "status", "phase": "post_summary_wait"}
         if action == "settle":
-            remaining_seconds = snapshot.get("remaining_seconds")
-            still_running = (
-                (remaining_seconds is not None and remaining_seconds > 0)
-                or snapshot.get("completed") is False
-                or (snapshot.get("active") is True and snapshot.get("can_settle") is not True)
-            )
-            if still_running:
-                wait_sec = remaining_seconds if remaining_seconds and remaining_seconds > 0 else CAVE_DEEP_STATUS_RECHECK_SEC
-                deep_retreat.mark_deep_retreat_success(now, now + wait_sec + deep_retreat.CD_BUFFER_SEC)
-                return {
-                    "handled": True,
-                    "ready": False,
-                    "reason": "still_running",
-                    "message_kind": "running",
-                    "phase": str(state.get("deep_retreat_phase") or ""),
-                    "remaining_seconds": remaining_seconds,
-                }
-            if "深度闭关总结" not in message and "功成圆满" not in message:
-                deep_retreat.clear_deep_retreat_summary_flags()
-                deep_retreat.set_deep_retreat_phase("launching")
-                state["deep_retreat_probe_pending"] = False
-                state["next_deep_retreat_time"] = now + CAVE_DEEP_STATUS_RECHECK_SEC
-                save_state()
-                return {
-                    "handled": False,
-                    "reason": "ambiguous_settle_recheck_status",
-                    "message_kind": "other",
-                    "phase": "launching",
-                }
-            if state.get("deep_retreat_phase") not in ("summary_due", "observing_summary", "waiting_summary", "running"):
-                deep_retreat.begin_deep_retreat_summary_wait(now)
-            before = str(state.get("deep_retreat_phase") or "")
-            await deep_retreat.handle_deep_retreat_summary_broadcast(
-                message,
-                now,
-                reply_context={"send_as_id": identity_id, "family": "deep_retreat", "route_source": "cave_miniapp"},
-            )
-            after = str(state.get("deep_retreat_phase") or "")
-            return {"handled": before != after or after == "post_summary_wait", "reason": "", "message_kind": "summary", "phase": after}
-
-        if action == "start":
-            reply_to = SimpleNamespace(raw_text=deep_retreat.CMD_DEEP_RETREAT, id=0)
-            handled = await deep_retreat.handle_deep_retreat_success_reply(
-                message,
-                now,
-                reply_to=reply_to,
-                matched_family="deep_retreat",
-            )
-            if not handled:
-                handled = await deep_retreat.handle_deep_retreat_running_reply(
-                    message,
-                    now,
-                    reply_to=reply_to,
-                    matched_family="deep_retreat",
-                )
-            return {
-                "handled": bool(handled),
-                "reason": "" if handled else "start_message_not_handled",
-                "message_kind": "start",
-                "phase": str(state.get("deep_retreat_phase") or ""),
-            }
-
-        if action == "status":
-            reply_to = SimpleNamespace(raw_text=deep_retreat.CMD_DEEP_RETREAT_QUERY, id=0)
-            handled = await deep_retreat.handle_deep_retreat_status_reply(
-                message,
-                now,
-                reply_to=reply_to,
-                matched_family="deep_retreat",
-            )
-            return {
-                "handled": bool(handled),
-                "reason": "" if handled else "status_message_not_handled",
-                "message_kind": "status",
-                "phase": str(state.get("deep_retreat_phase") or ""),
-            }
+            deep_retreat.clear_deep_retreat_summary_flags()
+            deep_retreat.set_deep_retreat_phase("launching")
+            state["deep_retreat_probe_pending"] = False
+            state["next_deep_retreat_time"] = now + CAVE_DEEP_STATUS_RECHECK_SEC
+            save_state()
+            return {"handled": False, "reason": "ambiguous_settle_recheck_status", "message_kind": "other", "phase": "launching"}
+        if action in {"start", "status", "force"}:
+            return {"handled": False, "reason": f"{action}_message_not_handled", "message_kind": action, "phase": str(state.get("deep_retreat_phase") or "")}
 
     return {"handled": False, "reason": "unsupported_action", "message_kind": ""}
 
 
-def _collect_session_ids(value, *, depth=0):
-    if depth > 6:
-        return []
-    session_ids = []
-    if isinstance(value, list):
-        for item in value:
-            session_ids.extend(_collect_session_ids(item, depth=depth + 1))
-        return session_ids
-    if not isinstance(value, dict):
-        return session_ids
-    for key, item in value.items():
-        normalized = _normalize_key(key)
-        if normalized in {"session", "sessionid", "huntsession", "huntsessionid"}:
-            text = str(item or "").strip()
-            if text:
-                session_ids.append(text)
-        elif isinstance(item, (dict, list)):
-            session_ids.extend(_collect_session_ids(item, depth=depth + 1))
-    return session_ids
+def _cave_deep_unknown_postcondition(pending, snapshot):
+    if snapshot.get("ok") is False or snapshot.get("conflicting"):
+        return False
+    action = pending.get("unknown_action") or pending.get("action")
+    if action == "start":
+        return snapshot.get("active") is True or snapshot.get("completed") is True or snapshot.get("can_settle") is True
+    if action in {"settle", "force"}:
+        return (
+            snapshot.get("active") is False and snapshot.get("can_start") is True
+            and snapshot.get("completed") is not True and snapshot.get("can_settle") is not True
+        )
+    return False
 
 
 def _cave_treasure_inventory_source_id(data, *, result_msg_id=0):
     data = data if isinstance(data, dict) else {}
-    sessions = sorted(set(_collect_session_ids(data)))
-    result_payload = data.get("results") or data.get("huntResult") or data
+    result_payload = [receipt["result"] for receipt in _cave_treasure_receipts({"data": data})]
+    sessions = sorted({treasure_session_id(row.get("sessionId") or row.get("session_id"))
+                       for row in result_payload} - {""})
     result_digest = stable_payload_digest(result_payload)
     if sessions:
         return f"sessions:{stable_payload_digest(sessions)}:{result_digest}"
@@ -2218,16 +2397,36 @@ def _cave_treasure_inventory_source_id(data, *, result_msg_id=0):
     return f"payload:{result_digest}"
 
 
-def _cave_treasure_inventory_items(result):
+def _cave_treasure_receipts(result):
     result = dict(result or {})
-    if not result.get("ok"):
-        return {}
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    status = str(result.get("status") or "").strip()
-    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
-    if status not in {"settled", "daily_limit"} and settled_count <= 0 and not data.get("results"):
-        return {}
-    rewards, gains = _collect_materials(data or {})
+    rows = data.get("results") if isinstance(data.get("results"), list) else []
+    receipts, seen = [], set()
+    for row in rows:
+        receipt = project_treasure_settlement(row)
+        if not receipt["confirmed"]:
+            continue
+        session_id = treasure_session_id(receipt["result"].get("sessionId") or receipt["result"].get("session_id"))
+        if session_id and session_id in seen:
+            continue
+        if session_id:
+            seen.add(session_id)
+        receipts.append(receipt)
+    return receipts
+
+
+def _cave_treasure_materials(result):
+    rewards, gains = {}, {}
+    for receipt in _cave_treasure_receipts(result):
+        for target, values in ((rewards, receipt["rewards"]), (gains, receipt["gains"])):
+            for name, amount in values.items():
+                target[name] = target.get(name, 0) + amount
+    return tuple({name: amount for name, amount in values.items() if treasure_integer(amount) not in (None, 0)}
+                 for values in (rewards, gains))
+
+
+def _cave_treasure_inventory_items(result):
+    rewards, gains = _cave_treasure_materials(result)
     items = dict(rewards)
     for name in _INVENTORY_GAIN_NAMES:
         amount = _parse_int(gains.get(name), 0)
@@ -2236,20 +2435,20 @@ def _cave_treasure_inventory_items(result):
     return {name: count for name, count in items.items() if str(name or "").strip() and _parse_int(count, 0) > 0}
 
 
-def _record_cave_treasure_inventory_delta(identity_id, result, *, now, result_msg_id=0):
+def _record_cave_treasure_inventory_delta(identity_id, result, *, now, result_msg_id=0, prepare=False, operation_id=""):
     data = (result or {}).get("data") if isinstance((result or {}).get("data"), dict) else {}
     items = _cave_treasure_inventory_items(result)
     if not items:
         return {"changed": False, "record": {}, "record_key": ""}
-    return record_inventory_delta(
+    return (prepare_inventory_delta if prepare else record_inventory_delta)(
         identity_id,
         source="cave_treasure_miniapp",
-        source_id=_cave_treasure_inventory_source_id(data, result_msg_id=result_msg_id),
+        source_id=("operation:" + operation_id) if operation_id else _cave_treasure_inventory_source_id(data, result_msg_id=result_msg_id),
         items=items,
         now=now,
         source_summary={
             "status": (result or {}).get("status") or "",
-            "settled_count": _parse_int((result or {}).get("settled_count") or data.get("settled_count"), 0),
+            "settled_count": len(_cave_treasure_receipts(result)),
             "result_msg_id": int(result_msg_id or 0),
         },
     )
@@ -2269,15 +2468,27 @@ def _cave_treasure_state_source_id(result, *, result_msg_id=0):
     return f"payload:{digest}"
 
 
-def _record_cave_treasure_miniapp_state(identity_id, result, *, now, result_msg_id=0):
+def _record_cave_treasure_miniapp_state(identity_id, result, *, now, result_msg_id=0, prepare=False, operation_record=None):
     data = (result or {}).get("data") if isinstance((result or {}).get("data"), dict) else {}
     state = dict(data.get("state") or {}) if isinstance(data.get("state"), dict) else {}
-    if not state:
-        return {"changed": False, "record": {}, "record_key": ""}
-    if str((result or {}).get("status") or "").strip() == "result_unknown":
+    unknown = bool((result or {}).get("outcome_unknown") or state.get("outcome_unknown")
+                   or str((result or {}).get("status") or "").strip() == "result_unknown")
+    previous = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    reconciled = bool(prepare and owner and treasure_operations.valid_record(operation_record)
+                      and operation_record["version"] == 2
+                      and treasure_results._same(owner.identity.get(treasure_operations.STATE_KEY), operation_record)
+                      and operation_record["miniapp_before"] == treasure_results._basis(
+                          get_miniapp_state_records(), f"{int(identity_id)}:cave_treasure"))
+    if (previous.get("state") or {}).get("outcome_unknown") and not unknown and not reconciled:
+        return {"changed": False, "record": previous, "record_key": f"{int(identity_id)}:cave_treasure"}
+    if unknown:
         state["outcome_unknown"] = True
         state["outcome_unknown_day"] = get_day_key(now)
-    return record_miniapp_state(
+    if not state:
+        return {"changed": False, "record": {}, "record_key": ""}
+    state["owner_account_id"] = get_identity_account(identity_id) or int(identity_id)
+    return (prepare_miniapp_state if prepare else record_miniapp_state)(
         identity_id,
         "cave_treasure",
         state,
@@ -2290,12 +2501,19 @@ def _record_cave_treasure_miniapp_state(identity_id, result, *, now, result_msg_
 
 
 def _cave_treasure_unknown_hold(identity_id, now):
-    record = dict(get_miniapp_state_records().get(f"{int(identity_id)}:cave_treasure") or {})
-    record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
-    return bool(
-        record_state.get("outcome_unknown")
-        and str(record_state.get("outcome_unknown_day") or "") == get_day_key(now)
-    )
+    # An account-shared mutation is not reconciled by a new day or another role.
+    account_id = get_identity_account(identity_id) or int(identity_id)
+    for key, record in get_miniapp_state_records().items():
+        if not str(key).endswith(":cave_treasure") or not isinstance(record, dict):
+            continue
+        record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
+        if not record_state.get("outcome_unknown"):
+            continue
+        record_identity = _parse_int(str(key).split(":", 1)[0], 0)
+        record_account = _parse_int(record_state.get("owner_account_id"), 0) or get_identity_account(record_identity) or record_identity
+        if record_identity == int(identity_id) or record_account == account_id:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -2571,12 +2789,27 @@ def _cave_small_world_action_message(result):
 
 def _record_cave_deep_retreat_state(identity_id, action, result, sync_result, *, now, result_msg_id=0):
     data = dict((result or {}).get("data") or {})
+    previous = get_miniapp_state_records().get(f"{identity_id}:cave_deep_retreat") or {}
+    previous_state = previous.get("state") if isinstance(previous.get("state"), dict) else {}
+    verified = not bool(cave_action_player_error(data, identity_id))
+    resolved = verified and bool((sync_result or {}).get("handled"))
+    new_unknown = bool((result or {}).get("outcome_unknown"))
+    unresolved = new_unknown or (bool(previous_state.get("outcome_unknown")) and not resolved)
     payload = {
         "action": str(action or ""),
         "ok": bool((result or {}).get("ok")),
         "status": str((result or {}).get("status") or ""),
+        "identity_verified": verified,
+        "action_dispatched": (result or {}).get("action_dispatched"),
+        "outcome_unknown": unresolved,
         "sync": dict(sync_result or {}),
     }
+    if unresolved:
+        if previous_state.get("outcome_unknown"):
+            payload["unknown_action"] = str(previous_state.get("unknown_action") or previous_state.get("action") or action)
+            payload["unknown_since"] = previous_state.get("unknown_since") or previous.get("updated_at") or now
+        else:
+            payload.update(unknown_action=str(action), unknown_since=now)
     message = extract_cave_deep_seclusion_action_message(data)
     if message:
         payload["message_digest"] = stable_payload_digest(message)
@@ -2601,19 +2834,16 @@ def _capture_store(now):
 
 def _record_cave_treasure_business_capture(capture_sink, result, *, source, now):
     result = dict(result or {})
-    if not result.get("ok"):
-        return {}
-    data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    settled_count = _parse_int(data.get("settled_count"), 0)
+    receipts = _cave_treasure_receipts(result)
+    settled_count = len(receipts)
     if settled_count <= 0:
         return {}
-    rows = data.get("results") if isinstance(data.get("results"), list) else []
     found_main = sum(
         1
-        for item in rows
-        if isinstance(item, dict) and bool(item.get("foundMain") or item.get("found_main"))
+        for receipt in receipts
+        if receipt["result"].get("foundMain") is True or receipt["result"].get("found_main") is True
     )
-    rewards, gains = _collect_materials(data)
+    rewards, gains = _cave_treasure_materials(result)
     return append_business_capture(
         capture_sink,
         adapter_key="cave_treasure",
@@ -2622,6 +2852,7 @@ def _record_cave_treasure_business_capture(capture_sink, result, *, source, now)
             "found_main": found_main,
             "gains": gains,
             "items": rewards,
+            "material_errors": sorted({receipt["material_error"] for receipt in receipts if receipt["material_error"]}),
         },
         source=source,
         created_at=now,
@@ -2815,11 +3046,13 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
                 "message": f"洞府野外历练身份读取失败：{session.get('error') or 'unknown'}",
                 "extra": _miniapp_result_extra({"phase": "session_failed", "acted": False}, session),
             }
-        player_error = _selected_player_error({"player_id": session.get("player_id")}, identity_id)
-        if player_error:
-            return {"ok": False, "message": player_error, "extra": {"phase": "player_mismatch", "acted": False}}
         session_data = dict((session.get("result") or {}).get("data") or {})
-        before_overview = session_data.get("overview") if isinstance(session_data.get("overview"), dict) else {}
+        before_raw = session_data.get("raw") or {}
+        player_error = cave_action_player_error({"account": {"playerId": session.get("player_id")}}, identity_id)
+        player_error = player_error or cave_action_player_error(before_raw, identity_id)
+        if player_error:
+            return {"ok": False, "message": f"洞府身份校验失败：{player_error}", "extra": {"phase": "player_mismatch", "acted": False}}
+        before_overview = parse_cave_dwelling_overview(before_raw)
         before_journey = before_overview.get("journey") if isinstance(before_overview.get("journey"), dict) else {}
         before_wild = before_journey.get("wild_experience") if isinstance(before_journey.get("wild_experience"), dict) else {}
         observed_at = completed_now()
@@ -2908,15 +3141,23 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
         if isinstance(raw.get("data"), dict):
             raw = raw["data"]
         account = raw.get("account") if isinstance(raw.get("account"), dict) else {}
-        reply_identity = raw.get("identity") if isinstance(raw.get("identity"), dict) else {}
-        player_id_present = "playerId" in account or "selectedPlayerId" in reply_identity
-        reply_player_id = account.get("playerId") if "playerId" in account else reply_identity.get("selectedPlayerId")
-        action_player_error = _selected_player_error({"player_id": reply_player_id}, identity_id) if player_id_present else ""
+        http_rejected = not result.get("ok") and any(
+            event.get("status_code") in {400, 401, 403, 404, 409, 422, 429}
+            for event in result.get("events") or [] if isinstance(event, dict)
+        )
+        action_player_error = cave_action_player_error(raw, identity_id)
+        if result.get("status") == "identity_unverified":
+            action_player_error = str(result.get("error") or action_player_error)
         if action_player_error:
-            response = {"ok": False, "message": action_player_error, "extra": _miniapp_result_extra({
-                "phase": "action_unknown", "acted": True, "completed": False, "outcome_unknown": True,
-                "tianxing_result_current": tianxing_current,
-            }, result)}
+            message = (result.get("error") or "MiniApp 野外请求被拒绝") if http_rejected else f"洞府身份校验失败：{action_player_error}"
+            response = {
+                "ok": False, "message": message,
+                "extra": _miniapp_result_extra({
+                    "phase": "blocked" if http_rejected else "action_unknown", "acted": True,
+                    "completed": False, "outcome_unknown": not http_rejected,
+                    "tianxing_result_current": tianxing_current,
+                }, result),
+            }
             if cancelled_flow is not None:
                 raise MiniAppFlowCancelled(response) from None
             return response
@@ -2928,15 +3169,12 @@ async def run_cave_public_wild_training(identity_id, public_entry_url, strategy,
             bool(result.get("ok"))
             and not action_player_error
             and action_result.get("ok") is True
-            and action_result.get("completed") is not False
+            and action_result.get("completed", True) is True
         )
         server_next_time = _wild_training_server_next_time(after_wild, now=observed_at)
         next_time = _wild_training_post_action_next_time(after_wild, action_result, now=observed_at)
         title, summary, rewards, gains = _wild_training_action_summary(action_result)
-        rejected = action_result.get("ok") is False or action_result.get("completed") is False or any(
-            event.get("status_code") in {400, 401, 403, 404, 409, 422, 429}
-            for event in result.get("events") or [] if isinstance(event, dict)
-        )
+        rejected = action_result.get("ok") is False or action_result.get("completed") is False or http_rejected
         phase = "completed" if completed else ("blocked" if rejected else "action_unknown")
         snapshot_current = record_is_current()
         if snapshot_current:
@@ -3259,100 +3497,209 @@ async def run_cave_public_small_world_sync(identity_id, public_entry_url, *, now
         return response if operation.owner.is_current() else cancelled
 
 
+def _cave_treasure_cancelled_response():
+    return {"ok": False, "message": "洞府寻宝操作已取消或身份已变更", "extra": {"status": "cancelled"}}
+
+
+def _cave_treasure_unknown_response():
+    return {
+        "ok": False, "message": "洞府寻宝存在结果未知动作，等待核实，不自动重试",
+        "extra": {"status": "result_unknown", "outcome_unknown": True,
+                  "daily_exhausted": False, "skipped": "outcome_unknown_hold"},
+    }
+
+
+async def _audit_cave_treasure(owner, response, *, priority="normal"):
+    if not owner.is_current():
+        return
+    try:
+        await send_audit_log(
+            f"🕳️ {response['message']}", scope="identity", send_as_id=owner.identity_id,
+            priority=priority, limit=260,
+        )
+    except asyncio.CancelledError:
+        raise MiniAppFlowCancelled(response if owner.is_current() else None) from None
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Treasure notification failed (%s); result retained", type(exc).__name__)
+
+
+def _commit_cave_treasure_result(projection, result, *, now, result_msg_id=0, public=False,
+                                operation_cancelled=False, operation_record=None):
+    identity_id = projection.owner.identity_id
+    try:
+        inventory_record = _record_cave_treasure_inventory_delta(
+            identity_id, result, now=now, result_msg_id=result_msg_id, prepare=True,
+            **({"operation_id": operation_record["operation_id"]} if operation_record else {}),
+        )
+        state_record = _record_cave_treasure_miniapp_state(
+            identity_id, result, now=now, result_msg_id=result_msg_id, prepare=True,
+            **({"operation_record": operation_record} if operation_record else {}),
+        )
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        game_state = data.get("state") if isinstance(data.get("state"), dict) else {}
+        status = str(result.get("status") or "")
+        unknown = bool(result.get("outcome_unknown") or game_state.get("outcome_unknown") or status == "result_unknown")
+        settled_count = len(_cave_treasure_receipts(result))
+        rewards, gains = _cave_treasure_materials(result)
+        prefix = "洞府寻宝公共入口：" if public else "洞府寻宝结果｜"
+        response = {
+            "ok": bool(result.get("ok")) and not unknown,
+            "message": prefix + _format_cave_treasure_summary(result),
+            "extra": _miniapp_result_extra({
+                "inventory_record_key": inventory_record.get("record_key", ""),
+                "state_record_key": state_record.get("record_key", ""),
+                "status": status, "outcome_unknown": unknown,
+                "games_used": _parse_int(game_state.get("games_used"), 0),
+                "games_limit": _parse_int(game_state.get("games_limit"), 0),
+                "settled_count": settled_count, "gains": gains, "rewards": rewards,
+                "daily_exhausted": bool(result.get("ok")) and status == "daily_limit" and not unknown and treasure_quota_exhausted(game_state),
+                "operation_cancelled": operation_cancelled,
+            }, result),
+        }
+        response = projection.apply(inventory_record, state_record, response, now=now, operation_record=operation_record)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Treasure projection failed (%s); blocking replay", type(exc).__name__)
+        response = projection.invalidate()
+    return response
+
+
+async def _run_owned_cave_treasure(owner, token, webview_url, *, now, capture_source, operation_check,
+                                   result_msg_id=0, public=False):
+    identity_id = owner.identity_id
+    recovered = _recover_owned_cave_treasure(identity_id)
+    resume = treasure_operations.resume_allowed(identity_id)
+    if recovered is not None and not resume:
+        return recovered
+    if not operation_check():
+        return _cave_treasure_cancelled_response()
+    if _cave_treasure_unknown_hold(identity_id, now) and not resume:
+        return _cave_treasure_unknown_response()
+    projection = treasure_results.ResultProjection.capture(owner, **({"resume": True} if resume else {}))
+    session = await _load_cave_public_identity_session(
+        identity_id, token, webview_url, now=now,
+        capture_source=f"{capture_source}:start", operation_check=operation_check,
+    )
+    if not operation_check() or not projection.is_current():
+        return _cave_treasure_cancelled_response()
+    if not session.get("ok"):
+        extra = treasure_operations.held_response(session.get("error") or "original_round_unverified")["extra"] if resume else {}
+        response = {"ok": False, "message": f"洞府寻宝身份读取失败：{session.get('error') or 'unknown'}",
+                    "extra": _miniapp_result_extra(extra, session)}
+        await _audit_cave_treasure(owner, response)
+        return response if owner.is_current() else _cave_treasure_cancelled_response()
+    try:
+        player_id = _require_cave_action_player_id(session.get("player_id"), identity_id=identity_id)
+    except ValueError as exc:
+        return {"ok": False, "message": f"洞府寻宝身份校验失败：{exc}", "extra": {"status": "blocked"}}
+    reason = treasure_operations.hold_reason(identity_id)
+    if reason and not (resume and treasure_operations.resume_allowed(identity_id)):
+        return treasure_operations.held_response(reason)
+    writer = treasure_operations.CheckpointWriter(projection, player_id=player_id, operation_check=operation_check,
+                                                 **({"resume": True} if resume else {}))
+    capture_sink = _capture_store(now)
+    cancelled_flow = None
+    try:
+        result = await run_cave_treasure_miniapp_production_flow(
+            identity_id, token=token, webview_url=webview_url, init_data=session.get("init_data") or "",
+            player_id=player_id, max_steps=CAVE_TREASURE_MANUAL_MAX_STEPS,
+            capture_sink=capture_sink, capture_source=capture_source,
+            operation_check=lambda: operation_check() and writer.is_current() and not writer.cancelled,
+            checkpoint=writer,
+            **({"resume_record": writer.resume_record} if resume else {}),
+        )
+    except MiniAppFlowCancelled as exc:
+        cancelled_flow, result = exc, exc.result
+    except BaseException:
+        writer.closed = True
+        raise
+    if not owner.is_current():
+        writer.closed = True
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled() from None
+        return _cave_treasure_cancelled_response()
+    if not isinstance(result, dict):
+        result = {"ok": False, "status": "result_unknown", "error": "treasure_result_missing", "outcome_unknown": True}
+    if resume and not writer.sequence:
+        writer.closed = True
+        response = treasure_operations.held_response(result.get("error") or "original_round_unverified")
+        response["extra"] = _miniapp_result_extra(response["extra"], result)
+        if cancelled_flow is not None or writer.cancelled:
+            raise MiniAppFlowCancelled(response) from None
+        return response
+    try:
+        _record_cave_treasure_business_capture(capture_sink, result, source=capture_source, now=now)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Treasure capture failed (%s); retaining local result", type(exc).__name__)
+    if not writer.finish(result):
+        response = (treasure_operations.held_response("checkpoint_persistence_pending") if writer.sequence
+                    else projection.invalidate())
+        if cancelled_flow is not None or writer.cancelled:
+            raise MiniAppFlowCancelled(response) from None
+        return response
+    operation_record = writer.current if writer.sequence else None
+    if operation_record:
+        result = {**result, **treasure_operations.projected_result(operation_record)}
+    response = _commit_cave_treasure_result(
+        projection, result, now=operation_record["updated_at"] if operation_record else now,
+        result_msg_id=result_msg_id, public=public, operation_record=operation_record,
+        operation_cancelled=cancelled_flow is not None or writer.cancelled or not operation_check(),
+    )
+    if cancelled_flow is not None or writer.cancelled:
+        raise MiniAppFlowCancelled(response) from None
+    if response["extra"].get("persistence_only"):
+        return response
+    priority = "normal" if response["extra"].get("settled_count", 0) > 0 or not response["ok"] else "low"
+    await _audit_cave_treasure(owner, response, priority=priority)
+    if not owner.is_current():
+        return _cave_treasure_cancelled_response()
+    response["extra"]["operation_cancelled"] = not operation_check()
+    return response
+
+
 async def run_cave_public_treasure(identity_id, public_entry_url, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if identity_id <= 0 or owner is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
+    recovered = recover_cave_treasure_result(identity_id)
+    if recovered is not None and not treasure_operations.resume_allowed(identity_id):
+        return recovered
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     identity_error = _public_entry_account_identity_error(identity_id)
     if identity_error:
         return {"ok": False, "message": identity_error, "extra": {}}
-    if _cave_treasure_unknown_hold(identity_id, now):
-        message = "洞府寻宝今日存在结果未知动作，已冻结自动重试至次日"
-        await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-        return {
-            "ok": True,
-            "message": message,
-            "extra": {"daily_exhausted": True, "skipped": "outcome_unknown_hold"},
-        }
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+
+    def can_continue():
+        return (
+            owner.is_current() and is_cave_public_identity_available(identity_id) and _public_entry_allowed()
+            and not _public_entry_account_identity_error(identity_id)
+            and (observation is None or observation.permits(identity_id, token))
+        )
+
     lock = _public_entry_lock(identity_id)
-    if lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
-    async with lock:
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_treasure_start:{identity_id}",
+    game_lock = _run_lock(identity_id)
+    if lock.locked() or game_lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
+    async with lock, game_lock:
+        return await _run_owned_cave_treasure(
+            owner, token, webview_url, now=now, capture_source=f"cave_public_treasure:{identity_id}",
+            operation_check=can_continue, public=True,
         )
-        if not session.get("ok"):
-            message = f"洞府寻宝身份读取失败：{session.get('error') or 'unknown'}"
-            await send_audit_log(f"🕳️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
-        capture_sink = _capture_store(now)
-        capture_source = f"cave_public_treasure:{identity_id}"
-        result = await run_cave_treasure_miniapp_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            init_data=session.get("init_data") or "",
-            player_id=session.get("player_id"),
-            max_steps=CAVE_TREASURE_MANUAL_MAX_STEPS,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
-        _record_cave_treasure_business_capture(capture_sink, result, source=capture_source, now=now)
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        state = data.get("state") if isinstance(data.get("state"), dict) else {}
-        inventory_record = _record_cave_treasure_inventory_delta(identity_id, result, now=now)
-        state_record = _record_cave_treasure_miniapp_state(identity_id, result, now=now)
-        summary = _format_cave_treasure_summary(result)
-        message = f"洞府寻宝公共入口：{summary}"
-        settled_count = _parse_int((result.get("data") or {}).get("settled_count"), 0)
-        rewards, gains = _collect_materials(data or {})
-        changed = bool(inventory_record.get("changed")) or settled_count > 0
-        await send_audit_log(
-            f"🕳️ {message}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="normal" if changed or not result.get("ok") else "low",
-            limit=260,
-        )
-        return {
-            "ok": bool(result.get("ok")),
-            "message": message,
-            "extra": _miniapp_result_extra({
-                "inventory_record_key": inventory_record.get("record_key", ""),
-                "state_record_key": state_record.get("record_key", ""),
-                "games_used": _parse_int(state.get("games_used"), 0),
-                "games_limit": _parse_int(state.get("games_limit"), 0),
-                "settled_count": settled_count,
-                "gains": gains,
-                "rewards": rewards,
-                "daily_exhausted": (
-                    str(result.get("status") or "").strip() == "daily_limit"
-                    or str(result.get("status") or "").strip() == "result_unknown"
-                    or (
-                        _parse_int(state.get("games_limit"), 0) > 0
-                        and _parse_int(state.get("games_used"), 0) >= _parse_int(state.get("games_limit"), 0)
-                    )
-                ),
-            }, result),
-        }
 
 
 async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if identity_id <= 0 or owner is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
@@ -3361,10 +3708,26 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+
+    def can_continue():
+        return (
+            owner.is_current() and is_cave_public_identity_available(identity_id)
+            and _public_entry_allowed()
+            and (observation is None or observation.permits(identity_id, token))
+        )
+
+    cancelled = {"ok": False, "message": "洞府天机试炼操作已取消或身份已变更", "extra": {"status": "cancelled"}}
     lock = _public_entry_lock(identity_id)
-    if lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
-    async with lock:
+    game_lock = _trial_run_lock(identity_id)
+    if lock.locked() or game_lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
+    async with lock, game_lock:
+        if not can_continue():
+            return cancelled
+        recovered = trial_operations.recover_local(identity_id)
+        if recovered is not None:
+            return _trial_recovery_response(recovered)
         session = await _load_cave_public_identity_session(
             identity_id,
             token,
@@ -3372,7 +3735,10 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             now=now,
             capture_source=f"cave_public_trial_start:{identity_id}",
             include_details=True,
+            operation_check=can_continue,
         )
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             message = f"洞府天机试炼入口读取失败：{session.get('error') or 'unknown'}"
             await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
@@ -3382,7 +3748,6 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
         cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
         raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
-        overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
         if not cave_result.get("ok"):
             message = f"洞府天机试炼入口读取失败：{cave_result.get('error') or cave_result.get('status') or 'unknown'}"
             await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=220)
@@ -3403,7 +3768,10 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
                 init_data=dwelling_init_data,
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_trial_external:{identity_id}",
+                operation_check=can_continue,
             )
+            if not can_continue():
+                return cancelled
             if not external_result.get("ok"):
                 message = f"洞府天机试炼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
                 await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
@@ -3417,17 +3785,32 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             return {"ok": False, "message": message, "extra": {}}
         capture_sink = _trial_miniapp_capture_store(now)
         capture_source = f"cave_public_trial:{identity_id}"
-        result = await run_trial_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            init_data=dwelling_init_data,
-            player_id=selected_player_id,
-            max_rounds=99,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
-        _record_trial_business_capture(capture_sink, result, source=capture_source, now=now)
+        cancelled_flow = None
+        writer = trial_operations.CheckpointWriter(owner, player_id=selected_player_id, operation_check=can_continue)
+        try:
+            result = await run_trial_miniapp_production_flow(
+                identity_id,
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                init_data=dwelling_init_data,
+                player_id=selected_player_id,
+                max_rounds=99,
+                capture_sink=capture_sink,
+                capture_source=capture_source,
+                operation_check=lambda: can_continue() and writer.is_current(),
+                checkpoint=writer,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
+        result = dict(result or {})
+        if not owner.is_current():
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return cancelled
+        result = trial_operations.finish_result(writer, result)
+        if _trial_has_settlements(result):
+            _record_trial_business_capture(capture_sink, result, source=capture_source, now=now)
         summary = _format_trial_summary(result)
         message = f"洞府天机试炼公共入口：{summary}"
         completed_ok = _trial_result_completed_ok(result)
@@ -3436,548 +3819,507 @@ async def run_cave_public_trial(identity_id, public_entry_url, *, now=None):
             result.get("settled_count") or (result.get("data") or {}).get("settled_count"),
             0,
         )
-        await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="low" if completed_ok else "normal", limit=260)
-        return {
+        response = {
             "ok": completed_ok,
             "message": message,
             "extra": _miniapp_result_extra({
                 "trial_title": launch.get("title", ""),
+                "status": result.get("status") or "unknown",
+                "error": result.get("error") or "",
+                "events": list(result.get("events") or ()),
                 "settled_count": settled_count,
                 "gains": gains,
                 "rewards": rewards,
+                "operation_cancelled": cancelled_flow is not None or not can_continue(),
             }, result),
         }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        try:
+            await send_audit_log(f"🧪 {message}", scope="identity", send_as_id=identity_id, priority="low" if completed_ok else "normal", limit=260)
+        except asyncio.CancelledError:
+            raise MiniAppFlowCancelled(response if owner.is_current() else None) from None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Trial public result report failed (%s); settlement retained", type(exc).__name__)
+        if not owner.is_current():
+            return cancelled
+        response["extra"]["operation_cancelled"] = not can_continue()
+        return response
 
 
-async def run_cave_public_fate_cards(
-    identity_id,
-    public_entry_url,
-    *,
-    choice_key="accept",
-    now=None,
-):
-    """Complete one 天机命脉 chain through the public dwelling entry.
+class _CaveFateCardsOperation:
+    """Own one fate chain; completion ownership is independent of admission."""
 
-    The configured choice is explicit. ``accept`` settles the dwelling quiet
-    room once; ``hide`` waits for the server-side timer. Every mutation is a
-    single POST followed by an authoritative ``/start`` reconciliation.
-    """
+    def __init__(self, owner, *, now, operation_check):
+        self.owner = owner
+        self.now = now
+        self.operation_check = operation_check
+        self.observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+        self.token = ""
+        self.controls = self.control_values()
+        self.deep = _CaveDeepRetreatOperation.capture(owner.identity_id)
+        self.record_key = f"{owner.identity_id}:fate_cards"
+        self.base_record = deepcopy(get_miniapp_state_records().get(self.record_key) or {})
+        self.record = deepcopy(self.base_record)
+        previous = self.base_record.get("state") or {}
+        self.pending = deepcopy(previous.get("pending") or {})
+        self.unconfirmed_prerequisite = deepcopy(previous.get("unconfirmed_prerequisite") or {})
+        if not self.pending and str(previous.get("status") or "").endswith("_unknown"):
+            self.pending = {"action": "legacy", "challenge_date": previous.get("challenge_date")}
+        self.receipts = deepcopy(previous.get("receipts") or {})
+        self.last_trace_balance = previous.get("trace_balance") if type(previous.get("trace_balance")) is int else None
+        self.fate_state = {}
+        self.reward = {}
+        self.meditation = {}
+        self.deep_summary = {}
+        self.budget = MiniAppRequestBudget({"max_requests_per_run": 16, "max_attempts_per_request": 1})
+
+    @staticmethod
+    def control_values():
+        config = get_miniapp_auto_config() or {}
+        return tuple(config.get(key) for key in (
+            "cave_public_fate_cards_enabled", "cave_public_fate_cards_choice_key",
+            "cave_public_deep_status_enabled",
+        ))
+
+    def owns_result(self):
+        return self.owner.is_current() and self.record == (get_miniapp_state_records().get(self.record_key) or {})
+
+    def can_dispatch(self):
+        try:
+            return (
+                self.owns_result() and self.deep is not None and self.deep.can_dispatch()
+                and self.controls == self.control_values()
+                and (self.operation_check is None or self.operation_check() is True)
+                and (self.observation is None or self.observation.permits(self.owner.identity_id, self.token))
+            )
+        except MiniAppRequestAborted:
+            return False
+
+    async def read(self, function, *args, **kwargs):
+        require_miniapp_operation(self.can_dispatch)
+        result = await function(*args, **kwargs, operation_check=self.can_dispatch)
+        require_miniapp_operation(self.can_dispatch)
+        return result
+
+    def record_state(self, identity_id, fate_state, *, now, status, **kwargs):
+        if identity_id != self.owner.identity_id or not self.owns_result():
+            raise MiniAppRequestAborted("fate_owner_changed")
+        self.fate_state = dict(fate_state or self.fate_state)
+        if self.fate_state.get("trace_balance_known"):
+            self.last_trace_balance = self.fate_state.get("trace_balance")
+        else:
+            self.fate_state["trace_balance"] = self.last_trace_balance
+        if str(status).endswith("_unknown") and not self.pending:
+            status = str(status).removesuffix("_unknown") + "_unconfirmed"
+        result = _record_fate_cards_state(
+            identity_id, self.fate_state, now=now, status=status,
+            reward=self.reward, meditation=self.meditation,
+            deep_retreat=kwargs.get("deep_retreat") or self.deep_summary,
+            base_record=self.base_record, pending=self.pending,
+            receipts=self.receipts, owner_account_id=self.owner.account_id,
+            unconfirmed_prerequisite=self.unconfirmed_prerequisite,
+        )
+        self.record = deepcopy(get_miniapp_state_records().get(self.record_key) or {})
+        return result
+
+    def add_reward(self, action, fate_state, action_result, *, expected=""):
+        data = action_result.get("data") or {}
+        direct = _fate_cards_state_from_result(action_result)
+        if (action_result.get("ok") is not True
+                or not _fate_cards_action_confirmed(action, direct, expected=expected)
+                or _fate_cards_transition_error(direct, fate_state)):
+            return
+        raw = data.get("raw") or {}
+        if raw.get({"draw": "alreadyDrawn", "settle": "alreadySettled"}.get(action, "")) is True:
+            return
+        receipt = stable_payload_digest({
+            "day": fate_state.get("challenge_date"), "record": fate_state.get("record_key"),
+            "action": action,
+        })
+        if self.receipts.get(action) == receipt:
+            return
+        self.receipts[action] = receipt
+        for name, amount in (data.get("reward") or {}).items():
+            if type(amount) is int and amount > 0:
+                self.reward[str(name)] = self.reward.get(str(name), 0) + amount
+
+    def accept_state(self, fate_state):
+        previous = self.base_record.get("state") or {}
+        prior_snapshot = previous.get("snapshot") or {}
+        basis = self.fate_state
+        if not basis and prior_snapshot.get("state_verified") is True and prior_snapshot.get("challenge_date") == fate_state.get("challenge_date"):
+            basis = prior_snapshot
+        error = _fate_cards_transition_error(basis, fate_state)
+        if not error and previous.get("challenge_date", "") > fate_state.get("challenge_date", ""):
+            error = "fate_day_regressed"
+        if error:
+            raise MiniAppRequestAborted(error)
+        if previous.get("owner_account_id") not in (None, self.owner.account_id):
+            raise MiniAppRequestAborted("fate_record_owner_unverified")
+        if self.pending:
+            action = self.pending.get("action")
+            basis = self.pending.get("before") or {}
+            if not self.pending.get("conflict") and basis.get("state_verified") is True and action in {"draw", "interpret", "choose", "settle"} and _fate_cards_action_confirmed(
+                action, fate_state, previous=basis, expected=self.pending.get("expected", ""),
+            ):
+                self.pending = {}
+            elif (not self.pending.get("conflict") and previous.get("owner_account_id") == self.owner.account_id
+                  and _fate_cards_prerequisite_superseded(self.pending, fate_state)):
+                # The same quest no longer needs this prerequisite. This does
+                # not confirm the missing action receipt or manufacture gains.
+                self.unconfirmed_prerequisite = {
+                    "action": action, "challenge_date": basis.get("challenge_date"),
+                    "record_key": basis.get("record_key"), "outcome_unknown": True,
+                    "reason": "quest_no_longer_needs_prerequisite",
+                }
+                self.pending = {}
+            else:
+                raise MiniAppRequestAborted("fate_previous_outcome_unknown")
+        if not self.fate_state and previous.get("challenge_date") != fate_state.get("challenge_date"):
+            self.receipts = {}
+        self.fate_state = deepcopy(fate_state)
+        if fate_state.get("trace_balance_known"):
+            self.last_trace_balance = fate_state.get("trace_balance")
+
+    async def fate_action(self, identity_id, action, **kwargs):
+        require_miniapp_operation(self.can_dispatch)
+        before = deepcopy(self.fate_state)
+        if before.get("state_verified") is not True or self.pending:
+            raise MiniAppRequestAborted("fate_action_unverified")
+        expected = kwargs.get("expected") or (kwargs.get("payload") or {}).get("questionKey", "")
+        kwargs["expected"] = expected
+        cancelled = None
+        try:
+            result = await _run_fate_cards_action_and_reconcile(
+                identity_id, action, **kwargs, previous=before,
+                operation_check=self.can_dispatch, request_budget=self.budget,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled = exc
+            result = exc.result if isinstance(exc.result, dict) else {"outcome_unknown": True}
+        if self.owns_result():
+            observed = result.get("state") or {}
+            confirmed = bool(result.get("ok") and _fate_cards_action_confirmed(
+                action, observed, previous=before, expected=expected,
+            ))
+            if confirmed:
+                self.fate_state = observed
+                self.pending = {}
+                self.add_reward(action, observed, result.get("action_result") or {}, expected=expected)
+            elif result.get("outcome_unknown") or "outcome_unknown" not in result and result.get("action_dispatched") is not False:
+                self.pending = {"action": action, "before": before, "expected": expected}
+                if result.get("conflict"):
+                    self.pending["conflict"] = result["conflict"]
+            status = "settled" if confirmed and action == "settle" else action if confirmed else f"{action}_unknown" if self.pending else f"{action}_rejected"
+            self.record_state(identity_id, self.fate_state, now=self.now, status=status)
+            result = {**result, "ok": confirmed}
+        else:
+            result = {"ok": False, "status": "cancelled", "state": {}}
+        if cancelled is not None:
+            raise MiniAppFlowCancelled(result) from None
+        if not self.owns_result() or result.get("ok") and action != "settle" and result.get("can_continue") is not True:
+            raise MiniAppRequestAborted("fate_chain_stopped_after_completion")
+        return result
+
+    async def settle_meditation(self, identity_id, *, session, **kwargs):
+        require_miniapp_operation(self.can_dispatch)
+        raw = (((session.get("result") or {}).get("data") or {}).get("raw") or {})
+        root = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        meditation = (root.get("dwelling") or {}).get("meditation") or {}
+        if cave_action_player_error(root, identity_id) or meditation.get("canSettle") is not True or self.pending:
+            raise MiniAppRequestAborted("fate_meditation_permission_unverified")
+        cancelled = None
+        try:
+            result = await run_cave_meditation_settle_production_flow(
+                identity_id, **kwargs, operation_check=self.can_dispatch,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled = exc
+            result = exc.result if isinstance(exc.result, dict) else {"outcome_unknown": True}
+        confirmed = False
+        if self.owns_result():
+            raw = result.get("data") or {}
+            root = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+            action = root.get("actionResult") or {}
+            confirmed = bool(result.get("ok") and not cave_action_player_error(root, identity_id)
+                             and action.get("ok") is True and type(action.get("cultivationGain")) is int
+                             and action["cultivationGain"] >= 0)
+            if confirmed:
+                rewards, gains = _collect_materials(action)
+                self.meditation = {"ok": True, "gains": gains, "rewards": rewards}
+            elif (result.get("outcome_unknown") or "outcome_unknown" not in result and result.get("action_dispatched") is not False
+                  or result.get("ok") and action.get("ok") is not False):
+                self.pending = {"action": "meditation", "before": self.fate_state,
+                                "last_update_ms": meditation.get("lastUpdateMs")}
+            self.record_state(identity_id, self.fate_state, now=self.now,
+                              status="meditation_settled" if confirmed else "meditation_unknown" if self.pending else "meditation_rejected")
+        if cancelled is not None:
+            raise MiniAppFlowCancelled(result) from None
+        if not confirmed:
+            raise MiniAppRequestAborted("fate_meditation_not_confirmed")
+        return result
+
+    async def deep_action(self, identity_id, **kwargs):
+        require_miniapp_operation(self.can_dispatch)
+        cancelled = None
+        try:
+            result = await _run_cave_public_deep_action_locked(
+                identity_id, **kwargs, operation=self.deep, operation_check=self.can_dispatch,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled = exc
+            result = exc.result if isinstance(exc.result, dict) else {"outcome_unknown": True}
+        if self.owns_result() and result.get("status") != "cancelled":
+            self.deep = _CaveDeepRetreatOperation.capture(identity_id)
+            self.deep_summary = {"action": kwargs["action"], "ok": bool(result.get("ok")), "sent": bool(result.get("sent"))}
+            if result.get("outcome_unknown"):
+                self.pending = {"action": f"deep_{kwargs['action']}", "before": self.fate_state}
+            self.record_state(identity_id, self.fate_state, now=self.now,
+                              status=f"deep_{kwargs['action']}" if result.get("ok") else f"deep_{kwargs['action']}_unknown")
+        if cancelled is not None:
+            raise MiniAppFlowCancelled(result) from None
+        if result.get("status") == "cancelled":
+            raise MiniAppRequestAborted("fate_deep_operation_changed")
+        return result
+
+
+async def run_cave_public_fate_cards(identity_id, public_entry_url, *, choice_key="accept", now=None, operation_check=None):
     identity_id = _identity_id(identity_id)
-    now = float(now or time.time())
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if owner is None:
+        return {"ok": False, "message": "身份不存在", "extra": {}}
+    operation = _CaveFateCardsOperation(owner, now=float(now or time.time()), operation_check=operation_check)
+    try:
+        return await _run_cave_public_fate_cards_owned(
+            identity_id, public_entry_url, choice_key=choice_key, now=operation.now, operation=operation,
+        )
+    except MiniAppFlowCancelled:
+        saved = (operation.record.get("state") or {}) if operation.owns_result() and operation.fate_state else {}
+        settled = saved.get("status") == "settled"
+        raise MiniAppFlowCancelled({
+            "ok": settled, "message": "天机命脉已结算，后续操作已取消" if settled else "天机命脉操作已取消",
+            "extra": {"status": "cancelled", "daily_exhausted": settled,
+                      "gains": saved.get("gains") or {}, "outcome_unknown": bool(operation.pending)},
+        }) from None
+    except MiniAppRequestAborted as exc:
+        return {"ok": False, "message": f"天机命脉链路已停止：{exc}",
+                "extra": {"status": "cancelled" if not operation.can_dispatch() else "unverified",
+                          "outcome_unknown": bool(operation.pending)}}
+
+
+async def _run_cave_public_fate_cards_owned(
+    identity_id, public_entry_url, *, choice_key, now, operation,
+):
+    """Drive one selected-role chain; the operation owns all result adoption."""
     try:
         choice_key = normalize_fate_cards_choice_key(choice_key, automation=True)
     except ValueError as exc:
         return {"ok": False, "message": str(exc), "extra": {}}
-    if identity_id <= 0:
-        return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not is_cave_public_identity_available(identity_id):
-        return {"ok": False, "message": "身份已停用", "extra": {}}
-    if not _public_entry_allowed():
-        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    operation.token = token
+    require_miniapp_operation(operation.can_dispatch)
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
 
     async with lock:
-        capture_sink = _capture_store(now)
-        capture_source = f"cave_public_fate_cards:{identity_id}"
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"{capture_source}:start",
-            include_details=True,
-        )
-        if not session.get("ok"):
-            message = f"洞府天机命脉身份读取失败：{session.get('error') or 'unknown'}"
-            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
-
-        dwelling_init_data = str(session.get("init_data") or "")
-        selected_player_id = session.get("player_id")
-        cave_result = dict(session.get("result") or {})
-        cave_data = dict(cave_result.get("data") or {})
-        cave_raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
-        cave_overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
-        external_app = find_fate_cards_external_app(cave_raw)
-        if not external_app or not external_app.get("available"):
-            message = "洞府公共入口未开放天机命脉"
-            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
-            return {"ok": True, "message": message, "extra": {"terminal_skip": True}}
-
+        source = f"cave_public_fate_cards:{identity_id}"
+        capture = _capture_store(now)
+        session = {}
         launch = {}
-        if external_app.get("action"):
-            external_result = await run_cave_external_action_production_flow(
-                identity_id,
-                token=token,
-                webview_url=webview_url,
-                action=external_app["action"],
-                player_id=selected_player_id,
-                init_data=dwelling_init_data,
-                capture_sink=capture_sink,
-                capture_source=f"{capture_source}:external",
+        fate_init_data = ""
+
+        def record_gains():
+            return dict((operation.record.get("state") or {}).get("gains") or {})
+
+        def failed(message, result=None):
+            return {"ok": False, "message": message, "extra": _miniapp_result_extra({
+                "gains": record_gains(), "outcome_unknown": bool(operation.pending),
+            }, result or {})}
+
+        def waiting(status, message, *, deep=None):
+            deep_summary = dict(operation.deep_summary)
+            if deep:
+                deep_summary.update({key: deep.get(key) for key in ("active", "remaining_seconds", "end_ms")})
+            record = operation.record_state(
+                identity_id, operation.fate_state, now=now, status=status, deep_retreat=deep_summary,
             )
-            if not external_result.get("ok"):
-                message = f"洞府天机命脉动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
-                await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-                return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
-            launch = _find_fate_cards_launch_in_cave_payload(external_result.get("data") or {})
-        elif external_app.get("url"):
-            launch = _find_fate_cards_launch_in_cave_payload(external_app)
-        if not launch:
-            message = "洞府天机命脉入口已请求，但未返回可用 URL"
-            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-            return {"ok": False, "message": message, "extra": {}}
-
-        try:
-            fate_init_data = await request_fate_cards_miniapp_init_data(
-                identity_id,
-                token=launch.get("token"),
-                webview_url=launch.get("webview_url"),
-            )
-        except Exception as exc:
-            message = f"天机命脉 WebView 会话失败：{type(exc).__name__}: {exc}"
-            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
-
-        async def probe(source_suffix):
-            return await run_fate_cards_start_probe_production(
-                identity_id,
-                token=launch.get("token"),
-                webview_url=launch.get("webview_url"),
-                init_data=fate_init_data,
-                capture_sink=capture_sink,
-                capture_source=f"{capture_source}:{source_suffix}",
-            )
-
-        async def refresh_dwelling(source_suffix):
-            nonlocal session, dwelling_init_data, selected_player_id, cave_result, cave_data, cave_raw, cave_overview
-            refreshed = await _load_cave_public_identity_session(
-                identity_id,
-                token,
-                webview_url,
-                now=now,
-                capture_source=f"{capture_source}:{source_suffix}",
-                include_details=True,
-            )
-            if not refreshed.get("ok"):
-                return refreshed
-            session = refreshed
-            dwelling_init_data = str(session.get("init_data") or "")
-            selected_player_id = session.get("player_id")
-            cave_result = dict(session.get("result") or {})
-            cave_data = dict(cave_result.get("data") or {})
-            cave_raw = cave_data.get("raw") if isinstance(cave_data.get("raw"), dict) else {}
-            cave_overview = cave_data.get("overview") if isinstance(cave_data.get("overview"), dict) else {}
-            return refreshed
-
-        async def refresh_fate(source_suffix):
-            nonlocal fate_state
-            refreshed = await probe(source_suffix)
-            fate_state = _fate_cards_state_from_result(refreshed) or fate_state
-            return refreshed
-
-        probe_result = await refresh_fate("fate_start")
-        fate_state = _fate_cards_state_from_result(probe_result)
-        if not probe_result.get("ok") or not fate_state:
-            message = f"天机命脉状态读取失败：{probe_result.get('error') or 'unknown'}"
-            await send_audit_log(f"🔭 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": {}}
-
-        if not fate_state.get("has_drawn"):
-            question_key = str(fate_state.get("default_question_key") or FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY).strip()
-            available_questions = {
-                str(item.get("key") or "").strip()
-                for item in fate_state.get("questions") or ()
-                if isinstance(item, dict)
-            }
-            if question_key not in available_questions:
-                message = "天机命脉页面未提供前端默认修行主题"
-                _record_fate_cards_state(identity_id, fate_state, now=now, status="question_unavailable")
-                return {"ok": False, "message": message, "extra": {}}
-            reconciled = await _run_fate_cards_action_and_reconcile(
-                identity_id,
-                "draw",
-                token=launch.get("token"),
-                webview_url=launch.get("webview_url"),
-                init_data=fate_init_data,
-                payload={"questionKey": question_key},
-                capture_sink=capture_sink,
-                capture_source=capture_source,
-            )
-            fate_state = reconciled.get("state") or fate_state
-            if not reconciled.get("ok"):
-                message = f"天机命脉启牌未确认：{reconciled.get('error') or 'unknown'}"
-                _record_fate_cards_state(identity_id, fate_state, now=now, status="draw_unknown")
-                return {"ok": False, "message": message, "extra": {}}
-
-        if not fate_state.get("has_ai_reading"):
-            reconciled = await _run_fate_cards_action_and_reconcile(
-                identity_id,
-                "interpret",
-                token=launch.get("token"),
-                webview_url=launch.get("webview_url"),
-                init_data=fate_init_data,
-                payload={},
-                capture_sink=capture_sink,
-                capture_source=capture_source,
-            )
-            fate_state = reconciled.get("state") or fate_state
-            if not reconciled.get("ok"):
-                message = f"天机命脉解读未确认：{reconciled.get('error') or 'unknown'}"
-                _record_fate_cards_state(identity_id, fate_state, now=now, status="interpret_unknown")
-                return {"ok": False, "message": message, "extra": {}}
-
-        current_choice = str(fate_state.get("choice_key") or "").strip()
-        if not current_choice:
-            available_choices = {
-                str(item.get("key") or "").strip()
-                for item in fate_state.get("choices") or ()
-                if isinstance(item, dict)
-            }
-            if choice_key not in available_choices:
-                message = f"天机命脉页面未提供配置命择 {choice_key}"
-                _record_fate_cards_state(identity_id, fate_state, now=now, status="choice_unavailable")
-                return {"ok": False, "message": message, "extra": {}}
-            reconciled = await _run_fate_cards_action_and_reconcile(
-                identity_id,
-                "choose",
-                token=launch.get("token"),
-                webview_url=launch.get("webview_url"),
-                init_data=fate_init_data,
-                payload={"choiceKey": choice_key},
-                capture_sink=capture_sink,
-                capture_source=capture_source,
-                expected=choice_key,
-            )
-            fate_state = reconciled.get("state") or fate_state
-            if not reconciled.get("ok"):
-                message = f"天机命脉承命未确认：{reconciled.get('error') or 'unknown'}"
-                _record_fate_cards_state(identity_id, fate_state, now=now, status="choose_unknown")
-                return {"ok": False, "message": message, "extra": {}}
-            current_choice = choice_key
-
-        quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
-        quest_status = str(quest.get("status") or "").strip().lower()
-        if quest_status in {"settled", "expired"}:
-            terminal_status = "settled" if quest_status == "settled" else "expired"
-            record = _record_fate_cards_state(identity_id, fate_state, now=now, status=terminal_status)
-            message = "天机命脉今日已结算" if quest_status == "settled" else "天机命脉今日已过期"
-            return {
-                "ok": True,
-                "message": message,
-                "extra": {"terminal_skip": True, "daily_exhausted": True, "record_key": record.get("record_key", "")},
-            }
-
-        meditation_summary = {}
-        deep_summary = {}
-        gains = {}
-        reward = {}
-        deep_actions_sent = set()
-        for _step in range(6):
-            quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
-            if quest.get("can_settle"):
-                break
-            if current_choice != "accept":
-                break
-
-            meditation = cave_overview.get("meditation") if isinstance(cave_overview.get("meditation"), dict) else {}
-            if meditation.get("can_settle") and "meditation" not in deep_actions_sent:
-                deep_actions_sent.add("meditation")
-                meditation_result = await run_cave_meditation_settle_production_flow(
-                    identity_id,
-                    token=token,
-                    webview_url=webview_url,
-                    init_data=dwelling_init_data,
-                    capture_sink=capture_sink,
-                    capture_source=f"{capture_source}:meditation",
-                )
-                med_rewards, med_gains = _collect_materials(meditation_result.get("data") or {})
-                gains.update(med_gains)
-                meditation_summary = {
-                    "ok": bool(meditation_result.get("ok")),
-                    "gains": med_gains,
-                    "rewards": med_rewards,
-                }
-                refreshed = await refresh_dwelling("after_meditation_dwelling")
-                if not refreshed.get("ok"):
-                    message = f"天机命脉静室结算后洞府回读失败：{refreshed.get('error') or 'unknown'}"
-                    _record_fate_cards_state(
-                        identity_id,
-                        fate_state,
-                        now=now,
-                        status="meditation_reconcile_failed",
-                        meditation=meditation_summary,
-                        deep_retreat=deep_summary,
-                    )
-                    return {"ok": False, "message": message, "extra": {"gains": gains}}
-                probe_result = await refresh_fate("after_meditation")
-                quest = fate_state.get("quest") if isinstance(fate_state.get("quest"), dict) else {}
-                if not meditation_result.get("ok") and not quest.get("can_settle"):
-                    message = f"天机命脉静室结算未确认：{meditation_result.get('error') or 'unknown'}"
-                    _record_fate_cards_state(
-                        identity_id,
-                        fate_state,
-                        now=now,
-                        status="meditation_unknown",
-                        meditation=meditation_summary,
-                        deep_retreat=deep_summary,
-                    )
-                    return {"ok": False, "message": message, "extra": {"gains": gains}}
-                continue
-
-            deep = cave_overview.get("deep_seclusion") if isinstance(cave_overview.get("deep_seclusion"), dict) else {}
-            if deep.get("active"):
-                if (deep.get("can_settle") or deep.get("completed")) and "deep_settle" not in deep_actions_sent:
-                    deep_actions_sent.add("deep_settle")
-                    deep_result = await _run_cave_public_deep_action_locked(
-                        identity_id,
-                        token=token,
-                        webview_url=webview_url,
-                        action="settle",
-                        session=session,
-                        cave_overview=cave_overview,
-                        init_data=dwelling_init_data,
-                        now=now,
-                        capture_sink=capture_sink,
-                        capture_source=capture_source,
-                    )
-                    deep_summary = {
-                        "action": "settle",
-                        "ok": bool(deep_result.get("ok")),
-                        "sent": bool(deep_result.get("sent")),
-                        "reason": str(deep_result.get("reason") or ""),
-                    }
-                    if not deep_result.get("ok"):
-                        message = f"天机命脉深度闭关结算未确认：{deep_result.get('error') or 'unknown'}"
-                        _record_fate_cards_state(
-                            identity_id,
-                            fate_state,
-                            now=now,
-                            status="deep_settle_unknown",
-                            meditation=meditation_summary,
-                            deep_retreat=deep_summary,
-                        )
-                        return {"ok": False, "message": message, "extra": {"gains": gains}}
-                    refreshed = await refresh_dwelling("after_deep_settle_dwelling")
-                    if not refreshed.get("ok"):
-                        message = f"天机命脉深度闭关后洞府回读失败：{refreshed.get('error') or 'unknown'}"
-                        return {"ok": False, "message": message, "extra": {"gains": gains}}
-                    probe_result = await refresh_fate("after_deep_settle")
-                    continue
-
-                retry_after = _cave_public_deep_retry_after(deep, now=now)
-                record = _record_fate_cards_state(
-                    identity_id,
-                    fate_state,
-                    now=now,
-                    status="waiting_deep_retreat",
-                    meditation=meditation_summary,
-                    deep_retreat={
-                        "action": "wait",
-                        "active": True,
-                        "remaining_seconds": _parse_int(deep.get("remaining_seconds"), 0),
-                        "end_ms": _parse_int(deep.get("end_ms"), 0),
-                    },
-                )
-                message = "天机命脉已承命，深度闭关进行中，完成后回洞府继续结算"
-                console_log(message, scope="identity", send_as_id=identity_id, limit=240)
-                return {
-                    "ok": True,
-                    "message": message,
-                    "extra": {
-                        "retry_after_sec": retry_after,
-                        "record_key": record.get("record_key", ""),
-                        "deep_retreat": deep,
-                        "gains": gains,
-                    },
-                }
-
-            if deep.get("can_force_exit") and "deep_force" not in deep_actions_sent:
-                deep_actions_sent.add("deep_force")
-                deep_result = await _run_cave_public_deep_action_locked(
-                    identity_id,
-                    token=token,
-                    webview_url=webview_url,
-                    action="force",
-                    cave_overview=cave_overview,
-                    init_data=dwelling_init_data,
-                    now=now,
-                    capture_sink=capture_sink,
-                    capture_source=capture_source,
-                )
-                deep_summary = {
-                    "action": "force",
-                    "ok": bool(deep_result.get("ok")),
-                    "sent": bool(deep_result.get("sent")),
-                    "reason": str(deep_result.get("reason") or ""),
-                }
-                if not deep_result.get("ok") or not deep_result.get("sent"):
-                    message = f"天机命脉强行出关未确认：{deep_result.get('error') or deep_result.get('reason') or 'unknown'}"
-                    _record_fate_cards_state(
-                        identity_id,
-                        fate_state,
-                        now=now,
-                        status="deep_force_unknown",
-                        meditation=meditation_summary,
-                        deep_retreat=deep_summary,
-                    )
-                    return {"ok": False, "message": message, "extra": {"gains": gains}}
-                refreshed = await refresh_dwelling("after_deep_force_dwelling")
-                if not refreshed.get("ok"):
-                    message = f"天机命脉强行出关后洞府回读失败：{refreshed.get('error') or 'unknown'}"
-                    return {"ok": False, "message": message, "extra": {"gains": gains}}
-                continue
-
-            if deep.get("can_start") and "deep_start" not in deep_actions_sent:
-                deep_actions_sent.add("deep_start")
-                deep_result = await _run_cave_public_deep_action_locked(
-                    identity_id,
-                    token=token,
-                    webview_url=webview_url,
-                    action="start",
-                    cave_overview=cave_overview,
-                    init_data=dwelling_init_data,
-                    now=now,
-                    capture_sink=capture_sink,
-                    capture_source=capture_source,
-                )
-                deep_summary = {
-                    "action": "start",
-                    "ok": bool(deep_result.get("ok")),
-                    "sent": bool(deep_result.get("sent")),
-                    "reason": str(deep_result.get("reason") or ""),
-                }
-                if not deep_result.get("ok") or not deep_result.get("sent"):
-                    message = f"天机命脉深度闭关启动未确认：{deep_result.get('error') or deep_result.get('reason') or 'unknown'}"
-                    _record_fate_cards_state(
-                        identity_id,
-                        fate_state,
-                        now=now,
-                        status="deep_start_unknown",
-                        meditation=meditation_summary,
-                        deep_retreat=deep_summary,
-                    )
-                    return {"ok": False, "message": message, "extra": {"gains": gains}}
-                refreshed = await refresh_dwelling("after_deep_start_dwelling")
-                if not refreshed.get("ok"):
-                    message = f"天机命脉深度闭关启动后洞府回读失败：{refreshed.get('error') or 'unknown'}"
-                    return {"ok": False, "message": message, "extra": {"gains": gains}}
-                deep = cave_overview.get("deep_seclusion") if isinstance(cave_overview.get("deep_seclusion"), dict) else {}
-                retry_after = _cave_public_deep_retry_after(deep, now=now)
-                record = _record_fate_cards_state(
-                    identity_id,
-                    fate_state,
-                    now=now,
-                    status="waiting_deep_retreat",
-                    meditation=meditation_summary,
-                    deep_retreat=deep_summary,
-                )
-                message = "天机命脉已承命，已启动深度闭关，完成后回洞府继续结算"
-                console_log(message, scope="identity", send_as_id=identity_id, limit=240)
-                return {
-                    "ok": True,
-                    "message": message,
-                    "extra": {
-                        "retry_after_sec": retry_after,
-                        "record_key": record.get("record_key", ""),
-                        "deep_retreat": deep,
-                        "gains": gains,
-                    },
-                }
-
-            retry_after = _fate_cards_retry_after_sec(fate_state)
-            record = _record_fate_cards_state(
-                identity_id,
-                fate_state,
-                now=now,
-                status="waiting_meditation",
-                meditation=meditation_summary,
-                deep_retreat=deep_summary,
-            )
-            message = "天机命脉已承命，静室暂无可结算修为，且深度闭关暂不可接续"
+            retry = _cave_public_deep_retry_after(deep, now=now) if deep else _fate_cards_retry_after_sec(operation.fate_state)
             console_log(message, scope="identity", send_as_id=identity_id, limit=240)
-            return {
-                "ok": True,
-                "message": message,
-                "extra": {"retry_after_sec": retry_after, "record_key": record.get("record_key", ""), "gains": gains},
-            }
+            return {"ok": True, "message": message, "extra": {
+                "retry_after_sec": retry, "record_key": record.get("record_key", ""),
+                "deep_retreat": deep or {}, "gains": record_gains(),
+            }}
 
+        def terminal():
+            status = (operation.fate_state.get("quest") or {}).get("status")
+            if status not in {"settled", "expired"}:
+                return None
+            record = operation.record_state(identity_id, operation.fate_state, now=now, status=status)
+            return {"ok": True, "message": "天机命脉今日已结算" if status == "settled" else "天机命脉今日已过期",
+                    "extra": {"terminal_skip": True, "daily_exhausted": True, "record_key": record.get("record_key", "")}}
+
+        async def load_dwelling(suffix):
+            nonlocal session
+            loaded = await operation.read(
+                _load_cave_public_identity_session, identity_id, token, webview_url,
+                now=now, capture_source=f"{source}:{suffix}", include_details=True,
+            )
+            if loaded.get("ok"):
+                raw = ((loaded.get("result") or {}).get("data") or {}).get("raw") or {}
+                error = cave_action_player_error({"account": {"playerId": loaded.get("player_id")}}, identity_id)
+                error = error or cave_action_player_error(raw, identity_id)
+                if error:
+                    return {"ok": False, "error": error, "status": "identity_unverified"}
+                session = loaded
+            return loaded
+
+        def dwelling_data():
+            return (session.get("result") or {}).get("data") or {}
+
+        async def read_fate(suffix):
+            result = await operation.read(
+                run_fate_cards_start_probe_production, identity_id,
+                token=launch.get("token"), webview_url=launch.get("webview_url"),
+                init_data=fate_init_data, capture_sink=capture,
+                capture_source=f"{source}:{suffix}", request_budget=operation.budget,
+            )
+            if not result.get("ok"):
+                raise MiniAppRequestAborted("fate_read_failed")
+            operation.accept_state(_fate_cards_state_from_result(result))
+
+        async def mutate_fate(action, payload=None, expected=""):
+            return await operation.fate_action(
+                identity_id, action, token=launch.get("token"),
+                webview_url=launch.get("webview_url"), init_data=fate_init_data,
+                payload=payload or {}, expected=expected,
+                capture_sink=capture, capture_source=source,
+            )
+
+        loaded = await load_dwelling("start")
+        if not loaded.get("ok"):
+            return failed("洞府天机命脉身份读取失败", loaded)
+        external = find_fate_cards_external_app(dwelling_data().get("raw") or {})
+        if not external or not external.get("available"):
+            return {"ok": True, "message": "洞府公共入口未开放天机命脉", "extra": {"terminal_skip": True}}
+        if external.get("action"):
+            result = await operation.read(
+                run_cave_external_action_production_flow, identity_id,
+                token=token, webview_url=webview_url, action=external["action"],
+                player_id=session.get("player_id"), init_data=session.get("init_data"),
+                capture_sink=capture, capture_source=f"{source}:external",
+            )
+            if not result.get("ok"):
+                return failed("洞府天机命脉动态入口获取失败", result)
+            launch = _find_fate_cards_launch_in_cave_payload(result.get("data") or {})
+        elif external.get("url"):
+            launch = _find_fate_cards_launch_in_cave_payload(external)
+        if not launch:
+            return failed("洞府天机命脉入口未返回可用 URL")
+        try:
+            fate_init_data = await operation.read(
+                request_fate_cards_miniapp_init_data, identity_id,
+                token=launch.get("token"), webview_url=launch.get("webview_url"),
+            )
+        except MiniAppRequestAborted:
+            raise
+        except Exception as exc:
+            return failed(f"天机命脉 WebView 会话失败：{type(exc).__name__}")
+        await read_fate("fate_start")
+        if done := terminal():
+            return done
+
+        for action in ("draw", "interpret", "choose"):
+            fate = operation.fate_state
+            if (action == "draw" and fate.get("has_drawn")
+                    or action == "interpret" and fate.get("has_ai_reading")
+                    or action == "choose" and fate.get("choice_key")):
+                continue
+            payload = {}
+            expected = ""
+            if action == "draw":
+                expected = fate.get("default_question_key") or FATE_CARDS_FRONTEND_DEFAULT_QUESTION_KEY
+                available = {item.get("key") for item in fate.get("questions") or ()}
+                if expected not in available:
+                    return failed("天机命脉页面未提供前端默认修行主题")
+                if choice_key not in {item.get("key") for item in fate.get("choices") or ()}:
+                    return failed(f"天机命脉页面未提供配置命择 {choice_key}")
+                payload = {"questionKey": expected}
+            elif action == "choose":
+                expected = choice_key
+                if expected not in {item.get("key") for item in fate.get("choices") or ()}:
+                    return failed(f"天机命脉页面未提供配置命择 {choice_key}")
+                payload = {"choiceKey": expected}
+            result = await mutate_fate(action, payload, expected)
+            if not result.get("ok"):
+                return failed(f"天机命脉 {action} 未确认", result)
+
+        performed = set()
+        for _step in range(6):
+            if done := terminal():
+                return done
+            quest = operation.fate_state.get("quest") or {}
+            if quest.get("can_settle") or operation.fate_state.get("choice_key") != "accept":
+                break
+            require_miniapp_operation(operation.can_dispatch)
+            overview = dwelling_data().get("overview") or {}
+            meditation = overview.get("meditation") or {}
+            if meditation.get("can_settle") and "meditation" not in performed:
+                performed.add("meditation")
+                await operation.settle_meditation(
+                    identity_id, session=session, token=token, webview_url=webview_url,
+                    player_id=session.get("player_id"), init_data=session.get("init_data"),
+                    capture_sink=capture, capture_source=f"{source}:meditation",
+                )
+                refreshed = await load_dwelling("after_meditation_dwelling")
+                if not refreshed.get("ok"):
+                    return failed("天机命脉静室结算后洞府回读失败", refreshed)
+                await read_fate("after_meditation")
+                continue
+            deep = overview.get("deep_seclusion") or {}
+            action = ""
+            if deep.get("active"):
+                if (deep.get("can_settle") or deep.get("completed")) and "settle" not in performed:
+                    action = "settle"
+                else:
+                    return waiting("waiting_deep_retreat", "天机命脉已承命，深度闭关进行中，完成后回洞府继续结算", deep=deep)
+            elif deep.get("can_force_exit") and "force" not in performed:
+                action = "force"
+            elif deep.get("can_start") and "start" not in performed:
+                action = "start"
+            if not action:
+                return waiting("waiting_meditation", "天机命脉已承命，静室暂无可结算修为，且深度闭关暂不可接续")
+            performed.add(action)
+            result = await operation.deep_action(
+                identity_id, token=token, webview_url=webview_url, action=action,
+                session=session, init_data=session.get("init_data"), now=now,
+                capture_sink=capture, capture_source=source,
+            )
+            if not result.get("ok") or action in {"start", "force"} and not result.get("sent"):
+                return failed(f"天机命脉深度闭关 {action} 未确认", result)
+            refreshed = await load_dwelling(f"after_deep_{action}_dwelling")
+            if not refreshed.get("ok"):
+                return failed(f"天机命脉深度闭关 {action} 后洞府回读失败", refreshed)
+            if action == "start":
+                deep = (dwelling_data().get("overview") or {}).get("deep_seclusion") or {}
+                return waiting("waiting_deep_retreat", "天机命脉已承命，已启动深度闭关，完成后回洞府继续结算", deep=deep)
+            if action == "settle":
+                await read_fate("after_deep_settle")
+
+        quest = operation.fate_state.get("quest") or {}
         if not quest.get("can_settle"):
-            retry_after = _fate_cards_retry_after_sec(fate_state)
-            record = _record_fate_cards_state(
-                identity_id,
-                fate_state,
-                now=now,
-                status="waiting_quest",
-                meditation=meditation_summary,
-                deep_retreat=deep_summary,
-            )
-            message = "天机命脉任务进行中，等待服务端完成条件"
-            console_log(message, scope="identity", send_as_id=identity_id, limit=220)
-            return {
-                "ok": True,
-                "message": message,
-                "extra": {"retry_after_sec": retry_after, "gains": gains, "record_key": record.get("record_key", "")},
-            }
-
-        reconciled = await _run_fate_cards_action_and_reconcile(
-            identity_id,
-            "settle",
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            init_data=fate_init_data,
-            payload={},
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
-        fate_state = reconciled.get("state") or fate_state
-        action_data = (reconciled.get("action_result") or {}).get("data") or {}
-        reward = action_data.get("reward") if isinstance(action_data.get("reward"), dict) else {}
-        if not reconciled.get("ok"):
-            message = f"天机命脉领奖未确认：{reconciled.get('error') or 'unknown'}"
-            _record_fate_cards_state(
-                identity_id,
-                fate_state,
-                now=now,
-                status="settle_unknown",
-                reward=reward,
-                meditation=meditation_summary,
-                deep_retreat=deep_summary,
-            )
-            return {"ok": False, "message": message, "extra": {"gains": gains}}
-
-        for name, amount in reward.items():
-            gains[str(name)] = int(gains.get(str(name), 0) or 0) + _parse_int(amount, 0)
-        record = _record_fate_cards_state(
-            identity_id,
-            fate_state,
-            now=now,
-            status="settled",
-            reward=reward,
-            meditation=meditation_summary,
-            deep_retreat=deep_summary,
-        )
-        record_state = (record.get("record") or {}).get("state") if isinstance(record.get("record"), dict) else {}
-        cumulative_gains = record_state.get("gains") if isinstance(record_state.get("gains"), dict) else gains
-        material = "、".join(
-            f"{name}+{amount}" for name, amount in sorted(cumulative_gains.items()) if _parse_int(amount, 0) > 0
-        ) or "奖励已入账"
-        message = f"天机命脉完成：{material}"
-        return {
-            "ok": True,
-            "message": message,
-            "extra": {
-                "daily_exhausted": True,
-                "settled_count": 1,
-                "gains": cumulative_gains,
-                "record_key": record.get("record_key", ""),
-            },
-        }
+            return waiting("waiting_quest", "天机命脉任务进行中，等待服务端完成条件")
+        result = await mutate_fate("settle")
+        if not result.get("ok"):
+            return failed("天机命脉领奖未确认", result)
+        gains = record_gains()
+        material = "、".join(f"{name}+{amount}" for name, amount in sorted(gains.items()) if _parse_int(amount, 0) > 0)
+        return {"ok": True, "message": f"天机命脉完成：{material or '已结算，奖励数量未确认'}", "extra": {
+            "daily_exhausted": True, "settled_count": 1, "gains": gains, "record_key": operation.record_key,
+        }}
 
 
 async def run_cave_public_tower(identity_id, public_entry_url, *, now=None, operation_check=None):
@@ -4157,7 +4499,8 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
     """Run fishing for a selected dwelling identity without a channel group command."""
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    operation = FishingMiniAppOperation.capture(identity_id)
+    if identity_id <= 0 or operation is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
@@ -4166,22 +4509,59 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
-    lock = _public_entry_lock(identity_id)
-    if lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
-    async with lock:
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_fishing_start:{identity_id}",
-            include_details=True,
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+
+    def can_continue():
+        return (
+            operation.is_current() and _public_entry_allowed()
+            and (observation is None or observation.permits(identity_id, token))
         )
+
+    cancelled = {"ok": False, "message": "洞府钓鱼操作已取消或身份已变更", "extra": {"status": "cancelled"}}
+
+    async def report(response, *, priority="normal", limit=260, daily=False):
+        notice = FishingMiniAppOperation.capture(identity_id)
+        if notice is None or not operation.owner.is_current():
+            return cancelled
+        try:
+            await send_audit_log(f"🎣 {response['message']}", scope="identity", send_as_id=identity_id,
+                                 priority=priority, limit=limit)
+            if not operation.owner.is_current():
+                return cancelled
+            if daily and notice.is_current() and _public_entry_allowed() and (
+                observation is None or observation.permits(identity_id, token)
+            ):
+                with use_identity(identity_id):
+                    await _send_fishing_daily_completion_summary(time.time())
+        except asyncio.CancelledError:
+            raise MiniAppFlowCancelled(response if operation.owner.is_current() else None) from None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Fishing notification failed (%s); result preserved", type(exc).__name__)
+        return response if operation.owner.is_current() else cancelled
+
+    lock = _public_entry_lock(identity_id)
+    game_lock = _fishing_send_lock(identity_id)
+    if lock.locked() or game_lock.locked():
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
+    async with lock, game_lock:
+        if not can_continue():
+            return cancelled
+        recovered = recover_fishing_result_pending(identity_id)
+        if recovered is not None:
+            return recovered
+        try:
+            session = await _load_cave_public_identity_session(
+                identity_id, token, webview_url, now=now,
+                capture_source=f"cave_public_fishing_start:{identity_id}", include_details=True,
+                operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled:
+            raise MiniAppFlowCancelled(cancelled) from None
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             message = f"洞府钓鱼身份读取失败：{session.get('error') or 'unknown'}"
-            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
+            return await report({"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)})
 
         dwelling_init_data = str(session.get("init_data") or "")
         selected_player_id = session.get("player_id")
@@ -4199,8 +4579,7 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
                 state["fishing_last_error"] = ""
                 save_state()
             message = "该身份未开放灵溪垂钓，今日跳过"
-            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
-            return {"ok": True, "message": message, "extra": {"skipped": "entry_missing"}}
+            return await report({"ok": True, "message": message, "extra": {"skipped": "entry_missing"}}, priority="low", limit=220)
         if not external_app.get("available"):
             with use_identity(identity_id):
                 state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(
@@ -4211,25 +4590,24 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
                 state["fishing_last_error"] = ""
                 save_state()
             message = "未持有鱼竿，今日跳过灵溪垂钓"
-            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=220)
-            return {"ok": True, "message": message, "extra": {"skipped": "rod_missing"}}
+            return await report({"ok": True, "message": message, "extra": {"skipped": "rod_missing"}}, priority="low", limit=220)
 
         launch = {}
         if external_app.get("action"):
-            external_result = await run_cave_external_action_production_flow(
-                identity_id,
-                token=token,
-                webview_url=webview_url,
-                action="fishing",
-                player_id=selected_player_id,
-                init_data=dwelling_init_data,
-                capture_sink=_capture_store(now),
-                capture_source=f"cave_public_fishing_external:{identity_id}",
-            )
+            try:
+                external_result = await run_cave_external_action_production_flow(
+                    identity_id, token=token, webview_url=webview_url, action="fishing",
+                    player_id=selected_player_id, init_data=dwelling_init_data,
+                    capture_sink=_capture_store(now), capture_source=f"cave_public_fishing_external:{identity_id}",
+                    operation_check=can_continue,
+                )
+            except MiniAppFlowCancelled:
+                raise MiniAppFlowCancelled(cancelled) from None
+            if not can_continue():
+                return cancelled
             if not external_result.get("ok"):
                 message = f"洞府钓鱼动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}"
-                await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-                return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)}
+                return await report({"ok": False, "message": message, "extra": _miniapp_result_extra({}, external_result)})
             launch = extract_fishing_miniapp_launch_from_dwelling_payload(external_result.get("data") or {})
         elif external_app.get("url"):
             launch = extract_fishing_miniapp_launch_from_dwelling_payload({
@@ -4237,278 +4615,359 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
             })
         if not launch:
             message = "洞府钓鱼入口已请求，但未返回可用 URL"
-            await send_audit_log(f"🎣 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=240)
-            return {"ok": False, "message": message, "extra": {}}
+            return await report({"ok": False, "message": message, "extra": {}})
 
         with use_identity(identity_id):
             max_rounds = _remaining_miniapp_chain_rounds(now)
-            pond_choice = str(state.get("fishing_pond") or "")
-            bait_choice = str(state.get("fishing_bait") or "")
         capture_sink = _fishing_miniapp_capture_store(now)
         capture_source = f"cave_public_fishing:{identity_id}"
-        result = await run_fishing_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            init_data=dwelling_init_data,
-            max_rounds=max_rounds,
-            pond_choice=pond_choice,
-            bait_choice=bait_choice,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
-        _record_fishing_business_capture(capture_sink, result, source=capture_source, now=now)
-        terminal_message = ""
-        with use_identity(identity_id):
-            public_only_bait_missing = str(result.get("status") or "").strip() == "bait_missing"
-            if public_only_bait_missing:
-                summary = _apply_fishing_miniapp_result(result, time.time())
-                state["next_fishing_time"] = fishing_behavior.next_fishing_reset_timestamp(
-                    now,
-                    _fishing_reset_jitter_sec(identity_id),
-                )
-                state["fishing_last_result"] = f"{summary}｜无可用鱼饵，今日跳过"
-                state["fishing_last_error"] = ""
-                terminal_message = state["fishing_last_result"]
-                save_state()
-        if public_only_bait_missing:
-            message = f"洞府灵溪垂钓公共入口：{terminal_message or '无可用鱼饵，今日跳过'}"
-            await send_audit_log(
-                f"🎣 {message}",
-                scope="identity",
-                send_as_id=identity_id,
-                priority="low",
-                limit=220,
+        cancelled_flow = None
+        writer = fishing_operations.CheckpointWriter(operation, operation_check=can_continue)
+        try:
+            result = await run_fishing_miniapp_production_flow(
+                identity_id, token=launch.get("token"), webview_url=launch.get("webview_url"),
+                init_data=dwelling_init_data, max_rounds=max_rounds,
+                pond_choice=operation.pond_choice, bait_choice=operation.bait_choice,
+                capture_sink=capture_sink, capture_source=capture_source,
+                operation_check=lambda: can_continue() and writer.is_current(), checkpoint=writer,
             )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
+        result = dict(result or {})
+        writer.finish(result)
+        confirmed = fishing_miniapp_has_confirmed_outcome(result)
+        if not operation.owner.is_current() or (not can_continue() and not confirmed):
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return cancelled
+        if cancelled_flow is not None and not confirmed:
+            raise MiniAppFlowCancelled(result) from None
+        if result.get("status") == "cancelled" and not confirmed:
+            return cancelled
+        update_schedule = can_continue() and cancelled_flow is None and result.get("status") != "cancelled"
+        _record_fishing_business_capture(capture_sink, result, source=capture_source, now=now)
+        try:
             with use_identity(identity_id):
-                await _send_fishing_daily_completion_summary(time.time())
-            return {
-                "ok": True,
-                "message": message,
-                "extra": _miniapp_result_extra({
-                    "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
-                    "player_id": selected_player_id,
-                    "skipped": "bait_missing",
-                    "terminal_skip": True,
-                }, result),
-            }
-        with use_identity(identity_id):
-            summary = _apply_fishing_miniapp_result(result, time.time())
-        completed_ok = bool(result.get("ok")) or str(result.get("status") or "") == "daily_limit"
+                summary = _apply_fishing_miniapp_result(result, time.time(), update_schedule=update_schedule, public_entry=True)
+        except FishingMiniAppCommitError as exc:
+            response = _fishing_result_commit_response(exc.reason)
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled(response) from None
+            return response
+        public_only_bait_missing = update_schedule and str(result.get("status") or "").strip() == "bait_missing"
+        status = str(result.get("status") or "").strip()
+        completed_ok = bool(result.get("ok")) or status in {"daily_limit", "no_rod"} or public_only_bait_missing
         message = f"洞府灵溪垂钓公共入口：{summary}"
-        await send_audit_log(
-            f"🎣 {message}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="low" if completed_ok else "normal",
-            limit=420,
-        )
-        if completed_ok:
-            with use_identity(identity_id):
-                await _send_fishing_daily_completion_summary(time.time())
-        return {
+        extra = {
+            "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
+            "player_id": selected_player_id, "daily_exhausted": status == "daily_limit",
+            "operation_cancelled": not update_schedule,
+        }
+        if public_only_bait_missing or status == "no_rod":
+            extra.update(skipped="bait_missing" if public_only_bait_missing else "rod_missing", terminal_skip=True)
+        response = {
             "ok": completed_ok,
             "message": message,
-            "extra": _miniapp_result_extra({
-                "fishing_title": launch.get("title") or external_app.get("title") or "灵溪垂钓",
-                "player_id": selected_player_id,
-                "daily_exhausted": str(result.get("status") or "").strip() == "daily_limit",
-            }, result),
+            "extra": _miniapp_result_extra(extra, result),
         }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        if fishing_operations.pending(operation.owner.identity):
+            return fishing_operations.response(operation.owner.identity[fishing_operations.STATE_KEY])
+        if not update_schedule:
+            return response
+        return await report(response, priority="low" if completed_ok and not result.get("error") else "normal",
+                            limit=420, daily=completed_ok)
+
+
+@dataclass(frozen=True)
+class _CaveYuanyingOperation:
+    owner: MiniAppIdentityOwner
+    schedule: dict
+    record: dict
+    enabled: bool
+
+    @classmethod
+    def capture(cls, identity_id):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        spec = yuanying.YUANYING_SPEC
+        return cls(
+            owner,
+            {key: deepcopy(owner.identity.get(key)) for key in (
+                spec.phase_key, spec.next_time_key, spec.last_command_key,
+                spec.probe_pending_key, spec.summary_sent_at_key, spec.last_summary_msg_id_key,
+            )},
+            deepcopy(get_miniapp_state_records().get(f"{identity_id}:cave_yuanying") or {}),
+            bool(owner.identity.get(spec.enabled_key)),
+        )
+
+    def result_is_current(self):
+        return (
+            self.owner.is_current()
+            and all(self.owner.identity.get(key) == value for key, value in self.schedule.items())
+            and self.record == (get_miniapp_state_records().get(f"{self.owner.identity_id}:cave_yuanying") or {})
+        )
+
+    def can_dispatch(self):
+        return (
+            self.result_is_current() and self.enabled
+            and bool(self.owner.identity.get("yuanying_enabled")) == self.enabled
+            and is_cave_public_identity_available(self.owner.identity_id)
+            and _public_entry_allowed()
+        )
+
+    def advanced(self):
+        current = self.capture(self.owner.identity_id)
+        return type(self)(self.owner, current.schedule, current.record, self.enabled)
+
+
+def _record_cave_yuanying_state(owner, payload, now):
+    recorded = record_miniapp_state(
+        owner.identity_id, "cave_yuanying", {"account_id": owner.account_id, **payload},
+        source="cave_public_yuanying", source_id=f"cave_yuanying:{stable_payload_digest(payload)}",
+        now=now, outputs=["yuanying_phase", "next_yuanying_time"],
+        replaces_commands=[yuanying.CMD_YUANYING_STATUS, yuanying.CMD_YUANYING], persist=False,
+    )
+    save_state()
+    return recorded
+
+
+def _defer_cave_yuanying(owner, now, *, unknown, retry_after_sec=0):
+    with use_identity(owner.identity_id):
+        yuanying.set_yuanying_phase("launching" if unknown else "idle")
+        state["next_yuanying_time"] = max(
+            float(state.get("next_yuanying_time", 0) or 0),
+            now + max(CAVE_YUANYING_UNKNOWN_RECHECK_SEC, retry_after_sec),
+        )
+        state["yuanying_probe_pending"] = False
+
+
+def _cave_yuanying_launch_unknown(result, sync_result):
+    if sync_result.get("handled"):
+        return False
+    if result.get("outcome_unknown") is True:
+        return True
+    if result.get("action_dispatched") is False:
+        return False
+    if result.get("ok") is False and result.get("outcome_unknown") is False:
+        return False
+    for event in result.get("events") or ():
+        status = event.get("status_code") if isinstance(event, dict) else None
+        if isinstance(status, int) and 400 <= status < 500:
+            return False
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    root = data.get("data") if isinstance(data.get("data"), dict) else data
+    action = root.get("actionResult") if isinstance(root.get("actionResult"), dict) else {}
+    return not (root.get("ok") is False or action.get("ok") is False)
+
+
+async def _audit_cave_yuanying(message, identity_id, response):
+    try:
+        await send_audit_log(
+            f"👶 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=320,
+        )
+    except asyncio.CancelledError:
+        raise MiniAppFlowCancelled(response) from None
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Cave YuanYing audit failed (%s)", type(exc).__name__)
 
 
 async def run_cave_public_yuanying(identity_id, public_entry_url, *, now=None):
-    """Run the one safe Tianjige command exposed by the public dwelling entry."""
+    """Read current status and launch at most once under one captured owner."""
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
-    if identity_id <= 0:
+    operation = _CaveYuanyingOperation.capture(identity_id)
+    if identity_id <= 0 or operation is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
     if not _public_entry_allowed():
         return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
-    with use_identity(identity_id):
-        if not state.get("yuanying_enabled"):
-            return {"ok": False, "message": "元婴模块已关闭", "extra": {}}
-        next_yuanying_time = float(state.get("next_yuanying_time", 0) or 0)
-        block_reason = yuanying.get_yuanying_block_reason(now)
-    if next_yuanying_time > now:
-        return {"ok": False, "message": f"元婴尚未到出窍窗口：{block_reason or '等待中'}", "extra": {}}
+    if not operation.enabled:
+        return {"ok": False, "message": "元婴模块已关闭", "extra": {}}
+    if float(operation.owner.identity.get("next_yuanying_time", 0) or 0) > now:
+        return {"ok": False, "message": "元婴尚未到出窍窗口：等待中", "extra": {}}
+    pending = yuanying.is_public_yuanying_unresolved(operation.record)
+    prior = operation.record.get("state") if isinstance(operation.record, dict) else None
+    prior = prior if isinstance(prior, dict) else {}
+    if pending and (type(prior.get("account_id")) is not int or prior["account_id"] != operation.owner.account_id):
+        return {"ok": False, "message": "洞府元婴未结记录的账号归属未确认", "extra": {"outcome_unknown": True}}
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+    cancelled = {"ok": False, "message": "洞府元婴操作已取消或身份状态已变更", "extra": {"status": "cancelled"}}
+
+    def can_continue():
+        return operation.can_dispatch() and (observation is None or observation.permits(identity_id, token))
+
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_tianjige_start:{identity_id}",
-        )
-        if not session.get("ok"):
-            reason = session.get("error") or "unknown"
-            message = f"洞府天机阁身份读取失败：{reason}"
-            await send_audit_log(f"👶 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
-            return {"ok": False, "message": message, "extra": {}}
+        if not can_continue():
+            return cancelled
+        try:
+            session = await _load_cave_public_identity_session(
+                identity_id, token, webview_url, now=now,
+                capture_source=f"cave_public_tianjige_start:{identity_id}", operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled:
+            raise MiniAppFlowCancelled(cancelled) from None
+        if not can_continue():
+            return cancelled
+        if session.get("ok") is not True:
+            message = f"洞府天机阁身份读取失败：{session.get('error') or 'unknown'}"
+            response = {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
+            await _audit_cave_yuanying(message, identity_id, response)
+            return response
+        player_error = _cave_tianjige_session_player_error(session, identity_id)
+        if player_error:
+            return {"ok": False, "message": player_error, "extra": {"status": "identity_unverified"}}
         init_data = session.get("init_data") or ""
         selected_player_id = session.get("player_id")
-
-        status_result = await run_cave_tianjige_command_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            command=yuanying.CMD_YUANYING_STATUS,
-            init_data=init_data,
-            player_id=selected_player_id,
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_tianjige_yuanying_status:{identity_id}",
-        )
+        try:
+            status_result = await run_cave_tianjige_command_production_flow(
+                identity_id, token=token, webview_url=webview_url, command=yuanying.CMD_YUANYING_STATUS,
+                init_data=init_data, player_id=selected_player_id, capture_sink=_capture_store(now),
+                capture_source=f"cave_public_tianjige_yuanying_status:{identity_id}", operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled:
+            raise MiniAppFlowCancelled(cancelled) from None
+        if not can_continue():
+            return cancelled
         status_data = status_result.get("data") if isinstance(status_result.get("data"), dict) else {}
-        status_sync = await sync_cave_tianjige_yuanying_result(
-            identity_id,
-            status_data,
-            now=now,
-            command=yuanying.CMD_YUANYING_STATUS,
-        )
-        status_ok = bool(status_result.get("ok")) and _cave_tianjige_action_succeeded(status_data)
+        player_error = cave_action_player_error(status_data, identity_id) if status_result.get("ok") is True else ""
+        status_ok = status_result.get("ok") is True and not player_error and _cave_tianjige_action_succeeded(status_data)
+        status_sync = {"handled": False, "ready": False}
+        if status_ok:
+            status_sync = await sync_cave_tianjige_yuanying_result(
+                identity_id, status_data, now=now, command=yuanying.CMD_YUANYING_STATUS,
+            )
+        if pending:
+            reconciled = prior.get("account_id") == operation.owner.account_id and status_sync.get("kind") == "running"
+            if not reconciled:
+                _defer_cave_yuanying(
+                    operation.owner, now, unknown=True, retry_after_sec=miniapp_retry_after_sec(status_result),
+                )
+            _record_cave_yuanying_state(operation.owner, {
+                **prior, "status": "reconciled_running" if reconciled else "unknown",
+                "outcome_unknown": not reconciled, "last_status_kind": status_sync.get("kind") or "",
+            }, now)
+            message = "洞府天机阁元婴状态已确认云游中" if reconciled else "洞府天机阁上次出窍结果仍待核实，仅查状态，不重复出窍"
+            response = {"ok": bool(reconciled), "message": message, "extra": _miniapp_result_extra({
+                "status_sync": status_sync, "launched": False, "outcome_unknown": not reconciled,
+            }, status_result)}
+            await _audit_cave_yuanying(message, identity_id, response)
+            return response
         if not status_ok or not status_sync.get("handled"):
-            reply_message = str(status_sync.get("message") or "").strip()
-            message = f"洞府天机阁元婴状态未确认：{reply_message or status_result.get('error') or status_result.get('status') or 'unknown'}"
-            await send_audit_log(f"👶 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=320)
-            return {"ok": False, "message": message, "extra": {"status_sync": status_sync}}
+            reply_message = (
+                extract_cave_tianjige_command_message(status_data)
+                if status_result.get("ok") is True and not player_error else ""
+            )
+            reason = player_error or status_result.get("error") or reply_message or status_sync.get("reason") or status_result.get("status") or "unknown"
+            message = f"洞府天机阁元婴状态未确认：{reason}"
+            response = {"ok": False, "message": message, "extra": _miniapp_result_extra({"status_sync": status_sync}, status_result)}
+            await _audit_cave_yuanying(message, identity_id, response)
+            return response
         if not status_sync.get("ready"):
             message = f"洞府天机阁元婴状态：{status_sync.get('message') or '已同步，当前无需出窍'}"
-            await send_audit_log(f"👶 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=320)
-            return {"ok": True, "message": message, "extra": {"status_sync": status_sync, "launched": False}}
+            response = {"ok": True, "message": message, "extra": _miniapp_result_extra({"status_sync": status_sync, "launched": False}, status_result)}
+            await _audit_cave_yuanying(message, identity_id, response)
+            return response
 
-        result = await run_cave_tianjige_command_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            command=yuanying.CMD_YUANYING,
-            init_data=init_data,
-            player_id=selected_player_id,
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_tianjige_yuanying:{identity_id}",
-        )
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        sync_result = await sync_cave_tianjige_yuanying_result(
-            identity_id,
-            data,
-            now=now,
-            command=yuanying.CMD_YUANYING,
-        )
-        action_ok = bool(result.get("ok")) and _cave_tianjige_action_succeeded(data)
-        reply_message = str(sync_result.get("message") or "").strip()
-        if not result.get("ok"):
-            message = f"洞府天机阁元婴出窍请求失败：{result.get('error') or result.get('status') or 'unknown'}"
-        elif not action_ok:
-            message = f"洞府天机阁元婴出窍未执行：{reply_message or '游戏未给出可执行结果'}"
-        elif not sync_result.get("handled"):
-            message = f"洞府天机阁元婴出窍已提交，但回包未能安全同步：{reply_message or '无可识别文案'}"
-        else:
-            message = f"洞府天机阁元婴出窍：{reply_message}"
-        await send_audit_log(
-            f"👶 {message}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="normal",
-            limit=320,
-        )
-        return {
-            "ok": bool(action_ok and sync_result.get("handled")),
-            "message": message,
-            "extra": {"status_sync": status_sync, "sync": sync_result, "launched": True},
+        operation = operation.advanced()
+        if not can_continue():
+            return cancelled
+        intent = {
+            "status": "dispatching", "outcome_unknown": True,
+            "player_id": selected_player_id, "started_at": now,
         }
+        with use_identity(identity_id):
+            yuanying.set_yuanying_phase("launching")
+        _record_cave_yuanying_state(operation.owner, intent, now)
+        operation = operation.advanced()
+        cancelled_flow = None
+        try:
+            result = await run_cave_tianjige_command_production_flow(
+                identity_id, token=token, webview_url=webview_url, command=yuanying.CMD_YUANYING,
+                init_data=init_data, player_id=selected_player_id, capture_sink=_capture_store(now),
+                capture_source=f"cave_public_tianjige_yuanying:{identity_id}", operation_check=can_continue,
+            )
+        except asyncio.CancelledError as exc:
+            cancelled_flow = exc
+            result = getattr(exc, "result", None)
+        except Exception as exc:
+            result = {"ok": False, "status": "failed", "error": type(exc).__name__, "outcome_unknown": True}
+        result = result if isinstance(result, dict) else {"ok": False, "status": "cancelled", "outcome_unknown": True}
+        if not operation.result_is_current():
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled(cancelled) from None
+            return cancelled
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        player_error = cave_action_player_error(data, identity_id) if result.get("ok") is True else ""
+        if player_error:
+            result = {**result, "ok": False, "data": {}, "error": player_error, "outcome_unknown": result.get("action_dispatched") is not False}
+            data = {}
+        sync_result = {"handled": False}
+        if result.get("ok") is True and _cave_tianjige_action_succeeded(data):
+            sync_result = await sync_cave_tianjige_yuanying_result(identity_id, data, now=now, command=yuanying.CMD_YUANYING)
+        unknown = _cave_yuanying_launch_unknown(result, sync_result)
+        if not sync_result.get("handled"):
+            _defer_cave_yuanying(operation.owner, now, unknown=unknown, retry_after_sec=miniapp_retry_after_sec(result))
+        final_status = "confirmed" if sync_result.get("handled") else "unknown" if unknown else "rejected"
+        _record_cave_yuanying_state(operation.owner, {
+            **intent, "status": final_status, "outcome_unknown": unknown,
+            "action_dispatched": result.get("action_dispatched", True),
+            "result_kind": sync_result.get("kind") or "", "error": result.get("error") or sync_result.get("reason") or "",
+        }, now)
+        if sync_result.get("handled"):
+            message = f"洞府天机阁元婴出窍：{sync_result.get('message') or '已同步'}"
+        elif unknown:
+            message = "洞府天机阁元婴出窍结果未知，保留记录，仅允许后续查状态"
+        else:
+            message = f"洞府天机阁元婴出窍未执行：{result.get('error') or '请求被拒绝'}"
+        response = {
+            "ok": bool(sync_result.get("handled")), "message": message,
+            "extra": _miniapp_result_extra({
+                "status_sync": status_sync, "sync": sync_result,
+                "launched": sync_result.get("kind") == "launched", "outcome_unknown": unknown,
+                "action_dispatched": result.get("action_dispatched", True),
+            }, status_result, result),
+        }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        await _audit_cave_yuanying(message, identity_id, response)
+        return response
 
 
 async def run_cave_public_tianti_status(identity_id, public_entry_url, *, now=None):
-    """Read `.天阶状态` through Tianjige and calibrate the existing reducer.
-
-    This is status-only. It remains safe when climb automation is disabled;
-    the normal tianti scheduler still owns every state-changing action.
-    """
-    identity_id = _identity_id(identity_id)
-    now = float(now or time.time())
-    if identity_id <= 0:
-        return {"ok": False, "message": "身份不存在", "extra": {}}
-    if not is_cave_public_identity_available(identity_id):
-        return {"ok": False, "message": "身份已停用", "extra": {}}
-    if not _public_entry_allowed():
-        return {"ok": False, "message": "全局暂停来源不允许洞府公共入口 MiniApp HTTP", "extra": {}}
-    token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
-    if error:
-        return {"ok": False, "message": error, "extra": {}}
-    lock = _public_entry_lock(identity_id)
-    if lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
-
-    async with lock:
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_tianti_status_start:{identity_id}",
-        )
-        if not session.get("ok"):
-            message = f"洞府天机阁天阶状态身份读取失败：{session.get('error') or 'unknown'}"
-            await send_audit_log(f"☁️ {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
-            return {"ok": False, "message": message, "extra": {}}
-
-        result = await run_cave_tianjige_command_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            command=CMD_TIANTI_STATUS,
-            init_data=session.get("init_data") or "",
-            player_id=session.get("player_id"),
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_tianjige_tianti_status:{identity_id}",
-        )
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        message = extract_cave_tianjige_command_message(data)
-        if not result.get("ok") or not message:
-            error_text = result.get("error") or result.get("status") or "天机阁未返回天阶状态文案"
-            final_message = f"洞府天机阁天阶状态未确认：{error_text}"
-            await send_audit_log(f"☁️ {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
-            return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
-
-        with use_identity(identity_id):
-            sync_result = tianti.sync_tianti_miniapp_status(message, now=now)
-        if not sync_result.get("handled"):
-            final_message = "洞府天机阁天阶状态回包未匹配现有解析器，保留原状态"
-            await send_audit_log(f"☁️ {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
-            return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
-
-        payload = dict(sync_result.get("payload") or {})
-        with use_identity(identity_id):
-            progress_current = int(
-                payload.get("progress_current", state.get("tianti_progress_current", 0)) or 0
-            )
-            progress_total = int(
-                payload.get("progress_total", state.get("tianti_progress_total", 0)) or 0
-            )
-        final_message = "洞府天机阁天阶状态已同步（只读，不触发登阶）"
-        await send_audit_log(
-            f"☁️ {final_message}｜进度 {progress_current}/{progress_total}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="low",
-            limit=300,
-        )
-        return {"ok": True, "message": final_message, "extra": {"sync": sync_result}}
+    """Use the same guarded status-only path as explicit Tianjige reads."""
+    return await run_cave_public_tianjige_read_only(
+        identity_id, public_entry_url, CMD_TIANTI_STATUS, now=now,
+    )
 
 
 def _sync_cave_tianjige_read_only_message(identity_id, command, message, *, now):
     """Apply supported Tianjige panels through status-only module bridges."""
-    if command not in {".我的阴罗幡", ".我的侍妾"}:
+    if command not in {CMD_TIANTI_STATUS, ".我的阴罗幡", ".我的侍妾"}:
         return {"supported": False, "handled": False, "summary": {}}
 
     with use_identity(identity_id):
+        if command == CMD_TIANTI_STATUS:
+            sync_result = tianti.sync_tianti_miniapp_status(message, now=now)
+            progress = int(state.get("tianti_progress_current", 0) or 0)
+            total = int(state.get("tianti_progress_total", 0) or 0)
+            return {
+                "supported": True,
+                "handled": bool(sync_result.get("handled")),
+                "reason": str(sync_result.get("reason") or ""),
+                "summary": sync_result,
+                "detail": f"进度 {progress}/{total}",
+            }
         if command == ".我的侍妾":
             sync_result = concubine.sync_concubine_miniapp_status(message, now)
             summary = dict(sync_result.get("summary") or {})
@@ -4553,6 +5012,18 @@ def _unbridged_cave_tianjige_observation(command, message):
     }
 
 
+async def _audit_cave_tianjige_read_only(identity_id, response, *, detail="", priority="normal"):
+    try:
+        await send_audit_log(
+            f"📖 {response['message']}{f'｜{detail}' if detail else ''}",
+            scope="identity", send_as_id=identity_id, priority=priority, limit=360,
+        )
+    except asyncio.CancelledError:
+        raise MiniAppFlowCancelled(response) from None
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Cave read-only audit failed (%s)", type(exc).__name__)
+
+
 async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, command, *, now=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -4573,15 +5044,27 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
     if error:
         return {"ok": False, "message": error, "extra": {}}
     entry_observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
-    prefix = {".我的阴罗幡": "yinluo_", ".我的侍妾": "concubine_"}.get(normalized_command)
+    prefix = {
+        CMD_TIANTI_STATUS: "tianti_", ".我的阴罗幡": "yinluo_", ".我的侍妾": "concubine_",
+    }.get(normalized_command)
 
     def business_snapshot():
         return {
             key: deepcopy(value) for key, value in owner.identity.items()
-            if prefix and (key.startswith(prefix) or key == f"next_{prefix}time")
+            if prefix and (key.startswith(prefix) or key.startswith(f"next_{prefix}"))
         }
 
     snapshot = business_snapshot()
+
+    def module_block_reason():
+        with use_identity(identity_id):
+            if normalized_command == CMD_TIANTI_STATUS:
+                return tianti.tianti_miniapp_status_block_reason(now)
+            if normalized_command == ".我的侍妾":
+                return concubine.concubine_miniapp_status_block_reason(now, processed_at=max(now, time.time()))
+            if normalized_command == ".我的阴罗幡":
+                return yinluo.yinluo_miniapp_status_block_reason(now)
+        return ""
 
     def can_continue():
         return (
@@ -4590,64 +5073,91 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             and _public_entry_allowed()
             and (entry_observation is None or entry_observation.permits(identity_id, token))
             and business_snapshot() == snapshot
+            and not module_block_reason()
         )
 
-    cancelled = {"ok": False, "message": "洞府天机阁只读操作已取消或状态已变更", "extra": {"status": "cancelled"}}
+    def cancelled(*results):
+        return {
+            "ok": False, "message": "洞府天机阁只读操作已取消或状态已变更",
+            "extra": _miniapp_result_extra({"status": "cancelled"}, *results),
+        }
+
     lock = _public_entry_lock(identity_id)
     if lock.locked():
-        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
+        return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {"status": "busy"}}
+    reason = module_block_reason()
+    if reason:
+        return {
+            "ok": False, "message": f"洞府天机阁只读状态暂不可同步：{reason}",
+            "extra": {
+                "status": "busy" if reason in {"active_pending", "active_phase"} else "blocked",
+                "reason": reason,
+            },
+        }
     async with lock:
         if not can_continue():
-            return cancelled
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_tianjige_read_only_start:{identity_id}",
-            operation_check=can_continue,
-        )
+            return cancelled()
+        try:
+            session = await _load_cave_public_identity_session(
+                identity_id, token, webview_url, now=now,
+                capture_source=f"cave_public_tianjige_read_only_start:{identity_id}",
+                operation_check=can_continue,
+            )
+        except asyncio.CancelledError as exc:
+            raise MiniAppFlowCancelled(cancelled(getattr(exc, "result", None))) from None
         if not can_continue():
-            return cancelled
-        if not session.get("ok"):
+            return cancelled(session)
+        if session.get("ok") is not True:
             message = f"洞府天机阁只读身份读取失败：{session.get('error') or 'unknown'}"
-            await send_audit_log(f"📖 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=280)
-            return {"ok": False, "message": message, "extra": {}}
-        result = await run_cave_tianjige_command_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            command=normalized_command,
-            init_data=session.get("init_data") or "",
-            player_id=session.get("player_id"),
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_tianjige_read_only:{identity_id}",
-            operation_check=can_continue,
-        )
+            response = {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
+            await _audit_cave_tianjige_read_only(identity_id, response)
+            return response
+        player_error = _cave_tianjige_session_player_error(session, identity_id)
+        if player_error:
+            return {
+                "ok": False, "message": player_error,
+                "extra": _miniapp_result_extra({"status": "identity_unverified"}, session),
+            }
+        try:
+            result = await run_cave_tianjige_command_production_flow(
+                identity_id, token=token, webview_url=webview_url, command=normalized_command,
+                init_data=session.get("init_data") or "", player_id=session.get("player_id"),
+                capture_sink=_capture_store(now), capture_source=f"cave_public_tianjige_read_only:{identity_id}",
+                operation_check=can_continue,
+            )
+        except asyncio.CancelledError as exc:
+            # A drained HTTP read can succeed without its panel being applied.
+            raise MiniAppFlowCancelled(cancelled(session, getattr(exc, "result", None))) from None
         if not can_continue():
-            return cancelled
+            return cancelled(session, result)
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        action_result = data.get("actionResult") if isinstance(data.get("actionResult"), dict) else {}
+        player_error = cave_action_player_error(data, identity_id) if result.get("ok") is True else ""
+        if player_error:
+            return {
+                "ok": False, "message": player_error,
+                "extra": _miniapp_result_extra({"status": "identity_unverified"}, session, result),
+            }
         message = extract_cave_tianjige_command_message(data)
-        if not result.get("ok") or data.get("ok") is False or action_result.get("ok") is False or not message:
+        if result.get("ok") is not True or not _cave_tianjige_action_succeeded(data) or not message:
             final_message = f"洞府天机阁只读未确认：{result.get('error') or result.get('status') or '无可识别回包'}"
-            await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="normal", limit=300)
-            return {"ok": False, "message": final_message, "extra": {"raw_message": message}}
+            response = {
+                "ok": False, "message": final_message,
+                "extra": _miniapp_result_extra({"raw_message": message}, session, result),
+            }
+            await _audit_cave_tianjige_read_only(identity_id, response)
+            return response
         if normalized_command == ".我的灵兽":
             observation = _unbridged_cave_tianjige_observation(normalized_command, message)
             final_message = "洞府天机阁灵兽面板已读取，但本地尚无对应 reducer；仅观察，不更新放养状态"
-            await send_audit_log(
-                f"📖 {final_message}｜首行={observation['first_line'] or '-'}｜摘要={observation['message_digest']}",
-                scope="identity",
-                send_as_id=identity_id,
-                priority="normal",
-                limit=320,
-            )
-            return {
+            response = {
                 "ok": False,
                 "message": final_message,
-                "extra": {"command": normalized_command, "observation": observation},
+                "extra": _miniapp_result_extra({"command": normalized_command, "observation": observation}, session, result),
             }
+            await _audit_cave_tianjige_read_only(
+                identity_id, response, detail=f"首行={observation['first_line'] or '-'}｜摘要={observation['message_digest']}",
+            )
+            return response
         sync_result = _sync_cave_tianjige_read_only_message(
             identity_id,
             normalized_command,
@@ -4658,42 +5168,44 @@ async def run_cave_public_tianjige_read_only(identity_id, public_entry_url, comm
             if not sync_result.get("handled"):
                 final_message = f"洞府天机阁只读回包未匹配现有解析器：{normalized_command}"
                 first_line = re.sub(r"\s+", " ", message.splitlines()[0] if message else "").strip()[:120]
-                console_log(
-                    f"📖 {final_message}｜reason={sync_result.get('reason') or 'unknown'}"
-                    f"｜first_line={first_line or '-'}",
-                    scope="identity",
-                    send_as_id=identity_id,
-                )
-                await send_audit_log(
-                    f"📖 {final_message}",
-                    scope="identity",
-                    send_as_id=identity_id,
-                    priority="normal",
-                    limit=300,
-                )
-                return {
+                try:
+                    console_log(
+                        f"📖 {final_message}｜reason={sync_result.get('reason') or 'unknown'}"
+                        f"｜first_line={first_line or '-'}",
+                        scope="identity",
+                        send_as_id=identity_id,
+                    )
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("Cave read-only diagnostic failed (%s)", type(exc).__name__)
+                response = {
                     "ok": False,
                     "message": final_message,
-                    "extra": {"command": normalized_command, "raw_message": message},
+                    "extra": _miniapp_result_extra({
+                        "command": normalized_command, "raw_message": message,
+                        "sync": dict(sync_result.get("summary") or {}),
+                        "reason": sync_result.get("reason") or "unparsed_panel",
+                    }, session, result),
                 }
+                await _audit_cave_tianjige_read_only(identity_id, response, detail=str(sync_result.get("detail") or ""))
+                return response
             summary = dict(sync_result.get("summary") or {})
-            final_message = f"洞府天机阁只读状态已同步：{normalized_command}"
-            detail = str(sync_result.get("detail") or "").strip()
-            await send_audit_log(
-                f"📖 {final_message}{f'｜{detail}' if detail else ''}",
-                scope="identity",
-                send_as_id=identity_id,
-                priority="low",
-                limit=320,
+            final_message = (
+                "洞府天机阁天阶状态已同步（只读，不触发登阶）"
+                if normalized_command == CMD_TIANTI_STATUS
+                else f"洞府天机阁只读状态已同步：{normalized_command}"
             )
-            return {
+            detail = str(sync_result.get("detail") or "").strip()
+            response = {
                 "ok": True,
                 "message": final_message,
-                "extra": {"command": normalized_command, "sync": summary},
+                "extra": _miniapp_result_extra({"command": normalized_command, "sync": summary}, session, result),
             }
-        final_message = f"洞府天机阁只读｜{normalized_command}：{message}"
-        await send_audit_log(f"📖 {final_message}", scope="identity", send_as_id=identity_id, priority="low", limit=360)
-        return {"ok": True, "message": final_message, "extra": {"command": normalized_command, "raw_message": message}}
+            await _audit_cave_tianjige_read_only(identity_id, response, detail=detail, priority="low")
+            return response
+        return {
+            "ok": False, "message": f"洞府天机阁只读命令尚未接入状态同步：{normalized_command}",
+            "extra": _miniapp_result_extra({"command": normalized_command, "raw_message": message}, session, result),
+        }
 
 
 async def run_cave_public_stargazer(identity_id, public_entry_url, *, now=None):
@@ -4865,6 +5377,8 @@ async def run_cave_public_tree(
     day_key="",
     op_id="",
     score_profiles=None,
+    operation_check=None,
+    operation=None,
 ):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
@@ -4878,10 +5392,43 @@ async def run_cave_public_tree(
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    owns_operation = operation is None
+    if owns_operation:
+        recovered = tree_runtime.recover_tree_miniapp_local(identity_id)
+        if recovered is not None:
+            return {"ok": False, "message": "灵树结果已本地恢复", "extra": recovered}
+    operation = operation or tree_runtime.TreeMiniAppOperation.daily(
+        identity_id, now=now, day_key=day_key, op_id=op_id, score_profiles=score_profiles,
+        operation_check=operation_check,
+    )
+    cancelled = {"ok": False, "message": "洞府灵树操作已取消或身份已变更", "extra": {"status": "cancelled"}}
+    if operation is None or operation.owner.identity_id != identity_id:
+        return cancelled
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+
+    def can_continue():
+        try:
+            require_miniapp_operation(operation_check)
+        except MiniAppRequestAborted:
+            return False
+        return (operation.can_dispatch() and _public_entry_allowed()
+                and (observation is None or observation.permits(identity_id, token)))
+
+    def entry_failure(message, *sources):
+        response = {"ok": False, "message": message, "extra": _miniapp_result_extra({}, *sources)}
+        if owns_operation:
+            operation.finish({
+                "ok": False, "status": str(response["extra"].get("status") or "failed"),
+                "error": message, "data": {}, "retry_after_sec": miniapp_retry_after_sec(response),
+            }, now=time.time())
+        return response
+
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
-    async with lock:
+    async with lock, operation.execution() as acquired:
+        if not acquired or not can_continue():
+            return cancelled
         session = await _load_cave_public_identity_session(
             identity_id,
             token,
@@ -4889,18 +5436,17 @@ async def run_cave_public_tree(
             now=now,
             capture_source=f"cave_public_tree_start:{identity_id}",
             include_details=True,
+            operation_check=can_continue,
         )
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
-            return {
-                "ok": False,
-                "message": f"洞府灵树身份读取失败：{session.get('error') or 'unknown'}",
-                "extra": _miniapp_result_extra({}, session),
-            }
+            return entry_failure(f"洞府灵树身份读取失败：{session.get('error') or 'unknown'}", session)
         cave_result = dict(session.get("result") or {})
         cave_data = dict(cave_result.get("data") or {})
         external_app = _find_tree_external_app_in_cave_payload(cave_data.get("raw") or {})
         if not external_app or not external_app.get("available"):
-            return {"ok": False, "message": "洞府外府未开放落云灵树入口", "extra": {}}
+            return entry_failure("洞府外府未开放落云灵树入口")
         launch = {}
         if external_app.get("action") and str(external_app.get("url") or "").strip() in {"", "#"}:
             external_result = await run_cave_external_action_production_flow(
@@ -4912,42 +5458,109 @@ async def run_cave_public_tree(
                 init_data=session.get("init_data") or "",
                 capture_sink=_capture_store(now),
                 capture_source=f"cave_public_tree_external:{identity_id}",
+                operation_check=can_continue,
             )
+            if not can_continue():
+                return cancelled
             if not external_result.get("ok"):
-                return {
-                    "ok": False,
-                    "message": f"洞府落云灵树动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}",
-                    "extra": _miniapp_result_extra({}, external_result),
-                }
+                return entry_failure(
+                    f"洞府落云灵树动态入口获取失败：{external_result.get('error') or external_result.get('status') or 'unknown'}",
+                    external_result,
+                )
             launch = _find_tree_launch_in_cave_payload(external_result.get("data") or {})
         elif external_app.get("url"):
             launch = _tree_launch_from_external_app(external_app)
         if not launch:
-            return {"ok": False, "message": "洞府落云灵树入口未返回可用 URL", "extra": {}}
-        result = await tree_runtime.run_tree_miniapp_daily_direct(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            init_data=session.get("init_data") or "",
-            day_key=day_key or get_day_key(now),
-            op_id=op_id,
-            score_profiles=score_profiles,
-            now=now,
-        )
-        return {
+            return entry_failure("洞府落云灵树入口未返回可用 URL")
+        interrupted = False
+        try:
+            result = await tree_runtime.run_tree_miniapp_daily_direct(
+                identity_id,
+                token=launch.get("token"),
+                webview_url=launch.get("webview_url"),
+                init_data=session.get("init_data") or "",
+                day_key=day_key or get_day_key(now),
+                op_id=op_id,
+                score_profiles=score_profiles,
+                now=now,
+                operation=operation,
+                operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled as exc:
+            interrupted = True
+            result = exc.result if isinstance(exc.result, dict) else {}
+        if not operation.owner.is_current():
+            if interrupted:
+                raise MiniAppFlowCancelled() from None
+            return cancelled
+        response = {
             "ok": bool(result.get("ok")),
             "message": f"洞府落云灵树：{result.get('status') or ('完成' if result.get('ok') else '未完成')}",
             "extra": _miniapp_result_extra({"title": launch.get("title", ""), "result": result}, result),
         }
+        if interrupted:
+            raise MiniAppFlowCancelled(response) from None
+        return response
 
 
-async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, action, *, now=None):
+@dataclass(frozen=True)
+class _CaveDeepRetreatOperation:
+    owner: MiniAppIdentityOwner
+    schedule: dict
+    record: dict
+    enabled: bool
+
+    @classmethod
+    def capture(cls, identity_id):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        spec = deep_retreat.DEEP_RETREAT_SPEC
+        return cls(
+            owner,
+            {key: deepcopy(owner.identity.get(key)) for key in (
+                spec.phase_key, spec.next_time_key, spec.last_command_key,
+                spec.probe_pending_key, spec.summary_sent_at_key, spec.last_summary_msg_id_key,
+            )},
+            deepcopy(get_miniapp_state_records().get(f"{identity_id}:cave_deep_retreat") or {}),
+            bool(owner.identity.get(spec.enabled_key)),
+        )
+
+    def result_is_current(self):
+        return (
+            self.owner.is_current()
+            and all(self.owner.identity.get(key) == value for key, value in self.schedule.items())
+            and self.record == (get_miniapp_state_records().get(f"{self.owner.identity_id}:cave_deep_retreat") or {})
+        )
+
+    def can_dispatch(self):
+        return (
+            self.result_is_current()
+            and is_cave_public_identity_available(self.owner.identity_id)
+            and bool(self.owner.identity.get("deep_retreat_enabled")) == self.enabled
+            and _public_entry_allowed()
+        )
+
+
+async def _audit_cave_retreat(message, identity_id, response, *, priority="low"):
+    try:
+        await send_audit_log(
+            f"🧘 {message}", scope="identity", send_as_id=identity_id, priority=priority, limit=260,
+        )
+    except asyncio.CancelledError:
+        raise MiniAppFlowCancelled(response) from None
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Cave retreat audit failed (%s)", type(exc).__name__)
+
+
+async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, action, *, now=None, operation_check=None):
     identity_id = _identity_id(identity_id)
     now = float(now or time.time())
     action = str(action or "").strip()
     if action not in {"status", "start", "settle", "force"}:
         return {"ok": False, "message": "洞府闭关动作仅允许 status/start/settle/force", "extra": {}}
-    if identity_id <= 0:
+    operation = _CaveDeepRetreatOperation.capture(identity_id)
+    if identity_id <= 0 or operation is None:
         return {"ok": False, "message": "身份不存在", "extra": {}}
     if not is_cave_public_identity_available(identity_id):
         return {"ok": False, "message": "身份已停用", "extra": {}}
@@ -4956,124 +5569,113 @@ async def run_cave_public_deep_retreat_action(identity_id, public_entry_url, act
     token, webview_url, error = _parse_public_cave_entry_url(public_entry_url)
     if error:
         return {"ok": False, "message": error, "extra": {}}
+    observation = _CAVE_PUBLIC_ENTRY_OBSERVATION.get()
+    cancelled = {"ok": False, "message": "洞府闭关操作已取消或身份状态已变更", "extra": {"status": "cancelled"}}
+
+    def can_continue():
+        return (
+            operation.can_dispatch()
+            and (operation_check is None or operation_check() is True)
+            and (observation is None or observation.permits(identity_id, token))
+        )
+
     lock = _public_entry_lock(identity_id)
     if lock.locked():
         return {"ok": False, "message": "洞府公共入口操作执行中", "extra": {}}
     async with lock:
-        session = await _load_cave_public_identity_session(
-            identity_id,
-            token,
-            webview_url,
-            now=now,
-            capture_source=f"cave_public_deep_retreat_start:{identity_id}",
-        )
+        if not can_continue():
+            return cancelled
+        try:
+            session = await _load_cave_public_identity_session(
+                identity_id,
+                token,
+                webview_url,
+                now=now,
+                capture_source=f"cave_public_deep_retreat_start:{identity_id}",
+                operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled:
+            raise MiniAppFlowCancelled(cancelled) from None
+        if not can_continue():
+            return cancelled
         if not session.get("ok"):
             message = f"洞府闭关身份读取失败：{session.get('error') or 'unknown'}"
             _record_cave_deep_retreat_state(
                 identity_id,
                 action,
-                {"ok": False, "status": "session_failed", "error": session.get("error") or "unknown", "data": {}},
+                {"ok": False, "status": "session_failed", "error": session.get("error") or "unknown", "data": {}, "action_dispatched": False},
                 {"handled": False, "reason": "session_failed", "phase": ""},
                 now=now,
             )
-            await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="normal", limit=260)
-            return {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
-        if action == "settle":
-            preflight = _cave_public_deep_settle_preflight(identity_id, session, now=now)
-            if not preflight.get("send"):
-                snapshot = dict(preflight.get("snapshot") or {})
-                sync_result = {
-                    "handled": True,
-                    "ready": False,
-                    "reason": str(preflight.get("reason") or "snapshot_missing"),
-                    "message_kind": "running" if preflight.get("reason") == "still_running" else "status",
-                    "phase": str(preflight.get("phase") or "launching"),
-                    "remaining_seconds": snapshot.get("remaining_seconds"),
-                    "end_ms": snapshot.get("end_ms"),
-                }
-                skipped_result = {
-                    "ok": True,
-                    "status": "preflight_skip",
-                    "data": {"deep_seclusion": snapshot},
-                }
-                record = _record_cave_deep_retreat_state(
-                    identity_id,
-                    action,
-                    skipped_result,
-                    sync_result,
-                    now=now,
-                )
-                if preflight.get("reason") == "still_running":
-                    remaining = snapshot.get("remaining_seconds")
-                    remaining_text = f"，剩余 {remaining} 秒" if remaining is not None else ""
-                    message = f"洞府闭关仍在进行{remaining_text}，已跳过 settle"
-                else:
-                    message = "洞府闭关面板缺少结算许可，已跳过 settle｜30 分钟后查状态"
-                await send_audit_log(
-                    f"🧘 {message}",
-                    scope="identity",
-                    send_as_id=identity_id,
-                    priority="low",
-                    limit=240,
-                )
-                return {
-                    "ok": True,
-                    "message": message,
-                    "extra": {
-                        "record_key": record.get("record_key", ""),
-                        "sync": sync_result,
-                        "settle_skipped": True,
-                        "retry_after_sec": float(preflight.get("retry_after_sec") or CAVE_DEEP_STATUS_RECHECK_SEC),
-                    },
-                }
-        result = await run_cave_deep_seclusion_action_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            action=action,
-            init_data=session.get("init_data") or "",
-            capture_sink=_capture_store(now),
-            capture_source=f"cave_public_deep_retreat:{identity_id}:{action}",
-        )
-        sync_result = await sync_cave_deep_seclusion_action_result(identity_id, action, result.get("data") or {}, now=now)
-        if action in {"status", "settle"} and result.get("ok") and not sync_result.get("handled"):
-            with use_identity(identity_id):
-                state["next_deep_retreat_time"] = max(
-                    float(state.get("next_deep_retreat_time", 0) or 0),
-                    now + CAVE_DEEP_STATUS_RECHECK_SEC,
-                )
-                save_state()
-        record = _record_cave_deep_retreat_state(identity_id, action, result, sync_result, now=now)
-        if not result.get("ok"):
-            message = f"洞府闭关 {action} 失败：{result.get('error') or result.get('status') or 'unknown'}"
+            response = {"ok": False, "message": message, "extra": _miniapp_result_extra({}, session)}
+            await _audit_cave_retreat(message, identity_id, response, priority="normal")
+            return response
+        cancelled_flow = None
+        try:
+            outcome = await _run_cave_public_deep_action_locked(
+                identity_id, token=token, webview_url=webview_url, action=action,
+                session=session, init_data=session.get("init_data") or "", now=now,
+                capture_sink=_capture_store(now), capture_source=f"cave_public_deep_retreat:{identity_id}",
+                operation=operation, operation_check=can_continue,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            outcome = exc.result if isinstance(exc.result, dict) else {"status": "cancelled"}
+        if outcome.get("status") == "cancelled":
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled(cancelled) from None
+            return cancelled
+        sync_result = outcome.get("sync") or {}
+        skipped = outcome.get("status") == "preflight_skip"
+        if skipped:
+            if sync_result.get("phase") == "running":
+                message = f"洞府闭关仍在进行，已跳过 {action}"
+            else:
+                message = f"洞府闭关未取得 {action} 许可或上次结果待核实，已跳过动作"
+                if not sync_result.get("handled"):
+                    message += "｜30 分钟后查状态"
+        elif not outcome.get("ok"):
+            message = f"洞府闭关 {action} 未确认：{outcome.get('error') or outcome.get('status') or 'unknown'}"
+            if sync_result.get("phase") == "launching":
+                message += "｜30 分钟后保守复查"
         else:
-            phase = (sync_result or {}).get("phase") or "-"
-            handled = "已同步" if (sync_result or {}).get("handled") else "未改状态"
-            recheck = ""
-            if not (sync_result or {}).get("handled"):
-                if action == "status":
-                    recheck = "｜30 分钟后保守复查"
-                elif action == "settle":
-                    recheck = "｜30 分钟后改查状态"
-            message = f"洞府闭关 {action} 完成：{handled}｜阶段 {phase}{recheck}"
-        await send_audit_log(f"🧘 {message}", scope="identity", send_as_id=identity_id, priority="low", limit=240)
-        return {
-            "ok": bool(result.get("ok")),
+            message = f"洞府闭关 {action} 完成：已同步｜阶段 {sync_result.get('phase') or '-'}"
+        response = {
+            "ok": bool(outcome.get("ok")),
             "message": message,
             "extra": _miniapp_result_extra(
-                {"record_key": record.get("record_key", ""), "sync": sync_result},
-                result,
+                {
+                    "record_key": (outcome.get("record") or {}).get("record_key", ""), "sync": sync_result,
+                    "status": outcome.get("status") or "", "acted": bool(outcome.get("sent")),
+                    "action_skipped": skipped, "settle_skipped": skipped and action == "settle",
+                    "outcome_unknown": bool(outcome.get("outcome_unknown")),
+                    **({"retry_after_sec": outcome["retry_after_sec"]} if outcome.get("retry_after_sec") else {}),
+                },
+                outcome.get("result") or {},
             ),
         }
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(response) from None
+        await _audit_cave_retreat(message, identity_id, response)
+        return response
 
 
 async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0, require_identity_match=False):
     identity_id = _identity_id()
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    authorization = _MANUAL_AUTH_UNTIL.get(identity_id)
     launch = extract_cave_treasure_miniapp_launch(event, message_text=text)
     if not launch:
         return False
+    if owner is not None and (not require_identity_match or _entry_mentions_current_identity(text)):
+        recovered = recover_cave_treasure_result(identity_id)
+        if recovered is not None and not treasure_operations.resume_allowed(identity_id):
+            if _MANUAL_AUTH_UNTIL.get(identity_id) == authorization:
+                revoke_cave_treasure_miniapp_manual_run(identity_id)
+            return True
     await capture_cave_public_entry_event(event, text)
-    if identity_id <= 0 or not _has_manual_auth(identity_id, now):
+    if (owner is None or not owner.is_current() or authorization is None
+            or _MANUAL_AUTH_UNTIL.get(identity_id) != authorization or not _has_manual_auth(identity_id, now)):
         return False
     if require_identity_match and not _entry_mentions_current_identity(text):
         return False
@@ -5086,46 +5688,42 @@ async def handle_cave_treasure_miniapp_entry(event, text, now, reply_to=None, ma
         await send_audit_log(f"🕳️ 洞府寻宝 MiniApp {reason}，已跳过 WebView/HTTP 接管。", scope="identity", limit=180)
         return True
 
-    lock = _run_lock(identity_id)
-    if lock.locked():
-        await send_audit_log("🕳️ 洞府寻宝 MiniApp 已在执行，重复入口忽略。", scope="identity", limit=160)
+    identity_error = _public_entry_account_identity_error(identity_id)
+    if identity_error:
+        revoke_cave_treasure_miniapp_manual_run(identity_id)
+        await _audit_cave_treasure(owner, {"ok": False, "message": identity_error, "extra": {}})
         return True
 
-    async with lock:
+    def can_continue():
+        return (owner.is_current() and is_cave_public_identity_available(identity_id)
+                and _public_entry_allowed() and not _public_entry_account_identity_error(identity_id))
+
+    lock = _public_entry_lock(identity_id)
+    game_lock = _run_lock(identity_id)
+    if lock.locked() or game_lock.locked():
+        await _audit_cave_treasure(owner, {"ok": False, "message": "洞府寻宝 MiniApp 已在执行，重复入口忽略。",
+                                          "extra": {"status": "busy"}})
+        return True
+
+    async with lock, game_lock:
+        if not can_continue():
+            return True
         revoke_cave_treasure_miniapp_manual_run(identity_id)
-        await send_audit_log(
-            "🕳️ 洞府寻宝 MiniApp 接管入口，开始 WebView/HTTP 流程。"
-            + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
-            scope="identity",
-            priority="low",
-            limit=180,
-        )
-        capture_sink = _capture_store(now)
+        if _cave_treasure_unknown_hold(identity_id, now) and not treasure_operations.resume_allowed(identity_id):
+            await _audit_cave_treasure(owner, _cave_treasure_unknown_response())
+            return True
+        await _audit_cave_treasure(owner, {
+            "ok": False,
+            "message": "洞府寻宝 MiniApp 接管入口，开始 WebView/HTTP 流程。"
+                       + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
+            "extra": {},
+        }, priority="low")
         capture_source = f"cave_treasure_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
-        result = await run_cave_treasure_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            max_steps=CAVE_TREASURE_MANUAL_MAX_STEPS,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
-        _record_cave_treasure_business_capture(capture_sink, result, source=capture_source, now=now)
-        summary = _format_cave_treasure_summary(result)
-        _record_cave_treasure_inventory_delta(
-            identity_id,
-            result,
-            now=now,
+        await _run_owned_cave_treasure(
+            owner, launch.get("token"), launch.get("webview_url"), now=now,
+            capture_source=capture_source, operation_check=can_continue,
             result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0),
         )
-        _record_cave_treasure_miniapp_state(
-            identity_id,
-            result,
-            now=now,
-            result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0),
-        )
-        priority = "low" if dict(result or {}).get("ok") else "normal"
-        await send_audit_log(f"🕳️ 洞府寻宝结果｜{summary}", scope="identity", priority=priority, limit=260)
         return True
 
 
@@ -5138,6 +5736,8 @@ __all__ = [
     "extract_cave_tianjige_command_message",
     "handle_cave_treasure_miniapp_entry",
     "is_cave_public_entry_busy",
+    "is_cave_treasure_busy",
+    "recover_cave_treasure_result",
     "apply_cave_inventory_snapshot",
     "revoke_cave_treasure_miniapp_manual_run",
     "run_cave_public_deep_retreat_action",

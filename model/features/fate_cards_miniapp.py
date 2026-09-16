@@ -8,26 +8,30 @@ reconciliation after each mutation.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
+from datetime import date
 from urllib.parse import urljoin
 
 from telethon import functions
 
+from ..inventory_delta import stable_payload_digest
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestAborted,
+    MiniAppRequestBudget,
     build_miniapp_http_request,
     build_miniapp_launch_request,
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
+    require_miniapp_operation,
     sanitize_webapp_secret_text,
 )
-from .miniapp_common import append_http_event, build_miniapp_transport
+from .miniapp_common import append_http_event, build_miniapp_transport, run_miniapp_blocking_flow
 
 
 FATE_CARDS_MINIAPP_GAME_KEY = "fate_cards"
@@ -216,23 +220,82 @@ def _explicit_default_key(root, options, *, kind):
     return ""
 
 
+def _fate_state_contract_error(root, record, state):
+    day = state["challenge_date"]
+    try:
+        if date.fromisoformat(day).isoformat() != day:
+            return "challenge_date_invalid"
+    except (ValueError, TypeError):
+        return "challenge_date_missing"
+    if root.get("challengeDate") and record.get("challengeDate") and root["challengeDate"] != record["challengeDate"]:
+        return "challenge_date_conflict"
+    if "hasDrawn" in root and not isinstance(root["hasDrawn"], bool):
+        return "has_drawn_invalid"
+    for field in ("questions", "choices"):
+        if field in root and (not isinstance(root[field], list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("key"), str)
+            or not re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", item["key"])
+            for item in root[field]
+        )):
+            return f"{field}_invalid"
+        if isinstance(root.get(field), list) and len({item["key"] for item in root[field]}) != len(root[field]):
+            return f"{field}_conflict"
+    if not state["has_drawn"]:
+        if not root.get("questions") or not root.get("choices"):
+            return "draw_options_missing"
+        return "" if root.get("hasDrawn") is False and "record" in root and not record else "draw_state_missing"
+    if root.get("hasDrawn") is False:
+        return "draw_state_conflict"
+    if not record or not state["card_count"] or not isinstance(record.get("cards"), list):
+        return "record_missing"
+    if any(not isinstance(card, dict) for card in record["cards"]):
+        return "cards_invalid"
+    if not state["record_created_at"] or not state["question_key"]:
+        return "record_identity_missing"
+    if not isinstance(record.get("aiReading"), dict):
+        return "reading_state_missing"
+    if "choiceKey" not in record or not isinstance(record["choiceKey"], str):
+        return "choice_state_missing"
+    if not state["choice_key"]:
+        return ""
+    quest = record.get("quest")
+    if not isinstance(quest, dict) or not state["quest"]["key"] or not state["quest"]["started_at"]:
+        return "quest_identity_missing"
+    if quest.get("key") and record.get("questKey") and quest["key"] != record["questKey"]:
+        return "quest_identity_conflict"
+    if quest.get("choiceKey") and quest["choiceKey"] != state["choice_key"]:
+        return "quest_choice_conflict"
+    for field in ("progress", "target"):
+        if type(quest.get(field)) is not int or quest[field] < (1 if field == "target" else 0):
+            return "quest_counter_invalid"
+    if not isinstance(quest.get("canSettle"), bool) or state["quest"]["status"] not in {"active", "settled", "expired"}:
+        return "quest_permission_missing"
+    if record.get("questStatus") and record["questStatus"] != state["quest"]["status"]:
+        return "quest_status_conflict"
+    if quest["canSettle"] and (quest["progress"] < quest["target"] or state["quest"]["status"] in {"settled", "expired"}):
+        return "quest_permission_conflict"
+    return ""
+
+
 def parse_fate_cards_state(data):
     """Return a secret-free decision snapshot from ``/start`` or later replies."""
     if not isinstance(data, dict):
         return {}
     root = data.get("data") if isinstance(data.get("data"), dict) else data
-    if not isinstance(root, dict):
+    if not isinstance(root, dict) or data.get("ok") is False or root.get("ok") is False:
+        return {}
+    if "hasDrawn" not in root and not isinstance(root.get("record"), dict):
         return {}
     record = root.get("record") if isinstance(root.get("record"), dict) else {}
     quest = record.get("quest") if isinstance(record.get("quest"), dict) else {}
     questions = [
         normalized
-        for normalized in (_normalize_option(item) for item in root.get("questions") or ())
+        for normalized in (_normalize_option(item) for item in (root.get("questions") if isinstance(root.get("questions"), list) else ()))
         if normalized
     ]
     choices = [
         normalized
-        for normalized in (_normalize_option(item) for item in root.get("choices") or ())
+        for normalized in (_normalize_option(item) for item in (root.get("choices") if isinstance(root.get("choices"), list) else ()))
         if normalized
     ]
     question_key = str(record.get("questionKey") or "").strip()
@@ -245,10 +308,19 @@ def parse_fate_cards_state(data):
     has_drawn = _as_bool(root.get("hasDrawn")) or bool(record and cards)
     quest_status = str(quest.get("status") or "").strip().lower()
     quest_can_settle = _as_bool(quest.get("canSettle"))
+    reward = root.get("reward") if isinstance(root.get("reward"), dict) else {}
+    trace_balance = root.get("traceBalance", reward.get("balance"))
+    trace_balance_known = type(trace_balance) is int and trace_balance >= 0
 
     state = {
         "challenge_date": _safe_text(root.get("challengeDate") or record.get("challengeDate") or "", limit=40),
-        "trace_balance": _as_int(root.get("traceBalance"), 0),
+        "record_created_at": _safe_text(record.get("createdAt") or "", limit=48),
+        "record_key": stable_payload_digest({
+            "day": record.get("challengeDate") or root.get("challengeDate"),
+            "created_at": record.get("createdAt"), "question": question_key, "cards": cards,
+        }) if record and cards else "",
+        "trace_balance": trace_balance if trace_balance_known else None,
+        "trace_balance_known": trace_balance_known,
         "questions": questions,
         "choices": choices,
         "question_count": len(questions),
@@ -261,6 +333,7 @@ def parse_fate_cards_state(data):
         "card_count": len(cards),
         "has_ai_reading": bool(isinstance(record.get("aiReading"), dict) and record.get("aiReading")),
         "quest": {
+            "key": _safe_text(quest.get("key") or record.get("questKey") or "", limit=80),
             "title": _safe_text(quest.get("title") or "", limit=100),
             "description": _safe_text(quest.get("description") or "", limit=220),
             "metric": _safe_text(quest.get("metric") or "", limit=80),
@@ -273,6 +346,8 @@ def parse_fate_cards_state(data):
             "expires_at": _safe_text(quest.get("expiresAt") or "", limit=48),
         },
     }
+    state["contract_error"] = _fate_state_contract_error(root, record, state)
+    state["state_verified"] = not state["contract_error"]
     state["decision"] = decide_fate_cards_next_step(state)
     return state
 
@@ -316,7 +391,9 @@ def parse_fate_cards_reward(data):
         return {}
     root = data.get("data") if isinstance(data.get("data"), dict) else data
     reward = root.get("reward") if isinstance(root.get("reward"), dict) else {}
-    trace_gain = _as_int(reward.get("tianjiTrace"), 0)
+    trace_gain = reward.get("tianjiTrace")
+    if type(trace_gain) is not int:
+        return {}
     return {"天机残痕": trace_gain} if trace_gain > 0 else {}
 
 
@@ -372,7 +449,8 @@ def extract_fate_cards_launch_from_payload(value):
     return {}
 
 
-async def request_fate_cards_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None):
+async def request_fate_cards_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None):
+    require_miniapp_operation(operation_check)
     adapter = adapter or build_fate_cards_miniapp_adapter()
     launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
     if not launch.allowed:
@@ -381,14 +459,18 @@ async def request_fate_cards_miniapp_init_data(identity_id, *, token, webview_ur
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
+        require_miniapp_operation(operation_check)
         bot = await client.get_entity(launch.bot_username or adapter.bot_username)
+        require_miniapp_operation(operation_check)
         bot_input = await client.get_input_entity(bot)
+        require_miniapp_operation(operation_check)
         result = await client(functions.messages.RequestMainWebViewRequest(
             peer=bot_input,
             bot=bot_input,
             platform=launch.platform or adapter.platform,
             start_param=launch.start_param,
         ))
+        require_miniapp_operation(operation_check)
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
@@ -402,6 +484,8 @@ def _flow_result(ok, status, *, error="", data=None, events=None):
         "error": sanitize_webapp_secret_text(error),
         "data": dict(data or {}),
         "events": list(events or ()),
+        "action_dispatched": False,
+        "outcome_unknown": False,
     }
 
 
@@ -414,6 +498,8 @@ def run_fate_cards_start_probe(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    request_budget=None,
+    operation_check=None,
 ):
     """Read the panel once; /start's replay safety is not established."""
     token = str(token or "").strip()
@@ -436,13 +522,15 @@ def run_fate_cards_start_probe(
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key="start",
+        request_budget=request_budget or MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper),
+        operation_check=operation_check,
     )
     events = []
     append_http_event(events, "start", result)
     if not result.ok:
         return _flow_result(False, "failed", error=result.error, events=events)
     state = parse_fate_cards_state(result.data)
-    if not state:
+    if not state or not state.get("state_verified"):
         return _flow_result(False, "failed", error="MiniApp 返回不是天机命脉状态", events=events)
     return _flow_result(True, "observed", data={"state": state}, events=events)
 
@@ -458,6 +546,8 @@ def run_fate_cards_action(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    request_budget=None,
+    operation_check=None,
 ):
     """Execute one explicitly selected mutation without HTTP replay."""
     endpoint = str(endpoint or "").strip().lower()
@@ -498,11 +588,14 @@ def run_fate_cards_action(
         capture_sink=capture_sink,
         capture_source=capture_source,
         step_key=endpoint,
+        request_budget=request_budget or MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper),
+        operation_check=operation_check,
     )
     events = []
     append_http_event(events, endpoint, result)
-    if not result.ok:
-        return _flow_result(False, "failed", error=result.error, data=result.data, events=events)
+    dispatched = int(result.attempts or 0) > 0
+    root = result.data.get("data") if isinstance(result.data.get("data"), dict) else result.data
+    rejected = result.data.get("ok") is False or root.get("ok") is False
     state = parse_fate_cards_state(result.data)
     data = {"raw": dict(result.data or {})}
     if state:
@@ -510,7 +603,14 @@ def run_fate_cards_action(
     reward = parse_fate_cards_reward(result.data)
     if reward:
         data["reward"] = reward
-    return _flow_result(True, endpoint, data=data, events=events)
+    response = _flow_result(result.ok and not rejected, endpoint if result.ok and not rejected else "failed", error=result.error, data=data, events=events)
+    response["action_dispatched"] = dispatched
+    response["outcome_unknown"] = dispatched and bool(
+        (result.ok and not rejected and not state.get("state_verified"))
+        or (not result.ok and (getattr(result, "retryable", False) or result.status_code == 0
+                              or result.status_code >= 500 or 200 <= result.status_code < 300 and not rejected))
+    )
+    return response
 
 
 async def run_fate_cards_start_probe_production(
@@ -524,26 +624,31 @@ async def run_fate_cards_start_probe_production(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    request_budget=None,
+    operation_check=None,
 ):
     """Manual production helper; it still performs only ``/start``."""
     adapter = adapter or build_fate_cards_miniapp_adapter()
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_fate_cards_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        return await asyncio.to_thread(
-            run_fate_cards_start_probe,
-            token=token,
-            init_data=init_data,
-            transport=transport or build_miniapp_transport(timeout=FATE_CARDS_HTTP_TIMEOUT),
-            adapter=adapter,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
+        def run(operation):
+            return run_fate_cards_start_probe(
+                token=token, init_data=init_data,
+                transport=transport or build_miniapp_transport(timeout=FATE_CARDS_HTTP_TIMEOUT),
+                adapter=adapter, sleeper=operation.sleep, capture_sink=capture_sink,
+                capture_source=capture_source, request_budget=request_budget,
+                operation_check=operation.check,
+            )
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -561,29 +666,38 @@ async def run_fate_cards_action_production(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    request_budget=None,
+    operation_check=None,
 ):
     adapter = adapter or build_fate_cards_miniapp_adapter()
+    worker_started = False
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_fate_cards_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        return await asyncio.to_thread(
-            run_fate_cards_action,
-            endpoint,
-            token=token,
-            init_data=init_data,
-            transport=transport or build_miniapp_transport(timeout=FATE_CARDS_HTTP_TIMEOUT),
-            payload=payload,
-            adapter=adapter,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
+        def run(operation):
+            return run_fate_cards_action(
+                endpoint, token=token, init_data=init_data,
+                transport=transport or build_miniapp_transport(timeout=FATE_CARDS_HTTP_TIMEOUT),
+                payload=payload, adapter=adapter, sleeper=operation.sleep,
+                capture_sink=capture_sink, capture_source=capture_source,
+                request_budget=request_budget, operation_check=operation.check,
+            )
+        worker_started = True
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
-        return _flow_result(False, "failed", error=exc)
+        return {
+            **_flow_result(False, "failed", error=exc),
+            "action_dispatched": None if worker_started else False,
+            "outcome_unknown": worker_started,
+        }
 
 
 __all__ = [

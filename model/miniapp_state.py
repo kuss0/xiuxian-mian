@@ -4,12 +4,18 @@ import re
 import time
 
 from .persistence import save_state
-from .state import get_identity_ids, get_miniapp_state_records, get_send_as_profile, set_miniapp_state_records
+from .state import get_identity_ids, get_miniapp_state_records, get_send_as_profile, has_identity, set_miniapp_state_records
 from .timing import fmt_abs_ts
 from .webapp_core import sanitize_webapp_secret_text
 
 
+# Only disposable summaries use LRU. Each registered identity has one slot per
+# runtime game; unknown outcomes and completion receipts must not be evicted.
 MINIAPP_STATE_RECORD_LIMIT = 300
+MINIAPP_RUNTIME_GAME_KEYS = frozenset({
+    "cave_entry_directory", "cave_deep_retreat", "cave_small_world", "cave_yuanying",
+    "cave_treasure", "fate_cards", "wild_training", "tower", "tree",
+})
 _SOURCE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 _GAME_KEY_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 _SENSITIVE_KEY_PARTS = (
@@ -78,8 +84,8 @@ def _is_sensitive_key(key):
 
 
 def _safe_state_value(value, *, depth=0):
-    if depth > 5:
-        return _normalize_text(value, limit=120)
+    if depth > 5 and isinstance(value, (dict, list, tuple)):
+        return None
     if isinstance(value, dict):
         result = {}
         for raw_key, child in sorted(value.items(), key=lambda item: str(item[0])):
@@ -93,7 +99,7 @@ def _safe_state_value(value, *, depth=0):
             if safe_child not in (None, "", [], {}):
                 result[safe_key] = safe_child
         return result
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         result = []
         for item in value[:80]:
             safe_item = _safe_state_value(item, depth=depth + 1)
@@ -106,7 +112,9 @@ def _safe_state_value(value, *, depth=0):
         return int(value)
     if isinstance(value, float):
         return float(value)
-    return _normalize_text(value, limit=240)
+    if isinstance(value, str):
+        return _normalize_text(value, limit=240)
+    return None
 
 
 def sanitize_miniapp_state(state):
@@ -131,26 +139,45 @@ def _record_key(identity_id, game_key):
     return f"{int(identity_id or 0)}:{_normalize_game_key(game_key)}"
 
 
+def _runtime_record_keys():
+    return {
+        _record_key(identity_id, game_key)
+        for identity_id in get_identity_ids()
+        for game_key in MINIAPP_RUNTIME_GAME_KEYS
+    }
+
+
+def _retention_limits(runtime_keys):
+    return {
+        "record_limit": len(runtime_keys) + MINIAPP_STATE_RECORD_LIMIT,
+        "runtime_record_limit": len(runtime_keys),
+        "summary_record_limit": MINIAPP_STATE_RECORD_LIMIT,
+    }
+
+
 def _prune_state_records(records):
+    runtime_keys = _runtime_record_keys()
     rows = [
         (key, record)
         for key, record in (records or {}).items()
         if isinstance(record, dict) and str(key or "") != "_meta"
     ]
-    rows.sort(key=lambda item: float(item[1].get("updated_at") or 0), reverse=True)
-    pruned = {key: record for key, record in rows[:MINIAPP_STATE_RECORD_LIMIT]}
+    pruned = {key: record for key, record in rows if key in runtime_keys}
+    summaries = [(key, record) for key, record in rows if key not in runtime_keys]
+    summaries.sort(key=lambda item: float(item[1].get("updated_at") or 0), reverse=True)
+    pruned.update(summaries[:MINIAPP_STATE_RECORD_LIMIT])
     now = time.time()
     meta = records.get("_meta") if isinstance((records or {}).get("_meta"), dict) else {}
     pruned["_meta"] = {
         **meta,
         "updated_at": now,
         "updated_at_text": fmt_abs_ts(now),
-        "record_limit": MINIAPP_STATE_RECORD_LIMIT,
+        **_retention_limits(runtime_keys),
     }
     return pruned
 
 
-def record_miniapp_state(
+def prepare_miniapp_state(
     identity_id,
     game_key,
     state,
@@ -160,7 +187,6 @@ def record_miniapp_state(
     now=None,
     outputs=None,
     replaces_commands=None,
-    persist=True,
 ):
     try:
         identity_id = int(identity_id or 0)
@@ -168,7 +194,7 @@ def record_miniapp_state(
         identity_id = 0
     game_key = _normalize_game_key(game_key)
     safe_state = sanitize_miniapp_state(state)
-    if identity_id <= 0 or not game_key or not safe_state:
+    if identity_id <= 0 or not has_identity(identity_id) or not game_key or not safe_state:
         return {"changed": False, "record": {}, "record_key": ""}
     now = time.time() if now is None else float(now)
     source = _normalize_text(source or f"{game_key}_miniapp", limit=80)
@@ -192,11 +218,24 @@ def record_miniapp_state(
     comparable_keys = ("identity_id", "game_key", "source", "source_id", "state", "outputs", "replaces_commands")
     if previous and {k: previous.get(k) for k in comparable_keys} == {k: record.get(k) for k in comparable_keys}:
         return {"changed": False, "record": previous, "record_key": key}
-    records[key] = record
-    set_miniapp_state_records(_prune_state_records(records))
-    if persist:
-        save_state()
     return {"changed": True, "record": record, "record_key": key}
+
+
+def record_miniapp_state(
+    identity_id, game_key, state, *, source="", source_id="", now=None,
+    outputs=None, replaces_commands=None, persist=True,
+):
+    prepared = prepare_miniapp_state(
+        identity_id, game_key, state, source=source, source_id=source_id, now=now,
+        outputs=outputs, replaces_commands=replaces_commands,
+    )
+    if prepared["changed"]:
+        records = dict(get_miniapp_state_records())
+        records[prepared["record_key"]] = prepared["record"]
+        set_miniapp_state_records(_prune_state_records(records))
+        if persist:
+            save_state()
+    return prepared
 
 
 def _identity_filter(identity_ids=None, send_as_id=None):
@@ -265,7 +304,7 @@ def get_miniapp_state_snapshot(identity_ids=None, game_key=None, *, send_as_id=N
         "by_identity": by_identity,
         "known_identity_ids": list(get_identity_ids()),
         "meta": {
-            "record_limit": int(meta.get("record_limit") or MINIAPP_STATE_RECORD_LIMIT),
+            **_retention_limits(_runtime_record_keys()),
             "updated_at": float(meta.get("updated_at") or 0),
             "updated_at_text": str(meta.get("updated_at_text") or ""),
         },
@@ -322,7 +361,9 @@ def replay_miniapp_capture_records(records, parser, *, game_key="", endpoint="")
 
 __all__ = [
     "MINIAPP_STATE_RECORD_LIMIT",
+    "MINIAPP_RUNTIME_GAME_KEYS",
     "get_miniapp_state_snapshot",
+    "prepare_miniapp_state",
     "record_miniapp_state",
     "replay_miniapp_capture_records",
     "sanitize_miniapp_state",

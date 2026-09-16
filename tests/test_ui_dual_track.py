@@ -268,6 +268,8 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "renderSmallWorldFeature(identity,'barrier','护界')+\n            renderSmallWorldBarrierConfig(identity)" in script
     assert "renderSmallWorldFeature(identity,'high_stock_silence','静默')" in script
     assert "renderSmallWorldBarrierConfig(identity)" in script
+    assert "currentChoiceText('未确认动作', wanxin.unresolved_summary || '无')" in script
+    assert "currentChoiceText('回包复核', wanxin.recovery_next_time || '未设置')" in script
     assert "data-jiyin-choice=\"offer_soul\"" in script
     assert "data-save-pet-inline" in script
     assert "data-pet-inline-name" in script

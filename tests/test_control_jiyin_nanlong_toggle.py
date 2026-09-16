@@ -156,7 +156,7 @@ class ControlJiyinNanlongToggleTests(unittest.TestCase):
                     self.assertEqual(0, state_module.state["jiyin_reply_to_msg_id"])
                     self.assertEqual("", state_module.state["jiyin_last_error"])
 
-    def test_manual_enable_clean_nanlong_due_time_keeps_clear_semantics(self):
+    def test_manual_enable_expired_nanlong_keeps_unresolved_work(self):
         now = 1_700_000_000.0
         identity_id = self._prepare_identity(990504)
 
@@ -164,6 +164,7 @@ class ControlJiyinNanlongToggleTests(unittest.TestCase):
             with self.subTest(next_time=next_time):
                 with state_module.use_identity(identity_id):
                     self._seed_nanlong_pending(next_time)
+                    before = self._snapshot_nanlong()
 
                 ok, message, _save_mock, log_mock, _jiyin_dirty_mock, nanlong_dirty_mock = self._set_module_enabled(
                     "南陇侯",
@@ -171,21 +172,44 @@ class ControlJiyinNanlongToggleTests(unittest.TestCase):
                 )
 
                 self.assertTrue(ok, message)
-                nanlong_dirty_mock.assert_called_once()
+                nanlong_dirty_mock.assert_not_called()
                 messages = [args[0] for args, _kwargs in log_mock.call_args_list if args]
                 self.assertFalse(any("异常计时" in message for message in messages), messages)
                 with state_module.use_identity(identity_id):
                     self.assertTrue(state_module.state["nanlong_enabled"])
-                    self.assertEqual(0, state_module.state["next_nanlong_time"])
-                    self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
-                    self.assertEqual(0, state_module.state["nanlong_reply_due_at"])
-                    self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
-                    self.assertEqual(0, state_module.state["nanlong_retry_count"])
-                    self.assertEqual("", state_module.state["nanlong_last_command"])
-                    self.assertEqual("", state_module.state["nanlong_protect_phase"])
-                    self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
-                    self.assertEqual(0, state_module.state["nanlong_recall_msg_id"])
-                    self.assertEqual("", state_module.state["nanlong_last_error"])
+                    self.assertEqual(before, self._snapshot_nanlong())
+
+    def test_manual_enable_expired_nanlong_empty_prompt_can_clear(self):
+        now = 1_700_000_000.0
+        identity_id = self._prepare_identity(990507)
+        with state_module.use_identity(identity_id) as identity:
+            identity.update(nanlong_enabled=False, nanlong_reply_to_msg_id=22028, next_nanlong_time=now - 1)
+        ok, message, _save_mock, _log_mock, _jiyin_dirty_mock, nanlong_dirty_mock = self._set_module_enabled("南陇侯", identity_id)
+        self.assertTrue(ok, message)
+        nanlong_dirty_mock.assert_called_once()
+        with state_module.use_identity(identity_id):
+            self.assertEqual(0, state_module.state["next_nanlong_time"])
+            self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["nanlong_reply_due_at"])
+            self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
+            self.assertEqual(0, state_module.state["nanlong_retry_count"])
+            self.assertEqual("", state_module.state["nanlong_last_command"])
+            self.assertEqual("", state_module.state["nanlong_protect_phase"])
+            self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
+            self.assertEqual(0, state_module.state["nanlong_recall_msg_id"])
+            self.assertEqual("", state_module.state["nanlong_last_error"])
+
+    def test_automatic_disable_preserves_unknown_send_and_cleanup(self):
+        identity_id = self._prepare_identity(990508)
+        for step in ("unknown", "recall"):
+            with self.subTest(step=step), state_module.use_identity(identity_id) as identity:
+                self._seed_nanlong_pending(0)
+                if step == "unknown":
+                    identity.update(nanlong_last_msg_id=0, nanlong_reply_due_at=0)
+                before = self._snapshot_nanlong()
+                control._disable_nanlong_module_state()
+                self.assertFalse(state_module.state["nanlong_enabled"])
+                self.assertEqual(before, self._snapshot_nanlong())
 
     def test_manual_enable_clean_future_time_keeps_pending_semantics(self):
         now = 1_700_000_000.0

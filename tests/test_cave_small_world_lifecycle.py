@@ -131,6 +131,9 @@ def invalidate(h, change):
 @pytest.mark.parametrize("business", [
     {"ok": False, "error": "resource_shortage"},
     {"ok": True, "completed": False},
+    {"ok": True, "completed": 0},
+    {"ok": True, "completed": "false"},
+    {"ok": True, "completed": None},
     {"ok": "false"},
     {"message": "unconfirmed"},
     None,
@@ -171,7 +174,10 @@ def test_flow_retains_server_retry_after_and_http_failure_evidence():
 
 
 def test_partial_success_keeps_receipt_but_does_not_relabel_old_panel_as_fresh():
-    transport = Mock(return_value={"ok": True, "actionResult": {"ok": True, "message": "confirmed"}})
+    transport = Mock(return_value={
+        "ok": True, "account": {"playerId": IDENTITY_ID},
+        "actionResult": {"ok": True, "message": "confirmed"},
+    })
     result = asyncio.run(run_flow(transport, initial_snapshot=world_payload(prayer=True)))
     assert result["ok"]
     assert result["data"].get("action_confirmed") is True
@@ -359,7 +365,7 @@ def test_flow_rejects_explicit_other_player_without_importing_their_resources(st
     transport = Mock(return_value=raw)
     result = asyncio.run(run_flow(transport, initial_snapshot=world_payload() if stage == "action" else None))
     assert not result["ok"]
-    assert result["error"] == "small_world_player_mismatch"
+    assert result["error"] == "cave_action_player_mismatch"
     assert result["data"]["action_confirmed"] is False
     assert result["data"]["snapshot_current"] is False
     assert transport.call_count == 1
@@ -425,7 +431,7 @@ def test_flow_stops_when_planner_invalidates_admission():
     transport = Mock()
     result = asyncio.run(dwelling.run_cave_small_world_production_flow(
         IDENTITY_ID, token="df_FIXTURE42", webview_url=ENTRY_URL, init_data="fixture-init",
-        initial_snapshot=world_payload(), action_planner=planner, transport=transport,
+        player_id=IDENTITY_ID, initial_snapshot=world_payload(), action_planner=planner, transport=transport,
         operation_check=lambda: allowed,
     ))
     assert result["status"] == "cancelled"
@@ -631,7 +637,10 @@ def test_real_thread_cancellation_keeps_public_lock_until_confirmed_receipt(worl
 
 @pytest.mark.parametrize("summary", [{"faith": 95}, {"faith": None}, {"faith": float("nan")}])
 def test_partial_resource_domain_is_not_a_new_zero_balance_snapshot(summary):
-    raw = {"ok": True, "account": {"smallWorld": {"hasWorld": True, "summary": summary}}, "actionResult": {"ok": True}}
+    raw = {
+        "ok": True, "account": {"playerId": IDENTITY_ID, "smallWorld": {"hasWorld": True, "summary": summary}},
+        "actionResult": {"ok": True},
+    }
     result = asyncio.run(run_flow(Mock(return_value=raw), initial_snapshot=world_payload()))
     assert result["data"]["action_confirmed"]
     assert not result["data"]["snapshot_current"]
@@ -708,7 +717,7 @@ def test_incomplete_start_snapshot_does_not_enter_the_spending_planner():
     transport = Mock(return_value={"ok": True, "actionResult": {"ok": True}})
     result = asyncio.run(dwelling.run_cave_small_world_production_flow(
         IDENTITY_ID, token="df_FIXTURE42", webview_url=ENTRY_URL, init_data="fixture-init",
-        initial_snapshot=raw, action_planner=planner, transport=transport,
+        player_id=IDENTITY_ID, initial_snapshot=raw, action_planner=planner, transport=transport,
     ))
     assert result["status"] == "noop"
     assert not result["data"]["action_dispatched"]
@@ -737,3 +746,179 @@ def test_guarded_loader_flows_report_cancelled_before_init_data_rpc(monkeypatch,
     assert not result["ok"]
     assert result["status"] == "cancelled"
     client.assert_not_called()
+
+
+@pytest.mark.parametrize("player_id", [IDENTITY_ID, -1_000_000_000_000 - IDENTITY_ID, str(IDENTITY_ID)])
+def test_small_world_builder_preserves_explicit_player_and_action_metadata(player_id):
+    request = dwelling.build_cave_small_world_action_request(
+        "refine_shenshi", token="df_FIXTURE42", init_data="fixture-init",
+        player_id=player_id, payload={"amount": 30},
+    )
+    assert request["payload"] == {
+        "action": "refine_shenshi", "playerId": int(player_id), "amount": 30,
+        "token": "df_FIXTURE42", "initData": "fixture-init",
+    }
+
+
+def test_small_world_builder_requires_selected_player():
+    with pytest.raises(TypeError):
+        dwelling.build_cave_small_world_action_request("collect", token="df_FIXTURE42")
+
+
+@pytest.mark.parametrize("player_id", [None, True, False, 0, "", -1001, "bad", 1001.0, {}, []])
+def test_small_world_builder_rejects_invalid_players(player_id):
+    with pytest.raises(ValueError):
+        dwelling.build_cave_small_world_action_request("collect", token="df_FIXTURE42", player_id=player_id)
+
+
+@pytest.mark.parametrize("player_id", [None, True, False, 0, "", -1001, "bad", 1001.0, IDENTITY_ID + 1, {}, []])
+def test_small_world_flow_rejects_invalid_selection_before_auth_or_transport(monkeypatch, player_id):
+    auth = AsyncMock(return_value="fixture-init")
+    monkeypatch.setattr(dwelling, "request_cave_treasure_miniapp_init_data", auth)
+    transport = Mock(return_value=world_payload())
+    planner = Mock(return_value={"action": "collect"})
+    result = asyncio.run(dwelling.run_cave_small_world_production_flow(
+        IDENTITY_ID, token="df_FIXTURE42", webview_url=ENTRY_URL,
+        player_id=player_id, action_planner=planner, transport=transport, adapter=adapter_with_limit(),
+    ))
+    assert not result["ok"]
+    assert result["error"].startswith("cave_action_player_")
+    auth.assert_not_awaited()
+    planner.assert_not_called()
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("action", "barrier"), ("playerId", IDENTITY_ID + 1),
+    ("token", "df_OTHER"), ("initData", "other-init"),
+])
+def test_small_world_planner_cannot_override_action_identity_or_auth(field, value):
+    transport = Mock(return_value=world_payload())
+    result = asyncio.run(dwelling.run_cave_small_world_production_flow(
+        IDENTITY_ID, token="df_FIXTURE42", webview_url=ENTRY_URL, init_data="fixture-init",
+        player_id=IDENTITY_ID, initial_snapshot=world_payload(), transport=transport,
+        action_planner=lambda _overview: {"action": "collect", "payload": {field: value}},
+    ))
+    assert not result["ok"]
+    assert result["error"] == "small_world_payload_reserved"
+    assert not result["data"]["action_dispatched"]
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["provided", "start", "action"])
+@pytest.mark.parametrize("variant", ["missing", "selector_only", "other", "bool", "float", "container", "contradiction"])
+def test_small_world_requires_account_identity_before_planning_or_accepting_receipt(stage, variant):
+    response = world_payload(collected=stage == "action")
+    account = response["account"]
+    if variant in {"missing", "selector_only"}:
+        account.pop("playerId")
+    elif variant == "contradiction":
+        response["identity"] = {"selectedPlayerId": IDENTITY_ID + 1}
+    else:
+        account["playerId"] = {"other": IDENTITY_ID + 1, "bool": True, "float": float(IDENTITY_ID), "container": []}[variant]
+    if variant == "selector_only":
+        response["identity"] = {"selectedPlayerId": IDENTITY_ID}
+    response["actionResult"] = {"ok": True, "rawMessage": "unowned-receipt"}
+    response = {"ok": True, "data": response}
+    before = world_payload()
+    snapshot = response if stage == "provided" else before if stage == "action" else None
+    transport = Mock(return_value=response)
+    planner = Mock(return_value={"action": "collect"})
+    result = asyncio.run(dwelling.run_cave_small_world_production_flow(
+        IDENTITY_ID, token="df_FIXTURE42", webview_url=ENTRY_URL, init_data="fixture-init",
+        player_id=IDENTITY_ID, initial_snapshot=snapshot, transport=transport,
+        action_planner=planner, adapter=adapter_with_limit(),
+    ))
+    assert not result["ok"]
+    assert result["status"] == "identity_unverified"
+    assert result["error"].startswith("cave_action_player_")
+    assert not result["data"]["action_confirmed"]
+    assert not result["data"]["snapshot_current"]
+    assert not result["data"].get("action_result")
+    assert transport.call_count == (0 if stage == "provided" else 1)
+    if stage == "action":
+        assert result["data"]["action_dispatched"]
+        assert result["data"]["raw"] == before
+        planner.assert_called_once()
+    else:
+        assert not result["data"].get("raw")
+        planner.assert_not_called()
+
+
+@pytest.mark.parametrize("action", sorted(dwelling.CAVE_SMALL_WORLD_ACTIONS))
+@pytest.mark.parametrize("reply_signed", [True, False])
+def test_small_world_channel_action_transport_never_falls_back_to_primary(action, reply_signed):
+    player_id = -1_000_000_000_000 - IDENTITY_ID
+    calls = []
+
+    def transport(request):
+        calls.append(request)
+        selected = request["payload"].get("playerId", 7401)
+        response = world_payload()
+        response["account"]["playerId"] = selected if reply_signed else dwelling._normalize_cave_inventory_player_id(selected)
+        if request["payload"].get("action"):
+            response["actionResult"] = {"ok": True}
+        return response
+
+    result = asyncio.run(dwelling.run_cave_small_world_production_flow(
+        IDENTITY_ID, token="df_FIXTURE42", webview_url=ENTRY_URL, init_data="fixture-init",
+        player_id=player_id, transport=transport, adapter=adapter_with_limit(),
+        action_planner=lambda _overview: {"action": action, "payload": {"amount": 30} if action == "refine_shenshi" else {}},
+    ))
+    assert result["ok"], result
+    assert result["data"]["action_confirmed"]
+    assert [call["payload"]["playerId"] for call in calls] == [player_id, player_id]
+    assert calls[-1]["payload"]["action"] == action
+
+
+def test_real_small_world_entry_selection_and_harvest_update_only_the_channel(world_env, monkeypatch):
+    h = world_env
+    player_id = -1_000_000_000_000 - IDENTITY_ID
+    state_module.set_identity_account(7401, 7401)
+    primary_before = copy.deepcopy(state_module.get_identity_state(7401))
+    state_module.set_identity_enabled(IDENTITY_ID, False)
+    state_module.set_channel_send_as_health({"status": "closed", "restore_identity_ids": [IDENTITY_ID]})
+    calls = []
+
+    def transport(request):
+        payload = request["payload"]
+        selected = payload.get("playerId", 7401)
+        calls.append((payload.get("action", "start"), selected))
+        raw = world_payload(collected=payload.get("action") == "collect")
+        raw["account"]["playerId"] = selected
+        raw["identity"] = {"selectedPlayerId": selected, "choices": [{"playerId": 7401}, {"playerId": player_id}]}
+        if payload.get("action"):
+            raw["actionResult"] = {"ok": True, "completed": True}
+        return raw
+
+    monkeypatch.setattr(cave, "_load_cave_public_identity_session", LOAD_SESSION)
+    monkeypatch.setattr(cave, "request_cave_treasure_miniapp_init_data", AsyncMock(return_value="fixture-init"))
+    monkeypatch.setattr(cave, "run_cave_small_world_production_flow", dwelling.run_cave_small_world_production_flow)
+    monkeypatch.setattr(dwelling, "_flow_transport", lambda *_args, **_kwargs: transport)
+    result = asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW, harvest_only=True))
+    assert result["ok"], result
+    assert calls == [("start", 7401), ("start", player_id), ("collect", player_id)]
+    assert state_module.get_identity_state(7401) == primary_before
+    assert h.identity["small_world_last_public_harvest_at"] == NOW
+    assert h.identity["small_world_next_public_harvest_at"] == NOW + 28800
+    assert h.identity["small_world_incense_stock"] == 1800
+    assert h.identity["small_world_refine_enabled"] is False
+
+
+def test_unowned_small_world_failure_text_cannot_extend_channel_cooldown(world_env, monkeypatch):
+    h = world_env
+    h.identity.update(small_world_harvest_enabled=False, small_world_manifest_enabled=True)
+    h.session["result"]["data"]["raw"] = world_payload(prayer=True)
+    raw = world_payload(prayer=True)
+    raw["account"]["playerId"] = 7401
+    raw["actionResult"] = {"ok": False, "rawMessage": "\u8d44\u6e90\u4e0d\u8db3\uff0c\u8bf7\u7b49\u5f85 999 \u5c0f\u65f6\u3002"}
+
+    async def actual_flow(identity_id, **kwargs):
+        return await dwelling.run_cave_small_world_production_flow(identity_id, **kwargs, transport=lambda _request: raw)
+
+    monkeypatch.setattr(cave, "run_cave_small_world_production_flow", actual_flow)
+    result = asyncio.run(cave.run_cave_public_small_world_sync(IDENTITY_ID, ENTRY_URL, now=NOW))
+    assert not result["ok"]
+    assert "cave_action_player_mismatch" in h.identity["small_world_last_error"]
+    assert h.identity["next_small_world_time"] == NOW + 21600
+    assert h.identity["small_world_incense_stock"] == 900

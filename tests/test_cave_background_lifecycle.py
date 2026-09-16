@@ -9,7 +9,7 @@ import pytest
 from model import state as state_module
 from model import ui
 from model.features import cave_treasure_runtime as cave
-from model.features import stargazer
+from model.features import stargazer, tianti
 from model.features.miniapp_common import MiniAppFlowCancelled
 
 
@@ -131,6 +131,21 @@ def test_cancelled_background_without_outcome_releases_slot_without_failure_cool
 
     asyncio.run(run())
     assert not ui._cave_public_background_retry_at
+    assert not ui._cave_public_background_daily_done
+    assert not ui._cave_public_background_state["running"]
+
+
+def test_unknown_treasure_result_cannot_mark_the_day_complete(background):
+    h = background
+    config = {**h.config, "cave_public_stargazer_enabled": False, "cave_public_treasure_enabled": True}
+    state_module.set_miniapp_auto_config(config)
+    h.run.return_value = False, "fixture unknown", {"outcome_unknown": True, "daily_exhausted": True}
+
+    async def run():
+        await (await queue_background(h))
+
+    asyncio.run(run())
+    h.run.assert_awaited_once()
     assert not ui._cave_public_background_daily_done
     assert not ui._cave_public_background_state["running"]
 
@@ -515,6 +530,34 @@ def test_local_busy_after_queue_is_not_a_thirty_minute_failure(background, monke
     loader.assert_not_awaited()
     assert not ui._cave_public_background_retry_at
     assert not ui._cave_public_background_state["running"]
+    assert "\u5931\u8d25" not in str(ui.console_log.call_args_list)
+
+
+def test_pending_tianti_read_reaches_runtime_as_local_wait(background, monkeypatch):
+    h = background
+    config = {
+        **h.config, "cave_public_stargazer_enabled": False, "cave_public_tianti_status_enabled": True,
+        "cave_public_tianti_status_identity_ids": [h.identity_id],
+    }
+    state_module.set_miniapp_auto_config(config)
+    monkeypatch.setattr(ui, "ui_run_cave_public_entry", h.real_run)
+    monkeypatch.setattr(cave, "_PUBLIC_ENTRY_LOCKS", {})
+    monkeypatch.setattr(tianti, "_TIANTI_RUN_LOCKS", {})
+    loader = AsyncMock()
+    monkeypatch.setattr(cave, "_load_cave_public_identity_session", loader)
+
+    async def run():
+        worker = await queue_background(h)
+        h.identity["pending_tasks"] = {(-10011, 72): {"cmd": tianti.CMD_TIANTI_WENXIN, "time": h.now[0]}}
+        await worker
+
+    asyncio.run(run())
+    loader.assert_not_awaited()
+    assert state_module.get_miniapp_auto_config() == config
+    assert not ui._cave_public_background_retry_at
+    assert not ui._cave_public_background_state["running"]
+    assert ui._cave_public_background_state["next_run_at"] == h.now[0] + config["cave_public_delay_sec"]
+    assert "\u7b49\u5f85" in str(ui.console_log.call_args_list)
     assert "\u5931\u8d25" not in str(ui.console_log.call_args_list)
 
 

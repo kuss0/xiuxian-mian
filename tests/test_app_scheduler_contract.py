@@ -5,7 +5,7 @@ import unittest
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -1378,12 +1378,15 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         identity_id = 991834
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(identity_id)
+        state_module.set_identity_account(identity_id, 7001)
+        state_module.set_game_group_id(-100991834)
+        state_module.set_global_enabled(True)
         with state_module.use_identity(identity_id):
             state_module.state["concubine_tianji_enabled"] = True
             state_module.state["next_concubine_time"] = now - 1
             state_module.state["concubine_availability"] = "unknown"
 
-        sent_msg = type("SentMsg", (), {"id": 902, "sent_at": now})()
+        sent_msg = SimpleNamespace(id=902, sent_at=now, send_started_at=now, chat_id=-100991834)
         with (
             patch.object(app, "get_identity_ids", return_value=[identity_id]),
             patch.object(app, "get_identity_enabled", return_value=True),
@@ -1391,15 +1394,19 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app, "is_identity_weak", return_value=False),
             patch.object(app, "has_phaseful_summary_block", return_value=False),
             patch.object(app.time, "time", return_value=now),
+            patch("model.features.concubine.save_state", return_value=True),
             patch("model.features.concubine.send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
         ):
             await app._run_due_concubine_schedulers(now, limit=1)
 
         send_mock.assert_awaited_once_with(
             ".我的侍妾",
-            track=False,
+            track=True, max_retry=0, reply_timeout=15 * 60,
+            send_as_id=identity_id, target_chat_id=-100991834,
+            source_module="concubine_status", op_id=ANY, operation_check=ANY,
             queue_timeout=app.CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC,
         )
+        self.assertEqual("sent", state_module.get_identity_state(identity_id)["concubine_status_query"]["status"])
 
     async def test_due_concubine_fast_scan_clears_legacy_timeout_error(self):
         identity_id = 991835

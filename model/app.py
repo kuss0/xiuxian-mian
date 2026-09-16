@@ -47,7 +47,7 @@ from .app_replica import (
     run_huanglong_conscription_scheduler,
     run_luoyun_cd_reminder_scheduler,
 )
-from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
+from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_CONCUBINE_STATUS, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import clear_transient_send_failures_for_global_recovery, enforce_identity_module_availability, extend_global_recovery_throttle_for_spread, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .game_bot_registry import GameBotCandidateRegistry
 from .module_manifest import is_module_archived
@@ -85,7 +85,9 @@ from .features.concubine import (
     handle_concubine_storage_bag_reply,
     handle_concubine_heart_reply,
     handle_concubine_tianji_reply,
+    handle_concubine_voyage_reply,
     is_concubine_affinity_event_candidate,
+    owns_concubine_affinity_reply,
     concubine_send_queue_timeout,
     CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC,
     restore_concubine_runtime,
@@ -129,7 +131,8 @@ from .features.tianxing import (
     run_tianxing_timeline_scheduler,
     run_tianxing_timeline_followup_scheduler,
 )
-from .features.yinluo import run_yinluo_scheduler
+from .features.yinluo import handle_yinluo_resource_reply, observe_yinluo_resources, run_yinluo_scheduler
+from .yinluo_resource_facts import parse_yinluo_resource_command
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.wanxin import handle_wanxin_reply, run_wanxin_global_cleanup_scheduler, run_wanxin_phaseful_cleanup_scheduler, run_wanxin_scheduler
 from .features.world_boss import (
@@ -316,7 +319,7 @@ _EARLY_ROUTED_REPLY_TTL_SEC = 30.0
 _EARLY_ROUTED_REPLY_REPLAY_DELAY_SEC = 0.1
 _EARLY_ROUTED_REPLY_MAX = 512
 _early_routed_replies = {}
-from .ui import run_miniapp_daily_scheduler, run_storage_bag_api_keepalive_scheduler, start_ui_server, stop_ui_server
+from .ui import _recover_cave_treasure_result_once, run_miniapp_daily_scheduler, run_storage_bag_api_keepalive_scheduler, start_ui_server, stop_ui_server
 
 _bot_silence_auto_paused = False
 _identity_scheduler_task = None
@@ -1759,10 +1762,16 @@ async def _resolve_event_reply(event):
         reply_to_msg_id=reply_header_msg_id,
         chat_id=int(getattr(event, "chat_id", 0) or 0),
     )
+    reply_context["forwarded"] = bool(
+        reply_context.get("forwarded") or getattr(event, "fwd_from", None)
+        or getattr(getattr(event, "message", None), "fwd_from", None)
+    )
     if reply_to is not None:
         reply_context["reply_to_command"] = str(getattr(reply_to, "raw_text", "") or "")
         reply_context["reply_to_server_at"] = telegram_event_timestamp(reply_to)
-        reply_context["reply_to_command_edited"] = getattr(reply_to, "edit_date", None) is not None
+        if hasattr(reply_to, "edit_date"):
+            reply_context["reply_to_command_edited"] = reply_to.edit_date is not None
+        reply_context["reply_to_command_forwarded"] = bool(getattr(reply_to, "fwd_from", None))
         try:
             reply_context["reply_to_sender_id"] = int(getattr(reply_to, "sender_id", 0) or 0)
         except (TypeError, ValueError):
@@ -2026,8 +2035,7 @@ async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None, repl
         reply_to=reply_to,
         reply_context=reply_context,
     )
-    if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
-        await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
+    await _dispatch_concubine_loss_broadcast_fallbacks(event, text, now)
     return phaseful_summary_handled
 
 
@@ -2186,20 +2194,21 @@ async def _dispatch_duel_broadcast_fallbacks(event, text, now):
 
 async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="nanlong_result"):
-        await _run_until_handled_for_enabled_identities(handle_nanlong_result_broadcast, text, now, event)
+        for identity_id in get_identity_ids():
+            with use_identity(identity_id):
+                if await handle_nanlong_result_broadcast(text, now, event):
+                    return
 
 
-async def _dispatch_concubine_affinity_fallbacks(event, text, now):
+async def _dispatch_concubine_affinity_fallbacks(event, text, now, *, event_type="message"):
     if not is_concubine_affinity_event_candidate(text):
         return
-    if _claim_runtime_event(event, scope="concubine_affinity"):
-        await _run_until_handled_for_enabled_identities(
-            handle_concubine_affinity_event,
-            text,
-            now,
-            event,
-            require_identity_hint=True,
-        )
+    for identity_id in get_identity_ids():
+        with use_identity(identity_id):
+            if await handle_concubine_affinity_event(
+                text, now, event, require_identity_hint=True, event_type=event_type,
+            ):
+                return
 
 
 async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
@@ -2238,9 +2247,12 @@ async def _dispatch_message_edited_tiandao_judgement_prompt(event, text, now):
     await _dispatch_message_edited_broadcasts(event, text, now, (("tiandao_judgement_prompt_edit", handle_tiandao_judgement_prompt),))
 
 
-async def _dispatch_message_edited_concubine_loss(event, text, now):
-    if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
-        await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
+async def _dispatch_concubine_loss_broadcast_fallbacks(event, text, now, *, event_type="message"):
+    if _is_concubine_loss_broadcast_candidate(text):
+        for identity_id in get_identity_ids():
+            with use_identity(identity_id):
+                if await handle_concubine_loss_broadcast(text, now, event, event_type=event_type):
+                    return
 
 
 async def _dispatch_message_edited_phaseful_summaries(event, text, now, reply_to=None, reply_context=None):
@@ -2660,6 +2672,8 @@ def _record_due_explore_rift_candidate_failure(action, *, now, reason):
 
 
 async def _run_due_concubine_schedulers(now, *, limit=DUE_CONCUBINE_MAX_PER_TICK):
+    from .features.concubine_external_events import next_at as external_next_at
+
     global _due_concubine_last_diag_at
     candidates = []
     owners = {}
@@ -2690,6 +2704,9 @@ async def _run_due_concubine_schedulers(now, *, limit=DUE_CONCUBINE_MAX_PER_TICK
             except (TypeError, ValueError, OverflowError):
                 next_time = 0.0
             _clear_due_concubine_transient_error_if_stable(scheduler_now, next_time)
+            external_due = external_next_at()
+            if external_due is not None:
+                next_time = min(next_time, external_due) if next_time > 0 else external_due
             if next_time <= 0 or next_time > scheduler_now:
                 continue
             candidates.append((next_time, scan_index, identity_id, scheduler_now))
@@ -2753,6 +2770,19 @@ async def _run_due_concubine_candidate(identity_id, scheduler_now, *, owner):
 
 
 def _record_due_concubine_candidate_failure(*, now, reason, transient=False):
+    from .features.concubine_external_events import needs_calibration
+    from .features.concubine_heart_actions import block_reason as heart_block_reason
+    from .features.concubine_reacquire_actions import block_reason as reacquire_block_reason
+
+    if needs_calibration() or reacquire_block_reason():
+        state["concubine_last_error"] = str(reason or "Reacquire scheduler recovery failed")
+        mark_dirty()
+        return
+    if heart_block_reason():
+        # The owned heart session, not the outer scan, controls continuation.
+        state["concubine_heart_last_error"] = str(reason or "Heart scheduler recovery failed")
+        mark_dirty()
+        return
     if transient:
         state["concubine_last_result"] = str(reason or "到期侍妾扫描让出本轮")
         state["concubine_last_error"] = ""
@@ -3225,6 +3255,84 @@ async def _handle_routed_reply_event(
     if not replay:
         _remember_early_routed_reply(event, text, now, reply_to, reply_context, event_kind=event_kind)
 
+    if (parse_yinluo_resource_command(reply_context.get("reply_to_command")) is not None
+            or str(matched_family or "").startswith("yinluo_")
+            or matched_family in {"wanxin_assist_banner", "wanxin_assist_strip"}):
+        # Financial edits have their own persisted revision identity. Generic
+        # consumed-message/family cleanup must not close an unknown new edit.
+        return handle_yinluo_resource_reply(
+            from_telegram_event(event, text, reply_context, event_kind=event_kind), now=now,
+        )
+
+    if matched_family in {"tianti_status", "tianti_wenxin", "tianti_gangfeng", "tianti_climb"}:
+        with use_identity(routed_identity_id):
+            return await handle_tianti_reply(
+                text, now, reply_to, matched_family=matched_family,
+                reply_context=dict(
+                    reply_context, chat_id=event.chat_id, msg_id=event.id, sender_id=event.sender_id,
+                    root_msg_id=reply_context.get("root_msg_id") or reply_context.get("reply_to_msg_id") or getattr(reply_to, "id", 0),
+                ),
+            )
+
+    with use_identity(routed_identity_id):
+        if matched_family == "concubine_reacquire":
+            return await handle_concubine_reacquire_reply(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=event.sender_id),
+            )
+        if matched_family == "concubine_heart":
+            return await handle_concubine_heart_reply(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=event.sender_id),
+            )
+        if matched_family == "concubine_status" or (
+            matched_family is None and str(getattr(reply_to, "raw_text", "") or "").strip() == CMD_CONCUBINE_STATUS
+        ):
+            return await handle_concubine_status_reply(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=getattr(event, "sender_id", 0),
+                                   forwarded=bool(reply_context.get("forwarded") or getattr(event, "fwd_from", None) or getattr(getattr(event, "message", None), "fwd_from", None))),
+            )
+        if matched_family == "concubine_tianji":
+            return await handle_concubine_tianji_reply(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=event.sender_id),
+            )
+        if matched_family == "concubine_voyage":
+            return await handle_concubine_voyage_reply(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=event.sender_id),
+            )
+        if owns_concubine_affinity_reply(matched_family, getattr(reply_to, "id", 0), event.chat_id):
+            handler = {
+                "storage_bag": handle_concubine_storage_bag_reply,
+                "concubine_gift": handle_concubine_gift_reply,
+                "concubine_greet": handle_concubine_greet_reply,
+            }[matched_family]
+            return await handler(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=event.sender_id),
+            )
+
+    if matched_family in {"concubine_fragment", "concubine_dream", "concubine_puzzle"}:
+        with use_identity(routed_identity_id):
+            handler = {
+                "concubine_fragment": handle_concubine_fragment_reply,
+                "concubine_dream": handle_concubine_dream_reply,
+                "concubine_puzzle": handle_concubine_puzzle_reply,
+            }[matched_family]
+            return await handler(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                current_chat_id=event.chat_id, observed_at=reply_context["server_event_at"],
+                reply_context=dict(reply_context, sender_id=getattr(event, "sender_id", 0)),
+            )
+
     kind_scope = str(event_kind or "message").strip() or "message"
     is_identity_info_waiting_reply = matched_family == "identity_info" and _is_identity_info_waiting_reply(text)
     is_nonterminal_waiting_reply = (
@@ -3383,19 +3491,20 @@ async def _handle_routed_reply_event(
             handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_tianti_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_status_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
-            handled_any = await handle_concubine_dream_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_fragment_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_puzzle_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_reacquire_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_fragment_reply(
+                text, now, reply_to, matched_family=matched_family, current_msg_id=event.id,
+                observed_at=reply_context.get("server_event_at", 0), current_chat_id=event.chat_id,
+                reply_context=dict(reply_context, sender_id=getattr(event, "sender_id", 0)),
+            ) or handled_any
             handled_any = await handle_concubine_tianji_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_heart_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
-            handled_any = await handle_concubine_greet_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_gift_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_affinity_event(text, now, event, matched_family=matched_family) or handled_any
-            handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            # An external observation is not terminal evidence for the parent command.
+            await handle_concubine_affinity_event(
+                text, now, event, matched_family=matched_family, event_type=event_kind,
+                reply_to=reply_to, reply_context=reply_context,
+            )
+            handled_any = await handle_nanlong_reply(
+                text, now, reply_to, matched_family=matched_family, source_at=reply_context["server_event_at"],
+            ) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_formation_event(text, now, event, reply_to=reply_to, reply_context=reply_context) or handled_any
             handled_any = await handle_identity_info_reply(
@@ -3436,6 +3545,7 @@ async def _handle_routed_reply_event(
                 reply_to,
                 matched_family=matched_family,
                 result_msg_id=event.id,
+                event=from_telegram_event(event, text, reply_context, event_kind=event_kind),
             ) or handled_any
             handled_any = await handle_duel_reply(
                 text,
@@ -3716,6 +3826,7 @@ async def on_message(event):
         reply_to, reply_context = await _resolve_event_reply(event)
         _bind_command_attempt_shadow(event, text, now, reply_context, event_kind="message")
         observe_duel_cultivation(from_telegram_event(event, text, reply_context, event_kind="message"), now=now)
+        observe_yinluo_resources(from_telegram_event(event, text, reply_context, event_kind="message"), now=now)
         _record_message_box_shadow(
             event,
             text,
@@ -3873,6 +3984,7 @@ async def on_message_edited(event):
         reply_to, reply_context = await _resolve_event_reply(event)
         _bind_command_attempt_shadow(event, text, now, reply_context, event_kind="edit")
         observe_duel_cultivation(from_telegram_event(event, text, reply_context, event_kind="edit"), now=now)
+        observe_yinluo_resources(from_telegram_event(event, text, reply_context, event_kind="edit"), now=now)
         _record_message_box_shadow(
             event,
             text,
@@ -3892,7 +4004,7 @@ async def on_message_edited(event):
         )
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
-        await _dispatch_message_edited_concubine_loss(event, text, now)
+        await _dispatch_concubine_loss_broadcast_fallbacks(event, text, now, event_type="edit")
         phaseful_summary_handled = await _dispatch_message_edited_phaseful_summaries(
             event,
             text,
@@ -3973,7 +4085,7 @@ async def on_message_edited(event):
         await _dispatch_duel_broadcast_fallbacks(event, text, now)
         await _dispatch_message_edited_tiandao_judgement_prompt(event, text, now)
         await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
-        await _dispatch_concubine_affinity_fallbacks(event, text, now)
+        await _dispatch_concubine_affinity_fallbacks(event, text, now, event_type="edit")
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
         await handle_passive_identity_profile_card(
             text, now, event=from_telegram_event(event, text, reply_context, event_kind="edit"),
@@ -4224,6 +4336,8 @@ async def main_loop(stop_event=None, quiesce_event=None):
             _cancel_identity_schedulers()
             if get_global_pause_source() == MAINTENANCE_PAUSE_SOURCE:
                 await run_miniapp_daily_scheduler(now)
+            else:
+                _recover_cave_treasure_result_once(now)
             await _sleep_or_stop(stop_event, 5)
             continue
 

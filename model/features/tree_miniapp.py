@@ -1,7 +1,7 @@
-import asyncio
 import math
 import random
 import time
+from copy import deepcopy
 
 from telethon import functions
 
@@ -18,12 +18,16 @@ from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestAborted,
+    MiniAppRequestBudget,
+    _response_retry_after_sec,
     build_miniapp_http_request,
     build_miniapp_launch_request,
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
+    require_miniapp_operation,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
@@ -31,7 +35,17 @@ from .miniapp_common import (
     append_http_event as _append_http_event,
     build_miniapp_transport,
     build_pooled_miniapp_transport,
+    run_miniapp_blocking_flow,
 )
+from .tree_receipts import (
+    parse_tree_allocation,
+    parse_tree_rewards,
+    parse_tree_submit,
+    tree_integer as _quota_integer,
+    tree_panel_context,
+    tree_round_key,
+)
+from . import tree_operations
 
 
 TREE_MINIAPP_GAME_KEY = "tree"
@@ -167,7 +181,8 @@ def build_tree_launch_args(url, *, start_param="", bot_username=TREE_MINIAPP_DEF
     return request, build_request_webview_args(adapter, request) if request.allowed else {}
 
 
-async def request_tree_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None):
+async def request_tree_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None):
+    require_miniapp_operation(operation_check)
     adapter = adapter or build_tree_miniapp_adapter()
     launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
     if not launch.allowed:
@@ -176,14 +191,19 @@ async def request_tree_miniapp_init_data(identity_id, *, token, webview_url="", 
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
+        require_miniapp_operation(operation_check)
         bot = await client.get_entity(launch.bot_username or adapter.bot_username)
+        require_miniapp_operation(operation_check)
         bot_input = await client.get_input_entity(bot)
+        require_miniapp_operation(operation_check)
         result = await client(functions.messages.RequestMainWebViewRequest(
             peer=bot_input,
             bot=bot_input,
             platform=launch.platform or adapter.platform,
             start_param=launch.start_param,
         ))
+        require_miniapp_operation(operation_check)
+    require_miniapp_operation(operation_check)
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
@@ -254,20 +274,6 @@ def _int_value(value, default=0):
         return int(float(str(value).replace(",", "")))
     except (TypeError, ValueError, OverflowError):
         return default
-
-
-def _tree_server_verification(data):
-    verified = data.get("verified") if isinstance(data, dict) and isinstance(data.get("verified"), dict) else {}
-    if not verified:
-        return {}
-    result = {}
-    for key in ("ok", "hit", "gameOver"):
-        if key in verified:
-            result[key] = bool(verified.get(key))
-    for key in ("score", "durationMs", "steps", "centerSteps", "exactCenters", "bestCenterCombo", "maxEvents"):
-        if key in verified:
-            result[key] = _int_value(verified.get(key), 0)
-    return result
 
 
 def _tree_fly_verification_mismatch(client_score, server_score, verification):
@@ -810,46 +816,72 @@ def build_tree_jump_proof(run, *, rng=None, profile=None):
     return proof, summary
 
 
-def _mode_quota(data, mode):
+def _parse_mode_quota(data, mode):
+    empty = {"used": 0, "limit": 0, "remaining": 0, "best": 0}
     council = data.get("council") if isinstance(data, dict) else {}
     daily = council.get("daily") if isinstance(council, dict) else {}
     quota = daily.get(mode) if isinstance(daily, dict) else {}
-    if not isinstance(quota, dict):
-        quota = {}
-    used = _int_value(quota.get("used"), 0)
-    limit = _int_value(quota.get("limit"), 0)
-    remaining = (
-        max(0, _int_value(quota.get("remaining"), 0))
-        if "remaining" in quota
-        else max(0, limit - used) if limit > 0 else 0
-    )
-    best = _int_value(quota.get("best"), 0)
-    return {
-        "used": used,
-        "limit": limit,
-        "remaining": remaining,
-        "best": best,
-    }
+    if any(isinstance(scope, dict) and "ok" in scope and scope["ok"] is not True
+           for scope in (council, daily, quota)):
+        return empty, "tree_quota_not_ok"
+    if not isinstance(quota, dict) or not {"used", "limit"} <= quota.keys():
+        return empty, "tree_quota_missing"
+    counts = {key: _quota_integer(quota[key]) for key in ("used", "limit", "remaining") if key in quota}
+    if None in counts.values():
+        return empty, "tree_quota_invalid_count"
+    used, limit = counts["used"], counts["limit"]
+    remaining = counts.get("remaining", limit - used)
+    if used > limit or remaining > limit or used + remaining != limit:
+        return empty, "tree_quota_inconsistent"
+    return {"used": used, "limit": limit, "remaining": remaining,
+            "best": _quota_integer(quota.get("best")) or 0}, ""
 
 
-def _mode_quota_is_authoritative(data, mode):
-    council = data.get("council") if isinstance(data, dict) else {}
-    daily = council.get("daily") if isinstance(council, dict) else {}
-    quota = daily.get(mode) if isinstance(daily, dict) else {}
-    return isinstance(quota, dict) and "used" in quota and "limit" in quota and (
-        "remaining" in quota or _int_value(quota.get("limit"), 0) > 0
-    )
+def _tree_state_body(data, *, from_submit=False):
+    if not isinstance(data, dict):
+        return {}, "tree_state_missing"
+    if "data" in data:
+        if not isinstance(data["data"], dict) or "data" in data["data"]:
+            return {}, "tree_state_invalid_envelope"
+        if any(key in data for key in ("council", "seasonState", "tree", "ranking", "actions")):
+            return {}, "tree_state_conflicting_envelopes"
+        data = {"ok": data.get("ok"), **data["data"]}
+    if "ok" in data and data["ok"] is not True:
+        return {}, "tree_state_not_ok"
+    # Only run/submit advertises seasonState as the current council snapshot.
+    if from_submit and "seasonState" in data:
+        if "council" in data or not isinstance(data["seasonState"], dict):
+            return {}, "tree_state_conflicting_panels"
+        data = {**data, "council": data["seasonState"]}
+    return data, ""
 
 
-def parse_tree_miniapp_state(data):
-    data = data if isinstance(data, dict) else {}
+def parse_tree_miniapp_state(data, *, from_submit=False):
+    data, body_error = _tree_state_body(data, from_submit=from_submit)
     tree = data.get("tree") if isinstance(data.get("tree"), dict) else {}
     council = data.get("council") if isinstance(data.get("council"), dict) else {}
     season = council.get("season") if isinstance(council.get("season"), dict) else {}
     ranking = data.get("ranking") if isinstance(data.get("ranking"), dict) else {}
     actions = data.get("actions") if isinstance(data.get("actions"), dict) else {}
-    jump = _mode_quota(data, "jump")
-    fly = _mode_quota(data, "fly")
+    jump, jump_error = _parse_mode_quota(data, "jump")
+    fly, fly_error = _parse_mode_quota(data, "fly")
+    context, context_error = {}, ""
+    if "season" in council and not isinstance(council["season"], dict):
+        context_error = "tree_quota_invalid_season"
+    if "seasonId" in season:
+        value = season["seasonId"]
+        if isinstance(value, str) and value.strip():
+            context["season_id"] = value.strip()
+        else:
+            context_error = "tree_quota_invalid_season"
+    if "dayIndex" in season:
+        value = _quota_integer(season["dayIndex"])
+        if value is not None:
+            context["day_index"] = value
+        else:
+            context_error = "tree_quota_invalid_day"
+    quota_error = {"jump": body_error or context_error or jump_error,
+                   "fly": body_error or context_error or fly_error}
     return {
         "ok": bool(data.get("ok")),
         "gameplay_mode": str(tree.get("gameplayMode") or ""),
@@ -862,14 +894,14 @@ def parse_tree_miniapp_state(data):
         "season_day_index": _int_value(season.get("dayIndex"), 0),
         "jump": jump,
         "fly": fly,
-        "quota_known": {
-            "jump": _mode_quota_is_authoritative(data, "jump"),
-            "fly": _mode_quota_is_authoritative(data, "fly"),
-        },
+        "quota_known": {mode: not error for mode, error in quota_error.items()},
+        "quota_error": quota_error,
+        "quota_context": context,
         "my_contribution_points": _int_value(ranking.get("myContributionPoints"), 0),
         "branch_rank": _int_value(ranking.get("branchRank"), 0),
         "claimed": bool(ranking.get("claimed")),
-        "can_run_game": bool(jump["remaining"] or fly["remaining"]),
+        "can_run_game": bool((not quota_error["jump"] and jump["remaining"])
+                             or (not quota_error["fly"] and fly["remaining"])),
         "can_claim_reward": bool(ranking.get("claimed") is False and str(season.get("status") or "") in {"ended", "settled", "claimable"}),
         "actions": {
             key: bool(actions.get(key))
@@ -898,47 +930,218 @@ def build_tree_game_proof(mode, run, *, rng=None, profile=None):
     raise ValueError("tree miniapp mode must be jump or fly")
 
 
-def _flow_result(ok, status, *, data=None, events=None, error=""):
+def _flow_result(ok, status, *, data=None, events=None, error="", request_budget=None,
+                 outcome_unknown=False, open_run=False, retry_after_sec=0):
     return {
         "ok": bool(ok),
         "status": str(status or ""),
         "data": data if isinstance(data, dict) else {},
         "events": list(events or ()),
         "error": sanitize_webapp_secret_text(error),
+        "request_budget": request_budget.safe_summary() if request_budget is not None else {},
+        "outcome_unknown": bool(outcome_unknown),
+        "open_run": bool(open_run),
+        "retry_after_sec": float(retry_after_sec),
     }
 
 
 
 
 def _non_idempotent_failure_status(result):
-    if bool(getattr(result, "retryable", False)) or str(getattr(result, "error_type", "") or "") in {
-        "transient",
-        "timeout",
-        "network",
-    }:
-        return "result_unknown"
-    return classify_tree_miniapp_error(getattr(result, "error", ""))
+    if result.error_type == "operation_cancelled":
+        return "cancelled"
+    if result.error_type == "request_budget":
+        return "request_budget"
+    if int(result.attempts or 0) <= 0:
+        return "failed"
+    if (result.error_type == "app" and result.data.get("ok") is False
+            and (200 <= result.status_code < 300 or 400 <= result.status_code < 500)
+            and result.status_code not in {408, 425, 429}):
+        return classify_tree_miniapp_error(result.error)
+    return "result_unknown"
 
 
-def _authoritative_tree_state(data):
-    queue = [data]
-    seen = set()
-    while queue:
-        candidate = queue.pop(0)
-        if not isinstance(candidate, dict) or id(candidate) in seen:
-            continue
-        seen.add(id(candidate))
-        state = parse_tree_miniapp_state(candidate)
-        known = state.get("quota_known") if isinstance(state.get("quota_known"), dict) else {}
-        if known.get("jump") or known.get("fly"):
-            return state
-        for key in ("state", "seasonState", "councilState", "data", "result"):
-            nested = candidate.get(key)
-            if isinstance(nested, dict):
-                if key in {"state", "seasonState", "councilState"} and "daily" in nested and "council" not in nested:
-                    queue.append({"council": nested})
-                queue.append(nested)
-    return None
+class _TreeFlow:
+    """One tree operation's request budget and already-returned business facts."""
+
+    def __init__(self, *, token, init_data, transport, adapter, sleeper, capture_sink,
+                 capture_source, operation_check, request_budget=None, daily=False, player_id=None, checkpoint_sink=None):
+        self.adapter = adapter or build_tree_miniapp_adapter()
+        self.token, self.init_data = str(token or "").strip(), str(init_data or "").strip()
+        self.transport = transport or _requests_transport
+        self.sleeper = sleeper if sleeper is not None else time.sleep
+        self.operation_check = operation_check
+        self.budget = request_budget or MiniAppRequestBudget(self.adapter.request_policy, sleeper=self.sleep)
+        self.capture_sink, self.capture_source = capture_sink, capture_source
+        self.daily = daily
+        self.player_id = player_id
+        self.confirmed_rounds = set()
+        self.events, self.data = [], {"state": {}}
+        if daily:
+            self.data.update(runs=[], rewards={"items": {}, "gains": {}}, errors=[])
+        self.open_run = self.outcome_unknown = False
+        self.retry_after_sec = 0.0
+        self.checkpoint_sink, self.sequence = checkpoint_sink, 0
+        self.pending, self.resolution, self.last_evidence = {}, {}, None
+        self.dispatched = False
+        self.checkpoint_failed = False
+
+    def checkpoint(self, phase, result=None):
+        evidence = {"version": 1, "sequence": self.sequence + 1, "phase": phase,
+                    "pending": deepcopy(self.pending), "resolution": deepcopy(self.resolution),
+                    "dispatched": self.dispatched,
+                    "result": tree_operations.project_result(result or self.snapshot(False, "running"))}
+        self.last_evidence = evidence
+        try:
+            accepted = self.checkpoint_sink is None or self.checkpoint_sink(evidence) is True
+        except Exception:
+            accepted = False
+        if accepted:
+            self.sequence += 1
+        else:
+            self.checkpoint_failed = True
+        return accepted
+
+    def allocated(self, context):
+        self.pending = {**self.pending, "action": "allocated", "round_key": tree_round_key(context)}
+        if not self.checkpoint("response"):
+            raise MiniAppRequestAborted("tree_checkpoint_unavailable")
+
+    def settled(self):
+        self.pending, self.resolution = {}, {}
+        if not self.checkpoint("settled"):
+            raise MiniAppRequestAborted("tree_checkpoint_unavailable")
+
+    def check(self):
+        require_miniapp_operation(self.operation_check)
+
+    def sleep(self, delay):
+        self.check()
+        self.sleeper(delay)
+        self.check()
+
+    def request(self, endpoint, *, step=None, payload=None):
+        step = step or endpoint
+        response_wait = 0.0
+        mutation = endpoint in {"run_start", "run_submit"}
+        entered = False
+        previous = deepcopy(self.pending)
+        request_intent = {}
+        if mutation:
+            self.check()
+            request_intent = {"action": endpoint, "entry_key": tree_operations.digest(self.token),
+                              "mode": payload["mode"],
+                              "round_key": tree_round_key(payload) if endpoint == "run_submit" else ""}
+            self.pending, self.resolution = request_intent, {}
+            if not self.checkpoint("intent"):
+                self.pending = previous
+                raise MiniAppRequestAborted("tree_checkpoint_unavailable")
+
+        def dispatch(request):
+            nonlocal response_wait, entered
+            self.check()
+            entered = True
+            if mutation:
+                self.dispatched = True
+            response = self.transport(request)
+            response_wait = _response_retry_after_sec(response)
+            return response
+
+        result = execute_miniapp_http_request(
+            build_tree_miniapp_request(endpoint, token=self.token, init_data=self.init_data,
+                                       payload=payload, adapter=self.adapter),
+            dispatch, backoff_sec=(), sleeper=self.sleep,
+            capture_sink=self.capture_sink, capture_source=self.capture_source,
+            step_key=step, request_budget=self.budget, operation_check=self.operation_check,
+        )
+        self.retry_after_sec = max(self.retry_after_sec, response_wait, result.retry_after_sec)
+        _append_http_event(self.events, step, result)
+        if response_wait > 0:
+            self.events[-1]["retry_after_sec"] = max(response_wait, result.retry_after_sec)
+        if mutation:
+            if not entered or (not result.ok and _non_idempotent_failure_status(result) not in {"result_unknown", "cancelled", "request_budget"}):
+                self.pending = previous
+                self.resolution = {"kind": "not_sent" if not entered else "rejected", "request": request_intent}
+                if not self.checkpoint("response"):
+                    raise MiniAppRequestAborted("tree_checkpoint_unavailable")
+            if result.ok and endpoint == "run_start":
+                self.open_run = True
+            elif not result.ok and _non_idempotent_failure_status(result) == "result_unknown":
+                self.outcome_unknown = True
+        return result
+
+    def failed_request(self, result, *, mutation=False, status=None):
+        if mutation:
+            status = _non_idempotent_failure_status(result)
+        elif result.error_type == "operation_cancelled":
+            status = "cancelled"
+        elif result.error_type == "request_budget":
+            status = "request_budget"
+        else:
+            status = status or classify_tree_miniapp_error(result.error)
+        return self.finish(False, status, error=result.error)
+
+    def unconfirmed_submit(self, receipt):
+        self.outcome_unknown = True
+        if receipt.get("round_key"):
+            partial = {"round_key": receipt["round_key"], "rewards": receipt["rewards"],
+                       "error": receipt["error"], "material_error": receipt["material_error"]}
+            self.data["partial_receipts"] = [partial]
+            if self.daily:
+                for kind in ("items", "gains"):
+                    _merge_tree_reward_counts(self.data["rewards"][kind], receipt["rewards"][kind])
+            else:
+                self.data["rewards"] = receipt["rewards"]
+                self.data["submit"] = {"confirmed": False, "score": None, "round_key": receipt["round_key"]}
+        status = "score_unknown" if receipt["error"] == "tree_score_missing_or_invalid" else "result_unknown"
+        return self.finish(False, status, error=receipt["error"])
+
+    def snapshot(self, ok, status, *, error=""):
+        if status == "result_unknown":
+            self.outcome_unknown = True
+        data = self.data
+        if self.daily:
+            error = sanitize_webapp_secret_text(error)
+            if error and error not in data["errors"]:
+                data["errors"].append(error)
+            phase = "completed" if ok else "unknown" if self.outcome_unknown else "blocked"
+            data = _daily_tree_data(phase=phase, state=data["state"], runs=data["runs"],
+                                    rewards=data["rewards"], errors=data["errors"],
+                                    partial_receipts=data.get("partial_receipts"))
+        return _flow_result(
+            ok, status, data=data, events=self.events, error=error, request_budget=self.budget,
+            outcome_unknown=self.outcome_unknown or self.pending.get("action") in {"run_start", "run_submit"},
+            open_run=self.open_run, retry_after_sec=self.retry_after_sec,
+        )
+
+    def finish(self, ok, status, *, error=""):
+        if self.checkpoint_failed:
+            ok, status, error = False, "persistence_pending", "tree_checkpoint_unavailable"
+        result = self.snapshot(ok, status, error=error)
+        if self.sequence and not self.checkpoint("complete", result):
+            result.update(ok=False, status="persistence_pending", error="tree_checkpoint_unavailable")
+        return {**result, "action_dispatched": self.dispatched, "checkpoint_sequence": self.sequence,
+                "operation_evidence": deepcopy(self.last_evidence) if self.sequence else None}
+
+
+def _authoritative_tree_state(data, *, from_submit=False):
+    state = parse_tree_miniapp_state(data, from_submit=from_submit)
+    return state if any(state["quota_known"].values()) else None
+
+
+def _tree_quota_progressed(previous, current, mode):
+    if not isinstance(current, dict) or not all(current.get("quota_known", {}).get(key) for key in TREE_MINIAPP_MODES):
+        return False
+    context = current.get("quota_context") or {}
+    if any(context.get(key) != value for key, value in (previous.get("quota_context") or {}).items()):
+        return False
+    for key in TREE_MINIAPP_MODES:
+        before, after = previous[key], current[key]
+        if (after["limit"] != before["limit"] or after["used"] < before["used"]
+                or after["remaining"] > before["remaining"]):
+            return False
+    return (current[mode]["used"] > previous[mode]["used"]
+            and current[mode]["remaining"] < previous[mode]["remaining"])
 
 
 def _merge_tree_reward_counts(target, source):
@@ -950,60 +1153,11 @@ def _merge_tree_reward_counts(target, source):
 
 
 def summarize_tree_rewards(data):
-    """Extract game materials/gains without treating score or protocol fields as rewards."""
-
-    items = {}
-    gains = {}
-    item_container_keys = {"reward", "rewards", "bonusloot", "loot", "items", "materials", "drops"}
-    gain_labels = {
-        "expgain": "经验",
-        "experiencegain": "经验",
-        "cultivationgain": "修为",
-        "xiuweigain": "修为",
-        "lingshigain": "灵石",
-        "stonegain": "灵石",
-        "contributiongain": "贡献",
-        "tracegain": "天机残痕",
-    }
-
-    def add_item(item):
-        if not isinstance(item, dict):
-            return
-        name = item.get("name") or item.get("itemName") or item.get("label") or item.get("title")
-        amount = item.get("qty", item.get("quantity", item.get("count", item.get("amount", 1))))
-        if name:
-            _merge_tree_reward_counts(items, {name: amount})
-
-    def visit(value, parent_key="", depth=0):
-        if depth > 5:
-            return
-        if isinstance(value, list):
-            for child in value:
-                if parent_key.lower() in item_container_keys:
-                    add_item(child)
-                else:
-                    visit(child, parent_key=parent_key, depth=depth + 1)
-            return
-        if not isinstance(value, dict):
-            return
-        if parent_key.lower() in item_container_keys:
-            add_item(value)
-            if not any(key in value for key in ("name", "itemName", "label", "title")):
-                _merge_tree_reward_counts(items, value)
-        for key, child in value.items():
-            lowered = str(key or "").lower()
-            if lowered in gain_labels:
-                _merge_tree_reward_counts(gains, {gain_labels[lowered]: child})
-            elif lowered in item_container_keys:
-                visit(child, parent_key=lowered, depth=depth + 1)
-            elif isinstance(child, (dict, list)):
-                visit(child, parent_key=lowered, depth=depth + 1)
-
-    visit(data)
-    return {"items": items, "gains": gains}
+    """Summarize only explicitly counted rewards in the current response."""
+    return parse_tree_rewards(data)[0]
 
 
-def _daily_tree_data(*, phase, state=None, runs=None, rewards=None, errors=None):
+def _daily_tree_data(*, phase, state=None, runs=None, rewards=None, errors=None, partial_receipts=None):
     state = state if isinstance(state, dict) else {}
     return {
         "phase": str(phase or ""),
@@ -1013,6 +1167,7 @@ def _daily_tree_data(*, phase, state=None, runs=None, rewards=None, errors=None)
         },
         "quota_known": dict(state.get("quota_known") or {}),
         "runs": list(runs or ()),
+        "partial_receipts": list(partial_receipts or ()),
         "rewards": dict(rewards or {"items": {}, "gains": {}}),
         "errors": list(errors or ()),
         "state": state,
@@ -1072,53 +1227,52 @@ def run_tree_miniapp_daily_lab_flow(
     capture_sink=None,
     capture_source="",
     score_profiles=None,
+    operation_check=None,
+    request_budget=None,
+    player_id=None,
+    checkpoint_sink=None,
 ):
     """Run all server-advertised jump quota, then fly quota, using one initData."""
 
-    adapter = adapter or build_tree_miniapp_adapter()
-    transport = transport or _requests_transport
+    flow = _TreeFlow(
+        token=token, init_data=init_data, transport=transport, adapter=adapter, sleeper=sleeper,
+        capture_sink=capture_sink, capture_source=capture_source, operation_check=operation_check,
+        request_budget=request_budget, daily=True, player_id=player_id, checkpoint_sink=checkpoint_sink,
+    )
+    try:
+        flow.check()
+        return _run_tree_daily(flow, rng=rng, score_profiles=score_profiles)
+    except MiniAppRequestAborted as exc:
+        return flow.finish(False, "cancelled", error=exc)
+    except Exception as exc:
+        return flow.finish(False, "failed", error=exc)
+
+
+def _run_tree_daily(flow, *, rng=None, score_profiles=None):
     rng = rng or random
-    sleeper = sleeper or time.sleep
-    token = str(token or "").strip()
-    init_data = str(init_data or "").strip()
-    events = []
-    runs = []
-    errors = []
-    rewards = {"items": {}, "gains": {}}
+    runs, errors, rewards = flow.data["runs"], flow.data["errors"], flow.data["rewards"]
     profiles = dict(score_profiles or {})
-    if not token or not init_data:
-        error = "token missing" if not token else "initData missing"
-        return _flow_result(False, "failed", data=_daily_tree_data(phase="blocked", errors=[error]), error=error)
+    context, context_error = {}, ""
+    if not flow.token or not flow.init_data:
+        return flow.finish(False, "failed", error="token missing" if not flow.token else "initData missing")
 
     def read_state(step_key):
-        request = build_tree_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
-        result = execute_miniapp_http_request(
-            request,
-            transport,
-            sleeper=sleeper,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=step_key,
-        )
-        _append_http_event(events, step_key, result)
-        return result, _authoritative_tree_state(result.data) if result.ok else None
+        nonlocal context_error
+        result = flow.request("start", step=step_key)
+        _, context_error = tree_panel_context(
+            result.data, player_id=flow.player_id if flow.player_id is not None else context.get("player_id"),
+        ) if result.ok else ({}, "")
+        return result, _authoritative_tree_state(result.data) if result.ok and not context_error else None
 
     start_result, state = read_state("start")
+    flow.data["state"] = state or {}
     if not start_result.ok:
-        error = sanitize_webapp_secret_text(start_result.error)
-        errors.append(error)
-        return _flow_result(
-            False,
-            classify_tree_miniapp_error(start_result.error),
-            data=_daily_tree_data(phase="blocked", errors=errors),
-            events=events,
-            error=error,
-        )
+        return flow.failed_request(start_result)
     if state is None or not all((state.get("quota_known") or {}).get(mode) for mode in ("jump", "fly")):
-        error = "server quota missing for jump/fly"
-        errors.append(error)
-        return _flow_result(False, "quota_unknown", data=_daily_tree_data(phase="blocked", state=state, errors=errors), events=events, error=error)
+        return flow.finish(False, "quota_unknown", error=context_error or "server quota missing or invalid for jump/fly")
+    context, _ = tree_panel_context(start_result.data, player_id=flow.player_id)
 
+    flow.check()
     ranking_targets = {
         mode: tree_miniapp_ranking_target(start_result.data, mode, profiles.get(mode))
         for mode in ("jump", "fly")
@@ -1126,6 +1280,7 @@ def run_tree_miniapp_daily_lab_flow(
     verification_mismatch_modes = []
 
     for mode in ("jump", "fly"):
+        flow.check()
         try:
             score_profile = normalize_tree_score_profile(mode, profiles.get(mode))
             score_profile["target_score_range"] = (
@@ -1133,88 +1288,52 @@ def run_tree_miniapp_daily_lab_flow(
                 ranking_targets[mode]["target_score"],
             )
         except Exception as exc:
-            error = sanitize_webapp_secret_text(exc)
-            errors.append(error)
-            return _flow_result(False, "failed", data=_daily_tree_data(phase="blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+            return flow.finish(False, "failed", error=exc)
 
         while _int_value((state.get(mode) or {}).get("remaining"), 0) > 0:
+            flow.check()
             quota_before = dict(state.get(mode) or {})
-            run_start_request = build_tree_miniapp_request(
-                "run_start",
-                token=token,
-                init_data=init_data,
-                payload={"mode": mode},
-                adapter=adapter,
-            )
-            run_start_result = execute_miniapp_http_request(
-                run_start_request,
-                transport,
-                sleeper=sleeper,
-                backoff_sec=(),
-                capture_sink=capture_sink,
-                capture_source=capture_source,
-                step_key=f"{mode}:run_start",
-            )
-            _append_http_event(events, f"{mode}:run_start", run_start_result)
+            run_start_result = flow.request("run_start", step=f"{mode}:run_start", payload={"mode": mode})
             if not run_start_result.ok:
-                status = _non_idempotent_failure_status(run_start_result)
-                error = sanitize_webapp_secret_text(run_start_result.error)
-                errors.append(f"{mode}:run_start:{error or status}")
-                return _flow_result(False, status, data=_daily_tree_data(phase="unknown" if status == "result_unknown" else "blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                return flow.failed_request(run_start_result, mutation=True)
 
-            run = run_start_result.data.get("run") if isinstance(run_start_result.data.get("run"), dict) else {}
-            if not run.get("runToken") or not run.get("seed"):
-                error = f"{mode} runToken or seed missing"
-                errors.append(error)
-                return _flow_result(False, "result_unknown", data=_daily_tree_data(phase="unknown", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+            run, run_context, error = parse_tree_allocation(run_start_result.data, mode=mode, context=context)
+            if error or tree_round_key(run_context) in flow.confirmed_rounds:
+                return flow.finish(False, "result_unknown", error=error or "tree_round_already_submitted")
+            flow.allocated(run_context)
+            flow.check()
             try:
                 proof, proof_summary = build_tree_game_proof(mode, run, rng=rng, profile=score_profile)
             except Exception as exc:
-                error = sanitize_webapp_secret_text(exc)
-                errors.append(f"{mode}:solve:{error}")
-                return _flow_result(False, "solve_failed", data=_daily_tree_data(phase="blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                return flow.finish(False, "solve_failed", error=exc)
+            flow.check()
 
             score = _int_value(proof_summary.get("score"), 0)
             target_score = _int_value(proof_summary.get("targetScore"), 0)
             if score <= 0 or score > TREE_MINIAPP_MAX_TARGET_SCORE[mode] or target_score > TREE_MINIAPP_MAX_TARGET_SCORE[mode]:
                 error = f"unsafe {mode} proof score={score} target={target_score}"
-                errors.append(error)
-                return _flow_result(False, "unsafe_score", data=_daily_tree_data(phase="blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                return flow.finish(False, "unsafe_score", error=error)
 
             duration_ms = max(0, _int_value(proof.get("durationMs"), 0))
             if duration_ms:
-                sleeper(float(duration_ms) / 1000.0)
-            submit_request = build_tree_miniapp_request(
-                "run_submit",
-                token=token,
-                init_data=init_data,
-                payload={
+                flow.sleep(float(duration_ms) / 1000.0)
+            submit_result = flow.request(
+                "run_submit", step=f"{mode}:run_submit", payload={
                     "mode": mode,
                     "runToken": str(run.get("runToken") or ""),
                     "proof": proof,
                 },
-                adapter=adapter,
             )
-            submit_result = execute_miniapp_http_request(
-                submit_request,
-                transport,
-                sleeper=sleeper,
-                backoff_sec=(),
-                capture_sink=capture_sink,
-                capture_source=capture_source,
-                step_key=f"{mode}:run_submit",
-            )
-            _append_http_event(events, f"{mode}:run_submit", submit_result)
             if not submit_result.ok:
-                status = _non_idempotent_failure_status(submit_result)
-                error = sanitize_webapp_secret_text(submit_result.error)
-                errors.append(f"{mode}:run_submit:{error or status}")
-                return _flow_result(False, status, data=_daily_tree_data(phase="unknown" if status == "result_unknown" else "blocked", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                return flow.failed_request(submit_result, mutation=True)
 
-            server_verification = _tree_server_verification(submit_result.data)
-            submitted_score = _int_value(submit_result.data.get("score"), 0)
-            if server_verification and not server_verification.get("ok", True):
-                submitted_score = 0
+            receipt = parse_tree_submit(submit_result.data, context=run_context)
+            if not receipt["confirmed"]:
+                return flow.unconfirmed_submit(receipt)
+            flow.open_run = False
+            flow.confirmed_rounds.add(receipt["round_key"])
+            server_verification = receipt["verification"]
+            submitted_score = receipt["score"]
             client_score = _int_value(proof.get("clientScore"), score)
             run_verification_mismatch = _tree_verification_mismatch(
                 mode,
@@ -1222,10 +1341,11 @@ def run_tree_miniapp_daily_lab_flow(
                 submitted_score,
                 server_verification,
             )
-            reward_summary = summarize_tree_rewards(submit_result.data)
+            reward_summary = receipt["rewards"]
             _merge_tree_reward_counts(rewards["items"], reward_summary.get("items"))
             _merge_tree_reward_counts(rewards["gains"], reward_summary.get("gains"))
             runs.append({
+                "round_key": receipt["round_key"],
                 "mode": mode,
                 "score": submitted_score,
                 "client_score": client_score,
@@ -1237,56 +1357,28 @@ def run_tree_miniapp_daily_lab_flow(
                 "rewards": reward_summary,
                 "server_verification": server_verification,
                 "verification_mismatch": run_verification_mismatch,
+                "material_error": receipt["material_error"],
             })
+            flow.settled()
 
-            next_state = _authoritative_tree_state(submit_result.data)
-            next_known = (next_state or {}).get("quota_known") or {}
-            next_quota = (next_state or {}).get(mode) or {}
-            progressed = (
-                next_known.get(mode)
-                and (
-                    _int_value(next_quota.get("used"), 0) > _int_value(quota_before.get("used"), 0)
-                    or _int_value(next_quota.get("remaining"), 0) < _int_value(quota_before.get("remaining"), 0)
-                )
-            )
+            next_state = _authoritative_tree_state(submit_result.data, from_submit=True)
+            progressed = _tree_quota_progressed(state, next_state, mode)
             if not progressed:
                 reconcile_result, reconciled_state = read_state(f"{mode}:reconcile")
                 if not reconcile_result.ok:
-                    error = sanitize_webapp_secret_text(reconcile_result.error)
-                    errors.append(f"{mode}:reconcile:{error or 'failed'}")
-                    return _flow_result(False, "quota_unknown", data=_daily_tree_data(phase="unknown", state=state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                    return flow.failed_request(reconcile_result, status="quota_unknown")
                 next_state = reconciled_state
-                next_known = (next_state or {}).get("quota_known") or {}
-                next_quota = (next_state or {}).get(mode) or {}
-                progressed = (
-                    next_known.get(mode)
-                    and (
-                        _int_value(next_quota.get("used"), 0) > _int_value(quota_before.get("used"), 0)
-                        or _int_value(next_quota.get("remaining"), 0) < _int_value(quota_before.get("remaining"), 0)
-                    )
-                )
+                progressed = _tree_quota_progressed(state, next_state, mode)
             if next_state is None or not progressed:
-                error = f"{mode} quota did not advance after confirmed submit"
-                errors.append(error)
-                return _flow_result(False, "quota_unknown", data=_daily_tree_data(phase="blocked", state=next_state or state, runs=runs, rewards=rewards, errors=errors), events=events, error=error)
+                return flow.finish(False, "quota_unknown", error=context_error or f"{mode} quota did not advance consistently after confirmed submit")
             state = next_state
+            flow.data["state"] = state
 
             if submitted_score <= 0:
                 error = f"{mode} server score is zero; stop remaining daily attempts"
-                errors.append(error)
-                return _flow_result(
-                    False,
-                    "zero_score",
-                    data=_daily_tree_data(
-                        phase="blocked",
-                        state=state,
-                        runs=runs,
-                        rewards=rewards,
-                        errors=errors,
-                    ),
-                    events=events,
-                    error=error,
-                )
+                return flow.finish(False, "zero_score", error=error)
+            if receipt["material_error"]:
+                return flow.finish(False, "material_unknown", error=receipt["material_error"])
             if run_verification_mismatch:
                 error = (
                     f"{mode} server verification mismatch; "
@@ -1300,28 +1392,15 @@ def run_tree_miniapp_daily_lab_flow(
     if verification_mismatch_modes:
         modes = ",".join(verification_mismatch_modes)
         error = f"server verification mismatch in {modes}; affected modes stopped"
-        return _flow_result(
-            False,
-            "verification_mismatch",
-            data=_daily_tree_data(
-                phase="blocked",
-                state=state,
-                runs=runs,
-                rewards=rewards,
-                errors=errors,
-            ),
-            events=events,
-            error=error,
-        )
+        return flow.finish(False, "verification_mismatch", error=error)
 
     complete = all(
         (state.get("quota_known") or {}).get(mode)
         and _int_value((state.get(mode) or {}).get("remaining"), -1) == 0
         for mode in ("jump", "fly")
     )
-    phase = "completed" if complete else "blocked"
     status = "completed" if complete else "quota_unknown"
-    return _flow_result(complete, status, data=_daily_tree_data(phase=phase, state=state, runs=runs, rewards=rewards, errors=errors), events=events, error="" if complete else "daily quota not explicitly exhausted")
+    return flow.finish(complete, status, error="" if complete else "daily quota not explicitly exhausted")
 
 
 def run_tree_miniapp_start_lab_flow(
@@ -1333,25 +1412,31 @@ def run_tree_miniapp_start_lab_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
+    request_budget=None,
+    player_id=None,
 ):
-    adapter = adapter or build_tree_miniapp_adapter()
-    transport = transport or _requests_transport
-    sleeper = sleeper or time.sleep
-    events = []
-    request = build_tree_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
-    result = execute_miniapp_http_request(
-        request,
-        transport,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="start",
+    flow = _TreeFlow(
+        token=token, init_data=init_data, transport=transport, adapter=adapter, sleeper=sleeper,
+        capture_sink=capture_sink, capture_source=capture_source, operation_check=operation_check,
+        request_budget=request_budget, player_id=player_id,
     )
-    events.append({"step": "start", "ok": result.ok, "summary": result.safe_summary()})
-    if not result.ok:
-        return _flow_result(False, classify_tree_miniapp_error(result.error), error=result.error, events=events)
-    parsed = parse_tree_miniapp_state(result.data)
-    return _flow_result(True, "ready", data={"state": parsed}, events=events)
+    try:
+        flow.check()
+        if not flow.token or not flow.init_data:
+            return flow.finish(False, "failed", error="token missing" if not flow.token else "initData missing")
+        result = flow.request("start")
+        if not result.ok:
+            return flow.failed_request(result)
+        _, error = tree_panel_context(result.data, player_id=flow.player_id)
+        if error:
+            return flow.finish(False, "failed", error=error)
+        flow.data["state"] = parse_tree_miniapp_state(result.data)
+        return flow.finish(True, "ready")
+    except MiniAppRequestAborted as exc:
+        return flow.finish(False, "cancelled", error=exc)
+    except Exception as exc:
+        return flow.finish(False, "failed", error=exc)
 
 
 def run_tree_miniapp_game_lab_flow(
@@ -1367,67 +1452,62 @@ def run_tree_miniapp_game_lab_flow(
     capture_sink=None,
     capture_source="",
     score_profile=None,
+    operation_check=None,
+    request_budget=None,
+    player_id=None,
+    checkpoint_sink=None,
 ):
-    adapter = adapter or build_tree_miniapp_adapter()
-    transport = transport or _requests_transport
+    flow = _TreeFlow(
+        token=token, init_data=init_data, transport=transport, adapter=adapter, sleeper=sleeper,
+        capture_sink=capture_sink, capture_source=capture_source, operation_check=operation_check,
+        request_budget=request_budget, player_id=player_id, checkpoint_sink=checkpoint_sink,
+    )
+    try:
+        flow.check()
+        return _run_tree_game(flow, mode=mode, submit=submit, rng=rng, score_profile=score_profile)
+    except MiniAppRequestAborted as exc:
+        return flow.finish(False, "cancelled", error=exc)
+    except Exception as exc:
+        return flow.finish(False, "failed", error=exc)
+
+
+def _run_tree_game(flow, *, mode, submit, rng, score_profile):
     rng = rng or random
-    sleeper = sleeper or time.sleep
-    token = str(token or "").strip()
-    init_data = str(init_data or "").strip()
     normalized_mode = str(mode or "").strip().lower()
     if normalized_mode not in TREE_MINIAPP_MODES:
-        return _flow_result(False, "failed", error="tree miniapp mode must be jump or fly")
-    if not token:
-        return _flow_result(False, "failed", error="token missing")
-    if not init_data:
-        return _flow_result(False, "failed", error="initData missing")
+        return flow.finish(False, "failed", error="tree miniapp mode must be jump or fly")
+    if not flow.token or not flow.init_data:
+        return flow.finish(False, "failed", error="token missing" if not flow.token else "initData missing")
     try:
         score_profile = normalize_tree_score_profile(normalized_mode, score_profile)
     except Exception as exc:
-        return _flow_result(False, "failed", error=exc)
+        return flow.finish(False, "failed", error=exc)
 
-    events = []
-    start_request = build_tree_miniapp_request("start", token=token, init_data=init_data, adapter=adapter)
-    start_result = execute_miniapp_http_request(
-        start_request,
-        transport,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="start",
-    )
-    _append_http_event(events, "start", start_result)
+    events = flow.events
+    start_result = flow.request("start")
     if not start_result.ok:
-        return _flow_result(False, classify_tree_miniapp_error(start_result.error), error=start_result.error, events=events)
+        return flow.failed_request(start_result)
+    context, error = tree_panel_context(start_result.data, player_id=flow.player_id)
+    if error:
+        return flow.finish(False, "quota_unknown", error=error)
 
     state = parse_tree_miniapp_state(start_result.data)
+    flow.data.update(state=state, mode=normalized_mode)
+    if not state.get("quota_known", {}).get(normalized_mode):
+        return flow.finish(False, "quota_unknown", error=f"server quota missing or invalid for {normalized_mode}")
     quota = state.get(normalized_mode) if isinstance(state, dict) else {}
     if _int_value((quota or {}).get("remaining"), 0) <= 0:
-        return _flow_result(False, "mode_exhausted", data={"state": state, "mode": normalized_mode}, events=events)
+        return flow.finish(False, "mode_exhausted")
 
-    run_start_request = build_tree_miniapp_request(
-        "run_start",
-        token=token,
-        init_data=init_data,
-        payload={"mode": normalized_mode},
-        adapter=adapter,
-    )
-    run_start_result = execute_miniapp_http_request(
-        run_start_request,
-        transport,
-        sleeper=sleeper,
-        backoff_sec=(),
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="run_start",
-    )
-    _append_http_event(events, "run_start", run_start_result)
+    run_start_result = flow.request("run_start", payload={"mode": normalized_mode})
     if not run_start_result.ok:
-        return _flow_result(False, classify_tree_miniapp_error(run_start_result.error), error=run_start_result.error, data={"state": state}, events=events)
-    run = run_start_result.data.get("run") if isinstance(run_start_result.data.get("run"), dict) else {}
-    if not run.get("runToken") or not run.get("seed"):
-        return _flow_result(False, "not_ready", error="runToken or seed missing", data={"state": state, "run_keys": sorted(str(key) for key in run)}, events=events)
+        return flow.failed_request(run_start_result, mutation=True)
+    run, run_context, error = parse_tree_allocation(run_start_result.data, mode=normalized_mode, context=context)
+    if error:
+        return flow.finish(False, "result_unknown", error=error)
+    flow.allocated(run_context)
 
+    flow.check()
     try:
         proof, proof_summary = build_tree_game_proof(normalized_mode, run, rng=rng, profile=score_profile)
     except Exception as exc:
@@ -1437,8 +1517,9 @@ def run_tree_miniapp_game_lab_flow(
             "mode": normalized_mode,
             "error": sanitize_webapp_secret_text(exc),
         })
-        return _flow_result(False, "solve_failed", error=exc, data={"state": state, "run_keys": sorted(str(key) for key in run)}, events=events)
+        return flow.finish(False, "solve_failed", error=exc)
 
+    flow.check()
     events.append({
         "step": "solve",
         "ok": True,
@@ -1447,7 +1528,8 @@ def run_tree_miniapp_game_lab_flow(
         "targetScore": int(proof_summary.get("targetScore") or 0),
         "durationMs": int(proof_summary.get("durationMs") or proof.get("durationMs") or 0),
     })
-    data = {
+    data = flow.data
+    data.update({
         "state": state,
         "mode": normalized_mode,
         "run": {
@@ -1462,7 +1544,7 @@ def run_tree_miniapp_game_lab_flow(
         "score_profile": {
             "target_score_range": list(score_profile.get("target_score_range") or ()),
         },
-    }
+    })
     proof_score = _int_value(proof_summary.get("score"), 0)
     if submit and proof_score <= 0:
         events.append({
@@ -1472,64 +1554,45 @@ def run_tree_miniapp_game_lab_flow(
             "score": proof_score,
             "error": "local proof score <= 0; submit blocked",
         })
-        return _flow_result(
-            False,
-            "unsafe_score",
-            data=data,
-            events=events,
-            error="local proof score <= 0; submit blocked",
-        )
+        return flow.finish(False, "unsafe_score", error="local proof score <= 0; submit blocked")
     if not submit:
-        return _flow_result(True, "prepared", data=data, events=events)
+        return flow.finish(True, "prepared")
 
     duration_ms = max(0, int(proof.get("durationMs") or proof_summary.get("durationMs") or 0))
     if duration_ms > 0:
-        sleeper(float(duration_ms) / 1000.0)
-    submit_request = build_tree_miniapp_request(
-        "run_submit",
-        token=token,
-        init_data=init_data,
-        payload={
+        flow.sleep(float(duration_ms) / 1000.0)
+    submit_result = flow.request(
+        "run_submit", payload={
             "mode": normalized_mode,
             "runToken": str(run.get("runToken") or ""),
             "proof": proof,
         },
-        adapter=adapter,
     )
-    submit_result = execute_miniapp_http_request(
-        submit_request,
-        transport,
-        sleeper=sleeper,
-        backoff_sec=(),
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="run_submit",
-    )
-    _append_http_event(events, "run_submit", submit_result)
     if not submit_result.ok:
-        return _flow_result(False, classify_tree_miniapp_error(submit_result.error), error=submit_result.error, data=data, events=events)
-    server_verification = _tree_server_verification(submit_result.data)
-    submitted_score = _int_value(submit_result.data.get("score"), int(proof_summary.get("score") or 0))
-    if server_verification and not server_verification.get("ok", True):
-        submitted_score = 0
-    data["rewards"] = summarize_tree_rewards(submit_result.data)
+        return flow.failed_request(submit_result, mutation=True)
+    receipt = parse_tree_submit(submit_result.data, context=run_context)
+    if not receipt["confirmed"]:
+        return flow.unconfirmed_submit(receipt)
+    flow.open_run = False
+    server_verification, submitted_score = receipt["verification"], receipt["score"]
+    data["rewards"] = receipt["rewards"]
     data["submit"] = {
+        "confirmed": True,
+        "round_key": receipt["round_key"],
         "score": submitted_score,
         "data_keys": sorted(str(key) for key in submit_result.data),
         "server_verification": server_verification,
+        "material_error": receipt["material_error"],
     }
+    flow.settled()
     season_state = submit_result.data.get("seasonState") if isinstance(submit_result.data.get("seasonState"), dict) else {}
     if season_state:
         data["season_state_keys"] = sorted(str(key) for key in season_state)
     if submitted_score <= 0:
-        return _flow_result(
-            False,
-            "zero_score",
-            data=data,
-            events=events,
-            error=f"{normalized_mode} server score is zero",
-        )
-    return _flow_result(True, "settled", data=data, events=events)
+        return flow.finish(False, "zero_score", error=f"{normalized_mode} server score is zero")
+    if receipt["material_error"]:
+        return flow.finish(False, "material_unknown", error=receipt["material_error"])
+    return flow.finish(True, "settled")
 
 
 async def run_tree_miniapp_start_production_flow(
@@ -1542,26 +1605,33 @@ async def run_tree_miniapp_start_production_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
 ):
     adapter = adapter or build_tree_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_tree_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
-        return await asyncio.to_thread(
-            run_tree_miniapp_start_lab_flow,
-            token=token,
-            init_data=init_data,
-            transport=transport or build_pooled_miniapp_transport(
-                adapter_key=adapter.game_key,
-                identity_id=identity_id,
-                timeout=TREE_MINIAPP_HTTP_TIMEOUT,
-            ),
-            adapter=adapter,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
+        require_miniapp_operation(operation_check)
+        init_data = await request_tree_miniapp_init_data(
+            identity_id, token=token, webview_url=webview_url, adapter=adapter, operation_check=operation_check,
         )
+        require_miniapp_operation(operation_check)
+
+        def run(operation):
+            return run_tree_miniapp_start_lab_flow(
+                token=token, init_data=init_data, adapter=adapter,
+                player_id=identity_id,
+                transport=transport or build_pooled_miniapp_transport(
+                    adapter_key=adapter.game_key, identity_id=identity_id,
+                    timeout=TREE_MINIAPP_HTTP_TIMEOUT, operation_check=operation.check,
+                ),
+                sleeper=operation.sleep, operation_check=operation.check,
+                capture_sink=capture_sink, capture_source=capture_source,
+            )
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -1580,30 +1650,36 @@ async def run_tree_miniapp_game_production_flow(
     capture_sink=None,
     capture_source="",
     score_profile=None,
+    operation_check=None,
+    checkpoint_sink=None,
 ):
     adapter = adapter or build_tree_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
-        init_data = await request_tree_miniapp_init_data(identity_id, token=token, webview_url=webview_url, adapter=adapter)
-        return await asyncio.to_thread(
-            run_tree_miniapp_game_lab_flow,
-            token=token,
-            init_data=init_data,
-            mode=mode,
-            submit=submit,
-            transport=transport or build_pooled_miniapp_transport(
-                adapter_key=adapter.game_key,
-                identity_id=identity_id,
-                timeout=TREE_MINIAPP_HTTP_TIMEOUT,
-            ),
-            adapter=adapter,
-            rng=rng,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            score_profile=score_profile,
+        require_miniapp_operation(operation_check)
+        init_data = await request_tree_miniapp_init_data(
+            identity_id, token=token, webview_url=webview_url, adapter=adapter, operation_check=operation_check,
         )
+        require_miniapp_operation(operation_check)
+
+        def run(operation):
+            return run_tree_miniapp_game_lab_flow(
+                token=token, init_data=init_data, mode=mode, submit=submit,
+                player_id=identity_id,
+                transport=transport or build_pooled_miniapp_transport(
+                    adapter_key=adapter.game_key, identity_id=identity_id,
+                    timeout=TREE_MINIAPP_HTTP_TIMEOUT, operation_check=operation.check,
+                ),
+                adapter=adapter, rng=rng, score_profile=score_profile,
+                checkpoint_sink=checkpoint_sink,
+                sleeper=operation.sleep, operation_check=operation.check,
+                capture_sink=capture_sink, capture_source=capture_source,
+            )
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -1621,33 +1697,40 @@ async def run_tree_miniapp_daily_production_flow(
     capture_sink=None,
     capture_source="",
     score_profiles=None,
+    operation_check=None,
+    checkpoint_sink=None,
 ):
     adapter = adapter or build_tree_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_tree_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        return await asyncio.to_thread(
-            run_tree_miniapp_daily_lab_flow,
-            token=token,
-            init_data=init_data,
-            transport=transport or build_pooled_miniapp_transport(
-                adapter_key=adapter.game_key,
-                identity_id=identity_id,
-                timeout=TREE_MINIAPP_HTTP_TIMEOUT,
-            ),
-            adapter=adapter,
-            rng=rng,
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            score_profiles=score_profiles,
-        )
+        require_miniapp_operation(operation_check)
+
+        def run(operation):
+            return run_tree_miniapp_daily_lab_flow(
+                token=token, init_data=init_data,
+                player_id=identity_id,
+                transport=transport or build_pooled_miniapp_transport(
+                    adapter_key=adapter.game_key, identity_id=identity_id,
+                    timeout=TREE_MINIAPP_HTTP_TIMEOUT, operation_check=operation.check,
+                ),
+                adapter=adapter, rng=rng, score_profiles=score_profiles,
+                checkpoint_sink=checkpoint_sink,
+                sleeper=operation.sleep, operation_check=operation.check,
+                capture_sink=capture_sink, capture_source=capture_source,
+            )
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", data=_daily_tree_data(phase="blocked"), error=exc)
     except Exception as exc:
         return _flow_result(
             False,
@@ -1679,6 +1762,7 @@ __all__ = [
     "make_tree_fly_gate",
     "make_tree_jump_platform",
     "normalize_tree_score_profile",
+    "normalize_tree_score_records",
     "parse_tree_miniapp_state",
     "request_tree_miniapp_init_data",
     "run_tree_miniapp_daily_lab_flow",

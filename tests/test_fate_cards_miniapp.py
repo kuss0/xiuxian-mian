@@ -139,6 +139,7 @@ class FateCardsMiniAppTests(unittest.TestCase):
                 "questions": [{"key": "cultivation", "name": "修行"}],
                 "choices": [{"key": "accept", "name": "顺势承命"}],
                 "hasDrawn": False,
+                "record": None,
             }
 
         result = fate_cards_miniapp.run_fate_cards_start_probe(

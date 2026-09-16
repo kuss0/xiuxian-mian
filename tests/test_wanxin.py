@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -12,10 +13,11 @@ from unittest.mock import AsyncMock, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import action_guard
+from model import action_guard, yinluo_accounting
 from model import state as state_module
 from model.features import wanxin
 from model.real_message_replay import iter_real_message_samples
+from yinluo_native_support import BOT, CHAT, native_logs, native_reply, seed_resources
 
 
 FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
@@ -30,6 +32,11 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        saver = patch.object(yinluo_accounting.persistence, "save_state", return_value=True)
+        saver.start()
+        self.addCleanup(saver.stop)
+        state_module.set_game_group_id(CHAT)
+        state_module.set_game_bot_ids([BOT])
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -42,6 +49,22 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         state_module.set_identity_account(identity_id, identity_id)
         state_module.update_send_as_profile(identity_id, username=username, label=username, sect_name=sect_name)
         return identity_id
+
+    async def _handle_assist(self, text, now, *, helper_id, reply_to, matched_family, result_msg_id, server_at=None):
+        event = native_reply(helper_id, reply_to.raw_text, text, now if server_at is None else server_at,
+                             root=reply_to.id, msg_id=result_msg_id)
+        return await wanxin.handle_wanxin_reply(text, now, reply_to=reply_to, matched_family=matched_family,
+                                              result_msg_id=result_msg_id, event=event)
+
+    async def _handle_native(self, text, now, *, reply_to, matched_family, result_msg_id=0, actor_id=None):
+        actor_id = state_module.get_current_identity_id() if actor_id is None else actor_id
+        event = native_reply(actor_id, reply_to.raw_text, text, now, root=reply_to.id, msg_id=result_msg_id)
+        if not state_module.has_identity(actor_id):
+            event = replace(event, identity_id=0, reply_context=dict(event.reply_context, send_as_id=0))
+        return await wanxin.handle_wanxin_reply(
+            text, now, reply_to=reply_to, matched_family=matched_family,
+            result_msg_id=event.msg_id, event=event,
+        )
 
     def test_parse_status_panel(self):
         parsed = wanxin.parse_wanxin_text(
@@ -166,114 +189,39 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wanxin_moon_seal", action_guard.resolve_action_key(".同参封魂"))
         self.assertEqual("wanxin_moon_join", action_guard.resolve_action_key(".月下合参"))
 
-    def test_topic_level_reply_recovery_binds_unique_visit_command(self):
-        sent_at = 1_800_000_005.0
-        now = sent_at + 60
+    async def test_topic_root_without_native_command_ancestry_is_not_bound(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_065.0
+        event = native_reply(identity_id, ".探望南宫婉", "【探望南宫婉】你稳住了她的神魂。", now - 2, root=100)
+        entries = native_logs(event)
+        entries[-1]["reply_to_msg_id"] = 90
         observed = wanxin.normalize_wanxin_observation({
-            "pending": {
-                "action": "visit",
-                "family": "wanxin_visit",
-                "msg_id": 11919613,
-                "send_as_id": 301299112,
-                "sent_at": sent_at,
-                "reply_due_at": now,
-            },
+            "pending": {"action": "visit", "family": "wanxin_visit", "msg_id": 100, "chat_id": CHAT,
+                        "send_as_id": identity_id, "sent_at": now - 3, "reply_due_at": now},
         })
-        entries = [
-            {
-                "ts": "2026-08-24 00:05:05 UTC+8",
-                "event_type": "sent",
-                "message_id": 11919613,
-                "chat_id": -1001680975844,
-                "sender_id": 301299112,
-                "topic_id": 7310786,
-                "reply_to_msg_id": 0,
-                "text": ".探望南宫婉",
-            },
-            {
-                "ts": "2026-08-24 00:05:08 UTC+8",
-                "event_type": "message",
-                "message_id": 11919615,
-                "chat_id": -1001680975844,
-                "sender_id": 8944702077,
-                "sender_username": "hantianzun24_bot",
-                "sender_is_bot": True,
-                "topic_id": 0,
-                "reply_to_msg_id": 7310786,
-                "text": "【探望南宫婉】\n你以月殿旧令稳住她的神魂，南宫婉短暂醒转片刻。",
-            },
-        ]
-        with (
-            patch.object(wanxin, "_iter_message_log_entries_between", return_value=iter((item, sent_at + index * 3) for index, item in enumerate(entries))),
-        ):
-            replies = wanxin._topic_level_wanxin_replies(
-                observed,
-                "visit",
-                11919613,
-                now,
-                -1001680975844,
-            )
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_observation"] = observed
+            before = copy.deepcopy(observed)
+            with patch.object(wanxin, "_iter_message_log_entries_between", return_value=[(row, now - 1) for row in entries]):
+                self.assertFalse(await wanxin._recover_wanxin_pending_from_message_log(observed, now))
+            self.assertEqual(before, state_module.state["wanxin_observation"])
 
-        self.assertEqual([11919615], [item["message_id"] for item in replies])
-
-    def test_topic_level_reply_recovery_rejects_later_duplicate_command(self):
-        sent_at = 1_800_000_005.0
-        now = sent_at + 180
+    async def test_pending_recovery_rejects_bot_named_player(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_065.0
+        event = native_reply(identity_id, ".探望南宫婉", "【探望南宫婉】你稳住了她的神魂。", now - 2, root=100)
+        entries = native_logs(event)
+        entries[-1].update(sender_id=BOT + 1, sender_is_bot=True, sender_username="untrusted_bot")
         observed = wanxin.normalize_wanxin_observation({
-            "pending": {
-                "action": "visit",
-                "family": "wanxin_visit",
-                "msg_id": 11919613,
-                "send_as_id": 301299112,
-                "sent_at": sent_at,
-                "reply_due_at": now,
-            },
+            "pending": {"action": "visit", "family": "wanxin_visit", "msg_id": 100, "chat_id": CHAT,
+                        "send_as_id": identity_id, "sent_at": now - 3, "reply_due_at": now},
         })
-        entries = [
-            {
-                "ts": "2026-08-24 00:05:05 UTC+8",
-                "event_type": "sent",
-                "message_id": 11919613,
-                "chat_id": -1001680975844,
-                "sender_id": 301299112,
-                "topic_id": 7310786,
-                "text": ".探望南宫婉",
-            },
-            {
-                "ts": "2026-08-24 00:06:10 UTC+8",
-                "event_type": "sent",
-                "message_id": 11919852,
-                "chat_id": -1001680975844,
-                "sender_id": 301299112,
-                "topic_id": 7310786,
-                "text": ".探望南宫婉",
-            },
-            {
-                "ts": "2026-08-24 00:06:14 UTC+8",
-                "event_type": "message",
-                "message_id": 11919854,
-                "chat_id": -1001680975844,
-                "sender_id": 8964348409,
-                "sender_username": "hantianzun22_bot",
-                "sender_is_bot": True,
-                "reply_to_msg_id": 7310786,
-                "text": "今日已探望过南宫婉。她神魂尚需静养。",
-            },
-        ]
-        with patch.object(
-            wanxin,
-            "_iter_message_log_entries_between",
-            return_value=iter((item, sent_at + index * 65) for index, item in enumerate(entries)),
-        ):
-            replies = wanxin._topic_level_wanxin_replies(
-                observed,
-                "visit",
-                11919613,
-                now,
-                -1001680975844,
-            )
-
-        self.assertEqual([], replies)
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_observation"] = observed
+            before = copy.deepcopy(observed)
+            with patch.object(wanxin, "_iter_message_log_entries_between", return_value=[(row, now - 1) for row in entries]):
+                self.assertFalse(await wanxin._recover_wanxin_pending_from_message_log(observed, now))
+            self.assertEqual(before, state_module.state["wanxin_observation"])
 
     def test_parse_real_moon_actions_and_safe_defaults(self):
         panel = wanxin.parse_wanxin_text(
@@ -319,12 +267,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "moon_status",
                     "family": "wanxin_moon_panel",
                     "msg_id": 7007,
+                    "chat_id": CHAT,
                     "send_as_id": identity_id,
                     "reply_due_at": now + 90,
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "【月影同参】\n侍妾：【南宫婉·月影】（随行中）\n情缘：160\n共鸣：已觉醒",
                     now,
                     reply_to=SimpleNamespace(id=7007, raw_text=".婉影"),
@@ -346,12 +295,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "moon_greet",
                     "family": "wanxin_moon_greet",
                     "msg_id": 7008,
+                    "chat_id": CHAT,
                     "send_as_id": identity_id,
                     "reply_due_at": now + 90,
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "【婉影问安】\n你与【南宫婉·月影】于月下静坐片刻。\n情缘 +9。\n"
                     "婉心 +1，魂封 -1。\n婉心 115 | 魂封 0 | 月魄 38 | 咒源 120",
                     now,
@@ -374,12 +324,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "moon_greet",
                     "family": "wanxin_moon_greet",
                     "msg_id": 7010,
+                    "chat_id": CHAT,
                     "send_as_id": identity_id,
                     "reply_due_at": now + 90,
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "今日已与婉影问安。月魄需静养，不可频繁牵动。",
                     now,
                     reply_to=SimpleNamespace(id=7010, raw_text=".婉影问安"),
@@ -466,7 +417,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         identity_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_000.0
-        fake_msg = SimpleNamespace(id=7001, sent_at=now)
+        fake_msg = SimpleNamespace(id=7001, chat_id=CHAT, sent_at=now)
         with state_module.use_identity(identity_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -511,7 +462,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7002, sent_at=now))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7002, chat_id=CHAT, sent_at=now))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
@@ -600,23 +551,18 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             "auto_next_time": now - 1,
         }
         blocked_until = now + 1800
-        with patch.object(
-            wanxin,
-            "_send_block_info",
-            return_value={
+        handled = wanxin._handle_unsent_send(
+            observed,
+            wanxin.WANXIN_ACTION_STRIP,
+            ".剥离咒源 @jfdffdddd",
+            now,
+            block={
                 "code": "send_as_peer_invalid",
                 "status": "unsent",
                 "reason": "频道身份不可用于当前游戏群",
                 "blocked_until": blocked_until,
             },
-        ):
-            handled = wanxin._handle_unsent_or_uncertain_send(
-                observed,
-                wanxin.WANXIN_ACTION_STRIP,
-                ".剥离咒源 @jfdffdddd",
-                now,
-                send_as_id=3907536807,
-            )
+        )
 
         self.assertFalse(handled)
         self.assertEqual(now - 1, observed["assist"]["next_strip_time"])
@@ -628,23 +574,18 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         blocked_until = now + 1800
         observed = {"assist": {"next_strip_time": now - 1}, "auto_next_time": now - 1}
         state_module.set_channel_send_as_health({"status": "closed", "next_probe_at": probe_at})
-        with patch.object(
-            wanxin,
-            "_send_block_info",
-            return_value={
+        handled = wanxin._handle_unsent_send(
+            observed,
+            wanxin.WANXIN_ACTION_STRIP,
+            ".剥离咒源 @jfdffdddd",
+            now,
+            block={
                 "code": "send_as_peer_invalid",
                 "status": "unsent",
                 "reason": "频道身份不可用于当前游戏群",
                 "blocked_until": blocked_until,
             },
-        ):
-            handled = wanxin._handle_unsent_or_uncertain_send(
-                observed,
-                wanxin.WANXIN_ACTION_STRIP,
-                ".剥离咒源 @jfdffdddd",
-                now,
-                send_as_id=3907536807,
-            )
+        )
 
         self.assertFalse(handled)
         self.assertEqual(probe_at + wanxin.CD_BUFFER_SEC, observed["auto_next_time"])
@@ -682,7 +623,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_default_starts_owner_action_without_publishing(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_050.0
-        fake_msg = SimpleNamespace(id=7101, sent_at=now)
+        fake_msg = SimpleNamespace(id=7101, chat_id=CHAT, sent_at=now)
         with state_module.use_identity(identity_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {"auto_next_time": now - 1}
@@ -696,7 +637,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".探望南宫婉", send_mock.await_args.args[0])
             self.assertEqual("visit", state_module.state["wanxin_observation"]["pending"]["action"])
 
-    async def test_owner_action_send_timeout_uses_conservative_cooldown(self):
+    async def test_owner_action_send_timeout_retains_unknown_without_cooldown(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_055.0
         with state_module.use_identity(identity_id):
@@ -716,12 +657,12 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once()
             observed = state_module.state["wanxin_observation"]
-            self.assertEqual({}, observed["pending"])
-            self.assertGreaterEqual(observed["next_protect_time"], now + wanxin.WANXIN_PROTECT_CD_SEC)
-            self.assertEqual(observed["next_protect_time"], observed["auto_next_time"])
+            self.assertEqual("unknown", observed["pending"]["status"])
+            self.assertEqual(now - 1, observed["next_protect_time"])
+            self.assertEqual(0, observed["pending"]["msg_id"])
             self.assertIn("状态未知", observed["auto_last_result"])
 
-    async def test_owner_action_send_exception_uses_conservative_cooldown(self):
+    async def test_owner_action_send_exception_retains_unknown_without_cooldown(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_055.5
         with state_module.use_identity(identity_id):
@@ -741,9 +682,9 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once()
             observed = state_module.state["wanxin_observation"]
-            self.assertEqual({}, observed["pending"])
-            self.assertGreaterEqual(observed["next_protect_time"], now + wanxin.WANXIN_PROTECT_CD_SEC)
-            self.assertEqual(observed["next_protect_time"], observed["auto_next_time"])
+            self.assertEqual("unknown", observed["pending"]["status"])
+            self.assertEqual(now - 1, observed["next_protect_time"])
+            self.assertEqual(0, observed["pending"]["msg_id"])
             self.assertIn("状态未知", observed["auto_last_result"])
 
     async def test_owner_action_queue_timeout_keeps_short_retry(self):
@@ -808,10 +749,11 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(observed["auto_next_time"], now + 15 * 60)
             self.assertIn("本轮已发送", observed["auto_last_error"])
 
-    async def test_assist_send_timeout_recovers_real_success_from_message_log(self):
+    async def test_unknown_assist_send_does_not_accept_unanchored_success_log(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_058.0
+        seed_resources(helper_id, now, sha=400)
         fake_now = now + 30
         with tempfile.TemporaryDirectory() as tmpdir:
             day = datetime.fromtimestamp(now + 2, wanxin.TZ_LOCAL).date().isoformat()
@@ -861,12 +803,11 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
                 send_mock.assert_awaited_once()
                 observed = state_module.state["wanxin_observation"]
-                self.assertEqual("banner", observed["assist"]["last_action"])
-                self.assertEqual("借幡镇魂成功", observed["assist"]["last_result"])
-                self.assertEqual("", observed["auto_last_error"])
-                self.assertEqual(0, observed["soul_seal"])
-                self.assertEqual(4, observed["moon_soul"])
-                self.assertGreater(observed["assist"]["next_banner_time"], now + wanxin.WANXIN_BANNER_CD_SEC)
+                self.assertIn("unknown", observed["auto_last_error"])
+                self.assertEqual(15, observed["soul_seal"])
+                self.assertEqual(0, observed["moon_soul"])
+                self.assertEqual(now - 1, observed["assist"]["next_banner_time"])
+                self.assertEqual("unknown", state_module.get_identity_state(helper_id)["yinluo_accounting"]["operations"][0]["phase"])
 
     async def test_scheduler_yinluo_assist_identity_waits_without_owner_action(self):
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
@@ -883,7 +824,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertIn("阴罗协助身份", state_module.state["wanxin_observation"]["auto_last_result"])
 
-    async def test_phaseful_cleanup_only_clears_expired_pending(self):
+    async def test_phaseful_cleanup_retains_expired_pending_for_native_recovery(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_070.0
         with state_module.use_identity(identity_id):
@@ -900,100 +841,59 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(wanxin, "close_action_guard_by_family") as close_guard_mock,
+                patch.object(wanxin, "clear_pending_by_reply") as close_guard_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_phaseful_cleanup_scheduler(now)
 
             send_mock.assert_not_awaited()
-            close_guard_mock.assert_called_once_with("wanxin_protect", send_as_id=identity_id, reason="wanxin_timeout", now=now)
+            close_guard_mock.assert_not_called()
             observed = state_module.state["wanxin_observation"]
-            self.assertEqual({}, observed["pending"])
+            self.assertEqual("unknown", observed["pending"]["status"])
             self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
-            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
+            self.assertEqual(0, observed["next_protect_time"])
             self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
 
     async def test_phaseful_cleanup_recovers_deduce_reply_before_timeout_cleanup(self):
         identity_id = self._prepare_identity(301299112, username="jfdffdddd")
         now = datetime(2026, 7, 6, 13, 49, tzinfo=wanxin.TZ_LOCAL).timestamp()
+        text = (
+            "【推演封魂咒】\n你沿着素女禁纹反推咒源，隐约看见阴罗秘咒的残痕。\n咒源 +16。\n"
+            "阶段：玄冰丹方（封魂未解）\n婉心：92\n魂封：0\n月魄：14\n咒源：120"
+        )
+        event = native_reply(identity_id, ".推演封魂咒", text, now - 127, root=11533841, command_at=now - 129)
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_path = Path(tmpdir) / "2026-07-06.log"
-            log_path.write_text(
-                "\n".join(
-                    json.dumps(item, ensure_ascii=False)
-                    for item in (
-                        {
-                            "ts": "2026-07-06 13:46:51 UTC+8",
-                            "event_type": "sent",
-                            "message_id": 11533841,
-                            "chat_id": state_module.get_game_group_id(),
-                            "sender_id": identity_id,
-                            "reply_to_msg_id": 0,
-                            "text": ".推演封魂咒",
-                            "family": "wanxin_deduce",
-                        },
-                        {
-                            "ts": "2026-07-06 13:46:53 UTC+8",
-                            "event_type": "message",
-                            "message_id": 11533842,
-                            "chat_id": state_module.get_game_group_id(),
-                            "sender_id": 8609885831,
-                            "reply_to_msg_id": 11533841,
-                            "text": (
-                                "【推演封魂咒】\n"
-                                "你沿着素女禁纹反推咒源，隐约看见阴罗秘咒的残痕。\n"
-                                "咒源 +16。\n\n"
-                                "阶段：玄冰丹方（封魂未解）\n"
-                                "婉心：92\n"
-                                "魂封：0\n"
-                                "月魄：14\n"
-                                "咒源：120"
-                            ),
-                        },
-                    )
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            rows = [dict(row, ts=datetime.fromtimestamp(row["server_event_at"], wanxin.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"))
+                    for row in native_logs(event)]
+            (Path(tmpdir) / "2026-07-06.log").write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
             with state_module.use_identity(identity_id):
                 state_module.state["wanxin_enabled"] = True
                 state_module.state["wanxin_observation"] = {
-                    "pending": {
-                        "action": "deduce",
-                        "family": "wanxin_deduce",
-                        "msg_id": 11533841,
-                        "send_as_id": identity_id,
-                        "reply_due_at": now - 1,
-                    },
-                    "auto_next_time": now - 1,
-                    "next_deduce_time": now - 1,
+                    "pending": {"action": "deduce", "family": "wanxin_deduce", "msg_id": 11533841,
+                                "send_as_id": identity_id, "sent_at": now - 129, "reply_due_at": now - 1},
+                    "auto_next_time": now - 1, "next_deduce_time": now - 1,
                 }
                 with (
-                    patch("model.message_log_recovery.MESSAGES_DIR", tmpdir),
-                    patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
-                    patch.object(wanxin, "close_action_guard_by_family") as close_guard_mock,
+                    patch.object(wanxin, "MESSAGES_DIR", tmpdir),
+                    patch.object(wanxin, "send_game_command", new=AsyncMock()) as sender,
+                    patch.object(wanxin, "clear_pending_by_reply") as clear,
                     patch.object(wanxin, "save_state"),
                 ):
                     await wanxin.run_wanxin_phaseful_cleanup_scheduler(now)
-
-                send_mock.assert_not_awaited()
-                close_guard_mock.assert_called_once()
-                self.assertEqual("wanxin_deduce", close_guard_mock.call_args.args[0])
-                self.assertEqual(identity_id, close_guard_mock.call_args.kwargs["send_as_id"])
-                self.assertEqual("wanxin_reply", close_guard_mock.call_args.kwargs["reason"])
-                self.assertLess(close_guard_mock.call_args.kwargs["now"], now)
+                sender.assert_not_awaited()
+                clear.assert_called_once()
+                self.assertFalse(clear.call_args.kwargs["clear_family"])
+                self.assertEqual(CHAT, clear.call_args.kwargs["reply_context"]["chat_id"])
+                self.assertEqual(11533841, clear.call_args.kwargs["reply_context"]["root_msg_id"])
                 observed = state_module.state["wanxin_observation"]
                 self.assertEqual({}, observed["pending"])
                 self.assertEqual("玄冰丹方（封魂未解）", observed["stage"])
-                self.assertEqual(92, observed["wanxin"])
-                self.assertEqual(0, observed["soul_seal"])
-                self.assertEqual(14, observed["moon_soul"])
-                self.assertEqual(120, observed["curse_source"])
+                self.assertEqual((92, 0, 14, 120), (observed["wanxin"], observed["soul_seal"], observed["moon_soul"], observed["curse_source"]))
                 self.assertEqual("推演成功", observed["auto_last_result"])
                 self.assertEqual("", observed["auto_last_error"])
                 self.assertGreater(observed["next_deduce_time"], now + 7 * 3600)
 
-    async def test_global_cleanup_clears_expired_pending_across_identities(self):
+    async def test_global_cleanup_retains_expired_pending_across_identities(self):
         first_id = self._prepare_identity(301299112, username="jfdffdddd")
         second_id = self._prepare_identity(8659059191, username="WalterWA2000")
         now = 1_800_000_080.0
@@ -1020,9 +920,9 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         for identity_id in (first_id, second_id):
             with state_module.use_identity(identity_id):
                 observed = state_module.state["wanxin_observation"]
-                self.assertEqual({}, observed["pending"])
+                self.assertEqual("unknown", observed["pending"]["status"])
                 self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
-                self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
+                self.assertEqual(0, observed["next_protect_time"])
                 self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
 
     async def test_scheduler_stops_after_pending_timeout_without_next_send(self):
@@ -1045,18 +945,18 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(wanxin, "close_action_guard_by_family"),
+                patch.object(wanxin, "clear_pending_by_reply"),
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
 
             send_mock.assert_not_awaited()
             observed = state_module.state["wanxin_observation"]
-            self.assertEqual({}, observed["pending"])
-            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
+            self.assertEqual("unknown", observed["pending"]["status"])
+            self.assertEqual(now - 1, observed["next_protect_time"])
             self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
 
-    async def test_deduce_pending_timeout_uses_short_backoff_not_full_cooldown(self):
+    async def test_deduce_pending_timeout_schedules_recovery_without_action_cooldown(self):
         identity_id = self._prepare_identity()
         now = 1_800_000_091.0
         with state_module.use_identity(identity_id):
@@ -1076,74 +976,42 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
-                patch.object(wanxin, "close_action_guard_by_family"),
+                patch.object(wanxin, "clear_pending_by_reply"),
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
 
             send_mock.assert_not_awaited()
             observed = state_module.state["wanxin_observation"]
-            self.assertEqual({}, observed["pending"])
-            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_deduce_time"])
+            self.assertEqual("unknown", observed["pending"]["status"])
+            self.assertEqual(now - 1, observed["next_deduce_time"])
             self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
-            self.assertIn("未按技能冷却锁定", observed["auto_last_error"])
+            self.assertIn("不按超时补发", observed["auto_last_error"])
 
     async def test_scheduler_recovers_owner_pending_reply_from_message_log(self):
         identity_id = self._prepare_identity()
         now = datetime(2026, 7, 4, 6, 50, tzinfo=wanxin.TZ_LOCAL).timestamp()
+        event = native_reply(identity_id, ".探望南宫婉", "你探望南宫婉，婉心微动，封魂稍缓。", now - 18, root=7401, command_at=now - 20)
         with tempfile.TemporaryDirectory() as tmpdir:
-            log_path = Path(tmpdir) / "2026-07-04.log"
-            log_path.write_text(
-                "\n".join(
-                    json.dumps(item, ensure_ascii=False)
-                    for item in (
-                        {
-                            "ts": "2026-07-04 06:49:40 UTC+8",
-                            "event_type": "message",
-                            "message_id": 7401,
-                            "chat_id": state_module.get_game_group_id(),
-                            "sender_id": identity_id,
-                            "reply_to_msg_id": 0,
-                            "text": ".探望南宫婉",
-                        },
-                        {
-                            "ts": "2026-07-04 06:49:42 UTC+8",
-                            "event_type": "message",
-                            "message_id": 7402,
-                            "chat_id": state_module.get_game_group_id(),
-                            "sender_id": 8609885831,
-                            "reply_to_msg_id": 7401,
-                            "text": "你探望南宫婉，婉心微动，封魂稍缓。",
-                        },
-                    )
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            rows = [dict(row, ts=datetime.fromtimestamp(row["server_event_at"], wanxin.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"))
+                    for row in native_logs(event)]
+            (Path(tmpdir) / "2026-07-04.log").write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
             with state_module.use_identity(identity_id):
                 state_module.state["wanxin_enabled"] = True
                 state_module.state["wanxin_observation"] = {
-                    "pending": {
-                        "action": "visit",
-                        "family": "wanxin_visit",
-                        "msg_id": 7401,
-                        "send_as_id": identity_id,
-                        "reply_due_at": now - 1,
-                    },
-                    "auto_next_time": now - 1,
-                    "next_visit_time": now - 1,
-                    "next_protect_time": now + 3600,
-                    "next_deduce_time": now + 3600,
+                    "pending": {"action": "visit", "family": "wanxin_visit", "msg_id": 7401,
+                                "send_as_id": identity_id, "sent_at": now - 20, "reply_due_at": now - 1},
+                    "auto_next_time": now - 1, "next_visit_time": now - 1,
+                    "next_protect_time": now + 3600, "next_deduce_time": now + 3600,
                 }
                 with (
-                    patch("model.message_log_recovery.MESSAGES_DIR", tmpdir),
-                    patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(wanxin, "MESSAGES_DIR", tmpdir),
+                    patch.object(wanxin, "send_game_command", new=AsyncMock()) as sender,
                     patch.object(wanxin, "send_audit_log", new=AsyncMock()),
                     patch.object(wanxin, "save_state"),
                 ):
                     await wanxin.run_wanxin_scheduler(now)
-
-                send_mock.assert_not_awaited()
+                sender.assert_not_awaited()
                 observed = state_module.state["wanxin_observation"]
                 self.assertEqual({}, observed["pending"])
                 self.assertEqual("探望成功", observed["auto_last_result"])
@@ -1153,7 +1021,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_100.0
-        fake_msg = SimpleNamespace(id=7002, sent_at=now)
+        fake_msg = SimpleNamespace(id=7002, chat_id=CHAT, sent_at=now)
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -1173,6 +1041,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_accept_contract_recovery_uses_reply_anchor_across_listener_and_aliases(self):
         owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        state_module.update_send_as_profile(owner_id, username_aliases=["WalterWA2000"])
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         listener_id = self._prepare_identity(301299112, username="jfdffdddd")
         now = 1_800_000_300.0
@@ -1189,27 +1058,29 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "accept",
                     "family": "wanxin_accept",
                     "msg_id": 169757,
+                    "chat_id": CHAT,
                     "send_as_id": helper_id,
                     "reply_due_at": now + 60,
                 },
             }
 
         with state_module.use_identity(listener_id), patch.object(wanxin, "save_state"), patch.object(
-            wanxin, "close_action_guard_by_family"
+            wanxin, "clear_pending_by_reply"
         ) as close_guard:
-            handled = await wanxin.handle_wanxin_reply(
+            handled = await self._handle_native(
                 "【咒契协定已成】\n阴罗宗弟子 @sanshaoyedejian1 已接取 @WalterWA2000 的解咒委托。",
                 now,
                 reply_to=SimpleNamespace(id=169757, raw_text=".接取解咒委托 99"),
                 matched_family="wanxin_accept",
                 result_msg_id=169760,
+                actor_id=helper_id,
             )
 
         self.assertTrue(handled)
         with state_module.use_identity(owner_id):
             observed = state_module.state["wanxin_observation"]
             self.assertTrue(observed["commission"]["accepted"])
-            self.assertEqual(169760, observed["commission"]["accept_msg_id"])
+            self.assertEqual(169757, observed["commission"]["accept_msg_id"])
             self.assertEqual({}, observed["pending"])
         self.assertIn(helper_id, [call.kwargs.get("send_as_id") for call in close_guard.call_args_list])
 
@@ -1232,11 +1103,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with state_module.use_identity(listener_id), patch.object(wanxin, "save_state"):
-            handled = await wanxin.handle_wanxin_reply(
+            handled = await self._handle_native(
                 "【咒契协定已成】\n阴罗宗弟子 @DaxCph 已接取 @WalterWA2000 的解咒委托。",
                 accepted_at,
+                reply_to=SimpleNamespace(id=217963, raw_text=".接取解咒委托 144"),
                 matched_family="wanxin_accept",
                 result_msg_id=217964,
+                actor_id=999001,
             )
 
         self.assertTrue(handled)
@@ -1259,9 +1132,14 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_claimed_commission_cancels_after_24h_then_can_republish(self):
         owner_id = self._prepare_identity(8659059191, username="WalterWA20000")
+        state_module.update_send_as_profile(owner_id, username_aliases=["WalterWA2000"])
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         published_at = 1_800_000_000.0
         due_at = published_at + wanxin.WANXIN_COMMISSION_TTL_SEC + wanxin.CD_BUFFER_SEC
+        entries = native_logs(
+            native_reply(owner_id, ".发布解咒委托 1", "【解咒委托已发布】\n委托 ID：144", published_at, root=7000),
+            native_reply(999001, ".接取解咒委托 144", "【咒契协定已成】\n阴罗宗弟子 @DaxCph 已接取 @WalterWA2000 的解咒委托。", published_at + 100, root=7200),
+        )
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -1280,7 +1158,8 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "assist": {"send_as_id": helper_id, "strip_enabled": True, "next_strip_time": published_at},
             }
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7601, sent_at=due_at))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7601, chat_id=CHAT, sent_at=due_at))) as send_mock,
+                patch.object(wanxin, "_iter_message_log_entries_between", return_value=[(row, row["server_event_at"]) for row in entries]),
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(due_at)
@@ -1288,7 +1167,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("cancel", state_module.state["wanxin_observation"]["pending"]["action"])
 
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "解咒委托已取消，已退回 1 灵石。",
                     due_at + 1,
                     reply_to=SimpleNamespace(id=7601, raw_text=".取消解咒委托"),
@@ -1306,22 +1185,37 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         published_at = datetime(2026, 7, 17, 8, 8, 53, tzinfo=wanxin.TZ_LOCAL).timestamp()
         due_at = published_at + wanxin.WANXIN_COMMISSION_TTL_SEC + wanxin.CD_BUFFER_SEC
+        outside_id = 990001
+        completed_at = datetime(2026, 7, 17, 11, 14, 10, tzinfo=wanxin.TZ_LOCAL).timestamp()
+        native_messages = (
+            (218010, owner_id, published_at - 2, 0, ".发布解咒委托 1"),
+            (218020, BOT, published_at, 218010, "【解咒委托已发布】\n委托 ID：145"),
+            (218030, outside_id, published_at + 100, 0, ".接取解咒委托 145"),
+            (218040, BOT, published_at + 102, 218030,
+             "【咒契协定已成】\n阴罗宗弟子 @DaxCph 已接取 @WalterWA2000 的解咒委托。"),
+            (218110, outside_id, completed_at - 2, 0, ".剥离咒源 @WalterWA2000"),
+            (218120, BOT, completed_at, 218110,
+             "【剥离咒源成功】\n"
+             "@DaxCph 以阴罗幡截住咒源反噬，替 @WalterWA2000 剥下一段阴罗残咒。\n"
+             "魂封 -8，咒源 +14。\n\n阶段：玄冰丹方（封魂未解）\n"
+             "婉心：120\n魂封：0\n月魄：52\n咒源：120"),
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "2026-07-17.log"
             log_path.write_text(
-                json.dumps(
+                "\n".join(json.dumps(
                     {
-                        "ts": "2026-07-17 11:14:10 UTC+8",
+                        "ts": datetime.fromtimestamp(at, wanxin.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
                         "event_type": "message",
-                        "message_id": 218120,
-                        "text": "【剥离咒源成功】\n"
-                        "@DaxCph 以阴罗幡截住咒源反噬，替 @WalterWA2000 剥下一段阴罗残咒。\n"
-                        "魂封 -8，咒源 +14。\n\n阶段：玄冰丹方（封魂未解）\n"
-                        "婉心：120\n魂封：0\n月魄：52\n咒源：120",
+                        "chat_id": CHAT,
+                        "message_id": msg_id,
+                        "sender_id": sender_id,
+                        "server_event_at": at,
+                        "reply_to_msg_id": reply_id,
+                        "text": text,
                     },
                     ensure_ascii=False,
-                )
-                + "\n",
+                ) for msg_id, sender_id, at, reply_id, text in native_messages) + "\n",
                 encoding="utf-8",
             )
             with state_module.use_identity(owner_id):
@@ -1367,6 +1261,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "cancel",
                     "family": "wanxin_cancel",
                     "msg_id": 248154,
+                    "chat_id": CHAT,
                     "send_as_id": owner_id,
                     "reply_due_at": now + 90,
                 },
@@ -1380,7 +1275,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "你当前没有可取消的解咒委托。",
                     now,
                     reply_to=SimpleNamespace(id=248154, raw_text=".取消解咒委托"),
@@ -1400,7 +1295,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_200.0
-        fake_msg = SimpleNamespace(id=7003, sent_at=now)
+        fake_msg = SimpleNamespace(id=7003, chat_id=CHAT, sent_at=now)
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -1436,7 +1331,8 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_225.0
-        fake_msg = SimpleNamespace(id=7004, sent_at=now)
+        seed_resources(helper_id, now)
+        fake_msg = SimpleNamespace(id=7004, sent_at=now, chat_id=CHAT)
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -1477,6 +1373,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_240.0
+        seed_resources(helper_id, now)
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -1496,14 +1393,14 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7501, sent_at=now))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7501, chat_id=CHAT, sent_at=now))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
             self.assertEqual(".发布解咒委托 1", send_mock.await_args.args[0])
 
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "【解咒委托已发布】\n委托 ID：88\n报酬：1 灵石\n"
                     "阴罗宗玩家可用 .接取解咒委托 88 接取。",
                     now + 1,
@@ -1514,7 +1411,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
 
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7503, sent_at=now + 2))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7503, chat_id=CHAT, sent_at=now + 2))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now + 2)
@@ -1523,7 +1420,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "【咒契协定已成】\n阴罗宗弟子 @sanshaoyedejian1 已接取 "
                     "@jfdffdddd 的解咒委托。",
                     now + 3,
@@ -1538,7 +1435,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed["next_protect_time"] = now - 1
             state_module.state["wanxin_observation"] = observed
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7505, sent_at=now + 24))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7505, sent_at=now + 24, chat_id=CHAT))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now + 24)
@@ -1561,6 +1458,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "pending": {
                         "action": "strip",
                         "family": "wanxin_assist_strip",
+                        "chat_id": CHAT,
                         "msg_id": msg_id,
                         "send_as_id": helper_id,
                         "reply_due_at": now + 60,
@@ -1577,7 +1475,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "【剥离咒源成功】\n"
                     "@sanshaoyedejian1 以阴罗幡截住咒源反噬，替 @jfdffdddd 剥下一段阴罗残咒。\n"
                     "魂封 -9，咒源 +14。@sanshaoyedejian1：报酬 1 灵石、贡献 +180。",
@@ -1585,6 +1483,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     reply_to=SimpleNamespace(id=7101, raw_text=".剥离咒源 @jfdffdddd"),
                     matched_family="wanxin_assist_strip",
                     result_msg_id=7102,
+                    helper_id=helper_id,
                 )
 
         self.assertTrue(handled)
@@ -1612,6 +1511,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "pending": {
                         "action": "strip",
                         "family": "wanxin_assist_strip",
+                        "chat_id": CHAT,
                         "msg_id": msg_id,
                         "send_as_id": helper_id,
                         "reply_due_at": now + 60,
@@ -1629,13 +1529,14 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         prepare(7301)
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "【剥离咒源失败】\n封魂咒骤然反扑，阴罗幡煞气被吞去 120 点，"
                     "@sanshaoyedejian1 修为折损 500，@jfdffdddd 魂封 +4。",
                     now,
                     reply_to=SimpleNamespace(id=7301, raw_text=".剥离咒源 @jfdffdddd"),
                     matched_family="wanxin_assist_strip",
                     result_msg_id=7302,
+                    helper_id=helper_id,
                 )
         self.assertTrue(handled)
         with state_module.use_identity(owner_id):
@@ -1647,23 +1548,24 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         prepare(7401)
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "你的阴罗幡煞气不足，剥离咒源至少需要 120 点煞气。",
-                    now,
+                    now + 10,
                     reply_to=SimpleNamespace(id=7401, raw_text=".剥离咒源 @jfdffdddd"),
                     matched_family="wanxin_assist_strip",
                     result_msg_id=7402,
+                    helper_id=helper_id,
                 )
         self.assertTrue(handled)
         with state_module.use_identity(owner_id):
             observed = state_module.state["wanxin_observation"]
             self.assertEqual(88, observed["commission"]["id"])
             self.assertTrue(observed["commission"]["accepted"])
-            self.assertEqual(now + wanxin.WANXIN_RESOURCE_RECOVERY_RETRY_SEC, observed["assist"]["next_strip_time"])
+            self.assertEqual(now + 10 + wanxin.WANXIN_RESOURCE_RECOVERY_RETRY_SEC, observed["assist"]["next_strip_time"])
         with state_module.use_identity(helper_id):
             helper_observed = state_module.state["yinluo_observation"]
             self.assertEqual(120, helper_observed["resource_recovery_min_sha"])
-            self.assertEqual(now, helper_observed["auto_next_time"])
+            self.assertEqual(now + 10 + wanxin.WANXIN_CHAIN_STEP_SEC, helper_observed["auto_next_time"])
 
     async def test_banner_resource_shortage_requests_yinluo_recovery(self):
         owner_id = self._prepare_identity()
@@ -1675,6 +1577,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "pending": {
                     "action": "banner",
                     "family": "wanxin_assist_banner",
+                    "chat_id": CHAT,
                     "msg_id": 7501,
                     "send_as_id": helper_id,
                     "reply_due_at": now + 60,
@@ -1696,12 +1599,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "auto_next_time": now + 3600,
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "你的阴罗幡煞气不足，借幡镇魂至少需要 80 点煞气。",
                     now,
                     reply_to=SimpleNamespace(id=7501, raw_text=".借幡镇魂 @jfdffdddd"),
                     matched_family="wanxin_assist_banner",
                     result_msg_id=7502,
+                    helper_id=helper_id,
                 )
 
         self.assertTrue(handled)
@@ -1711,20 +1615,22 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + wanxin.WANXIN_RESOURCE_RECOVERY_RETRY_SEC, observed["assist"]["next_banner_time"])
         with state_module.use_identity(helper_id):
             helper_observed = state_module.state["yinluo_observation"]
-            self.assertEqual(0, helper_observed["sha_current"])
+            self.assertEqual(400, helper_observed["sha_current"])
             self.assertEqual(80, helper_observed["resource_recovery_min_sha"])
-            self.assertEqual(now, helper_observed["auto_next_time"])
+            self.assertEqual(now + wanxin.WANXIN_CHAIN_STEP_SEC, helper_observed["auto_next_time"])
 
     async def test_assist_sha_cost_is_idempotent_for_duplicate_reply(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_300.0
+        seed_resources(helper_id, now, sha=400)
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
                 "pending": {
                     "action": "banner",
                     "family": "wanxin_assist_banner",
+                    "chat_id": CHAT,
                     "msg_id": 7601,
                     "send_as_id": helper_id,
                     "reply_due_at": now + 60,
@@ -1747,19 +1653,20 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         for reply_now in (now, now + 1):
             with state_module.use_identity(helper_id):
                 with patch.object(wanxin, "save_state"):
-                    handled = await wanxin.handle_wanxin_reply(
+                    handled = await self._handle_assist(
                         reply,
                         reply_now,
                         reply_to=SimpleNamespace(id=7601, raw_text=".借幡镇魂 @jfdffdddd"),
                         matched_family="wanxin_assist_banner",
                         result_msg_id=7602,
+                        helper_id=helper_id, server_at=now,
                     )
             self.assertTrue(handled)
 
         with state_module.use_identity(helper_id):
             self.assertEqual(320, state_module.state["yinluo_observation"]["sha_current"])
 
-    def test_recovered_assist_success_records_sha_cost(self):
+    async def test_legacy_unanchored_log_cannot_charge_sha(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_000_300.0
@@ -1780,10 +1687,11 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             ),
         }, now)]
         with state_module.use_identity(owner_id):
+            state_module.state["wanxin_observation"] = observed
             with patch.object(wanxin, "_iter_message_log_entries_between", return_value=entries):
-                self.assertTrue(wanxin._recover_recent_assist_success_from_log(observed, wanxin.WANXIN_ACTION_BANNER, now))
+                self.assertFalse(await wanxin.handle_wanxin_reply(entries[0][0]["text"], now, matched_family="wanxin_assist_banner"))
         with state_module.use_identity(helper_id):
-            self.assertEqual(320, state_module.state["yinluo_observation"]["sha_current"])
+            self.assertEqual(400, state_module.state["yinluo_observation"]["sha_current"])
 
     async def test_scheduler_refuses_assist_without_real_accept_evidence(self):
         owner_id = self._prepare_identity()
@@ -1828,11 +1736,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "visit",
                     "family": "wanxin_visit",
                     "msg_id": 7004,
+                    "chat_id": CHAT,
+                    "send_as_id": owner_id,
                     "reply_due_at": now + 60,
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "探望南宫婉后，婉心微明，魂封略有松动。",
                     now,
                     reply_to=SimpleNamespace(id=7004, raw_text=".探望南宫婉"),
@@ -1856,6 +1766,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "deduce",
                     "family": "wanxin_deduce",
                     "msg_id": 8001,
+                    "chat_id": CHAT,
                     "send_as_id": owner_id,
                     "reply_due_at": now + 60,
                 },
@@ -1872,7 +1783,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "推演封魂咒 冷却 8 小时，请在 7小时59分钟 后再试。",
                     now,
                     reply_to=SimpleNamespace(id=8001, raw_text=".推演封魂咒"),
@@ -1895,6 +1806,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "pending": {
                     "action": "banner",
                     "family": "wanxin_assist_banner",
+                    "chat_id": CHAT,
                     "msg_id": 8005,
                     "send_as_id": helper_id,
                     "reply_due_at": now + 60,
@@ -1908,12 +1820,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "此咒契刚借幡镇魂过，阴煞尚未归位。借幡镇魂 冷却 6 小时，请在 5小时59分钟10秒 后再试。",
                     now,
-                    reply_to=SimpleNamespace(id=8005, raw_text=".借幡镇魂"),
+                    reply_to=SimpleNamespace(id=8005, raw_text=".借幡镇魂 @jfdffdddd"),
                     matched_family="wanxin_assist_banner",
                     result_msg_id=8006,
+                    helper_id=helper_id,
                 )
 
             self.assertTrue(handled)
@@ -1932,6 +1845,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "pending": {
                     "action": "banner",
                     "family": "wanxin_assist_banner",
+                    "chat_id": CHAT,
                     "msg_id": 8005,
                     "send_as_id": helper_id,
                     "reply_due_at": now + 60,
@@ -1952,12 +1866,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "你与对方没有有效的咒契协定。需先由对方发布委托，再由你接取。",
                     now,
-                    reply_to=SimpleNamespace(id=8005, raw_text=".借幡镇魂"),
+                    reply_to=SimpleNamespace(id=8005, raw_text=".借幡镇魂 @jfdffdddd"),
                     matched_family="wanxin_assist_banner",
                     result_msg_id=8006,
+                    helper_id=helper_id,
                 )
 
         self.assertTrue(handled)
@@ -1974,6 +1889,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
         now = 1_800_001_000.0
+        seed_resources(helper_id, now)
         with state_module.use_identity(owner_id):
             state_module.state["wanxin_enabled"] = True
             state_module.state["wanxin_observation"] = {
@@ -1998,7 +1914,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             }
 
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9001, sent_at=now))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9001, chat_id=CHAT, sent_at=now))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now)
@@ -2006,7 +1922,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "【阴罗辨咒】\n@sanshaoyedejian1 替 @jfdffdddd 锁定咒源。咒源 +20，咒师贡献 +120。",
                     now + 1,
                     reply_to=SimpleNamespace(id=9001, raw_text=".辨认咒纹 @jfdffdddd"),
@@ -2021,7 +1937,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed["auto_next_time"] = now + 2
             state_module.state["wanxin_observation"] = observed
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9003, sent_at=now + 2))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9003, sent_at=now + 2, chat_id=CHAT))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now + 2)
@@ -2029,12 +1945,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
-                    "【借幡镇魂】\n@sanshaoyedejian1 借阴罗幡压住封魂咒反扑。\n@jfdffdddd 魂封 -12，月魄 +1；咒师贡献 +100。",
+                handled = await self._handle_assist(
+                    "【借幡镇魂】\n@sanshaoyedejian1 借阴罗幡压住封魂咒反扑，幡面煞气被削去 80 点。\n@jfdffdddd 魂封 -12，月魄 +1；咒师贡献 +100。",
                     now + 3,
                     reply_to=SimpleNamespace(id=9003, raw_text=".借幡镇魂 @jfdffdddd"),
                     matched_family="wanxin_assist_banner",
                     result_msg_id=9004,
+                    helper_id=helper_id,
                 )
         self.assertTrue(handled)
 
@@ -2044,7 +1961,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed["auto_next_time"] = now + 4
             state_module.state["wanxin_observation"] = observed
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9005, sent_at=now + 4))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9005, sent_at=now + 4, chat_id=CHAT))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now + 4)
@@ -2052,12 +1969,13 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_assist(
                     "【剥离咒源成功】\n@sanshaoyedejian1 替 @jfdffdddd 剥下一段阴罗残咒。\n魂封 -8，咒源 +12；贡献 +180。",
                     now + 5,
                     reply_to=SimpleNamespace(id=9005, raw_text=".剥离咒源 @jfdffdddd"),
                     matched_family="wanxin_assist_strip",
                     result_msg_id=9006,
+                    helper_id=helper_id,
                 )
         self.assertTrue(handled)
         with state_module.use_identity(owner_id):
@@ -2098,9 +2016,10 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(helper_id):
             with patch.object(wanxin, "save_state"):
-                handled = await wanxin.handle_wanxin_reply(
+                handled = await self._handle_native(
                     "【阴罗辨咒】\n@sanshaoyedejian1 替 @jfdffdddd 锁定咒源。咒源 +20，咒师贡献 +120。",
                     now,
+                    reply_to=SimpleNamespace(id=9100, raw_text=".辨认咒纹 @jfdffdddd"),
                     matched_family="wanxin_assist_identify",
                     result_msg_id=9101,
                 )
@@ -2108,7 +2027,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(other_owner_id):
             with (
-                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9102, sent_at=now + 1))) as send_mock,
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9102, chat_id=CHAT, sent_at=now + 1))) as send_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_scheduler(now + 1)

@@ -1,11 +1,11 @@
-import asyncio
 from collections import deque
+from copy import deepcopy
+import inspect
 import json
 import math
 import os
 import random
 import re
-import time
 
 from telethon import functions
 
@@ -18,6 +18,7 @@ from ..config import (
 from ..runtime import _get_identity_client_with_account, account_rpc_slot
 from ..state import get_game_bot_ids
 from ..webapp_core import (
+    _response_retry_after_sec,
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
@@ -37,6 +38,20 @@ from .miniapp_common import (
     append_http_event as _append_http_event,
     build_pooled_miniapp_transport,
     run_miniapp_blocking_flow,
+)
+from .treasure_receipts import (
+    parse_treasure_quota,
+    project_treasure_settlement,
+    treasure_completion_error,
+    treasure_integer,
+    treasure_quota_exhausted,
+    treasure_response_body,
+    treasure_session_id,
+)
+from . import treasure_operations
+from .treasure_runs import (
+    TREASURE_MAX_CELLS, parse_treasure_run, retain_treasure_run_evidence, treasure_reveal_progress_error, treasure_search_error,
+    treasure_run_continuity_error, treasure_settlement_allowed,
 )
 
 
@@ -253,7 +268,7 @@ def build_cave_tianjige_command_request(
     token,
     init_data_session=None,
     init_data="",
-    player_id=None,
+    player_id,
     adapter=None,
 ):
     """Build a strictly whitelisted Tianjige command-center request."""
@@ -265,7 +280,7 @@ def build_cave_tianjige_command_request(
         init_data=init_data,
         payload={
             "command": normalized_command,
-            **({"playerId": int(player_id)} if player_id not in (None, "") else {}),
+            "playerId": _require_cave_action_player_id(player_id),
         },
         adapter=adapter,
     )
@@ -326,7 +341,7 @@ def build_cave_journey_action_request(
     *,
     mode,
     token,
-    player_id=None,
+    player_id,
     init_data_session=None,
     init_data="",
     adapter=None,
@@ -347,7 +362,7 @@ def build_cave_journey_action_request(
         payload={
             "action": normalized_action,
             "mode": normalized_mode,
-            **({"playerId": int(player_id)} if player_id not in (None, "") else {}),
+            "playerId": _require_cave_action_player_id(player_id),
         },
         adapter=adapter,
     )
@@ -357,14 +372,17 @@ def build_cave_small_world_action_request(
     action,
     *,
     token,
+    player_id,
     init_data_session=None,
     init_data="",
     payload=None,
     adapter=None,
 ):
     normalized_action = normalize_cave_small_world_action(action)
-    action_payload = {"action": normalized_action}
-    action_payload.update(dict(payload or {}))
+    action_payload = dict(payload or {})
+    if {"action", "playerId", "token", "initData"}.intersection(action_payload):
+        raise ValueError("small_world_payload_reserved")
+    action_payload.update(action=normalized_action, playerId=_require_cave_action_player_id(player_id))
     return build_cave_treasure_miniapp_request(
         "small_world",
         token=token,
@@ -378,6 +396,7 @@ def build_cave_small_world_action_request(
 def build_cave_meditation_settle_request(
     *,
     token,
+    player_id,
     init_data_session=None,
     init_data="",
     adapter=None,
@@ -387,6 +406,7 @@ def build_cave_meditation_settle_request(
         token=token,
         init_data_session=init_data_session,
         init_data=init_data,
+        payload={"playerId": _require_cave_action_player_id(player_id)},
         adapter=adapter,
     )
 
@@ -555,30 +575,6 @@ def build_cave_treasure_miniapp_flow_plan():
     )
 
 
-def _find_nested_dict(data, candidate_keys):
-    if not isinstance(data, dict):
-        return {}
-    queue = [data]
-    seen = set()
-    while queue:
-        item = queue.pop(0)
-        item_id = id(item)
-        if item_id in seen:
-            continue
-        seen.add(item_id)
-        if not isinstance(item, dict):
-            continue
-        lowered_keys = {str(key).lower() for key in item}
-        if lowered_keys.intersection(candidate_keys):
-            return item
-        for value in item.values():
-            if isinstance(value, dict):
-                queue.append(value)
-            elif isinstance(value, list):
-                queue.extend(child for child in value if isinstance(child, dict))
-    return {}
-
-
 def _coerce_int(value, default=0):
     try:
         return int(float(value))
@@ -657,20 +653,22 @@ def _extract_hint_target(text):
 
 
 def _iter_cave_hint_markers(*sources):
+    remaining = TREASURE_MAX_CELLS
     for source in sources:
         if not isinstance(source, dict):
             continue
-        for marker in source.get("markers") or ():
-            if isinstance(marker, dict):
-                yield marker
         hint = source.get("hint") if isinstance(source.get("hint"), dict) else {}
-        for marker in hint.get("markers") or ():
-            if isinstance(marker, dict):
-                yield marker
         latest_hint = source.get("latestHint") if isinstance(source.get("latestHint"), dict) else {}
-        for marker in latest_hint.get("markers") or ():
-            if isinstance(marker, dict):
-                yield marker
+        for container in (source, hint, latest_hint):
+            markers = container.get("markers")
+            if not isinstance(markers, list):
+                continue
+            for marker in markers[:remaining]:
+                remaining -= 1
+                if isinstance(marker, dict):
+                    yield marker
+                if remaining <= 0:
+                    return
 
 
 def _cave_marker_target(marker):
@@ -678,11 +676,11 @@ def _cave_marker_target(marker):
         return 0
     for key in ("index", "cellIndex"):
         if key in marker:
-            target = _coerce_int(marker.get(key), -1)
-            return target + 1 if target >= 0 else 0
+            target = treasure_integer(marker[key])
+            return target + 1 if target is not None else 0
     for key in ("target", "targetIndex"):
         if key in marker:
-            return max(1, _coerce_int(marker.get(key), 0))
+            return treasure_integer(marker[key]) or 0
     return 0
 
 
@@ -1189,30 +1187,35 @@ def parse_cave_treasure_state(data):
     - 游戏 0/3: used games / total games for the day.
     """
 
-    if not isinstance(data, dict):
-        return {}
-    root = data.get("data") if isinstance(data.get("data"), dict) else data
-    overview = parse_cave_dwelling_overview(root)
+    root, error = treasure_response_body(data)
+    if error:
+        return {"state_error": error, "quota_verified": False}
+    if "huntRun" in root and root["huntRun"] is not None and root["huntRun"] != {}:
+        run = root["huntRun"]
+        parsed = parse_treasure_run(run)
+        if not isinstance(run, dict):
+            run = {}
+        latest_hint = run.get("latestHint") if isinstance(run.get("latestHint"), dict) else {}
+        hint_text = str(run.get("hint") or run.get("tips") or run.get("message") or run.get("text")
+                        or latest_hint.get("hint") or latest_hint.get("tips") or latest_hint.get("message")
+                        or latest_hint.get("text") or "")
+        targets = set(parsed["available_targets"])
+        hint_target = treasure_integer(run.get("hintTarget") or run.get("answer") or run.get("targetIndex")) or 0
+        if targets and not parsed["state_error"] and hint_target not in targets:
+            cells = run.get("cells") if isinstance(run.get("cells"), list) else []
+            markers = sorted((_cave_marker_priority(marker), _cave_marker_target(marker))
+                             for marker in _iter_cave_hint_markers(run, *cells))
+            hint_target = next((target for priority, target in reversed(markers)
+                                if priority > 0 and target in targets), 0)
+        if not hint_target:
+            hint_target = _extract_hint_target(hint_text)
+        return {**parse_treasure_quota(root), **parsed, "on_treasure_tab": True,
+                "hint_text": sanitize_webapp_secret_text(hint_text, limit=160),
+                "hint_target": hint_target if hint_target in targets else 0}
     dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
     hunt_panel = dwelling.get("hunt") if isinstance(dwelling.get("hunt"), dict) else {}
-    hunt_run = root.get("huntRun") if isinstance(root.get("huntRun"), dict) else {}
-    latest_hint = hunt_run.get("latestHint") if isinstance(hunt_run.get("latestHint"), dict) else {}
     hunt_result = root.get("huntResult") if isinstance(root.get("huntResult"), dict) else {}
-    treasure = _find_nested_dict(
-        root,
-        {
-            "treasure",
-            "hunt",
-            "search",
-            "shenshi",
-            "sense",
-            "gamecount",
-            "games",
-            "found",
-            "phase",
-            "tab",
-        },
-    ) or hunt_run or hunt_panel or root
+    treasure = hunt_panel or root
     all_text = "\n".join(
         str(value)
         for key, value in treasure.items()
@@ -1223,8 +1226,6 @@ def parse_cave_treasure_state(data):
         for key, value in treasure.items()
         if isinstance(value, str) and key.lower() in {"text", "message", "result", "status", "phase", "title"}
     )
-    if not all_text:
-        all_text = sanitize_webapp_secret_text(str(data), limit=800)
     if not outcome_text:
         outcome_text = all_text
 
@@ -1232,82 +1233,51 @@ def parse_cave_treasure_state(data):
         treasure,
         ("sense", "shenshi", "divineSense", "spiritSense", "actions", "attempts", "mind"),
     )
-    if hunt_run:
-        sense_ratio = (
-            _coerce_int(hunt_run.get("ap"), sense_ratio[0]),
-            _coerce_int(hunt_run.get("maxAp"), sense_ratio[1]),
-        )
-    elif hunt_panel:
+    if hunt_panel:
         action_points = _coerce_int(hunt_panel.get("actionPoints"), 0)
         if action_points > 0:
             sense_ratio = (action_points, action_points)
-    games_ratio = _first_ratio_by_keys(
-        treasure,
-        ("games", "gameCount", "rounds", "dailyGames", "playCount", "plays"),
-    )
-    if hunt_panel:
-        overview_hunt = overview.get("hunt") if isinstance(overview.get("hunt"), dict) else {}
-        games_ratio = (
-            _coerce_int(overview_hunt.get("used"), games_ratio[0]),
-            _coerce_int(overview_hunt.get("limit"), games_ratio[1]),
-        )
+    quota = parse_treasure_quota(root)
     text_ratios = _ratios_from_text(all_text)
     if sense_ratio == (0, 0):
         sense_ratio = text_ratios["sense"]
-    if games_ratio == (0, 0):
-        games_ratio = text_ratios["games"]
 
-    raw_cells = hunt_run.get("cells") if isinstance(hunt_run.get("cells"), list) else []
-    board_size = _coerce_int(hunt_run.get("size"), 0)
     target_count = _coerce_int(
         treasure.get("targetCount")
         or treasure.get("npcCount")
         or treasure.get("dwarfCount")
         or treasure.get("pointCount")
         or treasure.get("gridCount")
-        or (board_size * board_size if board_size > 0 else 0),
+        or 0,
         0,
     )
-    raw_targets = raw_cells or treasure.get("targets") or treasure.get("points") or treasure.get("dwarfs") or ()
+    raw_targets = treasure.get("targets") or treasure.get("points") or treasure.get("dwarfs") or ()
     if not target_count and isinstance(raw_targets, list):
         target_count = len(raw_targets)
     if target_count <= 0:
         target_count = max(sense_ratio[1] or 0, 1)
-    available_targets = []
-    revealed_targets = set()
-    if raw_cells:
-        for fallback_index, cell in enumerate(raw_cells):
-            if not isinstance(cell, dict):
-                continue
-            cell_index = _coerce_int(cell.get("index"), fallback_index) + 1
-            if _bool_from_any(cell.get("revealed")):
-                revealed_targets.add(cell_index)
-                continue
-            available_targets.append(cell_index)
-
-    status = str(hunt_run.get("status") or treasure.get("status") or "").strip()
+    status = str(treasure.get("status") or "").strip()
+    run_settled = status == "settled"
     in_round = _bool_from_any(
         treasure.get("inRound"),
         treasure.get("entered"),
         treasure.get("active"),
         treasure.get("started"),
-    ) or bool(hunt_run) or any(keyword in all_text for keyword in ("寻宝中", "已入府", "正在寻宝"))
+    ) or any(keyword in all_text for keyword in ("寻宝中", "已入府", "正在寻宝"))
     on_treasure_tab = _bool_from_any(
         treasure.get("onTreasureTab"),
         treasure.get("treasureTab"),
-    ) or bool(hunt_panel or hunt_run or hunt_result) or "寻宝" in all_text
+    ) or bool(hunt_panel or hunt_result) or "寻宝" in all_text
     explicit_treasure_found = _bool_from_any(
         treasure.get("found"),
         treasure.get("treasureFound"),
         treasure.get("hit"),
-        hunt_run.get("foundMain"),
-        bool(hunt_result),
     )
     treasure_found = explicit_treasure_found or any(
         keyword in outcome_text
         for keyword in ("发现宝", "命中宝", "主宝", "秘宝", "宝物到手")
     )
-    settled = bool(hunt_result) or _bool_from_any(treasure.get("settled"), treasure.get("finished")) or any(
+    settled = run_settled or project_treasure_settlement(hunt_result)["confirmed"] or _bool_from_any(treasure.get("settled"), treasure.get("finished")) or any(
         keyword in all_text for keyword in ("结算完成", "已结算", "今日寻宝已结算", "已收获")
     )
 
@@ -1316,102 +1286,86 @@ def parse_cave_treasure_state(data):
         or treasure.get("tips")
         or treasure.get("message")
         or treasure.get("text")
-        or latest_hint.get("hint")
-        or latest_hint.get("tips")
-        or latest_hint.get("message")
-        or latest_hint.get("text")
         or ""
     ).strip()
     hint_target = _coerce_int(treasure.get("hintTarget") or treasure.get("answer") or treasure.get("targetIndex"), 0)
-    if hint_target <= 0:
-        marker_targets = []
-        for marker in _iter_cave_hint_markers(hunt_run, treasure, *raw_cells):
-            marker_priority = _cave_marker_priority(marker)
-            marker_target = _cave_marker_target(marker)
-            if marker_priority > 0 and marker_target > 0:
-                marker_targets.append((marker_priority, marker_target))
-        available_set = set(available_targets)
-        for _marker_priority, marker_target in sorted(marker_targets, reverse=True):
-            if marker_target in revealed_targets:
-                continue
-            if available_set and marker_target not in available_set:
-                continue
-            hint_target = marker_target
-            break
     if hint_target <= 0 and hint_text:
         hint_target = _extract_hint_target(hint_text)
 
     return {
+        **quota,
+        "state_error": "",
+        "run_verified": False,
         "on_treasure_tab": bool(on_treasure_tab),
-        "in_round": bool(in_round),
-        "session_id": str(hunt_run.get("sessionId") or treasure.get("sessionId") or "").strip(),
+        "in_round": bool(in_round) and not run_settled,
+        "session_id": treasure_session_id(treasure.get("sessionId")),
         "status": status,
         "action_remaining": max(0, sense_ratio[0]),
         "action_limit": max(0, sense_ratio[1]),
-        "games_used": max(0, games_ratio[0]),
-        "games_limit": max(0, games_ratio[1]),
         "treasure_found": bool(treasure_found),
         "settled": bool(settled),
         "hint_text": sanitize_webapp_secret_text(hint_text, limit=160),
         "hint_target": max(0, hint_target),
         "target_count": max(1, target_count),
-        "available_targets": available_targets,
+        "available_targets": [],
     }
 
 
 def choose_cave_treasure_action(state, *, rng=None):
     rng = rng or random
     state = dict(state or {})
-    games_limit = _coerce_int(state.get("games_limit"), 0)
-    games_used = _coerce_int(state.get("games_used"), 0)
-    action_remaining = _coerce_int(state.get("action_remaining"), 0)
-    target_count = max(1, _coerce_int(state.get("target_count"), 1))
     in_round = bool(state.get("in_round"))
     session_id = str(state.get("session_id") or "").strip()
 
-    if games_limit > 0 and games_used >= games_limit and not in_round:
+    if state.get("state_error"):
+        return {"action": "blocked", "reason": state["state_error"]}
+    if state.get("quota_present") and state.get("quota_error") not in {None, "", "hunt_quota_missing"}:
+        return {"action": "blocked", "reason": state["quota_error"]}
+    if treasure_quota_exhausted(state):
         return {"action": "done", "reason": "daily_games_exhausted"}
     if not in_round:
+        if state.get("quota_verified") is not True:
+            return {"action": "blocked", "reason": state.get("quota_error") or "hunt_quota_unverified"}
         return {"action": "enter", "reason": "not_in_round"}
-    if state.get("treasure_found"):
-        return {"action": "settle", "sessionId": session_id, "reason": "treasure_found"}
-    if str(state.get("status") or "").strip() == "failed":
-        return {"action": "settle", "sessionId": session_id, "reason": "round_failed"}
-    if action_remaining > 0:
-        target_index = _coerce_int(state.get("hint_target"), 0)
-        candidates = [
-            _coerce_int(item, 0)
-            for item in state.get("available_targets") or ()
-            if _coerce_int(item, 0) > 0
-        ]
-        if target_index > 0 and candidates and target_index not in candidates:
-            target_index = 0
-        reason = "hint_target" if target_index > 0 else "random_target"
-        if target_index <= 0:
-            target_index = int(rng.choice(candidates)) if candidates else int(rng.randint(1, target_count))
-        return {
-            "action": "search",
-            "sessionId": session_id,
-            "targetIndex": max(1, min(target_index, target_count)),
-            "reason": reason,
-        }
-    return {"action": "settle", "sessionId": session_id, "reason": "round_actions_exhausted"}
+    if not treasure_session_id(session_id):
+        return {"action": "blocked", "reason": "hunt_run_session_missing"}
+    if treasure_settlement_allowed(state):
+        reason = ("treasure_found" if state.get("treasure_found") else "round_failed" if state.get("status") == "failed"
+                  else "board_exhausted" if state.get("board_complete") and not state.get("available_targets")
+                  else "round_actions_exhausted")
+        return {"action": "settle", "sessionId": session_id, "reason": reason}
+    error = treasure_search_error(state)
+    if error:
+        return {"action": "blocked", "reason": error}
+    candidates = state["available_targets"]
+    hint = treasure_integer(state.get("hint_target"))
+    target = hint if hint in candidates else rng.choice(candidates)
+    return {"action": "search", "sessionId": session_id, "targetIndex": target,
+            "reason": "hint_target" if hint in candidates else "random_target"}
 
 
-def build_cave_treasure_action_request(decision, *, token, init_data_session=None, init_data="", adapter=None):
+def build_cave_treasure_action_request(decision, *, token, init_data_session=None, init_data="", adapter=None, player_id=None):
     decision = dict(decision or {})
     action = str(decision.get("action") or "").strip()
     if action not in CAVE_TREASURE_SENDABLE_ACTIONS:
         raise ValueError(f"cave treasure action not sendable: {action or 'missing'}")
     payload = {}
+    if player_id not in (None, ""):
+        payload["playerId"] = _require_cave_action_player_id(player_id)
     endpoint = "hunt"
+    if action in {"search", "settle"}:
+        session_id = treasure_session_id(decision.get("sessionId"))
+        if not session_id:
+            raise ValueError("hunt_run_session_missing")
+        payload["sessionId"] = session_id
     if action == "search":
         endpoint = "hunt_reveal"
-        payload["sessionId"] = str(decision.get("sessionId") or "").strip()
-        payload["index"] = max(0, _coerce_int(decision.get("targetIndex"), 1) - 1)
+        target = treasure_integer(decision.get("targetIndex"))
+        if target in (None, 0):
+            raise ValueError("hunt_target_invalid")
+        payload["index"] = target - 1
     elif action == "settle":
         endpoint = "hunt_settle"
-        payload["sessionId"] = str(decision.get("sessionId") or "").strip()
     return build_cave_treasure_miniapp_request(
         endpoint,
         token=token,
@@ -1422,7 +1376,38 @@ def build_cave_treasure_action_request(decision, *, token, init_data_session=Non
     )
 
 
-def build_cave_deep_seclusion_action_request(action, *, token, init_data_session=None, init_data="", adapter=None):
+def _require_cave_action_player_id(value, *, identity_id=None):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("cave_action_player_missing")
+    raw = str(value).strip()
+    if not re.fullmatch(r"-?[0-9]+", raw):
+        raise ValueError("cave_action_player_invalid")
+    player_id = int(raw)
+    normalized = _normalize_cave_inventory_player_id(player_id)
+    if normalized <= 0:
+        raise ValueError("cave_action_player_invalid")
+    if identity_id is not None and normalized != _normalize_cave_inventory_player_id(identity_id):
+        raise ValueError("cave_action_player_mismatch")
+    return player_id
+
+
+def cave_action_player_error(data, identity_id):
+    """An action response must name its account, not only echo a selector."""
+    root = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    account = root.get("account") if isinstance(root, dict) else None
+    if not isinstance(account, dict) or "playerId" not in account:
+        return "cave_action_player_missing"
+    try:
+        _require_cave_action_player_id(account["playerId"], identity_id=identity_id)
+        selector = root.get("identity")
+        if isinstance(selector, dict) and "selectedPlayerId" in selector:
+            _require_cave_action_player_id(selector["selectedPlayerId"], identity_id=identity_id)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def build_cave_deep_seclusion_action_request(action, *, token, player_id, init_data_session=None, init_data="", adapter=None):
     action = str(action or "").strip()
     if action not in CAVE_DEEP_SECLUSION_ACTIONS:
         raise ValueError(f"cave deep seclusion action not allowed: {action or 'missing'}")
@@ -1431,7 +1416,7 @@ def build_cave_deep_seclusion_action_request(action, *, token, init_data_session
         token=token,
         init_data_session=init_data_session,
         init_data=init_data,
-        payload={"action": action},
+        payload={"action": action, "playerId": _require_cave_action_player_id(player_id)},
         adapter=adapter,
     )
 
@@ -1439,12 +1424,61 @@ def build_cave_deep_seclusion_action_request(action, *, token, init_data_session
 def _carry_cave_treasure_context(state, previous_state):
     state = dict(state or {})
     previous_state = dict(previous_state or {})
-    if _coerce_int(state.get("games_limit"), 0) <= 0 and _coerce_int(previous_state.get("games_limit"), 0) > 0:
-        state["games_used"] = previous_state.get("games_used", 0)
-        state["games_limit"] = previous_state.get("games_limit", 0)
+    if previous_state.get("quota_known") is True:
+        if state.get("quota_verified") is True and (
+            state["games_used"] < previous_state["games_used"]
+            or state["games_limit"] != previous_state["games_limit"]
+        ):
+            state.update(quota_verified=False, quota_error="hunt_quota_regressed_or_changed")
+        if state.get("quota_verified") is not True:
+            for key in ("games_used", "games_limit", "games_remaining"):
+                state[key] = previous_state.get(key, 0)
+            state["quota_known"] = True
     if _coerce_int(state.get("action_limit"), 0) <= 0 and _coerce_int(previous_state.get("action_limit"), 0) > 0:
         state["action_limit"] = previous_state.get("action_limit", 0)
     return state
+
+
+def _cave_treasure_player_error(data, player_id, *, require_account=False):
+    root, error = treasure_response_body(data)
+    if error:
+        return error
+    account = root.get("account")
+    if require_account and (not isinstance(account, dict) or "playerId" not in account):
+        return "cave_action_player_missing"
+    observed = player_id
+    scopes = [data, root] if root is not data else [root]
+    scopes.extend(root[key] for key in ("huntRun", "huntResult") if isinstance(root.get(key), dict))
+    try:
+        for scope in scopes:
+            fields = [(scope, key) for key in ("playerId", "player_id") if key in scope]
+            for name, keys in (("account", ("playerId", "player_id")), ("identity", ("selectedPlayerId",))):
+                container = scope.get(name)
+                if name in scope and not isinstance(container, dict):
+                    return "cave_action_player_invalid"
+                if isinstance(container, dict):
+                    fields.extend((container, key) for key in keys if key in container)
+            for container, key in fields:
+                observed = _require_cave_action_player_id(container[key], identity_id=observed)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def _cave_treasure_action_error(data, session_id=None):
+    root, error = treasure_response_body(data)
+    if error:
+        return error
+    scopes = [data, root] if root is not data else [root]
+    scopes.extend(root[key] for key in ("huntRun", "huntResult") if isinstance(root.get(key), dict))
+    for scope in scopes:
+        if any(key in scope and scope[key] is not True for key in ("ok", "success")) or scope.get("error") not in (None, ""):
+            return "hunt_response_not_ok"
+        if session_id is not None:
+            for key in ("sessionId", "session_id"):
+                if key in scope and treasure_session_id(scope[key]) != session_id:
+                    return "hunt_response_session_mismatch"
+    return ""
 
 
 def _flow_result(ok, status, *, error="", data=None, events=None):
@@ -1470,25 +1504,67 @@ def _is_uncertain_cave_mutation_result(result):
 def _is_cave_treasure_daily_limit_result(result):
     data = result.data if isinstance(getattr(result, "data", None), dict) else {}
     error = str(getattr(result, "error", "") or data.get("error") or "").strip().lower()
-    return error in {"hunt_daily_limit", "daily_limit", "daily_games_exhausted"}
+    status_code = int(getattr(result, "status_code", 0) or 0)
+    return (200 <= status_code < 300 or status_code in {400, 403, 409, 422}) and error in {
+        "hunt_daily_limit", "daily_limit", "daily_games_exhausted",
+    }
 
 
 def _cave_treasure_daily_limit_state(result, previous_state=None):
     data = result.data if isinstance(getattr(result, "data", None), dict) else {}
-    root = data.get("data") if isinstance(data.get("data"), dict) else data
-    dwelling = root.get("dwelling") if isinstance(root.get("dwelling"), dict) else {}
-    hunt = root.get("hunt") if isinstance(root.get("hunt"), dict) else {}
-    if not hunt and isinstance(dwelling.get("hunt"), dict):
-        hunt = dwelling["hunt"]
-    state = _carry_cave_treasure_context(parse_cave_treasure_state(data), previous_state or {})
-    games_limit = _coerce_int(hunt.get("limit"), _coerce_int(state.get("games_limit"), 0))
-    if games_limit > 0:
-        state["games_limit"] = games_limit
-        state["games_used"] = games_limit
-    state["action_remaining"] = 0
-    state["in_round"] = False
-    state["status"] = "daily_limit"
+    root, error = treasure_response_body(data)
+    quota = parse_treasure_quota(root, error_panel=True)
+    state = _carry_cave_treasure_context(quota, previous_state or {})
+    run = root.get("huntRun") if isinstance(root.get("huntRun"), dict) else {}
+    state.update(action_remaining=0, in_round=bool(run), session_id=treasure_session_id(run.get("sessionId")), status="daily_limit")
+    if run:
+        state.update(quota_verified=False, quota_error="hunt_daily_limit_with_active_round")
+        return state
+    if not quota["quota_present"] and not error:
+        state.update(daily_limit_confirmed=True, quota_known=False, quota_error="",
+                     games_used=0, games_limit=0, games_remaining=0)
+    elif not treasure_quota_exhausted(state):
+        state.update(quota_verified=False, quota_error=error or state.get("quota_error") or "hunt_daily_limit_conflicting_quota")
     return state
+
+
+def _resume_treasure_start(record, data, state):
+    if not treasure_operations.valid_record(record):
+        raise ValueError("hunt_resume_record_invalid")
+    old = record["checkpoint"]
+    pending, before = old["pending"], old["state"]
+    root, body_error = treasure_response_body(data)
+    if body_error:
+        raise ValueError(body_error)
+    receipt = None
+    if pending.get("action") == "settle" or "huntResult" in root and not state.get("in_round"):
+        raw = root.get("huntResult")
+        session_id = treasure_session_id(raw.get("sessionId", raw.get("session_id"))) if isinstance(raw, dict) else ""
+        if (not session_id or treasure_operations.session_key(session_id) != before.get("session_key")
+                or state.get("in_round") or _cave_treasure_action_error(data, session_id)
+                or treasure_completion_error(data) or treasure_completion_error(root)):
+            raise ValueError("hunt_resume_settlement_unverified")
+        receipt = project_treasure_settlement(raw, session_id=session_id)
+        if not receipt["confirmed"]:
+            raise ValueError(receipt["error"])
+        state = {**state, "in_round": False, "session_id": "", "settled": True}
+    else:
+        if pending and pending.get("action") != "search":
+            raise ValueError("hunt_resume_request_unbound")
+        metadata_error = _cave_treasure_action_error(data, state.get("session_id"))
+        if metadata_error:
+            raise ValueError(metadata_error)
+        after = treasure_operations.state_evidence(state)
+        error = (treasure_reveal_progress_error(before, after, pending["target_index"], session_field="session_key")
+                 if pending else treasure_run_continuity_error(before, after, session_field="session_key"))
+        if error:
+            raise ValueError(error)
+        state = retain_treasure_run_evidence({**before, "session_id": state["session_id"]}, state)
+        session_id = state["session_id"]
+    receipts = deepcopy(old["receipts"])
+    if receipt is not None:
+        receipts.append(treasure_operations.receipt_evidence(receipt, session_id))
+    return state, receipts, receipt
 
 
 def run_cave_treasure_miniapp_lab_flow(
@@ -1503,6 +1579,9 @@ def run_cave_treasure_miniapp_lab_flow(
     capture_sink=None,
     capture_source="",
     player_id=None,
+    operation_check=None,
+    checkpoint=None,
+    resume_record=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -1513,125 +1592,256 @@ def run_cave_treasure_miniapp_lab_flow(
         return _flow_result(False, "failed", error="initData missing")
 
     events = []
-    start_request = build_cave_treasure_miniapp_request(
-        "start",
-        token=token,
-        init_data=init_data,
-        payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
-        adapter=adapter,
-    )
-    start_result = execute_miniapp_http_request(
-        start_request,
-        transport,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="start",
-    )
-    _append_http_event(events, "start", start_result)
-    if not start_result.ok:
-        if _is_cave_treasure_daily_limit_result(start_result):
-            return _flow_result(
-                True,
-                "daily_limit",
-                data={
-                    "state": _cave_treasure_daily_limit_state(start_result),
-                    "results": [],
-                    "settled_count": 0,
-                },
-                events=events,
-            )
-        return _flow_result(False, "failed", error=start_result.error, events=events)
-
-    current_data = start_result.data
     last_state = {}
     results = []
-    for _step_index in range(max(1, int(max_steps or 1))):
-        state = _carry_cave_treasure_context(parse_cave_treasure_state(current_data), last_state)
-        last_state = state
-        decision = choose_cave_treasure_action(state, rng=rng)
-        events.append({
-            "step": "decide",
-            "ok": True,
-            "action": decision.get("action"),
-            "reason": decision.get("reason"),
-            "action_remaining": state.get("action_remaining", 0),
-            "games": f"{state.get('games_used', 0)}/{state.get('games_limit', 0)}",
-        })
-        if decision.get("action") == "done":
-            return _flow_result(
-                True,
-                "daily_limit",
-                data={"state": last_state, "results": results, "settled_count": len(results)},
-                events=events,
-            )
-        if decision.get("action") not in CAVE_TREASURE_SENDABLE_ACTIONS:
-            return _flow_result(
-                False,
-                "blocked",
-                error=f"unsendable action: {decision.get('action')}",
-                data={"state": last_state, "results": results, "settled_count": len(results)},
-                events=events,
-            )
+    settled_sessions = set()
+    material_errors = []
+    round_entry_used = None
+    pending_request, resolution, receipts = {}, {}, []
+    action_dispatched, checkpoint_sequence, checkpoint_error = False, 0, ""
+    retry_after_sec = 0.0
+    budget = MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper)
 
-        action_request = build_cave_treasure_action_request(
-            decision,
+    def evidence(*, ok=False, status="running", error=""):
+        return {"action_dispatched": action_dispatched, "pending": deepcopy(pending_request),
+                "state": treasure_operations.state_evidence(last_state), "receipts": deepcopy(receipts),
+                "resolution": deepcopy(resolution), "retry_after_sec": retry_after_sec, "ok": ok,
+                "status": status, "error": sanitize_webapp_secret_text(error, limit=240)}
+
+    def emit(phase, *, pending=None):
+        nonlocal checkpoint_sequence, checkpoint_error
+        if checkpoint_error:
+            return False
+        if checkpoint is None:
+            return True
+        frame = evidence()
+        frame.update(version=1, phase=phase, sequence=checkpoint_sequence + 1)
+        if pending is not None:
+            frame["pending"] = deepcopy(pending)
+        try:
+            accepted = checkpoint(frame)
+            if inspect.iscoroutine(accepted):
+                accepted.close()
+            if accepted is not True:
+                raise ValueError("treasure_checkpoint_not_acknowledged")
+        except Exception:
+            checkpoint_error = "treasure_checkpoint_failed"
+            return False
+        checkpoint_sequence += 1
+        return True
+
+    def finish(ok, status, *, error=""):
+        unresolved_action = pending_request.get("action", "")
+        data = {"state": dict(last_state), "results": list(results), "settled_count": len(results)}
+        if material_errors:
+            data["material_errors"] = list(dict.fromkeys(material_errors))
+        if unresolved_action:
+            data["uncertain_action"] = unresolved_action
+            data["state"].update(outcome_unknown=True, outcome_unknown_action=unresolved_action)
+        result = _flow_result(ok, status, error=error, data=data, events=events)
+        result["outcome_unknown"] = bool(unresolved_action)
+        result.update(action_dispatched=action_dispatched, checkpoint_sequence=checkpoint_sequence,
+                      checkpoint_error=checkpoint_error, operation_evidence=evidence(ok=ok, status=status, error=error))
+        result["request_budget"] = budget.safe_summary()
+        if retry_after_sec > 0:
+            result["retry_after_sec"] = retry_after_sec
+        return result
+
+    def execute(request, step, *, decision=None):
+        nonlocal retry_after_sec, pending_request, resolution, action_dispatched
+        response_retry_after = 0.0
+        sent, intent_saved = False, False
+        pending = ({"action": decision["action"],
+                    "session_key": treasure_operations.session_key(decision.get("sessionId", "")),
+                    "target_index": decision.get("targetIndex", 0)} if decision else {})
+
+        def dispatch(request):
+            nonlocal response_retry_after, pending_request, resolution, action_dispatched, sent, intent_saved
+            if decision:
+                resolution = {}
+                if not emit("intent", pending=pending):
+                    raise MiniAppRequestAborted(checkpoint_error)
+                intent_saved = True
+                require_miniapp_operation(operation_check)
+                pending_request, action_dispatched = pending, True
+            sent = True
+            response = transport(request)
+            response_retry_after = _response_retry_after_sec(response)
+            return response
+
+        result = execute_miniapp_http_request(
+            request, dispatch, sleeper=sleeper, backoff_sec=(),
+            capture_sink=capture_sink, capture_source=capture_source, step_key=step,
+            request_budget=budget, operation_check=operation_check,
+        )
+        retry_after_sec = max(retry_after_sec, result.retry_after_sec,
+                              response_retry_after if result.status_code in {408, 425} else 0)
+        _append_http_event(events, step, result)
+        events[-1]["dispatched"] = sent
+        if decision and intent_saved and not sent:
+            resolution = {"kind": "not_sent", "request": pending}
+            emit("response")
+        return result
+
+    try:
+        require_miniapp_operation(operation_check)
+        if player_id not in (None, ""):
+            player_id = _require_cave_action_player_id(player_id)
+        start_request = build_cave_treasure_miniapp_request(
+            "start",
             token=token,
             init_data=init_data,
+            payload={"playerId": player_id} if player_id not in (None, "") else None,
             adapter=adapter,
         )
-        action_result = execute_miniapp_http_request(
-            action_request,
-            transport,
-            sleeper=sleeper,
-            backoff_sec=(),
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"action:{decision.get('action')}",
+        start_result = execute(start_request, "start")
+        if not start_result.ok:
+            if resume_record is not None:
+                return finish(False, "recovery_pending", error=start_result.error)
+            if _is_cave_treasure_daily_limit_result(start_result):
+                player_error = _cave_treasure_player_error(start_result.data, player_id)
+                if player_error:
+                    return finish(False, "blocked", error=player_error)
+                last_state = _cave_treasure_daily_limit_state(start_result)
+                if treasure_quota_exhausted(last_state):
+                    if not emit("response"):
+                        return finish(False, "persistence_pending", error=checkpoint_error)
+                    return finish(True, "daily_limit")
+                return finish(False, "blocked", error=last_state["quota_error"])
+            status = "cancelled" if start_result.error_type == "operation_cancelled" else "failed"
+            return finish(False, status, error=start_result.error)
+        player_error = _cave_treasure_player_error(
+            start_result.data, player_id, require_account=player_id is not None,
         )
-        _append_http_event(events, f"action:{decision.get('action')}", action_result)
-        if not action_result.ok:
-            if _is_cave_treasure_daily_limit_result(action_result):
-                return _flow_result(
-                    True,
-                    "daily_limit",
-                    data={
-                        "state": _cave_treasure_daily_limit_state(action_result, last_state),
-                        "results": results,
-                        "settled_count": len(results),
-                    },
-                    events=events,
-                )
-            uncertain = _is_uncertain_cave_mutation_result(action_result)
-            return _flow_result(
-                False,
-                "result_unknown" if uncertain else "failed",
-                error=action_result.error,
-                data={
-                    "state": {
-                        **last_state,
-                        **({
-                            "outcome_unknown": True,
-                            "outcome_unknown_action": str(decision.get("action") or ""),
-                        } if uncertain else {}),
-                    },
-                    "results": results,
-                    "settled_count": len(results),
-                    **({"uncertain_action": str(decision.get("action") or "")} if uncertain else {}),
-                },
-                events=events,
-            )
-        current_data = action_result.data
-        if decision.get("action") == "settle":
-            hunt_result = current_data.get("huntResult") if isinstance(current_data.get("huntResult"), dict) else {}
-            results.append(dict(hunt_result or current_data or {}))
+        if player_error:
+            return finish(False, "blocked", error=player_error)
+        response_error = _cave_treasure_action_error(start_result.data)
+        if response_error:
+            return finish(False, "blocked", error=response_error)
+        last_state = parse_cave_treasure_state(start_result.data)
+        start_body, _ = treasure_response_body(start_result.data)
+        start_run = start_body.get("huntRun") if isinstance(start_body.get("huntRun"), dict) else {}
+        for key in ("sessionId", "session_id"):
+            if key in start_run and treasure_session_id(start_run[key]) != last_state.get("session_id"):
+                return finish(False, "blocked", error="hunt_response_session_mismatch")
+        if resume_record is not None:
+            last_state, receipts, recovered_receipt = _resume_treasure_start(resume_record, start_result.data, last_state)
+            prior = resume_record["checkpoint"]
+            action_dispatched = prior["action_dispatched"] or bool(prior["pending"]) or recovered_receipt is not None
+            retry_after_sec = max(retry_after_sec, prior["retry_after_sec"])
+            settled_sessions = {receipt["session_key"] for receipt in receipts}
+            if recovered_receipt is not None:
+                results.append(recovered_receipt["result"])
+                if recovered_receipt["material_error"]:
+                    material_errors.append(recovered_receipt["material_error"])
+        if not emit("response"):
+            return finish(False, "persistence_pending", error=checkpoint_error)
 
-    return _flow_result(
-        False,
-        "step_limit",
-        data={"state": last_state, "results": results, "settled_count": len(results)},
-        events=events,
-    )
+        for _step_index in range(max(1, int(max_steps or 1))):
+            require_miniapp_operation(operation_check)
+            decision = choose_cave_treasure_action(last_state, rng=rng)
+            action = decision.get("action")
+            events.append({
+                "step": "decide", "ok": True, "action": action, "reason": decision.get("reason"),
+                "action_remaining": last_state.get("action_remaining", 0),
+                "games": f"{last_state.get('games_used', 0)}/{last_state.get('games_limit', 0)}",
+            })
+            if action == "done":
+                return finish(True, "daily_limit")
+            if action not in CAVE_TREASURE_SENDABLE_ACTIONS:
+                return finish(False, "blocked", error=decision.get("reason") or f"unsendable action: {action}")
+            action_request = build_cave_treasure_action_request(
+                decision, token=token, init_data=init_data, adapter=adapter, player_id=player_id,
+            )
+            if action == "enter":
+                round_entry_used = last_state["games_used"]
+            action_result = execute(action_request, f"action:{action}", decision=decision)
+            if not action_result.ok:
+                if _is_cave_treasure_daily_limit_result(action_result):
+                    player_error = _cave_treasure_player_error(action_result.data, player_id)
+                    if player_error or action != "enter":
+                        return finish(False, "result_unknown", error=player_error or "hunt_daily_limit_during_round")
+                    last_state = _cave_treasure_daily_limit_state(action_result, last_state)
+                    if treasure_quota_exhausted(last_state):
+                        resolution = {"kind": "daily_limit", "request": pending_request}
+                        pending_request = {}
+                        if not emit("response"):
+                            return finish(False, "persistence_pending", error=checkpoint_error)
+                        return finish(True, "daily_limit")
+                    return finish(False, "result_unknown", error=last_state["quota_error"])
+                # Only an explicit owned business rejection resolves a dispatched mutation.
+                # Transport cancellation and intermediary 4xx responses cannot prove no effect.
+                if (pending_request and action_result.error_type == "app" and action_result.data.get("ok") is False
+                        and 200 <= action_result.status_code < 500 and action_result.status_code not in {408, 425, 429}
+                        and not _cave_treasure_player_error(action_result.data, player_id)):
+                    root, body_error = treasure_response_body(action_result.data)
+                    scopes = [action_result.data, root]
+                    scopes.extend(root[key] for key in ("huntRun", "huntResult") if isinstance(root.get(key), dict))
+                    session_ids = [scope[key] for scope in scopes
+                                   for key in ("sessionId", "session_id") if key in scope]
+                    if not body_error and all(treasure_session_id(value) == decision.get("sessionId") for value in session_ids):
+                        resolution = {"kind": "rejected", "request": pending_request}
+                        pending_request = {}
+                if pending_request or resolution and resolution["kind"] != "not_sent":
+                    emit("response")
+                uncertain = bool(pending_request)
+                status = "result_unknown" if uncertain else "cancelled" if action_result.error_type == "operation_cancelled" else "failed"
+                return finish(False, status, error=action_result.error)
+            current_data = action_result.data
+            root, response_error = treasure_response_body(current_data)
+            player_error = _cave_treasure_player_error(current_data, player_id)
+            if response_error or player_error:
+                return finish(False, "result_unknown", error=response_error or player_error)
+            session_id = (treasure_session_id((root.get("huntRun") or {}).get("sessionId"))
+                          if action == "enter" and isinstance(root.get("huntRun"), dict)
+                          else treasure_session_id(decision.get("sessionId")))
+            if not session_id:
+                return finish(False, "result_unknown", error="hunt_run_missing")
+            if action == "enter" and treasure_operations.session_key(session_id) in settled_sessions:
+                return finish(False, "result_unknown", error="hunt_run_already_settled")
+            response_error = _cave_treasure_action_error(current_data, session_id)
+            if response_error:
+                return finish(False, "result_unknown", error=response_error)
+            if action == "settle":
+                completion_error = treasure_completion_error(current_data) or treasure_completion_error(root)
+                if completion_error:
+                    return finish(False, "result_unknown", error=completion_error)
+                receipt = project_treasure_settlement(root.get("huntResult"), session_id=session_id)
+                if not receipt["confirmed"]:
+                    return finish(False, "result_unknown", error=receipt["error"])
+                results.append(receipt["result"])
+                receipts.append(treasure_operations.receipt_evidence(receipt, session_id))
+                settled_sessions.add(treasure_operations.session_key(session_id))
+                if receipt["material_error"]:
+                    material_errors.append(receipt["material_error"])
+                pending_request = {}
+                last_state = {**last_state, "in_round": False, "session_id": "", "settled": True}
+            elif not isinstance(root.get("huntRun"), dict) or not treasure_session_id(root["huntRun"].get("sessionId")):
+                return finish(False, "result_unknown", error="hunt_run_missing")
+            observed_state = _carry_cave_treasure_context(parse_cave_treasure_state(current_data), last_state)
+            if action == "search":
+                progress_error = treasure_reveal_progress_error(last_state, observed_state, decision["targetIndex"])
+                if progress_error:
+                    return finish(False, "result_unknown", error=progress_error)
+                observed_state = retain_treasure_run_evidence(last_state, observed_state)
+            last_state = observed_state
+            if action == "settle":
+                last_state.update(in_round=False, session_id="", settled=True)
+                if (round_entry_used is not None and last_state.get("quota_verified") is True
+                        and last_state["games_used"] <= round_entry_used):
+                    last_state.update(quota_verified=False, quota_error="hunt_quota_not_advanced")
+                round_entry_used = None
+            pending_request, resolution = {}, {}
+            if not emit("settled" if action == "settle" else "response"):
+                return finish(False, "persistence_pending", error=checkpoint_error)
+
+        if treasure_quota_exhausted(last_state):
+            return finish(True, "daily_limit")
+        return finish(False, "step_limit")
+    except MiniAppRequestAborted as exc:
+        return finish(False, "result_unknown" if pending_request else "cancelled", error=exc)
+    except Exception as exc:
+        return finish(False, "result_unknown" if pending_request else "failed", error=exc)
 
 
 async def run_cave_treasure_miniapp_production_flow(
@@ -1648,30 +1858,40 @@ async def run_cave_treasure_miniapp_production_flow(
     capture_source="",
     init_data="",
     player_id=None,
+    operation_check=None,
+    checkpoint=None,
+    resume_record=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
+        player_id = _require_cave_action_player_id(
+            identity_id if player_id in (None, "") else player_id, identity_id=identity_id,
+        )
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        return await asyncio.to_thread(
-            run_cave_treasure_miniapp_lab_flow,
-            token=token,
-            init_data=init_data,
-            transport=_flow_transport(transport, identity_id),
-            adapter=adapter,
-            rng=rng,
-            sleeper=sleeper or time.sleep,
-            max_steps=max_steps,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            player_id=player_id,
+        require_miniapp_operation(operation_check)
+        return await run_miniapp_blocking_flow(
+            lambda operation: run_cave_treasure_miniapp_lab_flow(
+                token=token, init_data=init_data,
+                transport=_flow_transport(transport, identity_id, operation_check=operation.check),
+                adapter=adapter, rng=rng, sleeper=operation.sleep, max_steps=max_steps,
+                capture_sink=capture_sink, capture_source=capture_source, player_id=player_id,
+                operation_check=operation.check,
+                checkpoint=checkpoint,
+                resume_record=resume_record,
+            ),
+            operation_check=operation_check, sleeper=sleeper,
         )
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -1910,6 +2130,7 @@ async def run_cave_small_world_production_flow(
     webview_url = str(webview_url or "").strip()
     try:
         require_miniapp_operation(operation_check)
+        player_id = _require_cave_action_player_id(player_id, identity_id=identity_id)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
@@ -1934,7 +2155,7 @@ async def run_cave_small_world_production_flow(
                 if snapshot_data is None:
                     start_request = build_cave_treasure_miniapp_request(
                         "start", token=token, init_data=init_data, adapter=adapter,
-                        payload={"playerId": int(player_id)} if player_id not in (None, "") else None,
+                        payload={"playerId": player_id},
                     )
                     start_result = execute_miniapp_http_request(
                         start_request, flow_transport, sleeper=operation.sleep,
@@ -1949,12 +2170,12 @@ async def run_cave_small_world_production_flow(
 
                 if isinstance(snapshot_data.get("data"), dict):
                     snapshot_data = snapshot_data["data"]
+                player_error = cave_action_player_error(snapshot_data, identity_id)
+                if player_error:
+                    return finish(False, "identity_unverified", player_error)
                 before_overview = parse_cave_dwelling_overview(snapshot_data)
                 data.update(overview=before_overview, before_overview=before_overview, raw=snapshot_data)
                 require_miniapp_operation(operation.check)
-                expected_player_id = _coerce_int(player_id, 0) or _coerce_int(before_overview.get("player_id"), 0)
-                if before_overview.get("player_id") and expected_player_id != before_overview["player_id"]:
-                    return finish(False, "failed", "small_world_player_mismatch")
                 if not before_overview.get("small_world"):
                     return finish(False, "failed", "small_world_state_missing")
                 data["snapshot_current"] = _has_complete_small_world_balances(snapshot_data)
@@ -1971,7 +2192,8 @@ async def run_cave_small_world_production_flow(
                 action = normalize_cave_small_world_action(action)
                 data["action"] = action
                 action_request = build_cave_small_world_action_request(
-                    action, token=token, init_data=init_data, payload=plan.get("payload") or {}, adapter=adapter,
+                    action, token=token, player_id=player_id, init_data=init_data,
+                    payload=plan.get("payload") or {}, adapter=adapter,
                 )
                 # A pre-action snapshot cannot prove the post-action resource balance.
                 data["snapshot_current"] = False
@@ -1985,18 +2207,15 @@ async def run_cave_small_world_production_flow(
                 action_data = action_result.data if isinstance(action_result.data, dict) else {}
                 root = action_data.get("data") if isinstance(action_data.get("data"), dict) else action_data
                 business = root.get("actionResult") if isinstance(root.get("actionResult"), dict) else {}
-                data["action_result"] = dict(business)
-                account = root.get("account") if isinstance(root.get("account"), dict) else {}
-                identity = root.get("identity") if isinstance(root.get("identity"), dict) else {}
-                reply_player_id = _coerce_int(account.get("playerId") or identity.get("selectedPlayerId"), 0)
-                if reply_player_id and expected_player_id and reply_player_id != expected_player_id:
-                    return finish(False, "action_failed", "small_world_player_mismatch")
-                data["action_confirmed"] = (
-                    action_result.ok and business.get("ok") is True and business.get("completed") is not False
-                )
+                player_error = cave_action_player_error(root, identity_id)
+                if not player_error:
+                    data["action_result"] = dict(business)
                 if not action_result.ok:
                     status = "cancelled" if action_result.error_type == "operation_cancelled" else "action_failed"
                     return finish(False, status, action_result.error)
+                if player_error:
+                    return finish(False, "identity_unverified", player_error)
+                data["action_confirmed"] = business.get("ok") is True and business.get("completed", True) is True
                 merged_data = merge_cave_dwelling_snapshot_data(snapshot_data, root)
                 data["raw"] = merged_data
                 after_overview = parse_cave_dwelling_overview(root)
@@ -2039,6 +2258,7 @@ async def run_cave_journey_action_production_flow(
     webview_url = str(webview_url or "").strip()
     try:
         require_miniapp_operation(operation_check)
+        player_id = _require_cave_action_player_id(player_id, identity_id=identity_id)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
@@ -2066,8 +2286,15 @@ async def run_cave_journey_action_production_flow(
             )
             events = []
             _append_http_event(events, step, result)
-            status = "acted" if result.ok else ("cancelled" if result.error_type == "operation_cancelled" else "failed")
-            response = _flow_result(result.ok, status, error=result.error, data=result.data, events=events)
+            player_error = cave_action_player_error(result.data, identity_id) if result.ok else ""
+            status = (
+                "identity_unverified" if player_error else "acted" if result.ok
+                else "cancelled" if result.error_type == "operation_cancelled" else "failed"
+            )
+            response = _flow_result(
+                result.ok and not player_error, status, error=player_error or result.error,
+                data=result.data if not player_error else None, events=events,
+            )
             response["action_dispatched"] = int(result.attempts or 0) > 0
             return response
 
@@ -2095,14 +2322,16 @@ async def run_cave_tianjige_command_production_flow(
 ):
     """Execute one verified Tianjige command without HTTP retries.
 
-    Command-center actions are state-changing. A transport timeout therefore has
-    an unknown outcome and must be surfaced to the caller instead of replayed.
+    The YuanYing launch is state-changing. A transport timeout therefore has an
+    unknown outcome and must be surfaced to the caller instead of replayed.
     """
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
         require_miniapp_operation(operation_check)
+        player_id = _require_cave_action_player_id(player_id, identity_id=identity_id)
+        command = normalize_cave_tianjige_command(command)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
@@ -2119,23 +2348,43 @@ async def run_cave_tianjige_command_production_flow(
             adapter=adapter,
         )
         def run(operation):
-            return execute_miniapp_http_request(
+            step = f"command_center:{command}"
+            result = execute_miniapp_http_request(
                 request,
                 _flow_transport(transport, identity_id, operation_check=operation.check),
                 backoff_sec=(),
                 sleeper=operation.sleep,
                 capture_sink=capture_sink,
                 capture_source=capture_source,
-                step_key=f"command_center:{normalize_cave_tianjige_command(command)}",
+                step_key=step,
+                request_budget=MiniAppRequestBudget(adapter.request_policy, sleeper=operation.sleep),
                 operation_check=operation.check,
             )
+            events = []
+            _append_http_event(events, step, result)
+            dispatched = int(result.attempts or 0) > 0
+            player_error = cave_action_player_error(result.data, identity_id) if result.ok else ""
+            status = (
+                "identity_unverified" if player_error else "ok" if result.ok
+                else "cancelled" if result.error_type == "operation_cancelled" else "failed"
+            )
+            response = _flow_result(
+                result.ok and not player_error, status, error=player_error or result.error,
+                data=result.data if result.ok and not player_error else None, events=events,
+            )
+            missing_contract = 200 <= result.status_code < 300 and not result.ok and result.data.get("ok") is not False
+            response["action_dispatched"] = dispatched
+            response["outcome_unknown"] = bool(
+                command == CMD_YUANYING and dispatched
+                and (player_error or missing_contract or _is_uncertain_cave_mutation_result(result) and result.status_code != 429)
+            )
+            return response
 
-        result = await run_miniapp_blocking_flow(
+        return await run_miniapp_blocking_flow(
             run, operation_check=operation_check, sleeper=sleeper,
         )
-        if not result.ok:
-            return _flow_result(False, "failed", error=result.error, events=[{"step": "command_center", "ok": False}])
-        return _flow_result(True, "ok", data=result.data, events=[{"step": "command_center", "ok": True}])
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 
@@ -2211,18 +2460,57 @@ async def run_cave_external_action_production_flow(
         return _flow_result(False, "failed", error=exc)
 
 
+async def _run_cave_retreat_http_request(
+    identity_id, request, *, completed_status, step_key, transport, adapter,
+    sleeper, capture_sink, capture_source, operation_check,
+):
+    def run(operation):
+        result = execute_miniapp_http_request(
+            request, _flow_transport(transport, identity_id, operation_check=operation.check),
+            backoff_sec=(), sleeper=operation.sleep, capture_sink=capture_sink,
+            capture_source=capture_source, step_key=step_key,
+            request_budget=MiniAppRequestBudget(adapter.request_policy, sleeper=operation.sleep),
+            operation_check=operation.check,
+        )
+        events = []
+        _append_http_event(events, step_key, result)
+        dispatched = int(result.attempts or 0) > 0
+        player_error = cave_action_player_error(result.data, identity_id) if result.ok else ""
+        status = (
+            "identity_unverified" if player_error else completed_status if result.ok
+            else "cancelled" if result.error_type == "operation_cancelled" else "failed"
+        )
+        response = _flow_result(
+            result.ok and not player_error, status, error=player_error or result.error,
+            data=result.data if result.ok and not player_error else None, events=events,
+        )
+        response["action_dispatched"] = dispatched
+        missing_contract = 200 <= result.status_code < 300 and not result.ok and result.data.get("ok") is not False
+        response["outcome_unknown"] = dispatched and bool(
+            player_error or missing_contract or _is_uncertain_cave_mutation_result(result)
+        )
+        return response
+
+    try:
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except Exception as exc:
+        return {**_flow_result(False, "failed", error=exc), "outcome_unknown": True}
+
+
 async def run_cave_deep_seclusion_action_production_flow(
     identity_id,
     *,
     token,
     webview_url,
     action,
+    player_id,
     transport=None,
     adapter=None,
     sleeper=None,
     capture_sink=None,
     capture_source="",
     init_data="",
+    operation_check=None,
 ):
     """Execute one deep-seclusion action without replaying an uncertain POST."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
@@ -2230,28 +2518,28 @@ async def run_cave_deep_seclusion_action_production_flow(
     webview_url = str(webview_url or "").strip()
     action = str(action or "").strip()
     try:
+        require_miniapp_operation(operation_check)
+        player_id = _require_cave_action_player_id(player_id, identity_id=identity_id)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        request = build_cave_deep_seclusion_action_request(action, token=token, init_data=init_data, adapter=adapter)
-        action_result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            request,
-            _flow_transport(transport, identity_id),
-            backoff_sec=(),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key=f"deep_seclusion:{action}",
+        require_miniapp_operation(operation_check)
+        request = build_cave_deep_seclusion_action_request(
+            action, token=token, player_id=player_id, init_data=init_data, adapter=adapter,
         )
-        if not action_result.ok:
-            return _flow_result(False, "failed", error=action_result.error, events=[{"step": f"deep_seclusion:{action}", "ok": False}])
-        return _flow_result(True, action, data=action_result.data, events=[{"step": f"deep_seclusion:{action}", "ok": True}])
+        return await _run_cave_retreat_http_request(
+            identity_id, request, completed_status=action, step_key=f"deep_seclusion:{action}",
+            transport=transport, adapter=adapter, sleeper=sleeper, capture_sink=capture_sink,
+            capture_source=capture_source, operation_check=operation_check,
+        )
+    except MiniAppRequestAborted as exc:
+        return {**_flow_result(False, "cancelled", error=exc), "action_dispatched": False}
     except Exception as exc:
-        return _flow_result(False, "failed", error=exc)
+        return {**_flow_result(False, "failed", error=exc), "action_dispatched": False}
 
 
 async def run_cave_meditation_settle_production_flow(
@@ -2259,55 +2547,45 @@ async def run_cave_meditation_settle_production_flow(
     *,
     token,
     webview_url,
+    player_id,
     transport=None,
     adapter=None,
     sleeper=None,
     capture_sink=None,
     capture_source="",
     init_data="",
+    operation_check=None,
 ):
     """Settle the dwelling quiet room once without replaying an uncertain POST."""
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        require_miniapp_operation(operation_check)
+        player_id = _require_cave_action_player_id(player_id, identity_id=identity_id)
         init_data = str(init_data or "").strip() or await request_cave_treasure_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
+        require_miniapp_operation(operation_check)
         request = build_cave_meditation_settle_request(
             token=token,
+            player_id=player_id,
             init_data=init_data,
             adapter=adapter,
         )
-        action_result = await asyncio.to_thread(
-            execute_miniapp_http_request,
-            request,
-            _flow_transport(transport, identity_id),
-            backoff_sec=(),
-            sleeper=sleeper or time.sleep,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key="meditation:settle",
+        return await _run_cave_retreat_http_request(
+            identity_id, request, completed_status="settled", step_key="meditation:settle",
+            transport=transport, adapter=adapter, sleeper=sleeper, capture_sink=capture_sink,
+            capture_source=capture_source, operation_check=operation_check,
         )
-        if not action_result.ok:
-            return _flow_result(
-                False,
-                "failed",
-                error=action_result.error,
-                data=action_result.data,
-                events=[{"step": "meditation:settle", "ok": False}],
-            )
-        return _flow_result(
-            True,
-            "settled",
-            data=action_result.data,
-            events=[{"step": "meditation:settle", "ok": True}],
-        )
+    except MiniAppRequestAborted as exc:
+        return {**_flow_result(False, "cancelled", error=exc), "action_dispatched": False}
     except Exception as exc:
-        return _flow_result(False, "failed", error=exc)
+        return {**_flow_result(False, "failed", error=exc), "action_dispatched": False}
 
 
 __all__ = [
@@ -2320,6 +2598,7 @@ __all__ = [
     "CAVE_TIANJIGE_READ_ONLY_COMMANDS",
     "CAVE_TIANJIGE_ALLOWED_COMMANDS",
     "build_cave_deep_seclusion_action_request",
+    "cave_action_player_error",
     "build_cave_external_action_request",
     "build_cave_meditation_settle_request",
     "build_cave_tianjige_command_request",

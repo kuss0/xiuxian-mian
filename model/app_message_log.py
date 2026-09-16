@@ -142,6 +142,7 @@ def _extract_message_log_buttons(event):
 
 def _build_message_log_payload(event, *, event_type="message"):
     now = datetime.now(TZ_LOCAL)
+    message = getattr(event, "message", None) or event
     reply_header = getattr(event, "reply_to", None)
     reply_to_msg_id = int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
     # 只读 reply_to_top_id 会把"直接发进话题"的消息记成 topic_id=0；
@@ -159,6 +160,10 @@ def _build_message_log_payload(event, *, event_type="message"):
         "reply_to_msg_id": reply_to_msg_id,
         "text": event.raw_text or "",
     }
+    if event_type == "edit" or hasattr(event, "edit_date") or hasattr(message, "edit_date"):
+        payload["message_edited"] = bool(event_type == "edit" or getattr(event, "edit_date", None) or getattr(message, "edit_date", None))
+    if hasattr(event, "fwd_from") or hasattr(message, "fwd_from"):
+        payload["forwarded"] = bool(getattr(event, "fwd_from", None) or getattr(message, "fwd_from", None))
     if sender is not None:
         username = str(getattr(sender, "username", "") or "").strip()
         if username:

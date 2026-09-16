@@ -1,6 +1,8 @@
 import asyncio
+from copy import deepcopy
+import hashlib
+import inspect
 import random
-import time
 
 from telethon import functions
 
@@ -9,19 +11,26 @@ from ..webapp_core import (
     MiniAppAdapter,
     MiniAppFlowPlan,
     MiniAppFlowStep,
+    MiniAppRequestAborted,
+    MiniAppRequestBudget,
+    _response_retry_after_sec,
     build_miniapp_http_request,
     build_miniapp_launch_request,
     build_request_webview_args,
     execute_miniapp_http_request,
     extract_miniapp_init_data_from_url,
     iter_webapp_entry_links,
+    require_miniapp_operation,
     sanitize_webapp_secret_text,
     summarize_webapp_url,
 )
 from .miniapp_common import (
+    MiniAppFlowCancelled,
     append_http_event as _append_http_event,
     build_pooled_miniapp_transport,
+    run_miniapp_blocking_flow,
 )
+from .trial_receipts import normalize_trial_challenge_id, normalize_trial_player_id, parse_trial_finish_receipt
 
 
 TRIAL_MINIAPP_GAME_KEY = "trial"
@@ -77,10 +86,13 @@ def build_trial_miniapp_request(
     adapter=None,
 ):
     adapter = adapter or build_trial_miniapp_adapter()
-    request_payload = {"token": str(token or "").strip()}
-    if player_id not in (None, ""):
-        request_payload["playerId"] = player_id
-    request_payload.update(dict(payload or {}))
+    request_payload = dict(payload or {})
+    if {"token", "playerId", "initData"}.intersection(request_payload):
+        raise ValueError("trial_payload_reserved")
+    request_payload["token"] = str(token or "").strip()
+    selected_player_id = normalize_trial_player_id(player_id)
+    if selected_player_id is not None:
+        request_payload["playerId"] = selected_player_id
     return build_miniapp_http_request(
         adapter,
         endpoint,
@@ -112,23 +124,28 @@ def extract_trial_miniapp_launch(event, *, message_text=""):
     return {}
 
 
-async def request_trial_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None):
+async def request_trial_miniapp_init_data(identity_id, *, token, webview_url="", adapter=None, operation_check=None):
     adapter = adapter or build_trial_miniapp_adapter()
     launch = build_miniapp_launch_request(adapter, webview_url, start_param=token)
     if not launch.allowed:
         raise ValueError(launch.reason or "trial miniapp launch not allowed")
+    require_miniapp_operation(operation_check)
     account_id, client = _get_identity_client_with_account(identity_id)
     if client is None:
         raise RuntimeError("身份客户端不可用")
     async with account_rpc_slot(account_id=account_id, client_obj=client):
+        require_miniapp_operation(operation_check)
         bot = await client.get_entity(launch.bot_username or adapter.bot_username)
+        require_miniapp_operation(operation_check)
         bot_input = await client.get_input_entity(bot)
+        require_miniapp_operation(operation_check)
         result = await client(functions.messages.RequestMainWebViewRequest(
             peer=bot_input,
             bot=bot_input,
             platform=launch.platform or adapter.platform,
             start_param=launch.start_param,
         ))
+    require_miniapp_operation(operation_check)
     init_data = extract_miniapp_init_data_from_url(getattr(result, "url", "") or "")
     if not init_data:
         raise RuntimeError("WebView URL 缺少 tgWebAppData")
@@ -245,7 +262,8 @@ def _trial_event_times(count, duration_ms, *, rng, start_ms=250):
 
 def _trial_challenge_id(challenge):
     challenge = dict(challenge or {})
-    return str(challenge.get("challengeId") or challenge.get("id") or "").strip()
+    values = [normalize_trial_challenge_id(challenge[key]) for key in ("challengeId", "id") if key in challenge]
+    return values[0] if values and len(set(values)) == 1 and values[0] else ""
 
 
 def _iter_trial_items(value):
@@ -762,6 +780,127 @@ def _flow_result(ok, status, *, error="", data=None, events=None, proof=None):
     }
 
 
+def _trial_digest(value):
+    return hashlib.sha256(str(value).encode()).hexdigest()
+
+
+def _trial_round_key(pending):
+    return _trial_digest(pending["entry_key"] + ":" + pending["challenge_key"])
+
+
+class _TrialRequestContext:
+    def __init__(self, *, transport, adapter, init_data, player_id, sleeper, capture_sink,
+                 capture_source, events, request_budget, operation_check, checkpoint):
+        self.transport, self.adapter, self.init_data = transport, adapter, init_data
+        self.player_id, self.sleeper = player_id, sleeper
+        self.capture_sink, self.capture_source, self.events = capture_sink, capture_source, events
+        self.request_budget, self.operation_check = request_budget, operation_check
+        self.checkpoint, self.sequence, self.checkpoint_error = checkpoint, 0, ""
+        self.pending, self.receipts, self.resolution = {}, [], {}
+        self.dispatched, self.retry_after_sec = False, 0
+        self.status, self.error = "running", ""
+
+    def evidence(self):
+        return {
+            "action_dispatched": self.dispatched, "pending": deepcopy(self.pending),
+            "outcome_unknown": bool(self.pending and self.pending["action"] not in {"challenge", "entry"}),
+            "round_receipts": deepcopy(self.receipts), "retry_after_sec": self.retry_after_sec,
+            "request_resolution": deepcopy(self.resolution),
+            "status": self.status, "error": self.error,
+        }
+
+    def emit(self, phase, *, pending=None, force=False):
+        if self.checkpoint_error and not force:
+            return False
+        if self.checkpoint is None:
+            return True
+        record = self.evidence()
+        record.update(version=1, phase=phase, sequence=self.sequence + 1)
+        if pending is not None:
+            record.update(pending=deepcopy(pending), outcome_unknown=True)
+        try:
+            accepted = self.checkpoint(record)
+            if inspect.iscoroutine(accepted):
+                accepted.close()
+            if accepted is not True:
+                raise ValueError("trial_checkpoint_not_acknowledged")
+        except Exception:
+            self.checkpoint_error = "trial_checkpoint_failed"
+            return False
+        self.sequence += 1
+        return True
+
+    def request(self, endpoint, *, token, payload=None):
+        if self.checkpoint_error:
+            raise MiniAppRequestAborted(self.checkpoint_error)
+        previous = deepcopy(self.pending)
+        sent, intent_saved = False, False
+        response_retry_after = 0
+        proof = (payload or {}).get("trialProof") or {}
+        pending = {"action": endpoint, "entry_key": _trial_digest(token),
+                   "challenge_key": _trial_digest(proof["challengeId"]) if endpoint == "finish" else ""}
+
+        def dispatch(request):
+            nonlocal sent, intent_saved, response_retry_after
+            self.resolution = {}
+            if not self.emit("intent", pending=pending):
+                raise MiniAppRequestAborted(self.checkpoint_error)
+            intent_saved = True
+            require_miniapp_operation(self.operation_check)
+            sent, self.dispatched, self.pending = True, True, pending
+            response = self.transport(request)
+            response_retry_after = _response_retry_after_sec(response)
+            return response
+
+        result = execute_miniapp_http_request(
+            build_trial_miniapp_request(endpoint, token=token, init_data=self.init_data,
+                                        player_id=self.player_id, payload=payload, adapter=self.adapter),
+            dispatch, sleeper=self.sleeper, backoff_sec=(), capture_sink=self.capture_sink,
+            capture_source=self.capture_source, step_key=endpoint, request_budget=self.request_budget,
+            operation_check=self.operation_check,
+        )
+        if sent and result.error_type == "app" and result.data.get("ok") is False and (
+            200 <= result.status_code < 500 and result.status_code not in {408, 425, 429}
+        ):
+            self.pending = previous
+            self.resolution = {"kind": "rejected", "request": pending}
+        elif intent_saved and not sent:
+            self.resolution = {"kind": "not_sent", "request": pending}
+        self.retry_after_sec = max(self.retry_after_sec, result.retry_after_sec,
+                                   response_retry_after if result.status_code in {408, 425} else 0)
+        _append_http_event(self.events, endpoint, result)
+        self.events[-1]["dispatched"] = sent
+        if not result.ok and (intent_saved or result.retry_after_sec):
+            self.emit("response")
+        return result
+
+    def challenge(self, token, challenge):
+        challenge_id = _trial_challenge_id(challenge)
+        if challenge_id:
+            self.resolution = {}
+            self.pending = {"action": "challenge", "entry_key": _trial_digest(token),
+                            "challenge_key": _trial_digest(challenge_id)}
+            self.emit("response")
+
+    def next_token(self, token):
+        self.resolution = {}
+        self.pending = {"action": "entry", "entry_key": _trial_digest(token), "challenge_key": ""}
+        self.emit("response")
+
+    def settled(self, token, challenge_id, data):
+        expected = {"action": "finish", "entry_key": _trial_digest(token),
+                    "challenge_key": _trial_digest(challenge_id)}
+        if self.pending != expected:
+            raise ValueError("trial_receipt_operation_mismatch")
+        key = _trial_round_key(expected)
+        if key in {item["round_key"] for item in self.receipts}:
+            raise ValueError("trial_receipt_already_recorded")
+        self.receipts.append({"round_key": key, "data": deepcopy(data)})
+        self.pending = {}
+        self.resolution = {}
+        self.emit("settled")
+
+
 
 
 def _challenge_from_start(data):
@@ -780,11 +919,6 @@ def _challenge_from_start(data):
             return nested_trial["challenge"], nested_trial
     challenge = data.get("challenge") if isinstance(data.get("challenge"), dict) else {}
     return challenge, trial
-
-
-def _trial_result_from_finish(data):
-    data = dict(data or {})
-    return data.get("result") if isinstance(data.get("result"), dict) else data
 
 
 def _challenge_from_finish(data):
@@ -808,50 +942,18 @@ def _challenge_from_finish(data):
     return {}, {}
 
 
-def _finish_remaining_count(data):
-    data = dict(data or {})
-    containers = (
-        data.get("dailyProgress"),
-        data.get("nextTrial"),
-        data.get("trial"),
-        data.get("result"),
-        data,
-    )
-    for container in containers:
-        if not isinstance(container, dict):
-            continue
-        for key in (
-            "remaining",
-            "remainingToday",
-            "dailyRemaining",
-            "remaining_today",
-            "remainingCount",
-        ):
-            if key not in container:
-                continue
-            try:
-                value = int(float(container.get(key)))
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if value >= 0:
-                return value
-    return None
-
-
 def _solve_and_finish_trial_challenge(
     *,
     challenge,
     token,
-    init_data,
     player_id,
-    transport,
-    adapter,
     rng,
     sleeper,
-    capture_sink,
-    capture_source,
     events,
+    operation_check,
+    requests,
 ):
+    require_miniapp_operation(operation_check)
     try:
         proof = build_trial_proof(challenge, rng=rng)
     except Exception as exc:
@@ -877,29 +979,14 @@ def _solve_and_finish_trial_challenge(
         "trapHits": proof.get("trapHits", 0),
         "durationMs": proof["durationMs"],
     })
+    require_miniapp_operation(operation_check)
     if sleeper is not None:
         sleeper(float(proof["durationMs"]) / 1000.0)
+    require_miniapp_operation(operation_check)
 
-    finish_request = build_trial_miniapp_request(
-        "finish",
-        token=token,
-        init_data=init_data,
-        player_id=player_id,
-        payload={"trialProof": proof},
-        adapter=adapter,
-    )
-    finish_result = execute_miniapp_http_request(
-        finish_request,
-        transport,
-        sleeper=sleeper,
-        backoff_sec=(),
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="finish",
-    )
-    _append_http_event(events, "finish", finish_result)
+    finish_result = requests.request("finish", token=token, payload={"trialProof": proof})
     if not finish_result.ok:
-        status = classify_trial_miniapp_error(finish_result.error)
+        status = _trial_http_failure_status(finish_result)
         return {
             "ok": False,
             "status": status,
@@ -910,13 +997,25 @@ def _solve_and_finish_trial_challenge(
         }
 
     finish_data = finish_result.data if isinstance(finish_result.data, dict) else {}
+    receipt = parse_trial_finish_receipt(
+        finish_data, challenge_id=_trial_challenge_id(challenge), player_id=player_id,
+    )
+    if not receipt["confirmed"]:
+        return {
+            "ok": False, "status": "result_unconfirmed", "error": receipt["error"],
+            "data": {}, "proof": proof, "finish_data": {},
+        }
+    requests.settled(token, _trial_challenge_id(challenge), receipt["result"])
     return {
         "ok": True,
         "status": "settled",
         "error": "",
-        "data": _trial_result_from_finish(finish_data),
+        "data": receipt["result"],
         "proof": proof,
-        "finish_data": finish_data,
+        "finish_data": receipt["body"],
+        "quota": receipt["quota"],
+        "quota_error": receipt["quota_error"],
+        "material_error": receipt["material_error"],
     }
 
 
@@ -931,66 +1030,45 @@ def run_trial_miniapp_lab_flow(
     sleeper=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
+    request_budget=None,
+    checkpoint=None,
 ):
-    adapter = adapter or build_trial_miniapp_adapter()
-    token = str(token or "").strip()
-    init_data = str(init_data or "").strip()
-    if not token:
-        return _flow_result(False, "failed", error="token missing")
-    if not init_data:
-        return _flow_result(False, "failed", error="initData missing")
-
-    events = []
-    start_request = build_trial_miniapp_request(
-        "start",
-        token=token,
-        init_data=init_data,
-        player_id=player_id,
-        adapter=adapter,
+    result = run_trial_miniapp_loop_lab_flow(
+        token=token, init_data=init_data, player_id=player_id,
+        transport=transport, adapter=adapter, rng=rng, sleeper=sleeper,
+        max_rounds=1, capture_sink=capture_sink, capture_source=capture_source,
+        operation_check=operation_check, request_budget=request_budget, checkpoint=checkpoint,
     )
-    start_result = execute_miniapp_http_request(
-        start_request,
-        transport,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="start",
-    )
-    _append_http_event(events, "start", start_result)
-    if not start_result.ok:
-        status = classify_trial_miniapp_error(start_result.error)
-        return _flow_result(False, status, error=start_result.error, events=events)
-
-    challenge, trial = _challenge_from_start(start_result.data)
-    if not challenge:
-        return _flow_result(False, "not_ready", data={"trial_keys": sorted(trial)}, events=events)
-    round_result = _solve_and_finish_trial_challenge(
-        challenge=challenge,
-        token=token,
-        init_data=init_data,
-        player_id=player_id,
-        transport=transport,
-        adapter=adapter,
-        rng=rng,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        events=events,
-    )
-    return _flow_result(
-        round_result["ok"],
-        round_result["status"],
-        error=round_result.get("error", ""),
-        data=round_result.get("data") or {},
-        events=events,
-        proof=round_result.get("proof") or {},
-    )
+    # Keep the single-round API shape while sharing the worker lifecycle.
+    data = dict(result.get("data") or {})
+    settlements = data.pop("results", [])
+    data.pop("settled_count", None)
+    result["data"] = dict(settlements[0]) if settlements else data
+    result["events"] = [event for event in result["events"] if event.get("step") != "round"]
+    return result
 
 
 def _extract_next_trial_token(data):
     data = dict(data or {})
-    token = str(data.get("token") or data.get("nextToken") or data.get("trialToken") or "").strip()
-    return token
+    containers = [item for item in (data, data.get("data"), data.get("result"), data.get("trial"))
+                  if isinstance(item, dict)]
+    containers += [item["trial"] for item in containers if isinstance(item.get("trial"), dict)]
+    values = [item[key] for item in containers for key in ("token", "nextToken", "trialToken") if key in item]
+    if not values:
+        return ""
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError("trial_next_token_invalid")
+    tokens = {value.strip() for value in values}
+    if len(tokens) != 1:
+        raise ValueError("trial_next_token_invalid")
+    return next(iter(tokens))
+
+
+def _trial_http_failure_status(result):
+    if result.error_type == "operation_cancelled":
+        return "cancelled"
+    return classify_trial_miniapp_error(result.error)
 
 
 def run_trial_miniapp_loop_lab_flow(
@@ -1005,6 +1083,9 @@ def run_trial_miniapp_loop_lab_flow(
     max_rounds=99,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
+    request_budget=None,
+    checkpoint=None,
 ):
     adapter = adapter or build_trial_miniapp_adapter()
     token = str(token or "").strip()
@@ -1018,135 +1099,133 @@ def run_trial_miniapp_loop_lab_flow(
     results = []
     current_token = token
     max_rounds = max(1, int(max_rounds or 1))
-
-    start_request = build_trial_miniapp_request(
-        "start",
-        token=current_token,
-        init_data=init_data,
-        player_id=player_id,
-        adapter=adapter,
+    proof = {}
+    completed_challenges = set()
+    if request_budget is None:
+        request_budget = MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper)
+    requests = _TrialRequestContext(
+        transport=transport, adapter=adapter, init_data=init_data, player_id=player_id,
+        sleeper=sleeper, capture_sink=capture_sink, capture_source=capture_source,
+        events=events, request_budget=request_budget, operation_check=operation_check, checkpoint=checkpoint,
     )
-    start_result = execute_miniapp_http_request(
-        start_request,
-        transport,
-        sleeper=sleeper,
-        capture_sink=capture_sink,
-        capture_source=capture_source,
-        step_key="start",
-    )
-    _append_http_event(events, "start", start_result)
-    if not start_result.ok:
-        status = classify_trial_miniapp_error(start_result.error)
-        return _flow_result(False, status, error=start_result.error, events=events)
 
-    challenge, trial = _challenge_from_start(start_result.data)
-    if not challenge:
-        return _flow_result(False, "not_ready", data={"trial_keys": sorted(trial)}, events=events)
+    def finish(status, *, error="", extra=None):
+        requests.status, requests.error = status, sanitize_webapp_secret_text(error)
+        requests.emit("complete", force=True)
+        if requests.checkpoint_error:
+            status = "partial" if results else "persistence_pending"
+            error = requests.checkpoint_error
+        result = _flow_result(
+            bool(results), status, error=error, events=events,
+            data={"results": results, "settled_count": len(results), **dict(extra or {})},
+            proof=proof if max_rounds == 1 else None,
+        )
+        evidence = requests.evidence()
+        evidence.pop("status")
+        evidence.pop("error")
+        return {**result, **evidence, "checkpoint_sequence": requests.sequence,
+                "checkpoint_error": requests.checkpoint_error}
 
-    for round_index in range(1, max_rounds + 1):
-        round_result = _solve_and_finish_trial_challenge(
-            challenge=challenge,
-            token=current_token,
-            init_data=init_data,
-            player_id=player_id,
-            transport=transport,
-            adapter=adapter,
-            rng=rng,
-            sleeper=sleeper,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            events=events,
-        )
-        events.append({
-            "step": "round",
-            "round": round_index,
-            "ok": bool(round_result.get("ok")),
-            "status": str(round_result.get("status") or ""),
-            "event_count": len(round_result.get("events") or ()),
-        })
-        if not round_result.get("ok"):
-            status = str(round_result.get("status") or "failed")
-            data = {"results": results, "settled_count": len(results)}
-            return _flow_result(bool(results), status if not results else "partial", error=round_result.get("error", ""), data=data, events=events)
+    def stop(status, *, error="", extra=None):
+        if results and status not in {"cancelled", "next_unavailable"}:
+            status = "partial"
+        return finish(status, error=error, extra=extra)
 
-        results.append(dict(round_result.get("data") or {}))
-        finish_data = dict(round_result.get("finish_data") or {})
-        remaining = _finish_remaining_count(finish_data)
-        if remaining == 0:
-            break
-        next_challenge, _next_trial = _challenge_from_finish(finish_data)
-        if next_challenge:
-            challenge = next_challenge
-            continue
+    def request(endpoint):
+        return requests.request(endpoint, token=current_token)
 
-        next_request = build_trial_miniapp_request(
-            "next",
-            token=current_token,
-            init_data=init_data,
-            player_id=player_id,
-            adapter=adapter,
-        )
-        next_result = execute_miniapp_http_request(
-            next_request,
-            transport,
-            sleeper=sleeper,
-            backoff_sec=(),
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key="next",
-        )
-        _append_http_event(events, "next", next_result)
-        if not next_result.ok:
-            status = classify_trial_miniapp_error(next_result.error)
-            if status == "daily_limit":
-                break
-            data = {
-                "results": results,
-                "settled_count": len(results),
-                "next_error": sanitize_webapp_secret_text(next_result.error),
-            }
-            return _flow_result(True, "next_unavailable", data=data, events=events)
-
-        next_token = _extract_next_trial_token(next_result.data)
-        next_challenge, _next_trial = _challenge_from_start(next_result.data)
-        if next_challenge:
-            if next_token:
-                current_token = next_token
-            challenge = next_challenge
-            continue
-        if not next_token:
-            data = {"results": results, "settled_count": len(results)}
-            return _flow_result(True, "next_unavailable", data=data, events=events)
-        current_token = next_token
-        start_request = build_trial_miniapp_request(
-            "start",
-            token=current_token,
-            init_data=init_data,
-            player_id=player_id,
-            adapter=adapter,
-        )
-        start_result = execute_miniapp_http_request(
-            start_request,
-            transport,
-            sleeper=sleeper,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            step_key="start",
-        )
-        _append_http_event(events, "start", start_result)
+    try:
+        start_result = request("start")
         if not start_result.ok:
-            status = classify_trial_miniapp_error(start_result.error)
-            if status == "daily_limit":
-                break
-            data = {"results": results, "settled_count": len(results)}
-            return _flow_result(True, "partial", error=start_result.error, data=data, events=events)
+            return stop(_trial_http_failure_status(start_result), error=start_result.error)
         challenge, trial = _challenge_from_start(start_result.data)
         if not challenge:
-            data = {"results": results, "settled_count": len(results)}
-            return _flow_result(True, "next_unavailable", data=data, events=events)
+            return stop("not_ready", extra={"trial_keys": sorted(trial)})
+        requests.challenge(current_token, challenge)
 
-    data = {"results": results, "settled_count": len(results)}
-    return _flow_result(True, "settled", data=data, events=events)
+        for round_index in range(1, max_rounds + 1):
+            challenge_id = _trial_challenge_id(challenge)
+            if requests.checkpoint_error:
+                return stop("persistence_pending", error=requests.checkpoint_error)
+            if challenge_id in completed_challenges:
+                return stop("duplicate_challenge", error="trial_challenge_already_settled")
+            round_result = _solve_and_finish_trial_challenge(
+                challenge=challenge, token=current_token, player_id=player_id,
+                rng=rng, sleeper=sleeper, events=events, operation_check=operation_check,
+                requests=requests,
+            )
+            proof = round_result.get("proof") or {}
+            events.append({
+                "step": "round", "round": round_index,
+                "ok": bool(round_result.get("ok")),
+                "status": str(round_result.get("status") or ""),
+            })
+            if not round_result.get("ok"):
+                return stop(
+                    round_result.get("status") or "failed", error=round_result.get("error", ""),
+                    extra=round_result.get("data"),
+                )
+
+            # Retain the returned settlement before checking any later admission.
+            results.append(dict(round_result.get("data") or {}))
+            completed_challenges.add(challenge_id)
+            if requests.checkpoint_error:
+                return stop("persistence_pending", error=requests.checkpoint_error)
+            finish_data = dict(round_result.get("finish_data") or {})
+            if round_result.get("material_error"):
+                return stop("material_unconfirmed", error=round_result["material_error"])
+            quota_error = round_result.get("quota_error") or ""
+            if quota_error:
+                events.append({"step": "quota", "ok": False, "error": quota_error})
+            if round_index == max_rounds:
+                break
+            if quota_error:
+                return stop("quota_invalid", error=quota_error)
+            if (round_result.get("quota") or {}).get("remaining") == 0:
+                break
+            next_challenge, _next_trial = _challenge_from_finish(finish_data)
+            if next_challenge:
+                challenge = next_challenge
+                requests.challenge(current_token, challenge)
+                continue
+
+            next_result = request("next")
+            if not next_result.ok:
+                status = _trial_http_failure_status(next_result)
+                if status == "daily_limit":
+                    break
+                return stop(
+                    "cancelled" if status == "cancelled" else "next_unavailable",
+                    error=next_result.error,
+                    extra={"next_error": sanitize_webapp_secret_text(next_result.error)},
+                )
+            next_token = _extract_next_trial_token(next_result.data)
+            next_challenge, _next_trial = _challenge_from_start(next_result.data)
+            if next_challenge:
+                if next_token:
+                    current_token = next_token
+                challenge = next_challenge
+                requests.challenge(current_token, challenge)
+                continue
+            if not next_token:
+                return stop("next_unavailable", error="next trial missing")
+            current_token = next_token
+            requests.next_token(current_token)
+            start_result = request("start")
+            if not start_result.ok:
+                status = _trial_http_failure_status(start_result)
+                if status == "daily_limit":
+                    break
+                return stop(status, error=start_result.error)
+            challenge, trial = _challenge_from_start(start_result.data)
+            if not challenge:
+                return stop("next_unavailable", error="next challenge missing")
+            requests.challenge(current_token, challenge)
+    except MiniAppRequestAborted as exc:
+        return stop("cancelled", error=exc)
+    except Exception as exc:
+        return stop("failed", error=exc)
+    return finish("settled")
 
 
 async def run_trial_miniapp_production_flow(
@@ -1162,35 +1241,46 @@ async def run_trial_miniapp_production_flow(
     adapter=None,
     capture_sink=None,
     capture_source="",
+    operation_check=None,
+    checkpoint=None,
 ):
     adapter = adapter or build_trial_miniapp_adapter()
     token = str(token or "").strip()
     webview_url = str(webview_url or "").strip()
     try:
+        player_id = normalize_trial_player_id(player_id)
+        require_miniapp_operation(operation_check)
         init_data = str(init_data or "").strip() or await request_trial_miniapp_init_data(
             identity_id,
             token=token,
             webview_url=webview_url,
             adapter=adapter,
+            operation_check=operation_check,
         )
-        runner = run_trial_miniapp_loop_lab_flow if int(max_rounds or 1) > 1 else run_trial_miniapp_lab_flow
-        kwargs = {
-            "token": token,
-            "init_data": init_data,
-            "player_id": player_id,
-            "transport": transport or build_pooled_miniapp_transport(
-                adapter_key=adapter.game_key,
-                identity_id=identity_id,
-                timeout=TRIAL_MINIAPP_HTTP_TIMEOUT,
-            ),
-            "adapter": adapter,
-            "sleeper": sleeper or time.sleep,
-            "capture_sink": capture_sink,
-            "capture_source": capture_source,
-        }
-        if runner is run_trial_miniapp_loop_lab_flow:
-            kwargs["max_rounds"] = max_rounds
-        return await asyncio.to_thread(runner, **kwargs)
+        require_miniapp_operation(operation_check)
+
+        def run(operation):
+            loop = int(max_rounds or 1) > 1
+            runner = run_trial_miniapp_loop_lab_flow if loop else run_trial_miniapp_lab_flow
+            kwargs = {"max_rounds": max_rounds} if loop else {}
+            return runner(
+                token=token, init_data=init_data, player_id=player_id,
+                transport=transport or build_pooled_miniapp_transport(
+                    adapter_key=adapter.game_key, identity_id=identity_id,
+                    timeout=TRIAL_MINIAPP_HTTP_TIMEOUT, operation_check=operation.check,
+                ),
+                adapter=adapter, sleeper=operation.sleep,
+                capture_sink=capture_sink, capture_source=capture_source,
+                operation_check=operation.check, checkpoint=checkpoint, **kwargs,
+            )
+
+        return await run_miniapp_blocking_flow(run, operation_check=operation_check, sleeper=sleeper)
+    except MiniAppFlowCancelled:
+        raise
+    except asyncio.CancelledError:
+        raise MiniAppFlowCancelled(_flow_result(False, "cancelled", error="authorization_cancelled")) from None
+    except MiniAppRequestAborted as exc:
+        return _flow_result(False, "cancelled", error=exc)
     except Exception as exc:
         return _flow_result(False, "failed", error=exc)
 

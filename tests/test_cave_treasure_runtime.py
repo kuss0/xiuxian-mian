@@ -14,8 +14,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import inventory_delta
 from model import state as state_module
-from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, deep_retreat, tianti, yinluo, yuanying
+from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, deep_retreat, fate_cards_miniapp, fishing_runtime, yinluo, yuanying
 from model.webapp_core import MiniAppHttpResult
+from test_treasure_lifecycle import ReturnedTreasureResultWriter
 
 
 def _cave_event(url="https://t.me/fanrenxiuxian_bot/app?startapp=df_SECRET999"):
@@ -39,9 +40,48 @@ def _cave_inventory_payload(player_id=1001, *, items=None, materials=None, treas
     }
 
 
+def _cave_command_session(player_id=1001):
+    return {
+        "ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": player_id,
+        "result": {"ok": True, "data": {"raw": {"account": {"playerId": player_id}}}},
+    }
+
+
+def _cave_command_payload(message, player_id=1001):
+    return {"account": {"playerId": player_id}, "actionResult": {"ok": True, "rawMessage": message}}
+
+
+def _verified_fate_state(value):
+    day = value["challenge_date"]
+    choice = value.get("choice_key", "")
+    quest = value.get("quest") or {}
+    parsed = fate_cards_miniapp.parse_fate_cards_state({
+        "ok": True, "challengeDate": day, "hasDrawn": value.get("has_drawn", False),
+        "questions": value.get("questions", [{"key": "cultivation"}]),
+        "choices": value.get("choices", [{"key": "accept"}, {"key": "hide"}]),
+        "traceBalance": 0,
+        "record": {
+            "challengeDate": day, "createdAt": f"{day}T00:01:00Z",
+            "questionKey": "cultivation", "choiceKey": choice,
+            "cards": [{"key": "cause"}, {"key": "present"}, {"key": "outcome"}],
+            "aiReading": {"overview": "fixture"} if value.get("has_ai_reading") else {},
+            "quest": {
+                "key": "fixture_quest", "startedAt": f"{day}T00:02:00Z",
+                "title": quest.get("title", ""), "status": quest.get("status", "active"),
+                "metric": quest.get("metric", "cultivation_gain" if choice == "accept" else "wait_seconds"),
+                "target": quest.get("target", 30), "progress": quest.get("progress", 0),
+                "canSettle": quest.get("can_settle", False),
+            } if choice else {},
+        } if value.get("has_drawn") else None,
+    })
+    assert parsed["state_verified"], parsed
+    return parsed
+
+
 class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
+        self.enterContext(patch.object(cave_treasure_runtime.treasure_operations, "CheckpointWriter", ReturnedTreasureResultWriter))
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._manual_auth = dict(cave_treasure_runtime._MANUAL_AUTH_UNTIL)
         cave_treasure_runtime._MANUAL_AUTH_UNTIL.clear()
@@ -218,21 +258,23 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "player_id": 1001,
             "result": {
                 "data": {
-                    "overview": {
-                        "journey": {
-                            "wild_experience": {
-                                "available": True,
-                                "daily_count": 0,
-                                "daily_limit": 2,
-                                "daily_remaining": 2,
-                                "remaining_seconds": 0,
-                                "ready_at": 0,
-                                "reset_at": 1_700_086_400_000,
-                                "modes": [],
+                    "raw": {
+                        "account": {
+                            "playerId": 1001,
+                            "journey": {
+                                "wildExperience": {
+                                    "available": True,
+                                    "dailyCount": 0,
+                                    "dailyLimit": 2,
+                                    "dailyRemaining": 2,
+                                    "remainingSeconds": 0,
+                                    "readyAt": 0,
+                                    "resetAt": 1_700_086_400_000,
+                                    "modes": [],
+                                },
                             },
                         },
                     },
-                    "raw": {},
                 },
             },
         }
@@ -331,10 +373,10 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "init_data": "query_id=abc",
             "player_id": 1001,
-            "result": {"data": {"overview": {"journey": {"wild_experience": {
-                "available": True, "daily_count": 0, "daily_limit": 2,
-                "daily_remaining": 2, "remaining_seconds": 0,
-            }}}}},
+            "result": {"data": {"raw": {"account": {"playerId": 1001, "journey": {"wildExperience": {
+                "available": True, "dailyCount": 0, "dailyLimit": 2,
+                "dailyRemaining": 2, "remainingSeconds": 0,
+            }}}}}},
         }
         flow_result = {"ok": True, "action_dispatched": True, "data": {
             "ok": True,
@@ -611,7 +653,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         with state_module.use_identity(1001):
-            with patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+            with patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=_cave_command_session())), \
+                    patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
                     patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
                 handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
                     _cave_event(),
@@ -667,6 +710,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(1001):
             with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
                     patch.object(cave_treasure_runtime, "get_global_pause_source", return_value="tianzun_maintenance"), \
+                    patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=_cave_command_session())), \
                     patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
                     patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
                 handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
@@ -704,7 +748,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         with state_module.use_identity(1001):
-            with patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)), \
+            with patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=_cave_command_session())), \
+                    patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)), \
                     patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
                 handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
                     _cave_event(),
@@ -751,7 +796,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with state_module.use_identity(1001):
-            with patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)), \
+            with patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=_cave_command_session())), \
+                    patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)), \
                     patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
                 handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
                     _cave_event(),
@@ -796,8 +842,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "ok": True,
             "status": "daily_limit",
             "data": {
-                "settled_count": 3,
-                "state": {"games_used": 3, "games_limit": 3},
+                "settled_count": 1,
+                "state": {"games_used": 3, "games_limit": 3, "games_remaining": 0, "quota_verified": True},
                 "results": [{"logs": ["获得古禁印痕 x1。"]}],
             },
         }
@@ -826,11 +872,11 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("normal", audit_mock.await_args.kwargs["priority"])
         self.assertEqual(3, result["extra"]["games_used"])
         self.assertEqual(3, result["extra"]["games_limit"])
-        self.assertEqual(3, result["extra"]["settled_count"])
+        self.assertEqual(1, result["extra"]["settled_count"])
         self.assertEqual({"古禁印痕": 1}, result["extra"]["rewards"])
         self.assertTrue(result["extra"]["daily_exhausted"])
 
-    async def test_public_treasure_unknown_result_freezes_same_day_retry(self):
+    async def test_public_treasure_unknown_result_holds_without_claiming_completion(self):
         now = 1_700_000_000.0
         unknown_result = {
             "ok": False,
@@ -857,8 +903,9 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 now=now + 60,
             )
 
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["extra"]["daily_exhausted"])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["extra"]["daily_exhausted"])
+        self.assertTrue(result["extra"]["outcome_unknown"])
         self.assertEqual("outcome_unknown_hold", result["extra"]["skipped"])
         session_mock.assert_not_awaited()
         flow_mock.assert_not_awaited()
@@ -1425,7 +1472,11 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_external_action_production_flow", new=AsyncMock(return_value=external_result)), \
                 patch.object(cave_treasure_runtime, "run_fishing_miniapp_production_flow", new=AsyncMock(return_value=fishing_result)) as fishing_mock, \
-                patch.object(cave_treasure_runtime, "_apply_fishing_miniapp_result", return_value="MiniApp bait_missing｜青鳞小鲫x1") as apply_mock, \
+                patch.object(cave_treasure_runtime, "_apply_fishing_miniapp_result", wraps=fishing_runtime._apply_fishing_miniapp_result) as apply_mock, \
+                patch.object(fishing_runtime, "save_state"), \
+                patch.object(fishing_runtime, "apply_storage_bag_item_deltas"), \
+                patch.object(cave_treasure_runtime.time, "time", return_value=now), \
+                patch.object(cave_treasure_runtime, "_send_fishing_daily_completion_summary", new=AsyncMock(return_value=False)), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
                 patch.object(cave_treasure_runtime, "save_state"):
             result = await cave_treasure_runtime.run_cave_public_fishing(
@@ -1743,6 +1794,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_public_yuanying_runs_tianjige_command_and_replays_success(self):
         now = 1_700_000_000.0
         result_data = {
+            "account": {"playerId": 1001},
             "actionResult": {
                 "ok": True,
                 "rawMessage": "你心念一动，丹田中的元婴化作一道流光飞出，消失在天际。\n它将在外云游 8 小时，为你寻觅天地奇珍。",
@@ -1751,10 +1803,12 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         status_result = {
             "ok": True,
             "status": "ok",
-            "data": {"actionResult": {"ok": True, "rawMessage": "【元婴状态】\n状态: 窍中温养，可继续出窍。"}},
+            "data": _cave_command_payload("【元婴状态】\n状态: 窍中温养，可继续出窍。"),
         }
         flow_result = {"ok": True, "status": "ok", "data": result_data}
-        cave_start = {"ok": True, "status": "ok", "data": {"overview": {"player_id": 1001}, "raw": {}}}
+        cave_start = {"ok": True, "status": "ok", "data": {
+            "overview": {"player_id": 1001}, "raw": {"account": {"playerId": 1001}},
+        }}
         with state_module.use_identity(1001):
             state_module.state["yuanying_enabled"] = True
             state_module.state["yuanying_phase"] = "idle"
@@ -1806,11 +1860,13 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         state_module.update_send_as_profile(2001, username="alias_role", label="别名角色")
         state_module.set_identity_account(2001, 1001)
         now = 1_700_000_000.0
-        cave_start = {"ok": True, "status": "ok", "data": {"overview": {"player_id": 2001}, "raw": {}}}
+        cave_start = {"ok": True, "status": "ok", "data": {
+            "overview": {"player_id": 2001}, "raw": {"account": {"playerId": 2001}},
+        }}
         status_result = {
             "ok": True,
             "status": "ok",
-            "data": {"actionResult": {"ok": True, "rawMessage": "【元婴状态】\n归来倒计时 1小时。"}},
+            "data": _cave_command_payload("【元婴状态】\n归来倒计时 1小时。", 2001),
         }
         with state_module.use_identity(2001):
             state_module.state["yuanying_enabled"] = True
@@ -1842,7 +1898,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(yuanying, "handle_yuanying_status_reply", new=AsyncMock()) as status_mock:
                 sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
                     1001,
-                    {"actionResult": {"ok": False, "rawMessage": "窍中温养，暂不可再次出窍。"}},
+                    {"account": {"playerId": 1001}, "actionResult": {"ok": False, "rawMessage": "窍中温养，暂不可再次出窍。"}},
                     now=1_700_000_000.0,
                 )
 
@@ -1856,7 +1912,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_tianjige_yuanying_empty_message_is_ignored(self):
         sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
             1001,
-            {"actionResult": {"ok": True}},
+            {"account": {"playerId": 1001}, "actionResult": {"ok": True}},
             now=1_700_000_000.0,
         )
 
@@ -1871,7 +1927,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["next_yuanying_time"] = now - 1
             sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
                 1001,
-                {"actionResult": {"ok": True, "rawMessage": "【元婴状态】\n状态: 窍中温养，但暂不可再次出窍。"}},
+                _cave_command_payload("【元婴状态】\n状态: 窍中温养，但暂不可再次出窍。"),
                 now=now,
                 command=yuanying.CMD_YUANYING_STATUS,
             )
@@ -1895,7 +1951,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_yuanying_time"] = now - 1
                 sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
                     1001,
-                    {"actionResult": action_result},
+                    {"account": {"playerId": 1001}, "actionResult": action_result},
                     now=now,
                     command=yuanying.CMD_YUANYING_STATUS,
                 )
@@ -1908,11 +1964,14 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_yuanying_active_retreat_status_defers_without_launch(self):
         now = 1_700_000_000.0
-        cave_start = {"ok": True, "status": "ok", "data": {"overview": {"player_id": 1001}, "raw": {}}}
+        cave_start = {"ok": True, "status": "ok", "data": {
+            "overview": {"player_id": 1001}, "raw": {"account": {"playerId": 1001}},
+        }}
         status_result = {
             "ok": True,
             "status": "ok",
             "data": {
+                "account": {"playerId": 1001},
                 "actionResult": {
                     "ok": True,
                     "rawMessage": "**你的本命元婴**\n**状态**: 元婴闭关\n**已积累修为**: 约 7123 点 (发言时自动结算)",
@@ -1959,6 +2018,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 sync = await cave_treasure_runtime.sync_cave_tianjige_yuanying_result(
                     1001,
                     {
+                        "account": {"playerId": 1001},
                         "actionResult": {
                             "ok": True,
                             "rawMessage": "【元婴状态】\n状态: 元婴闭关\n已积累修为: 约 7123 点",
@@ -1974,7 +2034,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(future_next_time, state_module.state["next_yuanying_time"])
 
     async def test_tianjige_command_flow_disables_http_retries(self):
-        http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已处理"}})
+        http_result = MiniAppHttpResult(ok=True, status_code=200, data=_cave_command_payload("已处理"))
         with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
                 patch.object(cave_treasure_miniapp, "execute_miniapp_http_request", new=Mock(return_value=http_result)) as execute_mock:
             result = await cave_treasure_miniapp.run_cave_tianjige_command_production_flow(
@@ -1982,6 +2042,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 token="df_SECRET999",
                 webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
                 command=".元婴出窍",
+                player_id=1001,
             )
 
         self.assertTrue(result["ok"])
@@ -2001,12 +2062,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(1001) as identity_state:
             identity_state["tianti_enabled"] = False
 
-        session = {
-            "ok": True,
-            "init_data": "query_id=abc&hash=SECRET",
-            "player_id": 1001,
-        }
-        result = {"ok": True, "data": {"actionResult": {"ok": True, "rawMessage": raw_message}}}
+        session = _cave_command_session()
+        result = {"ok": True, "data": _cave_command_payload(raw_message)}
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
@@ -2025,7 +2082,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, state_module.state["tianti_cycle_count"])
         self.assertEqual(0, state_module.state["tianti_last_climb_msg_id"])
 
-    async def test_public_tianti_status_audit_uses_preserved_progress_for_partial_panel(self):
+    async def test_public_tianti_status_partial_panel_preserves_progress_and_timers(self):
         now = 1_700_000_500.0
         raw_message = (
             "【凌霄云阶】\n"
@@ -2036,13 +2093,12 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             identity_state["tianti_enabled"] = False
             identity_state["tianti_progress_current"] = 10
             identity_state["tianti_progress_total"] = 12
+            identity_state["next_tianti_climb_time"] = now + 3600
+            identity_state["next_tianti_wenxin_time"] = now + 86400
+            before = copy.deepcopy(identity_state)
 
-        session = {
-            "ok": True,
-            "init_data": "query_id=abc&hash=SECRET",
-            "player_id": 1001,
-        }
-        result = {"ok": True, "data": {"actionResult": {"ok": True, "rawMessage": raw_message}}}
+        session = _cave_command_session()
+        result = {"ok": True, "data": _cave_command_payload(raw_message)}
         audit_mock = AsyncMock()
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
@@ -2054,12 +2110,14 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 now=now,
             )
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
+        self.assertEqual("incomplete_panel", response["extra"]["reason"])
+        self.assertEqual(before, state_module.get_identity_state(1001))
         self.assertIn("进度 10/12", audit_mock.await_args.args[0])
 
     async def test_public_tianjige_yinluo_status_replays_existing_reducer(self):
         now = 1_700_000_500.0
-        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        session = _cave_command_session()
         raw_message = (
             "**【竹灵 2的阴罗幡】**\n"
             "**本命魔兵：** `乌龙幡`\n"
@@ -2069,7 +2127,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "- **2号槽：** `[炼化中]` - 元婴修士 (剩余：30分钟)\n"
             "- **3号槽：** `[空闲]`"
         )
-        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        result = {"ok": True, "data": _cave_command_payload(raw_message)}
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
@@ -2096,8 +2154,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_tianjige_yinluo_status_rejects_unparsed_panel(self):
         now = 1_700_000_500.0
-        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
-        result = {"ok": True, "data": {"actionResult": {"rawMessage": "天机阁暂未返回阴罗幡详情。"}}}
+        session = _cave_command_session()
+        result = {"ok": True, "data": _cave_command_payload("天机阁暂未返回阴罗幡详情。")}
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
@@ -2119,7 +2177,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_tianjige_concubine_status_replays_idle_panel(self):
         now = 1_700_000_500.0
-        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        session = _cave_command_session()
         raw_message = (
             "你的道心侍妾：【南宫婉】（状态：随行中）\n"
             "情缘值：184\n"
@@ -2128,7 +2186,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "天机代卜冷却：3小时\n"
             "共历心劫冷却：4小时"
         )
-        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        result = {"ok": True, "data": _cave_command_payload(raw_message)}
         audit_mock = AsyncMock()
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
@@ -2151,7 +2209,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_tianjige_concubine_status_accepts_markdown_panel(self):
         now = 1_700_000_500.0
-        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        session = _cave_command_session()
         raw_message = (
             "**你的道心侍妾：** **【瑶光】**（状态：**随行中**）\n"
             "**情缘值：** 300\n"
@@ -2159,7 +2217,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "- **天机代卜冷却：** 3小时\n"
             "- **共历心劫冷却：** 4小时"
         )
-        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        result = {"ok": True, "data": _cave_command_payload(raw_message)}
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
@@ -2183,19 +2241,15 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_phase"] = "heart_choice_pending"
             identity_state["concubine_name"] = "南宫婉"
             identity_state["concubine_affinity"] = 160
-        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        session = _cave_command_session()
         result = {
             "ok": True,
-            "data": {
-                "actionResult": {
-                    "rawMessage": "你的道心侍妾：【南宫婉】（状态：随行中）\n情缘值：184"
-                }
-            },
+            "data": _cave_command_payload("你的道心侍妾：【南宫婉】（状态：随行中）\n情缘值：184"),
         }
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
-                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
-                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)), \
-                patch.object(concubine, "save_state", return_value=True), \
+                patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)) as session_mock, \
+                patch.object(cave_treasure_runtime, "run_cave_tianjige_command_production_flow", new=AsyncMock(return_value=result)) as flow_mock, \
+                patch.object(concubine, "save_state", return_value=True) as save_mock, \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
             response = await cave_treasure_runtime.run_cave_public_tianjige_read_only(
                 1001,
@@ -2205,13 +2259,16 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(response["ok"])
-        self.assertIn("未匹配现有解析器", response["message"])
+        self.assertEqual("heart_session_pending", response["extra"]["reason"])
+        session_mock.assert_not_awaited()
+        flow_mock.assert_not_awaited()
+        save_mock.assert_not_called()
         self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
         self.assertEqual(160, state_module.state["concubine_affinity"])
 
     async def test_public_tianjige_beast_panel_is_observation_only_until_reducer_exists(self):
         now = 1_700_000_500.0
-        session = {"ok": True, "init_data": "query_id=abc&hash=SECRET", "player_id": 1001}
+        session = _cave_command_session()
         raw_message = (
             "@local_user 的灵兽伙伴们：\n\n"
             "- 啼魂兽 (休息中)\n"
@@ -2221,7 +2278,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "  - 品阶: 2阶, 等级: 39\n"
             "  - 战力: 491"
         )
-        result = {"ok": True, "data": {"actionResult": {"rawMessage": raw_message}}}
+        result = {"ok": True, "data": _cave_command_payload(raw_message)}
         audit_mock = AsyncMock()
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
@@ -2244,7 +2301,10 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("本地尚无对应 reducer", audit_mock.await_args.args[0])
 
     async def test_deep_seclusion_action_flow_disables_http_retries(self):
-        http_result = SimpleNamespace(ok=True, data={"actionResult": {"ok": True, "message": "已结算"}})
+        http_result = MiniAppHttpResult(
+            ok=True, status_code=200, attempts=1,
+            data={"account": {"playerId": 1001}, "actionResult": {"ok": True, "message": "已结算"}},
+        )
         with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
                 patch.object(cave_treasure_miniapp, "execute_miniapp_http_request", new=Mock(return_value=http_result)) as execute_mock:
             result = await cave_treasure_miniapp.run_cave_deep_seclusion_action_production_flow(
@@ -2252,21 +2312,24 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 token="df_SECRET999",
                 webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
                 action="settle",
+                player_id=1001,
             )
 
         self.assertTrue(result["ok"])
         self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
         self.assertEqual("deep_seclusion:settle", execute_mock.call_args.kwargs["step_key"])
+        self.assertEqual(1001, execute_mock.call_args.args[0]["payload"]["playerId"])
 
     async def test_meditation_settle_flow_disables_http_retries(self):
-        http_result = SimpleNamespace(
-            ok=True,
-            data={"actionResult": {"ok": True, "message": "静室已结算", "cultivationGain": 120}},
+        http_result = MiniAppHttpResult(
+            ok=True, status_code=200, attempts=1,
+            data={"account": {"playerId": 1001}, "actionResult": {"ok": True, "message": "静室已结算", "cultivationGain": 120}},
         )
         with patch.object(cave_treasure_miniapp, "request_cave_treasure_miniapp_init_data", new=AsyncMock(return_value="query_id=abc&hash=SECRET")), \
                 patch.object(cave_treasure_miniapp, "execute_miniapp_http_request", new=Mock(return_value=http_result)) as execute_mock:
             result = await cave_treasure_miniapp.run_cave_meditation_settle_production_flow(
                 1001,
+                player_id=1001,
                 token="df_SECRET999",
                 webview_url="https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
             )
@@ -2275,6 +2338,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("settled", result["status"])
         self.assertEqual((), execute_mock.call_args.kwargs["backoff_sec"])
         self.assertEqual("meditation:settle", execute_mock.call_args.kwargs["step_key"])
+        self.assertEqual(1001, execute_mock.call_args.args[0]["payload"]["playerId"])
 
     async def test_public_fate_cards_accept_chain_settles_quiet_room_then_claims_reward(self):
         now = 1_700_000_500.0
@@ -2288,7 +2352,9 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "data": {
                     "overview": {"meditation": {"can_settle": True, "projected_gain": 120}},
                     "raw": {
+                        "dwelling": {"meditation": {"canSettle": True, "projectedGain": 120}},
                         "account": {
+                            "playerId": 1001,
                             "externalApps": {
                                 "groups": [{"apps": [{
                                     "key": "fate_cards",
@@ -2341,22 +2407,24 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
         reconcile_results = [
-            {"ok": True, "state": state, "action_result": {"data": {}}}
+            {"ok": True, "can_continue": True, "state": _verified_fate_state(state), "action_result": {"data": {}}}
             for state in reconciled_states[:3]
         ] + [{
             "ok": True,
-            "state": reconciled_states[3],
+            "state": _verified_fate_state(reconciled_states[3]),
             "action_result": {"data": {"reward": {"天机残痕": 2}}},
         }]
         probe_mock = AsyncMock(side_effect=[
-            {"ok": True, "data": {"state": initial_state}},
-            {"ok": True, "data": {"state": after_meditation_state}},
+            {"ok": True, "data": {"state": _verified_fate_state(initial_state)}},
+            {"ok": True, "data": {"state": _verified_fate_state(after_meditation_state)}},
         ])
+        reconcile_results[-1]["action_result"].update(ok=True)
+        reconcile_results[-1]["action_result"]["data"]["state"] = _verified_fate_state(reconciled_states[3])
         reconcile_mock = AsyncMock(side_effect=reconcile_results)
         meditation_mock = AsyncMock(return_value={
             "ok": True,
             "status": "settled",
-            "data": {"actionResult": {"cultivationGain": 120, "message": "静室已结算"}},
+            "data": {"ok": True, "account": {"playerId": 1001}, "actionResult": {"ok": True, "cultivationGain": 120, "message": "静室已结算"}},
         })
         with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
                 patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
@@ -2404,7 +2472,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "ok": True,
                 "data": {
                     "overview": {"meditation": {"can_settle": False, "projected_gain": 0}},
-                    "raw": {"externalApps": [{
+                    "raw": {"account": {"playerId": 1001}, "externalApps": [{
                         "key": "fate_cards",
                         "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
                         "available": True,
@@ -2418,7 +2486,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
-                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": _verified_fate_state(fate_state)}})), \
                 patch.object(cave_treasure_runtime, "run_cave_meditation_settle_production_flow", new=meditation_mock), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=audit_mock), \
                 patch.object(cave_treasure_runtime, "console_log") as console_mock:
@@ -2461,7 +2529,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                             "meditation": {"can_settle": False, "projected_gain": 0},
                             "deep_seclusion": deep_state,
                         },
-                        "raw": {"externalApps": [{
+                        "raw": {"account": {"playerId": 1001}, "externalApps": [{
                             "key": "fate_cards",
                             "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
                             "available": True,
@@ -2491,7 +2559,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     initial_session, after_force_session, after_start_session,
                 ])), \
                 patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
-                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": _verified_fate_state(fate_state)}})), \
                 patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
                 patch.object(cave_treasure_runtime, "console_log") as console_mock:
@@ -2506,6 +2574,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("启动深度闭关", result["message"])
         self.assertTrue(result["extra"]["deep_retreat"]["active"])
         self.assertEqual(["force", "start"], [call.kwargs["action"] for call in deep_mock.await_args_list])
+        self.assertEqual([initial_session, after_force_session], [call.kwargs["session"] for call in deep_mock.await_args_list])
         console_mock.assert_called_once()
         self.assertEqual(1001, console_mock.call_args.kwargs["send_as_id"])
 
@@ -2538,7 +2607,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                             "remaining_seconds": 120,
                         },
                     },
-                    "raw": {"externalApps": [{
+                    "raw": {"account": {"playerId": 1001}, "externalApps": [{
                         "key": "fate_cards",
                         "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
                         "available": True,
@@ -2551,7 +2620,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
-                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": _verified_fate_state(fate_state)}})), \
                 patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
                 patch.object(cave_treasure_runtime, "console_log") as console_mock:
@@ -2587,7 +2656,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "result": {
                 "ok": True,
                 "data": {
-                    "raw": {"externalApps": [{
+                    "raw": {"account": {"playerId": 1001}, "externalApps": [{
                         "key": "fate_cards",
                         "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
                         "available": True,
@@ -2599,7 +2668,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
-                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": fate_state}})), \
+                patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(return_value={"ok": True, "data": {"state": _verified_fate_state(fate_state)}})), \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()), \
                 patch.object(cave_treasure_runtime, "console_log") as console_mock:
             result = await cave_treasure_runtime.run_cave_public_fate_cards(
@@ -2649,7 +2718,9 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                                 "remaining_seconds": 0 if deep_settle else 0,
                             },
                         },
-                        "raw": {"externalApps": [{
+                        "raw": {"account": {"playerId": 1001},
+                                "dwelling": {"meditation": {"canSettle": meditation, "projectedGain": 18 if meditation else 0}},
+                                "externalApps": [{
                             "key": "fate_cards",
                             "url": "https://t.me/fanrenxiuxian_bot?startapp=fate_SAMPLE123",
                             "available": True,
@@ -2659,11 +2730,16 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             }
 
         deep_mock = AsyncMock(return_value={"ok": True, "status": "settled", "sent": True, "sync": {"handled": True}})
-        meditation_mock = AsyncMock(return_value={"ok": True, "status": "settled", "data": {"actionResult": {"cultivationGain": 18}}})
+        meditation_mock = AsyncMock(return_value={"ok": True, "status": "settled", "data": {
+            "ok": True, "account": {"playerId": 1001}, "actionResult": {"ok": True, "cultivationGain": 18},
+        }})
         reconcile_mock = AsyncMock(return_value={
             "ok": True,
-            "state": {**ready_state, "quest": {**ready_state["quest"], "status": "settled", "can_settle": False}},
-            "action_result": {"data": {"reward": {"天机残痕": 2}}},
+            "state": _verified_fate_state({**ready_state, "quest": {**ready_state["quest"], "status": "settled", "can_settle": False}}),
+            "action_result": {"ok": True, "data": {
+                "state": _verified_fate_state({**ready_state, "quest": {**ready_state["quest"], "status": "settled", "can_settle": False}}),
+                "reward": {"天机残痕": 2},
+            }},
         })
         with patch.object(cave_treasure_runtime, "is_cave_public_identity_available", return_value=True), \
                 patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
@@ -2674,9 +2750,9 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ])), \
                 patch.object(cave_treasure_runtime, "request_fate_cards_miniapp_init_data", new=AsyncMock(return_value="query_id=fate&hash=SECRET")), \
                 patch.object(cave_treasure_runtime, "run_fate_cards_start_probe_production", new=AsyncMock(side_effect=[
-                    {"ok": True, "data": {"state": fate_state}},
-                    {"ok": True, "data": {"state": fate_state}},
-                    {"ok": True, "data": {"state": ready_state}},
+                    {"ok": True, "data": {"state": _verified_fate_state(fate_state)}},
+                    {"ok": True, "data": {"state": _verified_fate_state(fate_state)}},
+                    {"ok": True, "data": {"state": _verified_fate_state(ready_state)}},
                 ])), \
                 patch.object(cave_treasure_runtime, "_run_cave_public_deep_action_locked", new=deep_mock), \
                 patch.object(cave_treasure_runtime, "run_cave_meditation_settle_production_flow", new=meditation_mock), \
@@ -2802,7 +2878,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result = await cave_treasure_runtime.sync_cave_deep_seclusion_action_result(
                 1001,
                 "settle",
-                {"ok": True, "actionResult": {"rawMessage": text}},
+                {"ok": True, "account": {"playerId": 1001}, "actionResult": {"rawMessage": text}},
                 now=now,
             )
 
@@ -2824,6 +2900,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "settle",
                 {
                     "ok": True,
+                    "account": {"playerId": 1001},
                     "actionResult": {
                         "ok": True,
                         "completed": False,
@@ -2874,7 +2951,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result = await cave_treasure_runtime.sync_cave_deep_seclusion_action_result(
                 1001,
                 "settle",
-                {"ok": True, "actionResult": {"ok": True, "message": "操作完成"}},
+                {"ok": True, "account": {"playerId": 1001}, "actionResult": {"ok": True, "message": "操作完成"}},
                 now=now,
             )
 
@@ -2910,7 +2987,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result = await cave_treasure_runtime.sync_cave_deep_seclusion_action_result(
                 1001,
                 "start",
-                {"ok": True, "actionResult": {"message": text}},
+                {"ok": True, "account": {"playerId": 1001}, "actionResult": {"message": text}},
                 now=now,
             )
 
@@ -2939,6 +3016,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "ok": True,
                     "data": {
+                        "account": {"playerId": 1001},
                         "deep_seclusion": {
                             "active": True,
                             "remaining_seconds": 2128,
@@ -2954,7 +3032,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(1001):
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
-            self.assertEqual(now + 35 * 60 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(now + 2128 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
 
     async def test_expired_cave_authorization_does_not_run(self):
         cave_treasure_runtime.authorize_cave_treasure_miniapp_manual_run(1001, now=1_700_000_000.0, ttl_sec=60)
@@ -2987,7 +3065,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         flow_result = {"ok": True, "status": "settled", "data": {"rewards": [{"name": "玄晶", "qty": 1}]}}
         with state_module.use_identity(1001):
-            with patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
+            with patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=_cave_command_session())), \
+                    patch.object(cave_treasure_runtime, "run_cave_treasure_miniapp_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
                     patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
                 handled = await cave_treasure_runtime.handle_cave_treasure_miniapp_entry(
                     _cave_event(),
@@ -3281,6 +3360,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_small_world_flow_reuses_split_details_snapshot_without_second_start(self):
         snapshot = {
             "account": {
+                "playerId": 1001,
                 "smallWorld": {
                     "hasWorld": True,
                     "summary": {"faith": 94, "population": 250000, "stability": 100, "incensePoints": 1000, "uncollectedIncense": 0},
@@ -3309,6 +3389,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_small_world_flow_merges_partial_action_reply_with_details_snapshot(self):
         snapshot = {
             "account": {
+                "playerId": 1001,
                 "smallWorld": {
                     "hasWorld": True,
                     "summary": {"faith": 94, "population": 250000, "stability": 100, "incensePoints": 1000, "uncollectedIncense": 0},
@@ -3322,6 +3403,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             error="",
             data={
                 "snapshot": {"level": "action", "partial": True, "domains": ["smallWorld"]},
+                "account": {"playerId": 1001},
                 "actionResult": {"ok": True, "rawMessage": "显灵成功"},
             },
         )
@@ -3770,7 +3852,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         save_mock.assert_called()
 
     async def test_cave_public_deep_retreat_allows_maintenance_pause_and_records(self):
-        flow_result = {"ok": True, "status": "status", "data": {"data": {"deep_seclusion": {"active": True, "remaining_seconds": 88}}}}
+        flow_result = {"ok": True, "status": "status", "action_dispatched": True, "data": {"data": {"account": {"playerId": 1001}, "deep_seclusion": {"active": True, "remaining_seconds": 88}}}}
         with state_module.use_identity(1001):
             state_module.state["deep_retreat_enabled"] = True
             with patch.object(cave_treasure_runtime, "get_global_enabled", return_value=False), \
@@ -3794,21 +3876,26 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("洞府闭关 status 完成", result["message"])
         flow_mock.assert_awaited_once()
         self.assertEqual("dwelling_init_data", flow_mock.await_args.kwargs["init_data"])
+        self.assertEqual(1001, flow_mock.await_args.kwargs["player_id"])
         self.assertIn("1001:cave_deep_retreat", state_module.get_miniapp_state_records())
 
     async def test_cave_public_deep_retreat_allows_send_as_player_switch(self):
         state_module.set_identity_account(1001, 2001)
-        flow_result = {"ok": True, "status": "start", "data": {"actionResult": {"ok": True, "rawMessage": "深度闭关成功"}}}
+        player_id = -1_000_000_001_001
+        flow_result = {"ok": True, "status": "start", "action_dispatched": True, "data": {"account": {"playerId": player_id}, "actionResult": {"ok": True, "rawMessage": "深度闭关成功"}}}
         with state_module.use_identity(1001):
             state_module.state["deep_retreat_enabled"] = True
             with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                     patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value={
                         "ok": True,
                         "init_data": "dwelling_init_data",
-                        "player_id": 1001,
-                        "result": {"ok": True},
+                        "player_id": player_id,
+                        "result": {"ok": True, "data": {"raw": {
+                            "account": {"playerId": player_id},
+                            "dwelling": {"meditation": {"deepSeclusion": {"canStart": True, "active": False}}},
+                        }}},
                     })) as session_mock, \
-                    patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock(return_value=flow_result)), \
+                    patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
                     patch.object(cave_treasure_runtime, "sync_cave_deep_seclusion_action_result", new=AsyncMock(return_value={
                         "handled": True,
                         "message_kind": "start",
@@ -3824,6 +3911,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["ok"])
         session_mock.assert_awaited_once()
+        self.assertEqual(player_id, flow_mock.await_args.kwargs["player_id"])
 
     async def test_cave_public_deep_settle_skips_post_until_dashboard_is_ready(self):
         now = 1_700_000_000.0
@@ -3836,6 +3924,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "ok": True,
                 "data": {
                     "raw": {
+                        "account": {"playerId": 1001},
                         "dwelling": {
                             "meditation": {
                                 "deepSeclusion": {
@@ -3882,6 +3971,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "ok": True,
                 "data": {
                     "raw": {
+                        "account": {"playerId": 1001},
                         "dwelling": {
                             "meditation": {
                                 "deepSeclusion": {
@@ -3897,7 +3987,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         summary = "【深度闭关总结】\n本次结算时长: 8.0 小时\n神魂吐纳次数: 32 周天"
-        flow_result = {"ok": True, "status": "settle", "data": {"actionResult": {"ok": True, "rawMessage": summary}}}
+        flow_result = {"ok": True, "status": "settle", "action_dispatched": True, "data": {"account": {"playerId": 1001}, "actionResult": {"ok": True, "rawMessage": summary}}}
         with patch.object(cave_treasure_runtime, "_public_entry_allowed", return_value=True), \
                 patch.object(cave_treasure_runtime, "_load_cave_public_identity_session", new=AsyncMock(return_value=session)), \
                 patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock(return_value=flow_result)) as flow_mock, \
@@ -3928,7 +4018,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "ok": True,
                     "init_data": "dwelling_init_data",
                     "player_id": 1001,
-                    "result": {"ok": True, "data": {"raw": {"ok": True}}},
+                    "result": {"ok": True, "data": {"raw": {"ok": True, "account": {"playerId": 1001}}}},
                 })), \
                 patch.object(cave_treasure_runtime, "run_cave_deep_seclusion_action_production_flow", new=AsyncMock()) as flow_mock, \
                 patch.object(cave_treasure_runtime, "send_audit_log", new=AsyncMock()):
@@ -3964,7 +4054,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cave_public_deep_status_unrecognized_reply_defers_thirty_minutes(self):
         now = 1_700_000_001.0
-        flow_result = {"ok": True, "status": "status", "data": {"actionResult": {"ok": True, "rawMessage": "状态读取完成"}}}
+        flow_result = {"ok": True, "status": "status", "action_dispatched": True, "data": {"account": {"playerId": 1001}, "actionResult": {"ok": True, "rawMessage": "状态读取完成"}}}
         with state_module.use_identity(1001):
             state_module.state["deep_retreat_enabled"] = True
             state_module.state["next_deep_retreat_time"] = now - 1
@@ -3984,7 +4074,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     now=now,
                 )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
         self.assertIn("30 分钟后保守复查", result["message"])
         with state_module.use_identity(1001):
             self.assertEqual(

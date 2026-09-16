@@ -1,32 +1,37 @@
 import asyncio
 import html
+import logging
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
+from copy import deepcopy
 from pathlib import Path
 
 from ..config import STATE_DIR
-from ..miniapp_state import record_miniapp_state
+from ..miniapp_state import prepare_miniapp_state, record_miniapp_state
 from ..runtime import send_audit_log
 from ..state import (
-    get_current_identity_id,
     get_global_enabled,
     get_global_pause_source,
     get_identity_ids,
+    get_miniapp_state_records,
     get_send_as_profile,
     has_active_identity_context,
     is_cave_public_identity_available,
+    set_miniapp_state_records,
     use_identity,
 )
 from ..timing import get_day_key
-from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
-from .miniapp_common import append_business_capture, resolve_identity_id as _identity_id
+from ..webapp_core import MiniAppCaptureStore, MiniAppRequestAborted, miniapp_retry_after_sec, require_miniapp_operation
+from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner, append_business_capture, resolve_identity_id as _identity_id
 from .tree_miniapp import (
     extract_tree_miniapp_launch,
     normalize_tree_score_profile,
     run_tree_miniapp_daily_production_flow,
     run_tree_miniapp_game_production_flow,
 )
+from . import tree_operations
 
 
 TREE_MINIAPP_MANUAL_AUTH_TTL_SEC = 10 * 60
@@ -65,6 +70,165 @@ def _miniapp_http_allowed_during_pause():
     return (not get_global_enabled()) and get_global_pause_source() == "tianzun_maintenance"
 
 
+def tree_miniapp_unresolved(result):
+    result = result if isinstance(result, dict) else {}
+    return bool(result.get("outcome_unknown") or result.get("open_run") or result.get("status") == "result_unknown"
+                or (result.get("phase") == "unknown" and result.get("error") != "入口命令无回包"))
+
+
+def _tree_result_phase(result):
+    if tree_miniapp_unresolved(result):
+        return "unknown" if result.get("outcome_unknown") or result.get("status") == "result_unknown" else "blocked"
+    if result.get("status") == "interrupted":
+        return "interrupted"
+    if result.get("ok"):
+        return "completed" if result.get("status") in {"completed", "settled"} else "blocked"
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if data.get("phase") == "unknown":
+        return "unknown"
+    return "retry_pending" if miniapp_retry_after_sec(result) > 0 else "blocked"
+
+
+def _tree_cancelled_result():
+    return {"ok": False, "status": "cancelled", "error": "tree operation invalidated", "data": {}}
+
+
+class TreeMiniAppOperation:
+    """Own the tree record and exclusion from queueing through final publication."""
+
+    def __init__(self, owner, auth, *, operation_check=None, from_authorization=False):
+        self.owner, self.auth = owner, dict(auth)
+        self.auth["owner_account_id"] = owner.account_id
+        self.operation_check = operation_check
+        self.record = deepcopy(get_miniapp_state_records().get(f"{owner.identity_id}:tree") or {})
+        self.coordinator = None
+        self.from_authorization = from_authorization
+        self.authorization_consumed = False
+        self.task = None
+        self.finished = False
+        self.writer, self.final_result = None, None
+
+    @classmethod
+    def daily(cls, identity_id, *, now, day_key="", op_id="", score_profiles=None, operation_check=None):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        auth = {
+            "kind": "daily", "identity_id": identity_id, "day_key": day_key or get_day_key(now),
+            "op_id": str(op_id or uuid.uuid4().hex), "command_msg_id": 0,
+            "owner_account_id": owner.account_id,
+            "score_profiles": {
+                mode: normalize_tree_score_profile(mode, (score_profiles or {}).get(mode))
+                for mode in ("jump", "fly")
+            },
+        }
+        return cls(owner, auth, operation_check=operation_check)
+
+    def result_is_current(self):
+        return (self.owner.is_current() and not self.finished
+                and self.record == (get_miniapp_state_records().get(f"{self.owner.identity_id}:tree") or {})
+                and (self.coordinator is None or self.coordinator == _COORDINATOR))
+
+    def can_dispatch(self):
+        if not self.result_is_current():
+            return False
+        if not (self.writer.is_current() if self.writer else tree_operations.admission_allowed(self.owner)):
+            return False
+        recorded = self.record.get("state") if isinstance(self.record.get("state"), dict) else {}
+        if recorded.get("phase") in {"queued", "running"} and (
+            self.coordinator is None or recorded.get("op_id") != self.auth.get("op_id")
+        ):
+            return False
+        try:
+            require_miniapp_operation(self.operation_check)
+        except MiniAppRequestAborted:
+            return False
+        return (not tree_miniapp_unresolved(self.record.get("state"))
+                and check_tree_miniapp_eligibility(self.owner.identity_id)[0]
+                and (get_global_enabled() or _miniapp_http_allowed_during_pause())
+                and not (self.authorization_consumed and _MANUAL_AUTH.get(self.owner.identity_id))
+                and (not self.from_authorization or self.authorization_consumed
+                     or (_MANUAL_AUTH.get(self.owner.identity_id) or {}).get("authorization_id")
+                     == self.auth.get("authorization_id")))
+
+    def reserve(self, phase, *, now):
+        if not self.can_dispatch():
+            return False
+        if phase == "queued" and _global_run_lock().locked():
+            return False
+        if self.coordinator is None and _COORDINATOR.get("phase") in {"queued", "entry_pending", "running"}:
+            if not (self.from_authorization and _COORDINATOR.get("phase") == "entry_pending"
+                    and _coordinator_matches_auth(self.auth)):
+                return False
+        _set_coordinator(phase, auth=self.auth, now=now)
+        self.coordinator = deepcopy(_COORDINATOR)
+        return True
+
+    def refresh_record(self):
+        self.record = deepcopy(get_miniapp_state_records().get(f"{self.owner.identity_id}:tree") or {})
+
+    def finish(self, result, *, now=None):
+        if not self.result_is_current():
+            if self.writer:
+                self.writer.close(result)
+            return False
+        if self.writer:
+            saved = self.writer.close(result)
+            if self.writer.sequence:
+                saved = saved and self.writer.publish(lambda projected: _record_tree_daily_result(
+                    self.auth, projected, _tree_result_phase(projected), now=now, persist=False,
+                ))
+                if saved:
+                    projected = tree_operations.projected_result(self.writer.current)
+                    result = {**result, **{key: value for key, value in projected.items() if key != "data"}}
+                else:
+                    result = {**result, "ok": False, "status": "persistence_pending", "error": "tree_persistence_pending"}
+        phase = _tree_result_phase(result)
+        _set_coordinator(phase, auth=self.auth, result=result, error=result.get("error", ""), now=now)
+        self.coordinator = deepcopy(_COORDINATOR)
+        # Business state precedes optional capture and notification.
+        if self.writer is None or not self.writer.sequence:
+            try:
+                _record_tree_daily_result(self.auth, result, phase, now=now)
+            except Exception as exc:
+                logging.getLogger(__name__).error("Tree result persistence failed (%s); coordinator retains result", type(exc).__name__)
+        self.final_result = result
+        self.finished = True
+        return True
+
+    def abandon(self):
+        if self.finished:
+            return
+        if self.coordinator is not None and self.coordinator == _COORDINATOR:
+            if not self.finish(_tree_cancelled_result()):
+                _set_coordinator("blocked", auth=self.auth, error="tree operation invalidated")
+        if self.writer and not self.writer.closed:
+            self.writer.close(_tree_cancelled_result())
+        self.finished = True
+
+    @asynccontextmanager
+    async def execution(self):
+        task = asyncio.current_task()
+        if self.task is task:
+            yield not self.finished
+            return
+        lock = _global_run_lock()
+        if lock.locked():
+            yield False
+            return
+        async with lock:
+            if not self.reserve("running", now=time.time()):
+                yield False
+                return
+            self.task = task
+            try:
+                self.writer = tree_operations.CheckpointWriter(self.owner, self.auth, operation_check=self.can_dispatch)
+                yield True
+            finally:
+                self.task = None
+                self.abandon()
+
+
 def authorize_tree_miniapp_manual_run(
     identity_id,
     *,
@@ -87,6 +251,8 @@ def authorize_tree_miniapp_manual_run(
     except Exception:
         normalized_score_profile = {}
     _MANUAL_AUTH[identity_id] = {
+        "owner": MiniAppIdentityOwner.capture(identity_id),
+        "authorization_id": uuid.uuid4().hex,
         "expires_at": now + max(30, float(ttl_sec or TREE_MINIAPP_MANUAL_AUTH_TTL_SEC)),
         "kind": "manual",
         "identity_id": identity_id,
@@ -129,11 +295,16 @@ def prepare_tree_miniapp_daily_run(
     eligible, reason = check_tree_miniapp_eligibility(identity_id, enabled=enabled)
     if not eligible:
         return {"ok": False, "reason": reason, "identity_id": identity_id}
+    recover_tree_miniapp_local(identity_id)
+    if not tree_operations.admission_allowed(MiniAppIdentityOwner.capture(identity_id)):
+        return {"ok": False, "reason": "灵树上一局待核对或保存", "identity_id": identity_id}
+    if _global_run_lock().locked():
+        return {"ok": False, "reason": "灵树 MiniApp 全局已有任务", "identity_id": identity_id}
     now = float(now or time.time())
-    if _COORDINATOR.get("phase") in {"entry_pending", "running"}:
+    if _COORDINATOR.get("phase") in {"queued", "entry_pending", "running"}:
         active_identity_id = _identity_id(_COORDINATOR.get("identity_id"))
         active_auth = _manual_auth(active_identity_id, now) if active_identity_id > 0 else {}
-        if _COORDINATOR.get("phase") == "running" or active_auth:
+        if _COORDINATOR.get("phase") in {"queued", "running"} or active_auth:
             return {
                 "ok": False,
                 "reason": "灵树 MiniApp 全局已有任务",
@@ -143,6 +314,8 @@ def prepare_tree_miniapp_daily_run(
             }
         _set_coordinator("blocked", error="entry authorization expired", now=now)
     auth = {
+        "owner": MiniAppIdentityOwner.capture(identity_id),
+        "authorization_id": uuid.uuid4().hex,
         "kind": "daily",
         "identity_id": identity_id,
         "day_key": str(day_key or get_day_key(now)),
@@ -176,6 +349,8 @@ def finalize_tree_miniapp_daily_command(op_id, command_msg_id, *, now=None):
         auth = _manual_auth(identity_id, now)
         if auth.get("kind") != "daily" or auth.get("op_id") != op_id:
             continue
+        if _COORDINATOR.get("phase") != "entry_pending" or not _coordinator_matches_auth(auth):
+            return False
         auth["command_msg_id"] = command_msg_id
         _MANUAL_AUTH[int(identity_id)] = auth
         _set_coordinator("entry_pending", auth=auth, now=now)
@@ -191,7 +366,8 @@ def cancel_tree_miniapp_daily_run(op_id, *, reason="cancelled", now=None):
         if auth.get("kind") != "daily" or auth.get("op_id") != op_id:
             continue
         _MANUAL_AUTH.pop(identity_id, None)
-        _set_coordinator("blocked", auth=auth, error=reason, now=now)
+        if _coordinator_matches_auth(auth):
+            _set_coordinator("blocked", auth=auth, error=reason, now=now)
         return True
     return False
 
@@ -203,6 +379,10 @@ def revoke_tree_miniapp_manual_run(identity_id):
 def _manual_auth(identity_id, now):
     identity_id = _identity_id(identity_id)
     auth = dict(_MANUAL_AUTH.get(identity_id) or {})
+    owner = auth.get("owner")
+    if not isinstance(owner, MiniAppIdentityOwner) or not owner.is_current():
+        _MANUAL_AUTH.pop(identity_id, None)
+        return {}
     expires_at = float(auth.get("expires_at", 0) or 0)
     if expires_at <= 0:
         return {}
@@ -220,15 +400,23 @@ def _global_run_lock():
 
 
 def get_tree_miniapp_coordinator_snapshot():
-    return dict(_COORDINATOR)
+    return deepcopy(_COORDINATOR)
+
+
+def _coordinator_matches_auth(auth):
+    return (bool(auth.get("op_id")) and _COORDINATOR.get("op_id") == auth.get("op_id")
+            and _COORDINATOR.get("identity_id") == auth.get("identity_id")
+            and _COORDINATOR.get("authorization_id") == auth.get("authorization_id", ""))
 
 
 def _set_coordinator(phase, *, auth=None, result=None, error="", now=None):
     auth = dict(auth or {})
     result = dict(result or {})
     now = float(now or time.time())
-    retry_after_sec = miniapp_retry_after_sec(result) if phase == "retry_pending" else 0.0
+    retry_after_sec = miniapp_retry_after_sec(result)
     _COORDINATOR.update({
+        "revision": uuid.uuid4().hex,
+        "authorization_id": str(auth.get("authorization_id") or ""),
         "phase": str(phase or "idle"),
         "identity_id": _identity_id(auth.get("identity_id")),
         "day_key": str(auth.get("day_key") or ""),
@@ -236,9 +424,9 @@ def _set_coordinator(phase, *, auth=None, result=None, error="", now=None):
         "command_msg_id": max(0, int(auth.get("command_msg_id") or 0)),
         "error": str(error or ""),
         "retry_after_sec": retry_after_sec,
-        "retry_at": now + retry_after_sec if retry_after_sec > 0 else 0.0,
+        "retry_at": now + retry_after_sec if phase == "retry_pending" and retry_after_sec > 0 else 0.0,
     })
-    if phase in {"entry_pending", "running"}:
+    if phase in {"queued", "entry_pending", "running"}:
         _COORDINATOR["started_at"] = now
         _COORDINATOR["finished_at"] = 0.0
         _COORDINATOR["result"] = {}
@@ -335,14 +523,18 @@ def _record_tree_business_capture(capture_sink, result, *, source, now):
     items = rewards.get("items") if isinstance(rewards.get("items"), dict) else {}
     gains = rewards.get("gains") if isinstance(rewards.get("gains"), dict) else {}
     runs = data.get("runs") if isinstance(data.get("runs"), list) else []
-    settled_count = len(runs) or (1 if str(result.get("status") or "") == "settled" else 0)
-    if settled_count <= 0:
+    submit = data.get("submit") if isinstance(data.get("submit"), dict) else {}
+    settled_submit = bool(submit) and submit.get("confirmed") is not False
+    settled_count = len(runs) or (1 if settled_submit or str(result.get("status") or "") == "settled" else 0)
+    partial_count = len(data.get("partial_receipts") or ())
+    if settled_count <= 0 and not (partial_count and (items or gains)):
         return {}
     return append_business_capture(
         capture_sink,
         adapter_key="tree",
         detail={
             "settled_count": settled_count,
+            "partial_receipt_count": partial_count,
             "gains": gains,
             "items": items,
         },
@@ -365,6 +557,15 @@ def _quota_text(state, mode):
     return f"{label} 未开放"
 
 
+def _tree_reward_text(data):
+    rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
+    items = rewards.get("items") if isinstance(rewards.get("items"), dict) else {}
+    gains = rewards.get("gains") if isinstance(rewards.get("gains"), dict) else {}
+    parts = [f"{name}x{amount}" for name, amount in sorted(items.items()) if int(amount or 0)]
+    parts.extend(f"{name}+{amount}" for name, amount in sorted(gains.items()) if int(amount or 0))
+    return "、".join(parts)
+
+
 def _format_tree_summary(result):
     result = dict(result or {})
     status = str(result.get("status") or "unknown").strip() or "unknown"
@@ -372,12 +573,10 @@ def _format_tree_summary(result):
     state = data.get("state") if isinstance(data.get("state"), dict) else {}
     proof_summary = data.get("proof_summary") if isinstance(data.get("proof_summary"), dict) else {}
     mode = str(data.get("mode") or proof_summary.get("mode") or "").strip()
+    reward_text = _tree_reward_text(data)
     if data.get("phase"):
         quotas = data.get("quotas") if isinstance(data.get("quotas"), dict) else {}
         runs = data.get("runs") if isinstance(data.get("runs"), list) else []
-        rewards = data.get("rewards") if isinstance(data.get("rewards"), dict) else {}
-        items = rewards.get("items") if isinstance(rewards.get("items"), dict) else {}
-        gains = rewards.get("gains") if isinstance(rewards.get("gains"), dict) else {}
         parts = [f"MiniApp {status}", f"阶段 {data.get('phase')}"]
         parts.extend(_quota_text(quotas, item) for item in ("jump", "fly"))
         if runs:
@@ -430,9 +629,9 @@ def _format_tree_summary(result):
                     )
             if ranking_notes:
                 parts.append("；".join(ranking_notes))
-        material_parts = [f"{name}x{amount}" for name, amount in sorted(items.items()) if int(amount or 0)]
-        material_parts.extend(f"{name}+{amount}" for name, amount in sorted(gains.items()) if int(amount or 0))
-        parts.append("收获 " + "、".join(material_parts) if material_parts else "未解析到新增物资")
+        if data.get("partial_receipts"):
+            parts.append("结算分数未确认")
+        parts.append("收获 " + reward_text if reward_text else "未解析到新增物资")
         if result.get("error"):
             parts.append(str(result.get("error")))
         return "｜".join(parts)
@@ -440,7 +639,9 @@ def _format_tree_summary(result):
         parts = [f"MiniApp {status}"]
         if mode:
             parts.append("跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else mode)
-        parts.append("已结算，未解析到新增物资")
+        parts.append("已开局，尚未提交" if status == "prepared" else "已结算")
+        if status != "prepared":
+            parts.append("收获 " + reward_text if reward_text else "未解析到新增物资")
         return "｜".join(parts)
     if status == "mode_exhausted":
         label = "跳一跳" if mode == "jump" else "飞一飞" if mode == "fly" else (mode or "当前模式")
@@ -449,33 +650,40 @@ def _format_tree_summary(result):
             f"{_quota_text(state, 'jump')}｜{_quota_text(state, 'fly')}"
         )
     error = str(result.get("error") or "").strip()
-    return f"MiniApp {status}｜{error or '未完成'}"
+    materials = f"｜已确认收获 {reward_text}" if reward_text else ""
+    return f"MiniApp {status}｜{error or '未完成'}{materials}"
 
 
-def _record_tree_daily_result(auth, result, phase, *, now=None):
+def _record_tree_daily_result(auth, result, phase, *, now=None, persist=True):
     auth = dict(auth or {})
-    if auth.get("kind") != "daily":
-        return
     result = dict(result or {})
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     now = float(now or time.time())
-    retry_after_sec = miniapp_retry_after_sec(result) if phase == "retry_pending" else 0.0
-    record_miniapp_state(
+    retry_after_sec = miniapp_retry_after_sec(result)
+    prepare = record_miniapp_state if persist else prepare_miniapp_state
+    prepared = prepare(
         int(auth.get("identity_id") or 0),
         "tree",
         {
-            "kind": "daily",
+            "kind": str(auth.get("kind") or "manual"),
+            "owner_account_id": auth.get("owner_account_id", 0),
+            "op_id": str(auth.get("op_id") or ""),
             "day_key": str(auth.get("day_key") or ""),
             "phase": str(phase or "blocked"),
             "completed_today": str(phase or "") == "completed",
             "quotas": dict(data.get("quotas") or {}),
             "runs": list(data.get("runs") or ()),
+            "partial_receipts": list(data.get("partial_receipts") or ()),
             "rewards": dict(data.get("rewards") or {}),
             "errors": list(data.get("errors") or ()),
             "status": str(result.get("status") or ""),
             "error": str(result.get("error") or ""),
+            "outcome_unknown": bool(result.get("outcome_unknown") or result.get("status") == "result_unknown"),
+            "open_run": bool(result.get("open_run")),
+            "request_budget": dict(result.get("request_budget") or {}),
+            "submit": dict(data.get("submit") or {}),
             "retry_after_sec": retry_after_sec,
-            "retry_at": now + retry_after_sec if retry_after_sec > 0 else 0.0,
+            "retry_at": now + retry_after_sec if phase == "retry_pending" and retry_after_sec > 0 else 0.0,
         },
         source="tree_daily_runtime",
         source_id=f"tree_daily:{auth.get('identity_id')}:{auth.get('day_key')}:{auth.get('op_id')}",
@@ -483,6 +691,71 @@ def _record_tree_daily_result(auth, result, phase, *, now=None):
         outputs=("daily_counter", "score_policy", "rewards"),
         replaces_commands=(".灵树",),
     )
+    if not persist and prepared["changed"]:
+        records = dict(get_miniapp_state_records())
+        records[prepared["record_key"]] = prepared["record"]
+        set_miniapp_state_records(records)
+    return prepared
+
+
+def recover_tree_miniapp_local(identity_id):
+    def publish(owner, record, result):
+        auth = {**record["auth"], "identity_id": owner.identity_id, "owner_account_id": owner.account_id,
+                "op_id": record["operation_id"]}
+        phase = "interrupted" if result["status"] == "interrupted" else _tree_result_phase(result)
+        _record_tree_daily_result(auth, result, phase, persist=False)
+
+    return tree_operations.recover_local(identity_id, publish)
+
+
+def _safe_tree_capture_store(now):
+    try:
+        return _tree_miniapp_capture_store(now)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Tree capture initialization failed (%s)", type(exc).__name__)
+        return None
+
+
+async def _audit_tree(message, identity_id, *, result=None, priority="low", limit=220):
+    try:
+        await send_audit_log(message, scope="identity", send_as_id=identity_id, priority=priority, limit=limit)
+    except asyncio.CancelledError:
+        if result is not None:
+            raise MiniAppFlowCancelled(result) from None
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Tree audit failed (%s); business result retained", type(exc).__name__)
+
+
+async def _finish_tree_operation(operation, result, *, capture_sink, capture_source, cancelled=False):
+    result = deepcopy(result) if isinstance(result, dict) else {
+        "ok": False, "status": "result_unknown", "outcome_unknown": True, "data": {},
+        "error": "tree worker returned no result",
+    }
+    if not operation.finish(result, now=time.time()):
+        if cancelled:
+            raise MiniAppFlowCancelled() from None
+        return _tree_cancelled_result()
+    result = operation.final_result or result
+    try:
+        _record_tree_business_capture(capture_sink, result, source=capture_source, now=time.time())
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Tree business capture failed (%s); state retained", type(exc).__name__)
+    if cancelled:
+        raise MiniAppFlowCancelled(result) from None
+    try:
+        summary = html.escape(_format_tree_summary(result), quote=False)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Tree summary failed (%s); result retained", type(exc).__name__)
+        summary = "结果已记录，摘要生成失败"
+    try:
+        await _audit_tree(
+            f"🌳 灵树结果｜{summary}", operation.owner.identity_id, result=result,
+            priority="low" if result.get("ok") else "normal", limit=520,
+        )
+    except MiniAppFlowCancelled:
+        raise MiniAppFlowCancelled(result if operation.owner.is_current() else None) from None
+    return result if operation.owner.is_current() else _tree_cancelled_result()
 
 
 async def handle_tree_miniapp_entry(
@@ -524,81 +797,62 @@ async def handle_tree_miniapp_entry(
     if (not global_enabled and not maintenance_miniapp_allowed) or not eligible:
         revoke_tree_miniapp_manual_run(identity_id)
         reason = "全局暂停" if not global_enabled and not maintenance_miniapp_allowed else eligibility_reason
-        _set_coordinator("blocked", auth=auth, error=reason, now=now)
-        await send_audit_log(
+        if _COORDINATOR.get("phase") not in {"queued", "entry_pending", "running"} or _coordinator_matches_auth(auth):
+            _set_coordinator("blocked", auth=auth, error=reason, now=now)
+        await _audit_tree(
             f"🌳 灵树 MiniApp {reason}，已跳过 WebView/HTTP 接管。",
-            scope="identity",
-            send_as_id=identity_id,
+            identity_id,
             limit=180,
         )
         return True
-    lock = _global_run_lock()
-    if lock.locked():
-        await send_audit_log(
-            "🌳 灵树 MiniApp 全局已有身份执行，当前入口忽略。",
-            scope="identity",
-            send_as_id=identity_id,
-            limit=160,
-        )
+    owner = auth.get("owner")
+    if not isinstance(owner, MiniAppIdentityOwner) or not owner.is_current():
         return True
-    async with lock:
+    operation = TreeMiniAppOperation(owner, auth, from_authorization=True)
+    async with operation.execution() as acquired:
+        if not acquired:
+            return True
+        if (_MANUAL_AUTH.get(identity_id) or {}).get("authorization_id") != auth.get("authorization_id"):
+            return True
         revoke_tree_miniapp_manual_run(identity_id)
-        _set_coordinator("running", auth=auth, now=now)
+        operation.authorization_consumed = True
         is_daily = auth.get("kind") == "daily"
         mode = str(auth.get("mode") or TREE_MINIAPP_DEFAULT_MODE).strip().lower() or TREE_MINIAPP_DEFAULT_MODE
-        await send_audit_log(
+        await _audit_tree(
             "🌳 灵树 MiniApp 接管入口，开始 WebView/HTTP 流程："
             + ("daily jump→fly。" if is_daily else f"{mode}。")
             + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
-            scope="identity",
-            send_as_id=identity_id,
+            identity_id,
             priority="low",
             limit=200,
         )
-        capture_sink = _tree_miniapp_capture_store(now)
+        if not operation.can_dispatch():
+            return True
+        capture_sink = _safe_tree_capture_store(now)
         capture_source = f"tree_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
         common_kwargs = {
             "token": launch.get("token"),
             "webview_url": launch.get("webview_url"),
             "capture_sink": capture_sink,
             "capture_source": capture_source,
+            "operation_check": operation.can_dispatch,
+            "checkpoint_sink": operation.writer,
         }
-        if is_daily:
-            result = await run_tree_miniapp_daily_production_flow(
-                identity_id,
-                score_profiles=dict(auth.get("score_profiles") or {}),
-                **common_kwargs,
-            )
-        else:
-            result = await run_tree_miniapp_game_production_flow(
-                identity_id,
-                mode=mode,
-                submit=bool(auth.get("submit", True)),
-                score_profile=dict(auth.get("score_profile") or {}),
-                **common_kwargs,
-            )
-        _record_tree_business_capture(capture_sink, result, source=capture_source, now=now)
-        result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
-        result_phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
-        if not dict(result or {}).get("ok") and miniapp_retry_after_sec(result) > 0:
-            result_phase = "retry_pending"
-        _set_coordinator(
-            result_phase if result_phase in {"completed", "blocked", "unknown", "retry_pending"} else "blocked",
-            auth=auth,
-            result=result,
-            error=str(dict(result or {}).get("error") or ""),
-            now=now,
-        )
-        _record_tree_daily_result(auth, result, result_phase, now=time.time())
-        summary = html.escape(_format_tree_summary(result), quote=False)
-        priority = "low" if dict(result or {}).get("ok") else "normal"
-        await send_audit_log(
-            f"🌳 灵树结果｜{summary}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority=priority,
-            limit=220,
-        )
+        cancelled = False
+        try:
+            if is_daily:
+                result = await run_tree_miniapp_daily_production_flow(
+                    identity_id, score_profiles=dict(auth.get("score_profiles") or {}), **common_kwargs,
+                )
+            else:
+                result = await run_tree_miniapp_game_production_flow(
+                    identity_id, mode=mode, submit=bool(auth.get("submit", True)),
+                    score_profile=dict(auth.get("score_profile") or {}), **common_kwargs,
+                )
+        except MiniAppFlowCancelled as exc:
+            cancelled, result = True, exc.result
+        await _finish_tree_operation(operation, result, capture_sink=capture_sink,
+                                     capture_source=capture_source, cancelled=cancelled)
         return True
 
 
@@ -612,6 +866,8 @@ async def run_tree_miniapp_daily_direct(
     op_id="",
     score_profiles=None,
     now=None,
+    operation_check=None,
+    operation=None,
 ):
     """Run the daily tree flow from a trusted MiniApp launch without a group command."""
     identity_id = _identity_id(identity_id)
@@ -619,60 +875,47 @@ async def run_tree_miniapp_daily_direct(
     eligible, reason = check_tree_miniapp_eligibility(identity_id, enabled=True)
     if not eligible:
         return {"ok": False, "status": "blocked", "error": reason, "data": {}}
-    auth = {
-        "kind": "daily",
-        "identity_id": identity_id,
-        "day_key": str(day_key or get_day_key(now)),
-        "op_id": str(op_id or f"tree_public:{get_day_key(now)}:{identity_id}"),
-        "command_msg_id": 0,
-        "score_profiles": {
-            mode: normalize_tree_score_profile(mode, (score_profiles or {}).get(mode))
-            for mode in ("jump", "fly")
-        },
-    }
-    lock = _global_run_lock()
-    if lock.locked():
-        return {"ok": False, "status": "blocked", "error": "灵树 MiniApp 全局已有任务", "data": {}}
+    if operation is None:
+        recovered = recover_tree_miniapp_local(identity_id)
+        if recovered is not None:
+            return {"ok": False, "status": "recovered", "error": "", "data": {}, **recovered}
+    operation = operation or TreeMiniAppOperation.daily(
+        identity_id, now=now, day_key=day_key, op_id=op_id, score_profiles=score_profiles,
+        operation_check=operation_check,
+    )
+    if operation is None or operation.owner.identity_id != identity_id:
+        return _tree_cancelled_result()
+    async with operation.execution() as acquired:
+        if not acquired or not operation.can_dispatch():
+            return _tree_cancelled_result()
 
-    async with lock:
-        _set_coordinator("running", auth=auth, now=now)
-        capture_sink = _tree_miniapp_capture_store(now)
-        capture_source = f"tree_public:{identity_id}:{auth['day_key']}"
-        result = await run_tree_miniapp_daily_production_flow(
-            identity_id,
-            token=token,
-            webview_url=webview_url,
-            init_data=init_data,
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-            score_profiles=auth["score_profiles"],
-        )
-        _record_tree_business_capture(capture_sink, result, source=capture_source, now=now)
-        result_data = dict(result or {}).get("data") if isinstance(dict(result or {}).get("data"), dict) else {}
-        phase = str(result_data.get("phase") or ("completed" if dict(result or {}).get("ok") else "blocked"))
-        if not dict(result or {}).get("ok") and miniapp_retry_after_sec(result) > 0:
-            phase = "retry_pending"
-        if phase not in {"completed", "blocked", "unknown", "retry_pending"}:
-            phase = "blocked"
-        _set_coordinator(
-            phase,
-            auth=auth,
-            result=result,
-            error=str(dict(result or {}).get("error") or ""),
-            now=now,
-        )
-        _record_tree_daily_result(auth, result, phase, now=time.time())
-        await send_audit_log(
-            f"🌳 灵树结果｜{_format_tree_summary(result)}",
-            scope="identity",
-            send_as_id=identity_id,
-            priority="low" if dict(result or {}).get("ok") else "normal",
-            limit=520,
-        )
-        return dict(result or {})
+        def can_continue():
+            try:
+                require_miniapp_operation(operation_check)
+            except MiniAppRequestAborted:
+                return False
+            return operation.can_dispatch()
+
+        capture_sink = _safe_tree_capture_store(now)
+        capture_source = f"tree_public:{identity_id}:{operation.auth['day_key']}"
+        cancelled = False
+        try:
+            result = await run_tree_miniapp_daily_production_flow(
+                identity_id, token=token, webview_url=webview_url, init_data=init_data,
+                capture_sink=capture_sink, capture_source=capture_source,
+                score_profiles=operation.auth["score_profiles"], operation_check=can_continue,
+                checkpoint_sink=operation.writer,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled, result = True, exc.result
+        return await _finish_tree_operation(operation, result, capture_sink=capture_sink,
+                                            capture_source=capture_source, cancelled=cancelled)
 
 
 __all__ = [
+    "TreeMiniAppOperation",
+    "tree_miniapp_unresolved",
+    "recover_tree_miniapp_local",
     "TREE_MINIAPP_DEFAULT_MODE",
     "TREE_MINIAPP_MANUAL_AUTH_TTL_SEC",
     "authorize_tree_miniapp_manual_run",

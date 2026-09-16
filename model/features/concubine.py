@@ -1,6 +1,8 @@
 import asyncio
+import copy
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -9,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -48,11 +51,24 @@ from ..config import (
 )
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
-from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
+from ..message_keys import find_message_key, message_key_parts
+from ..message_log_recovery import find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
+from ..runtime import _fire_and_forget, classify_game_send_block, clear_pending_by_reply, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, get_sent_message_chat_id, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_id, get_game_group_ids, get_game_topic_id, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..verified_event import telegram_event_timestamp
+from ..resource_accounting import valid_point
 from . import workflow_log
+from . import concubine_affinity_actions as affinity_actions
+from . import concubine_fragment_actions as fragment_actions
+from . import concubine_voyage_actions as voyage_actions
+from . import concubine_divination_actions as divination_actions
+from . import concubine_heart_contract as heart_contract
+from . import concubine_heart_actions as heart_actions
+from . import concubine_reacquire_actions as reacquire_actions
+from . import concubine_external_events as external_events
 from . import heavenly_ban as heavenly_ban_mod
+from .wanxin import wanxin_affinity_snapshot_is_stale
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import CMD_STORAGE_BAG, apply_storage_bag_item_deltas, parse_storage_bag_reply, resolve_storage_bag_identity_id
 from ..action_guard import close_action as close_action_guard
@@ -76,6 +92,26 @@ CONCUBINE_PENDING_COMMANDS = {
 }
 
 _CONCUBINE_SCHEDULER_LOCK = asyncio.Lock()
+_CONCUBINE_QUERY_INFLIGHT = {}
+CONCUBINE_QUERY_SOURCE = "concubine_status"
+CONCUBINE_QUERY_UNRESOLVED = {"sending", "sent", "unknown"}
+CONCUBINE_QUERY_REPLAY_SEC = 60
+CONCUBINE_QUERY_KEYS = {
+    "status": "concubine_status_msg_id",
+    "gift_status": "concubine_gift_status_msg_id",
+    "fragment": "concubine_fragment_msg_id",
+    "voyage_status": "concubine_voyage_msg_id",
+}
+CONCUBINE_QUERY_COMMANDS = {
+    "status": CMD_CONCUBINE_STATUS,
+    "gift_status": CMD_CONCUBINE_STATUS,
+    "fragment": CMD_CONCUBINE_FRAGMENT,
+    "voyage_status": CMD_CONCUBINE_VOYAGE_STATUS,
+}
+CONCUBINE_QUERY_FAMILIES = {
+    "status": "concubine_status", "gift_status": "concubine_status",
+    "fragment": "concubine_fragment", "voyage_status": "concubine_voyage",
+}
 CONCUBINE_MAIN_PENDING_COMMANDS = CONCUBINE_PENDING_COMMANDS - {
     CMD_CONCUBINE_TIANJI,
     CMD_CONCUBINE_VOYAGE,
@@ -94,14 +130,26 @@ CONCUBINE_REACQUIRE_COMMANDS = {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE}
 IDENTITY_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 
 RE_CONCUBINE_HEAD = re.compile(r"你的(?P<kind>道心侍妾|红尘道侣)[：:]\s*【(?P<name>[^】]+)】\s*[(（]状态[：:]\s*(?P<location>[^)）\n]+)[)）]")
-RE_CONCUBINE_AFFINITY = re.compile(r"情缘值[：:]\s*(\d+)")
-RE_CONCUBINE_OATH = re.compile(r"当前誓约[：:]\s*([^\s(（\n]+)")
-RE_DREAM_COOLDOWN = re.compile(r"入梦寻图冷却[：:]\s*([^\n]+)")
-RE_TIANJI_COOLDOWN = re.compile(r"天机代卜冷却[：:]\s*([^\n]+)")
-RE_HEART_COOLDOWN = re.compile(r"共历心劫冷却[：:]\s*([^\n]+)")
-RE_TIANJI_CHAIN = re.compile(r"天机代卜链[：:]\s*([^\n]+)")
+CONCUBINE_STATUS_FIELDS = {
+    "情缘值": "affinity",
+    "当前誓约": "oath",
+    "入梦寻图冷却": "dream_due_at",
+    "天机代卜冷却": "tianji_due_at",
+    "共历心劫冷却": "heart_due_at",
+    "天机代卜链": "tianji_chain",
+    "梦图拼片": "fragment_progresses",
+    "远航状态": "voyage",
+}
+RE_CONCUBINE_STATUS_FIELD = re.compile(
+    r"^[ \t]*(?:-[ \t]*)?(?P<label>" + "|".join(CONCUBINE_STATUS_FIELDS)
+    + r")[：:][ \t]*(?P<value>[^\r\n]*)$", re.MULTILINE,
+)
+RE_CONCUBINE_STATUS_WAIT = re.compile(
+    r"(?:(?P<hours>[0-9]+)\s*(?:小时|时))?\s*"
+    r"(?:(?P<minutes>[0-9]+)\s*(?:分钟|分))?\s*"
+    r"(?:(?P<seconds>[0-9]+)\s*秒)?"
+)
 RE_TIANJI_CHAIN_REMAINING = re.compile(r"(?P<name>[^（(]+)[（(]\s*剩余\s*(?P<wait>[^）)]+)\s*[）)]")
-RE_TIANJI_GUA = re.compile(r"得卦【(?P<name>[^】]+)】")
 RE_TIANJI_XIUWEI_SHORTAGE = re.compile(r"修为不足[，,]\s*代卜天机需消耗\s*\d+\s*点?修为")
 RE_DREAM_PARTNER = re.compile(r"你与侍妾【(?P<name>[^】]+)】")
 RE_AFFINITY_GAIN = re.compile(r"侍妾【(?P<name>[^】]+)】[\s\S]*?情缘增加了\s*(?P<amount>\d+)\s*点")
@@ -109,25 +157,22 @@ RE_CONCUBINE_GIFT_SUCCESS = re.compile(
     r"你将【灵石】[x×]\s*(?P<stone>[\d,]+)\s*赠予了侍妾【(?P<name>[^】]+)】[\s\S]*?情缘增加了\s*(?P<amount>[\d,]+)\s*点"
 )
 RE_SELFLESS_PARTNER = re.compile(r"侍妾\s*【?(?P<name>[^】\s，,。]+)】?\s*挺身而出")
-RE_HEART_AFFINITY_SETTLEMENT = re.compile(r"情缘结算[：:]\s*\+?\s*(?P<amount>[\d,]+)")
 RE_FRAGMENT_PROGRESS = re.compile(r"(?:虚天残图拼片|拼片进度|当前进度)\s*[：:]?\s*(\d+)\s*/\s*(\d+)")
 RE_FRAGMENT_TYPED_PROGRESS = re.compile(r"(?P<kind>虚天|苍坤)\s*(?:残图)?(?:拼片|进度)?\s*(?:已至)?\s*[：:]?\s*(?P<count>\d+)\s*/\s*(?P<total>\d+)")
 RE_FRAGMENT_CONTEXT_KIND = re.compile(r"[【\[][^\]】]*(?P<kind>虚天|苍坤)残图[^\]】]*[】\]]")
+RE_FRAGMENT_PANEL_HEAD = re.compile(r"^[ \t]*【(?P<kind>[^】\r\n]+)残图卷】[ \t]*$", re.MULTILINE)
+RE_FRAGMENT_PANEL_OWNER = re.compile(r"侍妾【(?P<name>[^】\r\n]{1,120})】[（(][^）)\r\n]+[）)]的残图卷轴如下[：:]")
+RE_FRAGMENT_PANEL_FIELD = re.compile(
+    r"^[ \t]*(?P<label>拼片进度|已收集|缺失残纹)[：:][ \t]*(?P<value>[^\r\n]*)$", re.MULTILINE,
+)
 RE_DREAM_BROADCAST_PROGRESS = re.compile(r"残图进度已至\s*(\d+)\s*/\s*(\d+)")
-RE_PUZZLE_SUCCESS_KIND = re.compile(r"^【(?P<kind>虚天|苍坤)残图·拼合成功】")
-RE_PUZZLE_MISSING = re.compile(r"(?:仍缺|缺失残纹)[：:]\s*([^\n。]+)")
-RE_NEW_SECT_PARTNER = re.compile(r"新的道心侍妾\s*【(?P<name>[^】]+)】\s*已被指派")
-RE_NEW_ROMANCE_PARTNER = re.compile(r"名为\s*【(?P<name>[^】]+)】\s*的女子[\s\S]*成为你的侍妾")
-RE_LOST_PARTNER_NAME = re.compile(r"侍妾【(?P<name>[^】]+)】(?:掳走|与南陇侯交换)")
-RE_MOON_CONTRACT = re.compile(r"【月殿因果\s*·\s*南宫婉入世】[\s\S]*?道友\s+@(?P<owner>[\w\d_]+)[\s\S]*?初始情缘[：:]\s*(?P<affinity>[\d,]+)")
 RE_IDENTITY_TAG = re.compile(rf"@({IDENTITY_TAG_PATTERN})")
-RE_VOYAGE_PANEL = re.compile(r"远航状态[：:]\s*(?P<route>[^航线\n。]+)航线(?P<state>进行中|已归航)(?:，(?P<tail>[^\n。]+))?")
-RE_VOYAGE_STATUS_SAILING = re.compile(r"侍妾【(?P<name>[^】]+)】正在执行【(?P<route>[^】]+)】远航[\s\S]*?预计归航还需\s*(?P<wait>[^。\n]+)")
-RE_VOYAGE_STATUS_RETURNED = re.compile(r"侍妾【(?P<name>[^】]+)】已自【(?P<route>[^】]+)】航线归来")
+RE_VOYAGE_PANEL = re.compile(r"远航状态[：:]\s*(?P<route>[^\n。]{1,40}?)航线(?P<state>进行中|已归航)(?:[，,](?P<tail>[^\n。]+))?")
+RE_VOYAGE_STATUS_SAILING = re.compile(r"侍妾【(?P<name>[^】\r\n]{1,120})】正在执行【(?P<route>[^】\r\n]{1,40})】远航[，,]\s*预计归航还需\s*(?P<wait>[^。\r\n]+)")
+RE_VOYAGE_STATUS_RETURNED = re.compile(r"侍妾【(?P<name>[^】\r\n]{1,120})】已自【(?P<route>[^】\r\n]{1,40})】航线归来(?:[，,]待结算[（(]\.远航归来[）)])?")
+RE_VOYAGE_LOCK = re.compile(r"侍妾(?:【(?P<name>[^】\r\n]{1,120})】)?(?:(?:正在|仍在)远航(?:途中|中)|尚未归航)")
 RE_VOYAGE_START = re.compile(r"【乱星海远航·启】[\s\S]*?你命侍妾【(?P<name>[^】]+)】沿\s*(?P<route>\S+)\s*航线远行[\s\S]*?预计归航时间[：:]\s*(?P<wait>[^。\n]+)")
 RE_VOYAGE_RETURN = re.compile(r"【乱星海远航·归】[\s\S]*?侍妾【(?P<name>[^】]+)】已自\s*(?P<route>\S+)\s*航线归来")
-RE_VOYAGE_RETURN_WAIT = re.compile(r"(?:远航|归航)[\s\S]{0,80}?(?:还需|尚需|剩余(?:约)?)\s*(?P<wait>[^。\n]+)")
-RE_VOYAGE_LOCK_WAIT = re.compile(r"远航(?:中|途中)[\s\S]{0,80}?请在\s*(?P<wait>[^。\n]+?)\s*后再试")
 RE_VOYAGE_AFFINITY_LOSS = re.compile(r"情缘减少\s*(?P<amount>[\d,]+)\s*点")
 RE_VOYAGE_SPIRIT_RESERVE = re.compile(r"蓄灵\s*(?P<amount>[\d,]+)\s*点")
 RE_VOYAGE_AFFINITY_REQUIREMENT = re.compile(r"此航线至少需要\s*(?P<amount>[\d,]+)\s*情缘值")
@@ -137,17 +182,11 @@ CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
 CONCUBINE_HEART_RESOURCE_KEY = "concubine_heart"
 CONCUBINE_LOG_REPLAY_LOOKBACK_SEC = CONCUBINE_PHASE_TIMEOUT_SEC + 5 * 60
 CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC = 5
-CONCUBINE_TIANJI_LOG_GUARD_LOOKBACK_SEC = CONCUBINE_TIANJI_CD_SEC + 2 * CONCUBINE_PHASE_TIMEOUT_SEC
 CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
 CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
 CONCUBINE_PANEL_REUSE_MAX_AGE_SEC = 10 * 60
 CONCUBINE_HEART_PANEL_MAX_AGE_SEC = CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
-CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 30
-CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC = 120
-CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT = 1
 CONCUBINE_HEART_GLOBAL_START_GAP_SEC = 5 * 60
-CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC = 60
-CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_VOYAGE_MIN_AFFINITY = 120
@@ -157,11 +196,7 @@ CONCUBINE_STATUS_REUSE_DEFER_MAX_SEC = 90
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
 CONCUBINE_VOYAGE_PENDING_PHASES = {"voyage_pending", "voyage_return_pending"}
 CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC = 60 * 60
-CONCUBINE_VOYAGE_LOG_SETTLE_SEC = 12
 CONCUBINE_GIFT_PHASES = {"gift_status_pending", "gift_bag_pending", "gift_pending"}
-CONCUBINE_GREET_MAX_RETRY_COUNT = 1
-CONCUBINE_GREET_RETRY_MIN_SEC = 90
-CONCUBINE_GREET_RETRY_MAX_SEC = 180
 CONCUBINE_GREET_DEFER_MIN_SEC = 60
 CONCUBINE_GREET_DEFER_MAX_SEC = 180
 CONCUBINE_ACTIVE_DEFER_MIN_SEC = 60
@@ -289,12 +324,10 @@ def _clear_pending_msg_ids():
     _clear_heart_choice_guard()
 
 
-def _is_heart_chain_active():
-    return _phase() in CONCUBINE_HEART_ACTIVE_PHASES or int(state.get("concubine_heart_prompt_msg_id", 0) or 0) > 0
 
 
 def _is_heart_anchor_lost_text(text):
-    return "心劫锚点已散" in str(text or "")
+    return heart_contract.is_anchor_lost(text)
 
 
 def _clear_heart_choice_guard():
@@ -306,207 +339,6 @@ def _clear_heart_choice_guard():
     state["concubine_last_recovered_reply_at"] = 0
 
 
-def _has_sent_heart_choice(prompt_msg_id, round_no):
-    return (
-        int(state.get("concubine_heart_choice_prompt_msg_id", 0) or 0) == int(prompt_msg_id or 0)
-        and int(state.get("concubine_heart_choice_round", 0) or 0) == int(round_no or 0)
-        and float(state.get("concubine_heart_choice_sent_at", 0) or 0) > 0
-    )
-
-
-def _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at):
-    state["concubine_heart_choice_prompt_msg_id"] = int(prompt_msg_id or 0)
-    state["concubine_heart_choice_round"] = int(round_no or 0)
-    state["concubine_heart_choice_sent_at"] = float(sent_at or 0)
-    state["concubine_heart_choice_retry_count"] = 0
-
-
-def _set_heart_pending_deadline(due_at):
-    due_at = float(due_at or 0)
-    if due_at > 0:
-        state["concubine_heart_due_at"] = due_at
-    return due_at
-
-
-def _wait_for_existing_heart_choice(now):
-    sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
-    _set_phase("heart_choice_reply_pending")
-    ack_timeout = _heart_choice_reply_timeout_sec()
-    state["next_concubine_time"] = max(float(now) + ack_timeout, sent_at + ack_timeout)
-    _set_heart_pending_deadline(state["next_concubine_time"])
-    return state["next_concubine_time"]
-
-
-def _heart_choice_reply_timeout_sec():
-    retry_count = int(state.get("concubine_heart_choice_retry_count", 0) or 0)
-    if retry_count >= CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT:
-        return CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
-    return CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
-
-
-def _heart_choice_reply_wait_until():
-    sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
-    if sent_at <= 0:
-        return 0.0
-    return sent_at + _heart_choice_reply_timeout_sec()
-
-
-def _close_heart_action_guard(now, reason):
-    close_action_guard("concubine_heart", send_as_id=get_current_identity_id(), reason=reason, now=now)
-
-
-def _heart_action_guard_session():
-    sessions = state.get("action_guard_sessions")
-    if not isinstance(sessions, dict):
-        return None
-    session = sessions.get("concubine_heart")
-    return session if isinstance(session, dict) else None
-
-
-def _heart_action_guard_last_sent_at():
-    session = _heart_action_guard_session()
-    if not session:
-        return 0.0
-    return max(
-        float(session.get("last_sent_at", 0) or 0),
-        float(session.get("first_sent_at", 0) or 0),
-    )
-
-
-def _heart_action_guard_blocks_until(now):
-    session = _heart_action_guard_session()
-    if not session or float(session.get("closed_at", 0) or 0) > 0:
-        return 0.0
-    attempt = int(session.get("attempt", 0) or 0)
-    next_allowed_at = float(session.get("next_allowed_at", 0) or 0)
-    if attempt > 0 and next_allowed_at > float(now):
-        return next_allowed_at
-    if attempt >= 2:
-        return max(float(now) + 60, _heart_action_guard_last_sent_at() + CONCUBINE_HEART_CD_SEC)
-    return 0.0
-
-
-def _close_heart_chain_without_settlement(now, reason, *, detail=""):
-    choice_sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
-    guard_sent_at = _heart_action_guard_last_sent_at()
-    cooldown_from = max(choice_sent_at, guard_sent_at)
-    if cooldown_from <= 0:
-        cooldown_from = float(now)
-    existing_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
-    retry_at = max(
-        existing_due_at if existing_due_at > float(now) else 0.0,
-        cooldown_from + CONCUBINE_HEART_CD_SEC + CD_BUFFER_SEC,
-    )
-    _close_heart_action_guard(now, reason)
-    state["concubine_heart_due_at"] = retry_at
-    state["concubine_heart_last_error"] = "心劫链路未见结算，按长冷却等待"
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _schedule_at_due_or_chain(now, retry_at)
-    detail_parts = [f"due_at={fmt_abs_ts(retry_at)}"]
-    if detail:
-        detail_parts.append(str(detail))
-    _record_concubine_event(
-        "共历心劫链路收尾",
-        kind="skipped",
-        reason=reason,
-        phase="idle",
-        command=CMD_CONCUBINE_HEART,
-        detail="｜".join(detail_parts),
-        decision="heart_chain_closed_without_settlement",
-        workflow_status="skipped",
-    )
-    return retry_at
-
-
-async def _handle_heart_anchor_lost(now, raw_text, *, reply_to=None, current_msg_id=0):
-    retry_at = _close_heart_chain_without_settlement(
-        now,
-        "heart_anchor_lost",
-        detail="游戏已接收心劫抉择但返回锚点散失，按本次可能已消费处理",
-    )
-    state["concubine_heart_last_error"] = "心劫锚点已散，按本次已消费进入长冷却"
-    _record_concubine_event(
-        "共历心劫锚点散失",
-        kind="changed",
-        reason="heart_anchor_lost",
-        phase="idle",
-        command=CMD_CONCUBINE_HEART,
-        reply_to=reply_to,
-        current_msg_id=current_msg_id,
-        matched_text=raw_text,
-        detail=f"旧 prompt 已清理，禁止重新引动｜due_at={fmt_abs_ts(retry_at)}",
-        decision="heart_anchor_lost_consumed_cooldown",
-        workflow_status="failed",
-    )
-    save_state()
-    return True
-
-
-def _reconcile_stale_heart_action_guard(now, reason):
-    if _phase() in CONCUBINE_HEART_ACTIVE_PHASES:
-        return False
-    if not _heart_action_guard_session():
-        return False
-    _close_heart_chain_without_settlement(now, reason)
-    return True
-
-
-def _schedule_heart_choice_followup(send_as_id, due_at, prompt_msg_id, round_no):
-    send_as_id = int(send_as_id or 0)
-    prompt_msg_id = int(prompt_msg_id or 0)
-    round_no = int(round_no or 0)
-    due_at = float(due_at or 0)
-    if send_as_id <= 0 or prompt_msg_id <= 0 or round_no not in {1, 2, 3}:
-        return False
-
-    async def delayed_choice():
-        delay = max(0.0, due_at - time.time())
-        if delay > 0:
-            await asyncio.sleep(delay)
-        if not has_identity(send_as_id):
-            return
-        async with _CONCUBINE_SCHEDULER_LOCK:
-            with use_identity(send_as_id):
-                if _phase() != "heart_choice_pending":
-                    return
-                if int(state.get("concubine_heart_prompt_msg_id", 0) or 0) != prompt_msg_id:
-                    return
-                if int(state.get("concubine_heart_round", 0) or 0) != round_no:
-                    return
-                now = time.time()
-                if float(state.get("next_concubine_time", 0) or 0) > now:
-                    return
-                await _send_heart_choice(now)
-
-    _fire_and_forget(delayed_choice())
-    return True
-
-
-def _activate_heart_choice_round(now, prompt_msg_id, round_no):
-    prompt_msg_id = int(prompt_msg_id or 0)
-    round_no = int(round_no or 0)
-    current_prompt_msg_id = int(state.get("concubine_heart_prompt_msg_id", 0) or 0)
-    current_round_no = int(state.get("concubine_heart_round", 0) or 0)
-    if current_prompt_msg_id == prompt_msg_id and current_round_no > round_no:
-        return
-    if current_prompt_msg_id == prompt_msg_id and current_round_no == round_no and _phase() == "heart_choice_pending":
-        return
-    state["concubine_heart_prompt_msg_id"] = int(prompt_msg_id or 0)
-    state["concubine_heart_round"] = int(round_no or 0)
-    state["concubine_heart_last_error"] = ""
-    if _has_sent_heart_choice(prompt_msg_id, round_no):
-        _wait_for_existing_heart_choice(now)
-        return
-    _set_phase("heart_choice_pending")
-    state["next_concubine_time"] = now + _heart_next_choice_delay()
-    _set_heart_pending_deadline(state["next_concubine_time"])
-    _schedule_heart_choice_followup(
-        get_current_identity_id(),
-        state["next_concubine_time"],
-        prompt_msg_id,
-        round_no,
-    )
 
 
 def _schedule_after(now, min_sec, max_sec):
@@ -542,35 +374,6 @@ def _handle_send_queue_timeout(command, now, *, due_key=None, error_key="concubi
         detail = f"{code}: {reason}" if reason else code or "runtime_block"
         state["concubine_last_result"] = f"{label}未发送，已错峰重试（{detail}）"
     _set_phase("idle")
-    return True
-
-
-def _handle_voyage_definitely_unsent(command, now, *, label, is_retry=False):
-    send_block = get_last_game_send_block(get_current_identity_id(), command)
-    block_code = str((send_block or {}).get("code") or "")
-    if not _handle_send_queue_timeout(
-        command,
-        now,
-        error_key="concubine_voyage_last_error",
-        label=label,
-    ):
-        return False
-    if is_retry:
-        state["concubine_voyage_retry_count"] = max(
-            0,
-            int(state.get("concubine_voyage_retry_count", 0) or 0) - 1,
-        )
-    state["concubine_voyage_msg_id"] = 0
-    _record_concubine_event(
-        f"{label}未发送",
-        kind="skipped",
-        reason="concubine_voyage_definitely_unsent",
-        phase="idle",
-        command=command,
-        detail=f"block={block_code or 'runtime_block'}｜retry_budget_preserved={bool(is_retry)}",
-        decision="voyage_send_definitely_unsent",
-        workflow_status="blocked",
-    )
     return True
 
 
@@ -632,175 +435,59 @@ def _voyage_min_affinity(route=None):
     return CONCUBINE_VOYAGE_MIN_AFFINITY
 
 
-def _voyage_command(*, is_retry=False):
-    route = ""
-    if is_retry:
-        route = str(state.get("concubine_voyage_route") or "").strip()
-    return f"{CMD_CONCUBINE_VOYAGE} {route or _preferred_voyage_route()}"
-
-
-def _voyage_return_at_from_wait(wait_text, now):
-    wait_text = str(wait_text or "")
-    if not has_wait_time(wait_text):
-        return 0.0
-    return float(now + parse_wait_time(wait_text) + CD_BUFFER_SEC)
-
-
-def _voyage_unknown_return_at(now):
-    existing = float(state.get("concubine_voyage_return_at", 0) or 0)
-    if existing > now:
-        return existing
-    return 0.0
-
-
-def _voyage_wait_text_from_return(raw_text):
-    text = str(raw_text or "")
-    matched = RE_VOYAGE_RETURN_WAIT.search(text) or RE_VOYAGE_LOCK_WAIT.search(text)
-    if not matched:
-        return ""
-    wait_text = str(matched.group("wait") or "").strip()
-    return wait_text if has_wait_time(wait_text) else ""
-
-
-def _parse_voyage_text(text, now):
-    raw_text = str(text or "")
-    if not raw_text:
+def _parse_voyage_rejection(text, now):
+    raw_text = re.sub(r"[*`]+", "", str(text or "")).strip()
+    locks = list(RE_VOYAGE_LOCK.finditer(raw_text))
+    if (len(raw_text) > 4096 or len(locks) != 1 or _status_timestamp(now) is None
+            or _is_no_partner_text(raw_text) or _is_phaseful_summary_text(raw_text)
+            or any(token in raw_text for token in ("当前并未执行远航任务", "并无可结算的远航任务", "航线已归航"))):
         return None
+    matched = locks[0]
+    # Only the wait clause in this rejection sentence is a voyage clock.
+    tail = re.split(r"[。\r\n]", raw_text[matched.end():], maxsplit=1)[0].strip(" ，,")
+    wait = re.fullmatch(r"(?:预计归航)?(?:还需|尚需|剩余(?:约)?)\s*(.+?)(?:\s*后(?:归来|归航))?", tail)
+    if wait is None:
+        wait = re.fullmatch(r"请在\s*(.+?)\s*后再试", tail)
+    return_at = 0.0
+    if wait:
+        return_at = _parse_wait_due_at(wait.group(1), now)
+        if return_at is None or return_at <= now:
+            return None
+    elif any(token in tail for token in ("还需", "尚需", "剩余", "请在", "预计归航")):
+        return None
+    return {"status": "sailing", "route": "", "partner": (matched["name"] or "").strip(),
+            "return_at": return_at, "result": "", "error": raw_text if not return_at else ""}
 
-    matched = RE_VOYAGE_START.search(raw_text)
+
+def _parse_voyage_status_text(text, now):
+    raw_text = re.sub(r"[*`]+", "", str(text or "")).strip()
+    if not raw_text or len(raw_text) > 4096 or _status_timestamp(now) is None:
+        return None
+    raw_text = re.sub(r"^【(?:侍妾远航|远航状态)】\s*", "", raw_text).removesuffix("。").strip()
+    matched = re.fullmatch(r"远航状态[：:]\s*(.+)", raw_text)
     if matched:
-        return {
-            "status": "sailing",
-            "route": matched.group("route").strip(),
-            "partner": matched.group("name").strip(),
-            "return_at": _voyage_return_at_from_wait(matched.group("wait"), now),
-            "result": "",
-            "error": "",
-        }
-
-    matched = RE_VOYAGE_RETURN.search(raw_text)
+        return _parse_status_voyage(matched.group(1), now)
+    matched = RE_VOYAGE_STATUS_SAILING.fullmatch(raw_text)
     if matched:
-        affinity_loss = RE_VOYAGE_AFFINITY_LOSS.search(raw_text)
-        return {
-            "status": "idle",
-            "route": matched.group("route").strip(),
-            "partner": matched.group("name").strip(),
-            "return_at": 0.0,
-            "result": raw_text.strip(),
-            "error": "",
-            "affinity_loss": _parse_count(affinity_loss.group("amount")) if affinity_loss else 0,
-        }
-
-    matched = RE_VOYAGE_STATUS_SAILING.search(raw_text)
+        return_at = _parse_wait_due_at(matched["wait"], now)
+        if return_at is None or return_at <= now:
+            return None
+        return {"status": "sailing", "partner": matched["name"].strip(),
+                "route": matched["route"].strip(), "return_at": return_at}
+    matched = RE_VOYAGE_STATUS_RETURNED.fullmatch(raw_text)
     if matched:
-        return {
-            "status": "sailing",
-            "route": matched.group("route").strip(),
-            "partner": matched.group("name").strip(),
-            "return_at": _voyage_return_at_from_wait(matched.group("wait"), now),
-            "result": "",
-            "error": "",
-        }
-
-    matched = RE_VOYAGE_STATUS_RETURNED.search(raw_text)
+        return {"status": "returned", "partner": matched["name"].strip(),
+                "route": matched["route"].strip(), "return_at": float(now)}
+    matched = re.fullmatch(r"侍妾(?:【(?P<name>[^】\r\n]{1,120})】)?当前并未执行远航任务", raw_text)
     if matched:
-        return {
-            "status": "returned",
-            "route": matched.group("route").strip(),
-            "partner": matched.group("name").strip(),
-            "return_at": float(now),
-            "result": "",
-            "error": "",
-        }
-
-    matched = RE_VOYAGE_PANEL.search(raw_text)
-    if matched:
-        route = matched.group("route").strip()
-        state_text = matched.group("state")
-        tail = matched.group("tail") or ""
-        if state_text == "进行中":
-            return {
-                "status": "sailing",
-                "route": route,
-                "partner": "",
-                "return_at": _voyage_return_at_from_wait(tail, now),
-                "result": "",
-                "error": "",
-            }
-        return {
-            "status": "returned",
-            "route": route,
-            "partner": "",
-            "return_at": float(now),
-            "result": "",
-            "error": "",
-        }
-
-    if "当前并未执行远航任务" in raw_text:
-        return {
-            "status": "no_task",
-            "route": "",
-            "partner": "",
-            "return_at": 0.0,
-            "result": "",
-            "error": raw_text.strip(),
-            "clear_idle": True,
-        }
-
-    if "侍妾当前并无可结算的远航任务" in raw_text:
-        return {"status": "no_task", "route": "", "partner": "", "return_at": 0.0, "result": "", "error": raw_text.strip()}
-
-    wait_text = _voyage_wait_text_from_return(raw_text)
-    if wait_text:
-        return {
-            "status": "sailing",
-            "route": str(state.get("concubine_voyage_route") or "").strip(),
-            "partner": "",
-            "return_at": _voyage_return_at_from_wait(wait_text, now),
-            "result": "",
-            "error": "",
-        }
-
-    if _is_voyage_lock_text(raw_text):
-        return {
-            "status": "sailing",
-            "route": str(state.get("concubine_voyage_route") or "").strip(),
-            "partner": "",
-            "return_at": _voyage_unknown_return_at(now),
-            "result": "",
-            "error": raw_text.strip(),
-        }
-
-    if "开启远航需要" in raw_text or ("远航" in raw_text and ("灵石不足" in raw_text or "修为不足" in raw_text or "资源不足" in raw_text)):
-        return {"status": "idle", "route": "", "partner": "", "return_at": 0.0, "result": "", "error": raw_text.strip()}
-
-    affinity_requirement = RE_VOYAGE_AFFINITY_REQUIREMENT.search(raw_text)
-    if affinity_requirement:
-        required = _parse_count(affinity_requirement.group("amount"))
-        return {
-            "status": "idle",
-            "route": str(state.get("concubine_voyage_route") or _preferred_voyage_route()).strip(),
-            "partner": "",
-            "return_at": 0.0,
-            "result": "",
-            "error": raw_text.strip(),
-            "affinity_cap": max(0, required - 1),
-        }
-
-    return None
+        return {"status": "no_task", "clear_idle": True, "partner": (matched["name"] or "").strip()}
+    if raw_text == "侍妾当前并无可结算的远航任务":
+        return {"status": "needs_status", "return_at": 0.0, "error": raw_text}
+    return _parse_voyage_rejection(raw_text, now)
 
 
 def _is_voyage_lock_text(text):
-    raw_text = str(text or "")
-    return any(
-        marker in raw_text
-        for marker in (
-            "侍妾正在远航途中",
-            "侍妾仍在远航途中",
-            "侍妾正在远航中",
-            "侍妾仍在远航中",
-        )
-    )
+    return RE_VOYAGE_LOCK.search(str(text or "")) is not None
 
 
 def _apply_voyage_blocked_action(parsed, now, *, error_key, label):
@@ -812,8 +499,8 @@ def _apply_voyage_blocked_action(parsed, now, *, error_key, label):
 
 
 def _handle_action_blocked_by_voyage(raw_text, now, *, error_key, label):
-    voyage = _parse_voyage_text(raw_text, now)
-    if not voyage or voyage.get("status") != "sailing":
+    voyage = _parse_voyage_rejection(raw_text, now)
+    if not voyage:
         return False
     _apply_voyage_blocked_action(voyage, now, error_key=error_key, label=label)
     return True
@@ -825,7 +512,6 @@ def _apply_voyage_snapshot(parsed, now):
     status = str(parsed.get("status") or "").strip()
     route = str(parsed.get("route") or "").strip()
     partner = str(parsed.get("partner") or "").strip()
-    previous_status = str(state.get("concubine_voyage_status") or "").strip()
     if partner:
         state["concubine_name"] = partner
     if route:
@@ -835,8 +521,6 @@ def _apply_voyage_snapshot(parsed, now):
     if status == "sailing":
         _clear_stale_tianji_summary_wait_error()
         return_at = float(parsed.get("return_at", 0) or 0)
-        if return_at <= now:
-            return_at = _voyage_unknown_return_at(now)
         state["concubine_voyage_return_at"] = return_at
         state["concubine_voyage_last_result"] = ""
         state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
@@ -844,7 +528,10 @@ def _apply_voyage_snapshot(parsed, now):
         if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
             _set_phase("idle")
             state["concubine_voyage_msg_id"] = 0
-        _schedule_voyage_wait(now)
+        if return_at > 0 and return_at <= now:
+            _schedule_chain_action(now)
+        else:
+            _schedule_voyage_wait(now)
         return True
     if status == "returned":
         state["concubine_voyage_return_at"] = float(parsed.get("return_at", now) or now)
@@ -861,24 +548,15 @@ def _apply_voyage_snapshot(parsed, now):
         if result:
             state["concubine_voyage_last_result"] = result
         state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
-        affinity_loss = int(parsed.get("affinity_loss", 0) or 0)
-        if affinity_loss > 0:
-            _apply_affinity_loss(affinity_loss, now)
-        if "affinity_cap" in parsed:
-            state["concubine_affinity"] = min(
-                int(state.get("concubine_affinity", 0) or 0),
-                int(parsed.get("affinity_cap", 0) or 0),
-            )
         state["concubine_voyage_retry_count"] = 0
         if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
             _set_phase("idle")
             state["concubine_voyage_msg_id"] = 0
         _schedule_chain_action(now)
         return True
-    if status == "no_task":
-        should_clear = bool(parsed.get("clear_idle")) or previous_status not in {"sailing", "returned"}
+    if status in {"no_task", "needs_status"}:
         state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
-        if should_clear:
+        if status == "no_task" and parsed.get("clear_idle") is True:
             state["concubine_voyage_status"] = "idle"
             state["concubine_voyage_return_at"] = 0
             state["concubine_voyage_retry_count"] = 0
@@ -887,7 +565,8 @@ def _apply_voyage_snapshot(parsed, now):
                 state["concubine_voyage_msg_id"] = 0
             _schedule_chain_action(now)
             return True
-        state["concubine_voyage_status"] = previous_status or "sailing"
+        state["concubine_voyage_status"] = "needs_status"
+        state["concubine_voyage_return_at"] = 0
         if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
             _set_phase("idle")
             state["concubine_voyage_msg_id"] = 0
@@ -1024,9 +703,7 @@ def _is_voyage_return_due(now):
 
 
 def _is_voyage_probe_due(now):
-    if str(state.get("concubine_voyage_status") or "") != "sailing":
-        return False
-    if int(state.get("concubine_voyage_retry_count", 0) or 0) > 0:
+    if str(state.get("concubine_voyage_status") or "") not in {"sailing", "needs_status"}:
         return False
     return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
     if return_at > 0:
@@ -1051,45 +728,14 @@ def _has_voyage_runtime_state(now):
     if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
         return True
     return (
-        _is_voyage_sailing(now)
+        state.get("concubine_voyage_status") == "needs_status"
+        or _is_voyage_sailing(now)
         or _is_voyage_return_due(now)
         or _is_voyage_probe_due(now)
         or _is_voyage_return_retry_exhausted(now)
     )
 
 
-def _voyage_retry_send_kwargs(command):
-    identity_id = int(get_current_identity_id() or 0)
-    old_msg_id = int(state.get("concubine_voyage_msg_id", 0) or 0)
-    chain_id = f"concubine_voyage_retry:{identity_id}:{old_msg_id}"
-    return {
-        "priority": "retry",
-        "source_module": "侍妾远航",
-        "op_id": f"{chain_id}:{str(command or '').strip()}",
-        "chain_id": chain_id,
-    }
-
-
-def _heart_choice_send_kwargs(prompt_msg_id, round_no, try_no=0):
-    identity_id = int(get_current_identity_id() or 0)
-    prompt_msg_id = int(prompt_msg_id or 0)
-    round_no = int(round_no or 0)
-    try_no = max(0, int(try_no or 0))
-    chain_id = f"concubine_heart_choice:{identity_id}:{prompt_msg_id}:round{round_no}"
-    return {
-        "source_module": "共历心劫",
-        "op_id": f"{chain_id}:try{try_no}:{CMD_CONCUBINE_HEART_STEADY}",
-        "chain_id": chain_id,
-    }
-
-
-def _heart_choice_route_kwargs():
-    chat_id = get_sent_message_chat_id(
-        int(state.get("concubine_heart_msg_id", 0) or 0),
-        default=0,
-        send_as_id=get_current_identity_id(),
-    )
-    return {"target_chat_id": chat_id} if chat_id else {}
 
 
 def _schedule_voyage_wait(now):
@@ -1117,13 +763,15 @@ def _is_voyage_eligible(now):
         minimum = _voyage_min_affinity(route)
         state["concubine_voyage_last_error"] = f"{route}情缘不足（{affinity}/{minimum}），暂不远航"
         return False
-    if _is_voyage_sailing(now) or _is_voyage_return_due(now):
+    if _is_voyage_sailing(now) or _is_voyage_return_due(now) or state.get("concubine_voyage_status") == "needs_status":
         return False
     state["concubine_voyage_last_error"] = ""
     return True
 
 
 def _is_daily_greet_due(now):
+    if affinity_actions.finished_today(now, "greet"):
+        return False
     if not state.get("concubine_tianji_enabled"):
         return False
     if not _is_star_palace_identity():
@@ -1132,12 +780,15 @@ def _is_daily_greet_due(now):
         return False
     if state.get("concubine_kind") != "道心侍妾":
         return False
-    if int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY:
+    affinity = state.get("concubine_affinity")
+    if type(affinity) is not int or not 0 <= affinity < CONCUBINE_TIANJI_MIN_AFFINITY:
         return False
     return str(state.get("concubine_last_greet_day") or "") != _local_day_key(now)
 
 
 def _is_gift_recovery_eligible(now):
+    if affinity_actions.finished_today(now):
+        return False
     if not state.get("concubine_tianji_enabled"):
         return False
     if not _is_star_palace_identity():
@@ -1168,21 +819,18 @@ def _is_gift_recovery_due(now):
 def _can_use_cached_panel_for_gift_recovery(now):
     if not _is_gift_recovery_eligible(now):
         return False
-    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_seen_at <= 0:
-        return False
-    return panel_seen_at >= float(now or 0) - CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
+    return _has_recent_concubine_status_panel(now)
 
 
 def _has_recent_concubine_status_panel(now):
     if not _has_available_partner():
         return False
-    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_seen_at <= 0:
+    panel_msg_id = _msg_id_int(state.get("concubine_last_panel_msg_id"))
+    panel_seen_at = _status_timestamp(state.get("concubine_last_snapshot_at"))
+    timestamp = _status_timestamp(now)
+    if panel_msg_id <= 0 or panel_seen_at is None or timestamp is None:
         return False
-    return panel_seen_at >= float(now or 0) - CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
+    return timestamp - CONCUBINE_PANEL_REUSE_MAX_AGE_SEC <= panel_seen_at <= timestamp
 
 
 def _reuse_recent_status_panel(now, reason):
@@ -1314,7 +962,7 @@ def _schedule_after_tianji(now):
     heart_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
     if state.get("concubine_heart_enabled") and heart_due_at > now:
         due_times.append(heart_due_at)
-    dream_due_at = float(state.get("concubine_dream_due_at", 0) or 0)
+    dream_due_at = fragment_actions.next_dream_at()
     if state.get("concubine_enabled") and dream_due_at > now:
         due_times.append(dream_due_at)
     if not due_times:
@@ -1330,28 +978,11 @@ def _schedule_affinity_recovery(now):
     if _is_gift_recovery_due(now):
         return _schedule_chain_action(now)
     if state.get("concubine_enabled"):
-        dream_due_at = float(state.get("concubine_dream_due_at", 0) or 0)
+        dream_due_at = fragment_actions.next_dream_at()
         if dream_due_at <= now:
             return _schedule_chain_action(now)
         return _schedule_at_due_or_chain(now, dream_due_at)
     return _schedule_after_tianji(now)
-
-
-def _retry_or_stop_daily_greet(now, reason):
-    retry_count = max(0, int(state.get("concubine_greet_retry_count", 0) or 0))
-    _set_phase("idle")
-    _clear_non_heart_pending_msg_ids()
-    if retry_count < CONCUBINE_GREET_MAX_RETRY_COUNT:
-        state["concubine_greet_retry_count"] = retry_count + 1
-        state["concubine_greet_last_error"] = (
-            f"{reason}，稍后补发"
-            f"（{state['concubine_greet_retry_count']}/{CONCUBINE_GREET_MAX_RETRY_COUNT}）"
-        )
-        return _schedule_after(now, CONCUBINE_GREET_RETRY_MIN_SEC, CONCUBINE_GREET_RETRY_MAX_SEC)
-    state["concubine_last_greet_day"] = _local_day_key(now)
-    state["concubine_greet_retry_count"] = 0
-    state["concubine_greet_last_error"] = f"{reason}，已补发一次，今日不再补发"
-    return _schedule_next_daily_greet_check(now)
 
 
 def _is_affinity_shortage_error():
@@ -1388,35 +1019,19 @@ def _normalize_tianji_affinity_error(now):
 
 
 def _backoff_after_pending_timeout(now, phase):
-    """Pending 超时后必须压住对应 due，避免下一轮因旧 due_at 立即重发。"""
+    """Legacy non-heart backoff; owned heart sessions retain their own clocks."""
     retry_at = _schedule_status_recheck(now)
     if phase == "status_pending":
         if state.get("concubine_enabled") and float(state.get("concubine_dream_due_at", 0) or 0) <= now:
             state["concubine_dream_due_at"] = retry_at
         if state.get("concubine_tianji_enabled") and float(state.get("concubine_tianji_due_at", 0) or 0) <= now:
             state["concubine_tianji_due_at"] = retry_at
-        if state.get("concubine_heart_enabled") and float(state.get("concubine_heart_due_at", 0) or 0) <= now:
-            state["concubine_heart_due_at"] = retry_at
-    elif phase == "greet_pending":
-        retry_at = _retry_or_stop_daily_greet(now, "每日问安等待回复超时")
     elif phase in CONCUBINE_GIFT_PHASES:
         state["concubine_last_gift_day"] = _local_day_key(now)
         state["concubine_gift_last_error"] = f"{phase} 等待回复超时，今日不再赠予"
         state["concubine_gift_amount"] = 0
-    elif phase == "dream_pending":
-        state["concubine_dream_due_at"] = retry_at
-    elif phase == "tianji_pending":
-        if float(state.get("concubine_tianji_due_at", 0) or 0) <= float(now):
-            state["concubine_tianji_due_at"] = float(now) + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC
-        _clear_expired_tianji_chain(now)
-    elif phase in {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
-        state["concubine_heart_due_at"] = retry_at
     elif phase in {"fragment_pending", "puzzle_pending"}:
-        _mark_completed_fragment_incomplete_after_failed_chain()
-        if float(state.get("concubine_dream_due_at", 0) or 0) <= now:
-            state["concubine_dream_due_at"] = retry_at
-    elif phase == "reacquire_pending":
-        state["concubine_reacquire_blocked_until"] = retry_at
+        _clear_fragment_confirmation()
     return retry_at
 
 
@@ -1427,10 +1042,7 @@ async def _apply_concubine_resource_backoff(now, action_key, due_key, error_key,
     state[error_key] = f"{label}资源不足: {str(raw_text or '')[:80]}"
     _set_phase("idle")
     _clear_pending_msg_ids()
-    if action_key == CONCUBINE_TIANJI_RESOURCE_KEY:
-        _schedule_after_tianji(now)
-    else:
-        _schedule_at_due_or_chain(now, due_at)
+    _schedule_at_due_or_chain(now, due_at)
     await send_audit_log(
         f"⚠️ {label}资源不足，第 {int(backoff.get('count', 1) or 1)} 档退避→{fmt_time_after(max(0, due_at - now))}",
         scope="identity",
@@ -1449,9 +1061,11 @@ def _is_current_reply(reply_to, state_key):
 
 
 def _msg_id_int(value):
+    if isinstance(value, bool):
+        return 0
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -1558,211 +1172,8 @@ def _concubine_family_for_command(command):
     return "concubine"
 
 
-def _tianji_due_from_logged_reply(text, event_ts):
-    raw_text = str(text or "")
-    event_ts = float(event_ts or 0)
-    if event_ts <= 0:
-        return None
-    if "【天机代卜链】" in raw_text:
-        gua_match = RE_TIANJI_GUA.search(raw_text)
-        return {
-            "due_at": event_ts + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC,
-            "chain": gua_match.group("name").strip() if gua_match else "",
-            "source": "success",
-        }
-    if "天机链路尚未重铸" in raw_text:
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_TIANJI_CD_SEC
-        return {
-            "due_at": event_ts + wait_sec + CD_BUFFER_SEC,
-            "chain": "",
-            "source": "cooldown",
-        }
-    return None
-
-
-def _find_recent_logged_tianji_cooldown(now):
-    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, end_ts - CONCUBINE_TIANJI_LOG_GUARD_LOOKBACK_SEC)
-    sent_msgs = {}
-    best = None
-    for payload in _iter_message_log_entries_between(start_ts, end_ts):
-        if not _payload_matches_game_topic(payload):
-            continue
-        event_ts = _parse_message_log_ts(payload.get("ts"))
-        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
-            continue
-        event_type = str(payload.get("event_type") or "").strip()
-        text = str(payload.get("text") or "").strip()
-        msg_id = _msg_id_int(payload.get("message_id"))
-        if (
-            text == CMD_CONCUBINE_TIANJI
-            and event_type in {"sent", "message"}
-            and _sender_matches_current_identity(payload.get("sender_id"))
-            and msg_id > 0
-        ):
-            sent_msgs.setdefault(msg_id, event_ts)
-            continue
-        if event_type not in {"message", "edit"}:
-            continue
-        reply_to_msg_id = _msg_id_int(payload.get("reply_to_msg_id"))
-        if reply_to_msg_id <= 0 or reply_to_msg_id not in sent_msgs:
-            continue
-        due_info = _tianji_due_from_logged_reply(text, event_ts)
-        if not due_info:
-            continue
-        due_at = float(due_info.get("due_at", 0) or 0)
-        if due_at <= float(now or 0):
-            continue
-        if not best or due_at > float(best.get("due_at", 0) or 0):
-            best = {
-                "due_at": due_at,
-                "chain": due_info.get("chain", ""),
-                "source": due_info.get("source", ""),
-                "msg_id": msg_id,
-                "reply_to_msg_id": reply_to_msg_id,
-                "event_ts": event_ts,
-            }
-    return best
-
-
-def _guard_tianji_send_with_message_log(now):
-    logged = _find_recent_logged_tianji_cooldown(now)
-    if not logged:
-        return False
-    due_at = float(logged.get("due_at", 0) or 0)
-    if due_at <= float(now or 0):
-        return False
-    state["concubine_tianji_due_at"] = max(float(state.get("concubine_tianji_due_at", 0) or 0), due_at)
-    chain = str(logged.get("chain") or "").strip()
-    if chain:
-        state["concubine_tianji_chain"] = chain
-        state["concubine_tianji_chain_due_at"] = max(float(state.get("concubine_tianji_chain_due_at", 0) or 0), due_at)
-    state["concubine_tianji_last_error"] = ""
-    if _phase() == "tianji_pending":
-        _set_phase("idle")
-    state["concubine_tianji_msg_id"] = 0
-    _schedule_after_tianji(now)
-    _record_concubine_event(
-        "天机代卜临发拦截",
-        kind="skipped",
-        reason="logged_tianji_cooldown",
-        phase=_phase(),
-        command=CMD_CONCUBINE_TIANJI,
-        msg_id=_msg_id_int(logged.get("msg_id")),
-        detail=f"due_at={fmt_abs_ts(due_at)}｜source={logged.get('source')}",
-        decision="tianji_send_blocked_by_message_log",
-    )
-    return True
-
-
-def _find_recent_logged_heart_start(now):
-    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, float(now or 0) - CONCUBINE_HEART_GLOBAL_START_GAP_SEC)
-    best = None
-    for payload in _iter_message_log_entries_between(start_ts, end_ts):
-        if not _payload_matches_game_topic(payload):
-            continue
-        event_ts = _parse_message_log_ts(payload.get("ts"))
-        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
-            continue
-        if str(payload.get("event_type") or "").strip() != "sent":
-            continue
-        if str(payload.get("text") or "").strip() != CMD_CONCUBINE_HEART:
-            continue
-        source_module = str(payload.get("source_module") or "").strip()
-        family = str(payload.get("family") or "").strip()
-        if source_module and source_module != "共历心劫":
-            continue
-        if family and family != "concubine_heart":
-            continue
-        if best is None or event_ts > float(best.get("event_ts", 0) or 0):
-            best = {
-                "event_ts": event_ts,
-                "sender_id": int(payload.get("sender_id", 0) or 0),
-                "msg_id": _msg_id_int(payload.get("message_id")),
-            }
-    return best
-
-
-def _guard_heart_start_with_message_log(now):
-    logged = _find_recent_logged_heart_start(now)
-    if not logged:
-        return False
-    event_ts = float(logged.get("event_ts", 0) or 0)
-    if event_ts <= 0:
-        return False
-    remaining = event_ts + CONCUBINE_HEART_GLOBAL_START_GAP_SEC - float(now or 0)
-    if remaining <= 0:
-        return False
-    delay = remaining + random.uniform(CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC, CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC)
-    state["next_concubine_time"] = max(float(state.get("next_concubine_time", 0) or 0), float(now or 0) + delay)
-    state["concubine_heart_last_error"] = ""
-    state["concubine_last_result"] = "共历心劫全局串行等待，避免多号三轮抉择叠发"
-    _record_concubine_event(
-        "共历心劫全局串行等待",
-        kind="skipped",
-        reason="concubine_heart_global_start_guard",
-        phase=_phase(),
-        command=CMD_CONCUBINE_HEART,
-        msg_id=_msg_id_int(logged.get("msg_id")),
-        detail=f"last_sender={int(logged.get('sender_id', 0) or 0)}｜wait={int(delay)}s",
-        decision="heart_start_global_guard",
-    )
-    return True
-
-
-def _cached_heart_panel_anchor(now):
-    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-    panel_chat_id = int(state.get("concubine_last_panel_chat_id", 0) or 0)
-    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_chat_id == 0 or panel_seen_at <= 0:
-        return None
-    if panel_seen_at < float(now or 0) - CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
-        return None
-    return {
-        "msg_id": panel_msg_id,
-        "chat_id": panel_chat_id,
-        "event_ts": panel_seen_at,
-        "source": "cached_panel",
-        "name": str(state.get("concubine_name") or ""),
-    }
-
-
-def _find_recent_logged_heart_panel(now):
-    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, float(now or 0) - CONCUBINE_HEART_PANEL_MAX_AGE_SEC)
-    best = None
-    for payload in _iter_message_log_entries_between(start_ts, end_ts):
-        if not _payload_matches_game_topic(payload):
-            continue
-        event_type = str(payload.get("event_type") or "").strip()
-        if event_type not in {"message", "edit"}:
-            continue
-        msg_id = _msg_id_int(payload.get("message_id"))
-        if msg_id <= 0:
-            continue
-        event_ts = _parse_message_log_ts(payload.get("ts"))
-        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
-            continue
-        text = str(payload.get("text") or "")
-        if CMD_CONCUBINE_HEART not in text and "共历心劫冷却" not in text:
-            continue
-        parsed = _parse_status_panel(text, event_ts)
-        if not parsed or not parsed.get("has_partner"):
-            continue
-        if best is None or event_ts > float(best.get("event_ts", 0) or 0):
-            best = {
-                "msg_id": msg_id,
-                "chat_id": int(payload.get("chat_id", 0) or 0),
-                "event_ts": event_ts,
-                "source": "message_log",
-                "name": str(parsed.get("name") or ""),
-            }
-    return best
-
-
 def _resolve_heart_panel_anchor(now):
-    return _cached_heart_panel_anchor(now) or _find_recent_logged_heart_panel(now)
+    return heart_actions.panel_anchor(now)
 
 
 def _record_concubine_event(
@@ -1864,13 +1275,6 @@ def _record_concubine_ignored_reply(label, *, reason="concubine_reply_ignored", 
     )
 
 
-def _is_current_heart_prompt_message(reply_to=None, current_msg_id=0):
-    expected_msg_id = _msg_id_int(state.get("concubine_heart_prompt_msg_id", 0))
-    if expected_msg_id <= 0:
-        return False
-    return _msg_id_int(current_msg_id) == expected_msg_id or _msg_id_int(getattr(reply_to, "id", 0)) == expected_msg_id
-
-
 def _is_heavenly_ban_text(text):
     return heavenly_ban_mod.is_heavenly_ban_text(text)
 
@@ -1885,20 +1289,6 @@ def _is_strong_dream_terminal_text(text):
         or ("【全群异闻·" in raw_text and "残图】" in raw_text)
         or _is_voyage_lock_text(raw_text)
         or ("尚无侍妾" in raw_text and "共梦寻图" in raw_text)
-    )
-
-
-def _is_strong_tianji_terminal_text(text):
-    raw_text = str(text or "")
-    return (
-        "【天机代卜链】" in raw_text
-        or "天机链路尚未重铸" in raw_text
-        or _is_tianji_resource_shortage_text(raw_text)
-        or "情缘未至" in raw_text
-        or "情缘未深" in raw_text
-        or "无法为你卜算天机" in raw_text
-        or _is_voyage_lock_text(raw_text)
-        or ("尚无侍妾" in raw_text and "代卜天机" in raw_text)
     )
 
 
@@ -1926,8 +1316,6 @@ def _is_concubine_candidate_text_for_phase(text, phase):
             or "残图" in raw_text
             or "掉落率" in raw_text
         )
-    if phase == "tianji_pending":
-        return _is_strong_tianji_terminal_text(raw_text) or "天机代卜" in raw_text or "代卜天机" in raw_text
     if phase == "greet_pending":
         return "问安" in raw_text or "情缘增加" in raw_text or _is_no_partner_text(raw_text) or _is_phaseful_summary_text(raw_text) or _is_voyage_lock_text(raw_text)
     if phase == "gift_status_pending":
@@ -1979,18 +1367,6 @@ def _is_concubine_candidate_text_for_phase(text, phase):
         return "残图" in raw_text or "拼片" in raw_text or _is_voyage_lock_text(raw_text)
     if phase == "puzzle_pending":
         return "拼图" in raw_text or "虚天" in raw_text or "苍坤" in raw_text or "残图" in raw_text or _is_voyage_lock_text(raw_text)
-    if phase == "reacquire_pending":
-        return (
-            "新的道心侍妾" in raw_text
-            or "成为你的侍妾" in raw_text
-            or _is_no_partner_text(raw_text)
-            or "赐婚" in raw_text
-            or "红尘寻缘" in raw_text
-            or "神念消耗过剧" in raw_text
-            or ("请在" in raw_text and "后再试" in raw_text)
-            or "冷却" in raw_text
-            or _is_voyage_lock_text(raw_text)
-        )
     return False
 
 
@@ -2053,30 +1429,72 @@ async def _audit_pending_timeout_candidates(now, phase):
     )
 
 
+def _find_observed_status_query_reply(now, phase):
+    owner = _status_query_owner()
+    root = _query_int(state.get(CONCUBINE_QUERY_KEYS[phase.removesuffix("_pending")]))
+    pending = state.get("pending_tasks")
+    if _query_time(now) is None or not _owns_status_query(owner) or root <= 0 or not isinstance(pending, dict):
+        return None
+    refs = [_status_query_pending_ref(key, item) for key, item in pending.items() if isinstance(item, dict)]
+    refs = [ref for ref in refs if ref and ref[1] == root and ref[0] in get_game_group_ids()]
+    if len(refs) != 1:
+        return None
+    chat = refs[0][0]
+    start = max(0, now - CONCUBINE_LOG_REPLAY_LOOKBACK_SEC)
+    rows = [row for row in _iter_message_log_entries_between(start, now)
+            if isinstance(row, dict) and _query_int(row.get("chat_id")) == chat
+            and row.get("event_type") in ("message", "edit")
+            and start <= _parse_message_log_ts(row.get("ts")) <= now]
+    commands = [row for row in rows if _query_int(row.get("message_id")) == root]
+    if not commands:
+        return None
+    original = commands[0]
+    original_at = _query_time(original.get("server_event_at"))
+    actor = _query_int(original.get("sender_id"))
+    if (original_at is None or not start <= original_at <= now
+            or any(row.get("event_type") != "message"
+                   or (row.get("sender_is_bot") is not False and not (actor < 0 and "sender_is_bot" not in row))
+                   or row.get("text") != CMD_CONCUBINE_STATUS
+                   or row.get("message_edited") is not False or row.get("forwarded") is not False
+                   or row.get("fwd_from") or row.get("edit_date")
+                   or _query_int(row.get("sender_id")) != actor
+                   or _query_time(row.get("server_event_at")) != original_at
+                   or ("account_id" in row and _query_int(row["account_id"]) != owner[2])
+                   for row in commands)):
+        return None
+    reply_ids = {_query_int(row.get("message_id")) for row in rows if _query_int(row.get("reply_to_msg_id")) == root} - {0}
+    replies = [row for row in rows if _query_int(row.get("message_id")) in reply_ids]
+    if not replies or any(_query_time(row.get("server_event_at")) is None for row in replies):
+        return None
+    # Select the latest revision before validating it; an invalid edit must not
+    # expose an older good-looking panel from the same read.
+    last = max(replies, key=lambda row: (row["server_event_at"], _query_int(row.get("message_id"))))
+    fact_keys = ("text", "sender_id", "sender_is_bot", "reply_to_msg_id", "account_id",
+                 "forwarded", "message_edited", "fwd_from", "edit_date")
+    if (any(row["server_event_at"] == last["server_event_at"] and row.get("message_id") == last.get("message_id")
+            and any(row.get(key) != last.get(key) for key in fact_keys) for row in replies)
+            or last.get("sender_is_bot") is not True or last.get("forwarded") is not False or last.get("fwd_from")
+            or type(last.get("message_edited")) is not bool
+            or _query_int(last.get("reply_to_msg_id")) != root
+            or ("account_id" in last and _query_int(last["account_id"]) != owner[2])
+            or last["server_event_at"] > now):
+        return None
+    parent = SimpleNamespace(id=root, chat_id=chat, sender_id=original.get("sender_id"),
+                             raw_text=original["text"], server_event_at=original_at, edit_date=None)
+    context = {"send_as_id": owner[0], "account_id": owner[2], "chat_id": chat,
+               "family": "concubine_status", "root_msg_id": root, "reply_to_msg_id": root,
+               "reply_to_command": original["text"], "reply_to_server_at": original_at,
+               "reply_to_sender_id": original.get("sender_id"), "reply_to_command_edited": False,
+               "sender_id": last.get("sender_id"), "event_type": last["event_type"],
+               "server_event_at": last["server_event_at"]}
+    record = _observed_status_query_source(parent, owner, last["server_event_at"], last.get("message_id"), chat, context)
+    if record is None or _parse_query_reply(record, last.get("text"), last["server_event_at"]) is None:
+        return None
+    key, valid = _observed_status_query_pending(record)
+    return (last, parent, context) if valid and key is not None else None
+
+
 def _pending_log_replay_spec(phase):
-    if phase == "status_pending":
-        return {
-            "state_key": "concubine_status_msg_id",
-            "command": CMD_CONCUBINE_STATUS,
-            "family": "concubine_status",
-            "handler": handle_concubine_status_reply,
-            "current_msg_id": True,
-        }
-    if phase == "gift_status_pending":
-        return {
-            "state_key": "concubine_gift_status_msg_id",
-            "command": CMD_CONCUBINE_STATUS,
-            "family": "concubine_status",
-            "handler": handle_concubine_status_reply,
-            "current_msg_id": True,
-        }
-    if phase == "greet_pending":
-        return {
-            "state_key": "concubine_greet_msg_id",
-            "command": CMD_CONCUBINE_DAILY_GREET,
-            "family": "concubine_greet",
-            "handler": handle_concubine_greet_reply,
-        }
     if phase == "gift_bag_pending":
         return {
             "state_key": "concubine_gift_bag_msg_id",
@@ -2090,82 +1508,6 @@ def _pending_log_replay_spec(phase):
             "command": CMD_CONCUBINE_GIFT_STONE,
             "family": "concubine_gift",
             "handler": handle_concubine_gift_reply,
-        }
-    if phase == "dream_pending":
-        return {
-            "state_key": "concubine_dream_msg_id",
-            "command": CMD_CONCUBINE_DREAM,
-            "family": "concubine_dream",
-            "handler": handle_concubine_dream_reply,
-        }
-    if phase == "fragment_pending":
-        return {
-            "state_key": "concubine_fragment_msg_id",
-            "command": CMD_CONCUBINE_FRAGMENT,
-            "family": "concubine_fragment",
-            "handler": handle_concubine_fragment_reply,
-        }
-    if phase == "puzzle_pending":
-        return {
-            "state_key": "concubine_puzzle_msg_id",
-            "command": CMD_CONCUBINE_PUZZLE,
-            "family": "concubine_puzzle",
-            "handler": handle_concubine_puzzle_reply,
-        }
-    if phase == "reacquire_pending":
-        command = str(state.get("concubine_reacquire_command_override") or "") or _get_reacquire_command()
-        return {
-            "state_key": "concubine_reacquire_msg_id",
-            "command": command,
-            "family": "concubine_reacquire",
-            "handler": handle_concubine_reacquire_reply,
-        }
-    if phase == "tianji_pending":
-        return {
-            "state_key": "concubine_tianji_msg_id",
-            "command": CMD_CONCUBINE_TIANJI,
-            "family": "concubine_tianji",
-            "handler": handle_concubine_tianji_reply,
-        }
-    if phase == "heart_pending":
-        return {
-            "state_key": "concubine_heart_msg_id",
-            "command": CMD_CONCUBINE_HEART,
-            "family": "concubine_heart",
-            "handler": handle_concubine_heart_reply,
-            "current_msg_id": True,
-        }
-    if phase == "heart_choice_reply_pending":
-        return {
-            "state_key": "concubine_heart_prompt_msg_id",
-            "command": CMD_CONCUBINE_HEART_STEADY,
-            "family": "concubine_heart",
-            "handler": handle_concubine_heart_reply,
-            "current_msg_id": True,
-            "match_message_id": True,
-        }
-    if phase == "heart_choice_pending":
-        return {
-            "state_key": "concubine_heart_prompt_msg_id",
-            "command": CMD_CONCUBINE_HEART_STEADY,
-            "family": "concubine_heart",
-            "handler": handle_concubine_heart_reply,
-            "current_msg_id": True,
-            "match_message_id": True,
-        }
-    if phase == "voyage_pending":
-        return {
-            "state_key": "concubine_voyage_msg_id",
-            "command": _voyage_command(),
-            "family": "concubine_voyage",
-            "handler": handle_concubine_voyage_reply,
-        }
-    if phase == "voyage_return_pending":
-        return {
-            "state_key": "concubine_voyage_msg_id",
-            "command": CMD_CONCUBINE_VOYAGE_RETURN,
-            "family": "concubine_voyage",
-            "handler": handle_concubine_voyage_reply,
         }
     return None
 
@@ -2276,70 +1618,31 @@ async def _recover_sent_command_after_empty_send(now, phase, command, state_key,
     return True
 
 
-def _find_logged_heart_anchor_lost(now):
-    if _phase() not in CONCUBINE_HEART_ACTIVE_PHASES:
-        return None
-    if int(state.get("concubine_heart_prompt_msg_id", 0) or 0) <= 0:
-        return None
-    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
-    start_ts = max(0.0, end_ts - CONCUBINE_LOG_REPLAY_LOOKBACK_SEC)
-    found = None
-    for payload in _iter_message_log_entries_between(start_ts, end_ts):
-        if not _payload_matches_game_topic(payload):
-            continue
-        if payload.get("event_type") not in {"message", "edit"}:
-            continue
-        event_ts = _parse_message_log_ts(payload.get("ts"))
-        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
-            continue
-        text = str(payload.get("text") or "")
-        if not _is_heart_anchor_lost_text(text):
-            continue
-        found = {
-            "ts": event_ts,
-            "message_id": _msg_id_int(payload.get("message_id")),
-            "reply_to_msg_id": _msg_id_int(payload.get("reply_to_msg_id")),
-            "text": text,
-        }
-    return found
-
-
-def _concubine_recovered_reply_key(phase, logged_reply):
-    text = str((logged_reply or {}).get("text") or "")
-    digest = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    message_id = _msg_id_int((logged_reply or {}).get("message_id"))
-    reply_to_msg_id = _msg_id_int((logged_reply or {}).get("reply_to_msg_id"))
-    return f"{phase}:{message_id}:{reply_to_msg_id}:{digest}"
 
 
 async def _recover_concubine_pending_from_message_log(now, phase):
-    if phase in CONCUBINE_HEART_ACTIVE_PHASES:
-        anchor_lost = _find_logged_heart_anchor_lost(now)
-        if anchor_lost:
-            reply_to_msg_id = _msg_id_int(anchor_lost.get("reply_to_msg_id"))
-            reply_to = SimpleNamespace(raw_text=CMD_CONCUBINE_HEART_STEADY, id=reply_to_msg_id) if reply_to_msg_id > 0 else None
-            handled = await _handle_heart_anchor_lost(
-                float(anchor_lost.get("ts") or now),
-                anchor_lost.get("text") or "",
-                reply_to=reply_to,
-                current_msg_id=_msg_id_int(anchor_lost.get("message_id")),
-            )
-            if handled:
-                await send_audit_log(
-                    f"🌸 侍妾日志补偿：{phase} 识别心劫锚点散失（msg_id={anchor_lost['message_id']}）。",
-                    scope="identity",
-                    limit=220,
-                )
-                return True
+    if phase in {"status_pending", "gift_status_pending"}:
+        query, owner = _status_query_record(), _status_query_owner()
+        if query is None or (query and query["status"] in CONCUBINE_QUERY_UNRESOLVED):
+            return False
+        observation = _find_observed_status_query_reply(now, phase)
+        if observation is None:
+            return False
+        reply, parent, context = observation
+        result = await _handle_observed_status_query_reply(
+            query, reply["text"], now, parent, context["server_event_at"],
+            reply["message_id"], context["chat_id"], context,
+        )
+        if result == "complete" and _owns_status_query(owner):
+            try:
+                await send_audit_log(f"🌸 侍妾日志补偿：{phase} 已保存核验后的状态（msg_id={reply['message_id']}）。",
+                                     scope="identity", send_as_id=owner[0], limit=220)
+            except Exception as exc:
+                console_log(f"侍妾查询已保存，通知失败 ({type(exc).__name__})")
+        # Only a failed commit holds the read; stale/blocked evidence is not a retry.
+        return result in {"complete", "save_failed"}
     logged_reply = _find_logged_pending_reply(now, phase)
     if not logged_reply:
-        return False
-    recovery_key = _concubine_recovered_reply_key(phase, logged_reply)
-    if (
-        phase in {"heart_choice_pending", "heart_choice_reply_pending"}
-        and recovery_key
-        and recovery_key == str(state.get("concubine_last_recovered_reply_key") or "")
-    ):
         return False
     spec = logged_reply["spec"]
     before_phase = _phase()
@@ -2365,9 +1668,6 @@ async def _recover_concubine_pending_from_message_log(now, phase):
     state_changed = _phase() != before_phase or float(state.get("next_concubine_time", 0) or 0) != before_next
     if not handled and not state_changed:
         return False
-    if phase in {"heart_choice_pending", "heart_choice_reply_pending"}:
-        state["concubine_last_recovered_reply_key"] = recovery_key
-        state["concubine_last_recovered_reply_at"] = float(now or 0)
     await send_audit_log(
         f"🌸 侍妾日志补偿：{phase} 已按真实回复接管（msg_id={logged_reply['message_id']}）。",
         scope="identity",
@@ -2404,24 +1704,30 @@ def _text_matches_current_identity(text):
 
 def _parse_wait_due_at(raw_text, now, *, coarse_minute_buffer=False):
     text = str(raw_text or "").strip()
-    if not text or "可施展" in text or "可用" in text:
+    if text in {"可施展", "可用"}:
         return 0.0
-    if has_wait_time(text):
-        minute_buffer = 60 if coarse_minute_buffer and "秒" not in text else 0
-        return float(now + parse_wait_time(text) + CD_BUFFER_SEC + minute_buffer)
-    return 0.0
+    matched = RE_CONCUBINE_STATUS_WAIT.fullmatch(text) if len(text) <= 64 else None
+    if not matched or not any(matched.groups()):
+        return None
+    wait_sec = sum(int(matched.group(key) or 0) * scale for key, scale in (
+        ("hours", 3600), ("minutes", 60), ("seconds", 1),
+    ))
+    minute_buffer = 60 if coarse_minute_buffer and matched.group("seconds") is None else 0
+    return _status_timestamp(now + wait_sec + CD_BUFFER_SEC + minute_buffer)
 
 
 def _parse_tianji_chain(raw_text, now):
     text = str(raw_text or "").strip()
-    if not text or text == "无":
+    if text == "无":
         return "", 0.0
-    matched = RE_TIANJI_CHAIN_REMAINING.search(text)
+    matched = RE_TIANJI_CHAIN_REMAINING.fullmatch(text)
     if not matched:
-        return text, 0.0
+        return None
     name = matched.group("name").strip()
     wait_text = matched.group("wait").strip()
-    due_at = float(now + parse_wait_time(wait_text) + CD_BUFFER_SEC) if has_wait_time(wait_text) else 0.0
+    due_at = _parse_wait_due_at(wait_text, now)
+    if not name or due_at is None or due_at <= 0:
+        return None
     return name, due_at
 
 
@@ -2440,13 +1746,6 @@ def _clear_expired_tianji_chain(now):
     state["concubine_tianji_chain"] = ""
     state["concubine_tianji_chain_due_at"] = 0
     return True
-
-
-def _set_tianji_provisional_cooldown(sent_at):
-    due_at = float(sent_at or time.time()) + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC
-    state["concubine_tianji_due_at"] = max(float(state.get("concubine_tianji_due_at", 0) or 0), due_at)
-    _clear_expired_tianji_chain(sent_at)
-    return state["concubine_tianji_due_at"]
 
 
 def _normalize_fragment_kind(raw_kind):
@@ -2521,44 +1820,48 @@ def _parse_fragment_progresses(text):
     return progresses
 
 
-def _iter_fragment_sections(text):
-    raw_text = str(text or "")
-    matches = list(RE_FRAGMENT_CONTEXT_KIND.finditer(raw_text))
-    for index, matched in enumerate(matches):
-        start = matched.start()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw_text)
-        yield _normalize_fragment_kind(matched.group("kind")), raw_text[start:end]
+def _parse_fragment_panel(text):
+    raw_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    headings = list(RE_FRAGMENT_PANEL_HEAD.finditer(raw_text))
+    labels = {label: kind for kind, label in FRAGMENT_LABELS.items()}
+    if len(headings) != len(labels) or {match["kind"] for match in headings} != labels.keys():
+        return None
+    owner = RE_FRAGMENT_PANEL_OWNER.fullmatch(raw_text[:headings[0].start()].strip())
+    if not owner or not owner["name"].strip():
+        return None
+
+    progresses = {}
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(raw_text)
+        fields = {}
+        for field in RE_FRAGMENT_PANEL_FIELD.finditer(raw_text[heading.end():end]):
+            if field["label"] in fields:
+                return None
+            fields[field["label"]] = field["value"].strip()
+        if fields.keys() != {"拼片进度", "已收集", "缺失残纹"}:
+            return None
+        progress = re.fullmatch(r"([0-4])[ \t]*/[ \t]*4", fields["拼片进度"])
+        if not progress:
+            return None
+        count = int(progress[1])
+        pieces = []
+        for label, size in (("已收集", count), ("缺失残纹", 4 - count)):
+            value = fields[label]
+            items = [] if value == "无" else [item.strip() for item in re.split(r"[、,，]", value)]
+            if len(items) != size or len(set(items)) != size or any(not item or len(item) > 120 for item in items):
+                return None
+            pieces.append(set(items))
+        if pieces[0] & pieces[1]:
+            return None
+        progresses[labels[heading["kind"]]] = (count, 4)
+    return {"partner": owner["name"].strip(), "progresses": progresses}
 
 
 def _confirmed_completed_fragment_kinds_from_reply(text):
-    confirmed = []
-    for kind, section in _iter_fragment_sections(text):
-        progress = _parse_fragment_progresses(section).get(kind)
-        if not progress:
-            continue
-        count, total = progress
-        missing_match = RE_PUZZLE_MISSING.search(section)
-        missing_text = missing_match.group(1).strip() if missing_match else ""
-        if total > 0 and count >= total and (not missing_text or missing_text == "无"):
-            confirmed.append(kind)
-    if confirmed:
-        return confirmed
-
-    missing_match = RE_PUZZLE_MISSING.search(str(text or ""))
-    missing_text = missing_match.group(1).strip() if missing_match else ""
-    if _is_puzzle_ready() and (not missing_text or missing_text == "无"):
-        return _completed_fragment_kinds()
-    return []
-
-
-def _parse_fragment_progress(text):
-    progresses = _parse_fragment_progresses(text)
-    if DREAM_KIND_XUTIAN in progresses:
-        return progresses[DREAM_KIND_XUTIAN]
-    for fragment_kind in FRAGMENT_KIND_ORDER:
-        if fragment_kind in progresses:
-            return progresses[fragment_kind]
-    return None
+    parsed = _parse_fragment_panel(text)
+    if not parsed:
+        return []
+    return [kind for kind in FRAGMENT_KIND_ORDER if parsed["progresses"][kind] == (4, 4)]
 
 
 def _apply_fragment_progresses(progresses):
@@ -2610,9 +1913,17 @@ def _mark_fragment_confirmation(now):
     return key
 
 
-def _is_current_fragment_confirmed():
+def _is_current_fragment_confirmed(now=None):
     key = _fragment_confirmation_key()
-    return bool(key and key == str(state.get("concubine_fragment_confirm_key") or ""))
+    at = _query_time(state.get("concubine_fragment_confirmed_at"))
+    now = _query_time(time.time() if now is None else now)
+    record = _status_query_record()
+    return bool(key and key == str(state.get("concubine_fragment_confirm_key") or "")
+                and at is not None and now is not None and 0 <= now - at <= CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
+                and record and record["kind"] == "fragment" and record["status"] == "complete"
+                and record.get("outcome") == "panel" and record.get("confirmation_key") == key
+                and record["account_id"] == get_identity_account(record["identity_id"])
+                and at == record["reply_at"] and _current_partner_matches(record["partner"]))
 
 
 def _format_fragment_progresses(progresses=None):
@@ -2633,51 +1944,6 @@ def _format_fragment_progresses(progresses=None):
 def _format_completed_fragment_progresses():
     completed = {kind: _get_fragment_progress(kind) for kind in _completed_fragment_kinds()}
     return _format_fragment_progresses(completed) if completed else ""
-
-
-def _parse_puzzle_success_kind(text):
-    matched = RE_PUZZLE_SUCCESS_KIND.match(str(text or ""))
-    if matched:
-        return _normalize_fragment_kind(matched.group("kind"))
-    raw_text = str(text or "")
-    if "全群广播" in raw_text and "残图拼合" in raw_text:
-        if "苍坤" in raw_text:
-            return DREAM_KIND_CANGKUN
-        if "虚天" in raw_text:
-            return DREAM_KIND_XUTIAN
-    return ""
-
-
-def _select_fragment_kind_for_puzzle_result(text):
-    parsed_kind = _parse_puzzle_success_kind(text)
-    if parsed_kind:
-        return parsed_kind
-    raw_text = str(text or "")
-    if "苍坤" in raw_text:
-        return DREAM_KIND_CANGKUN
-    if "虚天" in raw_text:
-        return DREAM_KIND_XUTIAN
-    completed = _completed_fragment_kinds()
-    return completed[0] if completed else DREAM_KIND_XUTIAN
-
-
-def _mark_completed_fragment_incomplete_after_failed_chain():
-    completed = _completed_fragment_kinds()
-    if not completed:
-        return
-    kind = completed[0]
-    _, total = _get_fragment_progress(kind)
-    _set_fragment_progress(kind, max(0, total - 1), total)
-
-
-def _apply_dream_partner_hint(text):
-    matched = RE_DREAM_PARTNER.search(str(text or ""))
-    if not matched:
-        return
-    name = matched.group("name").strip()
-    if name:
-        state["concubine_name"] = name
-        _set_availability("available")
 
 
 def _current_partner_matches(name):
@@ -2702,23 +1968,6 @@ def _parse_gift_success(text):
     }
 
 
-def _finish_gift_recovery_today(now, reason):
-    today = _local_day_key(now)
-    state["concubine_last_gift_day"] = today
-    state["concubine_gift_attempt_day"] = today
-    state["concubine_gift_last_error"] = str(reason or "")
-    _set_phase("idle")
-    _clear_non_heart_pending_msg_ids()
-    _schedule_affinity_recovery(now)
-
-
-def _defer_gift_recovery_after_send_failure(now, reason):
-    state["concubine_gift_last_error"] = f"{reason}，稍后重试"
-    _set_phase("idle")
-    _clear_non_heart_pending_msg_ids()
-    _schedule_after(now, CONCUBINE_ACTIVE_DEFER_MIN_SEC, CONCUBINE_ACTIVE_DEFER_MAX_SEC)
-
-
 def _is_selfless_affinity_depletion_text(text):
     raw_text = str(text or "")
     return (
@@ -2729,11 +1978,6 @@ def _is_selfless_affinity_depletion_text(text):
     )
 
 
-def _parse_selfless_partner_name(text):
-    matched = RE_SELFLESS_PARTNER.search(str(text or ""))
-    return matched.group("name").strip() if matched else ""
-
-
 def is_concubine_affinity_event_candidate(text):
     raw_text = str(text or "")
     if "【月殿因果" in raw_text and "南宫婉入世" in raw_text and "初始情缘" in raw_text:
@@ -2741,51 +1985,6 @@ def is_concubine_affinity_event_candidate(text):
     return "侍妾" in raw_text and "情缘" in raw_text and (
         "情缘增加了" in raw_text or _is_selfless_affinity_depletion_text(raw_text)
     )
-
-
-def _apply_affinity_gain(partner_name, amount, now):
-    if not _current_partner_matches(partner_name):
-        return False
-    return _apply_affinity_amount(amount, now)
-
-
-def _apply_affinity_loss(amount, now):
-    loss_amount = _parse_count(amount)
-    if loss_amount <= 0:
-        return False
-
-    current_affinity = max(0, int(state.get("concubine_affinity", 0) or 0))
-    new_affinity = max(0, current_affinity - loss_amount)
-    state["concubine_affinity"] = new_affinity
-    _set_availability("available")
-    if state.get("concubine_kind") == "道心侍妾":
-        if new_affinity < CONCUBINE_TIANJI_MIN_AFFINITY:
-            state["concubine_tianji_last_error"] = f"远航损耗情缘（{new_affinity}/{CONCUBINE_TIANJI_MIN_AFFINITY}），等待问安/赠予恢复"
-            _schedule_affinity_recovery(now)
-        else:
-            _normalize_tianji_affinity_error(now)
-    return True
-
-
-def _apply_affinity_amount(amount, now):
-    try:
-        gain_amount = int(str(amount or "").replace(",", ""))
-    except (TypeError, ValueError):
-        return False
-    if gain_amount <= 0:
-        return False
-
-    current_affinity = max(0, int(state.get("concubine_affinity", 0) or 0))
-    new_affinity = current_affinity + gain_amount
-    state["concubine_affinity"] = new_affinity
-    _set_availability("available")
-    if state.get("concubine_kind") == "道心侍妾":
-        if new_affinity < CONCUBINE_TIANJI_MIN_AFFINITY:
-            state["concubine_tianji_last_error"] = f"情缘恢复中（{new_affinity}/{CONCUBINE_TIANJI_MIN_AFFINITY}），暂缓天机代卜"
-            _schedule_affinity_recovery(now)
-        else:
-            _normalize_tianji_affinity_error(now)
-    return True
 
 
 def _is_no_partner_text(text):
@@ -2831,54 +2030,123 @@ def _parse_status_panel(text, now):
     # Tianjige command-center replies may wrap the same Telegram panel fields
     # in Markdown emphasis. Normalize decoration before applying the existing
     # business parser so the HTTP and Telegram paths share one reducer.
-    raw_text = re.sub(r"[*_`]+", "", str(text or ""))
-    matched = RE_CONCUBINE_HEAD.search(raw_text)
-    if not matched:
+    raw_text = re.sub(r"[*_`]+", "", str(text or "")).replace("\r\n", "\n").replace("\r", "\n")
+    observed_at = _status_timestamp(now)
+    if observed_at is None:
+        return None
+    headers = list(RE_CONCUBINE_HEAD.finditer(raw_text))
+    if not headers:
         if _is_no_partner_text(raw_text):
             return {
                 "has_partner": False,
+                "observed_at": observed_at,
                 "not_eligible": _is_partner_not_eligible_text(raw_text),
                 "manual_repair": _is_partner_manual_repair_text(raw_text),
             }
         return None
-
-    affinity_match = RE_CONCUBINE_AFFINITY.search(raw_text)
-    oath_match = RE_CONCUBINE_OATH.search(raw_text)
-    dream_match = RE_DREAM_COOLDOWN.search(raw_text)
-    tianji_match = RE_TIANJI_COOLDOWN.search(raw_text)
-    heart_match = RE_HEART_COOLDOWN.search(raw_text)
-    tianji_chain_match = RE_TIANJI_CHAIN.search(raw_text)
-    tianji_chain, tianji_chain_due_at = _parse_tianji_chain(tianji_chain_match.group(1), now) if tianji_chain_match else ("", 0.0)
-    progresses = _parse_fragment_progresses(raw_text)
-    voyage = _parse_voyage_text(raw_text, now)
-
-    return {
+    if len(headers) != 1 or _is_no_partner_text(raw_text):
+        return None
+    matched = headers[0]
+    parsed = {
         "has_partner": True,
+        "observed_at": observed_at,
         "kind": matched.group("kind").strip(),
         "name": matched.group("name").strip(),
         "location": matched.group("location").strip(),
-        "affinity": int(affinity_match.group(1)) if affinity_match else 0,
-        "oath": oath_match.group(1).strip() if oath_match else "",
-        "dream_due_at": _parse_wait_due_at(
-            dream_match.group(1),
-            now,
-            coarse_minute_buffer=True,
-        ) if dream_match else 0.0,
-        "tianji_due_at": _parse_wait_due_at(
-            tianji_match.group(1),
-            now,
-            coarse_minute_buffer=True,
-        ) if tianji_match else 0.0,
-        "heart_due_at": _parse_wait_due_at(
-            heart_match.group(1),
-            now,
-            coarse_minute_buffer=True,
-        ) if heart_match else 0.0,
-        "tianji_chain": tianji_chain,
-        "tianji_chain_due_at": tianji_chain_due_at,
-        "fragment_progresses": progresses,
-        "voyage": voyage,
     }
+    for field in RE_CONCUBINE_STATUS_FIELD.finditer(raw_text):
+        key = CONCUBINE_STATUS_FIELDS[field.group("label")]
+        value = field.group("value").strip()
+        if key in parsed or not value or len(value) > 512:
+            return None
+        if key == "affinity":
+            if len(value) > 20 or not re.fullmatch(r"(?:[0-9]+|[1-9][0-9]{0,2}(?:,[0-9]{3})+)", value):
+                return None
+            parsed[key] = int(value.replace(",", ""))
+            if parsed[key] > 2**63 - 1:
+                return None
+        elif key == "oath":
+            oath = re.fullmatch(r"([^\s()（）]+)(?:\s*[（(][^）)]*[）)])?", value)
+            if not oath:
+                return None
+            parsed[key] = oath.group(1)
+        elif key == "tianji_chain":
+            chain = _parse_tianji_chain(value, observed_at)
+            if chain is None:
+                return None
+            parsed[key], parsed["tianji_chain_due_at"] = chain
+        elif key == "fragment_progresses":
+            progresses = {}
+            for part in value.split("|"):
+                progress = re.fullmatch(r"\s*(虚天|苍坤)\s*([0-9]{1,19})\s*/\s*([0-9]{1,19})\s*", part)
+                if not progress:
+                    return None
+                kind = _normalize_fragment_kind(progress.group(1))
+                count, total = int(progress.group(2)), int(progress.group(3))
+                if kind in progresses or not 0 <= count <= total <= 2**63 - 1 or total == 0:
+                    return None
+                progresses[kind] = (count, total)
+            parsed[key] = progresses
+        elif key == "voyage":
+            voyage = _parse_status_voyage(value, observed_at)
+            if voyage is None:
+                return None
+            parsed[key] = voyage
+        else:
+            due_at = _parse_wait_due_at(value, observed_at, coarse_minute_buffer=True)
+            if due_at is None:
+                return None
+            parsed[key] = due_at
+    return parsed
+
+
+def _parse_status_voyage(value, now):
+    value = str(value or "").strip().removesuffix("。")
+    if value == "当前并未执行远航任务":
+        return {"status": "no_task", "clear_idle": True}
+    matched = RE_VOYAGE_PANEL.fullmatch("远航状态:" + value)
+    if not matched:
+        return None
+    status = "sailing" if matched.group("state") == "进行中" else "returned"
+    return_at = float(now) if status == "returned" else 0.0
+    tail = str(matched.group("tail") or "").strip()
+    if tail:
+        if status == "returned":
+            if re.fullmatch(r"待结算(?:[（(]\.远航归来[）)])?", tail) is None:
+                return None
+        else:
+            wait = re.fullmatch(r"(?:剩余约|剩余|预计归航还需)\s*(.+)", tail)
+            return_at = _parse_wait_due_at(wait.group(1), now) if wait else None
+            if return_at is None or return_at <= now:
+                return None
+    return {"status": status, "route": matched.group("route").strip(), "return_at": return_at}
+
+
+def _status_timestamp(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+        if not math.isfinite(number) or number <= 0:
+            return None
+        datetime.fromtimestamp(number, TZ_LOCAL)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return number
+
+
+def _is_complete_status_panel(parsed):
+    if not isinstance(parsed, dict) or _status_timestamp(parsed.get("observed_at")) is None:
+        return False
+    if parsed.get("has_partner") is False:
+        return True
+    if parsed.get("has_partner") is not True or not all(parsed.get(key) for key in ("kind", "name", "location")):
+        return False
+    # Red-dust panels legitimately omit affinity/oath; absent data is not zero.
+    required = {"dream_due_at", "tianji_due_at", "heart_due_at"}
+    if parsed["kind"] == "道心侍妾":
+        required.add("affinity")
+    return required <= parsed.keys()
 
 
 def _merge_future_cooldown(state_key, parsed_due_at, now):
@@ -2894,7 +2162,9 @@ def _is_puzzle_ready():
 
 
 def _has_available_partner():
-    return state.get("concubine_availability") == "available" and bool((state.get("concubine_name") or "").strip())
+    return (not external_events.needs_calibration() and not affinity_actions.needs_calibration()
+            and state.get("concubine_availability") == "available"
+            and bool((state.get("concubine_name") or "").strip()))
 
 
 def _has_main_due_action(now):
@@ -2902,7 +2172,7 @@ def _has_main_due_action(now):
         return False
     if _is_puzzle_ready():
         return True
-    return float(state.get("concubine_dream_due_at", 0) or 0) <= float(now)
+    return fragment_actions.next_dream_at() <= float(now)
 
 
 def _is_tianji_affinity_blocked():
@@ -2914,7 +2184,7 @@ def _has_tianji_due_action(now):
         return False
     if not _has_available_partner() or _is_tianji_affinity_blocked():
         return False
-    return float(state.get("concubine_tianji_due_at", 0) or 0) <= float(now)
+    return divination_actions.next_at() <= float(now)
 
 
 def _has_heart_due_action(now):
@@ -2922,7 +2192,7 @@ def _has_heart_due_action(now):
         return False
     if not _has_available_partner():
         return False
-    return float(state.get("concubine_heart_due_at", 0) or 0) <= float(now)
+    return heart_actions.next_at() <= float(now)
 
 
 def _has_due_action(now):
@@ -3032,14 +2302,14 @@ def _clear_partner_snapshot(*, clear_voyage=True):
 
 def _schedule_no_partner_check(now, *, allow_reacquire=True):
     retry_at = float(now + CONCUBINE_NO_PARTNER_RETRY_SEC)
-    blocked_until = float(state.get("concubine_reacquire_blocked_until", 0) or 0)
+    blocked_until = reacquire_actions.next_at()
     if allow_reacquire and state.get("concubine_enabled") and state.get("concubine_auto_reacquire") and blocked_until > now:
         retry_at = min(retry_at, blocked_until)
     state["next_concubine_time"] = retry_at
     return retry_at
 
 
-def _mark_no_partner(now, reason, *, allow_reacquire=True):
+def _mark_no_partner(now, reason, *, allow_reacquire=True, clear_pending=True):
     if _is_permanent_moon_partner():
         _set_availability("available")
         _set_phase("idle")
@@ -3054,7 +2324,8 @@ def _mark_no_partner(now, reason, *, allow_reacquire=True):
     _clear_pending_msg_ids()
     state["concubine_last_snapshot_at"] = 0
     state["concubine_last_error"] = str(reason or "暂无侍妾")
-    clear_pending_tasks_by_commands(CONCUBINE_PENDING_COMMANDS, send_as_id=get_current_identity_id())
+    if clear_pending:
+        clear_pending_tasks_by_commands(CONCUBINE_PENDING_COMMANDS, send_as_id=get_current_identity_id())
     blocked_until = float(state.get("concubine_reacquire_blocked_until", 0) or 0)
     if allow_reacquire and state.get("concubine_auto_reacquire") and now >= blocked_until:
         _schedule_after(now, 60, 1200)
@@ -3063,14 +2334,15 @@ def _mark_no_partner(now, reason, *, allow_reacquire=True):
     mark_dirty()
 
 
-def _freeze_no_partner_until(until, reason):
+def _freeze_no_partner_until(until, reason, *, clear_pending=True):
     now = time.time()
     blocked_until = max(float(until or 0), now + 60)
     _clear_partner_snapshot()
     _set_availability("no_partner")
     _set_phase("no_partner")
     _clear_pending_msg_ids()
-    clear_pending_tasks_by_commands(CONCUBINE_PENDING_COMMANDS, send_as_id=get_current_identity_id())
+    if clear_pending:
+        clear_pending_tasks_by_commands(CONCUBINE_PENDING_COMMANDS, send_as_id=get_current_identity_id())
     state["concubine_last_snapshot_at"] = now
     state["concubine_last_error"] = str(reason or "侍妾暂不可补领")
     state["concubine_reacquire_blocked_until"] = blocked_until
@@ -3078,69 +2350,63 @@ def _freeze_no_partner_until(until, reason):
     mark_dirty()
 
 
-def _apply_partner_acquired(name, now, *, kind="侍妾", affinity=0):
-    state["concubine_name"] = str(name or "").strip()
-    state["concubine_kind"] = kind
-    state["concubine_location"] = "待确认"
-    state["concubine_affinity"] = max(0, int(affinity or 0))
-    state["concubine_oath"] = ""
-    state["concubine_dream_due_at"] = 0
-    state["concubine_tianji_due_at"] = 0
-    state["concubine_heart_due_at"] = 0
-    state["concubine_tianji_chain"] = ""
-    state["concubine_tianji_chain_due_at"] = 0
-    _clear_fragment_progress()
-    state["concubine_last_snapshot_at"] = 0
-    state["concubine_reacquire_attempts"] = 0
-    state["concubine_reacquire_blocked_until"] = 0
-    state["concubine_reacquire_command_override"] = ""
-    state["concubine_last_error"] = ""
-    _set_availability("available")
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _schedule_chain_action(now)
-
-
-def _apply_status_snapshot(parsed, now):
-    if not parsed:
+def _apply_status_snapshot(parsed, now, *, allow_status_pending=False, owned_query=False, reconciles_external=False, read_point=None):
+    if not _is_complete_status_panel(parsed):
+        return False
+    observed_at = parsed["observed_at"]
+    processed_at = _status_timestamp(now)
+    if processed_at is None or observed_at > processed_at:
+        return False
+    if read_point is not None and (not valid_point(read_point, telegram_only=True) or read_point["at"] > observed_at):
+        return False
+    affinity_at = read_point["at"] if read_point is not None else observed_at
+    if affinity_actions.snapshot_is_stale(affinity_at, now=processed_at):
+        return False
+    if wanxin_affinity_snapshot_is_stale(
+        state.get("wanxin_observation"), affinity_at, now=processed_at, observation_point=read_point,
+    ):
+        return False
+    if not external_events.can_apply_snapshot(observed_at, authoritative=owned_query or reconciles_external, panel=parsed):
+        return False
+    if _status_snapshot_block_reason(
+        observed_at, allow_status_pending=allow_status_pending,
+        allow_fragment_ready=reconciles_external and external_events.needs_calibration(),
+    ):
         return False
     if not parsed.get("has_partner"):
         if parsed.get("manual_repair"):
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "侍妾数据异常，等待人工修复")
-            return True
-        not_eligible = bool(parsed.get("not_eligible"))
-        reason = "侍妾不可用：境界不足" if not_eligible else "暂无侍妾"
-        _mark_no_partner(now, reason, allow_reacquire=bool(state.get("concubine_enabled")) and not not_eligible)
+            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "侍妾数据异常，等待人工修复", clear_pending=not owned_query)
+        else:
+            not_eligible = bool(parsed.get("not_eligible"))
+            reason = "侍妾不可用：境界不足" if not_eligible else "暂无侍妾"
+            _mark_no_partner(now, reason, allow_reacquire=bool(state.get("concubine_enabled")) and not not_eligible, clear_pending=not owned_query)
+        state["concubine_last_snapshot_at"] = observed_at
+        state["concubine_last_panel_msg_id"] = 0
+        state["concubine_last_panel_chat_id"] = 0
+        external_events.snapshot_applied(observed_at)
         return True
 
-    heart_runtime = None
-    if _is_heart_chain_active():
-        heart_phase = _phase()
-        if heart_phase not in CONCUBINE_HEART_ACTIVE_PHASES:
-            heart_phase = "heart_choice_pending"
-        heart_runtime = {
-            "phase": heart_phase,
-            "heart_msg_id": int(state.get("concubine_heart_msg_id", 0) or 0),
-            "prompt_msg_id": int(state.get("concubine_heart_prompt_msg_id", 0) or 0),
-            "round": int(state.get("concubine_heart_round", 0) or 0),
-            "heart_due_at": float(state.get("concubine_heart_due_at", 0) or 0),
-            "next_time": float(state.get("next_concubine_time", 0) or 0),
-        }
-
+    same_partner = (
+        state.get("concubine_name") == parsed["name"]
+        and state.get("concubine_kind") == parsed["kind"]
+    )
     state["concubine_name"] = parsed.get("name", "")
     state["concubine_kind"] = parsed.get("kind", "")
     state["concubine_location"] = parsed.get("location", "")
-    state["concubine_affinity"] = int(parsed.get("affinity", 0) or 0)
-    state["concubine_oath"] = parsed.get("oath", "")
-    state["concubine_dream_due_at"] = _merge_future_cooldown("concubine_dream_due_at", parsed.get("dream_due_at", 0), now)
-    state["concubine_tianji_due_at"] = _merge_future_cooldown("concubine_tianji_due_at", parsed.get("tianji_due_at", 0), now)
-    state["concubine_heart_due_at"] = _merge_future_cooldown("concubine_heart_due_at", parsed.get("heart_due_at", 0), now)
-    state["concubine_tianji_chain"] = parsed.get("tianji_chain", "")
-    state["concubine_tianji_chain_due_at"] = float(parsed.get("tianji_chain_due_at", 0) or 0)
+    for field, default in (("affinity", 0), ("oath", ""), ("tianji_chain", ""), ("tianji_chain_due_at", 0)):
+        if field in parsed or not same_partner:
+            state[f"concubine_{field}"] = parsed.get(field, default)
+    for field in ("dream_due_at", "tianji_due_at", "heart_due_at"):
+        key, due_at = f"concubine_{field}", parsed.get(field, 0)
+        state[key] = _merge_future_cooldown(key, due_at, now) if same_partner else due_at
     _apply_fragment_progresses(parsed.get("fragment_progresses") or {})
     _apply_voyage_snapshot(parsed.get("voyage"), now)
-    state["concubine_last_snapshot_at"] = float(now)
+    state["concubine_last_snapshot_at"] = observed_at
+    # An HTTP panel has no Telegram reply anchor. Native callers set their own.
+    state["concubine_last_panel_msg_id"] = 0
+    state["concubine_last_panel_chat_id"] = 0
     state["concubine_reacquire_command_override"] = ""
+    external_events.snapshot_applied(observed_at)
     state["concubine_last_error"] = ""
     _clear_status_calibration_timeout_errors()
     _normalize_tianji_affinity_error(now)
@@ -3148,23 +2414,13 @@ def _apply_status_snapshot(parsed, now):
     if int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY:
         state["concubine_greet_retry_count"] = 0
         state["concubine_gift_last_error"] = ""
-    if heart_runtime:
-        _clear_non_heart_pending_msg_ids()
-        state["concubine_phase"] = heart_runtime["phase"]
-        state["concubine_heart_msg_id"] = heart_runtime["heart_msg_id"]
-        state["concubine_heart_prompt_msg_id"] = heart_runtime["prompt_msg_id"]
-        state["concubine_heart_round"] = heart_runtime["round"]
-        state["concubine_heart_due_at"] = heart_runtime["heart_due_at"]
-        state["next_concubine_time"] = heart_runtime["next_time"]
-        return True
-
     _set_phase("idle")
     _clear_pending_msg_ids()
 
     if _is_voyage_return_due(now):
         _schedule_chain_action(now)
         return True
-    if _is_voyage_sailing(now):
+    if _is_voyage_sailing(now) or state.get("concubine_voyage_status") == "needs_status":
         _schedule_voyage_wait(now)
         return True
 
@@ -3175,7 +2431,7 @@ def _apply_status_snapshot(parsed, now):
     else:
         due_times = []
         if state.get("concubine_enabled"):
-            due_times.append(float(state.get("concubine_dream_due_at", 0) or 0))
+            due_times.append(fragment_actions.next_dream_at())
         if state.get("concubine_tianji_enabled") and not _is_tianji_affinity_blocked():
             due_times.append(float(state.get("concubine_tianji_due_at", 0) or 0))
         if state.get("concubine_heart_enabled"):
@@ -3185,13 +2441,98 @@ def _apply_status_snapshot(parsed, now):
     return True
 
 
+def _status_snapshot_block_reason(now, *, allow_status_pending=False, allow_fragment_ready=False):
+    if external_events.invalid():
+        return "invalid_external_observation"
+    if reacquire_actions.block_reason():
+        return "reacquire_action_pending"
+    if heart_actions.block_reason():
+        return "heart_session_pending"
+    if divination_actions.block_reason():
+        return "divination_action_pending"
+    if voyage_actions.block_reason():
+        return "voyage_action_pending"
+    if fragment_actions.block_reason():
+        return "fragment_action_pending"
+    if affinity_actions.block_reason():
+        return "affinity_action_pending"
+    query = _status_query_record()
+    if query is None:
+        return "invalid_status_query"
+    if query and query["status"] in CONCUBINE_QUERY_UNRESOLVED and not allow_status_pending:
+        return "status_query_pending"
+    phase = _phase()
+    allowed_phases = {"idle", "no_partner"}
+    if allow_status_pending:
+        allowed_phases.update({"status_pending", "gift_status_pending"})
+        if query:
+            allowed_phases.add(query["kind"] + "_pending")
+    if allow_fragment_ready:
+        allowed_phases.add("puzzle_ready")
+    if phase not in allowed_phases:
+        return "active_phase"
+    pending_keys = {
+        "concubine_greet_msg_id", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id",
+        "concubine_gift_msg_id", "concubine_dream_msg_id", "concubine_fragment_msg_id",
+        "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id",
+        "concubine_voyage_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id",
+        "concubine_heart_choice_prompt_msg_id",
+    }
+    if allow_status_pending and phase == "gift_status_pending":
+        pending_keys.remove("concubine_gift_status_msg_id")
+    if allow_status_pending and query and phase == query["kind"] + "_pending":
+        pending_keys.discard(CONCUBINE_QUERY_KEYS[query["kind"]])
+    if any(state.get(key) for key in pending_keys):
+        return "active_pending"
+    try:
+        timestamp = float(now)
+        seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return "invalid_clock"
+    if not all(math.isfinite(value) for value in (timestamp, seen_at)) or timestamp <= 0:
+        return "invalid_clock"
+    if seen_at > timestamp:
+        return "stale_observation"
+    pending_tasks = state.get("pending_tasks")
+    if not isinstance(pending_tasks, dict):
+        return "invalid_pending"
+    read_commands = {CMD_CONCUBINE_STATUS, CMD_CONCUBINE_VOYAGE_STATUS}
+    read_families = {"concubine_status"}
+    if allow_status_pending and query and query["kind"] == "fragment":
+        read_commands.add(CMD_CONCUBINE_FRAGMENT)
+        read_families.add("concubine_fragment")
+    for pending in pending_tasks.values():
+        if not isinstance(pending, dict):
+            return "invalid_pending"
+        command = get_pending_command(pending).split()
+        family = str(pending.get("family") or "")
+        voyage_read = family == "concubine_voyage" and command == [CMD_CONCUBINE_VOYAGE_STATUS]
+        if (
+            (command and command[0] in CONCUBINE_PENDING_COMMANDS - read_commands)
+            or (family.startswith("concubine_") and family not in read_families and not voyage_read)
+        ):
+            return "active_pending"
+    return ""
+
+
+def concubine_miniapp_status_block_reason(now, *, processed_at=None):
+    if affinity_actions.snapshot_is_stale(now, now=now if processed_at is None else processed_at):
+        return "stale_owned_affinity"
+    if wanxin_affinity_snapshot_is_stale(
+        state.get("wanxin_observation"), now, now=now if processed_at is None else processed_at,
+    ):
+        return "stale_wanxin_affinity"
+    return _status_snapshot_block_reason(now, allow_fragment_ready=external_events.needs_calibration())
+
+
 def sync_concubine_miniapp_status(text, now):
     """Apply an idle Tianjige status panel without driving the active chain."""
     phase = _phase()
-    if phase not in {"idle", "no_partner"}:
+    block_reason = concubine_miniapp_status_block_reason(now)
+    if block_reason:
         return {
             "handled": False,
-            "reason": "active_phase",
+            "reason": block_reason,
             "phase": phase,
             "summary": {},
         }
@@ -3210,14 +2551,26 @@ def sync_concubine_miniapp_status(text, now):
             "phase": phase,
             "summary": {},
         }
-    if not _apply_status_snapshot(parsed, now):
+    if not _is_complete_status_panel(parsed):
+        return {
+            "handled": False,
+            "reason": "incomplete_panel",
+            "phase": phase,
+            "summary": {},
+        }
+    owner = _status_query_owner()
+    if not owner:
+        return {"handled": False, "reason": "missing_owner", "phase": phase, "summary": {}}
+    before = copy.deepcopy(owner[1])
+    if not _apply_status_snapshot(parsed, now, reconciles_external=True):
         return {
             "handled": False,
             "reason": "snapshot_rejected",
             "phase": phase,
             "summary": {},
         }
-    save_state()
+    if not _save_query_projection(owner, before):
+        return {"handled": False, "reason": "snapshot_not_saved", "phase": phase, "summary": {}}
     return {
         "handled": True,
         "reason": "",
@@ -3240,15 +2593,41 @@ def _get_reacquire_command():
     return CMD_CONCUBINE_SECT_MARRY if str(profile.get("sect_name") or "").strip() == "星宫" else CMD_CONCUBINE_ROMANCE
 
 
-def _switch_reacquire_command(now, command, reason):
-    state["concubine_reacquire_command_override"] = command if command in CONCUBINE_REACQUIRE_COMMANDS else ""
-    state["concubine_last_error"] = reason
-    _set_phase("no_partner")
-    _clear_pending_msg_ids()
-    _schedule_chain_action(now)
-
-
 def get_concubine_status_text():
+    if external_events.needs_calibration():
+        return "侍妾外部观测记录异常，等待核对" if external_events.invalid() else "侍妾外部变动待校准，原有操作保留"
+    reacquire_block = reacquire_actions.block_reason()
+    if reacquire_block:
+        if reacquire_block != "pending":
+            return "侍妾补领归属记录缺失或异常，等待核对"
+        action = reacquire_actions.record()
+        return f"侍妾补领：{action['status']}，等待原操作反馈，不重复补领"
+    heart_block = heart_actions.block_reason()
+    if heart_block:
+        if heart_block != "pending":
+            return "心劫归属记录缺失或异常，等待核对"
+        session = heart_actions.record()
+        step = session["steps"][-1]
+        return f"共历心劫：第 {step['round']}/3 轮，{step['status']}；只读校准 {session['probe_count']}/{heart_actions.PROBE_LIMIT}，不盲补消费命令"
+    divination_block = divination_actions.block_reason()
+    if divination_block:
+        return "天机代卜归属记录异常，等待核对" if divination_block == "invalid" else "天机代卜结果待确认，保留原操作且不自动补发"
+    voyage_block = voyage_actions.block_reason()
+    if voyage_block:
+        return "远航归属记录异常，等待核对" if voyage_block == "invalid" else "远航结果待确认，保留原操作且不自动补发"
+    fragment_block = fragment_actions.block_reason()
+    if fragment_block:
+        return "入梦/拼图归属记录异常，等待核对" if fragment_block == "invalid" else "入梦/拼图结果待确认，保留原操作且不自动补发"
+    action_block = affinity_actions.block_reason()
+    if action_block:
+        return "问安/赠礼归属记录异常，等待核对" if action_block == "invalid" else "问安/赠礼结果待确认，保留原操作且不自动补发"
+    if affinity_actions.needs_calibration():
+        return "问安/赠礼已确认，情缘余额待校准"
+    query = _status_query_record()
+    if query is None:
+        return "🌸 侍妾 - 查询归属记录异常，等待核对"
+    if _legacy_status_query_pending(query):
+        return "🌸 侍妾查询缺少归属记录，等待核对"
     if (
         not state.get("concubine_enabled", False)
         and not state.get("concubine_tianji_enabled", False)
@@ -3275,6 +2654,7 @@ def get_concubine_status_text():
         "heart_choice_reply_pending": "共历心劫等待回合推进...",
         "voyage_pending": "侍妾远航发起中...",
         "voyage_return_pending": "远航归来结算中...",
+        "voyage_status_pending": "远航状态只读校准中...",
         "no_partner": "暂无侍妾",
     }.get(_phase(), _phase())
     strategy_label = {
@@ -3310,6 +2690,9 @@ def get_concubine_status_text():
         lines.append(f"- 入梦寻图: {fmt_abs_ts(dream_due_at)}（{fmt_remaining(dream_due_at)}）")
     else:
         lines.append("- 入梦寻图: 可施展/待确认")
+    dream_retry_at = fragment_actions.next_dream_at()
+    if math.isfinite(dream_retry_at) and dream_retry_at > dream_due_at:
+        lines.append(f"- 入梦本地重试: {fmt_abs_ts(dream_retry_at)}（非游戏冷却）")
     tianji_due_at = float(state.get("concubine_tianji_due_at", 0) or 0)
     if tianji_due_at > 0:
         lines.append(f"- 天机代卜: {fmt_abs_ts(tianji_due_at)}（{fmt_remaining(tianji_due_at)}）")
@@ -3336,6 +2719,8 @@ def get_concubine_status_text():
             lines.append(f"- 远航状态: {voyage_route}航线远航中，归航时间待确认")
     elif voyage_status == "returned":
         lines.append(f"- 远航状态: {voyage_route}航线已归航，待 .远航归来")
+    elif voyage_status == "needs_status":
+        lines.append("- 远航状态: 待只读校准，暂不结算或发起远航")
     elif voyage_status == "idle":
         lines.append(f"- 远航状态: 空闲（默认 {CONCUBINE_VOYAGE_DEFAULT_ROUTE}）")
     elif state.get("concubine_voyage_enabled"):
@@ -3455,6 +2840,23 @@ def clear_concubine_tianji_state(*, persist=False, keep_last_error=False):
 
 
 def restore_concubine_runtime(now):
+    if external_events.needs_calibration():
+        return float(state.get("next_concubine_time", 0) or 0)
+    if reacquire_actions.block_reason():
+        return float(state.get("next_concubine_time", 0) or 0)
+    if heart_actions.block_reason():
+        return float(state.get("next_concubine_time", 0) or 0)
+    if divination_actions.block_reason():
+        return float(state.get("next_concubine_time", 0) or 0)
+    if voyage_actions.block_reason():
+        return float(state.get("next_concubine_time", 0) or 0)
+    if fragment_actions.block_reason():
+        return float(state.get("next_concubine_time", 0) or 0)
+    if affinity_actions.block_reason():
+        return float(state.get("next_concubine_time", 0) or 0)
+    query = _status_query_record()
+    if query is None or (query and query["status"] in CONCUBINE_QUERY_UNRESOLVED) or _legacy_status_query_pending(query):
+        return float(state.get("next_concubine_time", 0) or 0)
     ban_texts = _persisted_heavenly_ban_texts()
     if ban_texts:
         identity_id = int(get_current_identity_id() or 0)
@@ -3464,14 +2866,7 @@ def restore_concubine_runtime(now):
         return 0
     if _clear_expired_tianji_chain(now):
         mark_dirty()
-    if _phase() in CONCUBINE_HEART_ACTIVE_PHASES:
-        _close_heart_chain_without_settlement(now, f"{_phase()}_startup_restore")
-        mark_dirty()
-        return float(state.get("next_concubine_time", 0) or 0)
-    if _reconcile_stale_heart_action_guard(now, "heart_stale_guard_startup_restore"):
-        mark_dirty()
-        return float(state.get("next_concubine_time", 0) or 0)
-    if _phase() in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"} | CONCUBINE_VOYAGE_PENDING_PHASES:
+    if _phase() in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending"} | CONCUBINE_VOYAGE_PENDING_PHASES:
         if _has_available_partner():
             _set_phase("idle")
         elif state.get("concubine_availability") == "no_partner":
@@ -3479,1390 +2874,1009 @@ def restore_concubine_runtime(now):
         else:
             _set_phase("idle")
         _clear_pending_msg_ids()
-    if _is_voyage_return_due(now):
-        _schedule_chain_action(now)
-    elif _is_voyage_sailing(now):
-        _schedule_voyage_wait(now)
+    if _query_time(state.get("next_concubine_time")) is None:
+        if _is_voyage_return_due(now):
+            _schedule_chain_action(now)
+        elif _is_voyage_sailing(now) or state.get("concubine_voyage_status") == "needs_status":
+            _schedule_voyage_wait(now)
     if float(state.get("next_concubine_time", 0) or 0) <= 0:
         state["next_concubine_time"] = float(now + random.uniform(60, 1200))
     mark_dirty()
     return float(state.get("next_concubine_time", 0) or 0)
 
 
+def _status_query_owner():
+    identity_id = get_current_identity_id()
+    if not has_identity(identity_id):
+        return None
+    return identity_id, get_identity_state(identity_id), get_identity_account(identity_id)
+
+
+def _owns_status_query(owner, *, sending=False, kind="status"):
+    if not owner:
+        return False
+    identity_id, identity, account_id = owner
+    return bool(
+        has_identity(identity_id) and get_identity_state(identity_id) is identity
+        and get_identity_account(identity_id) == account_id
+        and (not sending or (
+            account_id > 0 and get_global_enabled() and get_identity_enabled(identity_id)
+            and (identity.get("concubine_enabled") if kind == "fragment" else
+                 identity.get("concubine_tianji_enabled") if kind == "gift_status" else any(
+                identity.get(key) for key in ("concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled")
+            ))
+        ))
+    )
+
+
+def _status_query_plan(owner):
+    if not _owns_status_query(owner):
+        return ""
+    identity_id, identity, _account_id = owner
+    values = {key: (float(value) if type(value) in {int, float} else value)
+              for key, value in identity.items()
+              if (key.startswith("concubine_") or key == "next_concubine_time")
+              and key not in {"concubine_status_query", "concubine_gift_actions", "concubine_greet_action", "concubine_fragment_actions", "concubine_voyage_actions", "concubine_tianji_action", "concubine_heart_session", "concubine_reacquire_action", "concubine_external_observation"}
+              and key not in CONCUBINE_ERROR_KEYS}
+    controls = [get_global_enabled(), get_identity_enabled(identity_id), get_game_group_id(),
+                get_game_topic_id(), get_send_as_profile(identity_id).get("sect_name") or ""]
+    try:
+        encoded = json.dumps([values, controls], sort_keys=True, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _query_int(value):
+    return value if type(value) is int and -(2 ** 63) < value < 2 ** 63 else 0
+
+
+def _query_time(value):
+    return _status_timestamp(value) if type(value) in {int, float} else None
+
+
+def _observed_status_query_record(record):
+    fields = {"origin", "op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at",
+              "msg_id", "status", "reply_at", "reply_msg_id", "sender_id", "actor_id", "outcome"}
+    if (record.keys() != fields or record["origin"] != "observed" or record["kind"] != "status"
+            or record["status"] != "complete" or record["outcome"] not in ("panel", "summary")
+            or record["command"] != CMD_CONCUBINE_STATUS
+            or _query_int(record["identity_id"]) != get_current_identity_id()
+            or _query_int(record["account_id"]) <= 0 or not _query_int(record["chat_id"])
+            or _query_int(record["msg_id"]) <= 0 or _query_int(record["reply_msg_id"]) <= record["msg_id"]
+            or _query_int(record["sender_id"]) <= 0 or not _query_int(record["actor_id"])
+            or not sender_matches_identity(record["actor_id"], record["identity_id"])
+            or _query_time(record["started_at"]) is None or _query_time(record["reply_at"]) is None
+            or record["started_at"] > record["reply_at"]
+            or record["op_id"] != f"observed:{record['chat_id']}:{record['msg_id']}"):
+        return None
+    return dict(record)
+
+
+def _status_query_record():
+    record = state.get("concubine_status_query", {})
+    if not isinstance(record, dict):
+        return None
+    if not record:
+        return {}
+    if "origin" in record:
+        return _observed_status_query_record(record)
+    fields = {"op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at",
+              "msg_id", "status", "plan_key", "sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after",
+              "partner", "outcome", "confirmation_key"}
+    if (
+        record.keys() - fields or not isinstance(record.get("kind"), str)
+        or record["kind"] not in CONCUBINE_QUERY_KEYS
+        or record.get("command") != CONCUBINE_QUERY_COMMANDS[record["kind"]]
+        or (record["kind"] == "fragment" and (
+            not isinstance(record.get("partner"), str) or not 0 < len(record["partner"].strip()) <= 120))
+        or (record["kind"] == "voyage_status" and (
+            not isinstance(record.get("partner"), str) or len(record["partner"]) > 120))
+        or (record["kind"] not in {"fragment", "voyage_status"} and "partner" in record)
+        or (record["kind"] == "fragment" and record.get("status") == "complete" and (
+            not isinstance(record.get("outcome"), str)
+            or record["outcome"] not in {"panel", "no_partner", "summary", "voyage_lock"}))
+        or (record["kind"] == "voyage_status" and record.get("status") == "complete" and (
+            not isinstance(record.get("outcome"), str)
+            or record["outcome"] not in {"panel", "summary", "voyage_lock", "needs_status"}))
+        or ("outcome" in record and (record["kind"] not in {"fragment", "voyage_status"} or record.get("status") != "complete"))
+        or ("confirmation_key" in record and (
+            record["kind"] != "fragment" or record.get("status") != "complete"
+            or not isinstance(record["confirmation_key"], str)
+            or record["confirmation_key"] not in {"", "xutian:4/4", "cangkun:4/4", "xutian:4/4|cangkun:4/4"}
+            or (record.get("outcome") != "panel" and record["confirmation_key"])))
+        or _query_int(record.get("identity_id")) != get_current_identity_id()
+        or _query_int(record.get("account_id")) <= 0 or not _query_int(record.get("chat_id"))
+        or type(record.get("msg_id")) is not int or not 0 <= record["msg_id"] < 2 ** 63
+        or not isinstance(record.get("op_id"), str) or not 0 < len(record["op_id"]) <= 128
+        or not isinstance(record.get("plan_key"), str) or re.fullmatch(r"[0-9a-f]{64}", record["plan_key"]) is None
+        or not isinstance(record.get("status"), str)
+        or record["status"] not in CONCUBINE_QUERY_UNRESOLVED | {"unsent", "complete", "expired"}
+        or type(record.get("started_at")) not in {int, float} or _status_timestamp(record["started_at"]) is None
+        or any(type(record[key]) not in {int, float} or _status_timestamp(record[key]) is None
+               for key in ("sent_at", "dispatch_at", "reply_at", "replay_after") if key in record)
+        or (record["status"] in {"sent", "complete"} and record["msg_id"] <= 0)
+        or (record["status"] == "unsent" and record["msg_id"] != 0)
+        or (record["msg_id"] and not (
+            record["started_at"] - 1 <= (record.get("dispatch_at") or 0) <= (record.get("sent_at") or 0)
+        ))
+        or (record["status"] == "complete" and (
+            _query_int(record.get("reply_msg_id")) <= (record["msg_id"] if record["kind"] in {"fragment", "voyage_status"} else 0)
+            or (record.get("reply_at") or 0) < record.get("dispatch_at", record["started_at"]) - 1
+        ))
+    ):
+        return None
+    return dict(record)
+
+
+def _store_status_query(record):
+    state["concubine_status_query"] = dict(record)
+    mark_dirty()
+
+
+def same_clock_native_status_covers(point, *, now):
+    """Prove inclusion before the original read, never from a scalar panel ID."""
+    owner, query = _status_query_owner(), _status_query_record()
+    if (not _owns_status_query(owner) or not query or query["kind"] not in {"status", "gift_status"}
+            or query["status"] != "complete" or owner[2] != query["account_id"]
+            or query.get("origin") == "observed" and query["outcome"] != "panel"
+            or not valid_point(point, telegram_only=True) or _query_time(now) is None
+            or not point["at"] == _query_time(state.get("concubine_last_snapshot_at")) == query["reply_at"] <= now
+            or not 0 < query["msg_id"] < query["reply_msg_id"]
+            or _query_int(state.get("concubine_last_panel_msg_id")) != query["reply_msg_id"]
+            or _query_int(state.get("concubine_last_panel_chat_id")) != query["chat_id"]):
+        return False
+    evidence = point["evidence"]
+    return (not evidence["edited"] and evidence["chat_id"] == query["chat_id"]
+            and evidence["msg_id"] < query["msg_id"])
+
+
+def _legacy_status_query_pending(record):
+    for kind in ("fragment", "voyage_status"):
+        if record and record["kind"] == kind and record["status"] in CONCUBINE_QUERY_UNRESOLVED:
+            continue
+        if _phase() == kind + "_pending" or (kind == "fragment" and state.get(CONCUBINE_QUERY_KEYS[kind])):
+            return True
+    return False
+
+
+def _query_error_key(kind):
+    return {"gift_status": "concubine_gift_last_error", "voyage_status": "concubine_voyage_last_error"}.get(kind, "concubine_last_error")
+
+
+def _save_query_projection(owner, before):
+    try:
+        saved = save_state() is not False
+    except Exception:
+        owner[1].clear()
+        owner[1].update(before)
+        mark_dirty()
+        raise
+    if not saved:
+        owner[1].clear()
+        owner[1].update(before)
+        mark_dirty()
+    return saved
+
+
+def _status_query_pending_matches(record, pending, *, source_module=CONCUBINE_QUERY_SOURCE):
+    # Runtime pending rows may omit account_id; the unique persisted op_id binds it.
+    return bool(isinstance(pending, dict) and pending.get("op_id") == record["op_id"]
+                and pending.get("source_module") == source_module
+                and get_pending_command(pending) == record["command"]
+                and ("account_id" not in pending or _query_int(pending["account_id"]) == record["account_id"]))
+
+
+def _status_query_pending_ref(key, item):
+    if isinstance(key, tuple):
+        if len(key) != 2 or not _query_int(key[0]) or _query_int(key[1]) <= 0:
+            return None
+    elif _query_int(key) <= 0:
+        return None
+    if "chat_id" in item and not _query_int(item["chat_id"]):
+        return None
+    try:
+        chat, root = message_key_parts(key, item)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if "message_id" in item and _query_int(item["message_id"]) != root:
+        return None
+    return chat, root
+
+
+def _observed_status_query_pending(record):
+    pending = state.get("pending_tasks")
+    if not isinstance(pending, dict):
+        return None, False
+    matched = None
+    for key, item in pending.items():
+        if not isinstance(item, dict):
+            return None, False
+        ref = _status_query_pending_ref(key, item)
+        if ref is None:
+            return None, False
+        if ref != (record["chat_id"], record["msg_id"]):
+            continue
+        if (matched is not None or get_pending_command(item) != record["command"]
+                or any(name in item and item[name] != record["command"] for name in ("cmd", "command"))
+                or item.get("family", "concubine_status") != "concubine_status"
+                or item.get("op_id") not in (None, "")
+                or item.get("source_module") not in (None, "", "concubine", CONCUBINE_QUERY_SOURCE)
+                or any(name in item and _query_int(item[name]) != expected for name, expected in (
+                    ("account_id", record["account_id"]), ("send_as_id", record["identity_id"])))):
+            return None, False
+        matched = key
+    return matched, True
+
+
+def _clear_status_query_pending(record, *, source_module=CONCUBINE_QUERY_SOURCE, family=None):
+    if record["msg_id"] <= 0:
+        return
+    pending = state.get("pending_tasks")
+    if not isinstance(pending, dict):
+        return
+    if record.get("origin") == "observed":
+        key, valid = _observed_status_query_pending(record)
+        if valid and key is not None:
+            phase = _phase()
+            if phase in {"status_pending", "gift_status_pending"}:
+                phase_key = CONCUBINE_QUERY_KEYS[phase.removesuffix("_pending")]
+                if _query_int(state.get(phase_key)) == record["msg_id"]:
+                    state[phase_key] = 0
+                    _set_phase("idle")
+            pending.pop(key)
+            mark_dirty()
+        return
+    key = find_message_key(pending, record["msg_id"], chat_id=record["chat_id"])
+    if (not _status_query_pending_matches(record, pending.get(key), source_module=source_module)
+            or _status_query_pending_ref(key, pending[key]) != (record["chat_id"], record["msg_id"])):
+        return
+    family = family or CONCUBINE_QUERY_FAMILIES[record["kind"]]
+    clear_pending_by_reply(send_as_id=record["identity_id"], reply_context={
+        "send_as_id": record["identity_id"], "root_msg_id": record["msg_id"],
+        "reply_to_msg_id": record["msg_id"], "chat_id": record["chat_id"], "family": family,
+    }, clear_family=False)
+
+
+def _release_owned_concubine_phase(record, key, *, unchanged):
+    # A zero compatibility anchor cannot identify a replacement plan.
+    anchor = state.get(key)
+    if (_phase() == record["kind"] + "_pending" and type(anchor) is int
+            and ((anchor > 0 and anchor == record["msg_id"]) or (anchor == 0 and unchanged))):
+        state[key] = 0
+        _set_phase("idle")
+        return True
+    return False
+
+
+def _release_status_query_phase(record, *, unchanged):
+    return _release_owned_concubine_phase(record, CONCUBINE_QUERY_KEYS[record["kind"]], unchanged=unchanged)
+
+
+def _status_query_admitted(kind, now):
+    if kind not in CONCUBINE_QUERY_KEYS or _query_time(now) is None:
+        return False
+    owner = _status_query_owner()
+    record = _status_query_record()
+    return bool(
+        _owns_status_query(owner, sending=True, kind=kind) and get_game_group_id()
+        and owner[0] not in _CONCUBINE_QUERY_INFLIGHT
+        and record is not None and (not record or record["status"] not in CONCUBINE_QUERY_UNRESOLVED)
+        and not _status_snapshot_block_reason(
+            now, allow_fragment_ready=kind == "fragment" or (kind == "status" and external_events.needs_calibration()),
+        )
+        and (kind != "fragment" or (
+            isinstance(state.get("concubine_name"), str) and 0 < len(state["concubine_name"].strip()) <= 120
+            and _has_available_partner() and _is_puzzle_ready() and not _is_current_fragment_confirmed(now)
+            and not _has_voyage_runtime_state(now)))
+        and (kind != "voyage_status" or (
+            isinstance(state.get("concubine_name"), str) and len(state["concubine_name"].strip()) <= 120
+            and float(state.get("next_concubine_time", 0) or 0) <= now))
+        and (not record or record["status"] not in {"unsent", "expired"}
+             or float(state.get("next_concubine_time", 0) or 0) <= now)
+    )
+
+
+async def _send_status_query(kind, now):
+    if not _status_query_admitted(kind, now):
+        return False
+    owner = _status_query_owner()
+    identity_id, identity, account_id = owner
+    started_at = max(float(now), time.time())
+    command = CONCUBINE_QUERY_COMMANDS[kind]
+    _set_phase(kind + "_pending")
+    identity[CONCUBINE_QUERY_KEYS[kind]] = 0
+    identity["next_concubine_time"] = started_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    record = {
+        "op_id": uuid4().hex, "kind": kind, "identity_id": identity_id, "account_id": account_id,
+        "chat_id": get_game_group_id(), "command": command, "started_at": started_at,
+        "status": "sending", "msg_id": 0, "plan_key": _status_query_plan(owner),
+    }
+    if kind in {"fragment", "voyage_status"}:
+        record["partner"] = identity["concubine_name"].strip()
+    if not record["plan_key"]:
+        _set_phase("idle")
+        return False
+    _store_status_query(record)
+    _CONCUBINE_QUERY_INFLIGHT[identity_id] = record["op_id"]
+
+    def current_operation():
+        if not _owns_status_query(owner):
+            return None
+        with use_identity(identity_id):
+            current = _status_query_record()
+        return current if current and all(current.get(key) == record[key] for key in (
+            "op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at",
+        )) else None
+
+    def can_send():
+        if not _owns_status_query(owner, sending=True, kind=kind):
+            return False
+        with use_identity(identity_id):
+            return bool(current_operation() == record and _status_query_plan(owner) == record["plan_key"]
+                        and not _status_snapshot_block_reason(time.time(), allow_status_pending=True)
+                        and not _has_phaseful_summary_window(time.time()))
+
+    def note_unsent(reason, *, persist=True):
+        unchanged = _status_query_plan(owner) == record["plan_key"]
+        _store_status_query(dict(record, status="unsent"))
+        _release_status_query_phase(record, unchanged=unchanged)
+        if unchanged:
+            identity["next_concubine_time"] = max(started_at, time.time()) + random.uniform(
+                CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC, CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC)
+            identity[_query_error_key(kind)] = reason
+        if persist:
+            save_state()
+
+    try:
+        try:
+            saved = save_state() is not False
+        except Exception:
+            note_unsent("侍妾查询在途状态保存异常，本次未发送", persist=False)
+            raise
+        if not saved:
+            note_unsent("侍妾查询在途状态未保存，本次未发送")
+            return False
+        previous_block = dict(classify_game_send_block(identity_id, command))
+        try:
+            msg = await _send_concubine_game_command(
+                command, track=True, max_retry=0, reply_timeout=CONCUBINE_PHASE_TIMEOUT_SEC,
+                send_as_id=identity_id, target_chat_id=record["chat_id"], source_module=CONCUBINE_QUERY_SOURCE,
+                op_id=record["op_id"], operation_check=can_send,
+                **({"priority": "chain"} if kind in {"fragment", "voyage_status"} else {}),
+            )
+        except (asyncio.CancelledError, Exception):
+            current = current_operation()
+            if current and current["status"] == "sending":
+                _store_status_query(dict(current, status="unknown"))
+                save_state()
+            elif current and current["status"] == "complete":
+                _clear_status_query_pending(current)
+                save_state()
+            raise
+        current = current_operation()
+        if current is None:
+            return False
+        if current["status"] != "sending":
+            if current["status"] == "complete":
+                _clear_status_query_pending(current)
+                save_state()
+            return current["status"] in {"sent", "complete"}
+        at = max(started_at, time.time())
+        if not msg:
+            block = classify_game_send_block(identity_id, command)
+            if (block.get("status") == "unsent" and block != previous_block
+                    and started_at <= (_status_timestamp(block.get("at")) or 0) <= at + 1):
+                note_unsent(f"侍妾查询未发送：{block.get('code') or 'blocked'}")
+                return False
+        msg_id, chat = _query_int(getattr(msg, "id", 0)), _query_int(getattr(msg, "chat_id", 0))
+        sent_at = _query_time(getattr(msg, "sent_at", 0)) or 0
+        dispatch_at = _query_time(getattr(msg, "send_started_at", 0)) or 0
+        known = bool(msg_id > 0 and chat == record["chat_id"] and started_at - 1 <= dispatch_at <= sent_at <= at + 1)
+        current = dict(record, status="sent" if known else "unknown")
+        if known:
+            current.update(msg_id=msg_id, sent_at=sent_at, dispatch_at=dispatch_at)
+        if _status_query_plan(owner) == record["plan_key"]:
+            if known:
+                identity[CONCUBINE_QUERY_KEYS[kind]] = msg_id
+                identity["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+            identity[_query_error_key(kind)] = (
+                "" if known else "侍妾查询发送状态未知，保留原操作等待反馈")
+            current["plan_key"] = _status_query_plan(owner)
+        _store_status_query(current)
+        save_state()
+        return known
+    finally:
+        if _CONCUBINE_QUERY_INFLIGHT.get(identity_id) == record["op_id"]:
+            _CONCUBINE_QUERY_INFLIGHT.pop(identity_id, None)
+
+
+def _adopt_status_query_receipt(record, now, *, source_module=CONCUBINE_QUERY_SOURCE, include_logs=True):
+    if record["msg_id"] or record["account_id"] != get_identity_account(record["identity_id"]):
+        return record
+    candidates = {}
+    pending = state.get("pending_tasks")
+    if not isinstance(pending, dict):
+        return record
+    for key, item in pending.items():
+        if not _status_query_pending_matches(record, item, source_module=source_module):
+            continue
+        reference = _status_query_pending_ref(key, item)
+        if reference is None:
+            continue
+        chat, root = reference
+        sent_at = _query_time(item.get("sent_at")) or 0
+        dispatch_at = _query_time(item.get("send_started_at")) or 0
+        if chat == record["chat_id"] and root > 0 and record["started_at"] - 1 <= dispatch_at <= sent_at <= now + 1:
+            candidates[chat, root] = (sent_at, dispatch_at)
+    if not candidates and include_logs:
+        def owned(entry):
+            return bool(isinstance(entry, dict) and entry.get("event_type") == "sent"
+                        and entry.get("op_id") == record["op_id"] and entry.get("source_module") == source_module
+                        and ("account_id" not in entry or _query_int(entry["account_id"]) == record["account_id"])
+                        and entry.get("text") == record["command"] and _query_int(entry.get("chat_id")) == record["chat_id"]
+                        and sender_matches_identity(entry.get("sender_id"), record["identity_id"])
+                        and _query_int(entry.get("message_id")) > 0)
+
+        for entry in find_recent_message_log_commands(
+            min(now, record["started_at"] + CONCUBINE_LOG_REPLAY_LOOKBACK_SEC), command_predicate=owned,
+            start_ts=record["started_at"] - 1, chat_id=record["chat_id"], lookahead_sec=1,
+        ):
+            sent_at = _query_time(entry.get("ts_epoch")) or 0
+            if owned(entry) and record["started_at"] - 1 <= sent_at <= now + 1:
+                candidates[record["chat_id"], entry["message_id"]] = (sent_at, sent_at)
+    if len(candidates) != 1:
+        return record
+    (chat, root), (sent_at, dispatch_at) = next(iter(candidates.items()))
+    return dict(record, status="sent", msg_id=root, chat_id=chat, sent_at=sent_at, dispatch_at=dispatch_at)
+
+
+def _expire_status_query(record, owner, now):
+    before = copy.deepcopy(owner[1])
+    unchanged = owner[2] == record["account_id"] and _status_query_plan(owner) == record["plan_key"]
+    _store_status_query(dict(record, status="expired"))
+    _clear_status_query_pending(record)
+    _release_status_query_phase(record, unchanged=unchanged)
+    if unchanged:
+        if record["kind"] == "fragment":
+            _clear_fragment_confirmation()
+        if record["kind"] == "voyage_status":
+            _schedule_voyage_wait(now)
+        else:
+            _schedule_status_recheck(now)
+        state[_query_error_key(record["kind"])] = "侍妾查询未收到完整面板，稍后重新校准"
+    return _save_query_projection(owner, before)
+
+
+def _find_owned_concubine_replies(record, now):
+    if not record["msg_id"]:
+        return []
+
+    def trusted(entry):
+        observed_at = _query_time(entry.get("server_event_at")) if isinstance(entry, dict) else None
+        return bool(observed_at and entry.get("event_type") in {"message", "edit"}
+                    and entry.get("sender_is_bot") is True and _query_int(entry.get("sender_id")) in get_game_bot_ids()
+                    and _query_int(entry.get("chat_id")) == record["chat_id"]
+                    and _query_int(entry.get("reply_to_msg_id")) == record["msg_id"]
+                    and _query_int(entry.get("message_id")) > record["msg_id"]
+                    and record.get("dispatch_at", record["started_at"]) - 1 <= observed_at <= now)
+
+    revisions = {}
+    for end_at in sorted({min(now, record["started_at"] + CONCUBINE_LOG_REPLAY_LOOKBACK_SEC), now}):
+        for entry in find_message_log_replies(
+            record["msg_id"], end_at, lookback_sec=CONCUBINE_LOG_REPLAY_LOOKBACK_SEC + 1,
+            lookahead_sec=1, chat_id=record["chat_id"], predicate=trusted,
+        ):
+            if not trusted(entry):
+                continue
+            key, at = entry["message_id"], entry["server_event_at"]
+            previous, conflict = revisions.get(key, ({"server_event_at": 0}, False))
+            if at > previous["server_event_at"]:
+                revisions[key] = (entry, False)
+            elif at == previous["server_event_at"]:
+                revisions[key] = (previous, conflict or entry.get("text") != previous.get("text"))
+    return sorted((entry for entry, conflict in revisions.values() if not conflict),
+                  key=lambda item: (item["server_event_at"], item["message_id"]), reverse=True)
+
+
+def _parse_query_reply(record, text, observed_at):
+    raw_text = str(text or "")
+    if record["kind"] == "voyage_status":
+        voyage = _parse_voyage_status_text(raw_text, observed_at)
+        summary = _is_phaseful_summary_text(raw_text)
+        if summary:
+            if voyage or "远航" in raw_text:
+                return None
+            return {"outcome": "summary", "panel": None, "voyage": None}
+        if not voyage or (record["partner"] and voyage.get("partner") not in (None, "", record["partner"])):
+            return None
+        outcome = "needs_status" if voyage["status"] == "needs_status" else "voyage_lock" if _is_voyage_lock_text(raw_text) else "panel"
+        return {"outcome": outcome, "panel": None, "voyage": voyage}
+    if record["kind"] != "fragment":
+        summary = _is_phaseful_summary_text(raw_text)
+        parsed = None if summary else _parse_status_panel(raw_text, observed_at)
+        if not summary and not _is_complete_status_panel(parsed):
+            return None
+        return {"outcome": "summary" if summary else "panel", "panel": parsed}
+
+    parsed = _parse_fragment_panel(raw_text)
+    if (RE_FRAGMENT_PANEL_HEAD.search(raw_text) and not parsed) or (parsed and parsed["partner"] != record["partner"]):
+        return None
+    voyage = _parse_voyage_rejection(raw_text, observed_at)
+    outcomes = [name for name, matched in (
+        ("panel", parsed), ("no_partner", _is_no_partner_text(raw_text)),
+        ("summary", _is_phaseful_summary_text(raw_text)), ("voyage_lock", voyage),
+    ) if matched]
+    if len(outcomes) != 1 or (voyage and voyage.get("partner") not in (None, "", record["partner"])):
+        return None
+    return {"outcome": outcomes[0], "panel": parsed, "voyage": voyage}
+
+
+async def _recover_status_query(now):
+    owner = _status_query_owner()
+    record = _status_query_record()
+    if not owner or record is None:
+        return True
+    if record and record["status"] == "complete" and owner[2] == record["account_id"]:
+        before = copy.deepcopy(owner[1])
+        _clear_status_query_pending(record)
+        if owner[1] != before:
+            _save_query_projection(owner, before)
+            return True
+    if not record or record["status"] not in CONCUBINE_QUERY_UNRESOLVED:
+        return _legacy_status_query_pending(record)
+    if owner[0] in _CONCUBINE_QUERY_INFLIGHT or now < record["started_at"]:
+        return True
+    if owner[2] != record["account_id"]:
+        if now >= record.get("sent_at", record["started_at"]) + CONCUBINE_PHASE_TIMEOUT_SEC:
+            _expire_status_query(record, owner, now)
+        return True
+    if now < record.get("replay_after", 0):
+        return True
+    before = copy.deepcopy(owner[1])
+    record = _adopt_status_query_receipt(record, now)
+    record["replay_after"] = now + CONCUBINE_QUERY_REPLAY_SEC
+    _store_status_query(record)
+    if not _save_query_projection(owner, before):
+        return True
+    for entry in _find_owned_concubine_replies(record, now):
+        if _parse_query_reply(record, entry.get("text", ""), entry["server_event_at"]) is None:
+            continue
+        handler = {"fragment": handle_concubine_fragment_reply, "voyage_status": handle_concubine_voyage_reply}.get(
+            record["kind"], handle_concubine_status_reply)
+        await handler(
+            entry.get("text", ""), now,
+            SimpleNamespace(id=record["msg_id"], chat_id=record["chat_id"], raw_text=record["command"]),
+            matched_family=CONCUBINE_QUERY_FAMILIES[record["kind"]], current_msg_id=entry["message_id"],
+            current_chat_id=record["chat_id"], observed_at=entry["server_event_at"],
+            reply_context={"sender_id": entry["sender_id"]},
+        )
+        # Terminal evidence needs its local commit retried, not read-timeout expiry.
+        return True
+    if now >= record.get("sent_at", record["started_at"]) + CONCUBINE_PHASE_TIMEOUT_SEC:
+        # A status read may expire; this policy does not authorize retrying mutations.
+        _expire_status_query(record, owner, now)
+    return True
+
+
 async def _send_status_command(now):
+    if not _status_query_admitted("status", now):
+        return False
     if _defer_active_for_phaseful_summary(now, "侍妾状态校准"):
         save_state()
         return False
-    if _has_recent_concubine_status_panel(now):
+    if _has_recent_concubine_status_panel(now) and not (_has_heart_due_action(now) and not heart_actions.panel_anchor(now)):
         _reuse_recent_status_panel(now, "10分钟内已有侍妾面板，跳过重复 .我的侍妾")
         save_state()
         return False
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_STATUS, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
-    if not msg:
-        if _handle_send_queue_timeout(CMD_CONCUBINE_STATUS, sent_at, label="侍妾状态校准"):
-            save_state()
-            return False
-        state["concubine_last_error"] = "发送 .我的侍妾 失败"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "status_pending")
-        save_state()
-        return False
-    _set_phase("status_pending")
-    state["concubine_status_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await _send_status_query("status", now)
 
 
 async def _send_greet_command(now):
-    if _defer_active_for_phaseful_summary(now, "每日问安", error_key="concubine_greet_last_error"):
-        save_state()
-        return False
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_DAILY_GREET, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        state["concubine_greet_last_error"] = "发送 .每日问安 失败"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "greet_pending")
-        save_state()
-        return False
-    _set_phase("greet_pending")
-    state["concubine_greet_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_greet_last_error"] = ""
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await affinity_actions.send("greet", now)
 
 
 async def _send_gift_status_command(now):
+    if not _status_query_admitted("gift_status", now):
+        return False
     if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
         save_state()
         return False
     if _can_use_cached_panel_for_gift_recovery(now):
-        state["concubine_gift_attempt_day"] = _local_day_key(now)
         state["concubine_gift_status_msg_id"] = 0
         state["concubine_gift_last_error"] = ""
         return await _send_gift_bag_command(now)
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_STATUS, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
-    if not msg:
-        _defer_gift_recovery_after_send_failure(sent_at, "发送 .我的侍妾 失败")
-        save_state()
-        return False
-    state["concubine_gift_attempt_day"] = _local_day_key(sent_at)
-    _set_phase("gift_status_pending")
-    state["concubine_gift_status_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_gift_last_error"] = ""
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await _send_status_query("gift_status", now)
 
 
 async def _send_gift_bag_command(now):
-    if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
-        save_state()
-        return False
-    msg = await _send_concubine_game_command(CMD_STORAGE_BAG, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
-    if not msg:
-        _defer_gift_recovery_after_send_failure(sent_at, "发送 .储物袋 失败")
-        save_state()
-        return False
-    _set_phase("gift_bag_pending")
-    state["concubine_gift_bag_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_gift_last_error"] = ""
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await affinity_actions.send("gift_bag", now)
 
 
 async def _send_gift_command(now, amount):
-    if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
-        save_state()
-        return False
-    gift_amount = max(0, int(amount or 0))
-    if gift_amount <= 0:
-        state["concubine_gift_last_error"] = "赠予数量为 0，跳过"
-        _set_phase("idle")
-        _clear_non_heart_pending_msg_ids()
-        _schedule_affinity_recovery(now)
-        save_state()
-        return False
-    command = f"{CMD_CONCUBINE_GIFT_STONE} 灵石*{gift_amount}"
-    msg = await _send_concubine_game_command(command, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
-    if not msg:
-        _defer_gift_recovery_after_send_failure(sent_at, f"发送 {command} 失败")
-        save_state()
-        return False
-    _set_phase("gift_pending")
-    state["concubine_gift_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_gift_amount"] = gift_amount
-    state["concubine_gift_last_error"] = ""
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await affinity_actions.send("gift", now, amount)
 
 
 async def _send_dream_command(now):
-    if _defer_active_for_phaseful_summary(now, "入梦寻图", allow_replayable_trigger=True):
-        save_state()
-        return False
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_DREAM, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        if was_last_game_send_blocked_by_global(get_current_identity_id(), CMD_CONCUBINE_DREAM):
-            state["concubine_last_error"] = ""
-            _set_phase("idle")
-            retry_at = sent_at + random.uniform(10 * 60, 30 * 60)
-            if float(state.get("concubine_dream_due_at", 0) or 0) <= sent_at:
-                state["concubine_dream_due_at"] = retry_at
-            state["next_concubine_time"] = retry_at
-            _record_concubine_event(
-                "入梦寻图全局暂停错峰",
-                kind="skipped",
-                reason="global_disabled",
-                phase="idle",
-                command=CMD_CONCUBINE_DREAM,
-                decision="dream_global_disabled",
-                workflow_status="deferred",
-            )
-            save_state()
-            return False
-        if await _recover_sent_command_after_empty_send(
-            sent_at,
-            "dream_pending",
-            CMD_CONCUBINE_DREAM,
-            "concubine_dream_msg_id",
-            label="入梦寻图",
-            decision="dream_sent_recovered_after_empty_send",
-        ):
-            return True
-        if _handle_send_queue_timeout(
-            CMD_CONCUBINE_DREAM,
-            sent_at,
-            due_key="concubine_dream_due_at",
-            label="入梦寻图",
-        ):
-            save_state()
-            return False
-        state["concubine_last_error"] = "发送 .入梦寻图 失败"
-        _set_phase("idle")
-        retry_at = _schedule_after(
-            sent_at,
-            CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC,
-            CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC,
-        )
-        if float(state.get("concubine_dream_due_at", 0) or 0) <= sent_at:
-            state["concubine_dream_due_at"] = retry_at
-        _record_concubine_event(
-            "入梦寻图发送失败",
-            kind="skipped",
-            reason="concubine_send_failed",
-            phase="idle",
-            command=CMD_CONCUBINE_DREAM,
-            detail=f"retry_at={fmt_abs_ts(retry_at)}",
-            decision="dream_send_failed",
-            workflow_status="failed",
-        )
-        save_state()
-        return False
-    _set_phase("dream_pending")
-    state["concubine_dream_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    _record_concubine_event(
-        "入梦寻图已发送",
-        kind="changed",
-        phase="dream_pending",
-        command=CMD_CONCUBINE_DREAM,
-        msg_id=state["concubine_dream_msg_id"],
-        decision="dream_sent",
-        workflow_status="sent",
-    )
-    save_state()
-    return True
+    return await fragment_actions.send("dream", now)
 
 
 async def _send_fragment_command(now):
+    if not _status_query_admitted("fragment", now):
+        return False
     if _defer_active_for_phaseful_summary(now, "残图确认"):
         save_state()
         return False
-    if _is_current_fragment_confirmed():
-        _set_phase("puzzle_ready")
-        next_time = float(state.get("next_concubine_time", 0) or 0)
-        if next_time <= 0 or next_time > now:
-            state["next_concubine_time"] = float(now)
-        save_state()
-        return False
-
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_FRAGMENT, track=False, priority="chain")
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        # The queued send can lose the race to an already-sent puzzle reply.
-        # Re-read business state before an old send result overwrites success.
-        if _is_current_fragment_confirmed() or not _is_puzzle_ready():
-            state["concubine_last_error"] = ""
-            save_state()
-            return False
-        if _handle_send_queue_timeout(
-            CMD_CONCUBINE_FRAGMENT,
-            sent_at,
-            label="残图确认",
-        ):
-            save_state()
-            return False
-        state["concubine_last_error"] = "发送 .残图 失败"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "fragment_pending")
-        save_state()
-        return False
-    _set_phase("fragment_pending")
-    state["concubine_fragment_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await _send_status_query("fragment", now)
 
 
 async def _send_puzzle_command(now):
-    if _defer_active_for_phaseful_summary(now, "残图拼合"):
-        save_state()
-        return False
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_PUZZLE, track=False, priority="chain")
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        if await _recover_sent_command_after_empty_send(
-            sent_at,
-            "puzzle_pending",
-            CMD_CONCUBINE_PUZZLE,
-            "concubine_puzzle_msg_id",
-            label="残图拼合",
-            decision="puzzle_sent_recovered_after_empty_send",
-        ):
-            return True
-        if _handle_send_queue_timeout(
-            CMD_CONCUBINE_PUZZLE,
-            sent_at,
-            label="残图拼合",
-        ):
-            save_state()
-            return False
-        state["concubine_last_error"] = "发送 .拼图 失败"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "puzzle_pending")
-        save_state()
-        return False
-    _set_phase("puzzle_pending")
-    state["concubine_puzzle_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await fragment_actions.send("puzzle", now)
 
 
 async def _send_reacquire_command(now):
-    if _defer_active_for_phaseful_summary(now, "侍妾补领"):
-        save_state()
-        return False
-    command = _get_reacquire_command()
-    msg = await _send_concubine_game_command(command, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        state["concubine_last_error"] = f"发送 {command} 失败"
-        _set_phase("no_partner")
-        _backoff_after_pending_timeout(sent_at, "reacquire_pending")
-        save_state()
-        return False
-    _set_phase("reacquire_pending")
-    state["concubine_reacquire_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_reacquire_attempts"] = int(state.get("concubine_reacquire_attempts", 0) or 0) + 1
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    save_state()
-    return True
+    return await reacquire_actions.send(now)
 
 
 async def _send_tianji_command(now):
-    if _guard_tianji_send_with_message_log(now):
-        save_state()
-        return False
-    if _defer_active_for_phaseful_summary(now, "天机代卜", error_key="concubine_tianji_last_error"):
-        save_state()
-        return False
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_TIANJI, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        if was_last_game_send_blocked_by_global(get_current_identity_id(), CMD_CONCUBINE_TIANJI):
-            state["concubine_tianji_last_error"] = ""
-            _set_phase("idle")
-            if float(state.get("concubine_tianji_due_at", 0) or 0) <= sent_at:
-                state["concubine_tianji_due_at"] = sent_at + random.uniform(10 * 60, 30 * 60)
-            state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
-            save_state()
-            return False
-        if _handle_send_queue_timeout(
-            CMD_CONCUBINE_TIANJI,
-            sent_at,
-            due_key="concubine_tianji_due_at",
-            error_key="concubine_tianji_last_error",
-            label="天机代卜",
-        ):
-            save_state()
-            return False
-        state["concubine_tianji_last_error"] = "发送 .天机代卜 失败，稍后重试"
-        _set_phase("idle")
-        retry_at = _schedule_status_recheck(sent_at)
-        if float(state.get("concubine_tianji_due_at", 0) or 0) <= sent_at:
-            state["concubine_tianji_due_at"] = retry_at
-        _record_concubine_event(
-            "天机代卜发送失败",
-            kind="skipped",
-            reason="concubine_send_failed",
-            phase="idle",
-            command=CMD_CONCUBINE_TIANJI,
-            decision="tianji_send_failed",
-            workflow_status="failed",
-        )
-        save_state()
-        return False
-    _set_phase("tianji_pending")
-    state["concubine_tianji_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    _set_tianji_provisional_cooldown(sent_at)
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    _record_concubine_event(
-        "天机代卜已发送",
-        kind="changed",
-        phase="tianji_pending",
-        command=CMD_CONCUBINE_TIANJI,
-        msg_id=state["concubine_tianji_msg_id"],
-        decision="tianji_sent",
-        workflow_status="sent",
-    )
-    save_state()
-    return True
+    return await divination_actions.send(now)
 
 
 async def _send_heart_command(now):
-    if _defer_active_for_phaseful_summary(now, "共历心劫", error_key="concubine_heart_last_error"):
-        save_state()
-        return False
-    if _is_heart_chain_active():
-        if int(state.get("concubine_heart_prompt_msg_id", 0) or 0) > 0 and _phase() not in CONCUBINE_HEART_ACTIVE_PHASES:
-            _set_phase("heart_choice_pending")
-            state["next_concubine_time"] = now + random.uniform(
-                CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC,
-                CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC,
-            )
-        elif float(state.get("next_concubine_time", 0) or 0) <= now:
-            state["next_concubine_time"] = now + random.uniform(5 * 60, 10 * 60)
-        state["concubine_heart_last_error"] = "已有心劫链路未结算，跳过重复发起"
-        _record_concubine_event(
-            "共历心劫已有链路",
-            kind="skipped",
-            reason="concubine_heart_chain_active",
-            phase=_phase(),
-            command=CMD_CONCUBINE_HEART,
-            detail=f"prompt_msg_id={int(state.get('concubine_heart_prompt_msg_id', 0) or 0)}｜round={int(state.get('concubine_heart_round', 0) or 0)}",
-            decision="heart_chain_already_active",
-        )
-        save_state()
-        return False
-
-    if _guard_heart_start_with_message_log(now):
-        save_state()
-        return False
-
-    panel_anchor = _resolve_heart_panel_anchor(now)
-    panel_msg_id = int((panel_anchor or {}).get("msg_id", 0) or 0)
-    panel_chat_id = int((panel_anchor or {}).get("chat_id", 0) or 0)
-    panel_source = str((panel_anchor or {}).get("source") or "")
-    if panel_msg_id <= 0 or panel_chat_id == 0:
-        state["concubine_last_panel_msg_id"] = 0
-        state["concubine_last_panel_chat_id"] = 0
-        state["concubine_last_snapshot_at"] = 0
-        state["concubine_heart_last_error"] = "共历心劫需先刷新侍妾面板"
-        await _send_status_command(now)
-        return False
-    msg = await _send_concubine_game_command(
-        CMD_CONCUBINE_HEART,
-        track=False,
-        reply_to=panel_msg_id,
-        priority="chain",
-        target_chat_id=panel_chat_id,
-    )
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else float(now)
-    if not msg:
-        guard_blocks_until = _heart_action_guard_blocks_until(sent_at)
-        if guard_blocks_until > sent_at:
-            _close_heart_chain_without_settlement(
-                sent_at,
-                "heart_send_blocked_by_stale_guard",
-                detail=f"panel_msg_id={panel_msg_id}｜guard_until={fmt_abs_ts(guard_blocks_until)}",
-            )
-            save_state()
-            return False
-
-        send_block = get_last_game_send_block(
-            get_current_identity_id(),
-            CMD_CONCUBINE_HEART,
-        )
-        block_code = str((send_block or {}).get("code") or "")
-        block_reason = str((send_block or {}).get("reason") or "").strip()
-        if block_code in CONCUBINE_UNSENT_BLOCK_CODES or block_code.startswith("flood_wait"):
-            retry_at = _schedule_after(
-                sent_at,
-                CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC,
-                CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC,
-            )
-            if float(state.get("concubine_heart_due_at", 0) or 0) <= sent_at:
-                state["concubine_heart_due_at"] = retry_at
-            _close_heart_action_guard(sent_at, "heart_send_definitely_unsent")
-            _set_phase("idle")
-            _clear_pending_msg_ids()
-            state["concubine_heart_last_error"] = ""
-            detail = f"{block_code}: {block_reason}" if block_reason else block_code or "runtime_block"
-            state["concubine_last_result"] = f"共历心劫未发送，已错峰重试（{detail}）"
-            _record_concubine_event(
-                "共历心劫未发送",
-                kind="skipped",
-                reason="concubine_heart_send_definitely_unsent",
-                phase="idle",
-                command=CMD_CONCUBINE_HEART,
-                detail=f"panel_msg_id={panel_msg_id}｜block={detail}",
-                decision="heart_send_definitely_unsent",
-                workflow_status="blocked",
-            )
-            save_state()
-            return False
-
-        # A transport timeout may have consumed the command. Do not reopen the
-        # non-idempotent chain on a short retry; wait through the real cooldown
-        # while passive reply recovery can still settle it if evidence appears.
-        cooldown_due = sent_at + CONCUBINE_HEART_CD_SEC + CD_BUFFER_SEC
-        _close_heart_action_guard(sent_at, "heart_send_unconfirmed")
-        state["concubine_heart_due_at"] = max(
-            float(state.get("concubine_heart_due_at", 0) or 0),
-            cooldown_due,
-        )
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        state["concubine_heart_last_error"] = "共历心劫发送状态未知，禁止盲补，按长冷却等待"
-        _schedule_at_due_or_chain(sent_at, state["concubine_heart_due_at"])
-        _record_concubine_event(
-            "共历心劫发送未确认",
-            kind="changed",
-            reason="concubine_heart_send_unconfirmed",
-            phase="idle",
-            command=CMD_CONCUBINE_HEART,
-            detail=f"panel_msg_id={panel_msg_id}｜block={block_code or 'unknown'}｜retry=disabled",
-            decision="heart_send_unconfirmed",
-            workflow_status="pending",
-        )
-        save_state()
-        return False
-    _set_phase("heart_pending")
-    state["concubine_heart_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_heart_prompt_msg_id"] = 0
-    state["concubine_heart_round"] = 0
-    _clear_heart_choice_guard()
-    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-    _set_heart_pending_deadline(state["next_concubine_time"])
-    _record_concubine_event(
-        "共历心劫已发送",
-        kind="changed",
-        phase="heart_pending",
-        command=CMD_CONCUBINE_HEART,
-        msg_id=state["concubine_heart_msg_id"],
-        detail=f"panel_msg_id={panel_msg_id}｜panel_source={panel_source}",
-        decision="heart_sent",
-        workflow_status="sent",
-    )
-    save_state()
-    return True
+    return await heart_actions.send(now)
 
 
-async def _send_voyage_return_command(now, *, is_retry=False):
-    if _defer_active_for_phaseful_summary(now, "远航归来", error_key="concubine_voyage_last_error", allow_replayable_trigger=True):
-        save_state()
-        return False
-    if not is_retry:
-        state["concubine_voyage_retry_count"] = 0
-    send_kwargs = _voyage_retry_send_kwargs(CMD_CONCUBINE_VOYAGE_RETURN) if is_retry else {"priority": "chain"}
-    msg = await _send_concubine_game_command(CMD_CONCUBINE_VOYAGE_RETURN, track=False, **send_kwargs)
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now or time.time())
-    if not msg:
-        if _handle_voyage_definitely_unsent(
-            CMD_CONCUBINE_VOYAGE_RETURN,
-            sent_at,
-            label="远航归来",
-            is_retry=is_retry,
-        ):
-            save_state()
-            return False
-        state["concubine_voyage_last_error"] = "发送 .远航归来 失败"
-        if is_retry:
-            state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
-        _set_phase("idle")
-        state["concubine_voyage_msg_id"] = 0
-        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
-        save_state()
-        return False
-    _set_phase("voyage_return_pending")
-    state["concubine_voyage_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
-    save_state()
-    return True
+async def _send_voyage_return_command(now):
+    return await voyage_actions.send("voyage_return", now)
 
 
 async def _send_voyage_status_command(now):
+    if not _status_query_admitted("voyage_status", now):
+        return False
     if _defer_active_for_phaseful_summary(now, "远航状态校准", error_key="concubine_voyage_last_error"):
         save_state()
         return False
-    msg = await _send_concubine_game_command(
-        CMD_CONCUBINE_VOYAGE_STATUS,
-        track=False,
-        priority="chain",
-        source_module="侍妾远航",
-    )
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now or time.time())
-    if not msg:
-        if _handle_voyage_definitely_unsent(
-            CMD_CONCUBINE_VOYAGE_STATUS,
-            sent_at,
-            label="远航状态校准",
-        ):
-            save_state()
-            return False
-        state["concubine_voyage_last_error"] = "发送 .远航状态 失败"
-        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
-        save_state()
-        return False
-    state["concubine_voyage_last_error"] = "远航结算补发已耗尽，已改为状态校准"
-    state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
-    save_state()
-    return True
+    return await _send_status_query("voyage_status", now)
 
 
-async def _send_voyage_command(now, *, is_retry=False):
-    if _defer_active_for_phaseful_summary(now, "侍妾远航", error_key="concubine_voyage_last_error", allow_replayable_trigger=True):
-        save_state()
-        return False
-    if not _is_voyage_eligible(now):
-        _schedule_after_tianji(now)
-        save_state()
-        return False
-    if not is_retry:
-        state["concubine_voyage_retry_count"] = 0
-    command = _voyage_command(is_retry=is_retry)
-    send_kwargs = _voyage_retry_send_kwargs(command) if is_retry else {"priority": "chain"}
-    msg = await _send_concubine_game_command(command, track=False, **send_kwargs)
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now or time.time())
-    if not msg:
-        if _handle_voyage_definitely_unsent(
-            command,
-            sent_at,
-            label="侍妾远航",
-            is_retry=is_retry,
-        ):
-            save_state()
-            return False
-        state["concubine_voyage_last_error"] = f"发送 {command} 失败"
-        if is_retry:
-            state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
-        _set_phase("idle")
-        state["concubine_voyage_msg_id"] = 0
-        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
-        save_state()
-        return False
-    _set_phase("voyage_pending")
-    state["concubine_voyage_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["concubine_voyage_route"] = command.replace(CMD_CONCUBINE_VOYAGE, "", 1).strip() or CONCUBINE_VOYAGE_DEFAULT_ROUTE
-    _clear_stale_tianji_summary_wait_error()
-    state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
-    save_state()
-    return True
-
-
-def _mark_voyage_pending_exhausted(now, phase):
-    route = str(state.get("concubine_voyage_route") or "").strip() or CONCUBINE_VOYAGE_DEFAULT_ROUTE
-    if not state.get("concubine_voyage_status"):
-        state["concubine_voyage_status"] = "sailing"
-    if not state.get("concubine_voyage_route"):
-        state["concubine_voyage_route"] = route
-    state["concubine_voyage_msg_id"] = 0
-    state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
-    state["concubine_voyage_last_error"] = f"{phase} 两次无回复，保持远航锁等待后续状态"
-    _set_phase("idle")
-    _schedule_voyage_wait(now)
-    return float(state.get("next_concubine_time", 0) or 0)
-
-
-def _defer_voyage_timeout_for_log_settle(now, phase):
-    pending_until = float(state.get("next_concubine_time", 0) or 0)
-    if pending_until <= 0:
-        return False
-    settle_until = pending_until + CONCUBINE_VOYAGE_LOG_SETTLE_SEC
-    if float(now or 0) >= settle_until:
-        return False
-    state["next_concubine_time"] = settle_until
-    state["concubine_voyage_last_error"] = f"{phase} 等待日志沉淀，暂缓补发"
-    return True
-
-
-async def _handle_voyage_pending_timeout(now, phase):
-    if await _recover_concubine_pending_from_message_log(now, phase):
-        return True
-    if _defer_voyage_timeout_for_log_settle(now, phase):
-        save_state()
-        return True
-    await _audit_pending_timeout_candidates(now, phase)
-    retry_count = int(state.get("concubine_voyage_retry_count", 0) or 0)
-    if retry_count < 1:
-        state["concubine_voyage_retry_count"] = retry_count + 1
-        if phase == "voyage_return_pending":
-            sent = await _send_voyage_return_command(now, is_retry=True)
-        else:
-            sent = await _send_voyage_command(now, is_retry=True)
-        if sent:
-            await send_audit_log(
-                f"↩️ 侍妾远航 {phase} 未见回复，短保护窗后已补发一次。",
-                scope="identity",
-                limit=180,
-                priority="low",
-            )
-        return True
-
-    retry_at = _mark_voyage_pending_exhausted(now, phase)
-    save_state()
-    await send_audit_log(
-        f"⚠️ 侍妾远航 {phase} 补发后仍无回复，保持本地远航锁；{fmt_time_after(max(0, retry_at - now))} 后再观察。",
-        scope="identity",
-        limit=260,
-    )
-    return True
+async def _send_voyage_command(now):
+    return await voyage_actions.send("voyage", now)
 
 
 async def _send_heart_choice(now):
-    prompt_msg_id = int(state.get("concubine_heart_prompt_msg_id", 0) or 0)
-    round_no = int(state.get("concubine_heart_round", 0) or 0)
-    if prompt_msg_id <= 0:
-        state["concubine_heart_last_error"] = "心劫抉择缺少提示消息ID"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(now, "heart_choice_pending")
-        _record_concubine_event(
-            "心劫抉择缺少提示",
-            kind="skipped",
-            reason="concubine_heart_missing_prompt",
-            phase="idle",
-            command=CMD_CONCUBINE_HEART_STEADY,
-            decision="heart_choice_missing_prompt",
-        )
-        save_state()
-        return False
-    if round_no not in {1, 2, 3}:
-        state["concubine_heart_last_error"] = "心劫抉择轮次异常，暂停自动处理"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(now, "heart_choice_pending")
-        _record_concubine_event(
-            "心劫抉择轮次异常",
-            kind="skipped",
-            reason="concubine_heart_invalid_round",
-            phase="idle",
-            command=CMD_CONCUBINE_HEART_STEADY,
-            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
-            decision="heart_choice_invalid_round",
-        )
-        save_state()
-        return False
-    if _has_sent_heart_choice(prompt_msg_id, round_no):
-        _wait_for_existing_heart_choice(now)
-        state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮已发送 .稳，等待回合推进"
-        _record_concubine_event(
-            "心劫抉择已发送",
-            kind="skipped",
-            reason="concubine_heart_choice_duplicate_guard",
-            phase="heart_choice_reply_pending",
-            command=CMD_CONCUBINE_HEART_STEADY,
-            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
-            decision="heart_choice_duplicate_guard",
-        )
-        save_state()
-        return False
-    msg = await _send_concubine_game_command(
-        CMD_CONCUBINE_HEART_STEADY,
-        track=False,
-        reply_to=prompt_msg_id,
-        priority="urgent_reactive",
-        **_heart_choice_route_kwargs(),
-        **_heart_choice_send_kwargs(prompt_msg_id, round_no),
-    )
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        send_block = get_last_game_send_block(
-            get_current_identity_id(),
-            CMD_CONCUBINE_HEART_STEADY,
-        )
-        block_code = str((send_block or {}).get("code") or "")
-        if block_code in CONCUBINE_UNSENT_BLOCK_CODES or block_code.startswith("flood_wait"):
-            _set_phase("heart_choice_pending")
-            state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
-            _set_heart_pending_deadline(state["next_concubine_time"])
-            state["concubine_heart_last_error"] = (
-                f"心劫第 {round_no} 轮 .稳 未发送，等待重试"
-            )
-            _record_concubine_event(
-                "心劫抉择未发送",
-                kind="skipped",
-                reason="concubine_heart_choice_definitely_unsent",
-                phase="heart_choice_pending",
-                command=CMD_CONCUBINE_HEART_STEADY,
-                detail=(
-                    f"prompt_msg_id={prompt_msg_id}｜round={round_no}"
-                    f"｜block={block_code or 'runtime_block'}"
-                ),
-                decision="heart_choice_definitely_unsent",
-                workflow_status="blocked",
-            )
-            save_state()
-            return True
-        _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
-        # A transport timeout may still deliver the choice later. Exhaust the
-        # resend budget so the same round cannot receive a blind duplicate.
-        state["concubine_heart_choice_retry_count"] = CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT
-        _set_phase("heart_choice_reply_pending")
-        state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
-        _set_heart_pending_deadline(state["next_concubine_time"])
-        state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 发送状态未知，禁止盲补"
-        _record_concubine_event(
-            "心劫抉择发送未确认",
-            kind="changed",
-            reason="concubine_send_unconfirmed",
-            phase="heart_choice_reply_pending",
-            command=CMD_CONCUBINE_HEART_STEADY,
-            detail=(
-                f"prompt_msg_id={prompt_msg_id}｜round={round_no}"
-                f"｜block={block_code or 'unknown'}｜retry_budget=exhausted"
-            ),
-            decision="heart_choice_send_unconfirmed",
-            workflow_status="pending",
-        )
-        save_state()
-        return True
-    _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
-    _set_phase("heart_choice_reply_pending")
-    state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
-    _set_heart_pending_deadline(state["next_concubine_time"])
-    _record_concubine_event(
-        "心劫抉择已发送",
-        kind="changed",
-        phase="heart_choice_reply_pending",
-        command=CMD_CONCUBINE_HEART_STEADY,
-        msg_id=int(getattr(msg, "id", 0) or 0),
-        detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
-        decision="heart_choice_sent",
-        workflow_status="sent",
-    )
-    save_state()
-    return True
+    return await heart_actions.send_choice(now)
 
 
-async def _retry_heart_choice_once(now):
-    prompt_msg_id = int(state.get("concubine_heart_prompt_msg_id", 0) or 0)
-    round_no = int(state.get("concubine_heart_round", 0) or 0)
-    retry_count = int(state.get("concubine_heart_choice_retry_count", 0) or 0)
-    if prompt_msg_id <= 0 or round_no not in {1, 2, 3}:
-        return False
-    if retry_count >= CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT:
-        return False
-
-    msg = await _send_concubine_game_command(
-        CMD_CONCUBINE_HEART_STEADY,
-        track=False,
-        reply_to=prompt_msg_id,
-        priority="retry",
-        **_heart_choice_route_kwargs(),
-        **_heart_choice_send_kwargs(prompt_msg_id, round_no, retry_count + 1),
-    )
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    state["concubine_heart_choice_retry_count"] = retry_count + 1
-    state["concubine_heart_choice_sent_at"] = sent_at
-    _set_phase("heart_choice_reply_pending")
-    state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
-    _set_heart_pending_deadline(state["next_concubine_time"])
-    if not msg:
-        state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 补发失败，等待回合推进"
-        _record_concubine_event(
-            "心劫抉择补发失败",
-            kind="skipped",
-            reason="concubine_heart_choice_retry_send_failed",
-            phase="heart_choice_reply_pending",
-            command=CMD_CONCUBINE_HEART_STEADY,
-            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}｜retry={retry_count + 1}",
-            decision="heart_choice_retry_send_failed",
-            workflow_status="failed",
-        )
-        save_state()
-        return True
-
-    state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 未见推进，已补发一次"
-    _record_concubine_event(
-        "心劫抉择已补发",
-        kind="changed",
-        phase="heart_choice_reply_pending",
-        command=CMD_CONCUBINE_HEART_STEADY,
-        msg_id=int(getattr(msg, "id", 0) or 0),
-        detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}｜retry={retry_count + 1}",
-        decision="heart_choice_retry_sent",
-        workflow_status="sent",
-    )
-    save_state()
-    return True
-
-
-async def handle_concubine_status_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
+async def _handle_owned_status_query_reply(record, text, now, reply_to, observed_at, current_msg_id, current_chat_id, context):
+    owner = _status_query_owner()
+    root = _query_int(getattr(reply_to, "id", 0))
+    reply_chat = _query_int(getattr(reply_to, "chat_id", 0))
+    command = str(getattr(reply_to, "raw_text", "") or "").strip()
     if (
-        not state.get("concubine_enabled", False)
-        and not state.get("concubine_tianji_enabled", False)
-        and not state.get("concubine_heart_enabled", False)
-        and not state.get("concubine_voyage_enabled", False)
+        not _owns_status_query(owner) or owner[2] != record["account_id"]
+        or record["status"] not in CONCUBINE_QUERY_UNRESOLVED
+        or root <= 0 or _query_int(current_msg_id) <= 0
+        or _query_int(current_chat_id) != record["chat_id"]
+        or (reply_chat and reply_chat != record["chat_id"])
+        or (command and command != record["command"])
     ):
         return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "concubine_status" and CMD_CONCUBINE_STATUS not in orig_cmd:
+    record = _adopt_status_query_receipt(record, now)
+    if root != record["msg_id"] or observed_at < record.get("dispatch_at", record["started_at"]) - 1:
         return False
-    phase = _phase()
-    gift_status_flow = phase == "gift_status_pending"
-    gift_status_can_continue = gift_status_flow and (
-        str(state.get("concubine_gift_attempt_day") or "") == _local_day_key(now)
-        or int(state.get("concubine_gift_status_msg_id", 0) or 0) > 0
-    )
-    if phase not in {"status_pending", "gift_status_pending"}:
-        if matched_family == "concubine_status" and CMD_CONCUBINE_STATUS not in orig_cmd:
-            console_log(f"🌸 忽略缺少命令锚点的侍妾状态回复（phase={phase}）。")
-            _record_concubine_ignored_reply("侍妾状态", reason="concubine_status_missing_command_anchor", phase=phase, reply_to=reply_to, current_msg_id=current_msg_id)
-            return False
-        if phase in {"greet_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"} | CONCUBINE_VOYAGE_PENDING_PHASES:
-            console_log(f"🌸 忽略非等待期侍妾状态回复（phase={phase}）。")
-            _record_concubine_ignored_reply("侍妾状态", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to, current_msg_id=current_msg_id)
-            return True
-        console_log(f"🌸 接受迟到的侍妾状态回复（phase={phase}）。")
-    elif not _is_current_reply(reply_to, "concubine_gift_status_msg_id" if gift_status_flow else "concubine_status_msg_id"):
-        console_log("🌸 忽略迟到的侍妾状态回复。")
-        _record_concubine_ignored_reply(
-            "侍妾状态",
-            reason="concubine_msg_id_mismatch",
-            phase=phase,
-            state_key="concubine_gift_status_msg_id" if gift_status_flow else "concubine_status_msg_id",
-            reply_to=reply_to,
-            current_msg_id=current_msg_id,
-        )
-        return True
+    result = _parse_query_reply(record, text, observed_at)
+    if result is None:
+        return False
+    summary, parsed = result["outcome"] == "summary", result["panel"]
+    source_context = dict(context)
+    if source_context.get("op_id") == record["op_id"]:
+        source_context.pop("op_id")
+    native_source = _observed_status_query_source(
+        reply_to, owner, observed_at, current_msg_id, current_chat_id, source_context)
+    read_point = _status_read_point(native_source) if native_source is not None else None
 
-    raw_text = text or ""
-    if _is_phaseful_summary_text(raw_text):
-        _set_phase("idle")
-        retry_at = _schedule_status_recheck(now)
-        if gift_status_flow:
-            state["concubine_gift_status_msg_id"] = 0
-            state["concubine_gift_attempt_day"] = ""
-            state["concubine_gift_last_error"] = "赠予前状态查询触发闭关/元婴结算，稍后重试"
+    before = copy.deepcopy(owner[1])
+    current_plan = _status_query_plan(owner) == record["plan_key"]
+    applied = False
+    if (current_plan and not _status_snapshot_block_reason(observed_at, allow_status_pending=True)
+            and external_events.can_apply_snapshot(record.get("dispatch_at", record["started_at"]), authoritative=True)):
+        if summary:
+            _release_status_query_phase(record, unchanged=current_plan)
+            _schedule_status_recheck(now)
+            state["concubine_gift_last_error" if record["kind"] == "gift_status" else "concubine_last_error"] = "侍妾状态查询触发闭关/元婴结算，稍后重新校准"
         else:
-            state["concubine_status_msg_id"] = 0
-            state["concubine_last_error"] = "侍妾状态查询触发闭关/元婴结算，稍后重试"
-        console_log(f"🌸 侍妾状态查询被闭关/元婴结算占用，延后至 {fmt_abs_ts(retry_at)} 校准。")
-        save_state()
-        return True
+            applied = _apply_status_snapshot(parsed, now, allow_status_pending=True, owned_query=True, read_point=read_point)
+            if applied and parsed.get("has_partner"):
+                state["concubine_last_panel_msg_id"] = current_msg_id
+                state["concubine_last_panel_chat_id"] = current_chat_id
+    if not applied:
+        _release_status_query_phase(record, unchanged=current_plan)
 
-    parsed = _parse_status_panel(raw_text, now)
-    if not parsed:
-        state["concubine_last_error"] = f"未识别的侍妾状态回复: {raw_text[:60]}"
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _backoff_after_pending_timeout(now, "gift_status_pending" if gift_status_flow else "status_pending")
-        save_state()
-        return False
-
-    _apply_status_snapshot(parsed, now)
-    state["concubine_last_panel_msg_id"] = int(current_msg_id or 0)
-    if gift_status_flow:
-        if gift_status_can_continue and _is_gift_recovery_eligible(now):
-            await _send_gift_bag_command(now)
-            return True
+    completed = dict(record, status="complete", reply_at=observed_at, reply_msg_id=current_msg_id)
+    completed.pop("replay_after", None)
+    _store_status_query(completed)
+    _clear_status_query_pending(completed)
+    gift_continue = bool(
+        applied and record["kind"] == "gift_status"
+        and _owns_status_query(owner, sending=True, kind="gift_status")
+        and _has_recent_concubine_status_panel(now) and _is_gift_recovery_eligible(now)
+    )
+    if not gift_continue and applied and record["kind"] == "gift_status":
         if int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY:
             state["concubine_gift_last_error"] = ""
             _schedule_after_tianji(now)
         else:
             state["concubine_gift_last_error"] = "状态确认后不满足赠予条件，暂不赠予"
             _schedule_affinity_recovery(now)
-        save_state()
-        return True
-    save_state()
-    if _is_puzzle_ready():
+    # The read and its exact pending root commit before any downstream await.
+    if not _save_query_projection(owner, before):
+        return False
+    if gift_continue:
+        await _send_gift_bag_command(now)
+    elif applied and _is_puzzle_ready():
         completed_text = _format_completed_fragment_progresses()
-        await send_audit_log(f"🌸 残图已凑齐（{completed_text}），先自动 .残图 确认后再拼图。", scope="identity")
+        try:
+            await send_audit_log(f"🌸 残图已凑齐（{completed_text}），先自动 .残图 确认后再拼图。", scope="identity", send_as_id=owner[0])
+        except Exception as exc:
+            console_log(f"侍妾查询已保存，通知失败 ({type(exc).__name__})")
     return True
 
 
-async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_enabled", False):
-        return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "concubine_dream" and CMD_CONCUBINE_DREAM not in orig_cmd:
-        return False
+def _observed_status_query_source(reply_to, owner, at, msg_id, chat_id, context):
+    if not _owns_status_query(owner) or owner[2] <= 0 or not isinstance(context, dict):
+        return None
+    root = _query_int(getattr(reply_to, "id", 0))
+    actor = _query_int(getattr(reply_to, "sender_id", 0))
+    sender = _query_int(context.get("sender_id"))
+    command = getattr(reply_to, "raw_text", None)
+    native_at = telegram_event_timestamp(reply_to)
+    started_at = _query_time(context.get("reply_to_server_at", native_at))
+    if (started_at is None or started_at > at or not 0 < root < _query_int(msg_id)
+            or not _query_int(chat_id) or chat_id not in get_game_group_ids()
+            or _query_int(getattr(reply_to, "chat_id", 0)) != chat_id
+            or sender <= 0 or sender not in get_game_bot_ids() or not actor
+            or not isinstance(command, str) or command.strip() != CMD_CONCUBINE_STATUS
+            or context.get("reply_to_command_edited", False) is not False
+            or getattr(reply_to, "edit_date", None) is not None
+            or ("reply_to_command_edited" not in context and not hasattr(reply_to, "edit_date"))
+            or context.get("event_type", "message") not in ("message", "edit")
+            or context.get("forwarded") or context.get("reply_to_command_forwarded") or getattr(reply_to, "fwd_from", None)
+            or ((hasattr(reply_to, "server_event_at") or hasattr(reply_to, "date")) and native_at != started_at)
+            or ("server_event_at" in context and _query_time(context["server_event_at"]) != at)
+            or any(name in context and (not isinstance(context[name], str) or context[name].strip() != command.strip())
+                   for name in ("reply_to_command", "command"))
+            or context.get("family") not in (None, "", "concubine_status")
+            or context.get("op_id") not in (None, "")
+            or context.get("source_module") not in (None, "", "concubine", CONCUBINE_QUERY_SOURCE)):
+        return None
+    if [identity_id for identity_id in get_identity_ids() if sender_matches_identity(actor, identity_id)] != [owner[0]]:
+        return None
+    expected = {"send_as_id": owner[0], "account_id": owner[2], "chat_id": chat_id,
+                "root_msg_id": root, "reply_to_msg_id": root, "reply_to_sender_id": actor}
+    if any(name in context and _query_int(context[name]) != value for name, value in expected.items()):
+        return None
+    return {"origin": "observed", "op_id": f"observed:{chat_id}:{root}", "kind": "status",
+            "identity_id": owner[0], "account_id": owner[2], "chat_id": chat_id, "msg_id": root,
+            "command": CMD_CONCUBINE_STATUS, "started_at": started_at, "reply_at": at,
+            "reply_msg_id": msg_id, "sender_id": sender, "actor_id": actor, "status": "complete"}
+
+
+def _status_read_point(source):
+    return {"at": source["started_at"], "evidence": {
+        "source": "telegram", "chat_id": source["chat_id"], "msg_id": source["msg_id"], "edited": False,
+    }}
+
+
+async def _handle_observed_status_query_reply(query, text, now, reply_to, at, msg_id, chat_id, context):
+    """Separate rejected evidence from a failed commit that must remain replayable."""
+    owner = _status_query_owner()
+    record = _observed_status_query_source(reply_to, owner, at, msg_id, chat_id, context)
+    if record is None:
+        return "ignored"
+    started_at = record["started_at"]
+    read_point = _status_read_point(record)
+    if query and (started_at < query.get("reply_at", query["started_at"])
+                  or (chat_id == query["chat_id"] and record["msg_id"] <= max(query["msg_id"], query.get("reply_msg_id", 0)))
+                  or (chat_id != query["chat_id"] and started_at == query.get("reply_at", query["started_at"]))):
+        return "ignored"
+    pending_key, pending_valid = _observed_status_query_pending(record)
     phase = _phase()
-    if phase != "dream_pending":
-        if phase in {"greet_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
-            console_log(f"🌸 忽略非等待期入梦寻图回复（phase={phase}）。")
-            _record_concubine_ignored_reply("入梦寻图", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
-            return True
-        console_log(f"🌸 接受手动/迟到的入梦寻图回复（phase={phase}）。")
-    elif not _is_current_reply(reply_to, "concubine_dream_msg_id") and not _is_strong_dream_terminal_text(text):
-        console_log("🌸 忽略迟到的入梦寻图回复。")
-        _record_concubine_ignored_reply(
-            "入梦寻图",
-            reason="concubine_msg_id_mismatch",
-            phase=phase,
-            state_key="concubine_dream_msg_id",
-            reply_to=reply_to,
+    phase_key = CONCUBINE_QUERY_KEYS[phase.removesuffix("_pending")] if phase in {"status_pending", "gift_status_pending"} else None
+    if (not pending_valid
+            or (phase_key and (pending_key is None or _query_int(state.get(phase_key)) != record["msg_id"]))
+            or any(state.get(key) for key in ("concubine_status_msg_id", "concubine_gift_status_msg_id") if key != phase_key)
+            or _status_snapshot_block_reason(started_at, allow_status_pending=True,
+                                             allow_fragment_ready=external_events.needs_calibration())
+            or wanxin_affinity_snapshot_is_stale(state.get("wanxin_observation"), started_at, now=now, observation_point=read_point)
+            or not external_events.can_apply_snapshot(started_at, authoritative=True)):
+        return "ignored"
+    result = _parse_query_reply(record, text, at)
+    if result is None:
+        return "ignored"
+    before = copy.deepcopy(owner[1])
+    if result["outcome"] == "summary":
+        if phase_key:
+            state[phase_key] = 0
+            _set_phase("idle")
+        if any(state.get(key) for key in ("concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled")):
+            _schedule_status_recheck(now)
+            state["concubine_last_error"] = "侍妾状态查询触发闭关/元婴结算，稍后重新校准"
+    else:
+        if not _apply_status_snapshot(result["panel"], now, allow_status_pending=True, owned_query=True, reconciles_external=True, read_point=read_point):
+            return "ignored"
+        if result["panel"]["has_partner"]:
+            state["concubine_last_panel_msg_id"] = msg_id
+            state["concubine_last_panel_chat_id"] = chat_id
+    _store_status_query(dict(record, outcome=result["outcome"]))
+    _clear_status_query_pending(record)
+    # A proven read is not a legacy gift intent. Only the scheduler may choose new work.
+    if not _save_query_projection(owner, before):
+        return "save_failed"
+    if result["outcome"] == "panel" and _is_puzzle_ready() and state.get("concubine_enabled"):
+        try:
+            await send_audit_log(f"🌸 残图已凑齐（{_format_completed_fragment_progresses()}），先自动 .残图 确认后再拼图。", scope="identity", send_as_id=owner[0])
+        except Exception as exc:
+            console_log(f"侍妾查询已保存，通知失败 ({type(exc).__name__})")
+    return "complete"
+
+
+async def handle_concubine_status_reply(
+    text, now, reply_to, matched_family=None, current_msg_id=0, *,
+    observed_at=None, current_chat_id=0, reply_context=None,
+):
+    if heart_actions.owns_probe(_query_int(getattr(reply_to, "id", 0)), current_chat_id, now):
+        return await heart_actions.handle_reply(
+            text, now, reply_to, current_msg_id=current_msg_id, current_chat_id=current_chat_id,
+            observed_at=observed_at, reply_context=reply_context, probe=True,
         )
-        return True
+    query = _status_query_record()
+    if query is None or matched_family not in (None, "", "concubine_status"):
+        return False
+    if query and query["status"] in CONCUBINE_QUERY_UNRESOLVED:
+        if query["kind"] not in {"status", "gift_status"}:
+            return False
+        context = {} if reply_context is None else reply_context
+        if not isinstance(context, dict):
+            return False
+        expected = {"send_as_id": get_current_identity_id(), "account_id": query["account_id"],
+                    "root_msg_id": _query_int(getattr(reply_to, "id", 0)),
+                    "reply_to_msg_id": _query_int(getattr(reply_to, "id", 0)), "chat_id": current_chat_id}
+        if (any(key in context and _query_int(context[key]) != value for key, value in expected.items())
+                or ("sender_id" in context and _query_int(context["sender_id"]) not in get_game_bot_ids())
+                or context.get("reply_to_command_edited")
+                or (context.get("reply_to_command") and context["reply_to_command"] != CMD_CONCUBINE_STATUS)):
+            return False
+        observed_at = now if observed_at is None else observed_at
+    observed_at, now = _query_time(observed_at), _query_time(now)
+    if observed_at is None or now is None or observed_at > now:
+        return False
+    if query and query["status"] in CONCUBINE_QUERY_UNRESOLVED:
+        return await _handle_owned_status_query_reply(
+            query, text, now, reply_to, observed_at, current_msg_id, current_chat_id, context)
+    return await _handle_observed_status_query_reply(
+        query, text, now, reply_to, observed_at, current_msg_id, current_chat_id, reply_context) == "complete"
 
-    raw_text = text or ""
-    voyage = _parse_voyage_text(raw_text, now)
-    if voyage and voyage.get("status") == "sailing":
-        _apply_voyage_blocked_action(voyage, now, error_key="concubine_last_error", label="入梦寻图")
-        save_state()
-        return True
 
-    if _is_heavenly_ban_text(raw_text):
-        await heavenly_ban_mod.handle_heavenly_ban_text(
-            raw_text,
-            now=now,
-            identity_id_hint=get_current_identity_id(),
-            source="concubine_dream",
-        )
-        state["concubine_dream_due_at"] = 0
-        state["next_concubine_time"] = 0
-        state["concubine_last_error"] = "入梦寻图触发天道封禁，已停用该身份并清空待发任务"
-        reset_resource_shortage(CONCUBINE_DREAM_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        save_state()
-        return True
+async def handle_concubine_dream_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    return await fragment_actions.handle_reply(
+        "dream", text, now, reply_to, current_msg_id=current_msg_id,
+        current_chat_id=current_chat_id, observed_at=observed_at, reply_context=reply_context,
+    )
 
-    if _is_dream_cooldown_text(raw_text):
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_DREAM_CD_SEC
-        state["concubine_dream_due_at"] = now + max(wait_sec + CD_BUFFER_SEC, CONCUBINE_DREAM_MIN_RETRY_SEC)
+
+async def handle_concubine_fragment_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    now, at = _query_time(now), _query_time(observed_at)
+    owner, record = _status_query_owner(), _status_query_record()
+    context = reply_context if isinstance(reply_context, dict) else {}
+    root = _query_int(getattr(reply_to, "id", 0))
+    if (
+        now is None or at is None or at > now or not _owns_status_query(owner)
+        or not record or record["kind"] != "fragment" or record["status"] not in CONCUBINE_QUERY_UNRESOLVED
+        or owner[2] != record["account_id"] or matched_family not in {None, "concubine_fragment"}
+        or _query_int(context.get("sender_id")) not in get_game_bot_ids()
+        or _query_int(current_chat_id) != record["chat_id"]
+        or _query_int(getattr(reply_to, "chat_id", 0)) not in (0, record["chat_id"])
+        or str(getattr(reply_to, "raw_text", "") or "").strip() not in ("", record["command"])
+    ):
+        return False
+    expected = {
+        "send_as_id": record["identity_id"], "account_id": record["account_id"],
+        "chat_id": record["chat_id"], "root_msg_id": root, "reply_to_msg_id": root,
+    }
+    if (any(key in context and _query_int(context[key]) != value for key, value in expected.items())
+            or context.get("reply_to_command_edited")
+            or (context.get("reply_to_command") and context["reply_to_command"] != record["command"])):
+        return False
+    record = _adopt_status_query_receipt(record, now)
+    if record["msg_id"] <= 0 or root != record["msg_id"] or _query_int(current_msg_id) <= root or at < record["dispatch_at"] - 1:
+        return False
+
+    result = _parse_query_reply(record, text, at)
+    if result is None:
+        return False
+    outcome, parsed, voyage = result["outcome"], result["panel"], result["voyage"]
+    unchanged = (_status_query_plan(owner) == record["plan_key"]
+                 and not _status_snapshot_block_reason(at, allow_status_pending=True))
+    before = copy.deepcopy(owner[1])
+    _release_status_query_phase(record, unchanged=unchanged)
+    notify = ""
+    confirmation_key = ""
+    if unchanged:
+        _clear_fragment_confirmation()
         state["concubine_last_error"] = ""
-        reset_resource_shortage(CONCUBINE_DREAM_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_after_tianji(now)
-        save_state()
-        return True
-
-    if "修为不足" in raw_text or "灵石不足" in raw_text or "资源不足" in raw_text:
-        await _apply_concubine_resource_backoff(
-            now,
-            CONCUBINE_DREAM_RESOURCE_KEY,
-            "concubine_dream_due_at",
-            "concubine_last_error",
-            "入梦寻图",
-            raw_text,
-        )
-        save_state()
-        return True
-
-    if _is_no_partner_text(raw_text):
-        if _is_partner_manual_repair_text(raw_text):
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "入梦寻图失败：侍妾数据异常，等待人工修复")
-            save_state()
-            return True
-        not_eligible = _is_partner_not_eligible_text(raw_text)
-        reason = "入梦寻图失败：境界不足" if not_eligible else "入梦寻图失败：暂无侍妾"
-        _mark_no_partner(now, reason, allow_reacquire=not not_eligible)
-        save_state()
-        return True
-
-    progresses = _parse_fragment_progresses(raw_text)
-    if "【入梦寻图】" in raw_text:
-        _apply_dream_partner_hint(raw_text)
-        _apply_fragment_progresses(progresses)
-        state["concubine_dream_due_at"] = now + CONCUBINE_DREAM_CD_SEC + CD_BUFFER_SEC
-        state["concubine_last_error"] = ""
-        reset_resource_shortage(CONCUBINE_DREAM_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        if _is_puzzle_ready():
-            _schedule_chain_action(now)
-            save_state()
-            await send_audit_log(f"🌸 入梦寻图已达 4/4（{_format_completed_fragment_progresses()}），将先 .残图 确认。", scope="identity")
+        if now - at > CONCUBINE_PANEL_REUSE_MAX_AGE_SEC:
+            _schedule_status_recheck(now)
+            state["concubine_last_error"] = "残图回包已过确认有效期，稍后重新查询"
+        elif parsed:
+            _apply_fragment_progresses(parsed["progresses"])
+            if _is_puzzle_ready():
+                confirmation_key = _mark_fragment_confirmation(at)
+                _set_phase("puzzle_ready")
+                _schedule_chain_action(now)
+                notify = f"🌸 残图确认 4/4（{_format_completed_fragment_progresses()}），已排队自动 .拼图。"
+            else:
+                _schedule_after_tianji(now)
+        elif voyage:
+            _apply_voyage_snapshot(voyage, at)
+            _schedule_voyage_wait(now)
+            state["concubine_last_error"] = "残图确认被远航锁拦截，等待归航"
         else:
-            _schedule_after_tianji(now)
-            save_state()
-        return True
-
-    if "【全群异闻·" in raw_text and "残图】" in raw_text:
-        _apply_fragment_progresses(progresses)
-        state["concubine_dream_due_at"] = now + CONCUBINE_DREAM_CD_SEC + CD_BUFFER_SEC
-        state["concubine_last_error"] = ""
-        reset_resource_shortage(CONCUBINE_DREAM_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        if _is_puzzle_ready():
-            _schedule_chain_action(now)
-            save_state()
-            await send_audit_log(f"🌸 入梦寻图广播已达 4/4（{_format_completed_fragment_progresses()}），将先 .残图 确认。", scope="identity")
-        else:
-            _schedule_after_tianji(now)
-            save_state()
-        return True
-
-    state["concubine_last_error"] = f"未识别的入梦寻图回复: {raw_text[:60]}"
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "dream_pending")
-    save_state()
-    return False
-
-
-async def handle_concubine_fragment_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_enabled", False):
+            if outcome == "no_partner":
+                _set_availability("unknown")
+                state["concubine_last_snapshot_at"] = 0
+            _schedule_status_recheck(now)
+            state["concubine_last_error"] = "残图查询未返回可用面板，稍后校准侍妾状态"
+    completed = dict(record, status="complete", reply_at=at, reply_msg_id=current_msg_id,
+                     outcome=outcome, confirmation_key=confirmation_key)
+    completed.pop("replay_after", None)
+    _store_status_query(completed)
+    _clear_status_query_pending(completed)
+    if not _save_query_projection(owner, before):
         return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "concubine_fragment" and CMD_CONCUBINE_FRAGMENT not in orig_cmd:
+    if notify:
+        try:
+            await send_audit_log(notify, scope="identity", send_as_id=owner[0])
+        except Exception as exc:
+            console_log(f"残图确认已保存，通知失败 ({type(exc).__name__})")
+    return True
+
+
+async def handle_concubine_puzzle_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    return await fragment_actions.handle_reply(
+        "puzzle", text, now, reply_to, current_msg_id=current_msg_id,
+        current_chat_id=current_chat_id, observed_at=observed_at, reply_context=reply_context,
+    )
+
+
+async def handle_concubine_reacquire_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    return await reacquire_actions.handle_reply(
+        text, now, reply_to, current_msg_id=current_msg_id,
+        current_chat_id=current_chat_id, observed_at=observed_at, reply_context=reply_context,
+    )
+
+
+async def handle_concubine_tianji_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    if matched_family not in {None, "concubine_tianji"}:
         return False
-    if _phase() != "fragment_pending":
-        phase = _phase()
-        console_log(f"🌸 忽略非等待期残图回复（phase={phase}）。")
-        _record_concubine_ignored_reply("残图", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
-        return True
-    if not _is_current_reply(reply_to, "concubine_fragment_msg_id"):
-        console_log("🌸 忽略迟到的残图回复。")
-        _record_concubine_ignored_reply(
-            "残图",
-            reason="concubine_msg_id_mismatch",
-            phase=_phase(),
-            state_key="concubine_fragment_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-
-    raw_text = text or ""
-    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_last_error", label="残图确认"):
-        save_state()
-        return True
-
-    if _is_no_partner_text(raw_text):
-        if _is_partner_manual_repair_text(raw_text):
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "残图确认失败：侍妾数据异常，等待人工修复")
-            save_state()
-            return True
-        not_eligible = _is_partner_not_eligible_text(raw_text)
-        reason = "残图确认失败：境界不足" if not_eligible else "残图确认失败：暂无侍妾"
-        _mark_no_partner(now, reason, allow_reacquire=not not_eligible)
-        save_state()
-        return True
-
-    progresses = _parse_fragment_progresses(raw_text)
-    if progresses:
-        _apply_fragment_progresses(progresses)
-    if "【虚天残图卷】" in raw_text or "【苍坤残图卷】" in raw_text:
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        if _confirmed_completed_fragment_kinds_from_reply(raw_text):
-            state["concubine_last_error"] = ""
-            _mark_fragment_confirmation(now)
-            _set_phase("puzzle_ready")
-            _schedule_chain_action(now)
-            save_state()
-            await send_audit_log(f"🌸 残图确认 4/4（{_format_completed_fragment_progresses()}），已排队自动 .拼图。", scope="identity")
-        else:
-            state["concubine_last_error"] = ""
-            _schedule_after_tianji(now)
-            save_state()
-        return True
-
-    state["concubine_last_error"] = f"未识别的残图回复: {raw_text[:60]}"
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "fragment_pending")
-    save_state()
-    return False
-
-
-async def handle_concubine_puzzle_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_enabled", False):
-        return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "concubine_puzzle" and CMD_CONCUBINE_PUZZLE not in orig_cmd:
-        return False
-    if _phase() != "puzzle_pending":
-        phase = _phase()
-        console_log(f"🌸 忽略非等待期拼图回复（phase={phase}）。")
-        _record_concubine_ignored_reply("拼图", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
-        return True
-    if not _is_current_reply(reply_to, "concubine_puzzle_msg_id"):
-        console_log("🌸 忽略迟到的拼图回复。")
-        _record_concubine_ignored_reply(
-            "拼图",
-            reason="concubine_msg_id_mismatch",
-            phase=_phase(),
-            state_key="concubine_puzzle_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-
-    raw_text = text or ""
-    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_last_error", label="拼图"):
-        save_state()
-        return True
-
-    success_kind = _parse_puzzle_success_kind(raw_text)
-    if success_kind:
-        _clear_fragment_progress(success_kind)
-        if float(state.get("concubine_dream_due_at", 0) or 0) <= now:
-            state["concubine_dream_due_at"] = now + CONCUBINE_DREAM_CD_SEC + CD_BUFFER_SEC
-        state["concubine_last_error"] = ""
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_after_tianji(now)
-        save_state()
-        await send_audit_log(f"🌸 {FRAGMENT_LABELS[success_kind]}残图拼合成功，已继续等待下一轮入梦。", scope="identity")
-        return True
-
-    if "残图尚未齐全" in raw_text:
-        missing_match = RE_PUZZLE_MISSING.search(raw_text)
-        if missing_match:
-            missing_items = [item.strip() for item in re.split(r"[、,，]\s*", missing_match.group(1)) if item.strip()]
-            total = max(4, len(missing_items))
-            missing_kind = _select_fragment_kind_for_puzzle_result(raw_text)
-            _set_fragment_progress(missing_kind, max(0, total - len(missing_items)), total)
-        state["concubine_last_error"] = "拼图失败：残图尚未齐全"
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _backoff_after_pending_timeout(now, "puzzle_pending")
-        save_state()
-        return True
-
-    if "【全群广播·" in raw_text and "残图拼合】" in raw_text:
-        broadcast_kind = _select_fragment_kind_for_puzzle_result(raw_text)
-        _clear_fragment_progress(broadcast_kind)
-        if float(state.get("concubine_dream_due_at", 0) or 0) <= now:
-            state["concubine_dream_due_at"] = now + CONCUBINE_DREAM_CD_SEC + CD_BUFFER_SEC
-        state["concubine_last_error"] = ""
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_after_tianji(now)
-        save_state()
-        return True
-
-    state["concubine_last_error"] = f"未识别的拼图回复: {raw_text[:60]}"
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "puzzle_pending")
-    save_state()
-    return False
-
-
-async def handle_concubine_reacquire_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_enabled", False):
-        return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "concubine_reacquire" and not any(cmd in orig_cmd for cmd in {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE}):
-        return False
-    if _phase() != "reacquire_pending":
-        phase = _phase()
-        console_log(f"🌸 忽略非等待期补领侍妾回复（phase={phase}）。")
-        _record_concubine_ignored_reply("补领侍妾", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
-        return True
-    if not _is_current_reply(reply_to, "concubine_reacquire_msg_id"):
-        console_log("🌸 忽略迟到的补领侍妾回复。")
-        _record_concubine_ignored_reply(
-            "补领侍妾",
-            reason="concubine_msg_id_mismatch",
-            phase=_phase(),
-            state_key="concubine_reacquire_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-
-    raw_text = text or ""
-    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_last_error", label="补领侍妾"):
-        save_state()
-        return True
-
-    if "开启了一段寻缘之旅" in raw_text:
-        _set_phase("reacquire_pending")
-        state["next_concubine_time"] = now + CONCUBINE_PHASE_TIMEOUT_SEC
-        save_state()
-        # 红尘寻缘常把这条中间态消息编辑成最终结果，不能提前消费。
-        return False
-
-    sect_match = RE_NEW_SECT_PARTNER.search(raw_text)
-    romance_match = RE_NEW_ROMANCE_PARTNER.search(raw_text)
-    if sect_match or romance_match:
-        name = (sect_match or romance_match).group("name")
-        _apply_partner_acquired(name, now, kind="道心侍妾" if sect_match else "红尘道侣")
-        save_state()
-        await send_audit_log(f"🌸 已补领侍妾【{name}】，稍后自动校准状态。", scope="identity")
-        return True
-
-    if "已有道侣" in raw_text or "已觅得红颜知己" in raw_text:
-        state["concubine_last_error"] = "补领返回已有侍妾，将直接入梦校准"
-        _set_availability("unknown")
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_chain_action(now)
-        save_state()
-        return True
-
-    if "贡献不足" in raw_text or "灵石不足" in raw_text or "修为不足" in raw_text or "资源不足" in raw_text:
-        _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, f"补领侍妾资源不足: {raw_text[:80]}")
-        save_state()
-        await send_audit_log(f"⚠️ 补领侍妾资源不足，已冻结 {int(CONCUBINE_REACQUIRE_RETRY_SEC / 3600)} 小时。", scope="identity")
-        return True
-
-    if _is_partner_not_eligible_text(raw_text):
-        _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, f"补领侍妾条件不足: {raw_text[:80]}")
-        save_state()
-        await send_audit_log(f"⚠️ 补领侍妾条件不足，已冻结 {int(CONCUBINE_REACQUIRE_RETRY_SEC / 3600)} 小时。", scope="identity")
-        return True
-
-    if "踏遍万千红尘" in raw_text or "未能寻得有缘之人" in raw_text:
-        _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "红尘寻缘未成功，停止连续尝试")
-        save_state()
-        return True
-
-    if "神念消耗过剧" in raw_text:
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_REACQUIRE_RETRY_SEC
-        _freeze_no_partner_until(now + wait_sec + CD_BUFFER_SEC, "补领侍妾冷却中")
-        save_state()
-        return True
-
-    if "你乃星宫弟子" in raw_text or "宗门自有道心侍妾" in raw_text:
-        if CMD_CONCUBINE_SECT_MARRY in orig_cmd:
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, f"补领指令校正异常: {raw_text[:80]}")
-            save_state()
-            return True
-        _switch_reacquire_command(now, CMD_CONCUBINE_SECT_MARRY, "补领指令校正：改用宗门赐婚")
-        save_state()
-        await send_audit_log("🌸 检测到星宫身份，补领侍妾已改用 .宗门赐婚。", scope="identity")
-        return True
-
-    if "并非星宫弟子" in raw_text or "若为散修或其他宗门" in raw_text:
-        if CMD_CONCUBINE_ROMANCE in orig_cmd:
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, f"补领指令校正异常: {raw_text[:80]}")
-            save_state()
-            return True
-        _switch_reacquire_command(now, CMD_CONCUBINE_ROMANCE, "补领指令校正：改用红尘寻缘")
-        save_state()
-        await send_audit_log("🌸 检测到非星宫身份，补领侍妾已改用 .红尘寻缘。", scope="identity")
-        return True
-
-    state["concubine_last_error"] = f"未识别的补领回复: {raw_text[:60]}"
-    _set_phase("no_partner")
-    _clear_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "reacquire_pending")
-    save_state()
-    return False
-
-
-async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_tianji_enabled", False):
-        return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "concubine_tianji" and CMD_CONCUBINE_TIANJI not in orig_cmd:
-        return False
-    phase = _phase()
-    if phase != "tianji_pending":
-        if phase in {"status_pending", "greet_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
-            console_log(f"🌸 忽略非等待期天机代卜回复（phase={phase}）。")
-            _record_concubine_ignored_reply("天机代卜", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
-            return True
-        console_log(f"🌸 接受手动/迟到的天机代卜回复（phase={phase}）。")
-    elif not _is_current_reply(reply_to, "concubine_tianji_msg_id") and not _is_strong_tianji_terminal_text(text):
-        console_log("🌸 忽略迟到的天机代卜回复。")
-        _record_concubine_ignored_reply(
-            "天机代卜",
-            reason="concubine_msg_id_mismatch",
-            phase=phase,
-            state_key="concubine_tianji_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-
-    raw_text = text or ""
-    voyage = _parse_voyage_text(raw_text, now)
-    if voyage and voyage.get("status") == "sailing":
-        _apply_voyage_blocked_action(voyage, now, error_key="concubine_tianji_last_error", label="天机代卜")
-        save_state()
-        return True
-
-    if "【天机代卜链】" in raw_text:
-        gua_match = RE_TIANJI_GUA.search(raw_text)
-        state["concubine_tianji_chain"] = gua_match.group("name").strip() if gua_match else ""
-        state["concubine_tianji_due_at"] = now + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC
-        state["concubine_tianji_chain_due_at"] = state["concubine_tianji_due_at"]
-        state["concubine_tianji_last_error"] = ""
-        reset_resource_shortage(CONCUBINE_TIANJI_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_after_tianji(now)
-        save_state()
-        return True
-
-    if "天机链路尚未重铸" in raw_text:
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_TIANJI_CD_SEC
-        state["concubine_tianji_due_at"] = now + wait_sec + CD_BUFFER_SEC
-        _clear_expired_tianji_chain(now)
-        state["concubine_tianji_last_error"] = ""
-        reset_resource_shortage(CONCUBINE_TIANJI_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_after_tianji(now)
-        save_state()
-        return True
-
-    if _is_no_partner_text(raw_text):
-        if _is_partner_manual_repair_text(raw_text):
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "天机代卜失败：侍妾数据异常，等待人工修复")
-            save_state()
-            return True
-        not_eligible = _is_partner_not_eligible_text(raw_text)
-        reason = "天机代卜失败：境界不足" if not_eligible else "天机代卜失败：暂无侍妾"
-        _mark_no_partner(now, reason, allow_reacquire=bool(state.get("concubine_enabled")) and not not_eligible)
-        save_state()
-        return True
-
-    if "情缘未至" in raw_text or "情缘未深" in raw_text or "无法为你卜算天机" in raw_text:
-        _mark_tianji_affinity_shortage(
-            now,
-            "情缘不足，暂缓天机代卜",
-            infer_low_affinity=True,
-        )
-        reset_resource_shortage(CONCUBINE_TIANJI_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        save_state()
-        return True
-
-    if _is_tianji_resource_shortage_text(raw_text):
-        await _apply_concubine_resource_backoff(
-            now,
-            CONCUBINE_TIANJI_RESOURCE_KEY,
-            "concubine_tianji_due_at",
-            "concubine_tianji_last_error",
-            "天机代卜",
-            raw_text,
-        )
-        save_state()
-        return True
-
-    state["concubine_tianji_last_error"] = f"未识别的天机代卜回复: {raw_text[:60]}"
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "tianji_pending")
-    save_state()
-    return False
+    return await divination_actions.handle_reply(
+        text, now, reply_to, current_msg_id=current_msg_id, current_chat_id=current_chat_id,
+        observed_at=observed_at, reply_context=reply_context,
+    )
 
 
 def _is_heart_resource_shortage_text(text):
@@ -4870,497 +3884,161 @@ def _is_heart_resource_shortage_text(text):
     return "修为不足" in raw_text and "开启共历心劫" in raw_text
 
 
-def _is_heart_cd_text(text):
-    return "心劫余波未散" in str(text or "")
-
-
 def _heart_next_choice_delay():
     return random.uniform(CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC, CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC)
 
 
-async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
-    if not state.get("concubine_heart_enabled", False):
+async def handle_concubine_heart_reply(
+    text, now, reply_to, matched_family=None, current_msg_id=0, *,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    if matched_family not in (None, "concubine_heart"):
         return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    return await heart_actions.handle_reply(
+        text, now, reply_to, current_msg_id=current_msg_id, current_chat_id=current_chat_id,
+        observed_at=observed_at, reply_context=reply_context,
+    )
+
+
+def owns_concubine_voyage_status_reply(root, chat_id, command=""):
+    if str(command or "").strip() == CMD_CONCUBINE_VOYAGE_STATUS:
+        return True
+    query = _status_query_record()
+    if query is None:
+        return True
+    if not query or query["kind"] != "voyage_status":
+        return False
+    return query["status"] in CONCUBINE_QUERY_UNRESOLVED or (
+        _query_int(chat_id) == query["chat_id"] and 0 < _query_int(root) <= query["msg_id"])
+
+
+async def _handle_owned_voyage_status_reply(
+    text, now, reply_to, *, current_msg_id, current_chat_id, observed_at, reply_context,
+):
+    now, at = _query_time(now), _query_time(observed_at)
+    owner, record = _status_query_owner(), _status_query_record()
+    context = reply_context if isinstance(reply_context, dict) else {}
+    root = _query_int(getattr(reply_to, "id", 0))
     if (
-        matched_family != "concubine_heart"
-        and CMD_CONCUBINE_HEART not in orig_cmd
-        and CMD_CONCUBINE_HEART_STEADY not in orig_cmd
-        and not _is_current_heart_prompt_message(reply_to=reply_to, current_msg_id=current_msg_id)
+        now is None or at is None or at > now or not _owns_status_query(owner)
+        or not record or record["kind"] != "voyage_status" or record["status"] not in CONCUBINE_QUERY_UNRESOLVED
+        or owner[2] != record["account_id"] or _query_int(context.get("sender_id")) not in get_game_bot_ids()
+        or _query_int(current_chat_id) != record["chat_id"]
+        or _query_int(getattr(reply_to, "chat_id", 0)) not in (0, record["chat_id"])
+        or str(getattr(reply_to, "raw_text", "") or "").strip() not in ("", record["command"])
     ):
         return False
-
-    raw_text = text or ""
-    voyage = _parse_voyage_text(raw_text, now)
-    if voyage and voyage.get("status") == "sailing":
-        _close_heart_action_guard(now, "heart_blocked_by_voyage")
-        _apply_voyage_blocked_action(voyage, now, error_key="concubine_heart_last_error", label="共历心劫")
-        save_state()
-        return True
-
-    if _is_heart_cd_text(raw_text):
-        _close_heart_action_guard(now, "heart_cd")
-        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_HEART_CD_SEC
-        state["concubine_heart_due_at"] = now + wait_sec + CD_BUFFER_SEC
-        state["concubine_heart_last_error"] = ""
-        reset_resource_shortage(CONCUBINE_HEART_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
-        save_state()
-        return True
-
-    if _is_heart_resource_shortage_text(raw_text):
-        _close_heart_action_guard(now, "heart_resource_shortage")
-        await _apply_concubine_resource_backoff(
-            now,
-            CONCUBINE_HEART_RESOURCE_KEY,
-            "concubine_heart_due_at",
-            "concubine_heart_last_error",
-            "共历心劫",
-            raw_text,
-        )
-        save_state()
-        return True
-
-    if _is_heart_anchor_lost_text(raw_text):
-        if not _is_heart_chain_active():
-            return False
-        return await _handle_heart_anchor_lost(
-            now,
-            raw_text,
-            reply_to=reply_to,
-            current_msg_id=current_msg_id,
-        )
-
-    if "请回复一条包含侍妾/道侣内容的消息" in raw_text:
-        _close_heart_action_guard(now, "heart_missing_panel_reply")
-        state["concubine_heart_last_error"] = "共历心劫需要回复侍妾面板，已改为状态校准"
-        state["concubine_last_panel_msg_id"] = 0
-        state["concubine_last_panel_chat_id"] = 0
-        _clear_pending_msg_ids()
-        await _send_status_command(now)
-        save_state()
-        return True
-
-    if "你已有一场心劫抉择正在进行" in raw_text:
-        _close_heart_action_guard(now, "heart_already_in_progress")
-        state["concubine_heart_last_error"] = "已有心劫抉择进行中，暂停自动补发"
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        if has_wait_time(raw_text):
-            state["concubine_heart_due_at"] = now + parse_wait_time(raw_text) + CD_BUFFER_SEC
+    expected = {"send_as_id": record["identity_id"], "account_id": record["account_id"],
+                "chat_id": record["chat_id"], "root_msg_id": root, "reply_to_msg_id": root}
+    if (any(key in context and _query_int(context[key]) != value for key, value in expected.items())
+            or any(key in context and context[key] != value for key, value in {
+                "op_id": record["op_id"], "source_module": CONCUBINE_QUERY_SOURCE, "family": "concubine_voyage",
+            }.items())
+            or (getattr(reply_to, "sender_id", 0) and not sender_matches_identity(reply_to.sender_id, record["identity_id"]))
+            or context.get("reply_to_command_edited")
+            or (context.get("reply_to_command") and context["reply_to_command"] != record["command"])):
+        return False
+    record = _adopt_status_query_receipt(record, now)
+    if record["msg_id"] <= 0 or root != record["msg_id"] or _query_int(current_msg_id) <= root or at < record["dispatch_at"] - 1:
+        return False
+    result = _parse_query_reply(record, text, at)
+    if result is None:
+        return False
+    unchanged = (_status_query_plan(owner) == record["plan_key"]
+                 and not _status_snapshot_block_reason(at, allow_status_pending=True))
+    before = copy.deepcopy(owner[1])
+    _release_status_query_phase(record, unchanged=unchanged)
+    if unchanged:
+        if result["outcome"] == "summary" or now - at > CONCUBINE_PANEL_REUSE_MAX_AGE_SEC:
+            _apply_voyage_snapshot({"status": "needs_status"}, now)
+            state["concubine_voyage_last_error"] = "远航状态尚未确认，稍后只读校准"
         else:
-            state["concubine_heart_due_at"] = now + random.uniform(30 * 60, 60 * 60)
-        _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
-        save_state()
-        await send_audit_log("🌸 共历心劫已有抉择进行中，已暂停补发并稍后校准。", scope="identity")
-        return True
-
-    if "【坠魔心劫·结算】" in raw_text:
-        _close_heart_action_guard(now, "heart_settlement")
-        affinity_match = RE_HEART_AFFINITY_SETTLEMENT.search(raw_text)
-        if affinity_match:
-            _apply_affinity_amount(affinity_match.group("amount"), now)
-        state["concubine_heart_due_at"] = now + CONCUBINE_HEART_CD_SEC + random.uniform(10 * 60, 40 * 60)
-        state["concubine_heart_last_error"] = ""
-        state["concubine_heart_prompt_msg_id"] = 0
-        state["concubine_heart_round"] = 0
-        reset_resource_shortage(CONCUBINE_HEART_RESOURCE_KEY)
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
-        save_state()
-        await send_audit_log("🌸 共历心劫已结算，按 12h+缓冲等待下一轮。", scope="identity")
-        return True
-
-    if "【坠魔心劫·第一轮】" in raw_text:
-        prompt_msg_id = int(current_msg_id or getattr(reply_to, "id", 0) or 0)
-        _activate_heart_choice_round(now, prompt_msg_id, 1)
-        save_state()
-        return True
-
-    if "【坠魔心劫·第1轮已定】" in raw_text and "【坠魔心劫·第2轮】" in raw_text:
-        prompt_msg_id = int(current_msg_id or state.get("concubine_heart_prompt_msg_id", 0) or 0)
-        _activate_heart_choice_round(now, prompt_msg_id, 2)
-        save_state()
-        return True
-
-    if "【坠魔心劫·第2轮已定】" in raw_text and "【坠魔心劫·第3轮】" in raw_text:
-        prompt_msg_id = int(current_msg_id or state.get("concubine_heart_prompt_msg_id", 0) or 0)
-        _activate_heart_choice_round(now, prompt_msg_id, 3)
-        save_state()
-        return True
-
-    _close_heart_action_guard(now, "heart_unrecognized")
-    state["concubine_heart_last_error"] = f"未识别的共历心劫回复: {raw_text[:60]}"
-    _set_phase("idle")
-    _clear_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "heart_pending")
-    save_state()
-    return False
+            _apply_voyage_snapshot(result["voyage"], now)
+    completed = dict(record, status="complete", reply_at=at, reply_msg_id=current_msg_id, outcome=result["outcome"])
+    completed.pop("replay_after", None)
+    _store_status_query(completed)
+    _clear_status_query_pending(completed)
+    return _save_query_projection(owner, before)
 
 
-async def handle_concubine_voyage_reply(text, now, reply_to, matched_family=None):
-    if not (
-        state.get("concubine_enabled", False)
-        or state.get("concubine_tianji_enabled", False)
-        or state.get("concubine_heart_enabled", False)
-        or state.get("concubine_voyage_enabled", False)
-        or _has_voyage_runtime_state(now)
+async def handle_concubine_voyage_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
+    if owns_concubine_voyage_status_reply(
+        getattr(reply_to, "id", 0), current_chat_id or getattr(reply_to, "chat_id", 0),
+        getattr(reply_to, "raw_text", "") or (reply_context or {}).get("reply_to_command"),
     ):
+        if matched_family not in {None, "concubine_voyage"}:
+            return False
+        return await _handle_owned_voyage_status_reply(
+            text, now, reply_to, current_msg_id=current_msg_id, current_chat_id=current_chat_id,
+            observed_at=observed_at, reply_context=reply_context,
+        )
+    if matched_family not in {None, "concubine_voyage"}:
         return False
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    voyage_commands = {CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_CONCUBINE_VOYAGE_STATUS}
-    if matched_family != "concubine_voyage" and not any(cmd in orig_cmd for cmd in voyage_commands):
-        return False
-
-    phase = _phase()
-    raw_text = text or ""
-    parsed = _parse_voyage_text(raw_text, now)
-    should_audit_voyage_result = False
-    if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
-        if not _is_current_reply(reply_to, "concubine_voyage_msg_id"):
-            console_log("🌸 忽略迟到的侍妾远航回复。")
-            _record_concubine_ignored_reply(
-                "侍妾远航",
-                reason="concubine_msg_id_mismatch",
-                phase=phase,
-                state_key="concubine_voyage_msg_id",
-                reply_to=reply_to,
-            )
-            return True
-        if parsed and parsed.get("status") == "no_task" and phase == "voyage_return_pending":
-            parsed["clear_idle"] = True
-        should_audit_voyage_result = bool(parsed and phase == "voyage_return_pending" and parsed.get("status") == "idle" and parsed.get("result"))
-    elif phase in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
-        if not parsed:
-            console_log(f"🌸 忽略非等待期侍妾远航回复（phase={phase}）。")
-            _record_concubine_ignored_reply("侍妾远航", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
-            return True
-
-    if parsed:
-        _apply_voyage_snapshot(parsed, now)
-        if should_audit_voyage_result:
-            await _send_voyage_result_audit(parsed)
-        save_state()
-        return True
-
-    state["concubine_voyage_last_error"] = f"未识别的侍妾远航回复: {raw_text[:60]}"
-    if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
-        _set_phase("idle")
-        state["concubine_voyage_msg_id"] = 0
-        _schedule_after(now, CONCUBINE_STATUS_RECHECK_MIN_SEC, CONCUBINE_STATUS_RECHECK_MAX_SEC)
-    save_state()
-    return False
+    return await voyage_actions.handle_reply(
+        text, now, reply_to, current_msg_id=current_msg_id, current_chat_id=current_chat_id,
+        observed_at=observed_at, reply_context=reply_context,
+    )
 
 
-async def handle_concubine_greet_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_tianji_enabled", False):
-        return False
+async def handle_concubine_greet_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "concubine_greet" and CMD_CONCUBINE_DAILY_GREET not in orig_cmd:
         return False
-    if _phase() == "greet_pending" and not _is_current_reply(reply_to, "concubine_greet_msg_id"):
-        console_log("🌸 忽略迟到的每日问安回复。")
-        _record_concubine_ignored_reply(
-            "每日问安",
-            reason="concubine_msg_id_mismatch",
-            phase=_phase(),
-            state_key="concubine_greet_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-
-    raw_text = text or ""
-    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_greet_last_error", label="每日问安"):
-        save_state()
-        return True
-
-    today = _local_day_key(now)
-    if _is_phaseful_summary_text(raw_text):
-        _retry_or_stop_daily_greet(now, "每日问安触发闭关/元婴结算")
-        save_state()
-        return True
-
-    if "今日已经问安过了" in raw_text:
-        state["concubine_last_greet_day"] = today
-        state["concubine_greet_retry_count"] = 0
-        state["concubine_greet_last_error"] = "今日已经问安过"
-        _set_phase("idle")
-        _clear_non_heart_pending_msg_ids()
-        if _is_gift_recovery_due(now):
-            _schedule_chain_action(now)
-        else:
-            _schedule_next_daily_greet_check(now)
-        save_state()
-        return True
-
-    gain_match = RE_AFFINITY_GAIN.search(raw_text)
-    if gain_match:
-        state["concubine_last_greet_day"] = today
-        state["concubine_greet_retry_count"] = 0
-        state["concubine_greet_last_error"] = ""
-        if not _apply_affinity_gain(gain_match.group("name").strip(), gain_match.group("amount"), now):
-            state["concubine_greet_last_error"] = f"问安情缘回复未匹配当前侍妾: {raw_text[:60]}"
-            _set_phase("idle")
-            _clear_non_heart_pending_msg_ids()
-            _backoff_after_pending_timeout(now, "greet_pending")
-            save_state()
-            return False
-        _set_phase("idle")
-        _clear_non_heart_pending_msg_ids()
-        if int(state.get("concubine_affinity", 0) or 0) < CONCUBINE_TIANJI_MIN_AFFINITY:
-            _schedule_affinity_recovery(now)
-        save_state()
-        return True
-
-    if _is_no_partner_text(raw_text):
-        if _is_partner_manual_repair_text(raw_text):
-            _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "每日问安失败：侍妾数据异常，等待人工修复")
-        else:
-            not_eligible = _is_partner_not_eligible_text(raw_text)
-            reason = "每日问安失败：境界不足" if not_eligible else "每日问安失败：暂无侍妾"
-            _mark_no_partner(now, reason, allow_reacquire=bool(state.get("concubine_enabled")) and not not_eligible)
-        save_state()
-        return True
-
-    state["concubine_greet_last_error"] = f"未识别的每日问安回复: {raw_text[:60]}"
-    _set_phase("idle")
-    _clear_non_heart_pending_msg_ids()
-    _backoff_after_pending_timeout(now, "greet_pending")
-    save_state()
-    return False
+    return await affinity_actions.handle_reply(
+        "greet", text, now, reply_to, current_msg_id=current_msg_id,
+        current_chat_id=current_chat_id, observed_at=observed_at, reply_context=reply_context,
+    )
 
 
-async def handle_concubine_storage_bag_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_tianji_enabled", False):
-        return False
+async def handle_concubine_storage_bag_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "storage_bag" and CMD_STORAGE_BAG not in orig_cmd:
         return False
-    phase = _phase()
-    can_continue = _can_continue_gift_recovery(now)
-    if phase == "gift_bag_pending" and not _is_current_reply(reply_to, "concubine_gift_bag_msg_id"):
-        console_log("🌸 忽略迟到的侍妾赠予储物袋回复。")
-        _record_concubine_ignored_reply(
-            "侍妾赠予储物袋",
-            reason="concubine_msg_id_mismatch",
-            phase=phase,
-            state_key="concubine_gift_bag_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-    if phase != "gift_bag_pending":
-        if not can_continue:
-            return False
-        console_log(f"🌸 接受侍妾赠予储物袋回复（phase={phase}，按当日赠予链路续接）。")
-
-    parsed = parse_storage_bag_reply(text)
-    if not parsed:
-        _finish_gift_recovery_today(now, f"未识别的储物袋回复: {(text or '')[:60]}")
-        save_state()
-        return True
-
-    resolved_identity_id = resolve_storage_bag_identity_id(parsed.get("owner"))
-    current_identity_id = get_current_identity_id()
-    if resolved_identity_id > 0 and current_identity_id > 0 and int(resolved_identity_id) != int(current_identity_id):
-        _finish_gift_recovery_today(now, f"储物袋归属不匹配，今日不赠予: {parsed.get('owner') or '未知'}")
-        save_state()
-        return True
-
-    if not _can_continue_gift_recovery(now):
-        if int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY:
-            state["concubine_gift_last_error"] = ""
-            _set_phase("idle")
-            _clear_non_heart_pending_msg_ids()
-            _schedule_after_tianji(now)
-        else:
-            _finish_gift_recovery_today(now, "储物袋返回时不满足赠予条件，今日不再赠予")
-        save_state()
-        return True
-
-    amount = CONCUBINE_TIANJI_MIN_AFFINITY - max(0, int(state.get("concubine_affinity", 0) or 0))
-    stones = _parse_count((parsed.get("items") or {}).get("灵石", 0))
-    if stones < amount:
-        _finish_gift_recovery_today(now, f"灵石不足（{stones}/{amount}），今日不赠予")
-        save_state()
-        return True
-
-    await _send_gift_command(now, amount)
-    return True
+    return await affinity_actions.handle_reply(
+        "gift_bag", text, now, reply_to, current_msg_id=current_msg_id,
+        current_chat_id=current_chat_id, observed_at=observed_at, reply_context=reply_context,
+    )
 
 
-async def handle_concubine_gift_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_tianji_enabled", False):
-        return False
+async def handle_concubine_gift_reply(
+    text, now, reply_to, matched_family=None, *, current_msg_id=0,
+    current_chat_id=0, observed_at=0, reply_context=None,
+):
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "concubine_gift" and CMD_CONCUBINE_GIFT_STONE not in orig_cmd:
         return False
-    if _phase() == "gift_pending" and not _is_current_reply(reply_to, "concubine_gift_msg_id"):
-        console_log("🌸 忽略迟到的侍妾赠予回复。")
-        _record_concubine_ignored_reply(
-            "侍妾赠予",
-            reason="concubine_msg_id_mismatch",
-            phase=_phase(),
-            state_key="concubine_gift_msg_id",
-            reply_to=reply_to,
-        )
-        return True
-
-    raw_text = text or ""
-    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_gift_last_error", label="赠予侍妾"):
-        save_state()
-        return True
-
-    gift_success = _parse_gift_success(raw_text)
-    if gift_success:
-        today = _local_day_key(now)
-        state["concubine_last_gift_day"] = today
-        state["concubine_gift_attempt_day"] = today
-        state["concubine_gift_last_error"] = ""
-        state["concubine_gift_amount"] = 0
-        if not _current_partner_matches(gift_success["name"]):
-            state["concubine_gift_last_error"] = f"赠予回复未匹配当前侍妾: {raw_text[:60]}"
-            _set_phase("idle")
-            _clear_non_heart_pending_msg_ids()
-            _schedule_affinity_recovery(now)
-            save_state()
-            return False
-        if not _apply_affinity_gain(gift_success["name"], gift_success["amount"], now):
-            state["concubine_gift_last_error"] = f"赠予情缘回复未生效: {raw_text[:60]}"
-            _set_phase("idle")
-            _clear_non_heart_pending_msg_ids()
-            _schedule_affinity_recovery(now)
-            save_state()
-            return False
-        apply_storage_bag_item_deltas(get_current_identity_id(), {"灵石": -gift_success["stone"]})
-        _set_phase("idle")
-        _clear_non_heart_pending_msg_ids()
-        if int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY:
-            _normalize_tianji_affinity_error(now)
-        save_state()
-        return True
-
-    if "灵石不足" in raw_text or "灵石不够" in raw_text or "数量不足" in raw_text:
-        _finish_gift_recovery_today(now, f"赠予失败：灵石不足｜{raw_text[:60]}")
-        save_state()
-        return True
-    if _is_no_partner_text(raw_text):
-        _finish_gift_recovery_today(now, f"赠予失败：暂无侍妾｜{raw_text[:60]}")
-        save_state()
-        return True
-    if "今日" in raw_text and ("赠予" in raw_text or "送" in raw_text):
-        _finish_gift_recovery_today(now, f"赠予受限：{raw_text[:60]}")
-        save_state()
-        return True
-
-    _finish_gift_recovery_today(now, f"未识别的赠予回复: {raw_text[:60]}")
-    save_state()
-    return False
+    return await affinity_actions.handle_reply(
+        "gift", text, now, reply_to, current_msg_id=current_msg_id,
+        current_chat_id=current_chat_id, observed_at=observed_at, reply_context=reply_context,
+    )
 
 
-async def handle_concubine_affinity_event(text, now, event=None, matched_family=None, require_identity_hint=False):
+def owns_concubine_affinity_reply(family, root, chat_id):
+    return affinity_actions.owns_reply(family, root, chat_id)
+
+
+async def handle_concubine_affinity_event(
+    text, now, event=None, matched_family=None, require_identity_hint=False, *,
+    event_type="message", reply_to=None, reply_context=None,
+):
     if matched_family in {"concubine_greet", "concubine_gift"}:
         return False
-    if (
-        not state.get("concubine_enabled", False)
-        and not state.get("concubine_tianji_enabled", False)
-        and not state.get("concubine_heart_enabled", False)
-        and not state.get("concubine_voyage_enabled", False)
-    ):
-        return False
-    raw_text = text or ""
-    if _parse_gift_success(raw_text):
-        return False
-    if not is_concubine_affinity_event_candidate(raw_text):
-        return False
-    if require_identity_hint and not _text_matches_current_identity(raw_text):
-        return False
-
-    moon_contract = RE_MOON_CONTRACT.search(raw_text)
-    if moon_contract:
-        _apply_partner_acquired(
-            "南宫婉",
-            now,
-            kind="红尘道侣",
-            affinity=_parse_count(moon_contract.group("affinity")),
-        )
-        state["concubine_auto_reacquire"] = False
-        state["concubine_last_error"] = ""
-        save_state()
-        await send_audit_log("🌙 南宫婉月殿契约已记录：永久道侣，不再进入安置/召回或自动补领链路。", scope="identity")
-        return True
-
-    if _is_selfless_affinity_depletion_text(raw_text):
-        partner_name = _parse_selfless_partner_name(raw_text)
-        if partner_name and not _current_partner_matches(partner_name):
-            return False
-        if state.get("concubine_kind") and state.get("concubine_kind") != "道心侍妾":
-            return False
-        if partner_name:
-            state["concubine_name"] = partner_name
-        state["concubine_kind"] = "道心侍妾"
-        _set_availability("available")
-        _mark_tianji_affinity_shortage(
-            now,
-            "无我之境耗尽情缘，等待问安恢复",
-            force_affinity_zero=True,
-        )
-        state["concubine_last_error"] = ""
-        save_state()
-        await send_audit_log("🌸 无我之境已耗尽侍妾情缘，暂停天机代卜，等待问安等情缘恢复。", scope="identity")
-        return True
-
-    gain_match = RE_AFFINITY_GAIN.search(raw_text)
-    if not gain_match:
-        return False
-    partner_name = gain_match.group("name").strip()
-    if not _apply_affinity_gain(partner_name, gain_match.group("amount"), now):
-        return False
-    save_state()
-    return True
+    return await external_events.observe(
+        text, now, event, event_type=event_type, reply_to=reply_to, reply_context=reply_context,
+    )
 
 
-async def handle_concubine_loss_broadcast(text, now, event):
-    if (
-        not state.get("concubine_enabled", False)
-        and not state.get("concubine_tianji_enabled", False)
-        and not state.get("concubine_heart_enabled", False)
-        and not state.get("concubine_voyage_enabled", False)
-    ):
-        return False
-    raw_text = text or ""
-    if "南陇侯" not in raw_text or "侍妾" not in raw_text:
-        return False
-    if "掳走" not in raw_text and "选择将侍妾" not in raw_text:
-        return False
-    if not _text_matches_current_identity(raw_text):
-        return False
-
-    matched = RE_LOST_PARTNER_NAME.search(raw_text)
-    partner_name = matched.group("name") if matched else (state.get("concubine_name") or "")
-    if _is_permanent_moon_partner(partner_name):
-        state["concubine_last_error"] = ""
-        _set_availability("available")
-        save_state()
-        await send_audit_log("🌙 南宫婉受月殿契约保护，已忽略侍妾丢失广播。", scope="identity")
-        return True
-    if "选择将侍妾" in raw_text:
-        from .nanlong import is_nanlong_protected_trade_active
-
-        if is_nanlong_protected_trade_active(now):
-            state["concubine_last_error"] = ""
-            save_state()
-            await send_audit_log("🌸 南陇侯洞府安置交易已确认，侍妾丢失判定已跳过，等待召回。", scope="identity")
-            return True
-    _mark_no_partner(now, f"南陇侯导致侍妾失去: {partner_name or '未知'}", allow_reacquire=bool(state.get("concubine_enabled")))
-    save_state()
-    if state.get("concubine_auto_reacquire"):
-        await send_audit_log("🌸 侍妾已被南陇侯带走，已进入自动补领等待。", scope="identity")
-    else:
-        await send_audit_log("🌸 侍妾已被南陇侯带走，入梦/拼图已熔断；自动补领未开启。", scope="identity")
-    return True
+async def handle_concubine_loss_broadcast(text, now, event, *, event_type="message"):
+    return await external_events.observe(text, now, event, loss=True, event_type=event_type)
 
 
 async def run_concubine_scheduler(now):
@@ -5407,37 +4085,27 @@ async def _recover_persisted_heavenly_ban(now, *, ban_texts=None, identity_id_hi
 
 
 async def _run_concubine_phaseful_cleanup_scheduler(now):
-    if (
-        not state.get("concubine_enabled", False)
-        and not state.get("concubine_tianji_enabled", False)
-        and not state.get("concubine_heart_enabled", False)
-        and not state.get("concubine_voyage_enabled", False)
-        and not _has_voyage_runtime_state(now)
-    ):
-        return
-
-    phase = _phase()
-    if phase not in CONCUBINE_HEART_ACTIVE_PHASES:
-        if _reconcile_stale_heart_action_guard(now, "heart_stale_guard_phaseful_cleanup"):
-            save_state()
-        return
-
-    pending_until = float(state.get("next_concubine_time", 0) or 0)
-    if pending_until > now:
-        return
-    if await _recover_concubine_pending_from_message_log(now, phase):
-        return
-
-    retry_at = _close_heart_chain_without_settlement(now, f"{phase}_phaseful_cleanup_timeout")
-    save_state()
-    await send_audit_log(
-        f"⚠️ 共历心劫 {phase} 在闭关/元婴结算保护中未见推进，已停止旧链路；按长冷却等待 {fmt_time_after(max(0, retry_at - now))}。",
-        scope="identity",
-        limit=240,
-    )
+    await reacquire_actions.recover(now)
+    await heart_actions.recover(now, allow_send=False)
 
 
 async def _run_concubine_scheduler(now):
+    if await reacquire_actions.recover(now):
+        return
+    if await heart_actions.recover(now):
+        return
+    if await divination_actions.recover(now):
+        return
+    if await voyage_actions.recover(now):
+        return
+    if await fragment_actions.recover(now):
+        return
+    if await affinity_actions.recover(now):
+        return
+    if await _recover_status_query(now):
+        return
+    if await external_events.recover(now):
+        return
     if await _recover_persisted_heavenly_ban(now):
         return
 
@@ -5469,49 +4137,7 @@ async def _run_concubine_scheduler(now):
         save_state()
 
     phase = _phase()
-    if phase == "heart_choice_pending":
-        next_time = float(state.get("next_concubine_time", 0) or 0)
-        if next_time > now:
-            return
-        if await _recover_concubine_pending_from_message_log(now, phase):
-            return
-        if int(state.get("concubine_heart_round", 0) or 0) in {1, 2, 3}:
-            await _send_heart_choice(now)
-            return
-        state["concubine_heart_last_error"] = "心劫抉择轮次异常，暂停自动处理"
-        _close_heart_chain_without_settlement(now, "heart_choice_invalid_round")
-        save_state()
-        return
-
-    if phase == "heart_choice_reply_pending":
-        pending_until = float(state.get("next_concubine_time", 0) or 0)
-        if pending_until > now:
-            state["next_concubine_time"] = pending_until
-            return
-        if await _recover_concubine_pending_from_message_log(now, phase):
-            return
-        pending_until = _heart_choice_reply_wait_until()
-        if pending_until > now:
-            state["next_concubine_time"] = pending_until
-            return
-        if await _retry_heart_choice_once(now):
-            return
-        retry_at = _close_heart_chain_without_settlement(now, "heart_choice_reply_timeout")
-        save_state()
-        await send_audit_log(
-            f"⚠️ 共历心劫抉择无回合推进，已停止旧 prompt；按长冷却等待 {fmt_time_after(max(0, retry_at - now))}。",
-            scope="identity",
-        )
-        return
-
-    if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
-        pending_until = float(state.get("next_concubine_time", 0) or 0)
-        if pending_until > now:
-            return
-        await _handle_voyage_pending_timeout(now, phase)
-        return
-
-    if phase in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending"}:
+    if phase in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending"}:
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
             return
@@ -5519,12 +4145,7 @@ async def _run_concubine_scheduler(now):
             return
         await _audit_pending_timeout_candidates(now, phase)
         timeout_error = f"{phase} 等待回复超时，已转状态校准" if phase != "status_pending" else "侍妾状态查询等待回复超时"
-        if phase == "tianji_pending":
-            state["concubine_tianji_last_error"] = timeout_error
-        elif phase in CONCUBINE_HEART_ACTIVE_PHASES:
-            state["concubine_heart_last_error"] = timeout_error
-        else:
-            state["concubine_last_error"] = timeout_error
+        state["concubine_last_error"] = timeout_error
         if _has_available_partner():
             _set_phase("idle")
         elif state.get("concubine_availability") == "no_partner":
@@ -5532,10 +4153,7 @@ async def _run_concubine_scheduler(now):
         else:
             _set_phase("idle")
         _clear_pending_msg_ids()
-        if phase in CONCUBINE_HEART_ACTIVE_PHASES:
-            retry_at = _close_heart_chain_without_settlement(now, f"{phase}_timeout")
-        else:
-            retry_at = _backoff_after_pending_timeout(now, phase)
+        retry_at = _backoff_after_pending_timeout(now, phase)
         save_state()
         if phase != "status_pending":
             await send_audit_log(
@@ -5553,13 +4171,16 @@ async def _run_concubine_scheduler(now):
         next_time = float(state.get("next_concubine_time", 0) or 0)
         if next_time > now:
             return
-        if _is_voyage_return_retry_exhausted(now):
+        if not _has_available_partner():
+            await _send_status_command(now)
+            return
+        if _is_voyage_probe_due(now) or _is_voyage_return_retry_exhausted(now):
             await _send_voyage_status_command(now)
             return
         await _send_voyage_return_command(now)
         return
 
-    if _is_voyage_sailing(now):
+    if _is_voyage_sailing(now) or state.get("concubine_voyage_status") == "needs_status":
         next_time = float(state.get("next_concubine_time", 0) or 0)
         if next_time <= now:
             _schedule_voyage_wait(now)
@@ -5571,7 +4192,7 @@ async def _run_concubine_scheduler(now):
         return
 
     if phase == "no_partner" or state.get("concubine_availability") == "no_partner":
-        if state.get("concubine_enabled") and state.get("concubine_auto_reacquire") and now >= float(state.get("concubine_reacquire_blocked_until", 0) or 0):
+        if state.get("concubine_enabled") and state.get("concubine_auto_reacquire") and now >= reacquire_actions.next_at():
             await _send_reacquire_command(now)
             return
         _schedule_no_partner_check(now)
@@ -5580,7 +4201,10 @@ async def _run_concubine_scheduler(now):
 
     if phase == "puzzle_ready":
         if state.get("concubine_enabled") and _is_puzzle_ready():
-            await _send_puzzle_command(now)
+            if _is_current_fragment_confirmed(now):
+                await _send_puzzle_command(now)
+            else:
+                await _send_fragment_command(now)
             return
         _set_phase("idle")
         _schedule_status_recheck(now)
@@ -5588,11 +4212,7 @@ async def _run_concubine_scheduler(now):
         return
 
     if not _has_available_partner():
-        if state.get("concubine_tianji_enabled") or state.get("concubine_heart_enabled"):
-            await _send_status_command(now)
-        elif state.get("concubine_enabled"):
-            await _send_dream_command(now)
-        elif state.get("concubine_voyage_enabled"):
+        if any(state.get(key) for key in ("concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled")):
             await _send_status_command(now)
         else:
             state["concubine_voyage_last_error"] = "侍妾远航需先确认侍妾"
@@ -5601,7 +4221,7 @@ async def _run_concubine_scheduler(now):
         return
 
     if state.get("concubine_enabled") and _is_puzzle_ready():
-        if _is_current_fragment_confirmed():
+        if _is_current_fragment_confirmed(now):
             _set_phase("puzzle_ready")
             await _send_puzzle_command(now)
         else:
@@ -5626,15 +4246,6 @@ async def _run_concubine_scheduler(now):
         await _send_voyage_command(now)
         return
 
-    if (
-        state.get("concubine_tianji_enabled")
-        and not _is_tianji_affinity_blocked()
-        and float(state.get("concubine_tianji_due_at", 0) or 0) <= now
-        and _guard_tianji_send_with_message_log(now)
-    ):
-        save_state()
-        return
-
     if _needs_active_status_calibration(now):
         action, error_key = _active_status_calibration_context(now)
         if _defer_active_for_phaseful_summary(now, action, error_key=error_key):
@@ -5656,13 +4267,13 @@ async def _run_concubine_scheduler(now):
             return
 
     if state.get("concubine_enabled"):
-        dream_due_at = float(state.get("concubine_dream_due_at", 0) or 0)
+        dream_due_at = fragment_actions.next_dream_at()
         if dream_due_at <= now:
             await _send_dream_command(now)
             return
 
     if state.get("concubine_heart_enabled"):
-        heart_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
+        heart_due_at = heart_actions.next_at()
         if heart_due_at <= now:
             await _send_heart_command(now)
             return
@@ -5673,11 +4284,11 @@ async def _run_concubine_scheduler(now):
 
     due_times = []
     if state.get("concubine_enabled"):
-        due_times.append(float(state.get("concubine_dream_due_at", 0) or 0))
+        due_times.append(fragment_actions.next_dream_at())
     if state.get("concubine_tianji_enabled") and not _is_tianji_affinity_blocked():
         due_times.append(float(state.get("concubine_tianji_due_at", 0) or 0))
     if state.get("concubine_heart_enabled"):
-        due_times.append(float(state.get("concubine_heart_due_at", 0) or 0))
+        due_times.append(heart_actions.next_at())
     due_times = [due_at for due_at in due_times if due_at > now]
     if due_times:
         state["next_concubine_time"] = min(due_times) + random.uniform(60, 600)
@@ -5704,6 +4315,7 @@ __all__ = [
     "handle_concubine_heart_reply",
     "handle_concubine_tianji_reply",
     "handle_concubine_voyage_reply",
+    "owns_concubine_voyage_status_reply",
     "is_concubine_affinity_event_candidate",
     "restore_concubine_runtime",
     "run_concubine_phaseful_cleanup_scheduler",

@@ -813,6 +813,8 @@ def _cave_public_deep_legacy_fallback_ready(now):
         updated_at > 0
         and 0 <= float(now) - updated_at <= CAVE_PUBLIC_DEEP_LEGACY_FALLBACK_WINDOW_SEC
         and payload.get("ok") is False
+        and payload.get("action_dispatched") is False
+        and not payload.get("outcome_unknown")
     )
 
 

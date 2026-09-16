@@ -259,6 +259,34 @@ class WorldBossMiniAppTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual("transient", result.error_type)
 
+    def test_nangongque_executor_accepts_one_budget_across_protocol_calls(self):
+        calls = []
+        budget = world_boss_miniapp.MiniAppRequestBudget(
+            world_boss_miniapp.MiniAppRequestPolicy(min_interval_sec=0, max_requests_per_run=2),
+        )
+        request = world_boss_miniapp.build_nangongque_miniapp_request(
+            "state", session_token="fixture-session", room_id="fixture-room", player_id=7,
+            init_data="fixture-init",
+        )
+        results = [world_boss_miniapp.execute_nangongque_miniapp_request(
+            request, lambda _request: calls.append(1) or {"ok": True}, request_budget=budget,
+        ) for _ in range(3)]
+        self.assertEqual(2, len(calls))
+        self.assertTrue(results[0].ok and results[1].ok)
+        self.assertEqual("request_budget", results[2].error_type)
+
+    def test_nangongque_executor_checks_owner_before_transport(self):
+        calls = []
+        request = world_boss_miniapp.build_nangongque_miniapp_request(
+            "input", session_token="fixture-session", room_id="fixture-room", player_id=7,
+            init_data="fixture-init", input_payload={"seq": 1, "action": "attack"},
+        )
+        result = world_boss_miniapp.execute_nangongque_miniapp_request(
+            request, lambda _request: calls.append(1) or {"ok": True}, operation_check=lambda: False,
+        )
+        self.assertEqual([], calls)
+        self.assertEqual("operation_cancelled", result.error_type)
+
     def test_adapter_and_request_payloads_are_scoped_and_captures_are_redacted(self):
         adapter = world_boss_miniapp.build_world_boss_miniapp_adapter()
         self.assertTrue(adapter.manual_only)

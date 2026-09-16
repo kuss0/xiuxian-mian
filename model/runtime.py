@@ -3016,7 +3016,9 @@ def _recover_module_managed_timeout_state(identity_id, msg_id, item, family, now
             if source_module == "阴罗宗" or family.startswith("yinluo_"):
                 from .features import yinluo
 
-                return bool(yinluo.reconcile_yinluo_timeout_from_pending(msg_id, cmd=cmd, sent_at=sent_at, now=now))
+                return bool(yinluo.reconcile_yinluo_timeout_from_pending(
+                    msg_id, cmd=cmd, sent_at=sent_at, now=now, chat_id=item.get("chat_id", 0),
+                ))
     except Exception as exc:
         console_log(
             f"⚠️ 模块托管超时恢复失败：{_truncate_log_text(cmd, limit=40)}｜{exc}",
@@ -5448,6 +5450,7 @@ def _refresh_identity_info_retry_tracking(identity_state, new_msg_id, now):
 async def run_retry_scheduler(now, send_as_id=None):
     from . import identity_refresh
     from .persistence import save_state
+    from .yinluo_resource_facts import parse_yinluo_resource_command
 
     if should_pause_for_bot_health():
         return
@@ -5483,6 +5486,26 @@ async def run_retry_scheduler(now, send_as_id=None):
             family = resolve_reply_family(cmd)
 
             if now - send_time <= threshold or not has_identity(identity_id):
+                continue
+            resource_command = parse_yinluo_resource_command(cmd)
+            if resource_command is not None and resource_command.action != "banner":
+                # Spending commands use native evidence reconciliation. Neither
+                # silence nor generic reply/text matching retires their guard.
+                if float(item.get("reply_recovery_retry_at", 0) or 0) > now:
+                    continue
+                from .features import yinluo
+
+                chat_id, root_msg_id = message_key_parts(msg_id, item)
+                with use_identity(identity_id):
+                    yinluo.reconcile_yinluo_timeout_from_pending(
+                        root_msg_id, cmd=cmd, sent_at=send_time, now=now, chat_id=chat_id,
+                    )
+                if (has_identity(identity_id) and get_identity_state(identity_id) is owner_state
+                        and owner_state["pending_tasks"].get(msg_id) is item):
+                    item["max_retry"] = 0
+                    item["reply_recovery_retry_at"] = now + yinluo.YINLUO_AUTO_CALIBRATE_RETRY_SEC
+                    item["reply_recovery_error"] = "yinluo_resource_reply_unresolved"
+                    mark_dirty()
                 continue
             pending_before = dict(item)
             recovered_reply = await _recover_pending_reply_from_message_log(identity_id, msg_id, item, now)

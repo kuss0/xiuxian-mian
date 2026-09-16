@@ -10,7 +10,7 @@ import pytest
 from model import state as state_module
 from model.features import cave_treasure_miniapp, cave_treasure_runtime, concubine, yinluo
 from model.real_message_replay import get_real_message_text
-from model.webapp_core import MiniAppRequestAborted, require_miniapp_operation
+from model.webapp_core import MiniAppHttpResult, MiniAppRequestAborted, require_miniapp_operation
 
 
 NOW = 1_700_000_500.0
@@ -48,8 +48,13 @@ def runtime(monkeypatch):
         "soul_stocks": {"凶兽戾魄": 4},
         "soul_lineage": {"元婴修士": 3}, "banner_traits": {"守魂": "+2%"},
     })
-    session = AsyncMock(return_value={"ok": True, "init_data": "fixture_init", "player_id": 1001})
-    flow = AsyncMock(return_value={"ok": True, "data": {"actionResult": {"rawMessage": PANEL}}})
+    session = AsyncMock(return_value={
+        "ok": True, "init_data": "fixture_init", "player_id": 1001,
+        "result": {"ok": True, "data": {"raw": {"account": {"playerId": 1001}}}},
+    })
+    flow = AsyncMock(return_value={"ok": True, "data": {
+        "account": {"playerId": 1001}, "actionResult": {"ok": True, "rawMessage": PANEL},
+    }})
     save = Mock()
     audit = AsyncMock()
     monkeypatch.setattr(cave_treasure_runtime, "_public_entry_allowed", lambda: True)
@@ -124,6 +129,33 @@ def test_banner_read_does_not_complete_or_replace_pending_mutation(runtime, pend
     response = read()
     assert not response["ok"]
     assert runtime.identity == before
+    runtime.save.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["auto_collect_pending", "auto_refine_pending", "auto_soothe_pending"])
+@pytest.mark.parametrize("payload", [None, [], False, 0, ""])
+def test_banner_read_keeps_falsy_legacy_payload_quarantined(runtime, field, payload):
+    runtime.identity["yinluo_observation"][field] = copy.deepcopy(payload)
+    before = copy.deepcopy(runtime.identity)
+    response = read()
+    assert not response["ok"]
+    assert response["extra"]["reason"] == "active_pending"
+    assert runtime.identity == before
+    runtime.session.assert_not_awaited()
+    runtime.flow.assert_not_awaited()
+    runtime.save.assert_not_called()
+
+
+@pytest.mark.parametrize("marker", [True, None, 0, "false"])
+def test_banner_read_cannot_clear_retained_legacy_quarantine(runtime, marker):
+    runtime.identity["yinluo_observation"]["legacy_pending_invalid"] = marker
+    before = copy.deepcopy(runtime.identity)
+    response = read()
+    assert not response["ok"]
+    assert response["extra"]["reason"] == "active_pending"
+    assert runtime.identity == before
+    runtime.session.assert_not_awaited()
+    runtime.flow.assert_not_awaited()
     runtime.save.assert_not_called()
 
 
@@ -344,6 +376,7 @@ def test_tianjige_flow_rechecks_after_auth(runtime, monkeypatch):
     monkeypatch.setattr(cave_treasure_miniapp, "execute_miniapp_http_request", execute)
     result = asyncio.run(cave_treasure_miniapp.run_cave_tianjige_command_production_flow(
         1001, token="df_FIXTURE999", webview_url=ENTRY, command=".我的阴罗幡",
+        player_id=1001,
         operation_check=lambda: allowed,
     ))
     assert not result["ok"]
@@ -358,7 +391,9 @@ def test_cancelled_read_holds_entry_lock_until_http_thread_drained(runtime, monk
         checks.append(kwargs.get("operation_check"))
         entered.set()
         assert release.wait(3)
-        return SimpleNamespace(ok=True, data={"actionResult": {"rawMessage": PANEL}})
+        return MiniAppHttpResult(ok=True, status_code=200, data={
+            "account": {"playerId": 1001}, "actionResult": {"ok": True, "rawMessage": PANEL},
+        })
 
     monkeypatch.setattr(cave_treasure_runtime, "run_cave_tianjige_command_production_flow",
                         cave_treasure_miniapp.run_cave_tianjige_command_production_flow)

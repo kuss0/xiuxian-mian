@@ -8,8 +8,10 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import state as state_module
+from model import persistence, state as state_module
+from model import yinluo_accounting as accounting
 from model.features import hehuan, tianxing, yinluo
+from yinluo_native_support import CHAT, native_logs, native_reply, seed_resources
 
 
 class ModuleTimeoutReconciliationTests(unittest.TestCase):
@@ -94,42 +96,47 @@ class ModuleTimeoutReconciliationTests(unittest.TestCase):
         self.assertGreater(observed["next_hehuan_time"], now)
         save_mock.assert_called_once()
 
-    def test_yinluo_blood_forest_pending_timeout_sets_consumed_cooldown(self):
-        now = 1_780_000_000.0
-        sent_at = now - 30
-        with state_module.use_identity(self.identity_id):
-            state_module.state["yinluo_enabled"] = True
-            state_module.state["yinluo_observation"] = {
-                "last_observed_at": now - 60,
-                "next_blood_forest_time": 0,
-            }
-
-            with patch.object(yinluo, "save_state") as save_mock:
-                handled = yinluo.reconcile_yinluo_timeout_from_pending(
-                    9003,
-                    cmd=yinluo.CMD_YINLUO_BLOOD_FOREST,
-                    sent_at=sent_at,
-                    now=now,
-                )
-
-            observed = yinluo.normalize_yinluo_observation(state_module.state["yinluo_observation"])
-            plan = yinluo.build_yinluo_manual_plan("blood_forest", now=now)
-
-        self.assertTrue(handled)
-        self.assertEqual("assumed_consumed", observed["last_result"])
-        self.assertGreaterEqual(
-            observed["next_blood_forest_time"],
-            sent_at + yinluo.YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC,
+    def _prepare_yinluo(self, command, sent_at, root):
+        self.assertTrue(seed_resources(self.identity_id, sent_at))
+        state_module.get_identity_state(self.identity_id)["yinluo_enabled"] = True
+        record, reason = accounting.prepare_operation(
+            self.identity_id, command, CHAT, sent_at, source_module="阴罗宗",
         )
-        self.assertFalse(plan["allowed"])
-        save_mock.assert_called_once()
+        self.assertEqual("", reason)
+        self.assertTrue(accounting.record_transport(
+            self.identity_id, record["op_id"], phase="sent", msg_id=root, chat_id=CHAT, sent_at=sent_at,
+        ))
+        return record
 
-    def test_yinluo_refine_timeout_closes_from_unthreaded_passive_reply(self):
+    def test_yinluo_blood_forest_timeout_does_not_invent_consumption(self):
         now = 1_780_000_000.0
         sent_at = now - 30
-        with state_module.use_identity(self.identity_id):
-            state_module.state["yinluo_enabled"] = True
-            state_module.state["yinluo_observation"] = {
+        command = yinluo.CMD_YINLUO_BLOOD_FOREST
+        with (state_module.use_identity(self.identity_id),
+              patch.object(persistence, "save_state", return_value=True) as save_mock,
+              patch.object(yinluo, "read_yinluo_log_batch", return_value=[])):
+            record = self._prepare_yinluo(command, sent_at, 9003)
+            save_mock.reset_mock()
+            handled = yinluo.reconcile_yinluo_timeout_from_pending(
+                9003, cmd=command, sent_at=sent_at, now=now, chat_id=CHAT,
+            )
+            observed = yinluo.normalize_yinluo_observation(state_module.state["yinluo_observation"])
+            self.assertEqual("sent", accounting.current_operation(self.identity_id, record["op_id"])["phase"])
+            self.assertEqual("yinluo_command_in_flight", accounting.admission_reason(self.identity_id, command))
+        self.assertFalse(handled)
+        self.assertNotEqual("assumed_consumed", observed["last_result"])
+        self.assertEqual(0, observed["next_blood_forest_time"])
+        save_mock.assert_not_called()
+
+    def test_yinluo_refine_timeout_rejects_unthreaded_observation_only(self):
+        now = 1_780_000_000.0
+        sent_at = now - 30
+        command = ".囚禁魂魄 3 凶兽戾魄"
+        with (state_module.use_identity(self.identity_id),
+              patch.object(persistence, "save_state", return_value=True) as save_mock,
+              patch.object(yinluo, "read_yinluo_log_batch", return_value=[])):
+            record = self._prepare_yinluo(command, sent_at, 9005)
+            state_module.state["yinluo_observation"].update({
                 "last_observed_at": sent_at + 1,
                 "last_action": "囚禁魂魄",
                 "last_result": "success",
@@ -138,22 +145,34 @@ class ModuleTimeoutReconciliationTests(unittest.TestCase):
                 "sha_current": 300,
                 "soul_stocks": {"凶兽戾魄": 0},
                 "refining_slot_numbers": [3],
-            }
+            })
             before = copy.deepcopy(state_module.state["yinluo_observation"])
-
-            with patch.object(yinluo, "save_state") as save_mock:
-                handled = yinluo.reconcile_yinluo_timeout_from_pending(
-                    9005,
-                    cmd=".囚禁魂魄 3 凶兽戾魄",
-                    sent_at=sent_at,
-                    now=now,
-                )
-
+            save_mock.reset_mock()
+            handled = yinluo.reconcile_yinluo_timeout_from_pending(
+                9005, cmd=command, sent_at=sent_at, now=now, chat_id=CHAT,
+            )
             after = state_module.state["yinluo_observation"]
-
-        self.assertTrue(handled)
+            self.assertEqual("sent", accounting.current_operation(self.identity_id, record["op_id"])["phase"])
+        self.assertFalse(handled)
         self.assertEqual(before, after)
         save_mock.assert_not_called()
+
+    def test_yinluo_refine_timeout_recovers_exact_native_final_edit(self):
+        now, sent_at = 1_780_000_000.0, 1_779_999_970.0
+        command = ".囚禁魂魄 3 凶兽戾魄"
+        rows = native_logs(native_reply(
+            self.identity_id, command, "一缕【凶兽戾魄】被强行打入3号炼化槽，炼化已开始。", sent_at + 2,
+            root=9005, command_at=sent_at, edited=True,
+        ))
+        with (state_module.use_identity(self.identity_id),
+              patch.object(persistence, "save_state", return_value=True),
+              patch.object(yinluo, "read_yinluo_log_batch", return_value=rows)):
+            record = self._prepare_yinluo(command, sent_at, 9005)
+            self.assertTrue(yinluo.reconcile_yinluo_timeout_from_pending(
+                9005, cmd=command, sent_at=sent_at, now=now, chat_id=CHAT,
+            ))
+            self.assertEqual("complete", accounting.current_operation(self.identity_id, record["op_id"])["phase"])
+            self.assertEqual([3], state_module.state["yinluo_observation"]["refining_slot_numbers"])
 
     def test_yinluo_refine_timeout_does_not_accept_stale_reply(self):
         now = 1_780_000_000.0
@@ -173,40 +192,28 @@ class ModuleTimeoutReconciliationTests(unittest.TestCase):
 
         self.assertFalse(handled)
 
-    def test_yinluo_blood_forest_timeout_retries_when_phaseful_summary_consumed_command(self):
+    def test_yinluo_blood_forest_timeout_does_not_retry_on_unrelated_summary(self):
         now = 1_780_000_000.0
         sent_at = now - 30
-        summary_entry = {
-            "event_type": "edit",
-            "message_id": 9004,
-            "text": "📜 修士 @timeout_user 深度闭关总结\n【深度闭关总结】",
-        }
+        command = yinluo.CMD_YINLUO_BLOOD_FOREST
+        rows = native_logs(native_reply(
+            self.identity_id, command, "修士 @timeout_user 深度闭关总结\n【深度闭关总结】", sent_at + 5,
+            root=9003, command_at=sent_at, edited=True,
+        ))
         state_module.update_send_as_profile(self.identity_id, username="timeout_user")
-        with state_module.use_identity(self.identity_id):
-            state_module.state["yinluo_enabled"] = True
-            state_module.state["yinluo_observation"] = {
-                "last_observed_at": now - 60,
-                "next_blood_forest_time": sent_at + yinluo.YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC,
-            }
-
-            with (
-                patch.object(yinluo, "iter_message_log_entries_between", return_value=iter([(summary_entry, sent_at + 5)])),
-                patch.object(yinluo, "save_state") as save_mock,
-            ):
-                handled = yinluo.reconcile_yinluo_timeout_from_pending(
-                    9003,
-                    cmd=yinluo.CMD_YINLUO_BLOOD_FOREST,
-                    sent_at=sent_at,
-                    now=now,
-                )
-
+        with (state_module.use_identity(self.identity_id),
+              patch.object(persistence, "save_state", return_value=True),
+              patch.object(yinluo, "read_yinluo_log_batch", return_value=rows)):
+            record = self._prepare_yinluo(command, sent_at, 9003)
+            handled = yinluo.reconcile_yinluo_timeout_from_pending(
+                9003, cmd=command, sent_at=sent_at, now=now, chat_id=CHAT,
+            )
             observed = yinluo.normalize_yinluo_observation(state_module.state["yinluo_observation"])
-
-        self.assertTrue(handled)
-        self.assertEqual("phaseful_consumed", observed["last_result"])
-        self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["next_blood_forest_time"])
-        self.assertEqual("", observed["last_error"])
-        save_mock.assert_called_once()
+            self.assertEqual("sent", accounting.current_operation(self.identity_id, record["op_id"])["phase"])
+            self.assertEqual("yinluo_command_in_flight", accounting.admission_reason(self.identity_id, command))
+        self.assertFalse(handled)
+        self.assertNotEqual("phaseful_consumed", observed["last_result"])
+        self.assertEqual(0, observed["next_blood_forest_time"])
 
 
 if __name__ == "__main__":

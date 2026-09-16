@@ -77,6 +77,22 @@ def apply_cultivation_delta(identity_id, key, amount, start, end, *, revision=No
         ledger = resource_accounting.record_delta(stored["ledger"], key, amount, start, end, revision=revision)
     if ledger is None or ledger == stored["ledger"]:
         return False
+    return apply_cultivation_projection(identity_id, ledger)
+
+
+def read_cultivation_ledger(identity_id):
+    stored, _reason = _read(identity_id)
+    return stored["ledger"] if stored is not None else None
+
+
+def apply_cultivation_projection(identity_id, ledger):
+    """Adopt a staged journal without saving; the owning transaction saves both resources."""
+    stored, _reason = _read(identity_id)
+    ledger = resource_accounting.read_ledger(ledger)
+    if stored is None or ledger is None:
+        return None
+    if ledger == stored["ledger"]:
+        return False
     balance = resource_accounting.evaluate(ledger)
     if (
         balance["status"] == "ready" and _matches_profile_clock(identity_id, ledger)
@@ -95,7 +111,7 @@ def has_cultivation_result(identity_id, key, start, end):
     return bool(stored is not None and resource_accounting.matching_entries(stored["ledger"], key, start, end))
 
 
-def cultivation_balance(identity_id):
+def observed_cultivation_balance(identity_id):
     stored, reason = _read(identity_id)
     if stored is None:
         return {"status": reason, "value": None}
@@ -109,3 +125,15 @@ def cultivation_balance(identity_id):
     ):
         return {"status": "unverified_profile", "value": None}
     return balance
+
+
+def cultivation_balance(identity_id):
+    from .yinluo_accounting import reserved_cultivation
+
+    balance = observed_cultivation_balance(identity_id)
+    if balance["status"] != "ready":
+        return balance
+    reservation = reserved_cultivation(identity_id)
+    if reservation["status"] != "ready":
+        return {"status": reservation["status"], "value": None}
+    return {"status": "ready", "value": max(0, balance["value"] - reservation["value"])}

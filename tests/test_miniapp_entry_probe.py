@@ -9,13 +9,17 @@ from unittest.mock import AsyncMock, patch
 
 from model import ui
 from model import state as state_module
-from model.features import cave_treasure_runtime
+from model.features import cave_treasure_runtime, tree_runtime
 
 
 class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._background_operation = ui._cave_public_background_operation
+        self._tree_coordinator = tree_runtime._COORDINATOR
+        self._tree_run_lock = tree_runtime._GLOBAL_RUN_LOCK
+        tree_runtime._COORDINATOR = {"phase": "idle", "op_id": "", "identity_id": 0}
+        tree_runtime._GLOBAL_RUN_LOCK = None
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
 
@@ -23,6 +27,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         ui._cave_public_background_operation = self._background_operation
+        tree_runtime._COORDINATOR = self._tree_coordinator
+        tree_runtime._GLOBAL_RUN_LOCK = self._tree_run_lock
 
     def background_operation(self, identity_id, action):
         state_module.ensure_identity_registered(identity_id)
@@ -296,6 +302,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("miniapp_manual_run", kwargs["chain_id"])
 
     async def test_manual_run_allows_cave_treasure_command_entry(self):
+        state_module.ensure_identity_registered(1001)
         send_mock = AsyncMock(return_value=SimpleNamespace(id=12351))
         with patch.object(ui, "get_identity_ids", return_value=[1001]), \
                 patch.object(ui, "get_identity_enabled", return_value=True), \
@@ -1888,6 +1895,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("wave1", start_mock.await_args.kwargs["trial_daily_context"]["wave_key"])
 
     async def test_miniapp_daily_scheduler_starts_public_tree_once_and_persists_running(self):
+        state_module.ensure_identity_registered(1001)
+        state_module.update_send_as_profile(1001, sect_name="落云宗")
         state_module._meta_state["miniapp_auto_config"] = {
             "tree_daily_enabled_identity_ids": [1001],
             "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
@@ -1960,6 +1969,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         fire_mock.assert_not_called()
 
     async def test_tree_daily_scheduler_retries_after_retry_after_deadline(self):
+        state_module.ensure_identity_registered(1001)
+        state_module.update_send_as_profile(1001, sect_name="落云宗")
         state_module._meta_state["miniapp_auto_config"] = {
             "tree_daily_enabled_identity_ids": [1001],
             "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
@@ -1995,6 +2006,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(scheduled))
 
     async def test_tree_daily_scheduler_migrates_legacy_entry_unknown_to_public_entry(self):
+        state_module.ensure_identity_registered(1001)
+        state_module.update_send_as_profile(1001, sect_name="落云宗")
         state_module._meta_state["miniapp_auto_config"] = {
             "tree_daily_enabled_identity_ids": [1001],
             "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
@@ -2066,6 +2079,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
 
     async def test_tree_daily_scheduler_closes_persisted_stale_entry_after_restart(self):
+        state_module.ensure_identity_registered(1001)
         state_module._meta_state["miniapp_auto_config"] = {
             "tree_daily_enabled_identity_ids": [1001],
         }

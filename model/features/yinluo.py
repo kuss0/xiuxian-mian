@@ -1,5 +1,5 @@
+import asyncio
 import copy
-import hashlib
 import re
 import time
 from datetime import datetime, timedelta
@@ -16,20 +16,31 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
+from ..action_guard import close_by_family as close_action_guard_by_family, get_action_guard_sessions, resolve_action_key
+from .. import runtime as game_runtime
+from .. import yinluo_accounting as accounting
+from ..cultivation_accounting import cultivation_balance
+from ..resource_accounting import compare_points
+from ..verified_event import VerifiedGameEvent
+from ..yinluo_resource_book import yinluo_resource_balance
+from ..yinluo_resource_replay import owned_yinluo_log_events, read_yinluo_log_batch
 from ..message_keys import get_message_record
-from ..message_log_recovery import iter_message_log_entries_between
 from ..persisted_state import PersistedState
-from ..runtime import send_game_command
+from ..runtime import classify_game_send_block, send_game_command
 from ..state import (
     REALM_SORT_INDEX,
     get_current_identity_id,
+    get_game_group_id,
+    get_global_enabled,
+    get_identity_account,
+    get_identity_enabled,
+    get_identity_state,
     get_pending_command,
     get_send_as_profile,
     has_identity,
     infer_realm_from_xiuwei_max,
     is_module_available,
     state,
-    update_send_as_profile,
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
@@ -43,6 +54,7 @@ YINLUO_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
 YINLUO_AUTO_CHAIN_STEP_SEC = 2 * 60
 YINLUO_AUTO_CALIBRATE_RETRY_SEC = 10 * 60
+_MISSING_OBSERVATION = object()
 YINLUO_AUTO_COLLECT_CONFIRM_TIMEOUT_SEC = 5 * 60
 YINLUO_AUTO_REFINE_CONFIRM_TIMEOUT_SEC = 10 * 60
 YINLUO_AUTO_SOOTHE_CONFIRM_TIMEOUT_SEC = 5 * 60
@@ -91,6 +103,40 @@ RE_REFINING_SLOT_DETAIL = re.compile(
 
 YINLUO_AUTO_REFINE_TARGETS = ()
 YINLUO_AUTO_ACTION_KEYS = ("collect", "daily_sacrifice", "refine", "soothe", "blood_forest", "demon_summon", "convert")
+_YINLUO_INFLIGHT = {}
+
+
+def _active_yinluo_operations(identity_id):
+    if not has_identity(identity_id):
+        return set()
+    owner, account_id = get_identity_state(identity_id), get_identity_account(identity_id)
+    active = {op_id for (actor, op_id), (original, account) in _YINLUO_INFLIGHT.items()
+              if actor == identity_id and original is owner and account == account_id}
+    if not game_runtime._GAME_SEND_TASKS:
+        return active
+    value, _reason = accounting.read_accounting(identity_id)
+    if value is None:
+        return active
+    operations = {item["op_id"]: item for item in value["operations"] if item["phase"] != "unsent"}
+    # Detached RPC handles remain authoritative until their completion callback
+    # has registered the receipt, including a done task still awaiting that callback.
+    for receipt in game_runtime._GAME_SEND_TASKS.values():
+        if (not isinstance(receipt, dict) or type(receipt.get("send_as_id")) is not int
+                or receipt["send_as_id"] != identity_id or type(receipt.get("account_id")) is not int
+                or receipt["account_id"] != account_id):
+            continue
+        kwargs = receipt.get("finalize_kwargs")
+        if not isinstance(kwargs, dict) or not isinstance(kwargs.get("send_intent"), dict):
+            continue
+        intent = kwargs["send_intent"]
+        op_id = intent.get("op_id")
+        record = operations.get(op_id) if isinstance(op_id, str) else None
+        if (record is not None and intent.get("source_module") == record["source_module"]
+                and receipt.get("command") == record["command"]
+                and type(kwargs.get("send_as_id")) is int and kwargs["send_as_id"] == identity_id
+                and type(kwargs.get("game_group_id")) is int and kwargs["game_group_id"] == record["chat_id"]):
+            active.add(op_id)
+    return active
 
 
 def _default_yinluo_auto_config():
@@ -120,7 +166,6 @@ def _default_yinluo_observation():
         "next_blood_forest_time": 0,
         "next_convert_time": 0,
         "last_daily_sacrifice_day": "",
-        "last_daily_sacrifice_result_key": "",
         "banner_owner": "",
         "banner_name": "",
         "banner_rank": "",
@@ -160,7 +205,6 @@ def _default_yinluo_observation():
         "last_extra_sha_gain": 0,
         "last_backlash_loss": 0,
         "last_bonus_gain": 0,
-        "last_convert_result_key": "",
         "last_sample_gap": "夺舍 @目标 成功/冷却文案未收录",
         "auto_next_time": 0,
         "auto_last_action": "",
@@ -169,16 +213,20 @@ def _default_yinluo_observation():
         "auto_collect_pending": {},
         "auto_refine_pending": {},
         "auto_soothe_pending": {},
+        "legacy_pending_invalid": False,
         "resource_recovery_min_sha": 0,
         "auto_config": _default_yinluo_auto_config(),
         "recent": [],
     }
 
 
-def normalize_yinluo_observation(value=None):
+def normalize_yinluo_observation(value=_MISSING_OBSERVATION):
     observed = copy.deepcopy(_default_yinluo_observation())
     if isinstance(value, dict):
-        observed.update(value)
+        observed.update(copy.deepcopy(value))
+    elif value is not _MISSING_OBSERVATION:
+        observed["legacy_pending_invalid"] = True
+    observed["legacy_pending_invalid"] = observed.get("legacy_pending_invalid") is not False
     if not isinstance(observed.get("soul_stocks"), dict):
         observed["soul_stocks"] = {}
     cleaned_stocks = {}
@@ -208,30 +256,10 @@ def normalize_yinluo_observation(value=None):
         cleaned_traits[trait_name] = trait_value
     observed["banner_traits"] = cleaned_traits
     observed["auto_config"] = normalize_yinluo_auto_config(observed.get("auto_config"))
-    collect_pending = observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}
-    collect_slots = []
-    for value in list(collect_pending.get("slots") or []) + [collect_pending.get("slot")]:
-        slot_no = _safe_int(value)
-        if 1 <= slot_no <= 99 and slot_no not in collect_slots:
-            collect_slots.append(slot_no)
-    if collect_slots:
-        observed["auto_collect_pending"] = {
-            "slots": collect_slots,
-            "sent_at": float(collect_pending.get("sent_at", 0) or 0),
-        }
-    else:
-        observed["auto_collect_pending"] = {}
-    if not isinstance(observed.get("auto_refine_pending"), dict):
-        observed["auto_refine_pending"] = {}
-    soothe_pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
-    soothe_slot = _safe_int(soothe_pending.get("slot"))
-    if 1 <= soothe_slot <= 99:
-        observed["auto_soothe_pending"] = {
-            "slot": soothe_slot,
-            "sent_at": float(soothe_pending.get("sent_at", 0) or 0),
-        }
-    else:
-        observed["auto_soothe_pending"] = {}
+    # Legacy pending payloads are evidence, not display values. Keep their
+    # identifiers, clocks and even malformed fields intact for reconciliation.
+    if any(not isinstance(observed.get(key), dict) for key in accounting.LEGACY_PENDING_FIELDS):
+        observed["legacy_pending_invalid"] = True
     for key in ("ready_slot_numbers", "collect_blocked_ready_slot_numbers", "empty_slot_numbers", "refining_slot_numbers", "exhausted_slot_numbers"):
         if not isinstance(observed.get(key), list):
             observed[key] = []
@@ -257,8 +285,6 @@ def normalize_yinluo_observation(value=None):
     if not isinstance(observed.get("recent"), list):
         observed["recent"] = []
     observed["recent"] = [item for item in observed.get("recent", []) if isinstance(item, dict)][-8:]
-    observed["last_convert_result_key"] = str(observed.get("last_convert_result_key") or "")
-    observed["last_daily_sacrifice_result_key"] = str(observed.get("last_daily_sacrifice_result_key") or "")
     blocked_slots = observed.get("collect_blocked_slots") if isinstance(observed.get("collect_blocked_slots"), dict) else {}
     cleaned_blocked_slots = {}
     for slot_key, block in blocked_slots.items():
@@ -301,15 +327,7 @@ def request_yinluo_sha_recovery(send_as_id, minimum_sha, *, now=None, reason="")
             minimum_sha,
             int(observed.get("resource_recovery_min_sha", 0) or 0),
         )
-        if _has_known_sha_pool(observed):
-            # The rejection only proves the pool is below the requirement.
-            # Use zero as a conservative lower bound until a gain/panel reply
-            # supplies an authoritative value.
-            observed["sha_current"] = 0
-            if int(observed.get("sha_max", 0) or 0) > 0:
-                observed["sha_percent"] = int(
-                    min(100, observed["sha_current"] * 100 / int(observed["sha_max"]))
-                )
+        observed["auto_calibrate_reason"] = "煞气不足，等待原生幡面板校准；不足提示不代表余额为零。"
         observed["auto_next_time"] = now
         observed["auto_last_action"] = "sha_recovery"
         observed["auto_last_error"] = str(reason or f"煞气不足，至少需要 {minimum_sha} 点。")
@@ -318,30 +336,6 @@ def request_yinluo_sha_recovery(send_as_id, minimum_sha, *, now=None, reason="")
     return True
 
 
-def record_yinluo_sha_consumption(send_as_id, amount, *, now=None):
-    """Apply a sha delta proven by a successful external Yinluo action."""
-    send_as_id = _safe_int(send_as_id)
-    amount = max(0, _safe_int(amount))
-    now = float(now if now is not None else time.time())
-    if send_as_id <= 0 or amount <= 0 or not has_identity(send_as_id):
-        return False
-    with use_identity(send_as_id):
-        observed = normalize_yinluo_observation(state.get("yinluo_observation"))
-        if _has_known_sha_pool(observed):
-            observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) - amount)
-            if int(observed.get("sha_max", 0) or 0) > 0:
-                observed["sha_percent"] = int(
-                    min(100, observed["sha_current"] * 100 / int(observed["sha_max"]))
-                )
-            if observed["sha_current"] < amount:
-                observed["resource_recovery_min_sha"] = max(
-                    amount,
-                    int(observed.get("resource_recovery_min_sha", 0) or 0),
-                )
-                observed["auto_next_time"] = now
-        state["yinluo_observation"] = observed
-        save_state()
-    return True
 
 
 def get_yinluo_sha_recovery_status(send_as_id):
@@ -351,8 +345,9 @@ def get_yinluo_sha_recovery_status(send_as_id):
     with use_identity(send_as_id):
         observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     required_sha = int(observed.get("resource_recovery_min_sha", 0) or 0)
-    sha_current = int(observed.get("sha_current", 0) or 0)
-    blocked = required_sha > 0 and (not _has_known_sha_pool(observed) or sha_current < required_sha)
+    balance = accounting.resource_balance(send_as_id, "sha")
+    sha_current = balance["value"] if balance["status"] == "ready" else None
+    blocked = required_sha > 0 and (sha_current is None or sha_current < required_sha)
     return {
         "blocked": blocked,
         "required_sha": required_sha,
@@ -439,16 +434,6 @@ def normalize_yinluo_auto_config(value=None):
     return config
 
 
-def _adjust_soul_stock(observed, name, delta):
-    name = str(name or "").strip()
-    delta = _safe_int(delta)
-    if not name or delta == 0:
-        return observed
-    stocks = observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}
-    current = _safe_int(stocks.get(name, 0))
-    stocks[name] = max(0, current + delta)
-    observed["soul_stocks"] = stocks
-    return observed
 
 
 def _remove_slot_number(observed, key, slot_no):
@@ -541,38 +526,6 @@ def _apply_collect_blockers(observed, now=None):
     return observed
 
 
-def _yinluo_text_result_key(action, raw_text):
-    compact_text = re.sub(r"\s+", "", str(raw_text or ""))
-    digest = hashlib.sha1(compact_text.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return f"{action}:{digest}"
-
-
-def _yinluo_result_key(action, raw_text, event_context=None):
-    context = event_context if isinstance(event_context, dict) else {}
-    identity_id = _safe_int(context.get("identity_id"))
-    chat_id = _safe_int(context.get("chat_id"))
-    msg_id = _safe_int(context.get("msg_id"))
-    root_msg_id = _safe_int(context.get("root_msg_id"))
-    reply_to_msg_id = _safe_int(context.get("reply_to_msg_id"))
-    source_message_id = _safe_int(context.get("source_message_id"))
-    stable_parts = []
-    if identity_id:
-        stable_parts.append(f"identity={identity_id}")
-    if chat_id:
-        stable_parts.append(f"chat={chat_id}")
-    for key, value in (
-        ("root", root_msg_id),
-        ("reply", reply_to_msg_id),
-        ("msg", msg_id),
-        ("source", source_message_id),
-    ):
-        if value:
-            stable_parts.append(f"{key}={value}")
-    if any(value for value in (root_msg_id, reply_to_msg_id, msg_id, source_message_id)):
-        return f"{action}:ids:" + ":".join(stable_parts)
-    return _yinluo_text_result_key(action, raw_text)
-
-
 def _yinluo_result_day_key(now, event_context=None):
     context = event_context if isinstance(event_context, dict) else {}
     for key in ("root_sent_at", "reply_sent_at", "event_time", "message_time", "sent_at"):
@@ -586,21 +539,6 @@ def _yinluo_result_day_key(now, event_context=None):
     return get_day_key(now)
 
 
-def _restore_auto_refine_pending(observed, reason="囚禁魂魄失败，需查幡校准。"):
-    pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
-    if not pending:
-        return observed
-    for key in ("empty_slot_numbers", "refining_slot_numbers"):
-        if isinstance(pending.get(f"pre_{key}"), list):
-            observed[key] = list(pending.get(f"pre_{key}") or [])
-    for key in ("empty_slots", "refining_slots", "sha_current", "sha_percent"):
-        if f"pre_{key}" in pending:
-            observed[key] = _safe_int(pending.get(f"pre_{key}"))
-    if isinstance(pending.get("pre_soul_stocks"), dict):
-        observed["soul_stocks"] = copy.deepcopy(pending.get("pre_soul_stocks") or {})
-    observed["auto_refine_pending"] = {}
-    observed["auto_calibrate_reason"] = str(reason or "囚禁魂魄失败，需查幡校准。")
-    return observed
 
 
 def _parse_non_member(raw_text):
@@ -933,7 +871,7 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "last_error": "化功为煞失败：煞气反噬",
             "last_convert_amount": amount,
             "last_backlash_loss": amount,
-            "convert_result_key": _yinluo_result_key("convert", raw_text, event_context),
+            "next_convert_time": float(now + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC),
         }
     if "你开始运转魔功" in raw_text and "煞气" in raw_text:
         return {
@@ -954,7 +892,6 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "last_error": "",
             "last_sha_gain": int(sha_match.group("gain") or 0) if sha_match else 0,
             "last_extra_sha_gain": int(extra_match.group("gain") or 0) if extra_match else 0,
-            "daily_sacrifice_result_key": _yinluo_result_key("daily_sacrifice", raw_text, event_context),
             "next_daily_sacrifice_time": _next_daily_sacrifice_time(now),
             "last_daily_sacrifice_day": result_day,
         }
@@ -977,7 +914,7 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "result": "success",
             "summary": "安抚幡灵成功",
             "last_error": "",
-            "last_soothe_cost": int(match.group("cost") or 0) if match else YINLUO_SOOTHE_XIUWEI_COST,
+            "last_soothe_cost": int(match.group("cost") or 0) if match else None,
             "last_soothe_count": int(match.group("count") or 0) if match else 1,
         }
 
@@ -993,7 +930,6 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "last_convert_amount": int(amount_match.group("amount") or 0) if amount_match else 0,
             "last_sha_gain": int(sha_match.group("gain") or 0) if sha_match else 0,
             "last_extra_sha_gain": int(extra_match.group("gain") or 0) if extra_match else 0,
-            "convert_result_key": _yinluo_result_key("convert", raw_text, event_context),
             "next_convert_time": float(now + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC),
         }
 
@@ -1136,32 +1072,40 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
     }
 
 
-def sync_yinluo_miniapp_status(text, now):
-    """Accept an idle banner panel without accounting or completing an action."""
+def yinluo_miniapp_status_block_reason(now):
     previous = state.get("yinluo_observation")
     if not isinstance(previous, dict):
-        return {"handled": False, "reason": "invalid_observation", "summary": {}}
+        return "invalid_observation"
     pending_tasks = state.get("pending_tasks")
     if not isinstance(pending_tasks, dict):
-        return {"handled": False, "reason": "invalid_pending", "summary": {}}
+        return "invalid_pending"
     mutating_commands = {
         CMD_YINLUO_BLOOD_FOREST, CMD_YINLUO_COLLECT, CMD_YINLUO_CONVERT,
         CMD_YINLUO_DAILY_SACRIFICE, CMD_YINLUO_DEMON_SUMMON, CMD_YINLUO_REFINE, CMD_YINLUO_SOOTHE,
     }
     for pending in pending_tasks.values():
         if not isinstance(pending, dict):
-            return {"handled": False, "reason": "invalid_pending", "summary": {}}
+            return "invalid_pending"
         family = str(pending.get("family") or "")
         command = get_pending_command(pending).split()
         if (family.startswith("yinluo_") and family != "yinluo_banner") or (command and command[0] in mutating_commands):
-            return {"handled": False, "reason": "active_pending", "summary": {}}
+            return "active_pending"
     if (
-        any(previous.get(key) for key in ("auto_collect_pending", "auto_refine_pending", "auto_soothe_pending"))
+        accounting.legacy_observation_pending(get_current_identity_id())
         or str(previous.get("last_result") or "") == "pending"
     ):
-        return {"handled": False, "reason": "active_pending", "summary": {}}
+        return "active_pending"
     if _safe_float(previous.get("last_observed_at")) > float(now):
-        return {"handled": False, "reason": "stale_observation", "summary": {}}
+        return "stale_observation"
+    return ""
+
+
+def sync_yinluo_miniapp_status(text, now):
+    """Accept an idle banner panel without accounting or completing an action."""
+    block_reason = yinluo_miniapp_status_block_reason(now)
+    if block_reason:
+        return {"handled": False, "reason": block_reason, "summary": {}}
+    previous = state["yinluo_observation"]
 
     try:
         parsed = parse_yinluo_text(text, now=now, family="yinluo_banner")
@@ -1237,220 +1181,246 @@ def sync_yinluo_miniapp_status(text, now):
     }
 
 
-def apply_yinluo_passive(text, now=None, family="", event_context=None):
-    now = float(now if now is not None else time.time())
-    parsed = parse_yinluo_text(text, now=now, family=family, event_context=event_context)
-    if not parsed:
-        return False
+def _accept_business_point(update, key):
+    return accounting.accept_business_point(update, key)
 
-    observed = normalize_yinluo_observation(state.get("yinluo_observation"))
-    previous_observed = copy.deepcopy(observed)
-    convert_result_key = str(parsed.get("convert_result_key") or "")
-    daily_sacrifice_result_key = str(parsed.get("daily_sacrifice_result_key") or "")
-    convert_already_accounted = (
-        parsed.get("action") == "化功为煞"
-        and parsed.get("result") in {"success", "failed"}
-        and convert_result_key
-        and convert_result_key == str(previous_observed.get("last_convert_result_key") or "")
-    )
-    daily_sacrifice_already_accounted = (
-        parsed.get("action") == "每日献祭"
-        and parsed.get("result") == "success"
-        and daily_sacrifice_result_key
-        and daily_sacrifice_result_key == str(previous_observed.get("last_daily_sacrifice_result_key") or "")
-        and str(parsed.get("last_daily_sacrifice_day") or "") == str(previous_observed.get("last_daily_sacrifice_day") or "")
-    )
-    observed["last_observed_at"] = now
-    for key in (
-        "last_error",
-        "next_demon_summon_time",
-        "next_daily_sacrifice_time",
-        "next_blood_forest_time",
-        "next_convert_time",
-        "last_daily_sacrifice_day",
-        "banner_owner",
-        "banner_name",
-        "banner_rank",
-        "sha_current",
-        "sha_max",
-        "sha_percent",
-        "banner_status",
-        "main_soul_path",
-        "soul_total",
-        "battle_bonus_percent",
-        "soul_lineage",
-        "banner_traits",
-        "soul_stocks",
-        "ready_slots",
-        "ready_slot_numbers",
-        "ready_slots_detail",
-        "refining_slots",
-        "refining_slot_numbers",
-        "refining_slots_detail",
-        "empty_slots",
-        "empty_slot_numbers",
-        "exhausted_slot_numbers",
-        "last_resource",
-        "last_soul_name",
-        "last_extra_soul_name",
-        "last_refine_slot",
-        "last_refine_cost",
-        "last_soothe_count",
-        "last_soothe_cost",
-        "last_convert_amount",
-        "last_collect_count",
-        "last_soul_gain",
-        "last_extra_soul_gain",
-        "last_sha_gain",
-        "last_extra_sha_gain",
-        "last_backlash_loss",
-        "last_bonus_gain",
-        "last_sample_gap",
-    ):
-        if convert_already_accounted and key == "next_convert_time":
-            continue
-        if daily_sacrifice_already_accounted and key in {"next_daily_sacrifice_time", "last_daily_sacrifice_day"}:
-            continue
-        if key in parsed:
-            observed[key] = parsed.get(key)
-    observed["last_action"] = parsed.get("action") or ""
-    observed["last_result"] = parsed.get("result") or ""
-    observed["last_summary"] = parsed.get("summary") or _short_summary(text)
-    if parsed.get("action") == "阴罗幡" and parsed.get("result") == "panel":
-        observed["auto_refine_pending"] = {}
-        observed["auto_calibrate_reason"] = ""
-        observed = _apply_collect_blockers(observed, now=now)
-    if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") in {"success", "failed"}:
-        gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
-        should_apply_gain = (
-            (parsed.get("action") != "化功为煞" or not convert_already_accounted)
-            and (parsed.get("action") != "每日献祭" or not daily_sacrifice_already_accounted)
-        )
-        if parsed.get("action") == "化功为煞" and parsed.get("result") == "failed":
-            observed["auto_next_time"] = max(
-                float(observed.get("auto_next_time", 0) or 0),
-                now + YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC,
-            )
-        if should_apply_gain and gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
-            observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
-            if int(observed.get("sha_max", 0) or 0) > 0:
-                observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
-        if parsed.get("action") == "化功为煞" and not convert_already_accounted:
-            _deduct_profile_xiuwei(parsed.get("last_convert_amount", 0))
-            if convert_result_key:
-                observed["last_convert_result_key"] = convert_result_key
-        if parsed.get("action") == "每日献祭" and not daily_sacrifice_already_accounted and daily_sacrifice_result_key:
-            observed["last_daily_sacrifice_result_key"] = daily_sacrifice_result_key
-    recovery_required = int(observed.get("resource_recovery_min_sha", 0) or 0)
-    if recovery_required > 0 and _has_known_sha_pool(observed) and int(observed.get("sha_current", 0) or 0) >= recovery_required:
-        observed["resource_recovery_min_sha"] = 0
-    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
-        observed = _restore_auto_refine_pending(observed)
-    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "slot_busy":
-        reason = parsed.get("last_error") or "炼化槽正在运转中，需查幡校准"
-        observed = _restore_auto_refine_pending(observed, reason)
-        observed["auto_refine_pending"] = {}
-        observed["auto_calibrate_reason"] = reason
-    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":
-        slot_no = int(parsed.get("last_refine_slot", 0) or 0)
-        refine_already_accounted = (
-            slot_no > 0
-            and slot_no in [_safe_int(value) for value in observed.get("refining_slot_numbers") or []]
-            and slot_no not in [_safe_int(value) for value in observed.get("empty_slot_numbers") or []]
-        )
-        observed = _remove_slot_number(observed, "empty_slot_numbers", slot_no)
-        observed = _append_slot_number(observed, "refining_slot_numbers", slot_no)
-        if observed.get("empty_slot_numbers"):
-            observed["empty_slots"] = len(observed.get("empty_slot_numbers") or [])
-        else:
-            observed["empty_slots"] = max(0, int(observed.get("empty_slots", 0) or 0) - 1)
-        if observed.get("refining_slot_numbers"):
-            observed["refining_slots"] = len(observed.get("refining_slot_numbers") or [])
-        else:
-            observed["refining_slots"] = max(0, int(observed.get("refining_slots", 0) or 0) + 1)
-        resource = str(parsed.get("last_resource") or "").strip()
-        cost = _estimate_refine_sha_cost(resource)
-        if not refine_already_accounted and _has_known_sha_pool(observed):
-            observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) - cost)
-            if int(observed.get("sha_max", 0) or 0) > 0:
-                observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
-        if resource and not refine_already_accounted:
-            observed = _adjust_soul_stock(observed, resource, -1)
-        observed["auto_refine_pending"] = {}
-        observed["auto_calibrate_reason"] = ""
-    if parsed.get("action") == "安抚幡灵" and parsed.get("result") == "success":
-        pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
-        slot_no = _safe_int(pending.get("slot"))
-        if 1 <= slot_no <= 99:
-            observed = _remove_slot_number(observed, "exhausted_slot_numbers", slot_no)
-            observed = _append_slot_number(observed, "refining_slot_numbers", slot_no)
-            observed["refining_slots"] = len(observed.get("refining_slot_numbers") or [])
-        observed["auto_soothe_pending"] = {}
-        observed["auto_calibrate_reason"] = "安抚幡灵成功，先查幡确认槽位状态。"
-        _deduct_profile_xiuwei(parsed.get("last_soothe_cost", YINLUO_SOOTHE_XIUWEI_COST))
-    if parsed.get("action") == "收取精华" and parsed.get("result") == "success":
-        collect_count = max(1, int(parsed.get("last_collect_count", 0) or 0))
-        observed, released_slots = _consume_collect_pending(observed, collect_count)
-        ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
-        if not released_slots and ready_slot_numbers:
-            released_slots = ready_slot_numbers[:collect_count]
-            observed["ready_slot_numbers"] = ready_slot_numbers[collect_count:]
-            observed["ready_slots"] = len(observed["ready_slot_numbers"])
-        elif not released_slots:
-            observed["ready_slots"] = max(0, int(observed.get("ready_slots", 0) or 0) - collect_count)
-        for slot_no in released_slots:
-            observed = _append_slot_number(observed, "empty_slot_numbers", slot_no)
-        if released_slots:
-            observed["empty_slots"] = len(observed.get("empty_slot_numbers") or [])
-            ready_details = observed.get("ready_slots_detail") if isinstance(observed.get("ready_slots_detail"), list) else []
-            observed["ready_slots_detail"] = [
-                item for item in ready_details if _safe_int(item.get("slot")) not in released_slots
-            ]
-        observed["auto_calibrate_reason"] = ""
-    if parsed.get("action") == "收取精华" and parsed.get("result") == "empty":
-        observed["auto_collect_pending"] = {}
-        observed["ready_slots"] = 0
-        observed["ready_slot_numbers"] = []
-        observed["auto_calibrate_reason"] = "收取精华空结果，需查幡校准。"
-        observed["auto_last_error"] = parsed.get("last_error") or parsed.get("summary") or ""
-    if parsed.get("action") == "召唤魔影" and parsed.get("result") == "success":
-        observed["next_demon_summon_time"] = float(now + YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC)
-        observed = _adjust_soul_stock(observed, parsed.get("last_soul_name") or parsed.get("last_resource"), parsed.get("last_soul_gain") or 1)
-    if parsed.get("action") == "血洗山林" and parsed.get("result") == "success":
-        observed = _adjust_soul_stock(observed, parsed.get("last_soul_name"), parsed.get("last_soul_gain"))
-        observed = _adjust_soul_stock(observed, parsed.get("last_extra_soul_name"), parsed.get("last_extra_soul_gain"))
-    if parsed.get("action") == "化功为煞" and parsed.get("result") == "failed":
-        observed["auto_last_error"] = parsed.get("last_error") or parsed.get("summary") or "化功为煞失败"
-    elif (
-        parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul", "slot_busy"}
-    ) or (
-        parsed.get("action") == "收取精华" and parsed.get("result") == "empty"
-    ):
-        observed["auto_last_error"] = parsed.get("last_error") or parsed.get("summary") or ""
-    else:
-        observed["auto_last_error"] = ""
-    if int(observed.get("ready_slots", 0) or 0) > 0:
-        observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
-    elif any(float(observed.get(key, 0) or 0) > now for key in ("next_blood_forest_time", "next_demon_summon_time")):
-        observed["auto_next_time"] = _yinluo_next_after_action(observed, now)
-    elif observed.get("last_action") == "化功为煞" and observed.get("last_result") == "failed":
-        observed["auto_next_time"] = max(
-            float(observed.get("auto_next_time", 0) or 0),
-            now + YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC,
-        )
-    elif observed.get("last_action") in {"阴罗幡", "召唤魔影", "血洗山林", "收取精华", "囚禁魂魄", "安抚幡灵", "每日献祭"}:
-        observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
-    else:
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), now + YINLUO_AUTO_STATUS_BACKOFF_SEC)
-    observed["recent"].append({
-        "ts": now,
-        "action": observed.get("last_action", ""),
-        "result": observed.get("last_result", ""),
-        "summary": observed.get("last_summary", ""),
+
+def _project_resource_display(update, observed):
+    for resource in update.value["book"]["ledgers"]:
+        balance = yinluo_resource_balance(update.value["book"], update.cultivation, resource)
+        if resource == "sha":
+            shortage = update.value["business"].get("shortage_sha")
+            baseline = update.value["book"]["ledgers"]["sha"]["baseline"]
+            if shortage and (not baseline or compare_points(baseline["point"], shortage["end"]) != 1):
+                balance = {"status": "sha_shortage_unreconciled", "value": None}
+            observed["sha_status"] = balance["status"]
+            if balance["status"] == "ready":
+                observed["sha_current"] = balance["value"]
+                if observed.get("sha_max", 0) > 0:
+                    observed["sha_percent"] = min(100, balance["value"] * 100 // observed["sha_max"])
+        elif resource.startswith("soul:") and balance["status"] == "ready":
+            observed.setdefault("soul_stocks", {})[resource.removeprefix("soul:")] = balance["value"]
+    return observed
+
+
+def _set_observed_slot(observed, slot_no, status, detail=None):
+    keys = {"ready": "ready_slot_numbers", "refining": "refining_slot_numbers",
+            "empty": "empty_slot_numbers", "exhausted": "exhausted_slot_numbers"}
+    for kind, key in keys.items():
+        observed[key] = [slot for slot in observed[key] if slot != slot_no]
+        if kind == status:
+            observed[key] = sorted([*observed[key], slot_no])
+    for kind, key in (("ready", "ready_slots_detail"), ("refining", "refining_slots_detail")):
+        observed[key] = [item for item in observed[key] if item.get("slot") != slot_no]
+        if status == kind and detail:
+            observed[key].append(copy.deepcopy(detail))
+    for kind in ("ready", "refining", "empty"):
+        observed[f"{kind}_slots"] = len(observed[keys[kind]])
+
+
+def _project_yinluo_observation(update, text, *, observation=None):
+    observed = normalize_yinluo_observation(update.owner.get("yinluo_observation") if observation is None else observation)
+    source, reply = update.source, update.reply
+    if source is None:
+        return _project_resource_display(update, observed)
+    if update.value["book"]["gap"]:
+        observed["auto_calibrate_reason"] = f"阴罗事实账本待核对：{update.value['book']['gap']['reason']}，不推进业务状态。"
+        return _project_resource_display(update, observed)
+    if update.value["hold"] == "legacy_pending" and observed.get("last_result") == "pending":
+        observed["auto_calibrate_reason"] = "旧阴罗结算缺少原命令归属，保留原记录，不能用面板替代结果。"
+        return _project_resource_display(update, observed)
+    if reply.phase == "pending" and accounting.command_outcome(
+        update.value["book"], source.chat_id, source.command_msg_id,
+    ) in accounting.TERMINAL_PHASES:
+        return _project_resource_display(update, observed)
+    now = source.result_at
+    parsed = parse_yinluo_text(text, now=now, event_context={
+        "identity_id": source.identity_id, "chat_id": source.chat_id, "msg_id": source.result_msg_id,
+        "root_msg_id": source.command_msg_id, "event_time": now, "root_sent_at": source.command_at,
     })
-    observed["recent"] = observed["recent"][-8:]
-    state["yinluo_observation"] = observed
-    return True
+    if source.command.action.startswith("assist_"):
+        return _project_resource_display(update, observed)
+    if not parsed or reply.phase not in accounting.TERMINAL_PHASES | {"pending"}:
+        observed["auto_calibrate_reason"] = "阴罗回包结果未确认，保留资源预留，等待原回包或人工核对。"
+        return _project_resource_display(update, observed)
+    action_key = f"action:{source.command.action}"
+    if _accept_business_point(update, action_key):
+        for key in ("next_demon_summon_time", "next_daily_sacrifice_time", "next_blood_forest_time",
+                    "next_convert_time", "last_daily_sacrifice_day"):
+            if key in parsed:
+                observed[key] = parsed[key]
+        if source.command.action == "summon" and reply.phase == "success":
+            observed["next_demon_summon_time"] = now + YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC
+        if source.command.action == "refine" and parsed["result"] == "sha_shortage":
+            observed["resource_recovery_min_sha"] = max(observed["resource_recovery_min_sha"], parsed.get("last_refine_cost", 0))
+            _accept_business_point(update, "shortage_sha")
+            observed["auto_calibrate_reason"] = "炼魂煞气不足，等待原生幡面板校准。"
+        elif source.command.action == "refine" and reply.phase == "denied":
+            observed["auto_calibrate_reason"] = "炼魂被拒绝，先查幡核对槽位和魂魄储备。"
+        elif source.command.action == "collect" and parsed["result"] == "empty":
+            observed["auto_calibrate_reason"] = "收取未获得精华，先查幡校准槽位。"
+        if source.command.action == "banner" and reply.phase == "panel":
+            for key in ("banner_owner", "banner_name", "banner_rank", "sha_max", "banner_status",
+                        "main_soul_path", "soul_total", "battle_bonus_percent", "soul_lineage", "banner_traits"):
+                if key in parsed and (parsed[key] or key not in {"soul_lineage", "banner_traits"}):
+                    observed[key] = copy.deepcopy(parsed[key])
+            for status in ("ready", "refining", "empty", "exhausted"):
+                for slot_no in parsed.get(f"{status}_slot_numbers", []):
+                    if _accept_business_point(update, f"slot:{slot_no}"):
+                        detail = next((item for item in parsed.get(f"{status}_slots_detail", []) if item["slot"] == slot_no), None)
+                        _set_observed_slot(observed, slot_no, status, detail)
+            if not accounting._open_native_commands(update.value) and not update.value["hold"]:
+                observed["auto_calibrate_reason"] = ""
+        elif source.command.slot and reply.phase == "success":
+            slot_no = source.command.slot
+            status = {"refine": "refining", "soothe": "refining", "collect": "empty"}.get(source.command.action)
+            if source.command.action == "collect" and parsed.get("result") != "success":
+                status = None
+            if status and _accept_business_point(update, f"slot:{slot_no}"):
+                _set_observed_slot(observed, slot_no, status)
+            if source.command.action in {"refine", "soothe"}:
+                observed["auto_calibrate_reason"] = "槽位动作已确认，待幡面板补充炼化进度。"
+        if _accept_business_point(update, "summary"):
+            for key, value in parsed.items():
+                if key.startswith("last_"):
+                    observed[key] = value
+            observed.update({
+                "last_observed_at": now, "last_action": parsed["action"], "last_result": parsed["result"],
+                "last_summary": parsed.get("summary") or _short_summary(text),
+                "auto_last_error": parsed.get("last_error", ""),
+                "auto_next_time": max(now + YINLUO_AUTO_CHAIN_STEP_SEC, observed.get("auto_next_time", 0))
+                if reply.phase == "pending" else now + YINLUO_AUTO_CHAIN_STEP_SEC,
+            })
+            observed["recent"] = [*observed["recent"], {
+                "ts": now, "action": parsed["action"], "result": parsed["result"], "summary": observed["last_summary"],
+            }][-8:]
+    observed = _project_resource_display(update, observed)
+    if observed.get("sha_status") == "ready" and observed["sha_current"] >= observed["resource_recovery_min_sha"]:
+        observed["resource_recovery_min_sha"] = 0
+    return observed
+
+
+def _clear_completed_resource_pending(identity_id):
+    migrated = accounting.reconcile_legacy_pending(identity_id)
+    removed = accounting.clear_completed_pending(identity_id)
+    value, _reason = accounting.read_accounting(identity_id)
+    if value is None:
+        return bool(removed) or migrated
+    if not isinstance(get_identity_state(identity_id).get("action_guard_sessions"), dict):
+        return bool(removed) or migrated
+    changed = bool(removed) or migrated
+    for action_key, session in get_action_guard_sessions(identity_id).items():
+        if not isinstance(session, dict):
+            continue
+        command = accounting.parse_yinluo_resource_command(session.get("last_command"))
+        if command is None or (command.action != "banner" and (value["hold"] or value["book"]["gap"])):
+            continue
+        chat_id, msg_id = session.get("last_chat_id"), session.get("last_msg_id")
+        sent_at = session.get("last_sent_at")
+        account_id = value["book"]["account_id"]
+        if (resolve_action_key(command.text) != action_key
+                or type(chat_id) is not int or not chat_id or type(msg_id) is not int or msg_id <= 0
+                or type(sent_at) not in {int, float}
+                or type(session.get("last_account_id", account_id)) is not int
+                or session.get("last_account_id", account_id) != account_id
+                or not accounting.command_complete(value, chat_id, msg_id, command=command.text,
+                                                   sent_at=sent_at)):
+            continue
+        changed = close_action_guard_by_family(
+            action_key, send_as_id=identity_id, reason="owned_yinluo_receipt",
+            expected_msg_id=msg_id, expected_chat_id=chat_id,
+        ) or changed
+    return changed
+
+
+def observe_yinluo_resources(event, *, now=None):
+    now = float(now if now is not None else time.time())
+    source = accounting.admit_yinluo_resource_source(event, **accounting.event_trust(now))
+    if source is not None:
+        pending = get_message_record(
+            get_identity_state(source.identity_id).get("pending_tasks", {}),
+            source.command_msg_id, chat_id=source.chat_id,
+        )
+        if pending is not None:
+            if (not isinstance(pending, dict) or get_pending_command(pending) != source.command.text
+                    or type(pending.get("account_id", source.account_id)) is not int
+                    or pending.get("account_id", source.account_id) != source.account_id):
+                return False
+            value, _reason = accounting.read_accounting(source.identity_id)
+            if value is None:
+                return False
+            unbound = any((item["phase"] in accounting.LIVE_PHASES or (
+                              item["phase"] == "read_expired" and item["command"] == CMD_YINLUO_BANNER)) and not item["msg_id"]
+                          and item["command"] == source.command.text and item["started_at"] - 1 <= source.command_at
+                          for item in value["operations"])
+            bound = any(item["op_id"] == pending.get("op_id") and item["msg_id"] == source.command_msg_id
+                        and item["chat_id"] == source.chat_id and item["command"] == source.command.text
+                        for item in value["operations"])
+            # Retain the exact transport binding before terminal cleanup can remove it.
+            if unbound and not bound and not (
+                isinstance(pending.get("op_id"), str) and pending["op_id"]
+                and accounting.adopt_pending_receipt(source.identity_id, pending["op_id"])
+            ):
+                return False
+    update = accounting.stage_event(event, now=now)
+    updates = [update] if update is not None else accounting.stage_unresolved_edits(event, now=now)
+    changed = False
+    for update in updates:
+        migrated_observation = accounting.stage_legacy_completion(update)
+        observations = {update.identity_id: {
+            "yinluo_observation": _project_yinluo_observation(update, event.text, observation=migrated_observation),
+        }}
+        if update.source is not None and update.source.command.action.startswith("assist_"):
+            from .wanxin import project_assist_resource_reply
+            observations.update(project_assist_resource_reply(update, event.text))
+            observations[update.identity_id]["yinluo_observation"] = _project_resource_display(
+                update, observations[update.identity_id]["yinluo_observation"],
+            )
+        if update.value == update.previous and update.cultivation == accounting.cultivation.read_cultivation_ledger(update.identity_id) and all(
+            get_identity_state(target).get(key) == value for target, fields in observations.items() for key, value in fields.items()
+        ):
+            _clear_completed_resource_pending(update.identity_id)
+            continue
+        if accounting.commit_update(update, observations=observations):
+            _clear_completed_resource_pending(update.identity_id)
+            changed = True
+    return changed
+
+
+def apply_yinluo_passive(text, now=None, family="", event_context=None):
+    # Native evidence is mandatory. Text-only legacy callers cannot change
+    # balances, pending operations, slots or cooldowns.
+    if not isinstance(event_context, VerifiedGameEvent) or event_context.text != text:
+        return False
+    return observe_yinluo_resources(event_context, now=now)
+
+
+def handle_yinluo_resource_reply(event, *, now):
+    observe_yinluo_resources(event, now=now)
+    return accounting.reply_complete(event, now=now)
+
+
+def recover_yinluo_resources(identity_id, now, *, entries=None):
+    """Replay existing native evidence outside the send queue, without retrying."""
+    value, _reason = accounting.read_accounting(identity_id)
+    if value is None:
+        return False
+    active = [item for item in value["operations"] if item["phase"] in accounting.LIVE_PHASES]
+    for operation in active:
+        accounting.adopt_pending_receipt(identity_id, operation["op_id"])
+    if entries is None:
+        clocks = [item["started_at"] for item in active]
+        pending = get_identity_state(identity_id).get("pending_tasks")
+        if isinstance(pending, dict):
+            clocks.extend(accounting.timestamp(item.get("send_started_at")) for item in pending.values()
+                          if accounting._legacy_tagged_pending(item) and 0 < accounting.timestamp(item.get("send_started_at")) <= now)
+        since = min(clocks, default=now - 15 * 60)
+        entries = read_yinluo_log_batch(now, since=since)
+    changed = False
+    for event, source in owned_yinluo_log_events(entries, **accounting.event_trust(now)):
+        if source.identity_id == identity_id:
+            changed = observe_yinluo_resources(event, now=now) or changed
+    return _clear_completed_resource_pending(identity_id) or changed
 
 
 def _normalize_manual_action(action):
@@ -1601,25 +1571,19 @@ def _has_known_sha_pool(observed):
 
 
 def _known_profile_xiuwei_current():
-    return _safe_int(get_send_as_profile().get("xiuwei_current", 0))
+    return cultivation_balance(get_current_identity_id()).get("value")
 
 
 def _convert_xiuwei_shortage_reason(amount):
     amount = _safe_int(amount)
     current = _known_profile_xiuwei_current()
-    if amount <= 0 or current <= 0:
+    if amount <= 0:
         return ""
+    if current is None:
+        return "修为账本待校准，不发送化功为煞。"
     if current < amount:
         return f"当前修为 {current}，不足以化功为煞 {amount} 点。"
     return ""
-
-
-def _deduct_profile_xiuwei(amount):
-    amount = _safe_int(amount)
-    current = _known_profile_xiuwei_current()
-    if amount <= 0 or current <= 0:
-        return
-    update_send_as_profile(get_current_identity_id(), xiuwei_current=max(0, current - amount))
 
 
 def _auto_config(observed):
@@ -1677,9 +1641,6 @@ def _build_auto_convert_arg(observed, now=None):
     amount = _safe_int(config.get("convert_amount", 0))
     if amount < YINLUO_CONVERT_MIN_AMOUNT or amount > YINLUO_CONVERT_MAX_AMOUNT:
         return "", "自动化煞数量未配置或不合法。"
-    shortage_reason = _convert_xiuwei_shortage_reason(amount)
-    if shortage_reason:
-        return "", shortage_reason
     if not _has_recent_observation(observed, now):
         return "", "阴罗宗状态过旧，不自动化煞。"
     next_time = float(observed.get("next_convert_time", 0) or 0)
@@ -1692,6 +1653,9 @@ def _build_auto_convert_arg(observed, now=None):
     if threshold <= 0:
         return "", "自动补煞阈值为 0，暂不自动化煞。"
     if sha_current < threshold:
+        shortage_reason = _convert_xiuwei_shortage_reason(amount)
+        if shortage_reason:
+            return "", shortage_reason
         return str(amount), ""
     return "", "当前煞气未低于自动补煞阈值。"
 
@@ -1710,23 +1674,6 @@ def _phaseful_risk_block(action, command="", family="", now=None):
     )
 
 
-def _consume_collect_pending(observed, count):
-    observed = normalize_yinluo_observation(observed)
-    count = max(1, _safe_int(count))
-    pending = observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}
-    pending_slots = list(pending.get("slots") or [])
-    if not pending_slots:
-        return observed, []
-    released_slots = pending_slots[:count]
-    remaining_slots = pending_slots[count:]
-    if remaining_slots:
-        observed["auto_collect_pending"] = {
-            "slots": remaining_slots,
-            "sent_at": float(pending.get("sent_at", 0) or 0),
-        }
-    else:
-        observed["auto_collect_pending"] = {}
-    return observed, released_slots
 
 
 def _has_collect_pending(observed):
@@ -1734,87 +1681,8 @@ def _has_collect_pending(observed):
     return bool(pending.get("slots"))
 
 
-def _collect_pending_expired(observed, now):
-    pending = observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}
-    if not pending.get("slots"):
-        return False
-    sent_at = float(pending.get("sent_at", 0) or 0)
-    return sent_at <= 0 or float(now) - sent_at >= YINLUO_AUTO_COLLECT_CONFIRM_TIMEOUT_SEC
 
 
-def _mark_collect_slot_sent(observed, command, sent_at=0):
-    observed = normalize_yinluo_observation(observed)
-    slot_no = _parse_slot_arg(str(command or "").replace(CMD_YINLUO_COLLECT, "", 1))
-    ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
-    if slot_no > 0 and slot_no in ready_slot_numbers:
-        ready_slot_numbers.remove(slot_no)
-        observed["ready_slot_numbers"] = ready_slot_numbers
-        observed["ready_slots"] = len(ready_slot_numbers)
-    else:
-        observed["ready_slots"] = max(0, int(observed.get("ready_slots", 0) or 0) - 1)
-        if ready_slot_numbers:
-            observed["ready_slot_numbers"] = ready_slot_numbers[1:]
-    if slot_no > 0:
-        pending = observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}
-        pending_slots = list(pending.get("slots") or [])
-        if slot_no not in pending_slots:
-            pending_slots.append(slot_no)
-        observed["auto_collect_pending"] = {
-            "slots": pending_slots,
-            "sent_at": float(sent_at or time.time()),
-        }
-        refining_slot_numbers_before = list(observed.get("refining_slot_numbers") or [])
-        observed = _remove_slot_number(observed, "refining_slot_numbers", slot_no)
-        details = observed.get("refining_slots_detail") if isinstance(observed.get("refining_slots_detail"), list) else []
-        filtered_details = [item for item in details if _safe_int(item.get("slot")) != slot_no]
-        observed["refining_slots_detail"] = filtered_details
-        removed_refining_slot = (
-            slot_no in [_safe_int(value) for value in refining_slot_numbers_before]
-            or len(filtered_details) != len(details)
-        )
-        if removed_refining_slot:
-            if observed.get("refining_slot_numbers"):
-                observed["refining_slots"] = len(observed.get("refining_slot_numbers") or [])
-            elif filtered_details:
-                observed["refining_slots"] = len(filtered_details)
-            else:
-                observed["refining_slots"] = max(0, int(observed.get("refining_slots", 0) or 0) - 1)
-    return observed
-
-
-def _mark_refine_slot_sent(observed, command, sent_at=0):
-    observed = normalize_yinluo_observation(observed)
-    slot_no = _extract_refine_slot(command)
-    target = _extract_refine_target(command)
-    observed["auto_refine_pending"] = {
-        "slot": slot_no,
-        "target": target,
-        "cost": _estimate_refine_sha_cost(target),
-        "sent_at": float(sent_at or 0),
-        "pre_empty_slot_numbers": list(observed.get("empty_slot_numbers") or []),
-        "pre_refining_slot_numbers": list(observed.get("refining_slot_numbers") or []),
-        "pre_empty_slots": int(observed.get("empty_slots", 0) or 0),
-        "pre_refining_slots": int(observed.get("refining_slots", 0) or 0),
-        "pre_sha_current": int(observed.get("sha_current", 0) or 0),
-        "pre_sha_percent": int(observed.get("sha_percent", 0) or 0),
-        "pre_soul_stocks": copy.deepcopy(observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}),
-    }
-    observed = _remove_slot_number(observed, "empty_slot_numbers", slot_no)
-    observed = _append_slot_number(observed, "refining_slot_numbers", slot_no)
-    if observed.get("empty_slot_numbers"):
-        observed["empty_slots"] = len(observed.get("empty_slot_numbers") or [])
-    else:
-        observed["empty_slots"] = max(0, int(observed.get("empty_slots", 0) or 0) - 1)
-    if observed.get("refining_slot_numbers"):
-        observed["refining_slots"] = len(observed.get("refining_slot_numbers") or [])
-    else:
-        observed["refining_slots"] = max(0, int(observed.get("refining_slots", 0) or 0) + 1)
-    observed = _adjust_soul_stock(observed, target, -1)
-    if _has_known_sha_pool(observed):
-        observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) - _estimate_refine_sha_cost(target))
-        if int(observed.get("sha_max", 0) or 0) > 0:
-            observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
-    return observed
 
 
 def _build_soothe_command(observed, arg="", now=None):
@@ -1828,21 +1696,13 @@ def _build_soothe_command(observed, arg="", now=None):
     if exhausted_slots and slot_no not in exhausted_slots:
         return "", f"{slot_no}号槽未记录为魂力枯竭，不发送安抚幡灵。"
     current = _known_profile_xiuwei_current()
-    if current > 0 and current < YINLUO_SOOTHE_XIUWEI_COST:
+    if current is None:
+        return "", "修为账本待校准，不发送安抚幡灵。"
+    if current < YINLUO_SOOTHE_XIUWEI_COST:
         return "", f"当前修为 {current}，不足以安抚幡灵 {YINLUO_SOOTHE_XIUWEI_COST} 点。"
     return f"{CMD_YINLUO_SOOTHE} {slot_no}", ""
 
 
-def _mark_soothe_slot_sent(observed, command, sent_at=0):
-    observed = normalize_yinluo_observation(observed)
-    slot_no = _parse_slot_arg(str(command or "").replace(CMD_YINLUO_SOOTHE, "", 1))
-    if slot_no > 0:
-        observed["auto_soothe_pending"] = {
-            "slot": slot_no,
-            "sent_at": float(sent_at or time.time()),
-        }
-        observed = _remove_slot_number(observed, "exhausted_slot_numbers", slot_no)
-    return observed
 
 
 def _has_soothe_pending(observed):
@@ -1850,12 +1710,6 @@ def _has_soothe_pending(observed):
     return _safe_int(pending.get("slot")) > 0
 
 
-def _soothe_pending_expired(observed, now):
-    pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
-    if not _has_soothe_pending(observed):
-        return False
-    sent_at = _safe_float(pending.get("sent_at"), 0)
-    return sent_at <= 0 or float(now) - sent_at >= YINLUO_AUTO_SOOTHE_CONFIRM_TIMEOUT_SEC
 
 
 def _has_refine_pending(observed):
@@ -1863,12 +1717,6 @@ def _has_refine_pending(observed):
     return _safe_int(pending.get("slot")) > 0 and str(pending.get("target") or "").strip()
 
 
-def _refine_pending_expired(observed, now):
-    pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
-    if not _has_refine_pending(observed):
-        return False
-    sent_at = _safe_float(pending.get("sent_at"), 0)
-    return sent_at <= 0 or float(now) - sent_at >= YINLUO_AUTO_REFINE_CONFIRM_TIMEOUT_SEC
 
 
 def _has_recent_observation(observed, now):
@@ -2176,19 +2024,66 @@ def _daily_sacrifice_due(observed, now):
     )
 
 
+def _capacity_message(capacity):
+    status = capacity["status"]
+    if status == "banner_required":
+        return "阴罗账本容量待回收，先取得原生幡面板覆盖已结算记录。"
+    if status == "capacity_read_slot":
+        return "阴罗账本已无查询槽，保留现有记录，等待原生回包核对。"
+    labels = {"cultivation": "修为", "sha": "煞气", "souls": "魂魄归属"}
+    needed = "、".join(labels.get(resource, resource.removeprefix("soul:")) for resource in capacity["resources"][:4])
+    return f"阴罗账本容量待核对：{status}" + (f"，缺少{needed}的原生覆盖。" if needed else "。")
+
+
 async def run_yinluo_scheduler(now):
     now = float(now if now is not None else time.time())
+    identity_id = get_current_identity_id()
+    if _active_yinluo_operations(identity_id):
+        return
     if not state.get("yinluo_enabled"):
         return
+    _clear_completed_resource_pending(identity_id)
     if not is_module_available("阴罗宗"):
+        # Availability changes do not prove that old resource work completed.
         state["yinluo_enabled"] = False
-        state["yinluo_observation"] = {}
         save_state()
         return
 
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    resource_state, _resource_error = accounting.read_accounting(identity_id)
+    if (resource_state is not None and now >= float(observed.get("auto_next_time", 0) or 0)
+            and (resource_state["hold"] == "legacy_pending"
+                 or any(operation["phase"] in accounting.LIVE_PHASES for operation in resource_state["operations"]))):
+        recover_yinluo_resources(identity_id, now)
+        observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    # Local read cleanup remains possible while a financial hold prevents work.
+    accounting.expire_unanswered_reads(
+        identity_id, now=now, timeout=YINLUO_AUTO_CALIBRATE_RETRY_SEC,
+        active_ops=_active_yinluo_operations(identity_id),
+    )
+    resource_state, resource_error = accounting.read_accounting(identity_id)
+    if resource_state is None or resource_state["hold"] or resource_state["book"]["gap"]:
+        reason = resource_error if resource_state is None else resource_state["hold"] or resource_state["book"]["gap"]["reason"]
+        action = "resource_hold"
+        error = f"阴罗资源归属待核对：{reason}"
+        if reason == "legacy_pending" and accounting.legacy_observation_pending(identity_id):
+            action = "legacy_pending"
+            error = "旧阴罗操作缺少原命令归属，保留现场等待核对，不恢复旧余额。"
+        if (observed.get("auto_last_action") != action or observed.get("auto_last_error") != error
+                or now >= float(observed.get("auto_next_time", 0) or 0)):
+            _set_yinluo_auto_wait(observed, now, action, now + YINLUO_AUTO_BLOCK_BACKOFF_SEC, error)
+        return
+    if any(operation["phase"] in accounting.LIVE_PHASES for operation in resource_state["operations"]):
+        if now < float(observed.get("auto_next_time", 0) or 0):
+            return
+        _set_yinluo_auto_wait(observed, now, "resource_pending", now + YINLUO_AUTO_CALIBRATE_RETRY_SEC,
+                             "阴罗操作结果未确认，保留预留，不重发、不回滚余额。")
+        return
+    sha = accounting.resource_balance(identity_id, "sha")
+    if sha["status"] != "ready":
+        observed["auto_calibrate_reason"] = f"煞气账本待校准：{sha['status']}"
     recovery_required = int(observed.get("resource_recovery_min_sha", 0) or 0)
-    if recovery_required > 0 and _has_known_sha_pool(observed) and int(observed.get("sha_current", 0) or 0) >= recovery_required:
+    if recovery_required > 0 and sha["status"] == "ready" and sha["value"] >= recovery_required:
         observed["resource_recovery_min_sha"] = 0
         recovery_required = 0
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
@@ -2212,53 +2107,11 @@ async def run_yinluo_scheduler(now):
         )
         return
 
-    if _has_refine_pending(observed):
-        if not _refine_pending_expired(observed, now):
-            _set_yinluo_auto_wait(
-                observed,
-                now,
-                "refine_pending",
-                now + YINLUO_AUTO_CHAIN_STEP_SEC,
-                "囚禁魂魄已发送，等待真实回复确认。",
-            )
-            return
-        observed = _restore_auto_refine_pending(observed, "囚禁魂魄等待回复超时，需查幡校准。")
-        state["yinluo_observation"] = observed
-        save_state()
-
-    if _has_soothe_pending(observed):
-        if not _soothe_pending_expired(observed, now):
-            _set_yinluo_auto_wait(
-                observed,
-                now,
-                "soothe_pending",
-                now + YINLUO_AUTO_CHAIN_STEP_SEC,
-                "安抚幡灵已发送，等待真实回复确认。",
-            )
-            return
-        observed["auto_soothe_pending"] = {}
-        observed["auto_calibrate_reason"] = "安抚幡灵等待回复超时，需查幡校准。"
-        state["yinluo_observation"] = observed
-        save_state()
-
-    if _has_collect_pending(observed):
-        if not _collect_pending_expired(observed, now):
-            _set_yinluo_auto_wait(
-                observed,
-                now,
-                "collect_pending",
-                now + YINLUO_AUTO_CHAIN_STEP_SEC,
-                "收取精华已发送，等待真实回复确认。",
-            )
-            return
-        observed["auto_collect_pending"] = {}
-        observed["auto_calibrate_reason"] = "收取精华等待回复超时，需查幡校准。"
-        state["yinluo_observation"] = observed
-        save_state()
-
     recovery_daily_due = recovery_required > 0 and _daily_sacrifice_due(observed, now)
     recovery_convert_amount, _recovery_convert_reason = _build_auto_convert_arg(observed, now=now)
-    if recovery_daily_due:
+    if sha["status"] != "ready":
+        plan = build_yinluo_manual_plan("banner", now=now)
+    elif recovery_daily_due:
         plan = build_yinluo_manual_plan("daily_sacrifice", now=now)
     elif recovery_required > 0 and recovery_convert_amount:
         plan = build_yinluo_manual_plan("convert", recovery_convert_amount, now=now)
@@ -2314,6 +2167,18 @@ async def run_yinluo_scheduler(now):
             _set_yinluo_auto_wait(observed, now, "idle", _earliest_yinluo_next_time(observed, now), block_error)
             return
 
+    if plan.get("allowed"):
+        capacity = accounting.capacity_status(identity_id)
+        if capacity["status"] == "banner_required":
+            if observed.get("auto_last_action") == "banner" and observed.get("auto_next_time", 0) > now:
+                return
+            plan = build_yinluo_manual_plan("banner", now=now)
+        elif capacity["status"] != "ready":
+            error = _capacity_message(capacity)
+            if (observed.get("auto_last_action") != "resource_capacity" or observed.get("auto_last_error") != error
+                    or now >= observed.get("auto_next_time", 0)):
+                _set_yinluo_auto_wait(observed, now, "resource_capacity", now + YINLUO_AUTO_BLOCK_BACKOFF_SEC, error)
+            return
     action = str(plan.get("action") or "")
     if not plan.get("allowed"):
         _set_yinluo_auto_wait(
@@ -2325,151 +2190,157 @@ async def run_yinluo_scheduler(now):
         )
         return
 
-    msg = await send_game_command(
-        plan["command"],
-        track=True,
-        max_retry=0,
-        priority="normal",
-        source_module="阴罗宗",
-        op_id=f"yinluo-auto-{action}-{int(now)}",
+    await _execute_yinluo_plan(plan, now, send_as_id=get_current_identity_id(), automatic=True)
+
+
+async def send_owned_yinluo_command(command, now, *, send_as_id, source_module, operation_check, sender=None, beneficiary=None, **options):
+    sender = sender or send_game_command
+    now = max(float(now), time.time())
+    if not has_identity(send_as_id):
+        return None, "missing_identity", None
+    owner = get_identity_state(send_as_id)
+    account_id = get_identity_account(send_as_id)
+    chat_id = get_game_group_id()
+
+    def owner_current():
+        return bool(has_identity(send_as_id) and get_identity_state(send_as_id) is owner
+                    and get_identity_account(send_as_id) == account_id)
+
+    def eligible():
+        return bool(owner_current() and get_global_enabled() and get_identity_enabled(send_as_id)
+                    and operation_check())
+
+    if not eligible():
+        return None, "operation_changed", None
+    _clear_completed_resource_pending(send_as_id)
+    accounting.expire_unanswered_reads(
+        send_as_id, now=now, timeout=YINLUO_AUTO_CALIBRATE_RETRY_SEC,
+        active_ops=_active_yinluo_operations(send_as_id),
     )
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else now
-    observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    record, reason = accounting.prepare_operation(
+        send_as_id, command, chat_id, now, source_module=source_module, beneficiary=beneficiary,
+    )
+    if record is None:
+        return None, reason, None
+
+    def can_send():
+        return bool(eligible() and accounting.current_operation(send_as_id, record["op_id"]) == record
+                    and not accounting.admission_reason(send_as_id, command, exclude=record["op_id"]))
+
+    previous_block = dict(classify_game_send_block(send_as_id, command))
+
+    def retain_outcome():
+        accounting.adopt_pending_receipt(send_as_id, record["op_id"])
+        current = accounting.current_operation(send_as_id, record["op_id"])
+        if current and current["phase"] not in {"sent", "complete"}:
+            block = classify_game_send_block(send_as_id, command)
+            definitely_unsent = (
+                block != previous_block and block.get("status") == "unsent"
+                and type(block.get("send_as_id")) is int and block["send_as_id"] == send_as_id
+                and block.get("command") == command
+                and now <= _safe_float(block.get("at")) <= max(time.time(), now) + 1
+            )
+            accounting.record_transport(send_as_id, record["op_id"], phase="unsent" if definitely_unsent else "unknown")
+        return accounting.current_operation(send_as_id, record["op_id"])
+
+    inflight_key = send_as_id, record["op_id"]
+    inflight_owner = owner, account_id
+    _YINLUO_INFLIGHT[inflight_key] = inflight_owner
+    try:
+        msg = await sender(
+            command, track=True, max_retry=0, send_as_id=send_as_id, source_module=source_module,
+            op_id=record["op_id"], target_chat_id=chat_id, operation_check=can_send, **options,
+        )
+    except (asyncio.CancelledError, Exception):
+        if owner_current():
+            retain_outcome()
+        raise
+    finally:
+        if _YINLUO_INFLIGHT.get(inflight_key) is inflight_owner:
+            _YINLUO_INFLIGHT.pop(inflight_key, None)
+    if not owner_current():
+        return msg, "owner_changed", record
     if not msg:
-        _set_yinluo_auto_wait(
-            observed,
-            now,
-            action,
-            sent_at + YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC,
-            "阴罗宗自动调度发送失败或被安全策略拦截",
-        )
-        return
+        current = retain_outcome()
+        phase = current["phase"] if current else "unknown"
+        return None, "" if phase in {"sent", "complete"} else phase, current
+    msg_id, returned_chat = getattr(msg, "id", None), getattr(msg, "chat_id", None)
+    sent_at = _safe_float(getattr(msg, "sent_at", 0))
+    if not 0 < sent_at <= max(time.time(), now) + 1 or not accounting.record_transport(
+        send_as_id, record["op_id"], phase="sent", msg_id=msg_id, chat_id=returned_chat, sent_at=sent_at,
+    ):
+        accounting.record_transport(send_as_id, record["op_id"], phase="unknown")
+        return msg, "receipt_unverified", accounting.current_operation(send_as_id, record["op_id"])
+    _clear_completed_resource_pending(send_as_id)
+    return msg, "", accounting.current_operation(send_as_id, record["op_id"], chat_id=returned_chat, msg_id=msg_id)
 
+
+async def _execute_yinluo_plan(plan, now, *, send_as_id, automatic=False):
+    if not has_identity(send_as_id):
+        return None, "missing_identity", None
+    identity = get_identity_state(send_as_id)
+    account_id = get_identity_account(send_as_id)
+    action, command = plan["action"], plan["command"]
+    before = copy.deepcopy(identity.get("yinluo_observation"))
+    config = copy.deepcopy(normalize_yinluo_observation(before)["auto_config"])
+    profile = get_send_as_profile(send_as_id)
+    profile_gate = (profile.get("sect_name"), profile.get("realm"))
+
+    def operation_check():
+        if not identity.get("yinluo_enabled") or identity.get("yinluo_observation") != before:
+            return False
+        with use_identity(send_as_id):
+            current_profile = get_send_as_profile(send_as_id)
+            if (current_profile.get("sect_name"), current_profile.get("realm")) != profile_gate:
+                return False
+            current_config = normalize_yinluo_observation(identity.get("yinluo_observation"))["auto_config"]
+            if current_config != config or (automatic and action != "banner" and not current_config.get(action)):
+                return False
+            return not _phaseful_risk_block(action, command, plan.get("family", ""), time.time()) if action != "banner" else True
+
+    result = await send_owned_yinluo_command(
+        command, now, send_as_id=send_as_id, source_module="阴罗宗", operation_check=operation_check,
+        priority="normal", delete_policy=plan.get("delete_policy") or "manual_keep",
+    )
+    _msg, reason, record = result
+    if not has_identity(send_as_id) or get_identity_state(send_as_id) is not identity or get_identity_account(send_as_id) != account_id:
+        return result
+    # An early reply already owns the business transition; a transport receipt
+    # must not overwrite it with a newly-created pending phase.
+    if (record and record["phase"] == "complete") or identity.get("yinluo_observation") != before or not identity.get("yinluo_enabled"):
+        return result
+    observed = normalize_yinluo_observation(identity.get("yinluo_observation"))
     observed["auto_last_action"] = action
-    observed["auto_last_error"] = ""
-    if action == "collect":
-        observed = _mark_collect_slot_sent(observed, plan.get("command") or "", sent_at)
-        observed["auto_next_time"] = _yinluo_next_after_action(observed, sent_at)
-    elif action == "refine":
-        observed = _mark_refine_slot_sent(observed, plan.get("command") or "", sent_at)
-        observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
-    elif action == "soothe":
-        observed = _mark_soothe_slot_sent(observed, plan.get("command") or "", sent_at)
-        observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
-    elif action == "convert":
-        observed["next_convert_time"] = max(
-            float(observed.get("next_convert_time", 0) or 0),
-            sent_at + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
-        )
-        observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
-    elif action == "daily_sacrifice":
-        observed["last_daily_sacrifice_day"] = get_day_key(sent_at)
-        observed["next_daily_sacrifice_time"] = max(
-            float(observed.get("next_daily_sacrifice_time", 0) or 0),
-            _next_daily_sacrifice_time(sent_at),
-        )
-        observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
-    elif action == "banner":
-        if str(observed.get("auto_calibrate_reason") or "").strip():
-            observed["auto_next_time"] = sent_at + YINLUO_AUTO_CALIBRATE_RETRY_SEC
-        else:
-            observed["auto_next_time"] = sent_at + YINLUO_AUTO_STATUS_BACKOFF_SEC
-    elif action == "blood_forest":
-        observed["next_blood_forest_time"] = max(
-            float(observed.get("next_blood_forest_time", 0) or 0),
-            sent_at + YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
-        )
-        observed["auto_next_time"] = _yinluo_next_after_action(observed, sent_at)
-    elif action == "demon_summon":
-        observed["next_demon_summon_time"] = max(
-            float(observed.get("next_demon_summon_time", 0) or 0),
-            sent_at + YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
-        )
-        observed["auto_next_time"] = _yinluo_next_after_action(observed, sent_at)
-    else:
-        observed["auto_next_time"] = sent_at + YINLUO_AUTO_STATUS_BACKOFF_SEC
-    state["yinluo_observation"] = observed
+    confirmed = not reason and record and record["phase"] in {"sent", "complete"}
+    observed["auto_last_error"] = "" if confirmed else f"阴罗动作等待：{reason}"
+    observed["auto_next_time"] = max(time.time(), now) + (
+        YINLUO_AUTO_CALIBRATE_RETRY_SEC if record and record["phase"] in accounting.LIVE_PHASES
+        else YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC
+    )
+    identity["yinluo_observation"] = observed
     save_state()
-
-
-def _mark_yinluo_sent_plan(plan, sent_at):
-    action = str((plan or {}).get("action") or "")
-    command = str((plan or {}).get("command") or "")
-    if not action or not command:
-        return
-    observed = normalize_yinluo_observation(state.get("yinluo_observation"))
-    if action == "collect":
-        observed = _mark_collect_slot_sent(observed, command, sent_at)
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "refine":
-        observed = _mark_refine_slot_sent(observed, command, sent_at)
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "soothe":
-        observed = _mark_soothe_slot_sent(observed, command, sent_at)
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "convert":
-        observed["next_convert_time"] = max(
-            float(observed.get("next_convert_time", 0) or 0),
-            float(sent_at) + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
-        )
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "daily_sacrifice":
-        observed["last_daily_sacrifice_day"] = get_day_key(sent_at)
-        observed["next_daily_sacrifice_time"] = max(
-            float(observed.get("next_daily_sacrifice_time", 0) or 0),
-            _next_daily_sacrifice_time(sent_at),
-        )
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "blood_forest":
-        observed["next_blood_forest_time"] = max(
-            float(observed.get("next_blood_forest_time", 0) or 0),
-            float(sent_at) + YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
-        )
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "demon_summon":
-        observed["next_demon_summon_time"] = max(
-            float(observed.get("next_demon_summon_time", 0) or 0),
-            float(sent_at) + YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
-        )
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
-    elif action == "banner":
-        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CALIBRATE_RETRY_SEC)
-    else:
-        return
-    observed["auto_last_action"] = action
-    observed["auto_last_error"] = ""
-    state["yinluo_observation"] = observed
-    save_state()
+    return result
 
 
 async def execute_yinluo_manual_action(action="banner", arg="", *, send_as_id=None, now=None):
     now = float(now if now is not None else time.time())
-    if send_as_id is not None:
-        with use_identity(send_as_id):
-            plan = build_yinluo_manual_plan(action, arg, now=now)
-    else:
+    send_as_id = get_current_identity_id() if send_as_id is None else send_as_id
+    if not has_identity(send_as_id):
+        return False, "身份不存在。", {}
+    _clear_completed_resource_pending(send_as_id)
+    with use_identity(send_as_id):
         plan = build_yinluo_manual_plan(action, arg, now=now)
     if not plan.get("allowed"):
         return False, plan.get("reason") or "阴罗宗动作未允许", plan
-    msg = await send_game_command(
-        plan["command"],
-        track=True,
-        max_retry=int(plan.get("max_retry", 0) or 0),
-        send_as_id=send_as_id,
-        priority="normal",
-        source_module=plan.get("source_module") or "阴罗宗",
-        op_id=plan.get("op_id") or "",
-        delete_policy=plan.get("delete_policy") or "manual_keep",
-    )
-    if not msg:
-        return False, "发送被运行时安全策略拦截或账号不可用。", plan
-    sent_at = float(getattr(msg, "sent_at", 0) or now)
-    if send_as_id is not None:
-        with use_identity(send_as_id):
-            _mark_yinluo_sent_plan(plan, sent_at)
-    else:
-        _mark_yinluo_sent_plan(plan, sent_at)
-    return True, f"已发送：{plan['command']}（msg_id={int(getattr(msg, 'id', 0) or 0)}）", plan
+    if plan["action"] != "banner":
+        capacity = accounting.capacity_status(send_as_id)
+        if capacity["status"] != "ready":
+            reason = _capacity_message(capacity)
+            return False, reason, {**plan, "allowed": False, "reason": reason}
+    _msg, reason, record = await _execute_yinluo_plan(plan, now, send_as_id=send_as_id)
+    if reason or not record or record["phase"] not in {"sent", "complete"}:
+        return False, f"未确认发送：{reason or 'unknown'}，资源预留按实际传输证据保留。", plan
+    return True, f"已发送：{plan['command']}（msg_id={record['msg_id']}）", plan
 
 
 def get_yinluo_ui_state(now=None):
@@ -2479,9 +2350,11 @@ def get_yinluo_ui_state(now=None):
     next_daily_sacrifice_time = float(observed.get("next_daily_sacrifice_time", 0) or 0)
     sha_current = int(observed.get("sha_current", 0) or 0)
     sha_max = int(observed.get("sha_max", 0) or 0)
-    sha_known = sha_current > 0 or sha_max > 0
+    sha_balance = accounting.resource_balance(get_current_identity_id(), "sha")
+    sha_known = sha_balance["status"] == "ready"
     return {
         "auto_config": copy.deepcopy(config),
+        "capacity": accounting.capacity_status(get_current_identity_id()),
         "observed": {
             "last_observed_at": float(observed.get("last_observed_at", 0) or 0),
             "last_observed_text": fmt_abs_ts(observed.get("last_observed_at", 0)),
@@ -2492,6 +2365,8 @@ def get_yinluo_ui_state(now=None):
             "sha_current": sha_current,
             "sha_max": sha_max,
             "sha_known": sha_known,
+            "sha_status": sha_balance["status"],
+            "sha_available": sha_balance["value"],
             "banner_name": str(observed.get("banner_name") or ""),
             "banner_rank": str(observed.get("banner_rank") or ""),
             "banner_status": str(observed.get("banner_status") or ""),
@@ -2505,6 +2380,7 @@ def get_yinluo_ui_state(now=None):
             "soul_lineage": copy.deepcopy(observed.get("soul_lineage") if isinstance(observed.get("soul_lineage"), dict) else {}),
             "banner_traits": copy.deepcopy(observed.get("banner_traits") if isinstance(observed.get("banner_traits"), dict) else {}),
             "auto_collect_pending": copy.deepcopy(observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}),
+            "legacy_pending_invalid": observed["legacy_pending_invalid"],
             "auto_calibrate_reason": str(observed.get("auto_calibrate_reason") or ""),
         },
     }
@@ -2638,7 +2514,8 @@ def get_yinluo_status_text():
     if exhausted_slots:
         lines.append(f"- 枯竭槽位：{_format_slot_numbers(exhausted_slots)}")
     if _has_collect_pending(observed):
-        slots = ",".join(str(slot) for slot in (observed.get("auto_collect_pending") or {}).get("slots", []))
+        pending_slots = observed["auto_collect_pending"].get("slots")
+        slots = ",".join(str(slot) for slot in pending_slots) if isinstance(pending_slots, list) else ""
         lines.append(f"- 待确认收取：{slots or '未知'}号槽")
     recent = observed.get("recent") or []
     if recent:
@@ -2648,88 +2525,14 @@ def get_yinluo_status_text():
     return "\n".join(lines)
 
 
-def reconcile_yinluo_timeout_from_pending(msg_id, cmd="", sent_at=0, now=None):
-    """Reconcile tracked Yinluo pending commands after runtime reply timeout."""
-    now = float(now if now is not None else time.time())
-    command = str(cmd or "").strip()
-    try:
-        sent_at = float(sent_at or 0)
-    except (TypeError, ValueError, OverflowError):
-        sent_at = 0.0
-    if sent_at <= 0:
-        sent_at = now
-    observed = normalize_yinluo_observation(state.get("yinluo_observation"))
-    if command == CMD_YINLUO_REFINE or command.startswith(f"{CMD_YINLUO_REFINE} "):
-        reply_result = str(observed.get("last_result") or "").strip()
-        reply_at = float(observed.get("last_observed_at", 0) or 0)
-        if (
-            str(observed.get("last_action") or "").strip() == "囚禁魂魄"
-            and reply_result in {"success", "sha_shortage", "missing_soul", "slot_busy"}
-            and reply_at >= sent_at
-        ):
-            # The passive handler already applied the business transition. Only
-            # acknowledge it here so the generic tracked pending/action guard is
-            # closed; replaying the result would double-apply resources/slots.
-            return True
+def reconcile_yinluo_timeout_from_pending(msg_id, cmd="", sent_at=0, now=None, *, chat_id=0):
+    if type(chat_id) is not int or not chat_id or type(msg_id) is not int or msg_id <= 0:
         return False
-    if command != CMD_YINLUO_BLOOD_FOREST:
+    recover_yinluo_resources(get_current_identity_id(), float(now if now is not None else time.time()))
+    value, _reason = accounting.read_accounting(get_current_identity_id())
+    if value is None:
         return False
-    profile = get_send_as_profile(get_current_identity_id()) or {}
-    username = str(profile.get("username") or "").strip().lstrip("@").casefold()
-    phaseful_summary = None
-    if username:
-        for entry, entry_ts in iter_message_log_entries_between(sent_at, now + 5):
-            text = str((entry or {}).get("text") or "")
-            if not any(marker in text for marker in ("深度闭关总结", "元神归窍总结")):
-                continue
-            if f"@{username}" not in text.casefold():
-                continue
-            phaseful_summary = (entry, entry_ts)
-            break
-    if phaseful_summary:
-        retry_at = float(now + YINLUO_AUTO_CHAIN_STEP_SEC)
-        observed["last_observed_at"] = max(float(observed.get("last_observed_at", 0) or 0), float(sent_at))
-        observed["last_action"] = "血洗山林"
-        observed["last_result"] = "phaseful_consumed"
-        observed["last_summary"] = "血洗山林触发闭关/元婴结算，动作未执行"
-        observed["last_error"] = ""
-        observed["next_blood_forest_time"] = retry_at
-        observed["auto_last_action"] = "blood_forest"
-        observed["auto_last_error"] = ""
-        observed["auto_next_time"] = retry_at
-        observed["recent"].append({
-            "ts": float(now),
-            "action": "血洗山林",
-            "result": "phaseful_consumed",
-            "summary": observed["last_summary"],
-        })
-        observed["recent"] = observed["recent"][-8:]
-        state["yinluo_observation"] = observed
-        save_state()
-        return True
-    cooldown_until = float(sent_at + YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC)
-    observed["last_observed_at"] = max(float(observed.get("last_observed_at", 0) or 0), float(sent_at))
-    observed["last_action"] = "血洗山林"
-    observed["last_result"] = "assumed_consumed"
-    observed["last_summary"] = "血洗山林已发送但回复未入库，按已消费冷却"
-    observed["last_error"] = "血洗山林回复超时，等待被动回复或下轮查幡校准"
-    observed["next_blood_forest_time"] = max(
-        float(observed.get("next_blood_forest_time", 0) or 0),
-        cooldown_until,
-    )
-    observed["auto_last_action"] = "blood_forest"
-    observed["auto_last_error"] = observed["last_error"]
-    observed["auto_next_time"] = _yinluo_next_after_action(observed, now)
-    observed["recent"].append({
-        "ts": float(now),
-        "action": "血洗山林",
-        "result": "assumed_consumed",
-        "summary": observed["last_summary"],
-    })
-    observed["recent"] = observed["recent"][-8:]
-    state["yinluo_observation"] = observed
-    save_state()
-    return True
+    return accounting.command_complete(value, chat_id, msg_id, command=cmd)
 
 
 __all__ = [

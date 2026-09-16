@@ -16,7 +16,7 @@ from urllib.parse import quote, urlencode
 import requests
 
 from model import webapp_core
-from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_common, miniapp_registry, spirit_beast_miniapp, stargazer_miniapp, tree_miniapp, trial_miniapp
+from model.features import cave_treasure_miniapp, fishing_miniapp, miniapp_common, miniapp_registry, stargazer_miniapp, tree_miniapp, trial_miniapp
 
 
 class WebAppCoreTests(unittest.TestCase):
@@ -1797,7 +1797,6 @@ class WebAppCoreTests(unittest.TestCase):
         calls = []
 
         def transport(request):
-            payload = dict(request.get("payload") or {})
             calls.append(request["safe_summary"]["endpoint"])
             if request["url"].endswith("/start"):
                 return {
@@ -2118,7 +2117,14 @@ class WebAppCoreTests(unittest.TestCase):
     def test_trial_lab_flow_solves_and_finishes_without_secret_leak(self):
         calls = []
         sleeps = []
+        now = [0.0]
         capture = webapp_core.MiniAppCaptureStore()
+
+        def sleep(delay):
+            sleeps.append(delay)
+            now[0] += delay
+
+        budget = webapp_core.MiniAppRequestBudget(clock=lambda: now[0], sleeper=sleep)
 
         def transport(request):
             endpoint = request["safe_summary"]["endpoint"]
@@ -2148,7 +2154,8 @@ class WebAppCoreTests(unittest.TestCase):
             init_data="query_id=abc&hash=VERY_SECRET",
             transport=transport,
             rng=__import__("random").Random(5),
-            sleeper=sleeps.append,
+            sleeper=sleep,
+            request_budget=budget,
             capture_sink=capture,
             capture_source="unit-test",
         )
@@ -2161,6 +2168,7 @@ class WebAppCoreTests(unittest.TestCase):
         self.assertEqual(["start", "finish"], [call[0] for call in calls])
         self.assertEqual(["start", "finish"], [item["step_key"] for item in capture.records])
         self.assertEqual(1, len(sleeps))
+        self.assertEqual(2, budget.request_count)
         self.assertNotIn("VERY_SECRET", summary_text)
         self.assertNotIn("trial_SECRET999", summary_text)
         self.assertNotIn("VERY_SECRET", capture_text)
@@ -2506,13 +2514,12 @@ class WebAppCoreTests(unittest.TestCase):
         parsed = cave_treasure_miniapp.parse_cave_treasure_state({
             "ok": True,
             "data": {
-                "tab": "寻宝",
-                "inRound": True,
-                "sessionId": "hunt-1",
-                "sense": "神识 8/8",
-                "games": "游戏 0/3",
-                "hint": "石室里第3个小人脚下有微光。",
-                "targetCount": 7,
+                "dwelling": {"hunt": {"used": 0, "limit": 3}},
+                "huntRun": {
+                    "sessionId": "hunt-1", "status": "active", "ap": 8, "maxAp": 8,
+                    "hint": "石室里第3个小人脚下有微光。", "targetCount": 7,
+                    "cells": [{"index": index, "revealed": False} for index in range(7)],
+                },
             },
         })
         decision = cave_treasure_miniapp.choose_cave_treasure_action(parsed, rng=__import__("random").Random(2))
@@ -2538,10 +2545,12 @@ class WebAppCoreTests(unittest.TestCase):
         parsed = cave_treasure_miniapp.parse_cave_treasure_state({
             "ok": True,
             "data": {
-                "tab": "寻宝",
-                "inRound": True,
-                "sessionId": "hunt-2",
-                "text": "寻宝中\n神识：9/11\n游戏：1/4\n石室内没有明显提示。",
+                "dwelling": {"hunt": {"used": 1, "limit": 4}},
+                "huntRun": {
+                    "sessionId": "hunt-2", "status": "active", "ap": 9, "maxAp": 11,
+                    "cells": [{"index": index, "revealed": False} for index in range(11)],
+                    "text": "寻宝中\n神识：9/11\n游戏：1/4\n石室内没有明显提示。",
+                },
             },
         })
         decision = cave_treasure_miniapp.choose_cave_treasure_action(
@@ -2562,7 +2571,7 @@ class WebAppCoreTests(unittest.TestCase):
             dict(parsed, action_remaining=0, games_used=1, games_limit=4, settled=False)
         )["action"])
         self.assertEqual("done", cave_treasure_miniapp.choose_cave_treasure_action(
-            dict(parsed, in_round=False, action_remaining=0, games_used=4, games_limit=4, settled=True)
+            dict(parsed, in_round=False, action_remaining=0, games_used=4, games_limit=4, games_remaining=0, settled=True)
         )["action"])
 
     def test_cave_treasure_minor_loot_does_not_stop_round_while_ap_remains(self):
@@ -2949,13 +2958,14 @@ class WebAppCoreTests(unittest.TestCase):
             sleeper=sleeps.append,
             capture_sink=capture,
             capture_source="unit-test",
+            request_budget=webapp_core.MiniAppRequestBudget({"min_interval_sec": 0}),
         )
         summary_text = json.dumps(result, ensure_ascii=False)
         capture_text = json.dumps(capture.records, ensure_ascii=False)
 
         self.assertTrue(result["ok"])
         self.assertEqual("settled", result["status"])
-        self.assertEqual({"score": 94, "grade": "甲等"}, result["data"])
+        self.assertEqual({"score": 94, "grade": "甲等", "daily": {}}, result["data"])
         self.assertEqual([0.2], sleeps)
         self.assertEqual(["start", "start", "finish", "result"], [call[0] for call in calls])
         self.assertEqual(["start_waiting", "start_bite", "finish", "result"], [item["step_key"] for item in capture.records])
@@ -3078,6 +3088,7 @@ class WebAppCoreTests(unittest.TestCase):
             transport=transport,
             rng=__import__("random").Random(5),
             sleeper=sleeps.append,
+            request_budget=webapp_core.MiniAppRequestBudget({"min_interval_sec": 0}),
         )
 
         self.assertTrue(result["ok"])

@@ -7,7 +7,7 @@ import pytest
 
 from model import state as state_module
 from model import ui
-from model.features import cave_treasure_runtime as cave
+from model.features import cave_treasure_runtime as cave, tianti
 
 
 @pytest.fixture
@@ -103,6 +103,25 @@ def test_busy_entry_does_not_claim_a_canary(public_ui):
     assert state_module.get_miniapp_auto_config() == config
     h.save.assert_not_called()
     h.runner.assert_not_awaited()
+
+
+def test_native_tianti_session_limit_reaches_ui_without_entry_fallback(public_ui, monkeypatch):
+    h = public_ui
+    monkeypatch.setattr(cave, "_PUBLIC_ENTRY_LOCKS", {})
+    monkeypatch.setattr(tianti, "_TIANTI_RUN_LOCKS", {})
+    monkeypatch.setattr(cave, "send_audit_log", AsyncMock())
+    h.start.return_value = {
+        "ok": False, "status": "failed", "error": "fixture-limit",
+        "events": [{"status_code": 429, "retry_after_sec": 50000, "shared_rate_limit": True}],
+    }
+    ok, _message, extra = asyncio.run(ui.ui_run_cave_public_entry(h.identity_id, "tianti_status", ""))
+    assert not ok
+    assert extra["shared_rate_limit"]
+    assert extra["shared_retry_after_sec"] == 50000
+    assert extra["shared_retry_at"] == h.now + 50000
+    assert len(extra["entry_attempts"]) == 1
+    h.start.assert_awaited_once()
+    assert not ui._cave_public_background_state["circuit_open_until"]
 
 
 def test_invalid_action_does_not_claim_a_canary(public_ui):

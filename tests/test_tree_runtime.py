@@ -412,8 +412,9 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
         retry = tree_runtime.prepare_tree_miniapp_daily_run(1002, enabled=True, now=1_700_000_002.0)
         self.assertTrue(retry["ok"])
 
-    async def test_direct_daily_retry_after_enters_retry_pending(self):
+    async def test_direct_daily_retry_after_enters_retry_pending_from_finish_time(self):
         now = 1_700_000_000.0
+        finished_at = now + 12
         flow_result = {
             "ok": False,
             "status": "rate_limited",
@@ -425,7 +426,8 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
             tree_runtime,
             "run_tree_miniapp_daily_production_flow",
             new=AsyncMock(return_value=flow_result),
-        ), patch.object(tree_runtime, "send_audit_log", new=AsyncMock()), \
+        ), patch.object(tree_runtime, "time", SimpleNamespace(time=lambda: finished_at)), \
+                patch.object(tree_runtime, "send_audit_log", new=AsyncMock()), \
                 patch.object(tree_runtime, "record_miniapp_state"):
             result = await tree_runtime.run_tree_miniapp_daily_direct(
                 1002,
@@ -440,7 +442,7 @@ class TreeRuntimeEntryTests(unittest.IsolatedAsyncioTestCase):
         snapshot = tree_runtime.get_tree_miniapp_coordinator_snapshot()
         self.assertEqual("retry_pending", snapshot["phase"])
         self.assertEqual(3600, snapshot["retry_after_sec"])
-        self.assertEqual(now + 3600, snapshot["retry_at"])
+        self.assertEqual(finished_at + 3600, snapshot["retry_at"])
 
 
 if __name__ == "__main__":

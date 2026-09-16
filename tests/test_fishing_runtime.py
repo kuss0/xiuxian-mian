@@ -396,6 +396,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 bait_choice="凡饵",
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
+                operation_check=ANY,
+                checkpoint=ANY,
             )
             self.assertEqual("idle", state_module.state["fishing_phase"])
             self.assertEqual(33001, state_module.state["fishing_last_msg_id"])
@@ -443,6 +445,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 bait_choice="凡饵",
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
+                operation_check=ANY,
+                checkpoint=ANY,
             )
             send_mock.assert_not_awaited()
             self.assertEqual(5, state_module.state["fishing_daily_count"])
@@ -486,6 +490,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 bait_choice="凡饵",
                 capture_sink=ANY,
                 capture_source="fishing_runtime:8659059191:33001",
+                operation_check=ANY,
+                checkpoint=ANY,
             )
 
     async def test_miniapp_entry_does_not_cap_chain_by_stale_local_daily_limit(self):
@@ -817,7 +823,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("渔获:银须灵鲢", state_module.state["fishing_last_result"])
             self.assertIn("幸运符x1", state_module.state["fishing_last_result"])
             self.assertEqual('{"银须灵鲢": 1}', state_module.state["fishing_caught_fish_json"])
-            delta_mock.assert_called_once_with(identity_id, {"银须灵鲢": 1})
+            delta_mock.assert_called_once_with(identity_id, {"银须灵鲢": 1}, persist=False)
             audit_texts = [call.args[0] for call in audit_mock.await_args_list]
             self.assertTrue(any("MiniApp 接管入口" in text for text in audit_texts))
             harvest_texts = [text for text in audit_texts if "MiniApp 收获" in text]

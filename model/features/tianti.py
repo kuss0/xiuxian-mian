@@ -1,9 +1,12 @@
 import asyncio
+import copy
+import math
 import random
 import re
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 from ..config import (
     CMD_TIANTI_CLIMB,
@@ -17,11 +20,13 @@ from ..config import (
     TIANTI_RANK_CD_SECONDS,
     TZ_LOCAL,
 )
-from ..message_log_recovery import find_message_log_replies, recover_sent_command_from_message_log
+from ..message_keys import message_key_parts
+from ..message_log_recovery import find_message_log_message, find_message_log_replies, find_recent_message_log_commands, sender_matches_identity
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, get_sent_message_chat_id, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, get_game_topic_id, get_miniapp_auto_config, get_pending_command, get_tianti_rank_choice, state, use_identity
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
+from ..runtime import classify_game_send_block, clear_pending_by_reply, console_log, send_audit_log, send_game_command
+from ..state import get_current_identity_id, get_game_bot_ids, get_game_group_id, get_game_group_ids, get_global_enabled, get_identity_account, get_identity_enabled, get_identity_state, get_miniapp_auto_config, get_pending_command, get_tianti_rank_choice, has_identity, state, use_identity
+from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
+from ..verified_event import telegram_event_timestamp
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 
 RE_TIANTI_PANEL = re.compile(r"【凌霄云阶】")
@@ -45,15 +50,447 @@ RE_TIANTI_GANGFENG_FAIL = re.compile(r"九天罡风尚未再聚，请在\s*(.+?)
 RE_TIANTI_GANGFENG_COOLDOWN = re.compile(r"\.引九天罡风[:：]\s*(.+)")
 TIANTI_CLIMB_RESOURCE_KEY = "tianti_climb"
 TIANTI_GANGFENG_RESOURCE_KEY = "tianti_gangfeng"
-TIANTI_CLIMB_INFLIGHT_SEC = 180
 TIANTI_STATUS_FRESH_SEC = 30 * 60
 TIANTI_TRIGGER_BUCKET_SEC = 600
 TIANTI_GANGFENG_WINDOW_SEC = 600
 TIANTI_GANGFENG_INFLIGHT_GATE_SEC = RETRY_MAX_SEC + 10
 TIANTI_WENXIN_INFLIGHT_GATE_SEC = RETRY_MAX_SEC + 10
 TIANTI_WENXIN_DAY_END_FALLBACK_SEC = 45 * 60
-_TIANTI_CLIMB_INFLIGHT_UNTIL = {}
 TIANTI_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+TIANTI_REPLAY_INTERVAL_SEC = 300
+TIANTI_SOURCE_MODULE = "登天阶"
+TIANTI_COMMANDS = {
+    "wenxin": (CMD_TIANTI_WENXIN, "tianti_last_wenxin_msg_id"),
+    "gangfeng": (CMD_TIANTI_GANGFENG, "tianti_last_gangfeng_msg_id"),
+    "status": (CMD_TIANTI_STATUS, "tianti_status_reply_to_msg_id"),
+    "climb": (CMD_TIANTI_CLIMB, "tianti_last_climb_msg_id"),
+}
+TIANTI_UNRESOLVED = {"sending", "sent", "unknown"}
+TIANTI_PANEL_REQUIRED = {
+    "progress_current", "progress_total", "cycle_count", "gangfeng_level", "gangfeng_total",
+    "cooldown_text", "wenxin_status",
+}
+_TIANTI_RUN_LOCKS = {}
+_TIANTI_LEGACY_REPLAY_AFTER = {}
+
+
+def _number(value):
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        value = float(value)
+        return value if math.isfinite(value) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _message_id(value):
+    value = _number(value)
+    return int(value) if value == int(value) else 0
+
+
+def _tianti_due_text(due_at):
+    return datetime.fromtimestamp(due_at, TZ_LOCAL).strftime("%H:%M:%S")
+
+
+def _capture_tianti_owner(send_as_id=None):
+    identity_id = _message_id(send_as_id or get_current_identity_id())
+    if not has_identity(identity_id):
+        return None
+    return identity_id, get_identity_state(identity_id), get_identity_account(identity_id)
+
+
+def _owns_tianti(owner, *, sending=False, explicit_read=False):
+    if not owner:
+        return False
+    identity_id, identity, account_id = owner
+    return bool(
+        has_identity(identity_id) and get_identity_state(identity_id) is identity
+        and get_identity_account(identity_id) == account_id
+        and (not sending or (
+            account_id > 0 and get_global_enabled() and get_identity_enabled(identity_id)
+            and (explicit_read or identity.get("tianti_enabled"))
+        ))
+    )
+
+
+def _tianti_plan_snapshot(owner):
+    identity_id, identity, _account_id = owner
+    return (
+        copy.deepcopy({key: value for key, value in identity.items() if (
+            key.startswith(("tianti_", "next_tianti_")) and key != "tianti_commands"
+        )}),
+        get_tianti_rank_choice(identity_id), get_game_group_id(),
+        is_tianti_public_status_selected(identity_id), get_global_enabled(), get_identity_enabled(identity_id),
+    )
+
+
+def _tianti_commands():
+    records = state.get("tianti_commands", {})
+    if not isinstance(records, dict) or records.keys() - TIANTI_COMMANDS.keys():
+        return None
+    fields = {
+        "op_id", "identity_id", "account_id", "command", "started_at", "chat_id", "msg_id",
+        "status", "rank_choice", "sent_at", "dispatch_at", "reply_at", "replay_after",
+    }
+    for kind, record in records.items():
+        if not isinstance(record, dict) or record.keys() - fields or (
+            record.get("command") != TIANTI_COMMANDS[kind][0]
+            or type(record.get("identity_id")) is not int or record["identity_id"] != get_current_identity_id()
+            or type(record.get("account_id")) is not int or record["account_id"] <= 0
+            or not isinstance(record.get("op_id"), str) or not 0 < len(record["op_id"]) <= 128
+            or not isinstance(record.get("rank_choice"), str) or record["rank_choice"] not in TIANTI_RANK_CD_SECONDS
+            or not isinstance(record.get("status"), str)
+            or record["status"] not in TIANTI_UNRESOLVED | {"unsent", "complete", "expired"}
+            or type(record.get("chat_id")) is not int or not record["chat_id"]
+            or type(record.get("msg_id")) is not int or record["msg_id"] < 0
+            or type(record.get("started_at")) not in {int, float} or _number(record["started_at"]) <= 0
+            or (record["status"] in {"sent", "complete"} and record["msg_id"] <= 0)
+            or (record["status"] == "unsent" and record["msg_id"] != 0)
+            or (record["status"] == "expired" and kind != "status")
+            or (record["msg_id"] and not (
+                record["started_at"] - 1 <= _number(record.get("dispatch_at", record["started_at"]))
+                <= _number(record.get("sent_at"))
+            ))
+            or (record["status"] == "complete" and (
+                _number(record.get("reply_at")) <= 0 or _number(record.get("reply_at")) < record["started_at"] - 1
+            ))
+            or any(type(record[key]) not in {int, float} or _number(record[key]) <= 0
+                   for key in ("sent_at", "dispatch_at", "reply_at", "replay_after") if key in record)
+        ):
+            return None
+    return copy.deepcopy(records)
+
+
+def _store_tianti_command(kind, record):
+    records = _tianti_commands()
+    if records is None:
+        return False
+    records[kind] = dict(record)
+    state["tianti_commands"] = records
+    mark_dirty()
+    return True
+
+
+def _tianti_native_block_reason():
+    records = _tianti_commands()
+    if records is None:
+        return "天阶命令归属记录异常，保留状态等待核对"
+    if any(record["status"] in TIANTI_UNRESOLVED for record in records.values()):
+        return "天阶仍有未确认操作，等待原命令反馈"
+    pending = state.get("pending_tasks")
+    if not isinstance(pending, dict) or any(not isinstance(item, dict) for item in pending.values()):
+        return "天阶待办记录异常，保留状态等待核对"
+    if any(_has_pending_tianti_command(command) for command, _key in TIANTI_COMMANDS.values()):
+        return "天阶仍有旧待办，缺少完整归属时不自动补发"
+    # Historical last_*_msg_id values also name completed results, not just work in flight.
+    return ""
+
+
+def _clear_tianti_command_pending(record):
+    family = next(f"tianti_{kind}" for kind, spec in TIANTI_COMMANDS.items() if spec[0] == record["command"])
+    clear_pending_by_reply(
+        send_as_id=record["identity_id"],
+        reply_context={
+            "send_as_id": record["identity_id"], "root_msg_id": record["msg_id"],
+            "reply_to_msg_id": record["msg_id"], "chat_id": record["chat_id"], "family": family,
+        },
+        clear_family=False,
+    )
+
+
+async def _notify_tianti(message, identity_id):
+    try:
+        await send_audit_log(message, scope="identity", send_as_id=identity_id, limit=300)
+    except Exception as exc:
+        console_log(f"天阶结果已保存，通知失败 ({type(exc).__name__})")
+
+
+async def _send_tianti_command(kind, owner, now, *, trigger_key="", explicit_read=False):
+    if not _owns_tianti(owner, sending=True, explicit_read=explicit_read):
+        return False
+    identity_id, identity, account_id = owner
+    command, msg_key = TIANTI_COMMANDS[kind]
+    if _tianti_native_block_reason() or not get_game_group_id():
+        return False
+    if kind in {"wenxin", "gangfeng"} and not identity.get(f"tianti_{kind}_enabled"):
+        return False
+    previous = _tianti_commands().get(kind)
+    if previous and previous["status"] == "unsent" and _number(state.get(f"next_tianti_{kind}_time")) > now:
+        return False
+    record = {
+        "op_id": uuid4().hex, "identity_id": identity_id, "account_id": account_id,
+        "command": command, "chat_id": get_game_group_id(), "msg_id": 0,
+        "started_at": max(float(now), time.time()), "status": "sending",
+        "rank_choice": get_tianti_rank_choice(identity_id),
+    }
+    _store_tianti_command(kind, record)
+    expected = _tianti_plan_snapshot(owner)
+
+    def current_operation():
+        if not _owns_tianti(owner):
+            return None
+        with use_identity(identity_id):
+            current = (_tianti_commands() or {}).get(kind)
+        if current and all(current.get(key) == record[key] for key in (
+            "op_id", "identity_id", "account_id", "command", "started_at", "chat_id", "rank_choice",
+        )):
+            return current
+        return None
+
+    def can_send():
+        return bool(
+            _owns_tianti(owner, sending=True, explicit_read=explicit_read)
+            and current_operation() == record and _tianti_plan_snapshot(owner) == expected
+        )
+
+    def note_unsent(reason):
+        _store_tianti_command(kind, dict(record, status="unsent"))
+        if _tianti_plan_snapshot(owner) == expected:
+            state[f"next_tianti_{kind}_time"] = max(float(now), time.time()) + RETRY_MAX_SEC
+            state["tianti_last_error"] = reason
+        save_state()
+
+    if save_state() is False:
+        note_unsent("天阶在途状态未保存，本次未发送")
+        return False
+    previous_block = classify_game_send_block(identity_id, command)
+    try:
+        msg = await send_game_command(
+            command, max_retry=0, send_as_id=identity_id, priority="chain",
+            source_module=TIANTI_SOURCE_MODULE, op_id=record["op_id"], target_chat_id=record["chat_id"],
+            operation_check=can_send,
+        )
+    except (asyncio.CancelledError, Exception):
+        if current_operation() == record:
+            _store_tianti_command(kind, dict(record, status="unknown"))
+            save_state()
+        raise
+    current = current_operation()
+    if current is None:
+        return False
+    if current["status"] != "sending":
+        if current["status"] == "complete":
+            _clear_tianti_command_pending(current)
+            save_state()
+        return current["status"] in {"sent", "complete"}
+    at = max(record["started_at"], time.time())
+    if not msg:
+        block = classify_game_send_block(identity_id, command)
+        if (
+            block.get("status") == "unsent" and block != previous_block
+            and record["started_at"] <= _number(block.get("at")) <= at + 1
+        ):
+            note_unsent(f"天阶未发送：{block.get('code') or 'blocked'}")
+            return False
+    msg_id, chat = _message_id(getattr(msg, "id", 0)), _message_id(getattr(msg, "chat_id", 0))
+    sent_at = _number(getattr(msg, "sent_at", 0))
+    dispatch_at = _number(getattr(msg, "send_started_at", 0))
+    known = bool(
+        msg_id > 0 and chat == record["chat_id"]
+        and record["started_at"] - 1 <= dispatch_at <= sent_at <= at + 1
+    )
+    current = dict(record, status="sent" if known else "unknown")
+    if known:
+        current.update(msg_id=msg_id, sent_at=sent_at, dispatch_at=dispatch_at)
+    _store_tianti_command(kind, current)
+    if _tianti_plan_snapshot(owner) == expected:
+        state["tianti_last_error"] = "" if known else f"{command} 发送状态未知，保留原操作等待反馈"
+        if known:
+            state[msg_key] = msg_id
+            if kind == "climb":
+                _schedule_tianti_climb_retry(sent_at, rank_choice=record["rank_choice"])
+                _calc_tianti_wenxin_plan(sent_at)
+            else:
+                state[f"next_tianti_{kind}_time"] = sent_at + {
+                    "wenxin": TIANTI_WENXIN_INFLIGHT_GATE_SEC,
+                    "gangfeng": TIANTI_GANGFENG_INFLIGHT_GATE_SEC,
+                    "status": RETRY_MAX_SEC,
+                }[kind]
+                if kind in {"wenxin", "gangfeng"}:
+                    state[f"tianti_{kind}_last_trigger_key"] = str(trigger_key)
+                if kind == "gangfeng":
+                    state["tianti_gangfeng_status"] = "等待回复"
+    save_state()
+    if not known:
+        await _notify_tianti(f"{command} 发送状态未知，等待原命令反馈，不自动补发。", identity_id)
+    return known
+
+
+def _adopt_tianti_receipt(record, now):
+    if record["msg_id"] or record["account_id"] != get_identity_account(record["identity_id"]):
+        return record
+    candidates = {}
+    pending_tasks = state.get("pending_tasks")
+    if not isinstance(pending_tasks, dict):
+        return record
+    for key, pending in pending_tasks.items():
+        if not isinstance(pending, dict) or (
+            pending.get("op_id") != record["op_id"] or pending.get("cmd") != record["command"]
+            or pending.get("source_module") != TIANTI_SOURCE_MODULE
+            or ("account_id" in pending and pending["account_id"] != record["account_id"])
+        ):
+            continue
+        try:
+            chat, root = message_key_parts(key, pending)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        sent_at, dispatch_at = _number(pending.get("sent_at")), _number(pending.get("send_started_at"))
+        if chat == record["chat_id"] and root > 0 and record["started_at"] - 1 <= dispatch_at <= sent_at <= now + 1:
+            candidates[chat, root] = (sent_at, dispatch_at)
+    if not candidates:
+        # The original send window remains searchable after downtime; never
+        # select a later command just because it has the same text.
+        def owned_send(entry):
+            return bool(
+                isinstance(entry, dict) and entry.get("event_type") == "sent" and entry.get("op_id") == record["op_id"]
+                and entry.get("source_module") == TIANTI_SOURCE_MODULE and entry.get("account_id") == record["account_id"]
+                and _message_id(entry.get("chat_id")) == record["chat_id"] and str(entry.get("text", "")).strip() == record["command"]
+                and sender_matches_identity(entry.get("sender_id"), record["identity_id"])
+                and _message_id(entry.get("message_id")) > 0
+            )
+
+        for logged in find_recent_message_log_commands(
+            min(now, record["started_at"] + TIANTI_LOG_REPLAY_LOOKBACK_SEC),
+            command_predicate=owned_send, start_ts=record["started_at"] - 1, chat_id=record["chat_id"],
+            lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC, lookahead_sec=1,
+        ):
+            sent_at = _number(logged.get("ts_epoch"))
+            if owned_send(logged) and record["started_at"] - 1 <= sent_at <= now + 1:
+                candidates[record["chat_id"], int(logged["message_id"])] = (sent_at, record["started_at"])
+    if len(candidates) != 1:
+        return record
+    (chat, root), (sent_at, dispatch_at) = next(iter(candidates.items()))
+    return dict(record, msg_id=root, chat_id=chat, sent_at=sent_at, dispatch_at=dispatch_at, status="sent")
+
+
+def _legacy_tianti_pending(now, records, *, allow_log=False):
+    pending_tasks = state.get("pending_tasks")
+    if not isinstance(pending_tasks, dict):
+        return {}
+    identity_id, account_id = get_current_identity_id(), get_identity_account(get_current_identity_id())
+    if account_id <= 0:
+        return {}
+    candidates = {}
+    for key, pending in pending_tasks.items():
+        if not isinstance(pending, dict):
+            continue
+        kind = next((kind for kind, spec in TIANTI_COMMANDS.items() if get_pending_command(pending) == spec[0]), None)
+        if kind is None or kind in records:
+            continue
+        try:
+            chat, root = message_key_parts(key, pending)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        sent_at = _number(pending.get("sent_at"))
+        if not chat or root <= 0 or not 0 < sent_at <= now + 1:
+            continue
+        candidates.setdefault(kind, []).append((chat, root, sent_at, pending))
+    imported = {}
+    for kind, items in candidates.items():
+        if len(items) != 1:
+            continue
+        chat, root, sent_at, pending = items[0]
+        command = TIANTI_COMMANDS[kind][0]
+        account = pending.get("account_id")
+        if account is None:
+            if not allow_log:
+                continue
+            logged = find_message_log_message(
+                root, sent_at + 1, chat_id=chat, lookback_sec=3, lookahead_sec=0,
+                predicate=lambda entry: entry.get("event_type") == "sent",
+            ) or {}
+            if not (
+                logged.get("event_type") == "sent" and _message_id(logged.get("chat_id")) == chat
+                and _message_id(logged.get("message_id")) == root and str(logged.get("text", "")).strip() == command
+                and sender_matches_identity(logged.get("sender_id"), identity_id)
+                and abs(_number(logged.get("ts_epoch")) - sent_at) <= 1
+            ):
+                continue
+            account = logged.get("account_id")
+        if type(account) is not int or account != account_id:
+            continue
+        dispatch_at = _number(pending.get("send_started_at")) or sent_at
+        if not 0 < dispatch_at <= sent_at:
+            continue
+        imported[kind] = {
+            "op_id": f"legacy:{chat}:{root}", "identity_id": identity_id, "account_id": account_id,
+            "command": command, "chat_id": chat, "msg_id": root, "started_at": dispatch_at,
+            "sent_at": sent_at, "dispatch_at": dispatch_at, "status": "sent",
+            "rank_choice": get_tianti_rank_choice(identity_id),
+        }
+    return imported
+
+
+def _tianti_reply_operation(kind, reply_to, now, context):
+    if not isinstance(context, dict) or not has_identity(get_current_identity_id()):
+        return None
+    records = _tianti_commands()
+    if records is None:
+        return None
+    identity_id = get_current_identity_id()
+    chat, root = _message_id(context.get("chat_id")), _message_id(context.get("root_msg_id"))
+    at = telegram_event_timestamp(SimpleNamespace(server_event_at=context.get("server_event_at")))
+    command = TIANTI_COMMANDS[kind][0]
+    if (
+        not chat or root <= 0 or context.get("send_as_id") != identity_id
+        or _message_id(context.get("sender_id")) not in get_game_bot_ids()
+        or _message_id(context.get("msg_id")) <= 0
+        or not 0 < at <= max(_number(now), time.time()) + 1
+        or (getattr(reply_to, "id", 0) and _message_id(reply_to.id) != root)
+        or (getattr(reply_to, "chat_id", 0) and _message_id(reply_to.chat_id) != chat)
+        or any(str(value).strip() != command for value in (
+            getattr(reply_to, "raw_text", ""), context.get("reply_to_command"),
+        ) if value)
+        or context.get("reply_to_command_edited")
+    ):
+        return None
+    records.update(_legacy_tianti_pending(max(_number(now), time.time()), records))
+    record = records.get(kind)
+    if record is None or (
+        (record["chat_id"], record["msg_id"]) != (chat, root)
+        and context.get("source") == "manual_game_command"
+    ):
+        if context.get("source") != "manual_game_command" or any(
+            item["status"] in TIANTI_UNRESOLVED for other, item in records.items() if other != "status" or kind == "status"
+        ):
+            return None
+        sent_at = (
+            telegram_event_timestamp(SimpleNamespace(server_event_at=context["reply_to_server_at"]))
+            if "reply_to_server_at" in context else telegram_event_timestamp(reply_to)
+        )
+        sender_id = context.get("reply_to_sender_id") or getattr(reply_to, "sender_id", 0)
+        raw_command = context.get("reply_to_command") or getattr(reply_to, "raw_text", "")
+        if (
+            not 0 < sent_at <= at + 1 or chat not in get_game_group_ids()
+            or get_identity_account(identity_id) <= 0 or str(raw_command).strip() != command
+            or not sender_matches_identity(sender_id, identity_id)
+            or sent_at <= max((item["started_at"] for item in records.values()), default=0)
+        ):
+            return None
+        record = {
+            "op_id": f"manual:{chat}:{root}", "identity_id": identity_id,
+            "account_id": get_identity_account(identity_id), "command": command,
+            "started_at": sent_at, "sent_at": sent_at, "dispatch_at": sent_at,
+            "msg_id": root, "chat_id": chat, "status": "sent",
+            "rank_choice": get_tianti_rank_choice(identity_id),
+        }
+    record = _adopt_tianti_receipt(record, max(_number(now), time.time()))
+    if (
+        record["status"] not in TIANTI_UNRESOLVED
+        or record["account_id"] != get_identity_account(identity_id)
+        or ("account_id" in context and context["account_id"] != record["account_id"])
+        or (record["chat_id"], record["msg_id"]) != (chat, root)
+        or at < _number(record.get("dispatch_at", record["started_at"])) - 1
+        or at < max((_number(item.get("reply_at")) for item in records.values()), default=0)
+        or at < _number(state.get("tianti_last_status_seen_at"))
+        or (kind == "status" and any(
+            other != "status" and item["status"] in TIANTI_UNRESOLVED
+            for other, item in records.items()
+        ))
+    ):
+        return None
+    return dict(record, reply_at=at)
 
 
 def _set_tianti_next_wenxin_time(next_time, *, persist=False):
@@ -89,13 +526,6 @@ def _schedule_tianti_wenxin_retry(now, *, persist=False):
 def _get_tianti_cd_seconds(rank_choice=None):
     rank_choice = (rank_choice or get_tianti_rank_choice()).strip()
     return int(TIANTI_RANK_CD_SECONDS.get(rank_choice, TIANTI_RANK_CD_SECONDS["普通"]))
-
-
-def _log_tianti_plan(prefix, *, scope="auto"):
-    console_log(
-        f"☁️ {prefix}：current={int(state.get('tianti_progress_current', 0) or 0)} remain={int(state.get('tianti_remaining_climb_count', 0) or 0)} target={int(state.get('tianti_theoretical_max_stage', 0) or 0)} trigger={int(state.get('tianti_wenxin_trigger_stage', 0) or 0)} next={fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}",
-        scope=scope,
-    )
 
 
 def _set_tianti_skip_reason(reason):
@@ -134,83 +564,6 @@ def _mark_tianti_status_synced(now, reply_to=None):
         state["next_tianti_status_time"] = 0
         changed = True
     return changed
-
-
-def _tianti_inflight_key(send_as_id=None):
-    identity_id = int(send_as_id or get_current_identity_id() or 0)
-    return identity_id
-
-
-def _has_tianti_climb_send_inflight(now=None, send_as_id=None):
-    now = float(now or time.time())
-    key = _tianti_inflight_key(send_as_id)
-    if key <= 0:
-        return False
-    until = float(_TIANTI_CLIMB_INFLIGHT_UNTIL.get(key, 0) or 0)
-    if until <= now:
-        _TIANTI_CLIMB_INFLIGHT_UNTIL.pop(key, None)
-        return False
-    return True
-
-
-def _reserve_tianti_climb_send(now=None, send_as_id=None):
-    now = float(now or time.time())
-    key = _tianti_inflight_key(send_as_id)
-    if key <= 0:
-        return False
-    if _has_tianti_climb_send_inflight(now, send_as_id=key):
-        return False
-    if _has_pending_tianti_command(CMD_TIANTI_CLIMB):
-        return False
-    _TIANTI_CLIMB_INFLIGHT_UNTIL[key] = now + TIANTI_CLIMB_INFLIGHT_SEC
-    return True
-
-
-def _clear_tianti_climb_send_inflight(send_as_id=None):
-    key = _tianti_inflight_key(send_as_id)
-    if key > 0:
-        _TIANTI_CLIMB_INFLIGHT_UNTIL.pop(key, None)
-
-
-async def _send_due_tianti_climb_after_status(send_as_id, delay=None, reserved=False):
-    if delay is None:
-        delay = random.uniform(2, 5)
-    await asyncio.sleep(delay)
-    now = time.time()
-    with use_identity(send_as_id):
-        if not state.get("tianti_enabled"):
-            return
-        next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
-        if next_climb_time <= 0 or now < next_climb_time:
-            if reserved:
-                _clear_tianti_climb_send_inflight(send_as_id)
-            return
-        if not reserved and not _reserve_tianti_climb_send(now, send_as_id=send_as_id):
-            return
-        should_trigger_wenxin, _wenxin_state = _should_trigger_tianti_wenxin(now)
-        should_trigger_gangfeng, _gangfeng_state = _should_trigger_tianti_gangfeng(now)
-        if should_trigger_wenxin or should_trigger_gangfeng:
-            _clear_tianti_climb_send_inflight(send_as_id)
-            return
-        console_log("☁️ 天阶状态显示可登，接续排队登天阶。")
-
-    # The climb state advances to the next long CD immediately after a
-    # successful send. A transport-level retry after a silent reply can climb
-    # twice, so leave reconciliation to the next status cycle.
-    msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=0, send_as_id=send_as_id, priority="chain")
-    with use_identity(send_as_id):
-        if not msg:
-            _clear_tianti_climb_send_inflight(send_as_id)
-            _set_tianti_next_climb_time(time.time() + RETRY_MAX_SEC, persist=True)
-            state["tianti_last_error"] = "登天阶接续发送失败"
-            await send_audit_log("❌ 登天阶接续发送失败，稍后重试。", scope="identity", send_as_id=send_as_id)
-            return
-        state["tianti_last_climb_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        _schedule_tianti_climb_retry(sent_at, persist=True)
-        _calc_tianti_wenxin_plan(sent_at)
-        _log_tianti_plan("状态接续登阶后")
-        console_log(f"☁️ 执行登天阶→{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}")
 
 
 def _reset_tianti_wenxin_daily_state(now):
@@ -496,7 +849,10 @@ def _apply_tianti_wenxin_result(raw_text, now, reply_to):
     if extra_gangfeng_match:
         extra_level = int(extra_gangfeng_match.group(1) or 0)
         if extra_level > 0:
-            state["tianti_gangfeng_level"] = int(state.get("tianti_gangfeng_level", 0) or 0) + extra_level
+            state["tianti_gangfeng_level"] = min(
+                int(state.get("tianti_gangfeng_total", 12) or 12),
+                int(state.get("tianti_gangfeng_level", 0) or 0) + extra_level,
+            )
             handled = True
 
     _schedule_tianti_wenxin_retry(now, persist=False)
@@ -509,7 +865,7 @@ def _schedule_tianti_climb_retry(now, rank_choice=None, *, persist=False):
     random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
     next_time = float(now) + cd_seconds + random_delay
     _set_tianti_next_climb_time(next_time, persist=persist)
-    state["tianti_cooldown_text"] = fmt_time_after(cd_seconds + random_delay)
+    state["tianti_cooldown_text"] = _tianti_due_text(next_time)
     if persist:
         save_state()
     else:
@@ -523,7 +879,7 @@ def _schedule_tianti_gangfeng_retry(now, wait_sec=None, *, persist=False):
     total_wait_sec = base_wait + random_delay
     next_time = float(now) + total_wait_sec
     state["next_tianti_gangfeng_time"] = float(next_time or 0)
-    state["tianti_gangfeng_status"] = fmt_time_after(total_wait_sec)
+    state["tianti_gangfeng_status"] = _tianti_due_text(next_time)
     if persist:
         save_state()
     else:
@@ -693,25 +1049,74 @@ def is_tianti_public_status_selected(send_as_id=None):
 
 
 async def sync_tianti_status(send_as_id):
-    send_as_id = int(send_as_id)
-    msg = await send_game_command(CMD_TIANTI_STATUS, track=False, send_as_id=send_as_id)
-    if not msg:
-        return False, "天阶状态同步发送失败"
-    return True, f"已发送天阶状态同步指令[{send_as_id}]，等待回复"
+    owner = _capture_tianti_owner(send_as_id)
+    if not owner or owner[0] in _TIANTI_RUN_LOCKS:
+        return False, "天阶身份不可用或已有操作执行中"
+    token = object()
+    _TIANTI_RUN_LOCKS[owner[0]] = token
+    try:
+        with use_identity(owner[0]):
+            before = _tianti_plan_snapshot(owner)
+            if await _recover_due_tianti_replies(time.time()):
+                return True, "天阶原操作回包已校准"
+            if not _owns_tianti(owner, sending=True, explicit_read=True) or _tianti_plan_snapshot(owner) != before:
+                return False, "天阶查询计划已变更"
+            _expire_tianti_status_read(time.time())
+            ok = await _send_tianti_command("status", owner, time.time(), explicit_read=True)
+        return ok, "已发送天阶状态同步，等待回复" if ok else "未新增天阶查询，等待原操作反馈或重新排队"
+    finally:
+        if _TIANTI_RUN_LOCKS.get(owner[0]) is token:
+            _TIANTI_RUN_LOCKS.pop(owner[0], None)
+
+
+def tianti_miniapp_status_block_reason(now):
+    try:
+        timestamp = float(now)
+        seen_at = float(state.get("tianti_last_status_seen_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return "invalid_clock"
+    if not all(math.isfinite(value) for value in (timestamp, seen_at)) or timestamp <= 0:
+        return "invalid_clock"
+    if seen_at > timestamp:
+        return "stale_observation"
+    records = _tianti_commands()
+    if records is None:
+        return "invalid_pending"
+    if any(kind != "status" and item["status"] in TIANTI_UNRESOLVED for kind, item in records.items()):
+        return "active_pending"
+    pending_tasks = state.get("pending_tasks")
+    if not isinstance(pending_tasks, dict):
+        return "invalid_pending"
+    for pending in pending_tasks.values():
+        if not isinstance(pending, dict):
+            return "invalid_pending"
+        family = str(pending.get("family") or "")
+        command = get_pending_command(pending).split()
+        if (
+            (family.startswith("tianti_") and family != "tianti_status")
+            or (command and command[0] in {CMD_TIANTI_CLIMB, CMD_TIANTI_WENXIN, CMD_TIANTI_GANGFENG})
+        ):
+            return "active_pending"
+    return ""
 
 
 def sync_tianti_miniapp_status(raw_text, now=None, *, message_id=0):
-    """Apply a read-only Tianjige status reply without triggering a send.
+    """Apply a complete read-only panel and leave dispatch to the scheduler.
 
-    The normal group reply handler may immediately chain a ready status into
-    `.登天阶`. A command-center status read is only a state calibration source,
-    so it must update the existing reducer while leaving scheduling to the
-    normal tianti scheduler.
+    Native replies share this panel reducer, but a public-entry read does not
+    complete or claim a Telegram command's pending operation.
     """
-    now = float(now or time.time())
+    now = time.time() if now is None else now
+    block_reason = tianti_miniapp_status_block_reason(now)
+    if block_reason:
+        return {"handled": False, "reason": block_reason, "payload": {}}
+    now = float(now)
     payload = _parse_tianti_panel(str(raw_text or ""))
     if not payload:
         return {"handled": False, "reason": "panel_unrecognized", "payload": {}}
+    if not TIANTI_PANEL_REQUIRED.issubset(payload):
+        # An incomplete read must not certify cached progress or rearm timers.
+        return {"handled": False, "reason": "incomplete_panel", "payload": payload}
 
     _ensure_tianti_wenxin_daily_state(now)
     changed = _mark_tianti_status_synced(
@@ -730,57 +1135,99 @@ def sync_tianti_miniapp_status(raw_text, now=None, *, message_id=0):
     }
 
 
-def _is_tianti_reply(text, reply_to, matched_family=None):
-    if matched_family in {"tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"}:
-        return True
-    raw_text = str(text or "")
-    if RE_TIANTI_PANEL.search(raw_text) or RE_TIANTI_GANGFENG_PANEL.search(raw_text) or RE_TIANTI_GANGFENG_FAIL.search(raw_text):
-        return True
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    return any(command in orig_cmd for command in {CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB, CMD_TIANTI_GANGFENG})
-
-
-def _is_tianti_status_panel_reply(reply_to, matched_family=None):
-    if matched_family == "tianti_status":
-        return True
-    reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0)
-    if reply_to_msg_id > 0 and reply_to_msg_id == int(state.get("tianti_status_reply_to_msg_id", 0) or 0):
-        return True
-    orig_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()
-    return orig_cmd == CMD_TIANTI_STATUS or orig_cmd.startswith(f"{CMD_TIANTI_STATUS} ")
-
-
 def _parse_tianti_panel(text):
-    raw_text = str(text or "")
-    if not RE_TIANTI_PANEL.search(raw_text):
+    raw_text = re.sub(r"[*_\x60]+", "", str(text or ""))
+    if len(RE_TIANTI_PANEL.findall(raw_text)) != 1:
         return None
 
     payload = {}
-    progress_match = RE_TIANTI_PROGRESS.search(raw_text)
-    if progress_match:
-        payload["progress_current"] = int(progress_match.group(1) or 0)
-        payload["progress_total"] = int(progress_match.group(2) or 0)
-    cycle_match = RE_TIANTI_CYCLE.search(raw_text)
-    if cycle_match:
-        payload["cycle_count"] = int(cycle_match.group(1) or 0)
-    gangfeng_match = RE_TIANTI_GANGFENG.search(raw_text)
-    if gangfeng_match:
-        payload["gangfeng_level"] = int(gangfeng_match.group(1) or 0)
-        payload["gangfeng_total"] = int(gangfeng_match.group(2) or 0)
-    cooldown_match = RE_TIANTI_COOLDOWN.search(raw_text)
-    if cooldown_match:
-        payload["cooldown_text"] = str(cooldown_match.group(1) or "").strip()
-    wenxin_match = RE_TIANTI_WENXIN.search(raw_text)
-    if wenxin_match:
-        payload["wenxin_status"] = str(wenxin_match.group(1) or "").strip()
-    gangfeng_cd_match = RE_TIANTI_GANGFENG_COOLDOWN.search(raw_text)
-    if gangfeng_cd_match:
-        payload["gangfeng_cooldown_text"] = str(gangfeng_cd_match.group(1) or "").strip()
-    return payload or None
+    lines = [line.strip().removeprefix("- ").strip() for line in raw_text.splitlines()]
+    for label, pattern, keys in (
+        ("当前进度", RE_TIANTI_PROGRESS, ("progress_current", "progress_total")),
+        ("已完成周天", RE_TIANTI_CYCLE, ("cycle_count",)),
+        ("罡风淬体", RE_TIANTI_GANGFENG, ("gangfeng_level", "gangfeng_total")),
+        ("登阶冷却", RE_TIANTI_COOLDOWN, ("cooldown_text",)),
+        ("问心状态", RE_TIANTI_WENXIN, ("wenxin_status",)),
+        (".引九天罡风", RE_TIANTI_GANGFENG_COOLDOWN, ("gangfeng_cooldown_text",)),
+    ):
+        label_pattern = re.compile(re.escape(label) + r"\s*[:：]")
+        count = len(label_pattern.findall(raw_text))
+        if count == 0:
+            continue
+        matches = [pattern.fullmatch(line) for line in lines if label_pattern.search(line)]
+        if count != 1 or len(matches) != 1 or matches[0] is None:
+            return None
+        for key, value in zip(keys, matches[0].groups()):
+            try:
+                payload[key] = value.strip() if key.endswith(("_text", "_status")) else int(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+    return payload if _valid_tianti_panel_payload(payload) else None
+
+
+def _tianti_panel_cooldown(text, *, gangfeng=False):
+    """Only explicit ready wording or one well-formed countdown is actionable."""
+    raw = str(text or "").strip().rstrip("。！!")
+    ready = {"可用", "可立即使用"} if gangfeng else {"可用", "可立即登阶"}
+    if raw in ready:
+        return "ready", 0
+    if gangfeng and raw == "未解锁":
+        return "locked", 0
+    duration = re.fullmatch(
+        r"(?:(?:剩余(?:时间)?|还需等待|需再等待|尚需等待|还需|请在)\s*[:：]?\s*)?"
+        r"(?P<duration>(?:\d+\s*(?:小时|分钟|时|分|秒)\s*)+)"
+        r"(?:后(?:再试|可用|可登阶|再施展此术))?",
+        raw,
+    )
+    if duration is None:
+        return None
+    units = {"小时": 3600, "时": 3600, "分钟": 60, "分": 60, "秒": 1}
+    parts = re.findall(r"(\d+)\s*(小时|分钟|时|分|秒)", duration.group("duration"))
+    order = [units[unit] for _, unit in parts]
+    if order != sorted(set(order), reverse=True):
+        return None
+    try:
+        wait_sec = sum(int(value) * units[unit] for value, unit in parts)
+        finite = math.isfinite(float(wait_sec))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if wait_sec <= 0 or not finite:
+        return None
+    return "waiting", wait_sec
+
+
+def _tianti_panel_wenxin(text):
+    raw = str(text or "").strip()
+    ready = "今日尚未问心" in raw
+    done = "今日已问心" in raw or "不会再回应" in raw
+    if ready == done:
+        return ""
+    if re.match(r"^今日尚未问心(?:$|[。！!；;，,（(\s])", raw) and not done:
+        return "ready"
+    if re.match(r"^今日已问心(?:$|[。！!；;，,（(\s])", raw) and not ready:
+        return "done"
+    return ""
+
+
+def _valid_tianti_panel_payload(payload):
+    if not isinstance(payload, dict) or not payload:
+        return False
+    for current_key, total_key in (("progress_current", "progress_total"), ("gangfeng_level", "gangfeng_total")):
+        if current_key not in payload and total_key not in payload:
+            continue
+        current, total = payload.get(current_key), payload.get(total_key)
+        if type(current) is not int or type(total) is not int or not 0 <= current <= total or total <= 0:
+            return False
+    if "cycle_count" in payload and (type(payload["cycle_count"]) is not int or payload["cycle_count"] < 0):
+        return False
+    for key, gangfeng in (("cooldown_text", False), ("gangfeng_cooldown_text", True)):
+        if key in payload and _tianti_panel_cooldown(payload[key], gangfeng=gangfeng) is None:
+            return False
+    return "wenxin_status" not in payload or bool(_tianti_panel_wenxin(payload["wenxin_status"]))
 
 
 def _apply_tianti_panel_payload(payload, now=None):
-    if not isinstance(payload, dict):
+    if not _valid_tianti_panel_payload(payload):
         return False
     if now is None:
         now = datetime.now(TZ_LOCAL).timestamp()
@@ -804,8 +1251,8 @@ def _apply_tianti_panel_payload(payload, now=None):
 
     cooldown_text = str(payload.get("cooldown_text") or "")
     if cooldown_text:
-        if has_wait_time(cooldown_text):
-            wait_sec = parse_wait_time(cooldown_text)
+        kind, wait_sec = _tianti_panel_cooldown(cooldown_text)
+        if kind == "waiting":
             if wait_sec > 0:
                 random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
                 total_wait_sec = wait_sec + random_delay
@@ -813,11 +1260,11 @@ def _apply_tianti_panel_payload(payload, now=None):
                 if abs(float(state.get("next_tianti_climb_time", 0) or 0) - next_climb) > 1:
                     _set_tianti_next_climb_time(next_climb, persist=False)
                     changed = True
-                display_text = fmt_time_after(total_wait_sec)
+                display_text = _tianti_due_text(next_climb)
                 if state.get("tianti_cooldown_text") != display_text:
                     state["tianti_cooldown_text"] = display_text
                     changed = True
-        else:
+        elif kind == "ready":
             next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
             if not _has_pending_tianti_command(CMD_TIANTI_CLIMB) and (next_climb <= 0 or next_climb > now):
                 _set_tianti_next_climb_time(now, persist=False)
@@ -826,14 +1273,14 @@ def _apply_tianti_panel_payload(payload, now=None):
     wenxin_text = str(payload.get("wenxin_status") or "")
     if wenxin_text:
         today_key = get_day_key(now)
-        if "今日尚未问心" in wenxin_text:
+        if _tianti_panel_wenxin(wenxin_text) == "ready":
             if str(state.get("tianti_last_wenxin_day") or "") == today_key:
                 state["tianti_last_wenxin_day"] = ""
                 changed = True
             if float(state.get("next_tianti_wenxin_time", 0) or 0) > 0:
                 _set_tianti_next_wenxin_time(0, persist=False)
                 changed = True
-        elif "今日已问心" in wenxin_text or "不会再回应" in wenxin_text:
+        elif _tianti_panel_wenxin(wenxin_text) == "done":
             if str(state.get("tianti_last_wenxin_day") or "") != today_key:
                 state["tianti_last_wenxin_day"] = today_key
                 changed = True
@@ -843,16 +1290,16 @@ def _apply_tianti_panel_payload(payload, now=None):
 
     gangfeng_cd_text = str(payload.get("gangfeng_cooldown_text") or "")
     if gangfeng_cd_text:
-        if "未解锁" in gangfeng_cd_text:
+        kind, wait_sec = _tianti_panel_cooldown(gangfeng_cd_text, gangfeng=True)
+        if kind == "locked":
             pass
-        elif "可用" in gangfeng_cd_text:
+        elif kind == "ready":
             if _schedule_tianti_gangfeng_ready(now, persist=False):
                 changed = True
             if state.get("tianti_gangfeng_status") != "可用":
                 state["tianti_gangfeng_status"] = "可用"
                 changed = True
-        elif has_wait_time(gangfeng_cd_text):
-            wait_sec = parse_wait_time(gangfeng_cd_text)
+        elif kind == "waiting":
             if wait_sec > 0:
                 random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
                 total_wait_sec = wait_sec + random_delay
@@ -860,7 +1307,7 @@ def _apply_tianti_panel_payload(payload, now=None):
                 if abs(float(state.get("next_tianti_gangfeng_time", 0) or 0) - next_gangfeng) > 1:
                     _set_tianti_next_gangfeng_time(next_gangfeng, persist=False)
                     changed = True
-                display_text = fmt_time_after(total_wait_sec)
+                display_text = _tianti_due_text(next_gangfeng)
                 if state.get("tianti_gangfeng_status") != display_text:
                     state["tianti_gangfeng_status"] = display_text
                     changed = True
@@ -872,18 +1319,6 @@ def _apply_tianti_climb_result(climb_result_match):
     state["tianti_progress_total"] = int(climb_result_match.group(2) or 0)
     state["tianti_gangfeng_level"] = int(climb_result_match.group(3) or 0)
     state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
-
-
-def _clear_obsolete_gangfeng_pending_after_climb():
-    removed_ids = clear_pending_tasks_by_commands(
-        {CMD_TIANTI_GANGFENG},
-        send_as_id=get_current_identity_id(),
-    )
-    if removed_ids:
-        console_log(
-            f"🌪️ 登阶结果已落地，清理上一登阶窗口的罡风待办：{','.join(str(item) for item in removed_ids)}"
-        )
-    return removed_ids
 
 
 def get_tianti_status_text():
@@ -913,309 +1348,262 @@ def get_tianti_status_text():
     return "\n".join(lines)
 
 
-async def handle_tianti_reply(text, now, reply_to, matched_family=None):
-    if not state.get("tianti_enabled"):
+def _parse_tianti_native_result(kind, text):
+    raw = re.sub(r"[*_\x60]+", "", str(text or ""))
+    if kind in {"climb", "gangfeng"} and ("修为不足" in raw or "资源不足" in raw):
+        if RE_TIANTI_CLIMB_COST.search(raw) or RE_TIANTI_CLIMB_GAIN.search(raw) or RE_TIANTI_GANGFENG_RESULT.search(raw):
+            return None
+        return "shortage", raw
+    if kind == "status":
+        payload = _parse_tianti_panel(raw)
+        return ("status", payload) if payload and TIANTI_PANEL_REQUIRED.issubset(payload) else None
+    if kind == "wenxin":
+        if RE_TIANTI_WENXIN_FAIL.search(raw) and not RE_TIANTI_WENXIN_GAIN_CONTRIB.search(raw):
+            return "wenxin", raw
+        if not RE_TIANTI_WENXIN_FAIL.search(raw) and (
+            len(RE_TIANTI_WENXIN_PANEL.findall(raw)) == 1
+            and len(RE_TIANTI_WENXIN_GAIN_CONTRIB.findall(raw)) == 1
+        ):
+            return "wenxin", raw
+        return None
+    wait = _parse_tianti_gangfeng_wait_reply(raw)
+    if wait > 0:
+        return "gangfeng_wait" if kind == "climb" else "wait", wait
+    if kind == "gangfeng":
+        matches = list(RE_TIANTI_GANGFENG_RESULT.finditer(raw))
+        if len(RE_TIANTI_GANGFENG_PANEL.findall(raw)) == 1 and len(matches) == 1:
+            level, total = map(int, matches[0].groups())
+            if 0 <= level <= total and total > 0:
+                return "gangfeng", (level, total)
+        return None
+    costs = list(RE_TIANTI_CLIMB_COST.finditer(raw))
+    gains = list(RE_TIANTI_CLIMB_GAIN.finditer(raw))
+    results = list(RE_TIANTI_CLIMB_RESULT.finditer(raw))
+    cycles = list(RE_TIANTI_CLIMB_CYCLE.finditer(raw))
+    if len(costs) == len(results) == 1 and len(gains) <= 1 and len(cycles) <= 1:
+        progress, total, level, max_level = map(int, results[0].groups())
+        if not 0 <= progress <= total or total <= 0 or not 0 <= level <= max_level or max_level <= 0:
+            return None
+        if not gains and "未能更进一步" not in raw:
+            return None
+        return "climb", (costs[0], gains[0] if gains else None, cycles[0] if cycles else None, results[0])
+    if not costs and not results and has_wait_time(raw) and any(word in raw for word in ("后再", "冷却", "请等待")):
+        wait = parse_wait_time(raw)
+        if wait > 0:
+            return "wait", wait
+    return None
+
+
+async def handle_tianti_reply(text, now, reply_to, matched_family=None, *, reply_context=None):
+    owner = _capture_tianti_owner()
+    if not _owns_tianti(owner):
         return False
-    if not _is_tianti_reply(text, reply_to, matched_family=matched_family):
+    kind = next((kind for kind in TIANTI_COMMANDS if matched_family == f"tianti_{kind}"), None)
+    if kind is None and not matched_family:
+        command = str(getattr(reply_to, "raw_text", "") or "").strip()
+        kind = next((kind for kind, spec in TIANTI_COMMANDS.items() if spec[0] == command), None)
+    if kind is None:
+        return False
+    record = _tianti_reply_operation(kind, reply_to, now, reply_context)
+    result = _parse_tianti_native_result(kind, text) if record else None
+    if result is None:
         return False
 
-    _ensure_tianti_wenxin_daily_state(now)
-    raw_text = str(text or "")
-    handled = False
-
-    if matched_family == "tianti_climb" and ("修为不足" in raw_text or "资源不足" in raw_text):
-        _clear_tianti_climb_send_inflight()
-        backoff = record_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY, now, reason=raw_text)
-        due_at = float(backoff.get("next_at", 0) or 0)
-        _set_tianti_next_climb_time(due_at, persist=False)
-        state["tianti_cooldown_text"] = fmt_time_after(max(0, due_at - now))
-        state["tianti_last_error"] = f"登天阶资源不足: {raw_text[:80]}"
-        _calc_tianti_wenxin_plan(now)
-        save_state()
-        await send_audit_log(
-            f"⚠️ 登天阶修为不足，第 {int(backoff.get('count', 1) or 1)} 档退避→{state['tianti_cooldown_text']}"
-        )
-        return True
-
-    if matched_family == "tianti_gangfeng" and ("修为不足" in raw_text or "资源不足" in raw_text):
-        backoff = record_resource_shortage(TIANTI_GANGFENG_RESOURCE_KEY, now, reason=raw_text)
-        due_at = float(backoff.get("next_at", 0) or 0)
-        _set_tianti_next_gangfeng_time(due_at, persist=False)
-        state["tianti_gangfeng_status"] = fmt_time_after(max(0, due_at - now))
-        state["tianti_last_error"] = f"九天罡风资源不足: {raw_text[:80]}"
-        save_state()
-        await send_audit_log(
-            f"⚠️ 九天罡风修为不足，第 {int(backoff.get('count', 1) or 1)} 档退避→{state['tianti_gangfeng_status']}"
-        )
-        return True
-
-    panel_payload = _parse_tianti_panel(raw_text)
-    if panel_payload:
-        is_status_panel_reply = _is_tianti_status_panel_reply(reply_to, matched_family=matched_family)
-        if _mark_tianti_status_synced(now, reply_to if is_status_panel_reply else None):
-            handled = True
-        if _apply_tianti_panel_payload(panel_payload, now=now):
-            handled = True
-        if is_status_panel_reply:
-            cooldown = str(panel_payload.get("cooldown_text") or "")
-            _calc_tianti_wenxin_plan(now)
-            _log_tianti_plan("天阶状态同步后")
-            if (
-                cooldown
-                and not has_wait_time(cooldown)
-                and float(state.get("next_tianti_climb_time", 0) or 0) <= now
-            ):
-                send_as_id = int(get_current_identity_id() or 0)
-                if send_as_id > 0 and _reserve_tianti_climb_send(now, send_as_id=send_as_id):
-                    _fire_and_forget(_send_due_tianti_climb_after_status(send_as_id, reserved=True))
-            if cooldown and has_wait_time(cooldown):
-                await send_audit_log(f"⏳ 天阶 CD→{state.get('tianti_cooldown_text')}")
-            handled = True
-
-    if matched_family == "tianti_wenxin":
-        handled = _apply_tianti_wenxin_result(raw_text, now, reply_to) or handled
-        _calc_tianti_wenxin_plan(now)
-        if handled:
-            await send_audit_log(f"☁️ 问心完成：{state.get('tianti_wenxin_status')}")
-            _log_tianti_plan("问心收口后")
-
-    if matched_family == "tianti_gangfeng":
-        gangfeng_wait_sec = _parse_tianti_gangfeng_wait_reply(raw_text)
-        gangfeng_result_match = RE_TIANTI_GANGFENG_RESULT.search(raw_text)
-        if RE_TIANTI_GANGFENG_PANEL.search(raw_text) and gangfeng_result_match:
-            state["tianti_last_gangfeng_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            state["tianti_gangfeng_level"] = int(gangfeng_result_match.group(1) or 0)
-            state["tianti_gangfeng_total"] = int(gangfeng_result_match.group(2) or 0)
-            state["tianti_gangfeng_status"] = "已施展，下次登天阶成功率显著提高"
-            reset_resource_shortage(TIANTI_GANGFENG_RESOURCE_KEY)
-            _schedule_tianti_gangfeng_retry(now, persist=True)
-            await send_audit_log(
-                f"🌪️ 九天罡风成功：{int(state.get('tianti_gangfeng_level', 0) or 0)}/{int(state.get('tianti_gangfeng_total', 12) or 12)}｜下次 {state.get('tianti_gangfeng_status')}"
-            )
-            handled = True
-        elif gangfeng_wait_sec > 0:
-            state["tianti_last_gangfeng_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            reset_resource_shortage(TIANTI_GANGFENG_RESOURCE_KEY)
-            _schedule_tianti_gangfeng_retry(now, wait_sec=gangfeng_wait_sec, persist=True)
-            await send_audit_log(f"⏳ 九天罡风 CD→{state.get('tianti_gangfeng_status')}")
-            handled = True
-
-    climb_cost_match = RE_TIANTI_CLIMB_COST.search(raw_text)
-    climb_gain_match = RE_TIANTI_CLIMB_GAIN.search(raw_text)
-    climb_cycle_match = RE_TIANTI_CLIMB_CYCLE.search(raw_text)
-    climb_result_match = RE_TIANTI_CLIMB_RESULT.search(raw_text)
-    if climb_cost_match and climb_gain_match and climb_result_match:
-        _clear_tianti_climb_send_inflight()
-        state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-        state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
-        state["tianti_last_gain_xiuwei"] = int(climb_gain_match.group(1) or 0)
-        state["tianti_last_gain_contrib"] = int(climb_gain_match.group(2) or 0)
-        if climb_cycle_match:
-            state["tianti_cycle_count"] = int(climb_cycle_match.group(1) or 0)
-        _apply_tianti_climb_result(climb_result_match)
-        _clear_obsolete_gangfeng_pending_after_climb()
-        state["tianti_last_error"] = ""
-        reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
-        _schedule_tianti_climb_retry(now, persist=False)
-        _calc_tianti_wenxin_plan(now)
-        _log_tianti_plan("登阶成功后")
-        await send_audit_log(
-            f"☁️ 登阶成功：{int(state.get('tianti_progress_current', 0) or 0)}/{int(state.get('tianti_progress_total', 12) or 12)}｜罡风 {int(state.get('tianti_gangfeng_level', 0) or 0)}/{int(state.get('tianti_gangfeng_total', 12) or 12)}｜下次 {state.get('tianti_cooldown_text')}"
-        )
-        handled = True
-
-    if matched_family == "tianti_climb" and climb_cost_match and climb_result_match and not climb_gain_match:
-        _clear_tianti_climb_send_inflight()
-        state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-        state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
-        state["tianti_last_gain_xiuwei"] = 0
-        state["tianti_last_gain_contrib"] = 0
-        _apply_tianti_climb_result(climb_result_match)
-        _clear_obsolete_gangfeng_pending_after_climb()
-        reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
-        _schedule_tianti_climb_retry(now, persist=False)
-        _calc_tianti_wenxin_plan(now)
-        _log_tianti_plan("登阶未进后")
-        await send_audit_log(
-            f"☁️ 登阶未进：{int(state.get('tianti_progress_current', 0) or 0)}/{int(state.get('tianti_progress_total', 12) or 12)}｜罡风 {int(state.get('tianti_gangfeng_level', 0) or 0)}/{int(state.get('tianti_gangfeng_total', 12) or 12)}｜下次 {state.get('tianti_cooldown_text')}"
-        )
-        handled = True
-
-    if matched_family == "tianti_climb" and _parse_tianti_gangfeng_wait_reply(raw_text) > 0:
-        wait_sec = _parse_tianti_gangfeng_wait_reply(raw_text)
-        _clear_tianti_climb_send_inflight()
-        random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
-        total_wait_sec = wait_sec + random_delay
-        state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-        reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
+    at = record["reply_at"]
+    result_kind, payload = result
+    _ensure_tianti_wenxin_daily_state(at)
+    state[TIANTI_COMMANDS[kind][1]] = record["msg_id"]
+    state["tianti_last_error"] = ""
+    if result_kind == "shortage":
+        resource_key = TIANTI_CLIMB_RESOURCE_KEY if kind == "climb" else TIANTI_GANGFENG_RESOURCE_KEY
+        backoff = record_resource_shortage(resource_key, at, reason=payload)
+        due_at = float(backoff["next_at"])
+        state[f"next_tianti_{kind}_time"] = due_at
+        state["tianti_cooldown_text" if kind == "climb" else "tianti_gangfeng_status"] = _tianti_due_text(due_at)
+        state["tianti_last_error"] = f"{record['command']} 资源不足: {payload[:80]}"
+        message = f"{record['command']} 资源不足，第 {backoff['count']} 档退避至 {fmt_abs_ts(due_at)}"
+    elif result_kind == "status":
+        _mark_tianti_status_synced(at, SimpleNamespace(id=record["msg_id"]))
+        _apply_tianti_panel_payload(payload, now=at)
+        message = f"天阶状态已同步：{state['tianti_progress_current']}/{state['tianti_progress_total']}，{state['tianti_cooldown_text']}"
+    elif result_kind == "wenxin":
+        _apply_tianti_wenxin_result(payload, at, SimpleNamespace(id=record["msg_id"]))
+        message = f"问心完成：{state['tianti_wenxin_status']}"
+    elif result_kind == "gangfeng":
+        state["tianti_gangfeng_level"], state["tianti_gangfeng_total"] = payload
         reset_resource_shortage(TIANTI_GANGFENG_RESOURCE_KEY)
-        _set_tianti_next_climb_time(now + total_wait_sec, persist=False)
-        _set_tianti_next_gangfeng_time(now + total_wait_sec, persist=False)
-        state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
-        state["tianti_gangfeng_status"] = fmt_time_after(total_wait_sec)
-        _calc_tianti_wenxin_plan(now)
-        _log_tianti_plan("登阶罡风冷却回复后")
-        await send_audit_log(f"⏳ 登阶等待九天罡风→{state.get('tianti_cooldown_text')}")
-        handled = True
-
-    if has_wait_time(raw_text) and matched_family == "tianti_climb" and not handled and not (climb_cost_match and climb_gain_match and climb_result_match):
-        wait_sec = parse_wait_time(raw_text)
-        if wait_sec > 0:
-            _clear_tianti_climb_send_inflight()
-            random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
-            total_wait_sec = wait_sec + random_delay
-            state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
-            _set_tianti_next_climb_time(now + total_wait_sec, persist=False)
-            state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
-            _calc_tianti_wenxin_plan(now)
-            _log_tianti_plan("登阶冷却回复后")
-            await send_audit_log(f"⏳ 天阶 CD→{state.get('tianti_cooldown_text')}")
-            handled = True
-
-    if handled:
-        state["tianti_last_error"] = ""
-        save_state()
-        return True
-
-    return False
+        _schedule_tianti_gangfeng_retry(at)
+        message = f"九天罡风成功：{payload[0]}/{payload[1]}，下次 {state['tianti_gangfeng_status']}"
+    elif result_kind == "climb":
+        cost, gain, cycle, progress = payload
+        state["tianti_last_cost_xiuwei"] = int(cost.group(1))
+        state["tianti_last_gain_xiuwei"] = int(gain.group(1)) if gain else 0
+        state["tianti_last_gain_contrib"] = int(gain.group(2)) if gain else 0
+        if cycle:
+            state["tianti_cycle_count"] = int(cycle.group(1))
+        _apply_tianti_climb_result(progress)
+        reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
+        _schedule_tianti_climb_retry(at, rank_choice=record["rank_choice"])
+        message = f"登阶{'成功' if gain else '未进'}：{state['tianti_progress_current']}/{state['tianti_progress_total']}，下次 {state['tianti_cooldown_text']}"
+    else:
+        wait = payload + random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+        state[f"next_tianti_{kind}_time"] = at + wait
+        state["tianti_cooldown_text" if kind == "climb" else "tianti_gangfeng_status"] = _tianti_due_text(at + wait)
+        reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY if kind == "climb" else TIANTI_GANGFENG_RESOURCE_KEY)
+        if result_kind == "gangfeng_wait":
+            state["next_tianti_gangfeng_time"] = at + wait
+            state["tianti_gangfeng_status"] = _tianti_due_text(at + wait)
+            reset_resource_shortage(TIANTI_GANGFENG_RESOURCE_KEY)
+        message = f"{record['command']} CD：{_tianti_due_text(at + wait)}"
+    _calc_tianti_wenxin_plan(at)
+    completed = dict(record, status="complete")
+    completed.pop("replay_after", None)
+    _store_tianti_command(kind, completed)
+    _clear_tianti_command_pending(completed)
+    old_read = (_tianti_commands() or {}).get("status")
+    if (
+        kind != "status" and old_read and old_read["status"] in TIANTI_UNRESOLVED
+        and old_read["account_id"] == record["account_id"] and old_read["started_at"] < record["started_at"]
+    ):
+        _store_tianti_command("status", dict(old_read, status="expired"))
+        if old_read["msg_id"]:
+            _clear_tianti_command_pending(old_read)
+    # Business outcome, completion evidence and cleanup commit before any await.
+    if save_state() is not False:
+        await _notify_tianti(message, owner[0])
+    return True
 
 
 async def _recover_due_tianti_replies(now):
-    specs = (
-        ("next_tianti_wenxin_time", "tianti_last_wenxin_msg_id", CMD_TIANTI_WENXIN, "tianti_wenxin"),
-        ("next_tianti_gangfeng_time", "tianti_last_gangfeng_msg_id", CMD_TIANTI_GANGFENG, "tianti_gangfeng"),
-        ("next_tianti_status_time", "tianti_status_reply_to_msg_id", CMD_TIANTI_STATUS, "tianti_status"),
-    )
-    for due_key, msg_key, command, family in specs:
-        due_at = float(state.get(due_key, 0) or 0)
-        if due_at <= 0 or due_at > float(now or 0):
+    owner = _capture_tianti_owner()
+    records = _tianti_commands()
+    if not owner or records is None:
+        return False
+    for identity_id in list(_TIANTI_LEGACY_REPLAY_AFTER):
+        if not has_identity(identity_id):
+            _TIANTI_LEGACY_REPLAY_AFTER.pop(identity_id, None)
+    previous_account, retry_after = _TIANTI_LEGACY_REPLAY_AFTER.get(owner[0], (0, 0))
+    allow_legacy_log = previous_account != owner[2] or now >= retry_after
+    imported = _legacy_tianti_pending(now, records, allow_log=allow_legacy_log)
+    if allow_legacy_log:
+        _TIANTI_LEGACY_REPLAY_AFTER[owner[0]] = (owner[2], now + TIANTI_REPLAY_INTERVAL_SEC)
+    if imported:
+        for kind, record in imported.items():
+            _store_tianti_command(kind, record)
+        save_state()
+        records.update(imported)
+    for kind, record in records.items():
+        if (
+            record["status"] not in TIANTI_UNRESOLVED or record["account_id"] != owner[2]
+            or _number(record.get("replay_after")) > now
+        ):
             continue
-        msg_id = int(state.get(msg_key, 0) or 0)
-        if msg_id <= 0:
-            recovered = recover_sent_command_from_message_log(
-                command,
-                get_current_identity_id(),
-                now,
-                start_ts=max(0.0, float(now or 0) - TIANTI_LOG_REPLAY_LOOKBACK_SEC),
-                game_group_id=0,
-                topic_id=0,
-                lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC,
-                lookahead_sec=5,
+        recovered = _adopt_tianti_receipt(record, now)
+        recovered = dict(recovered, replay_after=now + TIANTI_REPLAY_INTERVAL_SEC)
+        _store_tianti_command(kind, recovered)
+        save_state()
+        root = recovered["msg_id"]
+        if root <= 0:
+            continue
+
+        def trusted_reply(entry):
+            return bool(
+                isinstance(entry, dict) and entry.get("event_type") in {"message", "edit"}
+                and entry.get("sender_is_bot") is True and _message_id(entry.get("sender_id")) in get_game_bot_ids()
+                and _message_id(entry.get("chat_id")) == recovered["chat_id"]
+                and _message_id(entry.get("reply_to_msg_id")) == root
+                and _message_id(entry.get("message_id")) > 0
+                and recovered.get("dispatch_at", recovered["started_at"]) - 1
+                <= telegram_event_timestamp(SimpleNamespace(server_event_at=entry.get("server_event_at"))) <= now + 1
             )
-            msg_id = int((recovered or {}).get("message_id") or 0)
-            if msg_id <= 0:
-                continue
-            state[msg_key] = msg_id
-            save_state()
-        replies = find_message_log_replies(
-            msg_id,
-            now,
-            lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC,
-            lookahead_sec=5,
-            chat_id=get_sent_message_chat_id(msg_id, default=get_game_group_id(), send_as_id=get_current_identity_id()),
-            predicate=lambda entry: (
-                str((entry or {}).get("event_type") or "") in {"message", "edit"}
-                and bool((entry or {}).get("sender_is_bot"))
-            ),
-        )
-        reply_to = SimpleNamespace(id=msg_id, raw_text=command)
+
+        # Read the original reply window and a recent window, not all intervening history.
+        windows = {min(now, recovered["started_at"] + TIANTI_LOG_REPLAY_LOOKBACK_SEC), now}
+        replies = []
+        for end_at in sorted(windows):
+            replies.extend(find_message_log_replies(
+                root, end_at, lookback_sec=TIANTI_LOG_REPLAY_LOOKBACK_SEC + 1, lookahead_sec=1,
+                chat_id=recovered["chat_id"], predicate=trusted_reply,
+            ))
+        replies.sort(key=lambda item: (_number(item.get("server_event_at")), _message_id(item.get("message_id"))))
         for entry in replies:
+            if not _owns_tianti(owner):
+                return True
+            if not trusted_reply(entry):
+                continue
             if await handle_tianti_reply(
-                str((entry or {}).get("text") or ""),
-                float((entry or {}).get("ts_epoch") or now),
-                reply_to,
-                matched_family=family,
+                entry.get("text", ""), now,
+                SimpleNamespace(id=root, chat_id=recovered["chat_id"], raw_text=recovered["command"]),
+                matched_family=f"tianti_{kind}",
+                reply_context={
+                    "send_as_id": owner[0], "account_id": owner[2], "root_msg_id": root,
+                    "chat_id": recovered["chat_id"], "server_event_at": entry["server_event_at"],
+                    "sender_id": entry["sender_id"], "msg_id": entry["message_id"],
+                },
             ):
-                console_log(f"☁️ 登天阶 {family} 日志回捞成功，原消息ID={msg_id}。")
+                return True
+            if not _owns_tianti(owner):
                 return True
     return False
 
 
+def _expire_tianti_status_read(now):
+    records = _tianti_commands()
+    record = records.get("status") if records is not None else None
+    if (
+        record and record["status"] in TIANTI_UNRESOLVED
+        and record["account_id"] == get_identity_account(get_current_identity_id())
+        and now >= record["started_at"] + TIANTI_REPLAY_INTERVAL_SEC
+    ):
+        # Only a read may expire. Mutation records never become retryable by age.
+        _store_tianti_command("status", dict(record, status="expired"))
+        if record["msg_id"]:
+            _clear_tianti_command_pending(record)
+        save_state()
+
+
 async def run_tianti_scheduler(now):
-    if not state.get("tianti_enabled"):
+    owner = _capture_tianti_owner()
+    if not _owns_tianti(owner, sending=True) or owner[0] in _TIANTI_RUN_LOCKS:
         return
-
-    if _ensure_tianti_wenxin_daily_state(now):
-        mark_dirty()
-    if await _recover_due_tianti_replies(now):
-        return
-    _calc_tianti_wenxin_plan(now)
-
-    should_trigger_wenxin, wenxin_state = _should_trigger_tianti_wenxin(now)
-    if should_trigger_wenxin:
-        msg = await send_game_command(CMD_TIANTI_WENXIN, max_retry=1)
-        if not msg:
-            state["tianti_last_error"] = "问心台发送失败"
-            _set_tianti_next_wenxin_time(time.time() + RETRY_MAX_SEC, persist=True)
-            await send_audit_log("❌ 问心台发送失败，稍后重试。")
+    token = object()
+    _TIANTI_RUN_LOCKS[owner[0]] = token
+    try:
+        before = _tianti_plan_snapshot(owner)
+        if await _recover_due_tianti_replies(now):
             return
-        state["tianti_last_wenxin_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        state["tianti_wenxin_last_trigger_key"] = str(wenxin_state or "")
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        state["next_tianti_wenxin_time"] = sent_at + TIANTI_WENXIN_INFLIGHT_GATE_SEC
-        save_state()
-        console_log(
-            f"☁️ 执行问心台：target={int(state.get('tianti_theoretical_max_stage', 0) or 0)}｜trigger={int(state.get('tianti_wenxin_trigger_stage', 0) or 0)}"
-        )
-        return
-    if _set_tianti_skip_reason(str(wenxin_state or "")):
-        console_log(f"☁️ 问心跳过：{wenxin_state}")
-
-    should_trigger_gangfeng, gangfeng_state = _should_trigger_tianti_gangfeng(now)
-    if should_trigger_gangfeng:
-        msg = await send_game_command(CMD_TIANTI_GANGFENG, max_retry=1)
-        if not msg:
-            state["tianti_last_error"] = "九天罡风发送失败"
-            _set_tianti_next_gangfeng_time(time.time() + RETRY_MAX_SEC, persist=True)
-            await send_audit_log("❌ 九天罡风发送失败，稍后重试。")
+        if not _owns_tianti(owner, sending=True) or _tianti_plan_snapshot(owner) != before:
             return
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        state["tianti_last_gangfeng_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        state["tianti_gangfeng_last_trigger_key"] = str(gangfeng_state or "")
-        state["next_tianti_gangfeng_time"] = sent_at + TIANTI_GANGFENG_INFLIGHT_GATE_SEC
-        state["tianti_gangfeng_status"] = "等待回复"
-        save_state()
-        console_log("🌪️ 执行九天罡风")
-        return
-
-    if _tianti_status_sync_due(now):
-        if is_tianti_public_status_selected():
+        _expire_tianti_status_read(now)
+        blocked = _tianti_native_block_reason()
+        if blocked:
+            if state.get("tianti_last_error") != blocked:
+                state["tianti_last_error"] = blocked
+                mark_dirty()
             return
-        if _has_pending_tianti_command(CMD_TIANTI_STATUS):
+        if _ensure_tianti_wenxin_daily_state(now):
+            mark_dirty()
+        _calc_tianti_wenxin_plan(now)
+        should_wenxin, wenxin_reason = _should_trigger_tianti_wenxin(now)
+        if should_wenxin:
+            await _send_tianti_command("wenxin", owner, now, trigger_key=wenxin_reason)
             return
-        msg = await send_game_command(CMD_TIANTI_STATUS, max_retry=1)
-        if not msg:
-            state["tianti_last_error"] = "天阶状态发送失败"
-            state["next_tianti_status_time"] = time.time() + RETRY_MAX_SEC
-            await send_audit_log("❌ 登天阶状态发送失败，稍后重试。")
+        if _set_tianti_skip_reason(str(wenxin_reason or "")):
+            mark_dirty()
+        should_gangfeng, gangfeng_reason = _should_trigger_tianti_gangfeng(now)
+        if should_gangfeng:
+            await _send_tianti_command("gangfeng", owner, now, trigger_key=gangfeng_reason)
             return
-        state["tianti_status_reply_to_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        state["next_tianti_status_time"] = sent_at + RETRY_MAX_SEC
-        _log_tianti_plan("调度前快照")
-        console_log("☁️ 查询天阶状态")
-        save_state()
-        return
-
-    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
-    if next_climb_time > 0 and now >= next_climb_time:
-        send_as_id = int(get_current_identity_id() or 0)
-        if not _reserve_tianti_climb_send(now, send_as_id=send_as_id):
+        if _tianti_status_sync_due(now):
+            if not is_tianti_public_status_selected():
+                await _send_tianti_command("status", owner, now)
             return
-        msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=0)
-        if not msg:
-            _clear_tianti_climb_send_inflight(send_as_id)
-            _set_tianti_next_climb_time(time.time() + RETRY_MAX_SEC, persist=True)
-            state["tianti_last_error"] = "登天阶发送失败"
-            await send_audit_log("❌ 登天阶发送失败，稍后重试。")
-            return
-        state["tianti_last_climb_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        _schedule_tianti_climb_retry(sent_at, persist=True)
-        _calc_tianti_wenxin_plan(sent_at)
-        _log_tianti_plan("执行登阶后")
-        console_log(f"☁️ 执行登天阶→{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}")
+        next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
+        if next_climb > 0 and now >= next_climb:
+            await _send_tianti_command("climb", owner, now)
+    finally:
+        if _TIANTI_RUN_LOCKS.get(owner[0]) is token:
+            _TIANTI_RUN_LOCKS.pop(owner[0], None)
 
 
 __all__ = [

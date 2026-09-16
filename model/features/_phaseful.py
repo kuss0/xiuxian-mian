@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+from ..config import CD_BUFFER_SEC, CMD_DUEL, CMD_TREE_GUARD, CMD_TREE_WATER
 from ..message_log_recovery import find_message_log_replies, find_recent_message_log_command
 from ..message_keys import find_message_key, pop_message_record
 from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, get_last_game_send_block, get_sent_message_chat_id, register_game_command_sent_observer, send_audit_log, send_game_command
@@ -82,7 +82,7 @@ SUMMARY_BLOCKING_PHASES = {"queued_launch"}
 _REGISTERED_SPECS = []
 _SUMMARY_CONSUMED_COMMANDS = {}
 
-SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN}
+SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD}
 SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
 SUMMARY_REPLAY_DELAY_MIN_SEC = 9
 SUMMARY_REPLAY_DELAY_MAX_SEC = 18
@@ -416,11 +416,6 @@ def _is_duel_replay_command(command):
     return command == CMD_DUEL or command.startswith(f"{CMD_DUEL} ")
 
 
-def _is_voyage_replay_command(command):
-    command = str(command or "").strip()
-    return command == CMD_CONCUBINE_VOYAGE_RETURN
-
-
 def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
     command = str(command or "").strip()
     if not command:
@@ -532,6 +527,8 @@ def _has_pending_command(command, *, ignore_msg_id=0):
 
 
 def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
+    if not _is_summary_replayable_command(command):
+        return False
     if _is_duel_replay_command(command):
         from .duel import _clear_target_reservation, normalize_duel_target
 
@@ -550,39 +547,6 @@ def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
         state["next_duel_time"] = float(now)
         state["duel_last_result"] = "归位结算吃掉斗法，准备补发一次"
         state["duel_last_error"] = ""
-        return True
-
-    if command == CMD_CONCUBINE_DREAM:
-        from ..config import CONCUBINE_PHASE_TIMEOUT_SEC
-        from .concubine import _phase as concubine_phase
-        from .concubine import _set_phase as set_concubine_phase
-
-        if not state.get("concubine_enabled"):
-            return False
-        if concubine_phase() != "dream_pending":
-            return False
-        if int(state.get("concubine_dream_msg_id", 0) or 0) != int(old_msg_id or 0):
-            return False
-        state["concubine_dream_msg_id"] = 0
-        state["next_concubine_time"] = float(now) + CONCUBINE_PHASE_TIMEOUT_SEC
-        set_concubine_phase("idle")
-        return True
-
-    if _is_voyage_replay_command(command):
-        from .concubine import _phase as concubine_phase
-        from .concubine import _set_phase as set_concubine_phase
-
-        if concubine_phase() != "voyage_return_pending":
-            return False
-        if int(state.get("concubine_voyage_msg_id", 0) or 0) != int(old_msg_id or 0):
-            return False
-        retry_count = int(state.get("concubine_voyage_retry_count", 0) or 0)
-        if retry_count >= 1:
-            return False
-        state["concubine_voyage_msg_id"] = 0
-        state["concubine_voyage_retry_count"] = 1
-        state["next_concubine_time"] = float(now) + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
-        set_concubine_phase("idle")
         return True
 
     return True
@@ -611,28 +575,6 @@ def _finalize_replayed_command_state(command, msg):
             confirmed=False,
             command_msg_id=msg_id,
         )
-        return True
-
-    if command == CMD_CONCUBINE_DREAM and msg:
-        from ..config import CONCUBINE_PHASE_TIMEOUT_SEC
-        from .concubine import _set_phase as set_concubine_phase
-
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        set_concubine_phase("dream_pending")
-        state["concubine_dream_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
-        state["concubine_last_error"] = ""
-        return True
-
-    if _is_voyage_replay_command(command) and msg:
-        from .concubine import _set_phase as set_concubine_phase
-
-        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        set_concubine_phase("voyage_return_pending")
-        state["concubine_voyage_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 1)
-        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
-        state["concubine_voyage_last_error"] = ""
         return True
 
     return False

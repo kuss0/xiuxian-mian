@@ -111,7 +111,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "data": {"traceGain": 11, "bonusLoot": [{"name": "玄晶", "qty": 1}]},
         })
 
-        with patch.object(trial_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+        with patch.object(trial_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
             finalized = await trial_runtime.finalize_trial_batch_run(batch_id)
 
         self.assertTrue(finalized)
@@ -153,7 +153,7 @@ class TrialRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "data": {"settled_count": 2, "traceGain": 8},
         })
 
-        with patch.object(trial_runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
+        with patch.object(trial_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
             finalized = await trial_runtime.finalize_trial_batch_run(batch_id)
 
         self.assertTrue(finalized)

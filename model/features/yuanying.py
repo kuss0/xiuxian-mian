@@ -18,8 +18,8 @@ from ..config import (
 from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..identity_levels import parse_yuanying_level_text, update_identity_level_record
 from ..persistence import mark_dirty, save_state
-from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_profile, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
+from ..runtime import PHASEFUL_PASSIVE_TRIGGER_TEXT, _fire_and_forget, classify_game_send_block, console_log, mono, register_game_command_pre_send_guard, send_audit_log, send_game_command
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_miniapp_state_records, get_send_as_profile, get_send_as_tags, has_identity, is_cave_public_auto_enabled, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -299,6 +299,9 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
         return True
 
     if "窍中温养" in text:
+        public_record = get_miniapp_state_records().get(f"{get_current_identity_id()}:cave_yuanying") or {}
+        if is_public_yuanying_unresolved(public_record):
+            return level_updated
         state["yuanying_probe_pending"] = False
         clear_yuanying_summary_flags()
         begin_queued_launch(YUANYING_SPEC, now)
@@ -460,7 +463,35 @@ async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None
     return True
 
 
+def is_public_yuanying_unresolved(record):
+    if not record:
+        return False
+    if not isinstance(record, dict) or not isinstance(record.get("state"), dict):
+        return True
+    payload = record["state"]
+    status = payload.get("status")
+    return (
+        payload.get("outcome_unknown") is not False or not isinstance(status, str)
+        or status not in {"confirmed", "reconciled_running", "rejected"}
+    )
+
+
+def yuanying_public_pre_send_guard(command, *, send_as_id=0, priority="", intent=None, now=None):
+    if not _is_yuanying_launch_command(command):
+        return {"allowed": True}
+    public_record = get_miniapp_state_records().get(f"{int(send_as_id or 0)}:cave_yuanying") or {}
+    if is_public_yuanying_unresolved(public_record):
+        return {"allowed": False, "reason": "公共入口元婴出窍结果未结，仅允许状态校准", "code": "pre_send_guard"}
+    return {"allowed": True}
+
+
+register_game_command_pre_send_guard(yuanying_public_pre_send_guard)
+
+
 async def run_yuanying_scheduler(now):
+    public_record = get_miniapp_state_records().get(f"{get_current_identity_id()}:cave_yuanying") or {}
+    if is_public_yuanying_unresolved(public_record):
+        return
     if is_cave_public_auto_enabled("yuanying"):
         return
     await run_phaseful_scheduler(
@@ -484,6 +515,7 @@ __all__ = [
     "handle_yuanying_status_reply",
     "handle_yuanying_success_reply",
     "handle_yuanying_summary_broadcast",
+    "is_public_yuanying_unresolved",
     "mark_yuanying_success",
     "match_yuanying_summary_identity",
     "run_yuanying_scheduler",

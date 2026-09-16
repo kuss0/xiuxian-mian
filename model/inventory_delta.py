@@ -153,7 +153,7 @@ def _prune_delta_records(records):
     return pruned
 
 
-def record_inventory_delta(
+def prepare_inventory_delta(
     identity_id,
     *,
     source,
@@ -195,10 +195,24 @@ def record_inventory_delta(
         }
         if comparable_previous == comparable_record:
             return {"changed": False, "record": previous, "record_key": record_key}
-    records[record_key] = record
-    set_inventory_delta_records(_prune_delta_records(records))
-    save_state()
     return {"changed": True, "record": record, "record_key": record_key}
+
+
+def record_inventory_delta(
+    identity_id, *, source, source_id="", items=None,
+    status=INVENTORY_DELTA_STATUS_PENDING, now=None, source_summary=None, persist=True,
+):
+    prepared = prepare_inventory_delta(
+        identity_id, source=source, source_id=source_id, items=items,
+        status=status, now=now, source_summary=source_summary,
+    )
+    if prepared["changed"]:
+        records = dict(get_inventory_delta_records())
+        records[prepared["record_key"]] = prepared["record"]
+        set_inventory_delta_records(_prune_delta_records(records))
+        if persist:
+            save_state()
+    return prepared
 
 
 def _storage_record_items(record):
@@ -323,6 +337,7 @@ __all__ = [
     "build_inventory_freshness_snapshot",
     "normalize_inventory_item_name",
     "normalize_inventory_items",
+    "prepare_inventory_delta",
     "record_inventory_delta",
     "stable_payload_digest",
 ]

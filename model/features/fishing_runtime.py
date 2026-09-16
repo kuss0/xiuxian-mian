@@ -1,8 +1,13 @@
 import asyncio
+import hashlib
 import json
+import logging
+import math
 import random
 import re
 import time
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import (
@@ -20,7 +25,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
-from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec
+from ..webapp_core import MiniAppCaptureStore, miniapp_retry_after_sec, sanitize_webapp_secret_text
 from ..state import (
     get_current_identity_id,
     get_global_enabled,
@@ -33,6 +38,8 @@ from ..state import (
     is_cave_public_auto_enabled,
     is_cave_public_identity_available,
     get_send_as_profile,
+    get_storage_bag_records,
+    set_storage_bag_records,
     state,
     use_identity,
 )
@@ -41,11 +48,15 @@ from . import fishing_behavior
 from .fishing import parse_open_fish_result
 from .fishing_miniapp import (
     extract_fishing_miniapp_catches,
+    extract_fishing_miniapp_daily_progress as _extract_miniapp_daily_progress,
+    extract_fishing_miniapp_gains,
     extract_fishing_miniapp_launch,
+    extract_fishing_miniapp_rewards as _extract_miniapp_loose_rewards,
     run_fishing_miniapp_production_flow,
 )
-from .miniapp_common import append_business_capture
+from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner, append_business_capture
 from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas, start_storage_bag_gift_batch
+from . import fishing_operations
 
 
 FISHING_REPLY_TIMEOUT_SEC = 90
@@ -80,10 +91,96 @@ FISHING_VALUABLE_KEYWORDS = (
 )
 FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS = fishing_behavior.FISHING_MAX_DAILY_LIMIT
 _SEND_LOCKS = {}
+_DAILY_REPORT_LOCK = asyncio.Lock()
 # Kept as an empty compatibility surface for older tests and diagnostics. The
 # active fishing runtime no longer records or sends text fishing commands.
 _RECENT_COMMANDS = {}
 FISHING_MINIAPP_CAPTURE_DIR = Path(STATE_DIR) / "miniapp_capture"
+_FISHING_MINIAPP_PLAN_KEYS = (
+    "next_fishing_time", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at",
+    "fishing_status_msg_id", "fishing_pending_action", "fishing_last_msg_id",
+    "fishing_last_result", "fishing_last_error",
+)
+_FISHING_MINIAPP_FACT_KEYS = frozenset({
+    "fishing_daily_day", "fishing_daily_count", "fishing_daily_limit",
+    "fishing_daily_catch_summary_json", "fishing_basket_calibrated_day",
+})
+_FISHING_RESULT_PLAN_KEYS = _FISHING_MINIAPP_PLAN_KEYS + (
+    "fishing_enabled", "fishing_pond", "fishing_bait", "fishing_auto_open_fish_enabled",
+    "fishing_auto_buy_bait_enabled", "fishing_transfer_target_id",
+    "fishing_caught_fish_json", "fishing_transfer_due_at",
+)
+_FISHING_RESULT_STRING_KEYS = frozenset({
+    "fishing_daily_day", "fishing_daily_catch_summary_json", "fishing_basket_calibrated_day",
+    "fishing_phase", "fishing_pending_action", "fishing_last_result", "fishing_last_error",
+    "fishing_forced_buy_bait", "fishing_caught_fish_json",
+})
+_FISHING_RESULT_INT_KEYS = frozenset({
+    "fishing_daily_count", "fishing_daily_limit", "fishing_reply_to_msg_id",
+    "fishing_status_msg_id", "fishing_last_msg_id", "fishing_forced_buy_count",
+})
+_FISHING_RESULT_TIME_KEYS = frozenset({"next_fishing_time", "fishing_reply_due_at", "fishing_transfer_due_at"})
+_FISHING_RESULT_MAX_BYTES = 64 * 1024
+
+
+class FishingMiniAppCommitError(RuntimeError):
+    def __init__(self, reason="persistence_pending"):
+        super().__init__(f"fishing result commit held: {reason}")
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class FishingMiniAppOperation:
+    owner: MiniAppIdentityOwner
+    require_enabled: bool
+    pond_choice: str
+    bait_choice: str
+    schedule: dict
+
+    @classmethod
+    def capture(cls, identity_id, *, require_enabled=False):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        if owner is None:
+            return None
+        return cls(
+            owner, require_enabled, str(owner.identity.get("fishing_pond") or ""),
+            str(owner.identity.get("fishing_bait") or ""),
+            {key: deepcopy(owner.identity.get(key)) for key in _FISHING_MINIAPP_PLAN_KEYS},
+        )
+
+    def is_current(self):
+        return (
+            self.owner.is_current()
+            and is_cave_public_identity_available(self.owner.identity_id)
+            and (not self.require_enabled or bool(self.owner.identity.get("fishing_enabled")))
+            and str(self.owner.identity.get("fishing_pond") or "") == self.pond_choice
+            and str(self.owner.identity.get("fishing_bait") or "") == self.bait_choice
+            and all(self.owner.identity.get(key) == value for key, value in self.schedule.items())
+        )
+
+
+def _confirmed_fishing_round_count(result):
+    if not isinstance(result, dict) or ("ok" in result and type(result["ok"]) is not bool):
+        raise ValueError("invalid_fishing_result")
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    counts = [mapping["settled_count"] for mapping in (result, data) if "settled_count" in mapping]
+    if counts:
+        if any(type(count) is not int or count < 0 or count != counts[0] for count in counts):
+            raise ValueError("invalid_fishing_settled_count")
+        count = counts[0]
+    else:
+        count = int(result.get("ok") is True and result.get("status") == "settled")
+    if count > 0 and len(extract_fishing_miniapp_catches(data)) > count:
+        raise ValueError("unconfirmed_fishing_catches")
+    return count
+
+
+def fishing_miniapp_has_confirmed_outcome(result):
+    try:
+        count = _confirmed_fishing_round_count(result)
+    except ValueError:
+        return False
+    return count > 0 or result.get("status") in {"daily_limit", "no_rod"}
 
 
 
@@ -131,6 +228,8 @@ def _cave_public_fishing_is_authoritative(send_as_id=None):
 
 
 def _retire_legacy_fishing_state(now):
+    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+        return False
     phase = str(state.get("fishing_phase") or "idle").strip()
     if phase == "miniapp":
         return False
@@ -434,123 +533,9 @@ def _looks_like_fishing_miniapp_entry_prompt(text):
     )
 
 
-_MINIAPP_REWARD_CONTAINER_KEYS = {
-    "rewards",
-    "reward",
-    "bonusloot",
-    "bonusitems",
-    "bonus",
-    "loot",
-    "drops",
-    "items",
-    "materials",
-}
-
-_MINIAPP_GAIN_KEYS = {
-    "expgain": "钓术经验",
-    "experiencegain": "钓术经验",
-    "lingstonegain": "灵石",
-    "lingshigain": "灵石",
-    "spiritstonegain": "灵石",
-    "stonegain": "灵石",
-}
-
-
-def _normalize_miniapp_key(key):
-    raw = re.sub(r"[^A-Za-z0-9]", "", str(key or "")).lower()
-    while raw.startswith("last"):
-        raw = raw[4:]
-    return raw
-
-
-def _miniapp_reward_from_value(value, *, fallback_name=""):
-    if isinstance(value, str):
-        name = value.strip()
-        return {"name": name, "qty": 1} if name else {}
-    if isinstance(value, (int, float)) and fallback_name:
-        qty = _parse_int(value, 0)
-        return {"name": str(fallback_name).strip(), "qty": qty} if qty > 0 else {}
-    if not isinstance(value, dict):
-        return {}
-    name = ""
-    for key in ("name", "itemName", "item_name", "title", "label"):
-        if value.get(key) not in (None, ""):
-            name = str(value.get(key) or "").strip()
-            break
-    if not name and fallback_name:
-        name = str(fallback_name).strip()
-    if not name:
-        return {}
-    qty = value.get("qty", value.get("count", value.get("quantity", value.get("amount", 1))))
-    return {"name": name, "qty": max(1, _parse_int(qty, 1))}
-
-
-def _miniapp_rewards_from_container(value):
-    rewards = []
-    if isinstance(value, list):
-        for item in value:
-            reward = _miniapp_reward_from_value(item)
-            if reward:
-                rewards.append(reward)
-        return rewards
-    if isinstance(value, dict):
-        direct = _miniapp_reward_from_value(value)
-        if direct:
-            return [direct]
-        for name, amount in value.items():
-            reward = _miniapp_reward_from_value(amount, fallback_name=name)
-            if reward:
-                rewards.append(reward)
-        return rewards
-    reward = _miniapp_reward_from_value(value)
-    return [reward] if reward else []
-
-
-def _extract_miniapp_loose_rewards(data, depth=0):
-    rewards = []
-    if depth > 4:
-        return rewards
-    if isinstance(data, list):
-        for item in data:
-            rewards.extend(_extract_miniapp_loose_rewards(item, depth + 1))
-        return rewards
-    if not isinstance(data, dict):
-        return rewards
-    for key, value in data.items():
-        normalized = _normalize_miniapp_key(key)
-        if normalized in _MINIAPP_REWARD_CONTAINER_KEYS:
-            rewards.extend(_miniapp_rewards_from_container(value))
-            continue
-        if normalized in {"fish", "catch", "catches", "rounds", "details", "detail", "session", "game"}:
-            continue
-        rewards.extend(_extract_miniapp_loose_rewards(value, depth + 1))
-    return rewards
-
-
-def _extract_miniapp_numeric_gains(data, depth=0):
-    gains = {}
-    if depth > 4:
-        return gains
-    if isinstance(data, list):
-        for item in data:
-            for name, amount in _extract_miniapp_numeric_gains(item, depth + 1).items():
-                gains[name] = gains.get(name, 0) + amount
-        return gains
-    if not isinstance(data, dict):
-        return gains
-    for key, value in data.items():
-        normalized = _normalize_miniapp_key(key)
-        label = _MINIAPP_GAIN_KEYS.get(normalized)
-        if label:
-            amount = _parse_int(value, 0)
-            if amount > 0:
-                gains[label] = gains.get(label, 0) + amount
-            continue
-        if normalized in {"proof", "fishingproof", "score", "qualitybonus", "sessionid", "ready"}:
-            continue
-        for name, amount in _extract_miniapp_numeric_gains(value, depth + 1).items():
-            gains[name] = gains.get(name, 0) + amount
-    return gains
+def _extract_miniapp_numeric_gains(data):
+    labels = {"expGain": "钓术经验", "lingShiGain": "灵石"}
+    return {labels[key]: amount for key, amount in extract_fishing_miniapp_gains(data).items()}
 
 
 def _dedupe_miniapp_rewards(rewards):
@@ -587,7 +572,7 @@ def _miniapp_material_summary(data):
         for reward in (catch.get("rewards") or ())
         if isinstance(reward, dict)
     ]
-    standalone_rewards = [] if catches else _extract_miniapp_loose_rewards(data)
+    standalone_rewards = _extract_miniapp_loose_rewards(data)
     reward_text = _format_miniapp_reward_list(_dedupe_miniapp_rewards(standalone_rewards))
     gain_parts = [
         f"{name}+{amount}"
@@ -625,7 +610,14 @@ def _format_miniapp_result_summary(result):
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     if status == "no_rod":
         return "未持有鱼竿，今日跳过"
-    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
+    try:
+        settled_count = _confirmed_fishing_round_count(result)
+    except ValueError:
+        return "MiniApp 结果格式异常｜未确认结算"
+    if settled_count <= 0:
+        data = {}
+        if status in {"settled", "partial_not_ready", "finish_submitted"}:
+            return f"MiniApp {status}｜未确认结算"
     round_prefix = f"{settled_count}竿｜" if settled_count > 1 else ""
     if status == "partial_not_ready":
         material_text, _has_material = _miniapp_material_summary(data)
@@ -672,7 +664,11 @@ def _format_miniapp_catch_summary(catches):
 
 async def _send_fishing_miniapp_harvest_summary(result):
     result = dict(result or {})
-    if not result.get("ok"):
+    try:
+        settled_count = _confirmed_fishing_round_count(result)
+    except ValueError:
+        return False
+    if settled_count <= 0:
         return False
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     material_text, has_material = _miniapp_material_summary(data)
@@ -695,112 +691,6 @@ def _miniapp_catch_counts(catches):
         if fish:
             counts[fish] = counts.get(fish, 0) + 1
     return counts
-
-
-def _iter_miniapp_daily_progress_candidates(value, depth=0):
-    if depth > 4:
-        return
-    if isinstance(value, list):
-        for item in value:
-            yield from _iter_miniapp_daily_progress_candidates(item, depth + 1)
-        return
-    if not isinstance(value, dict):
-        return
-    keys = {str(key).lower() for key in value}
-    has_daily_hint = any(
-        hint in key
-        for key in keys
-        for hint in ("daily", "today", "rod", "remaining", "quota", "limit", "count")
-    )
-    if has_daily_hint:
-        yield value
-    for key, child in value.items():
-        key_text = str(key).lower()
-        if key_text in {"challenge", "proof", "fishingproof"}:
-            continue
-        if any(hint in key_text for hint in ("daily", "today", "quota", "limit", "counter", "count", "remaining", "session", "result")):
-            yield from _iter_miniapp_daily_progress_candidates(child, depth + 1)
-
-
-def _first_positive_int_from_keys(mapping, keys):
-    if not isinstance(mapping, dict):
-        return 0
-    lower_map = {str(key).lower(): value for key, value in mapping.items()}
-    for key in keys:
-        value = lower_map.get(key.lower())
-        parsed = _parse_int(value, 0)
-        if parsed > 0:
-            return parsed
-    return 0
-
-
-def _first_nonnegative_int_from_keys(mapping, keys):
-    if not isinstance(mapping, dict):
-        return -1
-    lower_map = {str(key).lower(): value for key, value in mapping.items()}
-    for key in keys:
-        if key.lower() not in lower_map:
-            continue
-        parsed = _parse_int(lower_map.get(key.lower()), -1)
-        if parsed >= 0:
-            return parsed
-    return -1
-
-
-def _extract_miniapp_daily_progress(data):
-    """Extract non-sensitive MiniApp daily rod progress when the API exposes it."""
-    limit_keys = (
-        "dailyLimit",
-        "daily_limit",
-        "dailyRodsLimit",
-        "daily_rods_limit",
-        "rodLimit",
-        "rod_limit",
-        "maxRods",
-        "max_rods",
-        "totalRods",
-        "total_rods",
-        "quota",
-        "limit",
-        "total",
-    )
-    used_keys = (
-        "dailyUsed",
-        "daily_used",
-        "dailyCount",
-        "daily_count",
-        "dailyRodsUsed",
-        "daily_rods_used",
-        "rodCount",
-        "rod_count",
-        "usedRods",
-        "used_rods",
-        "todayCount",
-        "today_count",
-        "used",
-        "count",
-    )
-    remaining_keys = (
-        "dailyRemaining",
-        "daily_remaining",
-        "remainingRods",
-        "remaining_rods",
-        "leftRods",
-        "left_rods",
-        "remaining",
-        "left",
-    )
-    progress = {"used": -1, "limit": 0, "remaining": -1}
-    for candidate in _iter_miniapp_daily_progress_candidates(data or {}):
-        limit = _first_positive_int_from_keys(candidate, limit_keys)
-        used = _first_nonnegative_int_from_keys(candidate, used_keys)
-        remaining = _first_nonnegative_int_from_keys(candidate, remaining_keys)
-        if limit > 0 and (used >= 0 or remaining >= 0):
-            progress["limit"] = limit
-            progress["used"] = used
-            progress["remaining"] = remaining
-            return progress
-    return progress
 
 
 def _normalize_fishing_daily_catch_summary(value=None):
@@ -897,7 +787,7 @@ def _enabled_fishing_daily_entries(now):
         if not identity_state.get("fishing_enabled") and not public_auto_enabled:
             continue
         entry_day, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(dict(identity_state), now)
-        if daily_updates:
+        if daily_updates and identity_state.get("fishing_result_pending", {}) == {} and not fishing_operations.pending(identity_state):
             identity_state.update(daily_updates)
             changed = True
         limit = _parse_int(limit, 0)
@@ -910,6 +800,8 @@ def _enabled_fishing_daily_entries(now):
             _parse_int(identity_state.get("fishing_reply_to_msg_id"), 0) > 0
             or bool(str(identity_state.get("fishing_pending_action") or "").strip())
             or phase not in {"", "idle"}
+            or identity_state.get("fishing_result_pending", {}) != {}
+            or fishing_operations.pending(identity_state)
         )
         terminal_skip = (
             "今日跳过" in last_result
@@ -960,6 +852,13 @@ def _format_fishing_all_daily_completion_summary(day_key, entries):
 
 
 async def _send_fishing_daily_completion_summary(now):
+    if _DAILY_REPORT_LOCK.locked():
+        return True
+    async with _DAILY_REPORT_LOCK:
+        return await _send_fishing_daily_completion_summary_locked(now)
+
+
+async def _send_fishing_daily_completion_summary_locked(now):
     day_key, entries, changed = _enabled_fishing_daily_entries(now)
     if changed:
         mark_dirty()
@@ -981,19 +880,34 @@ async def _send_fishing_daily_completion_summary(now):
     report_entries = [item for item in entries if item.get("reportable")]
     if not report_entries:
         return False
+    report_keys = set(_FISHING_MINIAPP_PLAN_KEYS) | _FISHING_MINIAPP_FACT_KEYS | {"fishing_daily_summary_day", "fishing_result_pending", "fishing_operation"}
+
+    def capture(identity_id):
+        owner = MiniAppIdentityOwner.capture(identity_id)
+        snapshot = {key: deepcopy(owner.identity.get(key)) for key in report_keys} if owner else {}
+        return owner, snapshot
+
+    def current(record):
+        owner, snapshot = record
+        return owner is not None and owner.is_current() and all(
+            owner.identity.get(key) == value for key, value in snapshot.items()
+        )
+
+    origin = capture(get_current_identity_id())
+    recipients = [capture(int(item.get("identity_id") or 0)) for item in entries]
     message = _format_fishing_all_daily_completion_summary(day_key, report_entries)
     ok = await send_audit_log(message, scope="identity", priority="normal", limit=900)
+    origin_current = current(origin)
     if not ok:
-        state["fishing_last_error"] = "灵溪垂钓日结播报发送失败，稍后重试"
-        mark_dirty()
+        if origin_current:
+            origin[0].identity["fishing_last_error"] = "灵溪垂钓日结播报发送失败，稍后重试"
+            mark_dirty()
         return True
-    for item in entries:
-        try:
-            identity_state = get_identity_state(int(item.get("identity_id") or 0))
-        except KeyError:
-            continue
-        identity_state["fishing_daily_summary_day"] = str(day_key or "").strip()
-    state["fishing_last_error"] = ""
+    for record in recipients:
+        if current(record):
+            record[0].identity["fishing_daily_summary_day"] = str(day_key or "").strip()
+    if origin_current:
+        origin[0].identity["fishing_last_error"] = ""
     save_state()
     return True
 
@@ -1002,18 +916,18 @@ def _miniapp_failure_backoff(now):
     return float(now + FISHING_MINIAPP_FAILURE_BACKOFF_SEC + random.uniform(0, FISHING_RECOVERY_MAX_SEC))
 
 
-def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
+def _build_fishing_miniapp_projection(result, now, *, result_msg_id=0, update_schedule=True, public_entry=False, fact_at=None):
     result = dict(result or {})
     retry_after_sec = miniapp_retry_after_sec(result)
     ok = bool(result.get("ok"))
     status = str(result.get("status") or "").strip()
-    completed_ok = ok or status == "daily_limit"
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    settled_hint = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
-    if ok and status == "not_ready" and settled_hint > 0:
+    settled_hint = _confirmed_fishing_round_count(result)
+    completed_ok = ok or status == "daily_limit" or settled_hint > 0
+    if completed_ok and status == "not_ready" and settled_hint > 0:
         status = "partial_not_ready"
         result["status"] = status
-    if status == "no_rod":
+    if status == "no_rod" and settled_hint <= 0:
         updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
         updates.update({
             "fishing_phase": "idle",
@@ -1025,20 +939,19 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
                 random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
             ),
         })
-        _apply_updates(updates)
-        save_state()
-        return updates["fishing_last_result"]
-    catches = extract_fishing_miniapp_catches(data)
+        return {"summary": updates["fishing_last_result"], "updates": updates if update_schedule else {},
+                "items": {}, "reminders": []}
+    catches = extract_fishing_miniapp_catches(data) if settled_hint > 0 else []
     updates = fishing_behavior.clear_pending_updates(keep_open_fish=True)
     updates["fishing_phase"] = "idle"
     updates["fishing_last_msg_id"] = int(result_msg_id or 0)
-    updates["fishing_last_result"] = _format_miniapp_result_summary(result)
+    updates["fishing_last_result"] = sanitize_webapp_secret_text(_format_miniapp_result_summary(result), limit=2048)
     updates["fishing_last_error"] = "" if completed_ok else updates["fishing_last_result"]
-    partial_statuses = {"next_failed", "next_unavailable", "not_ready"}
-    settled_statuses = {"settled", "finish_submitted", "daily_limit", "partial_not_ready"}
+    partial_statuses = {"next_failed", "next_unavailable", "not_ready", "failed", "shop_failed", "request_budget", "cancelled", "finish_submitted", "operation_pending"}
+    settled_statuses = {"settled", "daily_limit", "partial_not_ready"}
     error_text = str(result.get("error") or data.get("next_error") or "").strip()
     missing_bait_error = status == "next_failed" and "bait_missing" in error_text
-    if ok and status in partial_statuses:
+    if completed_ok and status in partial_statuses:
         updates["fishing_last_error"] = updates["fishing_last_result"]
     if ok and missing_bait_error:
         bait_name = str(data.get("next_bait_name") or state.get("fishing_bait") or "鱼饵").strip()
@@ -1046,29 +959,23 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
         updates["fishing_forced_buy_count"] = fishing_behavior.fishing_buy_bait_count(_state_snapshot())
         updates["fishing_last_error"] = f"缺少鱼饵：{bait_name}"
 
-    day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now)
+    day_key, count, limit, daily_updates = fishing_behavior.normalize_daily_counter(_state_snapshot(), now if fact_at is None else fact_at)
     updates.update(daily_updates)
-    progress = _extract_miniapp_daily_progress(data)
-    if progress.get("limit", 0) > 0:
-        limit = fishing_behavior.clamp_fishing_daily_limit(progress.get("limit"))
+    progress = _extract_miniapp_daily_progress(data) if settled_hint > 0 or status == "daily_limit" else {}
+    if progress and (progress["used"] < count + settled_hint or (status == "daily_limit" and progress["remaining"] != 0)):
+        progress = {}
+    has_progress = bool(progress)
+    if has_progress:
+        limit, count = progress["limit"], progress["used"]
         updates["fishing_daily_limit"] = limit
-    if progress.get("used", -1) >= 0:
-        count = min(int(limit or 0), max(0, int(progress.get("used") or 0)))
-    elif progress.get("remaining", -1) >= 0 and int(limit or 0) > 0:
-        count = min(int(limit or 0), max(0, int(limit or 0) - int(progress.get("remaining") or 0)))
-    has_progress = progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0
-    default_settled_count = 1 if status in settled_statuses else 0
-    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), default_settled_count)
+    settled_count = settled_hint
     if completed_ok and (status in settled_statuses or settled_count > 0 or has_progress):
-        settled_count = max(default_settled_count, settled_count)
         if status == "daily_limit" and not has_progress:
             inferred_limit = max(int(limit or 0), int(count or 0) + settled_count, len(catches))
             if inferred_limit > int(limit or 0):
                 limit = fishing_behavior.clamp_fishing_daily_limit(inferred_limit)
                 updates["fishing_daily_limit"] = limit
-        if progress.get("used", -1) >= 0 or progress.get("remaining", -1) >= 0:
-            count = min(int(limit or 0), int(count or 0))
-        else:
+        if not has_progress:
             count = min(int(limit or 0), int(count or 0) + settled_count)
         if status == "daily_limit":
             count = int(limit or count or 0)
@@ -1079,7 +986,7 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
             day_key,
             catches,
             settled_count=settled_count,
-            extra_rewards=[] if catches else _extract_miniapp_loose_rewards(data),
+            extra_rewards=_extract_miniapp_loose_rewards(data) if settled_count > 0 else [],
         )
         catch_counts = _miniapp_catch_counts(catches)
         if catch_counts:
@@ -1123,11 +1030,25 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
             float(updates.get("next_fishing_time", 0) or 0),
             float(now) + retry_after_sec,
         )
-    _apply_updates(updates)
+    if status == "no_rod":
+        updates.update(
+            fishing_last_result="未持有鱼竿，今日跳过", fishing_last_error="",
+            next_fishing_time=fishing_behavior.next_fishing_daily_limit_check_timestamp(
+                now, random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
+            ),
+        )
+    if public_entry and update_schedule and status == "bait_missing":
+        updates.update(
+            fishing_last_result=f"{updates['fishing_last_result']}｜无可用鱼饵，今日跳过", fishing_last_error="",
+            next_fishing_time=fishing_behavior.next_fishing_reset_timestamp(now, _fishing_reset_jitter_sec()),
+        )
+    summary = updates["fishing_last_result"]
+    if not update_schedule:
+        updates = {key: value for key, value in updates.items() if key in _FISHING_MINIAPP_FACT_KEYS}
     catch_counts = _miniapp_catch_counts(catches)
+    reminders = []
     if catch_counts:
-        apply_storage_bag_item_deltas(get_current_identity_id(), catch_counts)
-        for catch in catches:
+        for catch in catches if update_schedule else ():
             reward_text = "\n".join(
                 f"- 伴生机缘：【{reward.get('name')}】x{max(1, _parse_int(reward.get('qty'), 1))}"
                 for reward in (catch.get("rewards") or ())
@@ -1135,9 +1056,202 @@ def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0):
             )
             if reward_text:
                 text = f"【提竿成功】\n钓获：【{catch.get('fish')}】\n{reward_text}"
-                _queue_fishing_valuable_drop_reminders(text, now, result_msg_id=result_msg_id)
-    save_state()
-    return updates["fishing_last_result"]
+                reminders.append(text)
+    return {"summary": summary, "updates": updates, "items": catch_counts, "reminders": reminders}
+
+
+def _fishing_projection_digest(value):
+    def normalized(item):
+        if isinstance(item, dict):
+            return {key: normalized(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [normalized(child) for child in item]
+        if isinstance(item, float) and math.isfinite(item) and item.is_integer():
+            return int(item)
+        return item
+
+    payload = json.dumps(normalized(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fishing_result_basis(identity, keys):
+    return _fishing_projection_digest({key: identity.get(key) for key in keys})
+
+
+def _fishing_inventory_basis(identity_id, items):
+    if not items:
+        return ""
+    record = get_storage_bag_records().get(str(identity_id), {})
+    counts = record.get("items") or {}
+    return _fishing_projection_digest({"updated_at": record.get("updated_at", 0),
+                                       "items": {name: counts.get(name, 0) for name in items}})
+
+
+def _valid_fishing_result_pending(record):
+    fields = {"version", "identity_id", "account_id", "created_at", "result_msg_id", "plan", "facts",
+              "inventory", "summary", "updates", "items", "reminders"}
+    if not isinstance(record, dict) or type(record.get("version")) is not int or record["version"] not in {1, 2}:
+        return False
+    if record["version"] == 2:
+        fields.add("operation")
+        if not fishing_operations.valid_reference(record.get("operation")):
+            return False
+    if set(record) != fields:
+        return False
+
+    def safe_text(value, limit):
+        return (isinstance(value, str) and len(value) <= limit
+                and sanitize_webapp_secret_text(value, limit=limit + 1) == value)
+
+    def nonnegative(value):
+        return type(value) in (int, float) and 0 <= value < 1e12
+
+    if (any(type(record[key]) is not int or record[key] < 0 for key in ("identity_id", "account_id", "result_msg_id"))
+            or record["identity_id"] <= 0 or not nonnegative(record["created_at"]) or record["created_at"] <= 0
+            or any(not isinstance(record[key], str) or not re.fullmatch(r"[a-f0-9]{64}", record[key]) for key in ("plan", "facts"))
+            or not safe_text(record["summary"], 2048) or not record["summary"] or not isinstance(record["updates"], dict)
+            or not isinstance(record["items"], dict) or len(record["items"]) > FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS
+            or not isinstance(record["reminders"], list) or len(record["reminders"]) > FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS):
+        return False
+    for key, value in record["updates"].items():
+        if key in _FISHING_RESULT_STRING_KEYS:
+            if not safe_text(value, _FISHING_RESULT_MAX_BYTES):
+                return False
+        elif key in _FISHING_RESULT_INT_KEYS:
+            if type(value) is not int or value < 0:
+                return False
+        elif key in _FISHING_RESULT_TIME_KEYS:
+            if not nonnegative(value):
+                return False
+        else:
+            return False
+    for key in ("fishing_daily_catch_summary_json", "fishing_caught_fish_json"):
+        if key not in record["updates"]:
+            continue
+        try:
+            value = json.loads(record["updates"][key])
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(value, dict):
+            return False
+        if key == "fishing_daily_catch_summary_json":
+            if (set(value) != {"day", "rods", "fish", "rewards"} or not isinstance(value["day"], str)
+                    or type(value["rods"]) is not int or value["rods"] < 0
+                    or any(not isinstance(value[field], dict) for field in ("fish", "rewards"))):
+                return False
+            counters = [value["fish"], value["rewards"]]
+        else:
+            counters = [value]
+        if any(not name or not isinstance(name, str) or type(amount) is not int or amount <= 0
+               for counts in counters for name, amount in counts.items()):
+            return False
+    if (any(not safe_text(name, 160) or not name or type(amount) is not int or not 0 < amount <= FISHING_MINIAPP_CHAIN_PROTECT_ROUNDS
+            for name, amount in record["items"].items())
+            or any(not safe_text(text, 4096) for text in record["reminders"])
+            or not isinstance(record["inventory"], str)
+            or (not re.fullmatch(r"[a-f0-9]{64}", record["inventory"]) if record["items"] else record["inventory"] != "")):
+        return False
+    try:
+        return len(json.dumps(record, ensure_ascii=False, allow_nan=False).encode("utf-8")) <= _FISHING_RESULT_MAX_BYTES
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _commit_fishing_result_pending(owner):
+    record = owner.identity.get("fishing_result_pending")
+    if not owner.is_current() or not _valid_fishing_result_pending(record):
+        raise FishingMiniAppCommitError("invalid_projection")
+    if record["identity_id"] != owner.identity_id or record["account_id"] != owner.account_id:
+        raise FishingMiniAppCommitError("owner_changed")
+    if record["version"] == 2:
+        fishing_operations.check_reference(owner, record["operation"])
+    elif fishing_operations.pending(owner.identity):
+        raise FishingMiniAppCommitError("unowned_operation_projection")
+    try:
+        basis_current = (record["facts"] == _fishing_result_basis(owner.identity, _FISHING_MINIAPP_FACT_KEYS)
+                         and record["inventory"] == _fishing_inventory_basis(owner.identity_id, record["items"]))
+        update_schedule = (
+            record["plan"] == _fishing_result_basis(owner.identity, _FISHING_RESULT_PLAN_KEYS)
+            and is_cave_public_identity_available(owner.identity_id)
+            and (get_global_enabled() or _miniapp_http_allowed_during_pause())
+        )
+    except (ValueError, TypeError, OverflowError, AttributeError):
+        raise FishingMiniAppCommitError("invalid_basis") from None
+    if not basis_current:
+        raise FishingMiniAppCommitError("result_basis_changed")
+    before, inventory = deepcopy(owner.identity), get_storage_bag_records()
+    try:
+        owner.identity.update({key: deepcopy(value) for key, value in record["updates"].items()
+                               if update_schedule or key in _FISHING_MINIAPP_FACT_KEYS})
+        if record["items"]:
+            if apply_storage_bag_item_deltas(owner.identity_id, record["items"], persist=False) is False:
+                raise FishingMiniAppCommitError("inventory_not_applied")
+        with use_identity(owner.identity_id):
+            for text in record["reminders"] if update_schedule else ():
+                _queue_fishing_valuable_drop_reminders(text, record["created_at"], result_msg_id=record["result_msg_id"])
+        owner.identity["fishing_result_pending"] = {}
+        if record["version"] == 2:
+            fishing_operations.advance_accounting(owner, record["operation"])
+        if save_state() is False:
+            raise FishingMiniAppCommitError()
+    except Exception as exc:
+        owner.identity.clear()
+        owner.identity.update(before)
+        set_storage_bag_records(inventory)
+        mark_dirty()
+        if isinstance(exc, FishingMiniAppCommitError):
+            raise
+        raise FishingMiniAppCommitError() from None
+    return record["summary"]
+
+
+def _fishing_result_commit_response(reason="persistence_pending", *, summary=""):
+    return {"ok": bool(summary),
+            "message": f"钓鱼结果已完成本地入账：{summary}" if summary else "钓鱼结果待本地入账，暂不启动新一轮",
+            "extra": {"status": "result_committed" if summary else "persistence_pending",
+                      "reason": "" if summary else reason, "persistence_only": True}}
+
+
+def recover_fishing_result_pending(identity_id):
+    owner = MiniAppIdentityOwner.capture(identity_id)
+    if owner is None:
+        return None
+    recovered = None
+    if owner.identity.get("fishing_result_pending", {}) != {}:
+        try:
+            recovered = _fishing_result_commit_response(summary=_commit_fishing_result_pending(owner))
+        except FishingMiniAppCommitError as exc:
+            return _fishing_result_commit_response(exc.reason)
+    return fishing_operations.recover_local(identity_id, time.time()) or recovered
+
+
+def _apply_fishing_miniapp_result(result, now, *, result_msg_id=0, update_schedule=True, public_entry=False):
+    owner = MiniAppIdentityOwner.capture(get_current_identity_id())
+    if owner is None or owner.identity.get("fishing_result_pending", {}) != {}:
+        raise FishingMiniAppCommitError("unresolved_projection")
+    operation_reference, fact_at = None, None
+    if fishing_operations.pending(owner.identity):
+        result, operation_reference, plan_current, fact_at = fishing_operations.projection(owner, result, now)
+        update_schedule = update_schedule and plan_current
+    try:
+        projection = _build_fishing_miniapp_projection(
+            result, now, result_msg_id=result_msg_id, update_schedule=update_schedule, public_entry=public_entry, fact_at=fact_at,
+        )
+        record = {"version": 1, "identity_id": owner.identity_id, "account_id": owner.account_id,
+                  "created_at": now, "result_msg_id": int(result_msg_id or 0), **projection,
+                  "plan": _fishing_result_basis(owner.identity, _FISHING_RESULT_PLAN_KEYS),
+                  "facts": _fishing_result_basis(owner.identity, _FISHING_MINIAPP_FACT_KEYS),
+                  "inventory": _fishing_inventory_basis(owner.identity_id, projection["items"])}
+        if operation_reference is not None:
+            record.update(version=2, operation=operation_reference)
+    except Exception:
+        owner.identity["fishing_result_pending"] = {"invalid": True}
+        mark_dirty()
+        raise FishingMiniAppCommitError("invalid_projection") from None
+    # This is a prepared local projection, not authorization to repeat gameplay.
+    owner.identity["fishing_result_pending"] = deepcopy(record) if _valid_fishing_result_pending(record) else {"invalid": True}
+    mark_dirty()
+    return _commit_fishing_result_pending(owner)
 
 
 def _remaining_miniapp_chain_rounds(now):
@@ -1159,10 +1273,11 @@ def _fishing_miniapp_capture_store(now):
 
 def _record_fishing_business_capture(capture_sink, result, *, source, now):
     result = dict(result or {})
-    if not result.get("ok"):
+    try:
+        settled_count = _confirmed_fishing_round_count(result)
+    except ValueError:
         return {}
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    settled_count = _parse_int(result.get("settled_count") or data.get("settled_count"), 0)
     if settled_count <= 0:
         return {}
     catches = extract_fishing_miniapp_catches(data)
@@ -1182,7 +1297,7 @@ def _record_fishing_business_capture(capture_sink, result, *, source, now):
         for reward in (item.get("rewards") or ())
         if isinstance(reward, dict)
     ]
-    standalone_rewards = [] if catches else _extract_miniapp_loose_rewards(data)
+    standalone_rewards = _extract_miniapp_loose_rewards(data)
     caught = len(catch_rows)
     return append_business_capture(
         capture_sink,
@@ -1207,6 +1322,8 @@ async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_i
     launch = extract_fishing_miniapp_launch(event, message_text=text)
     if not launch and not _looks_like_fishing_miniapp_entry_prompt(text):
         return False
+    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+        return True
     explicit_angler = _explicit_fishing_angler(text)
     current_username = _current_identity_username()
     if explicit_angler and current_username and explicit_angler != current_username:
@@ -1231,6 +1348,9 @@ async def hold_unclaimed_fishing_miniapp_entry(event, text, now, *, result_msg_i
 
 
 async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_family=None, result_msg_id=0):
+    identity_id = int(get_current_identity_id() or 0)
+    if MiniAppIdentityOwner.capture(identity_id) is None:
+        return False
     if not state.get("fishing_enabled"):
         return False
     launch = extract_fishing_miniapp_launch(event, message_text=text)
@@ -1243,7 +1363,6 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
     current_username = _current_identity_username()
     if explicit_angler and current_username and explicit_angler != current_username:
         return False
-    identity_id = int(get_current_identity_id() or 0)
     global_enabled = get_global_enabled()
     maintenance_miniapp_allowed = _miniapp_http_allowed_during_pause()
     identity_available = is_cave_public_identity_available(identity_id)
@@ -1258,10 +1377,19 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
 
     lock = _fishing_send_lock(identity_id)
     if lock.locked():
-        state["fishing_last_error"] = "MiniApp 钓鱼接管中，重复入口已忽略"
-        mark_dirty()
         return True
     async with lock:
+        if recover_fishing_result_pending(identity_id) is not None:
+            recovery_operation = FishingMiniAppOperation.capture(identity_id, require_enabled=True)
+            if recovery_operation is not None and fishing_operations.pending(recovery_operation.owner.identity):
+                await fishing_operations.recover_entry(
+                    identity_id, launch,
+                    lambda: recovery_operation.is_current() and (get_global_enabled() or _miniapp_http_allowed_during_pause()),
+                )
+            return True
+        initial = FishingMiniAppOperation.capture(identity_id, require_enabled=True)
+        if initial is None or not initial.is_current():
+            return True
         max_rounds = _remaining_miniapp_chain_rounds(now)
         state["fishing_phase"] = "miniapp"
         state["fishing_reply_to_msg_id"] = 0
@@ -1270,35 +1398,98 @@ async def handle_fishing_miniapp_entry(event, text, now, reply_to=None, matched_
         state["fishing_last_result"] = "MiniApp 钓鱼接管中"
         state["fishing_last_error"] = ""
         state["next_fishing_time"] = float(now + FISHING_REPLY_TIMEOUT_SEC * max_rounds)
-        save_state()
-        await send_audit_log(
-            "🎣 灵溪垂钓 MiniApp 接管入口，开始 WebView/HTTP 流程。"
-            + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
-            scope="identity",
-            priority="low",
-            limit=180,
-        )
+        try:
+            saved = save_state() is not False
+        except Exception:
+            saved = False
+        if not saved:
+            initial.owner.identity.update(initial.schedule)
+            mark_dirty()
+            logging.getLogger(__name__).warning("Fishing start marker save failed; no HTTP started")
+            return True
+        operation = FishingMiniAppOperation.capture(identity_id, require_enabled=True)
+
+        def can_continue():
+            return operation.is_current() and (get_global_enabled() or _miniapp_http_allowed_during_pause())
+
+        try:
+            await send_audit_log(
+                "🎣 灵溪垂钓 MiniApp 接管入口，开始 WebView/HTTP 流程。"
+                + ("（天尊维护暂停中，仅执行 MiniApp HTTP）" if maintenance_miniapp_allowed else ""),
+                scope="identity", send_as_id=identity_id, priority="low", limit=180,
+            )
+        except asyncio.CancelledError:
+            # No game request has begun; undo only this callback's unchanged marker.
+            if operation.owner.is_current() and all(
+                operation.owner.identity.get(key) == value for key, value in operation.schedule.items()
+            ):
+                operation.owner.identity.update(initial.schedule)
+                save_state()
+            raise
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Fishing announcement failed (%s)", type(exc).__name__)
+        if not can_continue():
+            return True
         capture_sink = _fishing_miniapp_capture_store(now)
         capture_source = f"fishing_runtime:{identity_id}:{int(result_msg_id or getattr(event, 'id', 0) or 0)}"
-        result = await run_fishing_miniapp_production_flow(
-            identity_id,
-            token=launch.get("token"),
-            webview_url=launch.get("webview_url"),
-            max_rounds=max_rounds,
-            pond_choice=str(state.get("fishing_pond") or ""),
-            bait_choice=str(state.get("fishing_bait") or ""),
-            capture_sink=capture_sink,
-            capture_source=capture_source,
-        )
+        cancelled_flow = None
+        writer = fishing_operations.CheckpointWriter(operation, operation_check=can_continue)
+        try:
+            result = await run_fishing_miniapp_production_flow(
+                identity_id, token=launch.get("token"), webview_url=launch.get("webview_url"),
+                max_rounds=max_rounds, pond_choice=operation.pond_choice, bait_choice=operation.bait_choice,
+                capture_sink=capture_sink, capture_source=capture_source,
+                operation_check=lambda: can_continue() and writer.is_current(), checkpoint=writer,
+            )
+        except MiniAppFlowCancelled as exc:
+            cancelled_flow = exc
+            result = exc.result if isinstance(exc.result, dict) else {}
         result = dict(result or {})
+        writer.finish(result)
+        confirmed = fishing_miniapp_has_confirmed_outcome(result)
+        if not operation.owner.is_current() or (not can_continue() and not confirmed):
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled() from None
+            return True
+        if cancelled_flow is not None and not confirmed:
+            raise MiniAppFlowCancelled(result) from None
+        if result.get("status") == "cancelled" and not confirmed:
+            return True
+        update_schedule = can_continue() and cancelled_flow is None and result.get("status") != "cancelled"
         _record_fishing_business_capture(capture_sink, result, source=capture_source, now=now)
-        summary = _apply_fishing_miniapp_result(result, now, result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0))
-        await _send_fishing_miniapp_harvest_summary(result)
-        status = str(result.get("status") or "").strip()
-        if (not result.get("ok") or status in {"next_failed", "next_unavailable"}) and status != "no_rod":
-            await send_audit_log(f"🎣 灵溪垂钓 MiniApp 异常：{summary}", scope="identity", limit=240)
-        else:
-            await _send_fishing_daily_completion_summary(now)
+        try:
+            with use_identity(identity_id):
+                summary = _apply_fishing_miniapp_result(
+                    result, now, result_msg_id=int(result_msg_id or getattr(event, "id", 0) or 0),
+                    update_schedule=update_schedule,
+                )
+        except FishingMiniAppCommitError as exc:
+            logging.getLogger(__name__).warning("Fishing result not committed (%s); local recovery only", exc.reason)
+            if cancelled_flow is not None:
+                raise MiniAppFlowCancelled(dict(result, accounting_pending=True)) from None
+            return True
+        if cancelled_flow is not None:
+            raise MiniAppFlowCancelled(result) from None
+        if fishing_operations.pending(operation.owner.identity):
+            return True
+        if not update_schedule:
+            return True
+        notice = FishingMiniAppOperation.capture(identity_id, require_enabled=True)
+        try:
+            with use_identity(identity_id):
+                await _send_fishing_miniapp_harvest_summary(result)
+            if not notice.is_current() or not (get_global_enabled() or _miniapp_http_allowed_during_pause()):
+                return True
+            status = str(result.get("status") or "").strip()
+            if (not result.get("ok") or status in {"next_failed", "next_unavailable", "failed", "shop_failed", "request_budget"}) and status != "no_rod":
+                await send_audit_log(f"🎣 灵溪垂钓 MiniApp 异常：{summary}", scope="identity", send_as_id=identity_id, limit=240)
+            else:
+                with use_identity(identity_id):
+                    await _send_fishing_daily_completion_summary(now)
+        except asyncio.CancelledError:
+            raise MiniAppFlowCancelled(result if operation.owner.is_current() else None) from None
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Fishing notification failed (%s); result preserved", type(exc).__name__)
         return True
 
 
@@ -1320,6 +1511,10 @@ def is_fishing_reply_text(text):
 
 
 def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=True):
+    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+        if persist:
+            save_state()
+        return
     last_error = state.get("fishing_last_error") if keep_last_error else ""
     config_values = {}
     if keep_config:
@@ -1366,7 +1561,7 @@ def get_fishing_status_text():
     snapshot = _state_snapshot()
     config = fishing_behavior.current_fishing_config(snapshot)
     _day_key, daily_count, daily_limit, daily_updates = fishing_behavior.normalize_daily_counter(snapshot, time.time())
-    if daily_updates:
+    if daily_updates and state.get("fishing_result_pending", {}) == {} and not fishing_operations.pending(state):
         _apply_updates(daily_updates)
         mark_dirty()
         snapshot = _state_snapshot()
@@ -1401,6 +1596,10 @@ def get_fishing_status_text():
         f"- 下次动作：{fmt_abs_ts(state.get('next_fishing_time', 0))}（{fmt_remaining(state.get('next_fishing_time', 0))}）",
         f"- 最近结果：{state.get('fishing_last_result') or '无'}",
     ]
+    if state.get("fishing_result_pending", {}) != {}:
+        lines.append("- 本地入账：结果待恢复，暂不启动新一轮")
+    if fishing_operations.pending(state):
+        lines.append(f"- 运行恢复：{fishing_operations.status_text(state.get('fishing_operation'))}")
     if state.get("fishing_last_error"):
         lines.append(f"- 最近异常：{state['fishing_last_error']}")
     return "\n".join(lines)
@@ -1578,20 +1777,27 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
 
 
 async def run_fishing_scheduler(now):
-    if await _run_fishing_valuable_drop_reminders(now):
+    lock = _fishing_send_lock(get_current_identity_id())
+    if lock.locked():
         return
-
-    if await _send_fishing_daily_completion_summary(now):
-        return
-
-    if await _run_pending_fishing_transfer(now):
-        return
-
-    if _retire_legacy_fishing_state(now):
-        save_state()
+    async with lock:
+        if recover_fishing_result_pending(get_current_identity_id()) is not None:
+            return
+        if await _run_fishing_valuable_drop_reminders(now):
+            return
+        if await _send_fishing_daily_completion_summary(now):
+            return
+        if await _run_pending_fishing_transfer(now):
+            return
+        if _retire_legacy_fishing_state(now):
+            save_state()
 
 
 def schedule_fishing_initial_check(now, *, persist=False, keep_last_error=True):
+    if fishing_operations.pending(state) or state.get("fishing_result_pending", {}) != {}:
+        if persist:
+            save_state()
+        return
     last_error = state.get("fishing_last_error") if keep_last_error else ""
     had_legacy_state = bool(
         str(state.get("fishing_phase") or "idle").strip() not in {"", "idle"}

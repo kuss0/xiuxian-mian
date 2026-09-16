@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import time
 import traceback
+from copy import deepcopy
 from datetime import datetime
 from dataclasses import dataclass
 from functools import partial
@@ -95,7 +96,7 @@ from .features.guanxing_monitor import get_guanxing_monitor_summary_text
 from .features.hehuan import HEHUAN_AUTO_RETRY_LIMIT, HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN, normalize_hehuan_observation, set_hehuan_retry_max_interval_min
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
-from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
+from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, get_nanlong_pending_state, has_nanlong_pending_action, normalize_nanlong_choice, resolve_nanlong_choice
 from .features import miniapp_registry
 from .features import miniapp_command_catalog
 from .inventory_delta import build_inventory_freshness_snapshot
@@ -104,8 +105,10 @@ from .miniapp_capture_summary import get_miniapp_capture_summary, normalize_mini
 from .webapp_core import MiniAppRequestAborted, get_miniapp_global_rate_limit_snapshot, miniapp_retry_after_sec, require_miniapp_operation
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
+from .features.treasure_receipts import treasure_quota_exhausted
 from .features.cave_treasure_runtime import (
     CavePublicEntryHealthSnapshot,
+    _cave_treasure_unknown_hold,
     _parse_public_cave_entry_url,
     authorize_cave_treasure_miniapp_manual_run,
     revoke_cave_treasure_miniapp_manual_run,
@@ -130,12 +133,17 @@ from .features.cave_treasure_runtime import (
     observe_cave_public_entry,
     probe_cave_public_entry,
     is_cave_public_entry_busy,
+    is_cave_treasure_busy,
+    recover_cave_treasure_result,
 )
 from .features.miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
 from .features.stargazer import authorize_stargazer_miniapp_manual_run, revoke_stargazer_miniapp_manual_run
 from .features.world_boss_miniapp_runtime import WORLD_BOSS_MINIAPP_FINISH_RESERVE_WINDOWS
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tree_runtime import (
+    TreeMiniAppOperation,
+    tree_miniapp_unresolved,
+    recover_tree_miniapp_local,
     authorize_tree_miniapp_manual_run,
     cancel_tree_miniapp_daily_run,
     check_tree_miniapp_eligibility,
@@ -147,6 +155,7 @@ from .features.tree_runtime import (
 from .tree_score_policy import TREE_MINIAPP_MAX_TARGET_SCORE, TREE_MINIAPP_MIN_TARGET_SCORE, normalize_tree_score_profile
 from .features.trial_runtime import (
     authorize_trial_miniapp_manual_run,
+    is_trial_miniapp_busy,
     maybe_finalize_trial_batch_run,
     note_trial_batch_send_result,
     revoke_trial_miniapp_manual_run,
@@ -192,7 +201,8 @@ from .features.fishing import (
     normalize_fishing_config,
 )
 from .features.fishing_behavior import parse_chum_usage_counts, parse_pending_open_fish
-from .features.yuanying import get_yuanying_phase_text
+from .features import fishing_operations, treasure_operations, treasure_results, trial_operations, tree_operations
+from .features.yuanying import get_yuanying_phase_text, is_public_yuanying_unresolved
 from .features.wanxin import get_wanxin_ui_state, set_wanxin_config
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -4086,7 +4096,11 @@ def _get_fishing_miniapp_runtime_snapshot(send_as_id, identity_state):
     auto_enabled = bool(config.get("cave_public_fishing_enabled"))
     identity_available = bool(is_cave_public_identity_available(send_as_id))
     available = bool(entry_configured and selected and auto_enabled and identity_available)
-    if not entry_configured:
+    recovery_pending = fishing_operations.pending(identity_state)
+    recovery_reason = fishing_operations.reason(identity_state.get("fishing_operation")) if recovery_pending else ""
+    if recovery_pending:
+        status = fishing_operations.status_text(identity_state.get("fishing_operation"))
+    elif not entry_configured:
         status = "未配置公共入口"
     elif not selected:
         status = "未选择此身份"
@@ -4094,6 +4108,8 @@ def _get_fishing_miniapp_runtime_snapshot(send_as_id, identity_state):
         status = "MiniApp 自动运行关闭"
     elif not identity_available:
         status = "身份不可用"
+    elif identity_state.get("fishing_result_pending", {}) != {}:
+        status = "钓鱼结果待本地入账"
     else:
         status = "MiniApp 自动运行"
     parts = [status, "主动链仅走公共 MiniApp"]
@@ -4110,6 +4126,8 @@ def _get_fishing_miniapp_runtime_snapshot(send_as_id, identity_state):
         "auto_enabled": auto_enabled,
         "identity_available": identity_available,
         "legacy_fallback": False,
+        "recovery_pending": recovery_pending,
+        "recovery_reason": recovery_reason,
         "status": status,
         "summary": "｜".join(parts),
     }
@@ -4979,7 +4997,7 @@ def get_identity_ui_snapshot(send_as_id):
         jiyin_reply_to_msg_id = int(identity_state.get("jiyin_reply_to_msg_id", 0) or 0)
         saved_nanlong_choice = normalize_nanlong_choice(profile.get("nanlong_choice") or "")
         effective_nanlong_choice, _nanlong_choice_source = resolve_nanlong_choice(send_as_id)
-        nanlong_reply_to_msg_id = int(identity_state.get("nanlong_reply_to_msg_id", 0) or 0)
+        nanlong_reply_to_msg_id, nanlong_deadline_at, nanlong_reply_due_at, nanlong_pending_valid = get_nanlong_pending_state()
         stargazer_followup_due_at = float(identity_state.get("stargazer_followup_due_at", 0) or 0)
         stargazer_next_panel_time = float(identity_state.get("next_stargazer_panel_time", 0) or 0)
         if stargazer_followup_due_at > 0 and stargazer_next_panel_time > 0:
@@ -5004,8 +5022,6 @@ def get_identity_ui_snapshot(send_as_id):
                 "reply_to_msg_id": int((item or {}).get("reply_to_msg_id", 0) or 0),
             })
         jiyin_deadline_at = float(identity_state.get("next_jiyin_time", 0) or 0)
-        nanlong_deadline_at = float(identity_state.get("next_nanlong_time", 0) or 0)
-        nanlong_reply_due_at = float(identity_state.get("nanlong_reply_due_at", 0) or 0)
         identity_status_text = "运行中"
         if not global_enabled:
             identity_status_text = "全局暂停"
@@ -5229,11 +5245,11 @@ def get_identity_ui_snapshot(send_as_id):
             "nanlong_effective_choice": effective_nanlong_choice,
             "nanlong_effective_choice_label": get_nanlong_choice_label(effective_nanlong_choice),
             "nanlong_choice_source": _nanlong_choice_source,
-            "nanlong_pending": bool(nanlong_reply_to_msg_id > 0 and nanlong_deadline_at > now),
+            "nanlong_pending": not nanlong_pending_valid or bool(nanlong_reply_to_msg_id > 0 and nanlong_deadline_at > now) or has_nanlong_pending_action(send_as_id),
             "nanlong_deadline_at": fmt_abs_ts(nanlong_deadline_at),
             "nanlong_reply_due_at": fmt_abs_ts(nanlong_reply_due_at),
             "nanlong_reply_to_msg_id": nanlong_reply_to_msg_id,
-            "nanlong_last_error": identity_state.get("nanlong_last_error") or "",
+            "nanlong_last_error": (identity_state.get("nanlong_last_error") or "") if nanlong_pending_valid else "南陇侯待处理状态异常，需核对原记录",
             "checkin_window_local": {
                 "start_hour": checkin_window_local[0],
                 "end_hour": checkin_window_local[1],
@@ -7416,17 +7432,24 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
         identity_id = 0
     if identity_id not in get_identity_ids():
         return False, "身份不存在", {}
+    normalized_game_key = str(game_key or "").strip().lower()
+    if normalized_game_key == "cave_treasure":
+        recovered = recover_cave_treasure_result(identity_id)
+        if recovered is not None and not treasure_operations.resume_allowed(identity_id):
+            return bool(recovered["ok"]), recovered["message"], recovered["extra"]
     if not get_identity_enabled(identity_id):
         return False, "身份已停用", {}
 
-    normalized_game_key = str(game_key or "").strip().lower()
     command = MINIAPP_MANUAL_RUN_COMMANDS.get(normalized_game_key)
     if not command:
         allowed = "/".join(sorted(MINIAPP_MANUAL_RUN_COMMANDS))
         return False, f"MiniApp 手动执行仅允许 {allowed}", {}
 
+    treasure_owner = None
     if normalized_game_key == "cave_treasure":
-        authorize_cave_treasure_miniapp_manual_run(identity_id)
+        treasure_owner = MiniAppIdentityOwner.capture(identity_id)
+        if not authorize_cave_treasure_miniapp_manual_run(identity_id):
+            return False, "洞府寻宝授权未通过，未新建入口", {"status": "persistence_pending"}
     if normalized_game_key == "stargazer":
         authorize_stargazer_miniapp_manual_run(identity_id)
     if normalized_game_key == "tree":
@@ -7441,7 +7464,16 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
             submit=True,
         )
     if normalized_game_key == "trial":
-        authorize_trial_miniapp_manual_run(identity_id)
+        if is_trial_miniapp_busy(identity_id):
+            return False, "天机试炼仍在执行，未恢复或新建入口", {"status": "busy"}
+        recovered = trial_operations.recover_local(identity_id)
+        if recovered is not None:
+            return False, "天机试炼仅处理本地恢复，未新建入口", {
+                "status": recovered.get("status"), "error": recovered.get("error"),
+                "persistence_only": True,
+            }
+        if not authorize_trial_miniapp_manual_run(identity_id):
+            return False, "天机试炼授权未通过，未新建入口", {"status": "operation_pending"}
     op_id = f"miniapp_manual_run:{normalized_game_key}:{identity_id}:{int(time.time())}"
     msg = await send_game_command(
         command,
@@ -7454,6 +7486,12 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
         chain_id="miniapp_manual_run",
         delete_policy="keep",
         queue_timeout=90,
+        **({"operation_check": lambda: (
+            treasure_owner.is_current() and not is_cave_treasure_busy(identity_id) and get_identity_enabled(identity_id)
+            and (treasure_operations.resume_allowed(identity_id) or (
+                treasure_results.admission_allowed(treasure_owner) and not treasure_operations.hold_reason(identity_id)
+                and not _cave_treasure_unknown_hold(identity_id, time.time())))
+        )} if treasure_owner else {}),
     )
     extra = {
         "game_key": normalized_game_key,
@@ -7481,7 +7519,7 @@ async def ui_send_miniapp_manual_run(send_as_id, game_key, payload=None):
     return True, "已发送 MiniApp 手动执行命令，等待入口按钮接管", extra
 
 
-def _cave_public_entry_runner(identity_id, action):
+def _cave_public_entry_runner(identity_id, action, *, tree_operation=None):
     runners = {
         "small_world": run_cave_public_small_world_sync,
         "treasure": run_cave_public_treasure, "hunt": run_cave_public_treasure,
@@ -7507,7 +7545,9 @@ def _cave_public_entry_runner(identity_id, action):
             choice_key=normalize_miniapp_auto_config().get("cave_public_fate_cards_choice_key", "accept"),
         )
     if action in {"tree", "spirit_tree", "luoyun_tree"}:
-        return lambda url: run_cave_public_tree(identity_id, url, score_profiles=get_tree_miniapp_score_config(identity_id))
+        return lambda url: run_cave_public_tree(
+            identity_id, url, score_profiles=get_tree_miniapp_score_config(identity_id), operation=tree_operation,
+        )
     commands = {
         "yinluo_status": ".我的阴罗幡", "yinluo_banner": ".我的阴罗幡",
         "concubine_status": ".我的侍妾", "concubine": ".我的侍妾",
@@ -7520,7 +7560,7 @@ def _cave_public_entry_runner(identity_id, action):
     return None
 
 
-async def ui_run_cave_public_entry(send_as_id, action, public_entry_url, *, operation_check=None):
+async def ui_run_cave_public_entry(send_as_id, action, public_entry_url, *, operation_check=None, tree_operation=None):
     def operation_allowed():
         try:
             require_miniapp_operation(operation_check)
@@ -7537,12 +7577,16 @@ async def ui_run_cave_public_entry(send_as_id, action, public_entry_url, *, oper
     owner = MiniAppIdentityOwner.capture(identity_id)
     if owner is None or identity_id not in get_identity_ids():
         return False, "身份不存在", {}
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action in {"treasure", "hunt", "cave_treasure"}:
+        recovered = recover_cave_treasure_result(identity_id)
+        if recovered is not None and not treasure_operations.resume_allowed(identity_id):
+            return bool(recovered["ok"]), recovered["message"], recovered["extra"]
     if not is_cave_public_identity_available(identity_id):
         return False, "身份已停用", {}
     if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return False, "全局暂停来源不允许洞府公共入口 MiniApp HTTP", {"status": "cancelled"}
-    normalized_action = str(action or "").strip().lower()
-    runner = _cave_public_entry_runner(identity_id, normalized_action)
+    runner = _cave_public_entry_runner(identity_id, normalized_action, tree_operation=tree_operation)
     if runner is None:
         return False, "洞府公共入口动作无效", {}
     shared_hold = _cave_public_shared_hold(time.time())
@@ -8812,7 +8856,8 @@ def _normalize_cave_public_batch_identity_ids(payload):
 async def _run_trial_miniapp_batch(batch_id, identity_ids):
     sent = 0
     for identity_id in identity_ids:
-        authorize_trial_miniapp_manual_run(identity_id, batch_id=batch_id)
+        if not authorize_trial_miniapp_manual_run(identity_id, batch_id=batch_id):
+            continue
         op_id = f"miniapp_trial_batch:{batch_id}:{identity_id}"
         msg = await send_game_command(
             MINIAPP_MANUAL_RUN_COMMANDS["trial"],
@@ -8831,7 +8876,7 @@ async def _run_trial_miniapp_batch(batch_id, identity_ids):
             sent += 1
             note_trial_batch_send_result(batch_id, identity_id, ok=True, msg_id=msg_id)
         else:
-            revoke_trial_miniapp_manual_run(identity_id)
+            revoke_trial_miniapp_manual_run(identity_id, batch_id=batch_id)
             note_trial_batch_send_result(batch_id, identity_id, ok=False, error="发送被保护拦截")
         await maybe_finalize_trial_batch_run(batch_id)
         await asyncio.sleep(1.0)
@@ -8885,6 +8930,19 @@ def _cave_public_background_action_due(action, identity_id, now):
         if action in {"deep_status", "deep_start", "deep_settle", "deep_force"}:
             return bool(state.get("deep_retreat_enabled")) and float(state.get("next_deep_retreat_time", 0) or 0) <= now
         if action == "treasure":
+            if is_cave_treasure_busy(identity_id):
+                return False
+            if treasure_operations.resume_allowed(identity_id):
+                return True
+            if treasure_results.hold_reason(identity_id) or treasure_operations.hold_reason(identity_id):
+                return False
+            if _cave_treasure_unknown_hold(identity_id, now):
+                return False
+            result = state.get(treasure_results.STATE_KEY, {})
+            if (treasure_results.valid_record(result) and result["phase"] == "complete"
+                    and result["response"]["extra"]["daily_exhausted"]
+                    and get_day_key(result["created_at"]) == get_day_key(now)):
+                return False
             daily_done_key = ("treasure", get_day_key(now), int(identity_id))
             if daily_done_key in _cave_public_background_daily_done:
                 return False
@@ -8892,9 +8950,7 @@ def _cave_public_background_action_due(action, identity_id, now):
             record_state = record.get("state") if isinstance(record.get("state"), dict) else {}
             updated_at = float(record.get("updated_at", 0) or 0)
             if updated_at > 0 and get_day_key(updated_at) == get_day_key(now):
-                games_used = int(record_state.get("games_used", 0) or 0)
-                games_limit = int(record_state.get("games_limit", 0) or 0)
-                if games_limit > 0 and games_used >= games_limit:
+                if treasure_quota_exhausted(record_state):
                     return False
             return True
         if action == "fate_cards":
@@ -8911,6 +8967,10 @@ def _cave_public_background_action_due(action, identity_id, now):
         if action == "fishing":
             if int(identity_id) not in set(normalize_miniapp_auto_config().get("cave_public_fishing_identity_ids") or []):
                 return False
+            if state.get("fishing_result_pending", {}) != {}:
+                return True
+            if fishing_operations.pending(state):
+                return fishing_operations.local_recovery_due(state.get("fishing_operation"), now)
             if float(state.get("next_fishing_time", 0) or 0) > now:
                 return False
             day_key = get_day_key(now)
@@ -8944,6 +9004,9 @@ def _cave_public_background_action_due(action, identity_id, now):
                 return False
             next_time = float(state.get("next_yuanying_time", 0) or 0)
             phase = str(state.get("yuanying_phase") or "idle")
+            if phase == "launching":
+                record = get_miniapp_state_records().get(f"{int(identity_id)}:cave_yuanying") or {}
+                return next_time <= now and is_public_yuanying_unresolved(record)
             return next_time <= now and phase in {
                 "idle",
                 "running",
@@ -9183,6 +9246,7 @@ async def _execute_cave_public_background_action(operation, delay_sec):
         if (
             operation.owner.is_current() and action in {"treasure", "fishing", "fate_cards"}
             and (extra.get("daily_exhausted") or extra.get("terminal_skip"))
+            and not extra.get("outcome_unknown")
         ):
             _cave_public_background_daily_done.add((action, operation.day_key, int(identity_id)))
         if (
@@ -9195,6 +9259,9 @@ async def _execute_cave_public_background_action(operation, delay_sec):
             if miniapp_retry_after_sec({"extra": extra}) > 0:
                 retry_sec = max(30, min(24 * 3600, miniapp_retry_after_sec({"extra": extra})))
             if action in {"deep_status", "deep_settle"} and not ok:
+                retry_sec = max(retry_sec, 30 * 60)
+            if (action == "treasure" and not ok and extra.get("persistence_only")
+                    and extra.get("status") == "operation_pending"):
                 retry_sec = max(retry_sec, 30 * 60)
             _cave_public_background_retry_at[operation.retry_key] = finished_at + retry_sec
         shared_retry_sec = 0.0
@@ -9221,9 +9288,27 @@ async def _execute_cave_public_background_action(operation, delay_sec):
         )
 
 
+def _recover_cave_treasure_result_once(now):
+    for identity_id in get_identity_ids():
+        retry_key = ("treasure_result", identity_id)
+        if (now < float(_cave_public_background_retry_at.get(retry_key, 0) or 0)
+                or is_cave_treasure_busy(identity_id)
+                or not (treasure_results.recovery_due(identity_id) or treasure_operations.recovery_due(identity_id))):
+            continue
+        result = recover_cave_treasure_result(identity_id)
+        if result is not None:
+            _cave_public_background_retry_at[retry_key] = now + 60
+            return {"started": False, "kind": "treasure_local_recovery", "identity_id": identity_id,
+                    "ok": bool(result["ok"]), "message": result["message"], **result["extra"]}
+    return None
+
+
 async def _run_cave_public_background_scheduler(now, config):
     global _cave_public_background_operation
     now = float(now or time.time())
+    recovered = _recover_cave_treasure_result_once(now)
+    if recovered is not None:
+        return recovered
     shared_hold = _cave_public_shared_hold(now)
     if shared_hold:
         return {"started": False, "reason": "shared_rate_limit", **shared_hold}
@@ -9342,68 +9427,55 @@ async def _mark_tree_daily_entry_unknown(identity_id, day_key, now, *, op_id="",
     return {"started": False, "reason": "tree_entry_timeout", "identity_id": identity_id}
 
 
-async def _run_tree_public_daily_worker(identity_id, entry_urls, *, day_key, op_id, score_profiles):
-    final_result = {}
-    try:
-        for index, url in enumerate(entry_urls):
-            final_result = await run_cave_public_tree(
-                identity_id,
-                url,
-                day_key=day_key,
-                op_id=op_id,
-                score_profiles=score_profiles,
-            )
-            extra = dict(final_result.get("extra") or {})
-            if final_result.get("ok") or extra.get("result"):
-                _close_cave_public_upstream_circuit()
-                return final_result
-            message = str(final_result.get("message") or "")
-            if not _is_cave_public_entry_health_failure(message):
-                _close_cave_public_upstream_circuit()
-                break
-            if _is_cave_public_upstream_failure(message):
-                _open_cave_public_upstream_circuit(message)
-                break
-            if index + 1 >= len(entry_urls):
-                break
-    except Exception as exc:
-        final_result = {"ok": False, "message": f"{type(exc).__name__}: {exc}", "extra": {}}
+async def _run_tree_public_daily_worker(operation):
+    identity_id = operation.owner.identity_id
+    final_result = {"ok": False, "message": "洞府灵树任务已取消", "extra": {"status": "cancelled"}}
 
-    error = str(final_result.get("message") or "洞府落云灵树入口执行失败")
-    retry_after_sec = miniapp_retry_after_sec(final_result)
-    phase = "retry_pending" if retry_after_sec > 0 else "blocked"
-    recorded_at = time.time()
-    record_miniapp_state(
-        identity_id,
-        "tree",
-        {
-            "kind": "daily",
-            "day_key": day_key,
-            "phase": phase,
-            "completed_today": False,
-            "command_msg_id": 0,
-            "error": error,
-            "retry_after_sec": retry_after_sec,
-            "retry_at": recorded_at + retry_after_sec if retry_after_sec > 0 else 0.0,
-        },
-        source="tree_daily_scheduler",
-        source_id=op_id,
-        now=recorded_at,
-        outputs=("daily_counter", "score_policy", "rewards"),
-        replaces_commands=(".灵树",),
-    )
-    await send_audit_log(
-        f"🌳 洞府落云灵树未执行：{error}",
-        scope="identity",
-        send_as_id=identity_id,
-        priority="normal",
-        limit=320,
-    )
-    return final_result
+    def controls_current():
+        try:
+            require_miniapp_operation(operation.operation_check)
+        except MiniAppRequestAborted:
+            return False
+        return operation.owner.is_current()
+
+    try:
+        async with operation.execution() as acquired:
+            if not acquired or not operation.can_dispatch():
+                return final_result
+            try:
+                ok, message, extra = await ui_run_cave_public_entry(
+                    identity_id, "tree", "", operation_check=controls_current, tree_operation=operation,
+                )
+                final_result = {"ok": ok, "message": message, "extra": extra}
+            except Exception as exc:
+                final_result = {"ok": False, "message": f"tree entry failed ({type(exc).__name__})", "extra": {}}
+            if operation.finished:
+                return final_result
+            if not operation.result_is_current():
+                return final_result
+            extra = dict(final_result.get("extra") or {})
+            result = dict(extra.get("result") or {}) or {
+                "ok": False, "status": str(extra.get("status") or "failed"),
+                "error": str(final_result.get("message") or "洞府落云灵树入口执行失败"),
+                "retry_after_sec": miniapp_retry_after_sec(final_result), "data": {},
+            }
+            if operation.finish(result, now=time.time()):
+                try:
+                    await send_audit_log(
+                        f"🌳 洞府落云灵树未执行：{result.get('error') or result.get('status')}",
+                        scope="identity", send_as_id=identity_id, priority="normal", limit=320,
+                    )
+                except asyncio.CancelledError:
+                    raise MiniAppFlowCancelled(final_result) from None
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("Tree entry audit failed (%s); state retained", type(exc).__name__)
+            return final_result
+    finally:
+        operation.abandon()
 
 
 async def _run_tree_miniapp_daily_scheduler(now, config):
-    if not get_global_enabled():
+    if not get_global_enabled() and get_global_pause_source() != MAINTENANCE_PAUSE_SOURCE:
         return {"started": False, "reason": "global_disabled"}
     enabled_ids = list(config.get("tree_daily_enabled_identity_ids") or ())
     if not enabled_ids:
@@ -9423,7 +9495,7 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
                 op_id=op_id,
                 command_msg_id=int(coordinator.get("command_msg_id", 0) or 0),
             )
-    if coordinator_phase in {"entry_pending", "running"}:
+    if coordinator_phase in {"queued", "entry_pending", "running"}:
         return {"started": False, "reason": "tree_busy"}
     day_key = get_day_key(now)
     for identity_id in enabled_ids:
@@ -9431,9 +9503,15 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
         if not eligible:
             continue
         daily_state = _tree_daily_state_for_identity(identity_id)
+        recovered = recover_tree_miniapp_local(identity_id)
+        if recovered is not None:
+            return {"started": False, "reason": "tree_local_recovery", **recovered}
+        if not tree_operations.admission_allowed(MiniAppIdentityOwner.capture(identity_id)):
+            continue
+        if tree_miniapp_unresolved(daily_state):
+            continue
         if (
             daily_state.get("kind") == "daily"
-            and daily_state.get("day_key") == day_key
             and str(daily_state.get("phase") or "") == "running"
             and coordinator_phase not in {"entry_pending", "running"}
         ):
@@ -9443,9 +9521,11 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
                     identity_id,
                     "tree",
                     {
+                        **{key: value for key, value in daily_state.items() if not key.startswith("_record_")},
                         "kind": "daily",
-                        "day_key": day_key,
+                        "day_key": daily_state.get("day_key") or day_key,
                         "phase": "unknown",
+                        "outcome_unknown": True,
                         "completed_today": False,
                         "command_msg_id": 0,
                         "error": "公共入口任务中断，结果未知",
@@ -9464,6 +9544,7 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
                     limit=240,
                 )
                 return {"started": False, "reason": "tree_run_interrupted", "identity_id": identity_id}
+            continue
         if (
             daily_state.get("kind") == "daily"
             and daily_state.get("day_key") == day_key
@@ -9502,35 +9583,51 @@ async def _run_tree_miniapp_daily_scheduler(now, config):
         entry_urls = list(config.get("cave_public_entry_urls") or ())
         if not entry_urls:
             return {"started": False, "reason": "tree_public_entry_missing", "identity_id": identity_id}
-        op_id = f"tree_daily:{day_key}:{int(identity_id)}"
-        record_miniapp_state(
-            identity_id,
-            "tree",
-            {
-                "kind": "daily",
-                "day_key": day_key,
-                "phase": "running",
-                "completed_today": False,
-                "command_msg_id": 0,
-            },
-            source="tree_daily_scheduler",
-            source_id=op_id,
-            now=now,
-            outputs=("daily_counter", "score_policy", "rewards"),
-            replaces_commands=(".灵树",),
+        score_profiles = deepcopy(get_tree_miniapp_score_config(identity_id))
+
+        def controls_current():
+            current = normalize_miniapp_auto_config()
+            return (identity_id in (current.get("tree_daily_enabled_identity_ids") or ())
+                    and list(current.get("cave_public_entry_urls") or ()) == entry_urls
+                    and get_tree_miniapp_score_config(identity_id) == score_profiles)
+
+        operation = TreeMiniAppOperation.daily(
+            identity_id, now=now, day_key=day_key, score_profiles=score_profiles,
+            operation_check=controls_current,
         )
-        _fire_and_forget(_run_tree_public_daily_worker(
-            identity_id,
-            entry_urls,
-            day_key=day_key,
-            op_id=op_id,
-            score_profiles=get_tree_miniapp_score_config(identity_id),
-        ))
+        if operation is None:
+            continue
+        if not operation.reserve("queued", now=now):
+            return {"started": False, "reason": "tree_busy"}
+        op_id = operation.auth["op_id"]
+        worker = None
+        try:
+            record_miniapp_state(
+                identity_id, "tree", {
+                    "kind": "daily", "day_key": day_key, "phase": "running", "completed_today": False,
+                    "command_msg_id": 0, "owner_account_id": operation.owner.account_id, "op_id": op_id,
+                },
+                source="tree_daily_scheduler", source_id=op_id, now=now,
+                outputs=("daily_counter", "score_policy", "rewards"), replaces_commands=(".灵树",),
+            )
+            operation.refresh_record()
+            worker = _run_tree_public_daily_worker(operation)
+            task = _fire_and_forget(worker)
+            if isinstance(task, asyncio.Future):
+                task.add_done_callback(lambda _task: operation.abandon())
+        except Exception:
+            if worker is not None:
+                worker.close()
+            operation.abandon()
+            raise
         return {"started": True, "identity_id": identity_id, "op_id": op_id, "source": "cave_public"}
     return {"started": False, "reason": "tree_done_or_ineligible"}
 
 
 async def run_miniapp_daily_scheduler(now):
+    recovered = _recover_cave_treasure_result_once(float(now))
+    if recovered is not None:
+        return recovered
     raw_config = normalize_miniapp_auto_config()
     config = get_miniapp_auto_config_snapshot(now)
     if await maybe_send_cave_public_fate_cards_daily_summary(now):

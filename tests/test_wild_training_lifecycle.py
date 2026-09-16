@@ -22,6 +22,7 @@ IDENTITY_ID = 990430001
 NOW = 1700000000.0
 ENTRY_URL = "https://t.me/fanrenxiuxian_bot?startapp=df_FIXTURE43"
 JOURNEY_FLOW = dwelling.run_cave_journey_action_production_flow
+LOAD_SESSION = cave._load_cave_public_identity_session
 
 
 def journey_payload(*, completed=False, player_id=IDENTITY_ID):
@@ -208,7 +209,10 @@ def test_empty_journey_does_not_fabricate_a_zero_counter_panel():
 
 
 def test_nested_result_retains_confirmed_partial_action_without_old_panel(wild_env):
-    raw = {"ok": True, "actionResult": {"ok": True, "completed": True, "cultivationDelta": 1200}}
+    raw = {
+        "ok": True, "account": {"playerId": IDENTITY_ID},
+        "actionResult": {"ok": True, "completed": True, "cultivationDelta": 1200},
+    }
     wild_env.flow.return_value = flow_result({"ok": True, "data": raw})
     result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
     assert result["ok"]
@@ -552,8 +556,8 @@ def test_invalidated_journey_flow_does_not_send_http():
 
 
 def test_incomplete_counters_never_authorize_an_action(wild_env):
-    overview = wild_env.session["result"]["data"]["overview"]
-    overview["journey"]["wild_experience"].pop("daily_limit")
+    raw = wild_env.session["result"]["data"]["raw"]
+    raw["account"]["journey"]["wildExperience"].pop("dailyLimit")
     result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
     assert not result["ok"]
     wild_env.flow.assert_not_awaited()
@@ -656,3 +660,180 @@ def test_nonfinite_scheduler_timers_do_not_permanently_stall(wild_env, monkeypat
     asyncio.run(run())
     assert wild_env.identity["next_wild_training_time"] == NOW + 600
     wild_env.flow.assert_not_awaited()
+
+
+@pytest.mark.parametrize("player_id", [None, True, False, "", 0, "bad", -1001, float(IDENTITY_ID), IDENTITY_ID + 1, {}])
+def test_journey_selection_is_validated_before_auth_or_http(monkeypatch, player_id):
+    auth = AsyncMock(return_value="fixture-init")
+    monkeypatch.setattr(dwelling, "request_cave_treasure_miniapp_init_data", auth)
+    transport = Mock(return_value=journey_payload(completed=True))
+    result = asyncio.run(JOURNEY_FLOW(
+        IDENTITY_ID, token="df_FIXTURE43", webview_url=ENTRY_URL, player_id=player_id,
+        action="wild_experience", mode="cautious", transport=transport,
+    ))
+    assert not result["ok"]
+    assert result["error"].startswith("cave_action_player_")
+    auth.assert_not_awaited()
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("action,mode", [("wild_experience", "cautious"), ("set_encounter_mode", "off")])
+def test_journey_builders_require_selected_player(action, mode):
+    with pytest.raises(TypeError):
+        dwelling.build_cave_journey_action_request(action, mode=mode, token="df_FIXTURE43")
+    for invalid in (None, True, 0, -1, float(IDENTITY_ID)):
+        with pytest.raises(ValueError):
+            dwelling.build_cave_journey_action_request(action, mode=mode, token="df_FIXTURE43", player_id=invalid)
+    selected = -1_000_000_000_000 - IDENTITY_ID
+    request = dwelling.build_cave_journey_action_request(action, mode=mode, token="df_FIXTURE43", player_id=selected)
+    assert request["payload"]["playerId"] == selected
+
+
+def unowned_journey_payload(variant, *, completed=True):
+    raw = journey_payload(completed=completed)
+    if variant in {"missing", "selector_only"}:
+        raw["account"].pop("playerId")
+    elif variant == "contradiction":
+        raw["identity"] = {"selectedPlayerId": IDENTITY_ID + 1}
+    else:
+        raw["account"]["playerId"] = {"other": 7431, "bool": True, "float": float(IDENTITY_ID), "null": None}[variant]
+    if variant == "selector_only":
+        raw["identity"] = {"selectedPlayerId": IDENTITY_ID}
+    return raw
+
+
+@pytest.mark.parametrize("variant", ["missing", "selector_only", "contradiction", "other", "bool", "float", "null"])
+def test_journey_adapter_does_not_export_an_unowned_success(variant):
+    transport = Mock(return_value={"ok": True, "data": unowned_journey_payload(variant)})
+    result = asyncio.run(run_flow(transport))
+    assert not result["ok"]
+    assert result["status"] == "identity_unverified"
+    assert result["error"].startswith("cave_action_player_")
+    assert result["action_dispatched"]
+    assert not result["data"]
+    transport.assert_called_once()
+
+
+@pytest.mark.parametrize("variant", ["missing", "selector_only", "contradiction", "other", "bool", "float", "null"])
+def test_public_journey_rejects_unowned_snapshot_before_any_dispatch_or_cooldown(wild_env, variant):
+    data = wild_env.session["result"]["data"]
+    data["raw"] = unowned_journey_payload(variant, completed=False)
+    before = copy.deepcopy(state_module._meta_state)
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert not result["ok"]
+    assert not result["extra"].get("acted")
+    assert "cave_action_player_" in result["message"]
+    wild_env.flow.assert_not_awaited()
+    assert state_module._meta_state == before
+
+
+@pytest.mark.parametrize("variant", ["missing", "selector_only", "contradiction", "bool", "float"])
+def test_public_journey_reducer_independently_rejects_unowned_receipts(wild_env, variant):
+    wild_env.flow.return_value = flow_result(unowned_journey_payload(variant))
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert not result["ok"]
+    assert result["extra"]["phase"] == "action_unknown"
+    assert result["extra"]["acted"]
+    assert result["extra"]["outcome_unknown"]
+    assert not result["extra"].get("action_result")
+    assert not result["extra"].get("wild")
+    assert not result["extra"].get("next_time")
+    assert not state_module.get_inventory_delta_records()
+    assert not state_module.get_miniapp_state_records()
+
+
+@pytest.mark.parametrize("completed", [0, "false", None])
+def test_journey_completion_flag_must_be_boolean_when_present(wild_env, completed):
+    raw = journey_payload(completed=True)
+    raw["actionResult"]["completed"] = completed
+    wild_env.flow.return_value = flow_result(raw)
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert not result["ok"]
+    assert result["extra"]["outcome_unknown"]
+    assert not state_module.get_inventory_delta_records()
+
+
+def test_unowned_journey_result_does_not_consume_tianxing_or_create_rewards(wild_env, monkeypatch):
+    enable_tianxing(wild_env, monkeypatch)
+    raw = unowned_journey_payload("selector_only")
+    raw["actionResult"]["rawMessage"] = "\u3010\u63a8\u547d\u547d\u4e2d\u3011\u63a2\u7d22\n\u3010\u6539\u547d\u56de\u5929\u3011"
+    wild_env.flow.return_value = flow_result(raw)
+    consume = Mock(return_value=True)
+    unknown = Mock()
+    monkeypatch.setattr(wild, "apply_tianxing_passive", consume)
+    monkeypatch.setattr(wild, "mark_tianxing_route_result_unknown", unknown)
+    asyncio.run(run_worker())
+    consume.assert_not_called()
+    unknown.assert_called_once()
+    assert wild_env.identity["wild_training_last_completed_at"] == 0
+    assert not state_module.get_inventory_delta_records()
+
+
+def test_journey_uses_verified_raw_panel_instead_of_a_detached_cached_overview(wild_env):
+    wild_env.session["result"]["data"]["raw"] = journey_payload(completed=True)
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert result["ok"]
+    assert result["extra"]["phase"] == "cooldown"
+    assert result["extra"]["next_time"] == pytest.approx(NOW + 43200, abs=0.1)
+    wild_env.flow.assert_not_awaited()
+
+
+@pytest.mark.parametrize("strategy,mode", [("谨慎", "cautious"), ("均衡", "balanced"), ("深入", "deep")])
+@pytest.mark.parametrize("signed_reply", [True, False])
+def test_real_journey_selection_only_changes_the_channel(wild_env, monkeypatch, strategy, mode, signed_reply):
+    selected = -1_000_000_000_000 - IDENTITY_ID
+    state_module.set_identity_account(7431, 7431)
+    primary_before = copy.deepcopy(state_module.get_identity_state(7431))
+    wild_env.identity["wild_training_strategy"] = strategy
+    state_module.set_identity_enabled(IDENTITY_ID, False)
+    state_module.set_channel_send_as_health({"status": "closed", "restore_identity_ids": [IDENTITY_ID]})
+    calls = []
+
+    def transport(request):
+        payload = request["payload"]
+        player = payload.get("playerId", 7431)
+        action = payload.get("action", "start")
+        calls.append((action, player, payload.get("mode")))
+        reply_player = player if signed_reply else dwelling._normalize_cave_inventory_player_id(player)
+        raw = journey_payload(completed=action == "wild_experience", player_id=reply_player)
+        raw["identity"] = {"selectedPlayerId": player, "choices": [{"playerId": 7431}, {"playerId": selected}]}
+        return raw
+
+    monkeypatch.setattr(cave, "_load_cave_public_identity_session", LOAD_SESSION)
+    monkeypatch.setattr(cave, "request_cave_treasure_miniapp_init_data", AsyncMock(return_value="fixture-init"))
+    monkeypatch.setattr(cave, "run_cave_journey_action_production_flow", JOURNEY_FLOW)
+    monkeypatch.setattr(dwelling, "_flow_transport", lambda *_args, **_kwargs: transport)
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, strategy, now=NOW))
+    assert result["ok"], result
+    assert calls == [("start", 7431, None), ("start", selected, None), ("wild_experience", selected, mode)]
+    assert state_module.get_identity_state(7431) == primary_before
+    assert result["extra"]["completed"]
+    assert result["extra"]["next_time"] == pytest.approx(NOW + 43200, abs=0.1)
+    rows = [row for key, row in state_module.get_inventory_delta_records().items() if key != "_meta"]
+    assert len(rows) == 1
+    assert rows[0]["identity_id"] == IDENTITY_ID
+    assert rows[0]["items"] == {"fixture-loot": 1}
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 422, 429, 500, 503])
+def test_unowned_http_failure_keeps_transport_classification_without_business_data(wild_env, monkeypatch, status):
+    raw = unowned_journey_payload("other")
+    raw.update(ok=False, error="fixture-rejected-or-unavailable")
+    headers = {"Retry-After": "50000"} if status == 429 or status >= 500 else {}
+    response = SimpleNamespace(status_code=status, headers=headers, json=lambda: raw)
+    transport = Mock(return_value=response)
+
+    async def action(*args, **kwargs):
+        return await JOURNEY_FLOW(*args, **kwargs, transport=transport, adapter=adapter_with_limit())
+
+    monkeypatch.setattr(cave, "run_cave_journey_action_production_flow", action)
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert not result["ok"]
+    assert result["extra"]["phase"] == ("action_unknown" if status >= 500 else "blocked")
+    assert result["extra"]["outcome_unknown"] is (status >= 500)
+    assert not result["extra"].get("action_result")
+    assert not result["extra"].get("wild")
+    assert not state_module.get_inventory_delta_records()
+    assert not state_module.get_miniapp_state_records()
+    assert miniapp_retry_after_sec(result) == (50000 if headers else 0)
+    transport.assert_called_once()

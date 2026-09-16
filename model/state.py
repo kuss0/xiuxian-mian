@@ -26,6 +26,12 @@ from .config import (
 from .module_manifest import is_module_archived
 from .tree_score_policy import normalize_tree_score_records
 
+FISHING_OPERATION_MAX_BYTES = 256 * 1024
+TRIAL_OPERATION_MAX_BYTES = 256 * 1024
+TREASURE_RESULT_MAX_BYTES = 256 * 1024
+TREASURE_OPERATION_MAX_BYTES = 256 * 1024
+TREE_OPERATION_MAX_BYTES = 256 * 1024
+
 _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
@@ -53,7 +59,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
     "last_formation_msg_id", "formation_pending_invite_msg_id", "formation_pending_assist_msg_id", "formation_last_action", "formation_last_result", "formation_last_error", "formation_last_success_at",
-    "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_status_seen_at", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
+    "tianti_commands", "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_status_seen_at", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_chat_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_answer_method", "quiz_last_error", "quiz_last_matched_at", "quiz_deadline_at",
     "jiyin_reply_to_msg_id", "jiyin_reply_chat_id", "jiyin_last_error",
     "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_greet_msg_id", "concubine_last_greet_day", "concubine_greet_retry_count", "concubine_greet_last_error", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id", "concubine_gift_msg_id", "concubine_gift_amount", "concubine_last_gift_day", "concubine_gift_attempt_day", "concubine_gift_last_error", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_voyage_msg_id", "concubine_voyage_retry_count", "concubine_last_panel_msg_id", "concubine_last_panel_chat_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_heart_choice_prompt_msg_id", "concubine_heart_choice_round", "concubine_heart_choice_sent_at", "concubine_heart_choice_retry_count", "concubine_last_recovered_reply_key", "concubine_last_recovered_reply_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_fragment_xutian_count", "concubine_fragment_xutian_total", "concubine_fragment_cangkun_count", "concubine_fragment_cangkun_total", "concubine_fragment_confirm_key", "concubine_fragment_confirmed_at", "concubine_voyage_status", "concubine_voyage_route", "concubine_voyage_return_at", "concubine_voyage_last_result", "concubine_voyage_last_error", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
@@ -75,10 +81,42 @@ IDENTITY_RUNTIME_COLUMNS = [
     "second_soul_purge_msg_id", "second_soul_purge_status_msg_id", "second_soul_purge_attempts", "second_soul_purge_due_at", "second_soul_purge_last_at", "second_soul_last_error",
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_yindao_resend_count", "taiyi_search_resend_count", "taiyi_last_error",
     "weak_reason", "weak_source", "weak_last_block_log_at",
-    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload", "identity_info_refresh", "identity_profile_observed_at", "xiuwei_accounting",
+    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload", "identity_info_refresh", "identity_profile_observed_at", "xiuwei_accounting", "yinluo_accounting",
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "sect_teach_completed_message_keys", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "identity_info_refresh", "identity_profile_observed_at", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "wanxin_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders", "mulan_report_texts", "duel_daily_limited_targets", "explore_rift_result_evidence", "explore_rift_rebirth_operation", "second_soul_commands"}
 IDENTITY_JSON_COLUMNS.add("xiuwei_accounting")
+IDENTITY_JSON_COLUMNS.add("yinluo_accounting")
+IDENTITY_JSON_COLUMNS.add("tianti_commands")
+IDENTITY_JSON_COLUMNS.add("concubine_status_query")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_status_query")
+IDENTITY_JSON_COLUMNS.add("concubine_gift_actions")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_gift_actions")
+IDENTITY_JSON_COLUMNS.add("concubine_greet_action")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_greet_action")
+IDENTITY_JSON_COLUMNS.add("concubine_fragment_actions")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_fragment_actions")
+IDENTITY_JSON_COLUMNS.add("concubine_voyage_actions")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_voyage_actions")
+IDENTITY_JSON_COLUMNS.add("concubine_tianji_action")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_tianji_action")
+IDENTITY_JSON_COLUMNS.add("concubine_heart_session")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_heart_session")
+IDENTITY_JSON_COLUMNS.add("concubine_reacquire_action")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_reacquire_action")
+IDENTITY_JSON_COLUMNS.add("concubine_external_observation")
+IDENTITY_RUNTIME_COLUMNS.append("concubine_external_observation")
+IDENTITY_JSON_COLUMNS.add("fishing_result_pending")
+IDENTITY_RUNTIME_COLUMNS.append("fishing_result_pending")
+IDENTITY_JSON_COLUMNS.add("fishing_operation")
+IDENTITY_RUNTIME_COLUMNS.append("fishing_operation")
+IDENTITY_JSON_COLUMNS.add("trial_operation")
+IDENTITY_RUNTIME_COLUMNS.append("trial_operation")
+IDENTITY_JSON_COLUMNS.add("treasure_result")
+IDENTITY_RUNTIME_COLUMNS.append("treasure_result")
+IDENTITY_JSON_COLUMNS.add("treasure_operation")
+IDENTITY_RUNTIME_COLUMNS.append("treasure_operation")
+IDENTITY_JSON_COLUMNS.add("tree_operation")
+IDENTITY_RUNTIME_COLUMNS.append("tree_operation")
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "mulan_enabled", "wanxin_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_high_stock_silence_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "duel_unequip_prepared", "fishing_enabled",
@@ -428,6 +466,7 @@ IDENTITY_STATE_TEMPLATE = {
     "next_tianti_wenxin_time": 0,
     "next_tianti_climb_time": 0,
     "next_tianti_gangfeng_time": 0,
+    "tianti_commands": {},
     "tianti_status_reply_to_msg_id": 0,
     "tianti_last_status_msg_id": 0,
     "tianti_last_status_seen_at": 0,
@@ -507,6 +546,15 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_availability": "unknown",
     "concubine_nanlong_strategy": "reacquire_after_loss",
     "concubine_status_msg_id": 0,
+    "concubine_status_query": {},
+    "concubine_gift_actions": {},
+    "concubine_greet_action": {},
+    "concubine_fragment_actions": {},
+    "concubine_voyage_actions": {},
+    "concubine_tianji_action": {},
+    "concubine_heart_session": {},
+    "concubine_reacquire_action": {},
+    "concubine_external_observation": {},
     "concubine_greet_msg_id": 0,
     "concubine_last_greet_day": "",
     "concubine_greet_retry_count": 0,
@@ -732,6 +780,12 @@ IDENTITY_STATE_TEMPLATE = {
     "fishing_transfer_due_at": 0,
     "fishing_caught_fish_json": "",
     "fishing_valuable_drop_reminders": [],
+    "fishing_result_pending": {},
+    "fishing_operation": {},
+    "trial_operation": {},
+    "treasure_result": {},
+    "treasure_operation": {},
+    "tree_operation": {},
     "fishing_phase": "idle",
     "fishing_reply_to_msg_id": 0,
     "fishing_reply_due_at": 0,
@@ -850,6 +904,7 @@ IDENTITY_STATE_TEMPLATE = {
     "identity_info_refresh": {},
     "identity_profile_observed_at": {},
     "xiuwei_accounting": {},
+    "yinluo_accounting": {},
     "startup_module_alerts": [],
 
     # 元婴阻塞日志去重
@@ -989,6 +1044,14 @@ def remove_identity(send_as_id):
     dao_path_records = get_tianjige_dao_path_records()
     if dao_path_records.pop(str(send_as_id), None) is not None:
         set_tianjige_dao_path_records(dao_path_records)
+        removed = True
+    miniapp_records = get_miniapp_state_records()
+    filtered_miniapp_records = {
+        key: record for key, record in miniapp_records.items()
+        if not str(key).startswith(f"{send_as_id}:")
+    }
+    if len(filtered_miniapp_records) != len(miniapp_records):
+        set_miniapp_state_records(filtered_miniapp_records)
         removed = True
     watchers = get_quiz_learning_watchers()
     filtered_watchers = {

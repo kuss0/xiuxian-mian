@@ -1,5 +1,6 @@
 import asyncio
 import copy
+from dataclasses import replace
 import sys
 import unittest
 from pathlib import Path
@@ -11,9 +12,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
+from model import cultivation_accounting, yinluo_accounting
 from model import app
 from model.features import deep_retreat, passive_inbox, yinluo
 from model.real_message_replay import get_real_message_text, iter_real_message_samples
+from yinluo_native_support import BOT, CHAT, apply_native, native_reply, seed_resources
 
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "real_message_samples.json"
@@ -330,6 +333,9 @@ class YinluoManualPlanTests(unittest.TestCase):
             realm="结丹初期",
             xiuwei_max=50000,
         )
+        self.addCleanup(patch.stopall)
+        patch.object(yinluo_accounting.persistence, "save_state", return_value=True).start()
+        seed_resources(self.identity_id, 1_780_000_000.0)
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -433,6 +439,7 @@ class YinluoManualPlanTests(unittest.TestCase):
     def test_convert_blocks_when_known_xiuwei_is_insufficient(self):
         now = 1_780_000_000.0
         state_module.update_send_as_profile(self.identity_id, xiuwei_current=800, xiuwei_max=50000)
+        seed_resources(self.identity_id, now + 1, cultivation=800, profile_msg_id=11, panel_root=30)
         with state_module.use_identity(self.identity_id):
             state_module.state["yinluo_enabled"] = True
             state_module.state["yinluo_observation"] = {
@@ -572,19 +579,30 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             realm="结丹初期",
             xiuwei_max=50000,
         )
+        self.addCleanup(patch.stopall)
+        patch.object(yinluo_accounting.persistence, "save_state", return_value=True).start()
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
     async def _run_with_observation(self, observation, now=1_780_000_000.0):
-        msg = SimpleNamespace(id=9201, sent_at=now)
+        msg = SimpleNamespace(id=9201, sent_at=now, chat_id=CHAT)
         with state_module.use_identity(self.identity_id):
+            if not state_module.state["yinluo_accounting"]:
+                seed_resources(self.identity_id, now, sha=observation.get("sha_current", 2000), stocks=observation.get("soul_stocks"))
             state_module.state["yinluo_enabled"] = True
             state_module.state["yinluo_observation"] = observation
-            with patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
+            with patch.object(yinluo.time, "time", return_value=now), patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
                 await yinluo.run_yinluo_scheduler(now)
             return send_mock, state_module.state["yinluo_observation"]
+
+    def assert_in_flight(self, command):
+        book, reason = yinluo_accounting.read_accounting(self.identity_id)
+        self.assertFalse(reason)
+        active = [item for item in book["operations"] if item["phase"] in yinluo_accounting.LIVE_PHASES]
+        self.assertEqual(1, len(active))
+        self.assertEqual((command, "sent", CHAT), (active[0]["command"], active[0]["phase"], active[0]["chat_id"]))
 
     async def test_scheduler_queries_banner_when_observation_missing(self):
         send_mock, observed = await self._run_with_observation({})
@@ -594,7 +612,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("阴罗宗", send_mock.await_args.kwargs["source_module"])
         self.assertEqual("banner", observed["auto_last_action"])
 
-    def test_server_shortage_uses_conservative_zero_until_recalibrated(self):
+    def test_recovery_request_does_not_invent_a_zero_balance(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             state_module.state["yinluo_observation"] = {
@@ -612,7 +630,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["yinluo_observation"]
 
         self.assertTrue(changed)
-        self.assertEqual(0, observed["sha_current"])
+        self.assertEqual(400, observed["sha_current"])
         self.assertEqual(80, observed["resource_recovery_min_sha"])
         self.assertEqual(now, observed["auto_next_time"])
 
@@ -632,9 +650,9 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".收取精华 1", send_mock.await_args.args[0])
         self.assertEqual("collect", observed["auto_last_action"])
-        self.assertEqual(1, observed["ready_slots"])
-        self.assertEqual([4], observed["ready_slot_numbers"])
-        self.assertEqual([1], observed["auto_collect_pending"]["slots"])
+        self.assertEqual(2, observed["ready_slots"])
+        self.assertEqual([1, 4], observed["ready_slot_numbers"])
+        self.assert_in_flight(".收取精华 1")
 
     async def test_scheduler_skips_collect_blocked_ready_slots(self):
         now = 1_780_000_000.0
@@ -667,8 +685,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".收取精华 4", send_mock.await_args.args[0])
         self.assertEqual([2], observed["collect_blocked_ready_slot_numbers"])
-        self.assertEqual([], observed["ready_slot_numbers"])
-        self.assertEqual([4], observed["auto_collect_pending"]["slots"])
+        self.assertEqual([4], observed["ready_slot_numbers"])
+        self.assert_in_flight(".收取精华 4")
 
     async def test_scheduler_does_not_collect_when_all_ready_slots_are_blocked(self):
         now = 1_780_000_000.0
@@ -714,10 +732,10 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         }, now=now)
 
         send_mock.assert_not_called()
-        self.assertEqual("collect_pending", observed["auto_last_action"])
-        self.assertIn("等待真实回复", observed["auto_last_error"])
+        self.assertEqual("legacy_pending", observed["auto_last_action"])
+        self.assertIn("缺少原命令归属", observed["auto_last_error"])
 
-    async def test_scheduler_queries_banner_when_collect_reply_times_out(self):
+    async def test_scheduler_holds_unowned_legacy_collect_after_timeout(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -731,10 +749,9 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "auto_next_time": now - 1,
         }, now=now)
 
-        send_mock.assert_awaited_once()
-        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
-        self.assertEqual("banner", observed["auto_last_action"])
-        self.assertIn("收取精华等待回复超时", observed["auto_calibrate_reason"])
+        send_mock.assert_not_awaited()
+        self.assertEqual("legacy_pending", observed["auto_last_action"])
+        self.assertEqual([1], observed["auto_collect_pending"]["slots"])
 
     async def test_scheduler_waits_for_refine_reply_before_calibration(self):
         now = 1_780_000_000.0
@@ -765,11 +782,11 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         }, now=now)
 
         send_mock.assert_not_called()
-        self.assertEqual("refine_pending", observed["auto_last_action"])
-        self.assertIn("等待真实回复", observed["auto_last_error"])
+        self.assertEqual("legacy_pending", observed["auto_last_action"])
+        self.assertIn("缺少原命令归属", observed["auto_last_error"])
         self.assertEqual(3, observed["auto_refine_pending"]["slot"])
 
-    async def test_scheduler_queries_banner_when_refine_reply_times_out(self):
+    async def test_scheduler_never_restores_legacy_pre_refine_snapshot_on_timeout(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -800,15 +817,13 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "auto_next_time": now - 1,
         }, now=now)
 
-        send_mock.assert_awaited_once()
-        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
-        self.assertNotEqual(".囚禁魂魄 3 凶兽戾魄", send_mock.await_args.args[0])
-        self.assertEqual("banner", observed["auto_last_action"])
-        self.assertEqual({}, observed["auto_refine_pending"])
-        self.assertEqual([3, 4], observed["empty_slot_numbers"])
-        self.assertEqual([], observed["refining_slot_numbers"])
-        self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
-        self.assertIn("囚禁魂魄等待回复超时", observed["auto_calibrate_reason"])
+        send_mock.assert_not_awaited()
+        self.assertEqual("legacy_pending", observed["auto_last_action"])
+        self.assertEqual(3, observed["auto_refine_pending"]["slot"])
+        self.assertEqual([4], observed["empty_slot_numbers"])
+        self.assertEqual([3], observed["refining_slot_numbers"])
+        self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual(300, observed["sha_current"])
 
     async def test_scheduler_respects_collect_auto_toggle(self):
         now = 1_780_000_000.0
@@ -836,8 +851,9 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_manual_collect_marks_slot_pending_before_auto_can_repeat(self):
         now = 1_780_000_000.0
-        msg = SimpleNamespace(id=9301, sent_at=now)
+        msg = SimpleNamespace(id=9301, sent_at=now, chat_id=CHAT)
         with state_module.use_identity(self.identity_id):
+            seed_resources(self.identity_id, now)
             state_module.state["yinluo_enabled"] = True
             state_module.state["yinluo_observation"] = {
                 "last_observed_at": now - 60,
@@ -848,15 +864,15 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "next_blood_forest_time": now + 3600,
                 "next_demon_summon_time": now + 3600,
             }
-            with patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
+            with patch.object(yinluo.time, "time", return_value=now), patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
                 ok, message, plan = await yinluo.execute_yinluo_manual_action("collect", "1", now=now)
             observed = state_module.state["yinluo_observation"]
 
         self.assertTrue(ok, message)
         self.assertEqual(".收取精华 1", plan["command"])
         send_mock.assert_awaited_once()
-        self.assertEqual([2], observed["ready_slot_numbers"])
-        self.assertEqual([1], observed["auto_collect_pending"]["slots"])
+        self.assertEqual([1, 2], observed["ready_slot_numbers"])
+        self.assert_in_flight(".收取精华 1")
 
     async def test_manual_collect_blocks_while_collect_pending(self):
         now = 1_780_000_000.0
@@ -900,10 +916,11 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(plan["allowed"])
         send_mock.assert_not_called()
 
-    async def test_manual_daily_sacrifice_marks_daily_cooldown_after_send(self):
+    async def test_manual_daily_sacrifice_reserves_but_does_not_claim_daily_completion(self):
         now = 1_780_000_000.0
-        msg = SimpleNamespace(id=9305, sent_at=now)
+        msg = SimpleNamespace(id=9305, sent_at=now, chat_id=CHAT)
         with state_module.use_identity(self.identity_id):
+            seed_resources(self.identity_id, now)
             state_module.state["yinluo_enabled"] = True
             state_module.state["yinluo_observation"] = {
                 "last_observed_at": now - 60,
@@ -911,15 +928,16 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "banner_name": "血煞幡胚",
                 "next_daily_sacrifice_time": 0,
             }
-            with patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
+            with patch.object(yinluo.time, "time", return_value=now), patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
                 ok, message, plan = await yinluo.execute_yinluo_manual_action("献祭", now=now)
             observed = state_module.state["yinluo_observation"]
 
         self.assertTrue(ok, message)
         self.assertEqual(".每日献祭", plan["command"])
         send_mock.assert_awaited_once()
-        self.assertEqual(yinluo.get_day_key(now), observed["last_daily_sacrifice_day"])
-        self.assertGreater(observed["next_daily_sacrifice_time"], now)
+        self.assertEqual("", observed["last_daily_sacrifice_day"])
+        self.assertEqual(0, observed["next_daily_sacrifice_time"])
+        self.assert_in_flight(".每日献祭")
         self.assertEqual("daily_sacrifice", observed["auto_last_action"])
 
     async def test_scheduler_auto_daily_sacrifice_when_enabled_and_due(self):
@@ -947,8 +965,9 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".每日献祭", send_mock.await_args.args[0])
         self.assertEqual("daily_sacrifice", observed["auto_last_action"])
-        self.assertEqual(yinluo.get_day_key(now), observed["last_daily_sacrifice_day"])
-        self.assertGreater(observed["next_daily_sacrifice_time"], now)
+        self.assertEqual("", observed["last_daily_sacrifice_day"])
+        self.assertEqual(0, observed["next_daily_sacrifice_time"])
+        self.assert_in_flight(".每日献祭")
 
     async def test_resource_recovery_daily_sacrifice_preempts_future_auto_wait(self):
         now = 1_780_000_000.0
@@ -1032,11 +1051,12 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".囚禁魂魄 3 凶兽戾魄", send_mock.await_args.args[0])
         self.assertEqual("refine", observed["auto_last_action"])
-        self.assertEqual([4], observed["empty_slot_numbers"])
-        self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
-        self.assertEqual(300, observed["sha_current"])
-        self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
-        self.assertEqual(3, observed["auto_refine_pending"]["slot"])
+        self.assertEqual([3, 4], observed["empty_slot_numbers"])
+        self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual(1300, observed["sha_current"])
+        self.assertEqual(300, yinluo_accounting.resource_balance(self.identity_id, "sha")["value"])
+        self.assertEqual(0, yinluo_accounting.resource_balance(self.identity_id, "soul:凶兽戾魄")["value"])
+        self.assert_in_flight(".囚禁魂魄 3 凶兽戾魄")
 
     async def test_scheduler_auto_refine_uses_lowest_empty_slot_number(self):
         now = 1_780_000_000.0
@@ -1065,7 +1085,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         send_mock.assert_awaited_once()
         self.assertEqual(".囚禁魂魄 4 凶兽戾魄", send_mock.await_args.args[0])
-        self.assertEqual(4, observed["auto_refine_pending"]["slot"])
+        self.assert_in_flight(".囚禁魂魄 4 凶兽戾魄")
 
     async def test_scheduler_auto_soothes_lowest_exhausted_slot(self):
         now = 1_780_000_000.0
@@ -1092,8 +1112,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".安抚幡灵 3", send_mock.await_args.args[0])
         self.assertEqual("soothe", observed["auto_last_action"])
-        self.assertEqual({"slot": 3, "sent_at": now}, observed["auto_soothe_pending"])
-        self.assertEqual([5], observed["exhausted_slot_numbers"])
+        self.assert_in_flight(".安抚幡灵 3")
+        self.assertEqual([5, 3], observed["exhausted_slot_numbers"])
 
     async def test_scheduler_waits_for_soothe_reply_before_repeat(self):
         now = 1_780_000_000.0
@@ -1110,24 +1130,31 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         }, now=now)
 
         send_mock.assert_not_called()
-        self.assertEqual("soothe_pending", observed["auto_last_action"])
-        self.assertIn("等待真实回复", observed["auto_last_error"])
+        self.assertEqual("legacy_pending", observed["auto_last_action"])
+        self.assertIn("缺少原命令归属", observed["auto_last_error"])
         self.assertEqual(3, observed["auto_soothe_pending"]["slot"])
 
     def test_soothe_success_clears_pending_and_requests_banner_calibration(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
+            seed_resources(self.identity_id, now)
             state_module.state["yinluo_enabled"] = True
             state_module.state["yinluo_observation"] = {
                 "last_observed_at": now - 60,
                 "banner_owner": "缘初子",
                 "banner_name": "灭法幡",
                 "exhausted_slot_numbers": [3],
-                "auto_soothe_pending": {"slot": 3, "sent_at": now - 10},
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(
+            operation, reason = yinluo_accounting.prepare_operation(
+                self.identity_id, ".安抚幡灵 3", CHAT, now - 10, source_module="阴罗宗",
+            )
+            self.assertFalse(reason)
+            self.assertTrue(yinluo_accounting.record_transport(
+                self.identity_id, operation["op_id"], phase="sent", msg_id=10000, chat_id=CHAT, sent_at=now - 10,
+            ))
+            self.assertTrue(apply_native(self.identity_id, ".安抚幡灵 3",
                 "安抚成功！\n你消耗了 50 点修为，成功安抚了 1 个炼化槽。",
-                now=now,
+                now, command_at=now - 10,
             ))
             observed = state_module.state["yinluo_observation"]
 
@@ -1135,7 +1162,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, observed["auto_soothe_pending"])
         self.assertEqual([], observed["exhausted_slot_numbers"])
         self.assertIn(3, observed["refining_slot_numbers"])
-        self.assertIn("查幡确认", observed["auto_calibrate_reason"])
+        self.assertIn("幡面板", observed["auto_calibrate_reason"])
+        self.assertEqual("complete", yinluo_accounting.current_operation(self.identity_id, operation["op_id"])["phase"])
 
     async def test_scheduler_does_not_auto_refine_without_selected_targets(self):
         now = 1_780_000_000.0
@@ -1228,7 +1256,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".化功为煞 10000", send_mock.await_args.args[0])
         self.assertEqual("convert", observed["auto_last_action"])
-        self.assertGreater(observed["next_convert_time"], now)
+        self.assertEqual(0, observed["next_convert_time"])
+        self.assert_in_flight(".化功为煞 10000")
 
     async def test_scheduler_low_sha_preempts_stale_auto_wait(self):
         now = 1_780_000_000.0
@@ -1316,7 +1345,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_called()
         self.assertEqual("idle", observed["auto_last_action"])
 
-    async def test_auto_refine_failure_rolls_back_and_requires_banner_calibration(self):
+    async def test_auto_refine_rejection_releases_reservation_without_restoring_old_state(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -1344,7 +1373,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".囚禁魂魄 3 凶兽戾魄", send_mock.await_args.args[0])
 
         with state_module.use_identity(self.identity_id):
-            self.assertTrue(yinluo.apply_yinluo_passive("你的煞气不足！炼化需要消耗 1000 点煞气。", now=now + 1))
+            self.assertTrue(apply_native(self.identity_id, ".囚禁魂魄 3 凶兽戾魄",
+                                        "你的煞气不足！炼化需要消耗 1000 点煞气。", now + 1, root=9201))
             observed = state_module.state["yinluo_observation"]
 
         self.assertEqual([3], observed["empty_slot_numbers"])
@@ -1352,7 +1382,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1300, observed["sha_current"])
         self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
         self.assertEqual({}, observed["auto_refine_pending"])
-        self.assertIn("囚禁魂魄失败", observed["auto_calibrate_reason"])
+        self.assertIn("煞气不足", observed["auto_calibrate_reason"])
+        self.assertIsNone(yinluo_accounting.resource_balance(self.identity_id, "sha")["value"])
 
     async def test_scheduler_queries_banner_before_refine_when_calibration_required(self):
         now = 1_780_000_000.0
@@ -1391,7 +1422,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".召唤魔影", send_mock.await_args.args[0])
         self.assertEqual("demon_summon", observed["auto_last_action"])
-        self.assertGreater(observed["next_demon_summon_time"], now)
+        self.assertEqual(0, observed["next_demon_summon_time"])
+        self.assert_in_flight(".召唤魔影")
 
     async def test_scheduler_sends_blood_forest_when_due_before_demon_summon(self):
         now = 1_780_000_000.0
@@ -1408,9 +1440,10 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".血洗山林", send_mock.await_args.args[0])
         self.assertEqual("blood_forest", observed["auto_last_action"])
-        self.assertGreater(observed["next_blood_forest_time"], now)
+        self.assertEqual(0, observed["next_blood_forest_time"])
+        self.assert_in_flight(".血洗山林")
 
-    async def test_scheduler_keeps_due_demon_summon_on_short_chain_after_blood_forest(self):
+    async def test_scheduler_waits_for_forest_receipt_before_due_demon_summon(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -1425,7 +1458,8 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".血洗山林", send_mock.await_args.args[0])
         self.assertEqual("blood_forest", observed["auto_last_action"])
-        self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
+        self.assertEqual(now + yinluo.YINLUO_AUTO_CALIBRATE_RETRY_SEC, observed["auto_next_time"])
+        self.assert_in_flight(".血洗山林")
 
     async def test_scheduler_waits_for_pending_resolution_before_any_followup(self):
         now = 1_780_000_000.0
@@ -1505,6 +1539,11 @@ class YinluoPassiveInboxTests(unittest.TestCase):
             "recent": [],
         }
         passive_inbox._observed_passive_events = {}
+        saver = patch.object(yinluo_accounting.persistence, "save_state", return_value=True)
+        saver.start()
+        self.addCleanup(saver.stop)
+        state_module.set_game_group_id(CHAT)
+        state_module.set_game_bot_ids([BOT])
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -1514,6 +1553,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
 
     def _prepare_identity(self, send_as_id=3001, username="yinluo_user"):
         state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, send_as_id)
         state_module.update_send_as_profile(
             send_as_id,
             username=username,
@@ -1532,7 +1572,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
             state_module.state["yinluo_observation"] = {
                 "auto_next_time": now + yinluo.YINLUO_AUTO_STATUS_BACKOFF_SEC,
             }
-            changed = yinluo.apply_yinluo_passive(real_text("yinluo.blood_forest.cooldown"), now=now)
+            changed = apply_native(send_as_id, ".血洗山林", real_text("yinluo.blood_forest.cooldown"), now)
             observed = state_module.state["yinluo_observation"]
 
         self.assertTrue(changed)
@@ -1544,6 +1584,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
     def test_apply_success_replies_update_soul_stock_and_daily_sacrifice(self):
         now = 1_779_450_000.0
         send_as_id = self._prepare_identity()
+        seed_resources(send_as_id, now, sha=800, stocks={"妖兽精魄": 13, "凶兽戾魄": 0})
 
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
@@ -1555,9 +1596,9 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "empty_slots": 2,
                 "empty_slot_numbers": [1, 2],
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(real_text("yinluo.blood_forest.success"), now=now))
-            self.assertTrue(yinluo.apply_yinluo_passive(real_text("yinluo.demon_summon.success"), now=now + 1))
-            self.assertTrue(yinluo.apply_yinluo_passive("你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。", now=now + 2))
+            self.assertTrue(apply_native(send_as_id, ".血洗山林", real_text("yinluo.blood_forest.success"), now, root=10000))
+            self.assertTrue(apply_native(send_as_id, ".召唤魔影", real_text("yinluo.demon_summon.success"), now + 1, root=10010))
+            self.assertTrue(apply_native(send_as_id, ".每日献祭", "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。", now + 2, root=10020))
             observed = state_module.state["yinluo_observation"]
 
         self.assertEqual(14, observed["soul_stocks"]["妖兽精魄"])
@@ -1572,6 +1613,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         now = 1_779_408_030.0
         send_as_id = self._prepare_identity()
         text = "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。"
+        seed_resources(send_as_id, now - 180, sha=800)
 
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
@@ -1582,32 +1624,25 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "last_daily_sacrifice_day": yinluo.get_day_key(now - 180),
             }
             state_module.state["my_msg_ids"] = {8954050: now - 180}
-            context = {
-                "identity_id": send_as_id,
-                "chat_id": -1001680975844,
-                "msg_id": 8954051,
-                "reply_to_msg_id": 8954050,
-                "root_msg_id": 8954050,
-            }
+            context = native_reply(send_as_id, ".每日献祭", text, now, root=8954050, command_at=now - 180)
             self.assertTrue(yinluo.apply_yinluo_passive(text, now=now, family="yinluo_daily_sacrifice", event_context=context))
             observed = state_module.state["yinluo_observation"]
-            first_key = observed["last_daily_sacrifice_result_key"]
-            self.assertTrue(first_key.startswith("daily_sacrifice:ids:"))
+            first_receipts = copy.deepcopy(state_module.state["yinluo_accounting"]["book"]["receipts"])
+            self.assertEqual(8954050, first_receipts[-1]["start"]["evidence"]["msg_id"])
             self.assertEqual(yinluo.get_day_key(now - 180), observed["last_daily_sacrifice_day"])
             self.assertEqual(1300, observed["sha_current"])
 
-            replay_context = dict(context)
-            replay_context["msg_id"] = 8954051
-            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now + 60, family="yinluo_daily_sacrifice", event_context=replay_context))
+            self.assertFalse(yinluo.apply_yinluo_passive(text, now=now + 60, family="yinluo_daily_sacrifice", event_context=context))
             observed = state_module.state["yinluo_observation"]
 
-        self.assertEqual(first_key, observed["last_daily_sacrifice_result_key"])
+        self.assertEqual(first_receipts, state_module.get_identity_state(send_as_id)["yinluo_accounting"]["book"]["receipts"])
         self.assertEqual(1300, observed["sha_current"])
 
     def test_apply_convert_success_deducts_known_profile_xiuwei(self):
         now = 1_779_450_000.0
         send_as_id = self._prepare_identity()
         state_module.update_send_as_profile(send_as_id, xiuwei_current=12000, xiuwei_max=50000)
+        seed_resources(send_as_id, now, sha=300, cultivation=12000)
 
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
@@ -1616,16 +1651,19 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "sha_current": 300,
                 "sha_max": 15000,
             }
-            changed = yinluo.apply_yinluo_passive("【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！", now=now)
+            text = "【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！"
+            received = native_reply(send_as_id, ".化功为煞 10000", text, now)
+            changed = yinluo.apply_yinluo_passive(text, now=now, event_context=received)
             changed_again = yinluo.apply_yinluo_passive(
                 "【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！",
                 now=now + 30,
+                event_context=received,
             )
             observed = state_module.state["yinluo_observation"]
             profile = state_module.get_send_as_profile(send_as_id)
 
         self.assertTrue(changed)
-        self.assertTrue(changed_again)
+        self.assertFalse(changed_again)
         self.assertEqual(2300, observed["sha_current"])
         self.assertEqual(now + yinluo.YINLUO_CONVERT_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, observed["next_convert_time"])
         self.assertEqual(2000, profile["xiuwei_current"])
@@ -1640,6 +1678,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         )
 
         state_module.update_send_as_profile(send_as_id, xiuwei_current=12000, xiuwei_max=50000)
+        seed_resources(send_as_id, now, sha=300, cultivation=12000)
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
                 "last_observed_at": now - 30,
@@ -1650,8 +1689,9 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "sha_max": 15000,
                 "auto_next_time": now + 60,
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now))
-            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now + 30))
+            received = native_reply(send_as_id, ".化功为煞 10000", text, now)
+            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now, event_context=received))
+            self.assertFalse(yinluo.apply_yinluo_passive(text, now=now + 30, event_context=received))
             observed = state_module.state["yinluo_observation"]
             profile = state_module.get_send_as_profile(send_as_id)
 
@@ -1659,31 +1699,33 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertIn("反噬", observed["last_error"])
         self.assertEqual(300, observed["sha_current"])
         self.assertEqual(2000, profile["xiuwei_current"])
-        self.assertGreaterEqual(observed["auto_next_time"], now + yinluo.YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC)
+        self.assertGreater(observed["next_convert_time"], now)
 
-    def test_apply_refine_success_is_idempotent_after_auto_sent_marker(self):
+    def test_apply_refine_success_debits_only_explicit_soul_and_is_idempotent(self):
         now = 1_779_450_000.0
         send_as_id = self._prepare_identity()
+        seed_resources(send_as_id, now, sha=1300, stocks={"凶兽戾魄": 1})
 
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
                 "last_observed_at": now - 30,
                 "banner_owner": "缘初子",
-                "sha_current": 300,
+                "sha_current": 1300,
                 "sha_max": 15000,
-                "soul_stocks": {"凶兽戾魄": 0},
+                "soul_stocks": {"凶兽戾魄": 1},
                 "empty_slots": 1,
                 "empty_slot_numbers": [4],
                 "refining_slots": 1,
                 "refining_slot_numbers": [3],
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(
+            self.assertTrue(apply_native(send_as_id, ".囚禁魂魄 3 凶兽戾魄",
                 "一缕【凶兽戾魄】被强行打入3号炼化槽，在煞气的包裹下发出阵阵哀嚎，炼化已开始。",
-                now=now,
+                now,
             ))
             observed = state_module.state["yinluo_observation"]
 
-        self.assertEqual(300, observed["sha_current"])
+        self.assertEqual(1300, observed["sha_current"])
+        self.assertIsNone(yinluo_accounting.resource_balance(send_as_id, "sha")["value"])
         self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
         self.assertEqual([4], observed["empty_slot_numbers"])
         self.assertEqual([3], observed["refining_slot_numbers"])
@@ -1698,21 +1740,20 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "banner_owner": "缘初子",
                 "ready_slots": 2,
                 "ready_slot_numbers": [1, 2],
-                "auto_collect_pending": {"slots": [1], "sent_at": now - 10},
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(
+            self.assertTrue(apply_native(send_as_id, ".收取精华 1",
                 "收取成功！\n你从 0 个炼化槽中获得了: ！",
-                now=now,
+                now,
             ))
             observed = state_module.state["yinluo_observation"]
 
         self.assertEqual("empty", observed["last_result"])
-        self.assertEqual(0, observed["ready_slots"])
-        self.assertEqual([], observed["ready_slot_numbers"])
+        self.assertEqual(2, observed["ready_slots"])
+        self.assertEqual([1, 2], observed["ready_slot_numbers"])
         self.assertEqual({}, observed["auto_collect_pending"])
-        self.assertIn("收取精华空结果", observed["auto_calibrate_reason"])
+        self.assertIn("收取未获得精华", observed["auto_calibrate_reason"])
 
-    def test_apply_refine_slot_busy_restores_pending_and_requires_calibration(self):
+    def test_apply_refine_slot_busy_keeps_unowned_legacy_snapshot_for_review(self):
         now = 1_779_450_000.0
         send_as_id = self._prepare_identity()
 
@@ -1741,20 +1782,19 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                     "pre_soul_stocks": {"凶兽戾魄": 1},
                 },
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(
+            self.assertTrue(apply_native(send_as_id, ".囚禁魂魄 3 凶兽戾魄",
                 "此炼化槽正在运转中，无法囚禁新的魂魄。",
-                now=now,
-                family="yinluo_refine",
+                now,
             ))
             observed = state_module.state["yinluo_observation"]
 
         self.assertEqual("slot_busy", observed["last_result"])
-        self.assertEqual(500, observed["sha_current"])
-        self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
-        self.assertEqual([3], observed["empty_slot_numbers"])
-        self.assertEqual([], observed["refining_slot_numbers"])
-        self.assertEqual({}, observed["auto_refine_pending"])
-        self.assertIn("炼化槽正在运转中", observed["auto_calibrate_reason"])
+        self.assertEqual(300, observed["sha_current"])
+        self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual([], observed["empty_slot_numbers"])
+        self.assertEqual([3], observed["refining_slot_numbers"])
+        self.assertEqual(3, observed["auto_refine_pending"]["slot"])
+        self.assertIn("先查幡", observed["auto_calibrate_reason"])
 
     def test_apply_zero_second_banner_keeps_short_recheck_timer(self):
         now = 1_781_443_187.0
@@ -1766,7 +1806,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "next_blood_forest_time": now + 4 * 3600,
                 "next_demon_summon_time": now + 8 * 3600,
             }
-            self.assertTrue(yinluo.apply_yinluo_passive(
+            self.assertTrue(apply_native(send_as_id, ".我的阴罗幡",
                 "【缘初子的阴罗幡】\n"
                 "煞气池: 2140 / 15000 (14%)\n"
                 "魂魄储备:\n"
@@ -1774,30 +1814,24 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "炼化槽:\n"
                 "3号槽: [炼化中] - 凶兽戾魄 (剩余: 0秒)\n"
                 "6号槽: [空闲]",
-                now=now,
+                now,
             ))
             observed = state_module.state["yinluo_observation"]
 
         self.assertEqual("阴罗幡", observed["last_action"])
         self.assertEqual([], observed["ready_slot_numbers"])
-        self.assertEqual(now + yinluo.YINLUO_REFINING_DUE_RECHECK_SEC, observed["auto_next_time"])
+        self.assertFalse(yinluo._has_due_refining_finish(observed, now))
+        self.assertEqual(now + yinluo.YINLUO_REFINING_DUE_RECHECK_SEC, observed["refining_slots_detail"][0]["recheck_time"])
 
     def test_passive_inbox_updates_yinluo_from_reply_context(self):
         send_as_id = self._prepare_identity()
-        event = SimpleNamespace(chat_id=-1001680975844, id=8954045)
+        event = native_reply(send_as_id, ".我的阴罗幡", real_text("yinluo.banner.basic"), 1_779_450_000.0,
+                             root=8954042, msg_id=8954045)
 
         with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
-                real_text("yinluo.banner.basic"),
+                event,
                 now=1_779_450_000.0,
-                reply_context={
-                    "send_as_id": send_as_id,
-                    "family": "yinluo_banner",
-                    "reply_to_msg_id": 8954042,
-                    "root_msg_id": 8954042,
-                },
-                event=event,
-                event_type="message",
             ))
 
         self.assertTrue(handled)
@@ -1812,7 +1846,8 @@ class YinluoPassiveInboxTests(unittest.TestCase):
 
     def test_passive_inbox_applies_yinluo_refine_slot_busy_from_reply_context(self):
         send_as_id = self._prepare_identity()
-        event = SimpleNamespace(chat_id=-1001680975844, id=8954053)
+        event = native_reply(send_as_id, ".囚禁魂魄 3 凶兽戾魄", "此炼化槽正在运转中，无法囚禁新的魂魄。",
+                             1_779_450_000.0, root=8954052)
 
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
@@ -1836,45 +1871,30 @@ class YinluoPassiveInboxTests(unittest.TestCase):
 
         with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
-                "此炼化槽正在运转中，无法囚禁新的魂魄。",
+                event,
                 now=1_779_450_000.0,
-                reply_context={
-                    "send_as_id": send_as_id,
-                    "family": "yinluo_refine",
-                    "reply_to_msg_id": 8954052,
-                    "root_msg_id": 8954052,
-                },
-                event=event,
-                event_type="message",
             ))
 
         self.assertTrue(handled)
         with state_module.use_identity(send_as_id):
             observed = state_module.state["yinluo_observation"]
             self.assertEqual("slot_busy", observed["last_result"])
-            self.assertEqual([3], observed["empty_slot_numbers"])
-            self.assertEqual([], observed["refining_slot_numbers"])
-            self.assertIn("炼化槽正在运转中", observed["auto_calibrate_reason"])
+            self.assertEqual([], observed["empty_slot_numbers"])
+            self.assertEqual([3], observed["refining_slot_numbers"])
+            self.assertIn("先查幡", observed["auto_calibrate_reason"])
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["changed"])
         self.assertEqual(1, snapshot["modules"]["yinluo"])
 
     def test_passive_inbox_applies_yinluo_daily_sacrifice_from_reply_context(self):
         send_as_id = self._prepare_identity(username="yinluo_daily")
-        event = SimpleNamespace(chat_id=-1001680975844, id=8954050)
+        event = native_reply(send_as_id, ".每日献祭", real_text("yinluo.daily_sacrifice.success"),
+                             1_779_450_000.0, root=8954049)
 
         with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
-                real_text("yinluo.daily_sacrifice.success"),
+                event,
                 now=1_779_450_000.0,
-                reply_context={
-                    "send_as_id": send_as_id,
-                    "family": "yinluo_daily_sacrifice",
-                    "reply_to_msg_id": 8954049,
-                    "root_msg_id": 8954049,
-                },
-                event=event,
-                event_type="message",
             ))
 
         self.assertTrue(handled)
@@ -1893,7 +1913,9 @@ class YinluoPassiveInboxTests(unittest.TestCase):
     def test_passive_inbox_daily_sacrifice_dedupes_by_message_identity(self):
         send_as_id = self._prepare_identity(username="yinluo_daily_dedupe")
         text = "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。"
-        event = SimpleNamespace(chat_id=-1001680975844, id=8954052)
+        event = native_reply(send_as_id, ".每日献祭", text, 1_779_408_030.0,
+                             root=8954051, command_at=1_779_408_030.0 - 180, edited=True)
+        seed_resources(send_as_id, 1_779_408_030.0 - 180, sha=800)
 
         with state_module.use_identity(send_as_id):
             state_module.state["yinluo_observation"] = {
@@ -1907,29 +1929,13 @@ class YinluoPassiveInboxTests(unittest.TestCase):
 
         with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
             handled = asyncio.run(passive_inbox.handle_passive_module_card(
-                text,
+                event,
                 now=1_779_408_030.0,
-                reply_context={
-                    "send_as_id": send_as_id,
-                    "family": "yinluo_daily_sacrifice",
-                    "reply_to_msg_id": 8954051,
-                    "root_msg_id": 8954051,
-                },
-                event=event,
-                event_type="edit",
             ))
-            duplicate_event = SimpleNamespace(chat_id=-1001680975844, id=8954052)
+            duplicate_event = replace(event, text=text + "\n ", server_event_at=1_779_408_090.0)
             handled_again = asyncio.run(passive_inbox.handle_passive_module_card(
-                text + "\n ",
+                duplicate_event,
                 now=1_779_408_090.0,
-                reply_context={
-                    "send_as_id": send_as_id,
-                    "family": "yinluo_daily_sacrifice",
-                    "reply_to_msg_id": 8954051,
-                    "root_msg_id": 8954051,
-                },
-                event=duplicate_event,
-                event_type="edit",
             ))
 
         self.assertTrue(handled)
@@ -1939,7 +1945,7 @@ class YinluoPassiveInboxTests(unittest.TestCase):
             self.assertEqual(1300, observed["sha_current"])
             self.assertEqual(yinluo.get_day_key(1_779_408_030.0 - 180), observed["last_daily_sacrifice_day"])
 
-    def test_passive_inbox_routes_yinluo_banner_by_owner_name_without_reply_context(self):
+    def test_owner_name_without_native_command_does_not_authorize_resource_changes(self):
         send_as_id = self._prepare_identity(username="yinluo_user")
         state_module.update_send_as_profile(send_as_id, label="水镜真人", daohao="水镜真人")
         event = SimpleNamespace(chat_id=-1001680975844, id=8954046)
@@ -1953,11 +1959,10 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 event_type="message",
             ))
 
-        self.assertTrue(handled)
+        self.assertFalse(handled)
         with state_module.use_identity(send_as_id):
             observed = state_module.state["yinluo_observation"]
-            self.assertEqual("水镜真人", observed["banner_owner"])
-            self.assertEqual("灭法幡", observed["banner_name"])
+            self.assertEqual({}, observed)
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual("message:owner_name", snapshot["recent"][-1]["route_source"])
 

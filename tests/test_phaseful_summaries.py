@@ -1873,7 +1873,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         send_as_id = 8659059228
         now = 1_700_000_457.0
         msg_id = 9338522
-        self._prepare_identity(send_as_id, "DreamRetreatReplay")
+        self._prepare_identity(send_as_id, "TreeRetreatReplay")
 
         with state_module.use_identity(send_as_id):
             state_module.state["deep_retreat_enabled"] = True
@@ -1884,19 +1884,19 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             with patch.object(_phaseful, "save_state"):
                 _phaseful.observe_phaseful_identity_message(
                     send_as_id,
-                    concubine.CMD_CONCUBINE_DREAM,
+                    _phaseful.CMD_TREE_GUARD,
                     now=now,
                     msg_id=msg_id,
                     track=False,
                     reply_to=0,
                     priority="normal",
-                    source_module="侍妾",
+                    source_module="灵树",
                 )
 
             self.assertEqual("observing_summary", state_module.state["deep_retreat_phase"])
             payload = _phaseful._SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
             self.assertIsNotNone(payload)
-            self.assertEqual(concubine.CMD_CONCUBINE_DREAM, payload["cmd"])
+            self.assertEqual(_phaseful.CMD_TREE_GUARD, payload["cmd"])
             self.assertEqual(msg_id, payload["msg_id"])
             self.assertEqual(["deep_retreat_phase"], payload["specs"])
 
@@ -1904,7 +1904,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         send_as_id = 8659059233
         now = 1_700_000_457.0
         msg_id = 9338527
-        self._prepare_identity(send_as_id, "DreamRetreatEchoRace")
+        self._prepare_identity(send_as_id, "TreeRetreatEchoRace")
 
         with state_module.use_identity(send_as_id):
             state_module.state["deep_retreat_enabled"] = True
@@ -1917,7 +1917,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 # coroutine records the command's real metadata.
                 _phaseful.observe_phaseful_identity_message(
                     send_as_id,
-                    concubine.CMD_CONCUBINE_DREAM,
+                    _phaseful.CMD_TREE_GUARD,
                     now=now,
                     msg_id=msg_id,
                 )
@@ -1925,14 +1925,14 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
                 _phaseful.observe_phaseful_identity_message(
                     send_as_id,
-                    concubine.CMD_CONCUBINE_DREAM,
+                    _phaseful.CMD_TREE_GUARD,
                     now=now + 0.1,
                     msg_id=msg_id,
                     track=False,
                     reply_to=0,
                     priority="normal",
                     max_retry=0,
-                    source_module="侍妾",
+                    source_module="灵树",
                 )
 
             payload = _phaseful._SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
@@ -1940,7 +1940,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertFalse(payload["track"])
             self.assertEqual("normal", payload["priority"])
             self.assertEqual(0, payload["max_retry"])
-            self.assertEqual("侍妾", payload["send_intent"]["source_module"])
+            self.assertEqual("灵树", payload["send_intent"]["source_module"])
 
     def test_deep_retreat_summary_due_ignores_archived_wild_training_command(self):
         send_as_id = 8659059232
@@ -1975,7 +1975,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         send_as_id = 8659059230
         now = 1_700_000_458.0
         next_time = now - 1
-        self._prepare_identity(send_as_id, "ManualDreamEcho")
+        self._prepare_identity(send_as_id, "ManualTreeEcho")
 
         with state_module.use_identity(send_as_id):
             state_module.state["deep_retreat_enabled"] = True
@@ -1986,12 +1986,12 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             with patch.object(_phaseful, "save_state") as save_mock:
                 _phaseful.observe_phaseful_identity_message(
                     send_as_id,
-                    concubine.CMD_CONCUBINE_DREAM,
+                    _phaseful.CMD_TREE_GUARD,
                     now=now,
                     msg_id=9338524,
                     track=True,
                     reply_to=7310786,
-                    source_module="侍妾",
+                    source_module="灵树",
                 )
 
             save_mock.assert_not_called()
@@ -2760,11 +2760,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         send_mock.assert_not_awaited()
 
-    async def test_summary_replay_concubine_dream_rebuilds_pending_state(self):
+    async def test_summary_replay_rejects_legacy_dream_mutation(self):
         send_as_id = 8659059225
         now = 1_700_001_000.0
         old_msg_id = 9338504
-        new_msg_id = 9338505
         self._prepare_identity(send_as_id, "DreamReplay")
 
         with state_module.use_identity(send_as_id):
@@ -2784,7 +2783,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             "max_retry": 0,
             "send_intent": {"source_module": "侍妾"},
         }
-        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
+        sent_msg = None
         with (
             patch.object(_phaseful.time, "time", return_value=now),
             patch.object(_phaseful.random, "uniform", return_value=0),
@@ -2795,27 +2794,16 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         ):
             await _phaseful._replay_summary_consumed_command(send_as_id, payload)
 
-        send_mock.assert_awaited_once_with(
-            concubine.CMD_CONCUBINE_DREAM,
-            track=False,
-            send_as_id=send_as_id,
-            priority="retry",
-            max_retry=0,
-            source_module="侍妾",
-            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{concubine.CMD_CONCUBINE_DREAM}",
-            target_chat_id=state_module.get_game_group_id(),
-            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
-        )
+        send_mock.assert_not_awaited()
         with state_module.use_identity(send_as_id):
             self.assertEqual("dream_pending", state_module.state["concubine_phase"])
-            self.assertEqual(new_msg_id, state_module.state["concubine_dream_msg_id"])
-            self.assertEqual(now + 1 + concubine.CONCUBINE_PHASE_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+            self.assertEqual(old_msg_id, state_module.state["concubine_dream_msg_id"])
+            self.assertEqual(now - 1, state_module.state["next_concubine_time"])
 
-    async def test_summary_replay_concubine_voyage_return_rebuilds_pending_state(self):
+    async def test_summary_replay_rejects_legacy_voyage_return_mutation(self):
         send_as_id = 8659059226
         now = 1_700_001_100.0
         old_msg_id = 9338514
-        new_msg_id = 9338515
         self._prepare_identity(send_as_id, "VoyageReplay")
 
         with state_module.use_identity(send_as_id):
@@ -2837,7 +2825,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             "max_retry": 0,
             "send_intent": {"source_module": "侍妾远航"},
         }
-        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
+        sent_msg = None
         with (
             patch.object(_phaseful.time, "time", return_value=now),
             patch.object(_phaseful.random, "uniform", return_value=0),
@@ -2848,22 +2836,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         ):
             await _phaseful._replay_summary_consumed_command(send_as_id, payload)
 
-        send_mock.assert_awaited_once_with(
-            concubine.CMD_CONCUBINE_VOYAGE_RETURN,
-            track=False,
-            send_as_id=send_as_id,
-            priority="retry",
-            max_retry=0,
-            source_module="侍妾远航",
-            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{concubine.CMD_CONCUBINE_VOYAGE_RETURN}",
-            target_chat_id=state_module.get_game_group_id(),
-            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
-        )
+        send_mock.assert_not_awaited()
         with state_module.use_identity(send_as_id):
             self.assertEqual("voyage_return_pending", state_module.state["concubine_phase"])
-            self.assertEqual(new_msg_id, state_module.state["concubine_voyage_msg_id"])
-            self.assertEqual(1, state_module.state["concubine_voyage_retry_count"])
-            self.assertEqual(now + 1 + concubine.CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+            self.assertEqual(old_msg_id, state_module.state["concubine_voyage_msg_id"])
+            self.assertEqual(now - 1, state_module.state["next_concubine_time"])
 
     def test_summary_replay_rejects_archived_voyage_command_with_route_suffix(self):
         self.assertFalse(_phaseful._is_summary_replayable_command(f"{concubine.CMD_CONCUBINE_VOYAGE} 冒险"))

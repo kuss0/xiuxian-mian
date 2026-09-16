@@ -16,7 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import action_guard, app, message_contract, runtime
 from model import state as state_module
-from model.features import passive_event_ledger, passive_inbox, workflow_log
+from model.features import concubine, passive_event_ledger, passive_inbox, workflow_log
 from model.verified_event import from_telegram_event
 
 
@@ -194,8 +194,11 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
             state_module._meta_state["identity_states"] = {}
             state_module._meta_state["send_as_profiles"] = {}
             state_module.ensure_identity_registered(identity_id)
+            state_module.set_identity_account(identity_id, 991)
+            state_module.set_game_group_id(-1001680975844)
+            state_module.set_game_bot_ids([8325841058])
             state_module.update_send_as_profile(identity_id, username="growrdick", label="丁丁", daohao="随缘子")
-            event = SimpleNamespace(chat_id=-1001680975844, id=9512607)
+            event = SimpleNamespace(chat_id=-1001680975844, id=9512607, sender_id=8325841058, server_event_at=1_779_978_314.0)
             text = (
                 "你的道心侍妾: 【紫灵】 (状态: 随行中)\n\n"
                 "情缘值: 479\n"
@@ -206,7 +209,7 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
                 "命令: .入梦寻图、.残图、.拼图、.共历心劫、.坠魔心劫、.天机代卜"
             )
 
-            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(concubine, "save_state", return_value=True):
                 handled = asyncio.run(passive_inbox.handle_passive_module_card(
                     text,
                     now=1_779_978_314.0,
@@ -215,6 +218,9 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
                         "reply_to_msg_id": 9512606,
                         "root_msg_id": 9512606,
                         "reply_to_sender_id": -1003800619925,
+                        "reply_to_command": concubine.CMD_CONCUBINE_STATUS,
+                        "reply_to_server_at": 1_779_978_313.0,
+                        "reply_to_command_edited": False,
                     },
                     event=event,
                     event_type="message",
@@ -229,6 +235,7 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
             self.assertEqual(1, snapshot["changed"])
             self.assertEqual(identity_id, snapshot["recent"][-1]["identity_id"])
             self.assertEqual("message:reply_sender", snapshot["recent"][-1]["route_source"])
+            self.assertEqual("observed_query_result", snapshot["recent"][-1]["decision"])
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
