@@ -82,6 +82,31 @@ def test_native_action_contract_does_not_require_unsupported_player_id():
     assert "player_id" not in parsed
 
 
+def test_invalid_start_exposes_only_safe_contract_reason():
+    raw = native()
+    raw["record"]["quest"]["progress"] = "token=SECRET"
+    result = api.run_fate_cards_start_probe(
+        token="fate_SECRET", init_data="query_id=SECRET",
+        transport=lambda _request: (200, raw), sleeper=lambda _seconds: None,
+    )
+    assert result["ok"] is False
+    assert result["data"] == {"contract_error": "quest_counter_invalid"}
+    assert "SECRET" not in str(result)
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("quest_counter_invalid", "fate_read_failed:quest_counter_invalid"),
+    ("token=SECRET", "fate_read_failed"),
+])
+def test_failed_start_reason_survives_public_wrapper_without_secrets(env, reason, expected):
+    env.probe.return_value = {"ok": False, "data": {"contract_error": reason}}
+    result = asyncio.run(cave.run_cave_public_fate_cards(1001, ENTRY, now=NOW))
+    assert not result["ok"]
+    assert expected in result["message"]
+    assert "SECRET" not in str(result)
+    env.action.assert_not_awaited()
+
+
 @pytest.mark.parametrize("body", [{"ok": True}, "<html>temporary error</html>"])
 def test_missing_action_contract_preserves_dispatched_unknown(body):
     calls = []

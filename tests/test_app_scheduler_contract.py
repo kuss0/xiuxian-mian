@@ -419,6 +419,33 @@ class AppSchedulerContractTests(unittest.TestCase):
 
 
 class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_frozen_public_role_only_schedules_http_tower(self):
+        identity_id = 991789
+        for blocked in (None, "public", "switch", "offline", "weak", "global"):
+            with self.subTest(blocked=blocked):
+                owner = state_module.ensure_identity_registered(identity_id)
+                owner["tower_enabled"] = blocked != "switch"
+                state_module.update_send_as_profile(identity_id, enabled=False)
+                state_module.set_global_enabled(blocked != "global")
+                tower, ordinary, phaseful = AsyncMock(), AsyncMock(), AsyncMock()
+                with (
+                    patch.object(app, "get_identity_ids", return_value=[identity_id]),
+                    patch.object(app, "is_cave_public_identity_available", return_value=blocked != "public"),
+                    patch.object(app, "_is_identity_account_offline", return_value=blocked == "offline"),
+                    patch.object(app, "is_identity_weak", return_value=blocked == "weak"),
+                    patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock()),
+                    patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", (phaseful,)),
+                    patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (ordinary,)),
+                    patch.object(app, "run_tower_scheduler", new=tower),
+                ):
+                    await app._run_identity_schedulers(1_700_000_000.0)
+                self.assertEqual(tower.await_count, int(blocked is None))
+                ordinary.assert_not_awaited()
+                phaseful.assert_not_awaited()
+                self.assertFalse(state_module.get_identity_enabled(identity_id))
+        state_module.set_global_enabled(True)
+        state_module.remove_identity(identity_id)
+
     async def test_identity_scheduler_refreshes_now_before_each_module(self):
         state_module.ensure_identity_registered(301299112)
         first = AsyncMock()

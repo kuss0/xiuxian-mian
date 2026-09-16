@@ -4196,7 +4196,10 @@ async def _run_cave_public_fate_cards_owned(
                 capture_source=f"{source}:{suffix}", request_budget=operation.budget,
             )
             if not result.get("ok"):
-                raise MiniAppRequestAborted("fate_read_failed")
+                detail = result.get("data") if isinstance(result.get("data"), dict) else {}
+                reason = detail.get("contract_error")
+                reason = reason if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,64}", reason) else ""
+                raise MiniAppRequestAborted(f"fate_read_failed:{reason}" if reason else "fate_read_failed")
             operation.accept_state(_fate_cards_state_from_result(result))
 
         async def mutate_fate(action, payload=None, expected=""):

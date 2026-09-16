@@ -531,7 +531,8 @@ def run_fate_cards_start_probe(
         return _flow_result(False, "failed", error=result.error, events=events)
     state = parse_fate_cards_state(result.data)
     if not state or not state.get("state_verified"):
-        return _flow_result(False, "failed", error="MiniApp 返回不是天机命脉状态", events=events)
+        return _flow_result(False, "failed", error="MiniApp 返回不是天机命脉状态", events=events,
+                            data={"contract_error": state.get("contract_error") or "state_missing"})
     return _flow_result(True, "observed", data={"state": state}, events=events)
 
 

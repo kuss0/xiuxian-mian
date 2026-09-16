@@ -2365,9 +2365,23 @@ async def _run_identity_schedulers(now):
     await _run_phaseful_identity_schedulers(now)
 
     for identity_id in get_identity_ids():
-        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
+        if not has_identity(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
+            continue
+        if not get_identity_enabled(identity_id):
+            # Frozen group sends must not suppress the HTTP-only tower route.
+            # Do not run ordinary/phaseful command schedulers for these roles.
+            with use_identity(identity_id) as owner_state:
+                owner_account = get_identity_account(identity_id)
+                if (
+                    owner_state.get("tower_enabled")
+                    and _identity_scheduler_owner_is_current(
+                        identity_id, owner_state, owner_account, cave_public=True,
+                    )
+                    and not is_identity_weak(identity_id, time.time())
+                ):
+                    await run_tower_scheduler(time.time())
             continue
         with use_identity(identity_id) as owner_state:
             owner_account = get_identity_account(identity_id)
