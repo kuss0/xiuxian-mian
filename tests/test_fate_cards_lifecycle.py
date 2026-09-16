@@ -96,11 +96,11 @@ def test_invalid_start_exposes_only_safe_contract_reason():
 
 @pytest.mark.parametrize("field,expected", [
     ("key", "quest_identity_missing"),
-    ("startedAt", "quest_started_at_missing"),
+    ("startedAt", "quest_started_at_invalid"),
 ])
-def test_quest_identity_diagnostics_distinguish_optional_time_from_key(field, expected):
+def test_quest_identity_diagnostics_distinguish_invalid_time_from_key(field, expected):
     raw = native()
-    raw["record"]["quest"][field] = None
+    raw["record"]["quest"][field] = None if field == "key" else {"bad": True}
     if field == "key":
         raw["record"]["questKey"] = ""
     result = api.run_fate_cards_start_probe(
@@ -109,6 +109,61 @@ def test_quest_identity_diagnostics_distinguish_optional_time_from_key(field, ex
     )
     assert result["ok"] is False
     assert result["data"]["contract_error"] == expected
+
+
+@pytest.mark.parametrize("missing", ["absent", None, ""])
+def test_native_quest_without_start_time_uses_dated_record_binding(missing):
+    raw = native(progress=30)
+    if missing == "absent":
+        del raw["record"]["quest"]["startedAt"]
+    else:
+        raw["record"]["quest"]["startedAt"] = missing
+    state = api.parse_fate_cards_state(raw)
+    assert state["state_verified"]
+    assert state["quest"]["started_at"] == ""
+    assert state["record_key"] and state["record_created_at"]
+    changed = copy.deepcopy(raw)
+    changed["record"]["createdAt"] = DAY + "T00:05:00Z"
+    assert cave._fate_cards_transition_error(state, api.parse_fate_cards_state(changed)) == "fate_record_changed"
+    del raw["record"]["createdAt"]
+    assert not api.parse_fate_cards_state(raw)["state_verified"]
+
+
+@pytest.mark.parametrize("status", ["active", "settled"])
+def test_missing_quest_start_time_does_not_block_single_settlement(env, status):
+    def observed(status):
+        raw = native(progress=30, status=status)
+        raw["record"]["quest"]["startedAt"] = None
+        return {"ok": True, "data": {"state": api.parse_fate_cards_state(raw)}}
+
+    env.probe.side_effect = [observed(status), observed("settled")]
+    env.action.return_value["data"]["state"] = observed("settled")["data"]["state"]
+    result = run()
+    assert result["ok"]
+    assert env.action.await_count == int(status == "active")
+    if status == "active":
+        assert env.action.await_args.args[1] == "settle"
+
+
+def test_missing_quest_start_time_does_not_release_unmet_or_other_prerequisite():
+    raw = native()
+    raw["record"]["quest"]["startedAt"] = None
+    before = api.parse_fate_cards_state(raw)
+    pending = {"action": "meditation", "before": before}
+    assert not cave._fate_cards_prerequisite_superseded(pending, before)
+    raw["record"]["quest"].update(progress=30, canSettle=True)
+    after = api.parse_fate_cards_state(raw)
+    assert cave._fate_cards_prerequisite_superseded(pending, after)
+    after["record_key"] = "other_record"
+    assert not cave._fate_cards_prerequisite_superseded(pending, after)
+
+
+def test_verified_quest_start_time_cannot_disappear():
+    before = api.parse_fate_cards_state(native())
+    raw = native(progress=30)
+    raw["record"]["quest"]["startedAt"] = None
+    after = api.parse_fate_cards_state(raw)
+    assert cave._fate_cards_transition_error(before, after) == "fate_quest_changed"
 
 
 @pytest.mark.parametrize("reason,expected", [

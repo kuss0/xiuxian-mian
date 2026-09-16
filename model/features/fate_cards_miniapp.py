@@ -261,8 +261,14 @@ def _fate_state_contract_error(root, record, state):
     quest = record.get("quest")
     if not isinstance(quest, dict) or not state["quest"]["key"]:
         return "quest_identity_missing"
-    if not state["quest"]["started_at"]:
-        return "quest_started_at_missing"
+    # Some native quests have no startedAt. The dated card record and quest
+    # key bind them; retain an optional timestamp, never invent one.
+    if quest.get("startedAt") is not None and not isinstance(quest["startedAt"], str):
+        return "quest_started_at_invalid"
+    if not state["quest"]["started_at"] and (
+        not isinstance(quest.get("metric"), str) or not quest["metric"].strip()
+    ):
+        return "quest_identity_missing"
     if quest.get("key") and record.get("questKey") and quest["key"] != record["questKey"]:
         return "quest_identity_conflict"
     if quest.get("choiceKey") and quest["choiceKey"] != state["choice_key"]:

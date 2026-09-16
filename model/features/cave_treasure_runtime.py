@@ -1678,8 +1678,10 @@ def _fate_cards_prerequisite_superseded(pending, fate_state):
     old_quest = before.get("quest") or {}
     quest = fate_state.get("quest") or {}
     if any(old_quest.get(key) in (None, "") or old_quest[key] != quest.get(key) for key in (
-        "key", "started_at", "metric", "target",
+        "key", "metric", "target",
     )):
+        return False
+    if old_quest.get("started_at", "") != quest.get("started_at", ""):
         return False
     progress, target = quest.get("progress"), quest.get("target")
     return quest.get("status") in {"settled", "expired"} or (
