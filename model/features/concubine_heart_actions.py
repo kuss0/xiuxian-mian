@@ -348,6 +348,26 @@ def _current(owner, session_id, op_id=None, *, probe=False):
     return value if value and value["session_id"] == session_id and (op_id is None or (step and step["op_id"] == op_id)) else None
 
 
+def owns_launch_dispatch(command, intent, *, account_id, chat_id, now):
+    """Distinguish this caller's durable pre-send phase from an older live trial."""
+    owner, value = c._status_query_owner(), record()
+    if (command != c.CMD_CONCUBINE_HEART or not isinstance(intent, dict)
+            or intent.get("source_module") != SOURCE or not value
+            or value["status"] != "active" or len(value["steps"]) != 1 or value["probe"]
+            or type(account_id) is not int or account_id != owner[2] or account_id != value["account_id"]
+            or type(chat_id) is not int or chat_id != value["chat_id"]
+            or intent.get("chain_id") != value["session_id"]):
+        return False
+    step = value["steps"][0]
+    return bool(
+        step["status"] == "sending" and not step["msg_id"] and step["round"] == 0
+        and intent.get("op_id") == step["op_id"] == _INFLIGHT.get(owner[0])
+        and all(_same(c.state.get(key), value["projection"][key]) for key in PROJECTION_KEYS)
+        and _can_act(owner, value, now) and not c.external_events.needs_calibration()
+        and now >= _global_start_at(owner[0])
+    )
+
+
 def _step(number, command, root, at):
     return {"op_id": c.uuid4().hex, "round": number, "command": command, "reply_to_msg_id": root,
             "started_at": at, "status": "sending", "msg_id": 0}

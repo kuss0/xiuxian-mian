@@ -178,6 +178,88 @@ def test_heart_known_launch_does_not_fabricate_business_cooldown(env):
     assert env.identity["concubine_heart_due_at"] == before
 
 
+def test_owned_heart_launch_passes_real_runtime_guard_once(env, monkeypatch):
+    from model import action_guard
+
+    monkeypatch.setattr(action_guard, "_recent_closed_command_guards", {})
+    monkeypatch.setattr(runtime, "is_game_send_quiesced", lambda: False)
+    monkeypatch.setattr(runtime, "_global_recovery_hold_until_for_priority", lambda *_: 0)
+    monkeypatch.setattr(runtime, "_dungeon_quiet_blocks_send", AsyncMock(return_value=False))
+    monkeypatch.setattr(runtime, "is_account_offline", lambda *_: False)
+    monkeypatch.setattr(runtime, "_account_target_group_blocks_send", AsyncMock(return_value=False))
+    monkeypatch.setattr(runtime, "_account_flood_wait_until", lambda *_: 0)
+    monkeypatch.setattr(runtime, "is_identity_weak", lambda *_: False)
+    monkeypatch.setattr(runtime, "_refresh_bot_health_timeout_before_send", lambda: None)
+    monkeypatch.setattr(runtime, "_bot_health_blocks_send", lambda *_: False)
+    monkeypatch.setattr(runtime, "_run_game_command_pre_send_guards", AsyncMock(return_value=(True, "", "")))
+    monkeypatch.setattr(runtime, "send_audit_log", AsyncMock())
+
+    async def sent(command, **kwargs):
+        intent = {key: kwargs[key] for key in ("source_module", "op_id", "chain_id")}
+        assert await runtime._game_send_allowed(
+            command, send_as_id=ID, account_id=ACCOUNT,
+            send_priority=runtime.SEND_PRIORITY_CHAIN, send_intent=intent,
+            target_chat_id=CHAT, owner_check=kwargs["operation_check"],
+        )
+        if command == COMMAND:
+            assert not action_guard.before_send(command, send_as_id=ID, now=NOW)[0]
+        return receipt(env)
+
+    env.send.side_effect = sent
+    assert asyncio.run(start(env))
+    assert not asyncio.run(start(env))
+    assert env.send.await_count == 1
+    assert not action_guard.before_send(COMMAND, send_as_id=ID, now=NOW + 1)[0]
+    assert asyncio.run(reply(env))
+    for number in range(1, 4):
+        next_choice(env, number)
+        assert asyncio.run(choose(env))
+        assert asyncio.run(reply(env, ROUNDS[number] if number < 3 else contract.SUCCESS,
+                                 event_type="edit"))
+    assert env.identity[FIELD]["status"] == "complete"
+    assert env.send.await_count == 4
+
+
+@pytest.mark.parametrize("case", [
+    "source", "operation", "chain", "account", "chat", "no_intent", "detached",
+    "unknown", "projection", "paused", "remote_cooldown", "older_send", "recent_close",
+])
+def test_heart_launch_exception_does_not_release_unowned_or_blocked_work(env, monkeypatch, case):
+    from model import action_guard
+
+    monkeypatch.setattr(action_guard, "_recent_closed_command_guards", {})
+
+    async def sent(command, **kwargs):
+        intent = {key: kwargs[key] for key in ("source_module", "op_id", "chain_id")}
+        options = dict(send_as_id=ID, now=NOW, send_intent=intent, account_id=ACCOUNT, target_chat_id=CHAT)
+        assert action_guard.before_send(command, **options)[0]
+        if case in {"source", "operation", "chain"}:
+            intent[{"source": "source_module", "operation": "op_id", "chain": "chain_id"}[case]] = "other"
+        elif case in {"account", "chat"}:
+            options["account_id" if case == "account" else "target_chat_id"] += 1
+        elif case == "no_intent":
+            options["send_intent"] = None
+        elif case == "detached":
+            concubine.heart_actions._INFLIGHT.clear()
+        elif case == "unknown":
+            env.identity[FIELD]["steps"][0]["status"] = "unknown"
+        elif case == "projection":
+            env.identity["concubine_heart_prompt_msg_id"] = ROOT + 99
+        elif case == "paused":
+            env.identity["concubine_heart_enabled"] = False
+        elif case == "remote_cooldown":
+            action_guard.note_remote_block(command, ID, block_until=NOW + 3600, now=NOW)
+        elif case == "older_send":
+            action_guard.note_sent(command, ID, ROOT - 5, sent_at=NOW - 1, chat_id=CHAT)
+        elif case == "recent_close":
+            action_guard._recent_closed_command_guards[(ID, "concubine_heart", command)] = NOW + 60
+        assert not action_guard.before_send(command, **options)[0]
+        return None
+
+    env.send.side_effect = sent
+    assert not asyncio.run(start(env))
+
+
 @pytest.mark.parametrize("mode", ["none", "exception", "cancel"])
 def test_unknown_heart_launch_survives_restart_without_long_cooldown(env, mode):
     env.send.return_value = None

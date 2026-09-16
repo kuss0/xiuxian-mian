@@ -4652,7 +4652,10 @@ async def _game_send_allowed(
             )
         _record_game_send_block(send_as_id, command, code or "pre_send_guard", reason, definitely_unsent=True)
         return False
-    allowed, reason = action_guard_before_send(command, send_as_id=send_as_id)
+    allowed, reason = action_guard_before_send(
+        command, send_as_id=send_as_id, send_intent=send_intent,
+        account_id=account_id, target_chat_id=target_chat_id,
+    )
     if not allowed:
         if action_guard_should_log_block(command, send_as_id=send_as_id):
             await send_audit_log(

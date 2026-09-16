@@ -1020,7 +1020,7 @@ def _new_session(action_key, now, command):
     }
 
 
-def before_send(command, send_as_id=None, now=None):
+def before_send(command, send_as_id=None, now=None, *, send_intent=None, account_id=0, target_chat_id=0):
     action_key = resolve_action_key(command)
     now = float(now if now is not None else time.time())
     if has_identity(send_as_id):
@@ -1053,7 +1053,15 @@ def before_send(command, send_as_id=None, now=None):
                 mark_dirty()
             return False, f"{session.get('label') or spec.get('label') or action_key} 同命令短窗保护，剩余约 {wait_sec}s"
 
-        if _runtime_has_inflight_action(action_key, identity_state, now):
+        owned_heart_launch = False
+        if (action_key == "concubine_heart" and isinstance(send_intent, dict)
+                and not _session_has_send_evidence(session)):
+            from .features.concubine_heart_actions import owns_launch_dispatch
+
+            owned_heart_launch = owns_launch_dispatch(
+                command, send_intent, account_id=account_id, chat_id=target_chat_id, now=now,
+            )
+        if _runtime_has_inflight_action(action_key, identity_state, now) and not owned_heart_launch:
             if changed:
                 mark_dirty()
             return False, f"{session.get('label') or action_key} 等待游戏回复/结算中，暂不补发"
