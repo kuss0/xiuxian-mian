@@ -1357,7 +1357,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
         apply_mock.assert_called_once()
         summary_mock.assert_awaited_once()
 
-    async def test_public_entry_fishing_skips_identity_without_rod_until_next_day(self):
+    async def test_public_entry_fishing_unavailable_does_not_infer_missing_rod(self):
         identity_id = 3504367852
         state_module.ensure_identity_registered(identity_id)
         with state_module.use_identity(identity_id):
@@ -1403,7 +1403,8 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("rod_missing", result["extra"]["skipped"])
+        self.assertEqual("entry_unavailable", result["extra"]["skipped"])
+        self.assertNotIn("鱼竿", result["message"])
         external_mock.assert_not_awaited()
         fishing_mock.assert_not_awaited()
         with state_module.use_identity(identity_id):
@@ -1414,7 +1415,7 @@ class CaveTreasureRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 state_module.state["next_fishing_time"],
             )
-            self.assertEqual("未持有鱼竿，今日跳过", state_module.state["fishing_last_result"])
+            self.assertEqual("灵溪垂钓入口不可用，今日跳过", state_module.state["fishing_last_result"])
             self.assertEqual("", state_module.state["fishing_last_error"])
 
     async def test_public_entry_fishing_skips_public_identity_without_bait_until_next_day(self):

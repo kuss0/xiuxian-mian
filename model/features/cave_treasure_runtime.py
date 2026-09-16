@@ -4599,11 +4599,11 @@ async def run_cave_public_fishing(identity_id, public_entry_url, *, now=None):
                     now,
                     _fishing_reset_jitter_sec(identity_id),
                 )
-                state["fishing_last_result"] = "未持有鱼竿，今日跳过"
+                state["fishing_last_result"] = "灵溪垂钓入口不可用，今日跳过"
                 state["fishing_last_error"] = ""
                 save_state()
-            message = "未持有鱼竿，今日跳过灵溪垂钓"
-            return await report({"ok": True, "message": message, "extra": {"skipped": "rod_missing"}}, priority="low", limit=220)
+            message = "该身份灵溪垂钓入口不可用，今日跳过"
+            return await report({"ok": True, "message": message, "extra": {"skipped": "entry_unavailable"}}, priority="low", limit=220)
 
         launch = {}
         if external_app.get("action"):
