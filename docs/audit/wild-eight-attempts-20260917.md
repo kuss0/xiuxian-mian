@@ -52,3 +52,41 @@ If rescheduling recovery, touch only enabled online identities whose stored
 error is exactly `洞府游历页未返回野外历练状态`; stagger them and retain every
 Tianxing observation, timeline, and command guard. Do not reset server quota or
 clear a pending operation. Back up the quiesced database before changes.
+
+## Production Checkpoint
+
+Deployed `ddee0659` on 2026-09-17 09:58 UTC+8 and pushed to the production
+tracking branch. Only the three enabled online identities with the exact
+schema error were rescheduled; module flags and all runtime-state rows were
+verified unchanged during the maintenance transaction. The main service is
+active, PID 2227795, NRestarts 0. Observer/watchdog were not restarted.
+
+- Yinluo: first action completed at 10:01:53, cultivation +4485, spirit stones
+  +192, remaining 7/8.
+- Lpprceqei: first action completed at 10:02:31, defeat, cultivation -12601,
+  remaining 7/8. Defeat is correctly recorded as a completed action.
+- WA: `.推命 探索` sent 09:59:05, message 1131741, reply 1131743 confirmed
+  before the action. Deep strategy completed at 10:06:26 with change-fate
+  rescue, no cultivation loss, fourth-level demon pill x1, remaining 7/8.
+- WA's actual action result contains both prediction-hit and change-trigger
+  text. It was consumed by the existing Tianxing reducer. The following round
+  obtained a new prediction (1131874) and a new change-fate command (1131876,
+  confirmed by reply 1131878), rather than reusing consumed effects.
+- Two non-Tianxing follow-ups encountered connection resets at `dwelling_start`
+  before any journey request. They retained normal backoff; no mutation was
+  replayed. This network issue is not resolved by the quota parser change.
+
+The canonical strategies are in `identity_runtime_state`: WA deep, the other
+two online identities cautious. The legacy `identities` strategy column still
+contains balanced and is not the runtime source of truth. Production strategy
+values were preserved. The separate first Wisemole probe used balanced based
+on that legacy column; its local report has been corrected.
+
+This checkpoint confirms one live WA cycle, not all eight live daily rounds.
+Remaining rounds are handled by normal scheduling and fresh Tianxing evidence.
+
+Separate observation for follow-up: after the new 3-point change-fate receipt,
+the local Tianji estimate still read 49 (previous estimate 48 plus the hit).
+Do not present it as an authoritative server balance; investigate cost
+accounting/idempotence separately rather than editing balances during this
+quota fix. The existing insufficient-Tianji server-reply guard stays intact.
