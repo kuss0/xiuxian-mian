@@ -1084,7 +1084,7 @@ def _parse_cave_journey_overview(journey):
             "available": wild.get("available") is True,
             "daily_count": _coerce_int(wild.get("dailyCount"), -1),
             "daily_limit": _coerce_int(wild.get("dailyLimit"), 0),
-            "daily_remaining": _coerce_int(wild.get("dailyRemaining"), -1),
+            "daily_remaining": _coerce_int(wild.get("remainingAttempts", wild.get("dailyRemaining")), -1),
             "cooldown_hours": _coerce_float(wild.get("cooldownHours"), 0.0),
             "remaining_seconds": _coerce_int(wild.get("remainingSeconds"), 0),
             "last_at": _coerce_int(wild.get("lastAt"), 0),

@@ -60,6 +60,62 @@ def flow_result(payload=None):
     }
 
 
+@pytest.mark.parametrize("fields,expected", [
+    ({"remainingAttempts": 7}, 7),
+    ({"dailyRemaining": 7}, 7),
+    ({"remainingAttempts": 0, "dailyRemaining": 7}, 0),
+    ({"remainingAttempts": 7, "dailyRemaining": 0}, 7),
+    ({}, -1),
+    ({"remainingAttempts": None, "dailyRemaining": 7}, -1),
+    ({"remainingAttempts": "invalid", "dailyRemaining": 7}, -1),
+])
+def test_journey_remaining_count_accepts_new_contract_without_truthy_fallback(fields, expected):
+    parsed = dwelling._parse_cave_journey_overview({
+        "wildExperience": {"available": True, "dailyCount": 1, "dailyLimit": 8, **fields},
+    })
+    assert parsed["wild_experience"]["daily_remaining"] == expected
+
+
+def current_journey_payload(count, *, completed=False):
+    raw = journey_payload(completed=completed)
+    raw["account"]["journey"]["wildExperience"] = {
+        "available": count < 8, "dailyCount": count, "dailyLimit": 8,
+        "remainingAttempts": 8 - count, "resetAt": int((NOW + 86400) * 1000),
+    }
+    return raw
+
+
+@pytest.mark.parametrize("before_count", [0, 7])
+def test_current_journey_defeat_is_settled_once_and_uses_server_quota(wild_env, before_count):
+    wild_env.session["result"]["data"]["raw"] = current_journey_payload(before_count)
+    after = current_journey_payload(before_count + 1, completed=True)
+    after["actionResult"].update(outcome="defeat", cultivationDelta=-385, loot=[])
+    wild_env.flow.return_value = flow_result(after)
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert result["ok"]
+    assert result["extra"]["completed"]
+    assert result["extra"]["phase"] == "completed"
+    assert result["extra"]["wild"]["daily_remaining"] == 7 - before_count
+    assert "-385" in result["message"]
+    expected = NOW + (86400 if before_count == 7 else cave.WILD_TRAINING_NO_COOLDOWN_FOLLOWUP_SEC)
+    assert result["extra"]["next_time"] == pytest.approx(expected, abs=1)
+    wild_env.flow.assert_awaited_once()
+    assert not state_module.get_inventory_delta_records()
+
+
+@pytest.mark.parametrize("remaining,expected_phase", [
+    (0, "cooldown"), (None, "state_missing"), (-1, "state_missing"), (9, "state_missing"),
+])
+def test_current_journey_no_quota_or_invalid_state_never_dispatches(wild_env, remaining, expected_phase):
+    raw = current_journey_payload(8 if remaining == 0 else 0)
+    raw["account"]["journey"]["wildExperience"]["remainingAttempts"] = remaining
+    wild_env.session["result"]["data"]["raw"] = raw
+    result = asyncio.run(cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=NOW))
+    assert result["extra"]["phase"] == expected_phase
+    assert not result["extra"].get("acted")
+    wild_env.flow.assert_not_awaited()
+
+
 def adapter_with_limit(count=1):
     return replace(dwelling.build_cave_treasure_miniapp_adapter(), request_policy=MiniAppRequestPolicy(
         min_interval_sec=0, max_requests_per_run=count,
@@ -382,6 +438,81 @@ def enable_tianxing(h, monkeypatch):
         },
     )
     monkeypatch.setattr(tianxing, "is_module_available", lambda _name: True)
+
+
+@pytest.mark.parametrize("with_tianxing", [False, True])
+def test_eight_round_day_checks_each_quota_and_tianxing_consumption(wild_env, monkeypatch, with_tianxing):
+    h = wild_env
+    if with_tianxing:
+        enable_tianxing(h, monkeypatch)
+    async def run():
+        with state_module.use_identity(IDENTITY_ID):
+            for count in range(8):
+                now = NOW + count * 120
+                if with_tianxing:
+                    if count:
+                        assert not wild.wild_training_http_route_is_ready("深入", now)
+                    # A new, confirmed prediction is required for every round.
+                    h.identity["tianxing_observation"].update(
+                        current_prediction="探索", current_prediction_until=now + 3600,
+                        current_prediction_set_at=now - 1,
+                    )
+                    assert wild.wild_training_http_route_is_ready("深入", now)
+                h.session["result"]["data"]["raw"] = current_journey_payload(count)
+                after = current_journey_payload(count + 1, completed=True)
+                if with_tianxing:
+                    after["actionResult"]["rawMessage"] = (
+                        "【野外历练 · 妖兽遭遇】\n"
+                        "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
+                        "【改命待发】此道改命尚可维持 23小时49分钟\n"
+                    )
+                h.flow.return_value = flow_result(after)
+                result = await cave.run_cave_public_wild_training(
+                    IDENTITY_ID, ENTRY_URL, "深入" if with_tianxing else "谨慎", now=now,
+                )
+                assert result["ok"]
+                assert await wild._apply_miniapp_result(result, now, notify=False) == "completed"
+                assert result["extra"]["wild"]["daily_remaining"] == 7 - count
+                if with_tianxing:
+                    observed = tianxing.normalize_tianxing_observation(h.identity["tianxing_observation"])
+                    assert observed["prediction_consumed_at"] == now
+                    assert observed["current_prediction"] == ""
+                    assert observed["current_change"] == "探索"
+                    assert observed["tianji_value"] == 10 + count
+                    assert not wild.wild_training_http_route_is_ready("深入", now + 60)
+                if count < 7:
+                    assert h.identity["next_wild_training_time"] == pytest.approx(now + 60, abs=1)
+            reset_at = NOW + 86400
+            assert reset_at + 1800 <= h.identity["next_wild_training_time"] <= reset_at + 5400
+            h.session["result"]["data"]["raw"] = current_journey_payload(8)
+            ninth = await cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "谨慎", now=now + 60)
+            assert not ninth["extra"]["acted"]
+            assert ninth["extra"]["phase"] == "cooldown"
+    asyncio.run(run())
+    assert h.flow.await_count == 8
+
+
+@pytest.mark.parametrize("raw_message", [
+    "【野外历练 · 改命脱险】\n【推命命中】司命演算吻合，天机值 +1\n【改命回天】",
+    "【野外历练 · 负伤而归】\n修为折损 -385",
+])
+def test_eight_round_followup_does_not_reuse_triggered_or_unconfirmed_change(wild_env, monkeypatch, raw_message):
+    h = wild_env
+    enable_tianxing(h, monkeypatch)
+    h.session["result"]["data"]["raw"] = current_journey_payload(0)
+    after = current_journey_payload(1, completed=True)
+    after["actionResult"].update(rawMessage=raw_message, cultivationDelta=-385, loot=[])
+    h.flow.return_value = flow_result(after)
+    async def run():
+        with state_module.use_identity(IDENTITY_ID):
+            result = await cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "深入", now=NOW)
+            assert await wild._apply_miniapp_result(result, NOW, notify=False) == "completed"
+            assert not wild.wild_training_http_route_is_ready("深入", NOW + 60)
+            result = await cave.run_cave_public_wild_training(IDENTITY_ID, ENTRY_URL, "深入", now=NOW + 60)
+            assert result["extra"]["phase"] == "route_changed"
+            assert not result["extra"]["acted"]
+    asyncio.run(run())
+    h.flow.assert_awaited_once()
 
 
 @pytest.mark.parametrize("change", ["prediction_expired", "change_expired", "prediction_consumed", "paused"])
