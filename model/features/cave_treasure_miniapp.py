@@ -1528,7 +1528,7 @@ def _cave_treasure_daily_limit_state(result, previous_state=None):
     return state
 
 
-def _resume_treasure_start(record, data, state):
+def _resume_treasure_start(record, data, state, *, observed_at):
     if not treasure_operations.valid_record(record):
         raise ValueError("hunt_resume_record_invalid")
     old = record["checkpoint"]
@@ -1537,6 +1537,7 @@ def _resume_treasure_start(record, data, state):
     if body_error:
         raise ValueError(body_error)
     receipt = None
+    resolution = {}
     if pending.get("action") == "settle" or "huntResult" in root and not state.get("in_round"):
         raw = root.get("huntResult")
         session_id = treasure_session_id(raw.get("sessionId", raw.get("session_id"))) if isinstance(raw, dict) else ""
@@ -1558,13 +1559,20 @@ def _resume_treasure_start(record, data, state):
         error = (treasure_reveal_progress_error(before, after, pending["target_index"], session_field="session_key")
                  if pending else treasure_run_continuity_error(before, after, session_field="session_key"))
         if error:
-            raise ValueError(error)
-        state = retain_treasure_run_evidence({**before, "session_id": state["session_id"]}, state)
-        session_id = state["session_id"]
+            if not treasure_operations.search_daily_reset_resolved(
+                before, after, pending,
+                previous_at=record["updated_at"], current_at=observed_at,
+            ):
+                raise ValueError(error)
+            resolution = {"kind": "daily_reset", "request": deepcopy(pending)}
+            session_id = ""
+        else:
+            state = retain_treasure_run_evidence({**before, "session_id": state["session_id"]}, state)
+            session_id = state["session_id"]
     receipts = deepcopy(old["receipts"])
     if receipt is not None:
         receipts.append(treasure_operations.receipt_evidence(receipt, session_id))
-    return state, receipts, receipt
+    return state, receipts, receipt, resolution
 
 
 def run_cave_treasure_miniapp_lab_flow(
@@ -1582,6 +1590,7 @@ def run_cave_treasure_miniapp_lab_flow(
     operation_check=None,
     checkpoint=None,
     resume_record=None,
+    observed_at=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -1598,6 +1607,7 @@ def run_cave_treasure_miniapp_lab_flow(
     material_errors = []
     round_entry_used = None
     pending_request, resolution, receipts = {}, {}, []
+    resume_resolution = {}
     action_dispatched, checkpoint_sequence, checkpoint_error = False, 0, ""
     retry_after_sec = 0.0
     budget = MiniAppRequestBudget(adapter.request_policy, sleeper=sleeper)
@@ -1725,9 +1735,14 @@ def run_cave_treasure_miniapp_lab_flow(
             if key in start_run and treasure_session_id(start_run[key]) != last_state.get("session_id"):
                 return finish(False, "blocked", error="hunt_response_session_mismatch")
         if resume_record is not None:
-            last_state, receipts, recovered_receipt = _resume_treasure_start(resume_record, start_result.data, last_state)
+            last_state, receipts, recovered_receipt, recovered_resolution = _resume_treasure_start(
+                resume_record, start_result.data, last_state,
+                observed_at=float(observed_at or resume_record["updated_at"]),
+            )
             prior = resume_record["checkpoint"]
             action_dispatched = prior["action_dispatched"] or bool(prior["pending"]) or recovered_receipt is not None
+            resolution = recovered_resolution
+            resume_resolution = recovered_resolution
             retry_after_sec = max(retry_after_sec, prior["retry_after_sec"])
             settled_sessions = {receipt["session_key"] for receipt in receipts}
             if recovered_receipt is not None:
@@ -1736,6 +1751,10 @@ def run_cave_treasure_miniapp_lab_flow(
                     material_errors.append(recovered_receipt["material_error"])
         if not emit("response"):
             return finish(False, "persistence_pending", error=checkpoint_error)
+        if resume_resolution:
+            # Reconciliation is deliberately read-only.  A later scheduler
+            # pass may start the new day's round after this journal is durable.
+            return finish(False, "daily_reset_reconciled")
 
         for _step_index in range(max(1, int(max_steps or 1))):
             require_miniapp_operation(operation_check)
@@ -1861,6 +1880,7 @@ async def run_cave_treasure_miniapp_production_flow(
     operation_check=None,
     checkpoint=None,
     resume_record=None,
+    observed_at=None,
 ):
     adapter = adapter or build_cave_treasure_miniapp_adapter()
     token = str(token or "").strip()
@@ -1887,6 +1907,7 @@ async def run_cave_treasure_miniapp_production_flow(
                 operation_check=operation.check,
                 checkpoint=checkpoint,
                 resume_record=resume_record,
+                observed_at=observed_at,
             ),
             operation_check=operation_check, sleeper=sleeper,
         )

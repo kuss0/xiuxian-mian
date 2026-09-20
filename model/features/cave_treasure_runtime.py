@@ -3616,6 +3616,7 @@ async def _run_owned_cave_treasure(owner, token, webview_url, *, now, capture_so
             operation_check=lambda: operation_check() and writer.is_current() and not writer.cancelled,
             checkpoint=writer,
             **({"resume_record": writer.resume_record} if resume else {}),
+            observed_at=now,
         )
     except MiniAppFlowCancelled as exc:
         cancelled_flow, result = exc, exc.result

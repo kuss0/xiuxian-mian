@@ -147,6 +147,53 @@ def test_unknown_enter_without_a_returned_session_stays_held(native):
     assert native.owner[results.STATE_KEY] == old_result
 
 
+def test_verified_daily_reset_retires_unknown_search_before_starting_a_new_round(native):
+    before, _old_result = interrupt(native, "search", limit=1)
+    native.now += 86400
+    calls = []
+    native.transport = scripted_transport(calls, limit=1)
+
+    async def flow(identity_id, **kwargs):
+        return await worker.run_cave_treasure_miniapp_production_flow(
+            identity_id, **dict(kwargs, transport=native.transport, adapter=adapter(), sleeper=lambda _delay: None),
+        )
+
+    native.flow.side_effect = flow
+    reconciled = asyncio.run(call(native, "public"))
+    assert not reconciled["ok"] and reconciled["extra"]["status"] == "daily_reset_reconciled"
+    assert calls == ["start"]
+    current = native.owner[operations.STATE_KEY]
+    assert current["version"] == 2 and current["resume"]["operation_id"] == before["operation_id"]
+    assert not operations.hold_reason(IDENTITY)
+
+    response = asyncio.run(call(native, "public"))
+    assert response["ok"] and response["extra"]["daily_exhausted"], response
+    assert calls == ["start", "start", "hunt", "hunt_reveal", "hunt_settle"]
+
+
+@pytest.mark.parametrize("kind", ["search", "settle"])
+def test_daily_counter_must_move_back_and_only_search_can_be_retired(native, kind):
+    before, old_result = interrupt(native, kind, limit=1)
+    calls = []
+
+    def transport(request):
+        calls.append(request["safe_summary"]["endpoint"])
+        return panel(1, 1)
+
+    native.transport = transport
+
+    async def flow(identity_id, **kwargs):
+        return await worker.run_cave_treasure_miniapp_production_flow(
+            identity_id, **dict(kwargs, transport=native.transport, adapter=adapter(), sleeper=lambda _delay: None),
+        )
+
+    native.flow.side_effect = flow
+    asyncio.run(call(native, "public"))
+    assert calls == ["start"]
+    assert native.owner[operations.STATE_KEY] == before
+    assert native.owner[results.STATE_KEY] == old_result
+
+
 @pytest.mark.parametrize("stage", ["checkpoint", "result"])
 def test_recovery_save_failure_preserves_facts_and_retries_only_local_work(native, stage):
     before, old_result = interrupt(native, "search", limit=2)

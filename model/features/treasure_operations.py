@@ -106,6 +106,36 @@ def _valid_request(value):
                  else value["target_index"] == 0))
 
 
+def search_daily_reset_resolved(previous, current, pending, *, previous_at=0, current_at=0):
+    """Prove that an unknown search belongs to a server-reset round.
+
+    A reveal/search does not award loot by itself.  It is safe to retire only
+    when a fresh owned snapshot has no active/settled round and its verified
+    daily usage counter has moved backwards.  Missing round data alone is not
+    enough evidence because it can also be a partial response.
+    """
+    if (not results._time(previous_at) or not results._time(current_at) or current_at <= previous_at
+            or get_day_key(previous_at) == get_day_key(current_at)
+            or not _valid_state(previous) or not _valid_state(current) or not _valid_request(pending)
+            or pending["action"] != "search" or previous.get("in_round") is not True
+            or pending["session_key"] != previous.get("session_key")
+            or pending["target_index"] in previous.get("revealed_targets", [])
+            or current.get("in_round") is not False or current.get("session_key", "")
+            or current.get("settled") is not False or current.get("treasure_found") is not False
+            or current.get("quota_verified") is not True):
+        return False
+    previous_used = previous.get("games_used")
+    current_used = current.get("games_used")
+    previous_limit = previous.get("games_limit")
+    current_limit = current.get("games_limit")
+    return (
+        type(previous_used) is int and type(current_used) is int
+        and type(previous_limit) is int and type(current_limit) is int
+        and previous_limit > 0 and previous_limit == current_limit
+        and 0 <= current_used < previous_used <= previous_limit
+    )
+
+
 def _valid_receipt(value):
     return (isinstance(value, dict) and set(value) == {"session_key", "rewards", "gains", "found_main", "material_error"}
             and results._key(value["session_key"]) and results._counts(value["rewards"])
@@ -129,7 +159,7 @@ def valid_checkpoint(value):
         return False
     if not results._empty(resolution) and (
         not isinstance(resolution, dict) or set(resolution) != {"kind", "request"}
-        or resolution["kind"] not in ("not_sent", "rejected", "daily_limit")
+        or resolution["kind"] not in ("not_sent", "rejected", "daily_limit", "daily_reset")
         or not _valid_request(resolution["request"]) or pending
     ):
         return False
@@ -310,12 +340,23 @@ def _resume_checkpoint_allowed(previous, value):
     old = previous["checkpoint"]
     state, current, pending = old["state"], value["state"], old["pending"]
     prior, receipts = old["receipts"], value["receipts"]
-    if (value["phase"] != "response" or value["pending"] or value["resolution"]
+    resolution = value["resolution"]
+    if (value["phase"] != "response" or value["pending"]
             or value["ok"] or value["status"] != "running" or value["error"]
             or value["action_dispatched"] != (old["action_dispatched"] or bool(pending) or len(receipts) > len(prior))
             or value["retry_after_sec"] < old["retry_after_sec"]
             or not results._same(receipts[:len(prior)], prior)):
         return False
+    if resolution:
+        return (
+            len(receipts) == len(prior)
+            and resolution.get("kind") == "daily_reset"
+            and results._same(resolution.get("request"), pending)
+            and search_daily_reset_resolved(
+                state, current, pending,
+                previous_at=previous["updated_at"], current_at=time.time(),
+            )
+        )
     if len(receipts) > len(prior):
         return (len(receipts) == len(prior) + 1 and receipts[-1]["session_key"] == state["session_key"]
                 and current.get("in_round") is False and current.get("settled") is True)
