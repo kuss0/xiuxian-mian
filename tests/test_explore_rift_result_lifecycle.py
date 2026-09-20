@@ -150,6 +150,14 @@ def test_conflicting_edits_in_same_server_second_are_not_guessed(env):
     assert state_module._meta_state == expected
 
 
+def test_pending_edit_can_upgrade_to_terminal_in_same_server_second(env):
+    assert asyncio.run(delivery("元婴在无尽的虚空中穿行，成功捕获了几缕逸散的法则本源！", kind="edit"))
+    assert env.identity["explore_rift_pending_result_msg_id"] == RESULT
+    assert asyncio.run(delivery(SUCCESS, kind="edit"))
+    assert env.identity["explore_rift_pending_result_msg_id"] == 0
+    assert item_count() == 2
+
+
 def test_original_then_edit_in_same_second_accepts_the_edit_once(env):
     assert asyncio.run(delivery())
     assert asyncio.run(delivery(SUCCESS.replace("x2", "x3"), kind="edit"))

@@ -29,7 +29,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..message_keys import message_key_parts
-from ..message_log_recovery import _read_log_tail_lines
+from ..message_log_recovery import _read_log_tail_lines, find_message_log_replies
 from ..runtime import classify_game_send_block, console_log, send_audit_log, send_game_command
 from ..state import (
     REALM_SORT_INDEX,
@@ -338,7 +338,16 @@ def _plan_rift_result(raw_text, stage, evidence):
             if digest == previous.get("digest"):
                 return {"ignored": True}
             if evidence["event_type"] == previous.get("event_type"):
-                return None
+                # Telegram can deliver multiple edits in one server second.  A
+                # pending rift animation may therefore share its timestamp with
+                # the final titled result.  The lifecycle direction proves this
+                # one transition; two different terminal edits remain ambiguous.
+                if not (
+                    previous.get("stage") == "pending"
+                    and stage in EXPLORE_RIFT_FINAL_TITLES
+                    and evidence["msg_id"] == previous.get("msg_id")
+                ):
+                    return None
             if evidence["event_type"] != "edit":
                 return {"ignored": True}
         if old_stage not in {"pending", EXPLORE_RIFT_FATAL_TITLE}:
@@ -1250,9 +1259,19 @@ def _find_owned_rift_log_reply(command, now, *, command_msg_id=0, command_chat_i
     if command_msg_id:
         owners = {key: value for key, value in owners.items() if key[1] == command_msg_id and (not command_chat_id or key[0] == command_chat_id)}
         if len(owners) != 1:
-            return None
+            return _find_anchored_rift_log_reply(
+                command,
+                now,
+                command_msg_id=command_msg_id,
+                command_chat_id=command_chat_id,
+                result_msg_id=result_msg_id,
+            )
+    if command == CMD_EXPLORE_RIFT:
+        latest_replies = _latest_explore_rift_log_replies(entries, now)
+    else:
+        latest_replies = _latest_tianxing_log_replies(entries, now)
     replies = []
-    for entry in _latest_tianxing_log_replies(entries, now):
+    for entry in latest_replies:
         root = _rift_log_id(entry.get("reply_to_msg_id"))
         owner = owners.get((entry["chat_id"], root))
         if not owner or (result_msg_id and entry["message_id"] != result_msg_id):
@@ -1271,8 +1290,112 @@ def _find_owned_rift_log_reply(command, now, *, command_msg_id=0, command_chat_i
             "event_type": entry["event_type"], "text": raw_text,
         })
     if len({(reply["chat_id"], reply["root_msg_id"]) for reply in replies}) != 1:
+        return _find_anchored_rift_log_reply(
+            command,
+            now,
+            command_msg_id=command_msg_id,
+            command_chat_id=command_chat_id,
+            result_msg_id=result_msg_id,
+        )
+    return replies[0] if replies else _find_anchored_rift_log_reply(
+        command,
+        now,
+        command_msg_id=command_msg_id,
+        command_chat_id=command_chat_id,
+        result_msg_id=result_msg_id,
+    )
+
+
+def _latest_explore_rift_log_replies(entries, now):
+    """Resolve same-second pending -> terminal edits without guessing terminals."""
+    grouped = {}
+    for entry in entries or []:
+        # Reuse the shared validator one row at a time, then apply the
+        # rift-specific monotonic lifecycle rule only within an exact message.
+        validated = _latest_tianxing_log_replies([entry], now)
+        if len(validated) != 1:
+            continue
+        current = validated[0]
+        key = _rift_log_id(current.get("chat_id")), _rift_log_id(current.get("message_id"))
+        if not key[0] or key[1] <= 0:
+            continue
+        grouped.setdefault(key, []).append(current)
+
+    resolved = []
+    for candidates in grouped.values():
+        latest_revision = max(
+            (_rift_log_time(item.get("server_event_at")), item.get("event_type") == "edit")
+            for item in candidates
+        )
+        latest = [
+            item for item in candidates
+            if (_rift_log_time(item.get("server_event_at")), item.get("event_type") == "edit") == latest_revision
+        ]
+        texts = {str(item.get("text") or "").strip() for item in latest}
+        if len(texts) == 1:
+            resolved.append(latest[-1])
+            continue
+        terminal = [item for item in latest if _explore_rift_final_title(str(item.get("text") or "").strip())]
+        pending = [item for item in latest if _rift_result_stage(str(item.get("text") or "").strip()) == "pending"]
+        terminal_texts = {str(item.get("text") or "").strip() for item in terminal}
+        if len(terminal_texts) == 1 and len(terminal) + len(pending) == len(latest):
+            resolved.append(terminal[-1])
+
+    return sorted(
+        resolved,
+        key=lambda item: (
+            _rift_log_time(item.get("server_event_at")),
+            _rift_log_id(item.get("chat_id")),
+            _rift_log_id(item.get("message_id")),
+            item.get("event_type") == "edit",
+        ),
+        reverse=True,
+    )
+
+
+def _find_anchored_rift_log_reply(command, now, *, command_msg_id=0, command_chat_id=0, result_msg_id=0):
+    if command != CMD_EXPLORE_RIFT:
         return None
-    return replies[0]
+    _observed, snapshot = _unknown_rift_snapshot()
+    if not _unknown_rift_owner_matches(snapshot):
+        return None
+    root = _rift_log_id(command_msg_id or snapshot.get("command_msg_id"))
+    chat = _rift_log_id(command_chat_id or snapshot.get("command_chat_id"))
+    started_at = _rift_log_time(snapshot.get("command_started_at") or snapshot.get("recorded_at"))
+    if (
+        root <= 0 or not chat or started_at <= 0
+        or (command_msg_id and root != _rift_log_id(snapshot.get("command_msg_id")))
+        or (command_chat_id and chat != _rift_log_id(snapshot.get("command_chat_id")))
+    ):
+        return None
+    end_at = min(float(now or 0) + 1, started_at + EXPLORE_RIFT_PENDING_RESULT_STALE_SEC + 60)
+    if end_at < started_at:
+        return None
+    entries = find_message_log_replies(
+        root,
+        end_at,
+        lookback_sec=max(1, int(end_at - started_at + 60)),
+        lookahead_sec=0,
+        chat_id=chat,
+        messages_dir=MESSAGES_DIR,
+    )
+    replies = []
+    for entry in _latest_explore_rift_log_replies(entries, end_at):
+        if result_msg_id and _rift_log_id(entry.get("message_id")) != _rift_log_id(result_msg_id):
+            continue
+        raw_text = str(entry.get("text") or "").strip()
+        if not is_explore_rift_reply_text(raw_text):
+            continue
+        replies.append({
+            "ts": _rift_log_time(entry.get("server_event_at")),
+            "server_event_at": _rift_log_time(entry.get("server_event_at")),
+            "msg_id": _rift_log_id(entry.get("message_id")),
+            "chat_id": _rift_log_id(entry.get("chat_id")),
+            "root_msg_id": _rift_log_id(entry.get("reply_to_msg_id")),
+            "event_type": entry.get("event_type"),
+            "text": raw_text,
+        })
+    return replies[0] if len(replies) == 1 else None
 
 
 def _rift_log_reply_context(entry, now, family):

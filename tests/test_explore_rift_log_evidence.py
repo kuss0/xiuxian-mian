@@ -171,6 +171,38 @@ def test_conflicting_same_second_edits_are_not_guessed(env, mode):
     assert not read(mode)
 
 
+@pytest.mark.parametrize("mode", ["reply", "result"])
+def test_same_second_pending_edit_can_upgrade_to_unique_terminal(env, mode):
+    env.write([
+        command(mode),
+        row("元婴在无尽的虚空中穿行，成功捕获了几缕逸散的法则本源！", kind="edit", received=NOW - 2),
+        row(FINAL, kind="edit"),
+    ])
+    result = read(mode)
+    assert result and result["text"] == FINAL
+
+
+@pytest.mark.parametrize("mode", ["reply", "result"])
+def test_anchored_result_older_than_tail_is_recovered(env, mode):
+    env.identity["tianxing_observation"]["explore_rift_unknown_snapshot"].update({
+        "op_id": "rift-op",
+        "identity_id": IDENTITY,
+        "account_id": ACCOUNT,
+        "command_msg_id": ROOT,
+        "command_chat_id": CHAT,
+        "command_started_at": NOW - 120,
+        "recorded_at": NOW - 120,
+    })
+    env.write([
+        command(mode),
+        row("元婴在无尽的虚空中穿行，成功捕获了几缕逸散的法则本源！", kind="edit", received=NOW - 2),
+        row(FINAL, kind="edit"),
+        row("x" * (600 * 1024), msg_id=RESULT + 10, root=ROOT + 10, sender=IDENTITY, at=NOW, received=NOW),
+    ])
+    result = read(mode)
+    assert result and result["text"] == FINAL
+
+
 @pytest.mark.parametrize("mode", ["panel", "reply", "result"])
 def test_same_ids_in_two_owned_chats_are_ambiguous(env, mode):
     text = PANEL if mode == "panel" else FINAL
