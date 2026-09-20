@@ -264,6 +264,24 @@ def test_ordinary_background_completion_retains_spacing_and_retry_behavior(backg
     assert ui._cave_public_background_retry_at[("stargazer", h.identity_id)] == h.now[0] + 60
 
 
+def test_treasure_daily_reset_reconciliation_is_not_reported_or_delayed_as_failure(background):
+    h = background
+    config = {**h.config, "cave_public_stargazer_enabled": False, "cave_public_treasure_enabled": True}
+    state_module.set_miniapp_auto_config(config)
+    h.run.return_value = False, "daily reset reconciled", {
+        "status": "daily_reset_reconciled", "outcome_unknown": False,
+    }
+
+    async def run():
+        await (await queue_background(h))
+
+    asyncio.run(run())
+    assert ui._cave_public_background_retry_at[("treasure", h.identity_id)] == h.now[0] + 60
+    message = str(ui.console_log.call_args_list)
+    assert "已核销" in message
+    assert "失败" not in message
+
+
 def test_frozen_channel_during_maintenance_keeps_public_background_available(background):
     h = background
     state_module.set_identity_enabled(h.identity_id, False)

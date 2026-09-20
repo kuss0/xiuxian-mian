@@ -9278,7 +9278,12 @@ async def _execute_cave_public_background_action(operation, delay_sec):
             and (ok or operation.schedule_current())
             and _cave_public_background_retry_at.get(operation.retry_key) == operation.retry
         ):
-            retry_sec = 60 if ok else 30 * 60
+            reconciled = (
+                action == "treasure"
+                and extra.get("status") == "daily_reset_reconciled"
+                and not extra.get("outcome_unknown")
+            )
+            retry_sec = 60 if ok or reconciled else 30 * 60
             if miniapp_retry_after_sec({"extra": extra}) > 0:
                 retry_sec = max(30, min(24 * 3600, miniapp_retry_after_sec({"extra": extra})))
             if action in {"deep_status", "deep_settle"} and not ok:
@@ -9303,7 +9308,11 @@ async def _execute_cave_public_background_action(operation, delay_sec):
             if shared_retry_sec > 0 else message
         ))
     if operation.owner.is_current():
-        outcome = "等待" if extra.get("status") == "busy" else ("成功" if ok else "失败")
+        outcome = (
+            "等待" if extra.get("status") == "busy"
+            else "已核销" if extra.get("status") == "daily_reset_reconciled" and not extra.get("outcome_unknown")
+            else "成功" if ok else "失败"
+        )
         console_log(
             f"🧭 洞府公共入口后台：{get_identity_display_name(identity_id)}｜{action}｜"
             f"{outcome}｜{str(message or '无详情')[:180]}",
