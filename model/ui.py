@@ -470,6 +470,8 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "cave_public_fate_cards_last_report_at": 0,
     "cave_public_fishing_enabled": False,
     "cave_public_fishing_identity_ids": [],
+    "cave_public_concubine_enabled": False,
+    "cave_public_concubine_identity_ids": [],
     "cave_public_stargazer_enabled": False,
     "cave_public_yuanying_enabled": False,
     "cave_public_tianti_status_enabled": False,
@@ -570,6 +572,7 @@ def normalize_miniapp_auto_config(config=None):
         "cave_public_trial_enabled",
         "cave_public_fate_cards_enabled",
         "cave_public_fishing_enabled",
+        "cave_public_concubine_enabled",
         "cave_public_stargazer_enabled",
         "cave_public_yuanying_enabled",
         "cave_public_tianti_status_enabled",
@@ -676,6 +679,14 @@ def normalize_miniapp_auto_config(config=None):
     result["cave_public_fishing_identity_ids"] = sorted({
         int(identity_id)
         for identity_id in fishing_identity_ids
+        if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+    })
+    concubine_identity_ids = result.get("cave_public_concubine_identity_ids") or []
+    if not isinstance(concubine_identity_ids, (list, tuple, set)):
+        concubine_identity_ids = []
+    result["cave_public_concubine_identity_ids"] = sorted({
+        int(identity_id)
+        for identity_id in concubine_identity_ids
         if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
     })
     tianti_status_identity_ids = result.get("cave_public_tianti_status_identity_ids") or []
@@ -949,6 +960,24 @@ def get_miniapp_auto_config_snapshot(now=None):
             "account_id": account_id,
             "auto_enabled": int(identity_id) in fishing_public_ids,
         })
+    concubine_public_ids = set(config.get("cave_public_concubine_identity_ids") or [])
+    cave_public_concubine_candidates = []
+    for identity_id in get_identity_ids():
+        if not is_cave_public_identity_available(identity_id):
+            continue
+        with use_identity(identity_id):
+            concubine_enabled = bool(state.get("concubine_enabled"))
+            partner = str(state.get("concubine_name") or "").strip()
+        if not concubine_enabled and not partner and int(identity_id) not in concubine_public_ids:
+            continue
+        cave_public_concubine_candidates.append({
+            "identity_id": int(identity_id),
+            "label": get_identity_ui_display_name(identity_id),
+            "account_id": int(get_identity_account(identity_id) or 0),
+            "partner": partner,
+            "auto_enabled": int(identity_id) in concubine_public_ids,
+            "module_enabled": concubine_enabled,
+        })
     tianti_public_ids = set(config.get("cave_public_tianti_status_identity_ids") or [])
     cave_public_tianti_status_candidates = []
     for identity_id in get_identity_ids():
@@ -972,6 +1001,7 @@ def get_miniapp_auto_config_snapshot(now=None):
         "world_boss_candidates": world_boss_candidates,
         "world_boss_rotation_accounts": rotation_accounts,
         "cave_public_fishing_candidates": cave_public_fishing_candidates,
+        "cave_public_concubine_candidates": cave_public_concubine_candidates,
         "cave_public_tianti_status_candidates": cave_public_tianti_status_candidates,
         "cave_public_entry_url_configured": bool(config.get("cave_public_entry_urls")),
         "cave_public_entry_url_count": len(config.get("cave_public_entry_urls") or []),
@@ -8174,6 +8204,7 @@ async def ui_set_cave_public_config(payload=None):
         "trial_enabled": "cave_public_trial_enabled",
         "fate_cards_enabled": "cave_public_fate_cards_enabled",
         "fishing_enabled": "cave_public_fishing_enabled",
+        "concubine_enabled": "cave_public_concubine_enabled",
         "stargazer_enabled": "cave_public_stargazer_enabled",
         "yuanying_enabled": "cave_public_yuanying_enabled",
         "tianti_status_enabled": "cave_public_tianti_status_enabled",
@@ -8191,6 +8222,15 @@ async def ui_set_cave_public_config(payload=None):
         if not isinstance(raw_ids, (list, tuple, set)):
             raw_ids = []
         config["cave_public_fishing_identity_ids"] = sorted({
+            int(identity_id)
+            for identity_id in raw_ids
+            if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0
+        })
+    if "concubine_identity_ids" in payload:
+        raw_ids = payload.get("concubine_identity_ids") or []
+        if not isinstance(raw_ids, (list, tuple, set)):
+            raw_ids = []
+        config["cave_public_concubine_identity_ids"] = sorted({
             int(identity_id)
             for identity_id in raw_ids
             if str(identity_id or "").strip().lstrip("-").isdigit() and int(identity_id) > 0

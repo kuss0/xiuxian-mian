@@ -6,6 +6,7 @@ import re
 
 from ..state import get_storage_bag_records, set_storage_bag_records
 from . import concubine as c
+from . import tianjige_transport
 
 
 STATE_KEY = "concubine_gift_actions"
@@ -14,6 +15,7 @@ KEYS = {"gift_bag": "concubine_gift_bag_msg_id", "gift": "concubine_gift_msg_id"
 FAMILIES = {"gift_bag": "storage_bag", "gift": "concubine_gift", "greet": "concubine_greet"}
 UNRESOLVED = {"sending", "sent", "unknown"}
 _INFLIGHT = {}
+HTTP_RECONCILE_INTERVAL_SEC = 1800
 
 
 def _source(kind):
@@ -35,8 +37,27 @@ def _valid_record(kind, record):
     }
     if kind != "greet":
         required.update({"amount", "inventory_key", "parent_op_id"})
-    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result"}
+    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result",
+                "transport", "http_receipt", "reconciliation"}
     if not isinstance(record, dict) or required - record.keys() or record.keys() - required - optional:
+        return False
+    http = record.get("transport") == "miniapp"
+    if "transport" in record and (not http or kind != "greet"):
+        return False
+    if http:
+        if (record["msg_id"] != 0 or record.get("reply_msg_id", 0) != 0
+                or type(record.get("reply_msg_id", 0)) is not int
+                or "sent_at" in record or "dispatch_at" in record or record["status"] == "sent"):
+            return False
+        if record["status"] == "complete":
+            if not tianjige_transport.receipt_matches(
+                record.get("http_receipt"), identity_id=record["identity_id"], account_id=record["account_id"],
+                op_id=record["op_id"], command=record["command"], started_at=record["started_at"],
+            ) or record.get("reply_at") != record["http_receipt"]["started_at"]:
+                return False
+        elif "http_receipt" in record:
+            return False
+    elif "http_receipt" in record:
         return False
     if (
         record["kind"] != kind or c._query_int(record["identity_id"]) != c.get_current_identity_id()
@@ -52,9 +73,9 @@ def _valid_record(kind, record):
         or record["day"] != c._local_day_key(record["started_at"])
         or type(record["msg_id"]) is not int or not 0 <= record["msg_id"] < 2 ** 63
         or not isinstance(record["status"], str)
-        or record["status"] not in UNRESOLVED | {"complete", "unsent", "expired"}
+        or record["status"] not in UNRESOLVED | {"complete", "unsent", "expired", "reconciled"}
         or (record["status"] == "expired" and kind != "gift_bag")
-        or (record["status"] in {"sent", "complete"} and not record["msg_id"])
+        or (not http and record["status"] in {"sent", "complete"} and not record["msg_id"])
         or (record["status"] == "unsent" and record["msg_id"])
         or any(c._query_time(record[key]) is None for key in (
             "sent_at", "dispatch_at", "reply_at", "replay_after", "retry_at") if key in record)
@@ -62,6 +83,32 @@ def _valid_record(kind, record):
             record["started_at"] - 1 <= record.get("dispatch_at", 0) <= record.get("sent_at", 0)))
     ):
         return False
+    if "reconciliation" in record or record["status"] == "reconciled":
+        probe = record.get("reconciliation")
+        if (not http or record["status"] not in UNRESOLVED | {"reconciled"}
+                or not isinstance(probe, dict) or not isinstance(probe.get("op_id"), str)
+                or re.fullmatch(r"[a-f0-9]{32}", probe["op_id"]) is None
+                or probe["op_id"] == record["op_id"] or c._query_time(probe.get("started_at")) is None
+                or probe["started_at"] <= record["started_at"]):
+            return False
+        if record["status"] == "reconciled":
+            companion = probe.get("companion")
+            observed_day = probe.get("observed_day")
+            if (probe.keys() != {"op_id", "started_at", "receipt", "companion", "observed_day"}
+                    or not tianjige_transport.pavilion_receipt_matches(
+                        probe["receipt"], identity_id=record["identity_id"], account_id=record["account_id"],
+                        op_id=probe["op_id"], started_at=probe["started_at"])
+                    or not isinstance(companion, dict)
+                    or companion.keys() != {"partner", "greeted_today", "affinity"}
+                    or companion["partner"] != record["partner"]
+                    or type(companion["greeted_today"]) is not bool
+                    or type(companion["affinity"]) is not int or not 0 <= companion["affinity"] < 2 ** 63
+                    or observed_day != c._local_day_key(probe["receipt"]["started_at"])
+                    or observed_day < record["day"]
+                    or (observed_day == record["day"] and companion["greeted_today"] is not True)):
+                return False
+        elif probe.keys() != {"op_id", "started_at"}:
+            return False
     if kind == "greet":
         if record["command"] != c.CMD_CONCUBINE_DAILY_GREET:
             return False
@@ -78,9 +125,9 @@ def _valid_record(kind, record):
     if record["status"] == "complete":
         result = record.get("result")
         if (
-            c._query_int(record.get("reply_msg_id")) <= record["msg_id"]
+            (not http and c._query_int(record.get("reply_msg_id")) <= record["msg_id"])
             or c._query_time(record.get("reply_at")) is None
-            or record["reply_at"] < record["dispatch_at"] - 1
+            or record["reply_at"] < record.get("dispatch_at", record["started_at"]) - 1
             or not isinstance(result, dict)
             or result.keys() != ({"outcome", "gain", "applied", "wait_until"} if kind == "greet" else
                                  {"outcome", "stones", "gain", "applied"})
@@ -191,10 +238,14 @@ def finished_today(now, kind="gift"):
         return True
     day = c._local_day_key(now)
     return any(
-        record["status"] == "complete" and record["day"] == day
-        and ((kind == "greet" and record["kind"] == "greet" and record["result"]["outcome"] in {"success", "daily_limit"})
+        record["day"] == day
+        and ((kind == "greet" and record["kind"] == "greet" and (
+                record["status"] == "complete" and record["result"]["outcome"] in {"success", "daily_limit"}
+                or record["status"] == "reconciled" and record["reconciliation"]["companion"]["greeted_today"]))
              or (kind == "gift" and (record["kind"] == "gift"
-                 or (record["kind"] == "gift_bag" and record["result"]["outcome"] == "shortage"))))
+                 and record["status"] == "complete"
+                 or (record["kind"] == "gift_bag" and record["status"] == "complete"
+                     and record["result"]["outcome"] == "shortage"))))
         for record in value.values()
     )
 
@@ -208,6 +259,8 @@ def _inventory_key(identity_id):
 
 
 def _clear_pending(record):
+    if record.get("transport") == "miniapp":
+        return
     c._clear_status_query_pending(record, source_module=_source(record["kind"]), family=FAMILIES[record["kind"]])
 
 
@@ -278,6 +331,8 @@ async def send(kind, now, amount=0):
     }
     if kind != "greet":
         record.update(amount=amount, inventory_key=_inventory_key(identity_id), parent_op_id=bag["op_id"] if bag else "")
+    elif tianjige_transport.pavilion_available(identity_id):
+        record["transport"] = "miniapp"
     if not _valid_record(kind, record):
         return False
     c._set_phase(kind + "_pending")
@@ -306,6 +361,7 @@ async def send(kind, now, amount=0):
         with c.use_identity(identity_id):
             return bool(
                 current() == record and c._status_query_plan(owner) == record["plan_key"]
+                and (record.get("transport") != "miniapp" or tianjige_transport.pavilion_available(identity_id))
                 and (kind == "greet" or _inventory_key(identity_id) == record["inventory_key"])
                 and c._local_day_key(c.time.time()) == record["day"]
                 and not c._has_phaseful_summary_window(c.time.time())
@@ -337,6 +393,8 @@ async def send(kind, now, amount=0):
         if not saved:
             unsent(f"{label}\u5728\u9014\u72b6\u6001\u672a\u4fdd\u5b58\uff0c\u672c\u6b21\u672a\u53d1\u9001")
             return False
+        if record.get("transport") == "miniapp":
+            return await _send_greet_miniapp(record, owner, current, can_send, unsent)
         previous_block = dict(c.classify_game_send_block(identity_id, command))
         try:
             msg = await c._send_concubine_game_command(
@@ -389,6 +447,149 @@ async def send(kind, now, amount=0):
     finally:
         if _INFLIGHT.get((identity_id, kind)) == record["op_id"]:
             _INFLIGHT.pop((identity_id, kind), None)
+
+
+async def _send_greet_miniapp(record, owner, current, can_send, unsent):
+    identity = owner[1]
+    try:
+        response = await tianjige_transport.execute(
+            record["identity_id"], record["command"], op_id=record["op_id"], operation_check=can_send,
+        )
+    except (asyncio.CancelledError, Exception):
+        item = current()
+        if item and item["status"] == "sending":
+            before = copy.deepcopy(identity)
+            _store(dict(item, status="unknown"))
+            identity["concubine_greet_last_error"] = "宝阁问安请求中断，保留原操作，不补发"
+            c._save_query_projection(owner, before)
+        raise
+    item = current()
+    if item is None:
+        return False
+    if item["status"] != "sending":
+        return item["status"] == "complete"
+    now = c.time.time()
+    unchanged = c._status_query_plan(owner) == record["plan_key"]
+    before = copy.deepcopy(identity)
+    receipt = response.get("receipt")
+    result = None
+    if response.get("terminal") is True and tianjige_transport.receipt_matches(
+        receipt, identity_id=record["identity_id"], account_id=record["account_id"],
+        op_id=record["op_id"], command=record["command"], started_at=record["started_at"],
+    ):
+        result = _parse_result("greet", str(response.get("message") or ""), record, receipt["started_at"])
+    try:
+        if result is not None and can_send():
+            completed = dict(record, status="complete", reply_at=receipt["started_at"], reply_msg_id=0,
+                             http_receipt=receipt, result=result)
+            if not _valid_record("greet", completed):
+                return False
+            _release_phase(record, unchanged=True)
+            _apply_result(completed, result, now, True)
+            completed["plan_key"] = c._status_query_plan(owner)
+            _store(completed)
+            return c._save_query_projection(owner, before)
+        if response.get("action_dispatched") is False:
+            unsent("宝阁问安未发出，稍后重试")
+            return False
+        _store(dict(record, status="unknown"))
+        if unchanged:
+            identity["concubine_greet_last_error"] = "宝阁问安结果未确认，仅核验今日状态，不补发、不转群命令"
+        c._save_query_projection(owner, before)
+        return False
+    except Exception:
+        identity.clear()
+        identity.update(before)
+        c.mark_dirty()
+        raise
+
+
+async def _recover_greet_miniapp(record, owner, now):
+    identity_id, identity, account_id = owner
+    if ((identity_id, "greet") in _INFLIGHT
+            or now < max(record["started_at"] + HTTP_RECONCILE_INTERVAL_SEC, record.get("replay_after", 0))
+            or account_id != record["account_id"] or not tianjige_transport.available(identity_id)):
+        return
+
+    def current():
+        if not c._owns_status_query(owner, sending=True, kind="gift_status"):
+            return False
+        with c.use_identity(identity_id):
+            item = (records() or {}).get("greet")
+            return bool(item == record and c._status_query_plan(owner) == record["plan_key"]
+                        and c._current_partner_matches(record["partner"])
+                        and c._local_day_key(c.time.time()) >= record["day"]
+                        and not c._has_phaseful_summary_window(c.time.time())
+                        and not c.voyage_actions.block_reason() and not c.divination_actions.block_reason()
+                        and not c.heart_actions.block_reason() and not c.reacquire_actions.block_reason()
+                        and not c.external_events.needs_calibration())
+
+    if not current():
+        return
+    before = copy.deepcopy(identity)
+    probe = {"op_id": c.uuid4().hex, "started_at": max(now, c.time.time())}
+    record = dict(record, reconciliation=probe, replay_after=probe["started_at"] + HTTP_RECONCILE_INTERVAL_SEC)
+    _store(record)
+    if not c._save_query_projection(owner, before):
+        return
+    _INFLIGHT[identity_id, "greet"] = probe["op_id"]
+    try:
+        response = await tianjige_transport.read_pavilion(
+            identity_id, partner=record["partner"], op_id=probe["op_id"], operation_check=current,
+        )
+        if not current() or response.get("ok") is not True:
+            return
+        receipt = response.get("receipt")
+        if not tianjige_transport.pavilion_receipt_matches(
+            receipt, identity_id=identity_id, account_id=account_id,
+            op_id=probe["op_id"], started_at=probe["started_at"],
+        ):
+            return
+        companion = response.get("companion")
+        observed_day = c._local_day_key(receipt["started_at"])
+        if (not isinstance(companion, dict) or companion.keys() != {"partner", "greeted_today", "affinity"}
+                or companion["partner"] != record["partner"]
+                or type(companion["greeted_today"]) is not bool
+                or type(companion["affinity"]) is not int or not 0 <= companion["affinity"] < 2 ** 63
+                or observed_day < record["day"]
+                or (observed_day == record["day"] and companion["greeted_today"] is not True)):
+            return
+        reconciled = dict(record, status="reconciled", reconciliation=dict(
+            probe, receipt=receipt, companion=companion, observed_day=observed_day,
+        ))
+        if not _valid_record("greet", reconciled):
+            return
+        before = copy.deepcopy(identity)
+        try:
+            _release_phase(record, unchanged=True)
+            identity["concubine_affinity"] = companion["affinity"]
+            identity["concubine_greet_retry_count"] = 0
+            identity["concubine_greet_last_error"] = ""
+            if companion["greeted_today"]:
+                identity["concubine_last_greet_day"] = max(
+                    str(identity.get("concubine_last_greet_day") or ""), observed_day)
+            if observed_day == record["day"]:
+                c._normalize_tianji_affinity_error(c.time.time())
+                if companion["affinity"] < c.CONCUBINE_TIANJI_MIN_AFFINITY:
+                    c._schedule_affinity_recovery(c.time.time())
+                else:
+                    c._schedule_after_tianji(c.time.time())
+            else:
+                c._schedule_chain_action(c.time.time())
+            _store(reconciled)
+            c._save_query_projection(owner, before)
+        except Exception:
+            identity.clear()
+            identity.update(before)
+            c.mark_dirty()
+            raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        c.console_log(f"Greeting pavilion reconciliation deferred ({type(exc).__name__})")
+    finally:
+        if _INFLIGHT.get((identity_id, "greet")) == probe["op_id"]:
+            _INFLIGHT.pop((identity_id, "greet"), None)
 
 
 def owns_reply(family, root, chat_id):
@@ -535,7 +736,8 @@ async def handle_reply(kind, text, now, reply_to, *, current_msg_id=0, current_c
     at = c._query_time(observed_at)
     context = reply_context if isinstance(reply_context, dict) else {}
     if (
-        not record or not c._owns_status_query(owner) or owner[2] != record["account_id"]
+        not record or record.get("transport") == "miniapp"
+        or not c._owns_status_query(owner) or owner[2] != record["account_id"]
         or record["status"] not in UNRESOLVED or at is None or not at <= now
         or c._query_int(context.get("sender_id")) not in c.get_game_bot_ids()
         or c._query_int(current_chat_id) != record["chat_id"]
@@ -606,6 +808,9 @@ async def recover(now):
                 return True
         if record["status"] not in UNRESOLVED:
             continue
+        if record.get("transport") == "miniapp":
+            await _recover_greet_miniapp(record, owner, now)
+            return True
         if (record["identity_id"], kind) in _INFLIGHT or now < record.get("replay_after", record["started_at"]):
             return True
         if kind != "gift_bag" and owner[2] != record["account_id"]:

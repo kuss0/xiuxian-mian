@@ -5,6 +5,7 @@ import copy
 import re
 
 from . import concubine as c
+from . import tianjige_transport
 
 
 STATE_KEY = "concubine_fragment_actions"
@@ -12,6 +13,8 @@ SOURCE = "concubine_fragments"
 KINDS = {"dream", "puzzle"}
 UNRESOLVED = {"sending", "sent", "unknown"}
 _INFLIGHT = {}
+HTTP_RECONCILE_INTERVAL_SEC = 1800
+HTTP_EVENT_CLOCK_SKEW_SEC = 5
 RE_DREAM_HEAD = re.compile(r"^\u3010\u5165\u68a6\u5bfb\u56fe\u3011$", re.MULTILINE)
 RE_DREAM_BROADCAST = re.compile(r"^\u3010\u5168\u7fa4\u5f02\u95fb\u00b7(?P<kind>\u865a\u5929|\u82cd\u5764)\u6b8b\u56fe\u3011$", re.MULTILINE)
 RE_PUZZLE_HEAD = re.compile(r"^\u3010(?P<kind>\u865a\u5929|\u82cd\u5764)\u6b8b\u56fe\u00b7\u62fc\u5408\u6210\u529f\u3011$", re.MULTILINE)
@@ -49,11 +52,42 @@ def _fragments():
     return values if _valid_fragments(values, full=True) else None
 
 
+def _snapshot_consumed(record, snapshot, observed_at=None):
+    if not tianjige_transport.fragment_snapshot_valid(snapshot, partner=record.get("partner")):
+        return []
+    threshold = record["started_at"] - HTTP_EVENT_CLOCK_SKEW_SEC
+    ceiling = ((c._query_time(observed_at) or float("inf")) + HTTP_EVENT_CLOCK_SKEW_SEC)
+    if record["kind"] == "dream":
+        return ["dream"] if threshold <= snapshot["last_dream_at"] <= ceiling else []
+    completed = set(record["confirmation_key"].split("|"))
+    return [kind for kind in c.FRAGMENT_KIND_ORDER
+            if f"{kind}:4/4" in completed and threshold <= snapshot["last_puzzle_at"][kind] <= ceiling]
+
+
 def _valid_record(kind, record):
     fields = {"op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at", "status", "msg_id",
               "plan_key", "partner", "snapshot_at", "fragments", "dream_due_at", "parent_op_id", "confirmation_key", "confirmed_at"}
-    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result"}
+    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result",
+                "transport", "http_receipt", "reconciliation"}
     if not isinstance(record, dict) or fields - record.keys() or record.keys() - fields - optional:
+        return False
+    http = record.get("transport") == "miniapp"
+    if "transport" in record and not http:
+        return False
+    if http:
+        if (record["msg_id"] != 0 or record.get("reply_msg_id", 0) != 0
+                or type(record.get("reply_msg_id", 0)) is not int
+                or "sent_at" in record or "dispatch_at" in record or record["status"] == "sent"):
+            return False
+        if record["status"] == "complete":
+            if not tianjige_transport.receipt_matches(
+                    record.get("http_receipt"), identity_id=record["identity_id"], account_id=record["account_id"],
+                    op_id=record["op_id"], command=record["command"], started_at=record["started_at"]
+            ) or record.get("reply_at") != record["http_receipt"]["started_at"]:
+                return False
+        elif "http_receipt" in record:
+            return False
+    elif "http_receipt" in record or "reconciliation" in record:
         return False
     if (
         record["kind"] != kind or record["command"] != _command(kind)
@@ -66,9 +100,9 @@ def _valid_record(kind, record):
         or not _zero_time(record["snapshot_at"]) or not _zero_time(record["dream_due_at"])
         or c._query_time(record["started_at"]) is None or record["snapshot_at"] > record["started_at"]
         or type(record["msg_id"]) is not int or not 0 <= record["msg_id"] < 2 ** 63
-        or not isinstance(record["status"], str) or record["status"] not in UNRESOLVED | {"unsent", "complete"}
+        or not isinstance(record["status"], str) or record["status"] not in UNRESOLVED | {"unsent", "complete", "reconciled"}
         or any(c._query_time(record[key]) is None for key in ("sent_at", "dispatch_at", "reply_at", "replay_after", "retry_at") if key in record)
-        or (record["status"] in {"sent", "complete"} and not record["msg_id"])
+        or (not http and record["status"] in {"sent", "complete"} and not record["msg_id"])
         or (record["status"] in {"unsent", "sending"} and record["msg_id"])
         or (bool(record["msg_id"]) != ("sent_at" in record and "dispatch_at" in record))
         or (not record["msg_id"] and bool({"sent_at", "dispatch_at"} & record.keys()))
@@ -85,12 +119,33 @@ def _valid_record(kind, record):
                 or not key or record["confirmation_key"] != key or c._query_time(record["confirmed_at"]) is None
                 or not 0 <= record["started_at"] - record["confirmed_at"] <= c.CONCUBINE_PANEL_REUSE_MAX_AGE_SEC):
             return False
+    if "reconciliation" in record or record["status"] == "reconciled":
+        probe = record.get("reconciliation")
+        if (not http or record["status"] not in UNRESOLVED | {"reconciled"}
+                or not isinstance(probe, dict) or not isinstance(probe.get("op_id"), str)
+                or re.fullmatch(r"[a-f0-9]{32}", probe["op_id"]) is None
+                or probe["op_id"] == record["op_id"] or c._query_time(probe.get("started_at")) is None
+                or probe["started_at"] <= record["started_at"]):
+            return False
+        if record["status"] == "reconciled":
+            if (probe.keys() != {"op_id", "started_at", "receipt", "snapshot", "consumed"}
+                    or not tianjige_transport.pavilion_receipt_matches(
+                        probe["receipt"], identity_id=record["identity_id"], account_id=record["account_id"],
+                        op_id=probe["op_id"], started_at=probe["started_at"])
+                    or not tianjige_transport.fragment_snapshot_valid(probe["snapshot"], partner=record["partner"])
+                    or not isinstance(probe["consumed"], list) or not probe["consumed"]
+                    or probe["consumed"] != _snapshot_consumed(
+                        record, probe["snapshot"], probe["receipt"]["started_at"])):
+                return False
+        elif probe.keys() != {"op_id", "started_at"}:
+            return False
     if record["status"] != "complete":
         return not ({"result", "reply_at", "reply_msg_id"} & record.keys())
     result = record.get("result")
     valid = bool(
-        c._query_int(record.get("reply_msg_id")) > record["msg_id"]
-        and c._query_time(record.get("reply_at")) is not None and record["reply_at"] >= record["dispatch_at"] - 1
+        (http or c._query_int(record.get("reply_msg_id")) > record["msg_id"])
+        and c._query_time(record.get("reply_at")) is not None
+        and record["reply_at"] >= record.get("dispatch_at", record["started_at"]) - 1
         and isinstance(result, dict) and result.keys() == {"outcome", "partner", "progresses", "wait_until", "applied", "text"}
         and isinstance(result["outcome"], str)
         and result["outcome"] in ({"dream", "cooldown", "shortage", "no_partner", "voyage_lock"} if kind == "dream" else
@@ -141,6 +196,8 @@ def next_dream_at():
 
 
 def _clear_pending(record):
+    if record.get("transport") == "miniapp":
+        return
     c._clear_status_query_pending(record, source_module=SOURCE, family="concubine_" + record["kind"])
 
 
@@ -195,6 +252,8 @@ async def send(kind, now):
         "parent_op_id": parent["op_id"] if parent else "", "confirmation_key": parent["confirmation_key"] if parent else "",
         "confirmed_at": parent["reply_at"] if parent else 0,
     }
+    if tianjige_transport.pavilion_available(identity_id):
+        record["transport"] = "miniapp"
     if not _valid_record(kind, record):
         return False
     before = copy.deepcopy(identity)
@@ -221,6 +280,7 @@ async def send(kind, now):
             at = c.time.time()
             query = c._status_query_record()
             return bool(current() == record and c._status_query_plan(owner) == record["plan_key"]
+                        and (record.get("transport") != "miniapp" or tianjige_transport.pavilion_available(identity_id))
                         and query is not None and (not query or query["status"] not in c.CONCUBINE_QUERY_UNRESOLVED)
                         and not c.affinity_actions.block_reason() and not c.voyage_actions.block_reason()
                         and not c.divination_actions.block_reason() and not c.heart_actions.block_reason()
@@ -237,6 +297,8 @@ async def send(kind, now):
     try:
         if not c._save_query_projection(owner, before):
             return False
+        if record.get("transport") == "miniapp":
+            return await _send_miniapp(record, owner, current, can_send)
         previous_block = dict(c.classify_game_send_block(identity_id, record["command"]))
         try:
             msg = await c._send_concubine_game_command(
@@ -402,7 +464,8 @@ async def handle_reply(kind, text, now, reply_to, *, current_msg_id=0, current_c
     context = reply_context if isinstance(reply_context, dict) else {}
     root = c._query_int(getattr(reply_to, "id", 0))
     if (now is None or at is None or at > now or not c._owns_status_query(owner)
-            or not record or record["status"] not in UNRESOLVED or owner[2] != record["account_id"]
+            or not record or record.get("transport") == "miniapp"
+            or record["status"] not in UNRESOLVED or owner[2] != record["account_id"]
             or c._query_int(context.get("sender_id")) not in c.get_game_bot_ids()
             or c._query_int(current_chat_id) != record["chat_id"]
             or c._query_int(getattr(reply_to, "chat_id", 0)) not in (0, record["chat_id"])
@@ -465,6 +528,9 @@ async def recover(now):
                 return True
         if record["status"] not in UNRESOLVED:
             continue
+        if record.get("transport") == "miniapp":
+            await _recover_miniapp(record, owner, now)
+            return True
         if owner[0] in _INFLIGHT or now < record.get("replay_after", record["started_at"]) or owner[2] != record["account_id"]:
             return True
         before = copy.deepcopy(owner[1])
@@ -485,3 +551,144 @@ async def recover(now):
             break
         return True
     return bool(block_reason())
+
+
+async def _send_miniapp(record, owner, current, can_send):
+    try:
+        response = await tianjige_transport.execute(
+            record["identity_id"], record["command"], op_id=record["op_id"], operation_check=can_send,
+        )
+    except (asyncio.CancelledError, Exception):
+        if current() == record:
+            before = copy.deepcopy(owner[1])
+            _store(dict(record, status="unknown"))
+            c._save_query_projection(owner, before)
+        raise
+    if current() != record:
+        return False
+    now = c.time.time()
+    unchanged = c._status_query_plan(owner) == record["plan_key"]
+    before = copy.deepcopy(owner[1])
+    receipt = response.get("receipt")
+    result = None
+    if response.get("terminal") is True and tianjige_transport.receipt_matches(
+        receipt, identity_id=record["identity_id"], account_id=record["account_id"],
+        op_id=record["op_id"], command=record["command"], started_at=record["started_at"],
+    ):
+        result = _parse_result(record, response.get("message", ""), receipt["started_at"])
+    try:
+        if result is not None and can_send():
+            completed = dict(record, status="complete", result=result, http_receipt=receipt,
+                             reply_at=receipt["started_at"], reply_msg_id=0)
+            if not _valid_record(record["kind"], completed):
+                return False
+            _release_phase(record, unchanged=True)
+            _apply_result(completed, now, True)
+            _store(completed)
+            return c._save_query_projection(owner, before)
+        if response.get("action_dispatched") is False:
+            retry_at = now + c.CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC
+            _store(dict(record, status="unsent", retry_at=retry_at))
+            _release_phase(record, unchanged=unchanged)
+            if unchanged:
+                owner[1]["next_concubine_time"] = retry_at
+        else:
+            _store(dict(record, status="unknown"))
+            if unchanged:
+                owner[1]["concubine_last_error"] = "宝阁入梦/拼图结果未确认，仅核验状态，不补发、不转群命令"
+        c._save_query_projection(owner, before)
+        return False
+    except Exception:
+        owner[1].clear()
+        owner[1].update(before)
+        c.mark_dirty()
+        raise
+
+
+def _apply_reconciled_snapshot(record, snapshot, now, observed_at):
+    consumed = _snapshot_consumed(record, snapshot, observed_at)
+    if not consumed:
+        return False
+    c._apply_fragment_progresses(snapshot["fragments"])
+    c._clear_fragment_confirmation()
+    if record["kind"] == "dream":
+        c.state["concubine_dream_due_at"] = max(
+            now, snapshot["last_dream_at"] + c.CONCUBINE_DREAM_CD_SEC + c.CD_BUFFER_SEC,
+        )
+        c.reset_resource_shortage(c.CONCUBINE_DREAM_RESOURCE_KEY)
+    c.state["concubine_last_error"] = ""
+    if c._is_puzzle_ready():
+        c._schedule_chain_action(now)
+    else:
+        c._schedule_after_tianji(now)
+    return True
+
+
+async def _recover_miniapp(record, owner, now):
+    identity_id = owner[0]
+    if (identity_id in _INFLIGHT
+            or now < max(record["started_at"] + HTTP_RECONCILE_INTERVAL_SEC, record.get("replay_after", 0))
+            or owner[2] != record["account_id"] or not tianjige_transport.available(identity_id)):
+        return
+
+    def current():
+        if not c._owns_status_query(owner, sending=True, kind="fragment"):
+            return False
+        with c.use_identity(identity_id):
+            values = records()
+            item = (values or {}).get(record["kind"])
+            return bool(item == record and tianjige_transport.available(identity_id)
+                        and c._status_query_plan(owner) == record["plan_key"]
+                        and c._current_partner_matches(record["partner"])
+                        and _fragments() == record["fragments"])
+
+    if not current():
+        return
+    before = copy.deepcopy(owner[1])
+    probe = {"op_id": c.uuid4().hex, "started_at": max(now, c.time.time())}
+    record = dict(record, reconciliation=probe,
+                  replay_after=probe["started_at"] + HTTP_RECONCILE_INTERVAL_SEC)
+    _store(record)
+    if not c._save_query_projection(owner, before):
+        return
+    _INFLIGHT[identity_id] = probe["op_id"]
+    try:
+        response = await tianjige_transport.read_pavilion(
+            identity_id, partner=record["partner"], op_id=probe["op_id"],
+            operation_check=current, projection="fragments",
+        )
+        if not current() or response.get("ok") is not True:
+            return
+        receipt, snapshot = response.get("receipt"), response.get("fragments")
+        if (not tianjige_transport.pavilion_receipt_matches(
+                receipt, identity_id=identity_id, account_id=owner[2],
+                op_id=probe["op_id"], started_at=probe["started_at"])
+                or not tianjige_transport.fragment_snapshot_valid(snapshot, partner=record["partner"])):
+            return
+        consumed = _snapshot_consumed(record, snapshot, receipt["started_at"])
+        if not consumed:
+            return
+        completed = dict(record, status="reconciled", reconciliation=dict(
+            probe, receipt=receipt, snapshot=snapshot, consumed=consumed,
+        ))
+        if not _valid_record(record["kind"], completed):
+            return
+        before = copy.deepcopy(owner[1])
+        try:
+            _release_phase(record, unchanged=True)
+            if not _apply_reconciled_snapshot(record, snapshot, c.time.time(), receipt["started_at"]):
+                return
+            _store(completed)
+            c._save_query_projection(owner, before)
+        except Exception:
+            owner[1].clear()
+            owner[1].update(before)
+            c.mark_dirty()
+            raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        c.console_log(f"Fragment Pavilion reconciliation deferred ({type(exc).__name__})")
+    finally:
+        if _INFLIGHT.get(identity_id) == probe["op_id"]:
+            _INFLIGHT.pop(identity_id, None)

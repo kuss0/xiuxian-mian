@@ -2360,6 +2360,9 @@ def _apply_status_snapshot(parsed, now, *, allow_status_pending=False, owned_que
     if read_point is not None and (not valid_point(read_point, telegram_only=True) or read_point["at"] > observed_at):
         return False
     affinity_at = read_point["at"] if read_point is not None else observed_at
+    # A missing settlement can change affinity; an omitted field is not a fresh balance.
+    if voyage_actions.blocks_affinity_snapshot(parsed, affinity_at):
+        return False
     if affinity_actions.snapshot_is_stale(affinity_at, now=processed_at):
         return False
     if wanxin_affinity_snapshot_is_stale(
@@ -2954,6 +2957,8 @@ def _observed_status_query_record(record):
 
 
 def _status_query_record():
+    from . import tianjige_transport
+
     record = state.get("concubine_status_query", {})
     if not isinstance(record, dict):
         return None
@@ -2963,10 +2968,23 @@ def _status_query_record():
         return _observed_status_query_record(record)
     fields = {"op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at",
               "msg_id", "status", "plan_key", "sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after",
-              "partner", "outcome", "confirmation_key"}
+              "partner", "outcome", "confirmation_key", "transport", "http_receipt"}
+    http = record.get("transport") == "miniapp"
     if (
         record.keys() - fields or not isinstance(record.get("kind"), str)
         or record["kind"] not in CONCUBINE_QUERY_KEYS
+        or ("transport" in record and (not http or record["kind"] != "fragment"))
+        or (http and (record.get("msg_id") != 0 or "sent_at" in record or "dispatch_at" in record
+                      or record.get("status") == "sent"))
+        or (http and record.get("status") == "complete" and (
+            not tianjige_transport.pavilion_receipt_matches(
+                record.get("http_receipt"), identity_id=record.get("identity_id"),
+                account_id=record.get("account_id"), op_id=record.get("op_id"),
+                started_at=record.get("started_at"))
+            or record.get("reply_at") != record["http_receipt"]["started_at"]
+            or record.get("reply_msg_id") != 0))
+        or (http and record.get("status") != "complete" and "http_receipt" in record)
+        or (not http and "http_receipt" in record)
         or record.get("command") != CONCUBINE_QUERY_COMMANDS[record["kind"]]
         or (record["kind"] == "fragment" and (
             not isinstance(record.get("partner"), str) or not 0 < len(record["partner"].strip()) <= 120))
@@ -2995,13 +3013,14 @@ def _status_query_record():
         or type(record.get("started_at")) not in {int, float} or _status_timestamp(record["started_at"]) is None
         or any(type(record[key]) not in {int, float} or _status_timestamp(record[key]) is None
                for key in ("sent_at", "dispatch_at", "reply_at", "replay_after") if key in record)
-        or (record["status"] in {"sent", "complete"} and record["msg_id"] <= 0)
+        or (not http and record["status"] in {"sent", "complete"} and record["msg_id"] <= 0)
         or (record["status"] == "unsent" and record["msg_id"] != 0)
         or (record["msg_id"] and not (
             record["started_at"] - 1 <= (record.get("dispatch_at") or 0) <= (record.get("sent_at") or 0)
         ))
         or (record["status"] == "complete" and (
-            _query_int(record.get("reply_msg_id")) <= (record["msg_id"] if record["kind"] in {"fragment", "voyage_status"} else 0)
+            (not http and _query_int(record.get("reply_msg_id")) <= (
+                record["msg_id"] if record["kind"] in {"fragment", "voyage_status"} else 0))
             or (record.get("reply_at") or 0) < record.get("dispatch_at", record["started_at"]) - 1
         ))
     ):
@@ -3110,7 +3129,7 @@ def _observed_status_query_pending(record):
 
 
 def _clear_status_query_pending(record, *, source_module=CONCUBINE_QUERY_SOURCE, family=None):
-    if record["msg_id"] <= 0:
+    if record.get("transport") == "miniapp" or record["msg_id"] <= 0:
         return
     pending = state.get("pending_tasks")
     if not isinstance(pending, dict):
@@ -3469,7 +3488,48 @@ async def _send_status_command(now):
         _reuse_recent_status_panel(now, "10分钟内已有侍妾面板，跳过重复 .我的侍妾")
         save_state()
         return False
+    from . import tianjige_transport
+
+    # Heart trials still need an actual group reply anchor; an HTTP panel is not one.
+    if (tianjige_transport.pavilion_available(get_current_identity_id())
+            and not (_has_heart_due_action(now) and not heart_actions.panel_anchor(now))):
+        return await _send_pavilion_status(now)
     return await _send_status_query("status", now)
+
+
+async def _send_pavilion_status(now):
+    from . import tianjige_transport
+
+    owner = _status_query_owner()
+    if not _owns_status_query(owner, sending=True) or concubine_miniapp_status_block_reason(now):
+        return False
+    expected = _status_query_plan(owner)
+
+    def current():
+        return (_owns_status_query(owner, sending=True) and bool(expected)
+                and _status_query_plan(owner) == expected
+                and tianjige_transport.pavilion_available(owner[0])
+                and not concubine_miniapp_status_block_reason(now, processed_at=max(now, time.time())))
+
+    result = await tianjige_transport.execute(
+        owner[0], CMD_CONCUBINE_STATUS, op_id=f"concubine-panel-{uuid4().hex}", operation_check=current,
+    )
+    if not current():
+        return False
+    if result.get("terminal"):
+        read_at = result["receipt"]["started_at"]
+        parsed = _parse_status_panel(result["message"], read_at)
+        if _is_complete_status_panel(parsed) and not parsed.get("has_partner"):
+            before = copy.deepcopy(owner[1])
+            if _apply_status_snapshot(parsed, max(now, time.time()), owned_query=True, reconciles_external=True):
+                return _save_query_projection(owner, before)
+        synced = sync_concubine_miniapp_status(result["message"], read_at)
+        if synced.get("handled"):
+            return True
+    state["concubine_last_error"] = "宝阁侍妾状态未确认，退避后复核；本轮不转发群命令"
+    _schedule_status_recheck(max(now, time.time()))
+    save_state()
+    return False
 
 
 async def _send_greet_command(now):
@@ -3507,7 +3567,110 @@ async def _send_fragment_command(now):
     if _defer_active_for_phaseful_summary(now, "残图确认"):
         save_state()
         return False
+    from . import tianjige_transport
+
+    if tianjige_transport.pavilion_available(get_current_identity_id()):
+        return await _send_pavilion_fragment_status(now)
     return await _send_status_query("fragment", now)
+
+
+async def _send_pavilion_fragment_status(now):
+    from . import tianjige_transport
+
+    if not _status_query_admitted("fragment", now):
+        return False
+    owner = _status_query_owner()
+    identity_id, identity, account_id = owner
+    started_at = max(float(now), time.time())
+    before = copy.deepcopy(identity)
+    _set_phase("fragment_pending")
+    identity[CONCUBINE_QUERY_KEYS["fragment"]] = 0
+    identity["next_concubine_time"] = started_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    record = {
+        "op_id": uuid4().hex, "kind": "fragment", "identity_id": identity_id, "account_id": account_id,
+        "chat_id": get_game_group_id(), "command": CMD_CONCUBINE_FRAGMENT, "started_at": started_at,
+        "status": "sending", "msg_id": 0, "plan_key": _status_query_plan(owner),
+        "partner": identity["concubine_name"].strip(), "transport": "miniapp",
+    }
+    if not record["plan_key"]:
+        identity.clear()
+        identity.update(before)
+        mark_dirty()
+        return False
+    _store_status_query(record)
+    _CONCUBINE_QUERY_INFLIGHT[identity_id] = record["op_id"]
+
+    def current():
+        if not _owns_status_query(owner, sending=True, kind="fragment"):
+            return False
+        with use_identity(identity_id):
+            item = _status_query_record()
+            return bool(item == record and _status_query_plan(owner) == record["plan_key"]
+                        and tianjige_transport.pavilion_available(identity_id)
+                        and not _status_snapshot_block_reason(time.time(), allow_status_pending=True)
+                        and not _has_phaseful_summary_window(time.time()))
+
+    try:
+        if not _save_query_projection(owner, before):
+            return False
+        try:
+            result = await tianjige_transport.read_pavilion(
+                identity_id, partner=record["partner"], op_id=record["op_id"],
+                operation_check=current, projection="fragments",
+            )
+        except (asyncio.CancelledError, Exception):
+            if current():
+                snapshot = copy.deepcopy(identity)
+                _store_status_query(dict(record, status="unsent"))
+                _release_status_query_phase(record, unchanged=True)
+                _schedule_status_recheck(max(started_at, time.time()))
+                identity["concubine_last_error"] = "宝阁残图读取中断，稍后重新确认"
+                _save_query_projection(owner, snapshot)
+            raise
+        if not current():
+            return False
+        receipt, fragments = result.get("receipt"), result.get("fragments")
+        valid = bool(result.get("ok") is True
+                     and tianjige_transport.pavilion_receipt_matches(
+                         receipt, identity_id=identity_id, account_id=account_id,
+                         op_id=record["op_id"], started_at=record["started_at"])
+                     and tianjige_transport.fragment_snapshot_valid(fragments, partner=record["partner"]))
+        snapshot = copy.deepcopy(identity)
+        if not valid:
+            _store_status_query(dict(record, status="unsent"))
+            _release_status_query_phase(record, unchanged=True)
+            _schedule_status_recheck(max(started_at, time.time()))
+            identity["concubine_last_error"] = "宝阁残图读取未通过身份/结构校验，稍后重试"
+            _save_query_projection(owner, snapshot)
+            return False
+        at = receipt["started_at"]
+        _clear_fragment_confirmation()
+        _apply_fragment_progresses(fragments["fragments"])
+        confirmation_key = ""
+        notify = ""
+        if _is_puzzle_ready():
+            confirmation_key = _mark_fragment_confirmation(at)
+            _set_phase("puzzle_ready")
+            _schedule_chain_action(max(now, time.time()))
+            notify = f"🌸 残图确认 4/4（{_format_completed_fragment_progresses()}），已排队自动 .拼图。"
+        else:
+            _release_status_query_phase(record, unchanged=True)
+            _schedule_after_tianji(max(now, time.time()))
+        identity["concubine_last_error"] = ""
+        completed = dict(record, status="complete", reply_at=at, reply_msg_id=0,
+                         outcome="panel", confirmation_key=confirmation_key, http_receipt=receipt)
+        _store_status_query(completed)
+        if not _save_query_projection(owner, snapshot):
+            return False
+        if notify:
+            try:
+                await send_audit_log(notify, scope="identity", send_as_id=identity_id)
+            except Exception as exc:
+                console_log(f"宝阁残图确认已保存，通知失败 ({type(exc).__name__})")
+        return True
+    finally:
+        if _CONCUBINE_QUERY_INFLIGHT.get(identity_id) == record["op_id"]:
+            _CONCUBINE_QUERY_INFLIGHT.pop(identity_id, None)
 
 
 async def _send_puzzle_command(now):
@@ -3536,7 +3699,41 @@ async def _send_voyage_status_command(now):
     if _defer_active_for_phaseful_summary(now, "远航状态校准", error_key="concubine_voyage_last_error"):
         save_state()
         return False
+    from . import tianjige_transport
+
+    if tianjige_transport.pavilion_available(get_current_identity_id()):
+        return await _send_pavilion_voyage_status(now)
     return await _send_status_query("voyage_status", now)
+
+
+async def _send_pavilion_voyage_status(now):
+    from . import tianjige_transport
+
+    owner = _status_query_owner()
+    if not _status_query_admitted("voyage_status", now):
+        return False
+    expected = _status_query_plan(owner)
+
+    def current():
+        return (_owns_status_query(owner, sending=True) and bool(expected)
+                and _status_query_plan(owner) == expected
+                and tianjige_transport.pavilion_available(owner[0])
+                and _status_query_admitted("voyage_status", now))
+
+    result = await tianjige_transport.execute(
+        owner[0], CMD_CONCUBINE_VOYAGE_STATUS, op_id=f"concubine-voyage-panel-{uuid4().hex}", operation_check=current,
+    )
+    if not current():
+        return False
+    parsed = _parse_voyage_status_text(result.get("message"), result["receipt"]["started_at"]) if result.get("terminal") else None
+    before = copy.deepcopy(owner[1])
+    if parsed and parsed.get("partner") in {None, "", owner[1].get("concubine_name")}:
+        if _apply_voyage_snapshot(parsed, max(now, time.time())):
+            return _save_query_projection(owner, before)
+    state["concubine_voyage_last_error"] = "宝阁远航状态未确认，退避后复核；本轮不发送结算命令"
+    _schedule_status_recheck(max(now, time.time()))
+    _save_query_projection(owner, before)
+    return False
 
 
 async def _send_voyage_command(now):

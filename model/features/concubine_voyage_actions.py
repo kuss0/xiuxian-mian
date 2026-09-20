@@ -5,6 +5,7 @@ import copy
 import re
 
 from . import concubine as c
+from . import tianjige_transport
 
 
 STATE_KEY = "concubine_voyage_actions"
@@ -12,6 +13,7 @@ SOURCE = "concubine_voyage"
 KINDS = {"voyage", "voyage_return"}
 UNRESOLVED = {"sending", "sent", "unknown"}
 _INFLIGHT = {}
+HTTP_RECONCILE_INTERVAL_SEC = 1800
 START_HEAD = "\u3010\u4e71\u661f\u6d77\u8fdc\u822a\u00b7\u542f\u3011"
 RETURN_HEAD = "\u3010\u4e71\u661f\u6d77\u8fdc\u822a\u00b7\u5f52\u3011"
 RE_AMOUNT = re.compile(r"(?:[0-9]+|[1-9][0-9]{0,2}(?:,[0-9]{3})+)")
@@ -46,8 +48,26 @@ def _command(kind, route):
 def _valid_record(kind, record):
     required = {"op_id", "kind", "identity_id", "account_id", "chat_id", "command", "started_at", "status", "msg_id",
                 "plan_key", "partner", "route", "snapshot_at", "affinity", "voyage"}
-    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result"}
+    optional = {"sent_at", "dispatch_at", "reply_at", "reply_msg_id", "replay_after", "retry_at", "result", "transport", "http_receipt", "reconciliation"}
     if not isinstance(record, dict) or required - record.keys() or record.keys() - required - optional:
+        return False
+    http = record.get("transport") == "miniapp"
+    if "transport" in record and not http:
+        return False
+    if http:
+        if (record["msg_id"] != 0 or record.get("reply_msg_id", 0) != 0
+                or type(record.get("reply_msg_id", 0)) is not int
+                or "sent_at" in record or "dispatch_at" in record or record["status"] == "sent"):
+            return False
+        if record["status"] == "complete":
+            if not tianjige_transport.receipt_matches(
+                record.get("http_receipt"), identity_id=record["identity_id"], account_id=record["account_id"],
+                op_id=record["op_id"], command=record["command"], started_at=record["started_at"],
+            ) or record.get("reply_at") != record["http_receipt"]["started_at"]:
+                return False
+        elif "http_receipt" in record:
+            return False
+    elif "http_receipt" in record:
         return False
     if (
         kind not in KINDS or record["kind"] != kind or not _bounded_name(record["route"], limit=40)
@@ -61,9 +81,9 @@ def _valid_record(kind, record):
         or not _zero_time(record["snapshot_at"]) or c._query_time(record["started_at"]) is None
         or record["snapshot_at"] > record["started_at"]
         or type(record["msg_id"]) is not int or not 0 <= record["msg_id"] < 2 ** 63
-        or not isinstance(record["status"], str) or record["status"] not in UNRESOLVED | {"unsent", "complete"}
+        or not isinstance(record["status"], str) or record["status"] not in UNRESOLVED | {"unsent", "complete", "reconciled"}
         or any(c._query_time(record[key]) is None for key in ("sent_at", "dispatch_at", "reply_at", "replay_after", "retry_at") if key in record)
-        or (record["status"] in {"sent", "complete"} and not record["msg_id"])
+        or (not http and record["status"] in {"sent", "complete"} and not record["msg_id"])
         or (record["status"] in {"sending", "unsent"} and record["msg_id"])
         or (bool(record["msg_id"]) != ("sent_at" in record and "dispatch_at" in record))
         or (not record["msg_id"] and bool({"sent_at", "dispatch_at"} & record.keys()))
@@ -75,11 +95,32 @@ def _valid_record(kind, record):
             or record["voyage"]["route"] != record["route"]))
     ):
         return False
+    if "reconciliation" in record or record["status"] == "reconciled":
+        probe = record.get("reconciliation")
+        if (not http or record["status"] not in UNRESOLVED | {"reconciled"}
+                or not isinstance(probe, dict)
+                or not isinstance(probe.get("op_id"), str)
+                or re.fullmatch(r"[a-f0-9]{32}", probe["op_id"]) is None
+                or probe["op_id"] == record["op_id"]
+                or c._query_time(probe.get("started_at")) is None
+                or probe["started_at"] <= record["started_at"]):
+            return False
+        if record["status"] == "reconciled":
+            if (probe.keys() != {"op_id", "started_at", "receipt", "text", "voyage"}
+                    or not tianjige_transport.receipt_matches(
+                        probe["receipt"], identity_id=record["identity_id"], account_id=record["account_id"],
+                        op_id=probe["op_id"], command=c.CMD_CONCUBINE_VOYAGE_STATUS, started_at=probe["started_at"])
+                    or not isinstance(probe["text"], str)
+                    or not _valid_voyage(probe["voyage"])
+                    or _reconciled_voyage(record, probe["text"], probe["receipt"]["started_at"]) != probe["voyage"]):
+                return False
+        elif probe.keys() != {"op_id", "started_at"}:
+            return False
     if record["status"] != "complete":
         return not ({"result", "reply_at", "reply_msg_id"} & record.keys())
     result = record.get("result")
-    if (c._query_int(record.get("reply_msg_id")) <= record["msg_id"]
-            or c._query_time(record.get("reply_at")) is None or record["reply_at"] < record["dispatch_at"] - 1
+    if ((not http and c._query_int(record.get("reply_msg_id")) <= record["msg_id"])
+            or c._query_time(record.get("reply_at")) is None or record["reply_at"] < record.get("dispatch_at", record["started_at"]) - 1
             or not isinstance(result, dict)
             or result.keys() != {"outcome", "voyage", "affinity_loss", "affinity_gain", "minimum_affinity", "applied", "affinity_applied", "text"}
             or type(result["applied"]) is not bool or type(result["affinity_applied"]) is not bool
@@ -125,7 +166,19 @@ def block_reason():
     return ""
 
 
+def blocks_affinity_snapshot(parsed, at):
+    value = (records() or {}).get("voyage_return", {})
+    return bool(value.get("status") == "reconciled"
+                and parsed.get("has_partner") and parsed.get("name") == value["partner"]
+                and c._current_partner_matches(value["partner"])
+                and c.state.get("concubine_last_snapshot_at", 0)
+                <= value["reconciliation"]["receipt"]["started_at"]
+                and ("affinity" not in parsed or at <= value["reconciliation"]["receipt"]["started_at"]))
+
+
 def _clear_pending(record):
+    if record.get("transport") == "miniapp":
+        return
     c._clear_status_query_pending(record, source_module=SOURCE, family="concubine_voyage")
 
 
@@ -192,6 +245,8 @@ async def send(kind, now):
         "snapshot_at": identity.get("concubine_last_snapshot_at", 0),
         "affinity": identity.get("concubine_affinity", 0), "voyage": _voyage(),
     }
+    if tianjige_transport.pavilion_available(identity_id):
+        record["transport"] = "miniapp"
     if not _valid_record(kind, record):
         return False
     before = copy.deepcopy(identity)
@@ -216,12 +271,15 @@ async def send(kind, now):
         with c.use_identity(identity_id):
             at = c.time.time()
             return bool(current() == record and c._status_query_plan(owner) == record["plan_key"]
+                        and (record.get("transport") != "miniapp" or tianjige_transport.pavilion_available(identity_id))
                         and not _other_work() and not c._has_active_nanlong_pending(at)
                         and not c._has_phaseful_summary_window(at, allow_replayable_trigger=True))
 
     try:
         if not c._save_query_projection(owner, before):
             return False
+        if record.get("transport") == "miniapp":
+            return await _send_miniapp(record, owner, current, can_send)
         previous_block = dict(c.classify_game_send_block(identity_id, record["command"]))
         try:
             msg = await c._send_concubine_game_command(
@@ -279,6 +337,61 @@ async def send(kind, now):
     finally:
         if _INFLIGHT.get(identity_id) == record["op_id"]:
             _INFLIGHT.pop(identity_id, None)
+
+
+async def _send_miniapp(record, owner, current, can_send):
+    try:
+        response = await tianjige_transport.execute(
+            record["identity_id"], record["command"], op_id=record["op_id"], operation_check=can_send,
+        )
+    except (asyncio.CancelledError, Exception):
+        if current() == record:
+            before = copy.deepcopy(owner[1])
+            _store(dict(record, status="unknown"))
+            owner[1]["concubine_voyage_last_error"] = "宝阁远航请求中断，保留原操作，不补发"
+            c._save_query_projection(owner, before)
+        raise
+    if current() != record:
+        return False
+    now = c.time.time()
+    unchanged = c._status_query_plan(owner) == record["plan_key"]
+    before = copy.deepcopy(owner[1])
+    receipt = response.get("receipt")
+    result = None
+    if response.get("terminal") and tianjige_transport.receipt_matches(
+        receipt, identity_id=record["identity_id"], account_id=record["account_id"],
+        op_id=record["op_id"], command=record["command"], started_at=record["started_at"],
+    ):
+        result = _parse_result(record, response.get("message", ""), receipt["started_at"])
+    if result is not None and can_send():
+        completed = dict(record, status="complete", result=result, http_receipt=receipt,
+                         reply_at=receipt["started_at"], reply_msg_id=0)
+        if not _valid_record(record["kind"], completed):
+            return False
+        _release_phase(record, unchanged=unchanged)
+        _apply_result(completed, now, unchanged)
+        _store(completed)
+        if not c._save_query_projection(owner, before):
+            return False
+        if result["outcome"] == "returned":
+            try:
+                await c._send_voyage_result_audit({"status": "idle", "partner": record["partner"],
+                                                "route": record["route"], "result": result["text"]})
+            except Exception as exc:
+                c.console_log(f"Voyage completion saved; audit failed ({type(exc).__name__})")
+        return True
+    if response.get("action_dispatched") is False:
+        retry_at = now + c.CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC
+        _store(dict(record, status="unsent", retry_at=retry_at))
+        _release_phase(record, unchanged=unchanged)
+        if unchanged:
+            owner[1]["next_concubine_time"] = retry_at
+    else:
+        _store(dict(record, status="unknown"))
+        if unchanged:
+            owner[1]["concubine_voyage_last_error"] = "宝阁远航结果未确认，保留原操作，不补发、不转群命令"
+    c._save_query_projection(owner, before)
+    return False
 
 
 def _parse_result(record, text, observed_at):
@@ -390,7 +503,7 @@ async def handle_reply(text, now, reply_to, *, current_msg_id=0, current_chat_id
         return False
     candidates = []
     for record in values.values():
-        if (record["status"] in UNRESOLVED and record["account_id"] == owner[2]
+        if (record.get("transport") != "miniapp" and record["status"] in UNRESOLVED and record["account_id"] == owner[2]
                 and c._query_int(current_chat_id) == record["chat_id"]):
             candidate = c._adopt_status_query_receipt(record, now, source_module=SOURCE, include_logs=False)
             if root > 0 and root == candidate["msg_id"] and c._query_int(current_chat_id) == candidate["chat_id"]:
@@ -456,6 +569,9 @@ async def recover(now):
                 return True
         if record["status"] not in UNRESOLVED:
             continue
+        if record.get("transport") == "miniapp":
+            await _recover_miniapp(record, owner, now)
+            return True
         if owner[0] in _INFLIGHT or now < record.get("replay_after", record["started_at"]) or owner[2] != record["account_id"]:
             return True
         before = copy.deepcopy(owner[1])
@@ -476,3 +592,93 @@ async def recover(now):
             break
         return True
     return bool(block_reason())
+
+
+def _reconciled_voyage(record, text, observed_at):
+    parsed = c._parse_voyage_status_text(text, observed_at)
+    if not parsed or parsed.get("partner") not in (None, "", record["partner"]):
+        return None
+    if record["kind"] == "voyage":
+        if parsed.get("status") not in {"sailing", "returned"} or parsed.get("route") != record["route"]:
+            return None
+        voyage = {"status": parsed["status"], "route": record["route"], "return_at": parsed.get("return_at", 0)}
+        return voyage if _valid_voyage(voyage) and voyage["return_at"] > 0 else None
+    if parsed.get("status") == "no_task" and parsed.get("clear_idle") is True:
+        return {"status": "idle", "route": record["route"], "return_at": 0}
+    return None
+
+
+async def _recover_miniapp(record, owner, now):
+    # A fresh status can reconcile business state, not reconstruct lost rewards.
+    identity_id = owner[0]
+    earliest = record["started_at"] + HTTP_RECONCILE_INTERVAL_SEC
+    if (identity_id in _INFLIGHT or now < max(earliest, record.get("replay_after", 0))
+            or owner[2] != record["account_id"] or not _controls(owner, record["kind"])
+            or not tianjige_transport.available(identity_id)):
+        return
+
+    def current():
+        if not c._owns_status_query(owner):
+            return False
+        with c.use_identity(identity_id):
+            return bool(_controls(owner, record["kind"])
+                        and tianjige_transport.available(identity_id)
+                        and (records() or {}).get(record["kind"]) == record
+                        and c._status_query_plan(owner) == record["plan_key"]
+                        and c._current_partner_matches(record["partner"])
+                        and _voyage() == record["voyage"]
+                        and c.state.get("concubine_last_snapshot_at", 0) == record["snapshot_at"]
+                        and not _other_work())
+
+    if not current():
+        return
+    before = copy.deepcopy(owner[1])
+    probe = {"op_id": c.uuid4().hex, "started_at": max(now, c.time.time())}
+    record = dict(record, reconciliation=probe, replay_after=probe["started_at"] + HTTP_RECONCILE_INTERVAL_SEC)
+    _store(record)
+    if not c._save_query_projection(owner, before):
+        return
+    _INFLIGHT[identity_id] = probe["op_id"]
+    try:
+        response = await tianjige_transport.execute(
+            identity_id, c.CMD_CONCUBINE_VOYAGE_STATUS, op_id=probe["op_id"], operation_check=current,
+        )
+        if not current() or response.get("terminal") is not True:
+            return
+        receipt = response.get("receipt")
+        if not tianjige_transport.receipt_matches(
+            receipt, identity_id=identity_id, account_id=owner[2], op_id=probe["op_id"],
+            command=c.CMD_CONCUBINE_VOYAGE_STATUS, started_at=probe["started_at"],
+        ):
+            return
+        text = response.get("message", "")
+        voyage = _reconciled_voyage(record, text, receipt["started_at"])
+        if voyage is None:
+            return
+        completed = dict(record, status="reconciled", reconciliation=dict(probe, receipt=receipt, text=text, voyage=voyage))
+        if not _valid_record(record["kind"], completed):
+            return
+        before = copy.deepcopy(owner[1])
+        try:
+            _release_phase(record, unchanged=True)
+            c._apply_voyage_snapshot(voyage, c.time.time())
+            if record["kind"] == "voyage_return":
+                # The missing settlement might have changed affinity; require a fresh panel.
+                c._set_availability("unknown")
+                c.state["concubine_last_snapshot_at"] = 0
+                c.state["concubine_voyage_last_result"] = ""
+                c._schedule_status_recheck(c.time.time())
+            _store(completed)
+            c._save_query_projection(owner, before)
+        except Exception:
+            owner[1].clear()
+            owner[1].update(before)
+            c.mark_dirty()
+            raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        c.console_log(f"Voyage status reconciliation deferred ({type(exc).__name__})")
+    finally:
+        if _INFLIGHT.get(identity_id) == probe["op_id"]:
+            _INFLIGHT.pop(identity_id, None)

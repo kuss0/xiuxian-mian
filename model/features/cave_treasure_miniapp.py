@@ -10,6 +10,8 @@ import re
 from telethon import functions
 
 from ..config import (
+    CMD_CONCUBINE_DREAM,
+    CMD_CONCUBINE_PUZZLE,
     CMD_TIANTI_STATUS,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
@@ -114,6 +116,11 @@ CAVE_TIANJIGE_READ_ONLY_COMMANDS = frozenset({
     ".我的侍妾",
     ".我的灵兽",
 })
+CAVE_TIANJIGE_TIANXING_COMMANDS = frozenset({
+    ".天机盘", ".观命", ".消劫",
+    *(f".定命 {star}" for star in ("紫微", "天府", "太阴", "贪狼")),
+    *(f".{action} {route}" for action in ("推命", "改命") for route in ("闭关", "炼制", "探索", "斗法")),
+})
 CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     CMD_TIANTI_STATUS,
     CMD_YUANYING,
@@ -121,6 +128,14 @@ CAVE_TIANJIGE_ALLOWED_COMMANDS = frozenset({
     ".我的阴罗幡",
     ".我的侍妾",
     ".我的灵兽",
+    *CAVE_TIANJIGE_TIANXING_COMMANDS,
+    ".远航归来",
+    ".远航状态",
+    ".天机代卜",
+    ".每日问安",
+    CMD_CONCUBINE_DREAM,
+    CMD_CONCUBINE_PUZZLE,
+    *(f".侍妾远航 {route}" for route in ("稳妥", "均衡", "冒险", "月殿寻痕")),
 })
 CAVE_EXTERNAL_ACTIONS = frozenset({
     "fate_cards",
@@ -2072,7 +2087,7 @@ async def run_cave_dwelling_snapshot_production_flow(
         payload = {"playerId": int(player_id)} if player_id not in (None, "") else {}
         if endpoint == "section":
             normalized_section = str(section or "").strip().lower()
-            if normalized_section not in {"inventory"}:
+            if normalized_section not in {"inventory", "pavilion"}:
                 return _flow_result(False, "failed", error="洞府分段 section 不在白名单")
             payload["section"] = normalized_section
         request = build_cave_treasure_miniapp_request(
@@ -2375,7 +2390,7 @@ async def run_cave_tianjige_command_production_flow(
             missing_contract = 200 <= result.status_code < 300 and not result.ok and result.data.get("ok") is not False
             response["action_dispatched"] = dispatched
             response["outcome_unknown"] = bool(
-                command == CMD_YUANYING and dispatched
+                command not in CAVE_TIANJIGE_READ_ONLY_COMMANDS | {CMD_YUANYING_STATUS, ".天机盘", ".远航状态"} and dispatched
                 and (player_error or missing_contract or _is_uncertain_cave_mutation_result(result) and result.status_code != 429)
             )
             return response

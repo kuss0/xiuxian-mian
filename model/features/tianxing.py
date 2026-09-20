@@ -5,6 +5,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from contextvars import ContextVar
 from datetime import datetime
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ from ..message_log_recovery import find_message_log_replies, find_message_log_re
 from ..message_keys import get_message_record, message_key_parts
 from ._phaseful import get_phaseful_summary_risk_reason
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until
+from . import tianjige_transport
 
 
 TIANXING_TIME_BUFFER_SEC = 60
@@ -130,6 +132,49 @@ _TIANXING_TIMELINE_LOCKS = {}
 _TIANXING_AUTO_LOCKS = {}
 _TIANXING_CRAFT_LOCKS = {}
 _TIANXING_RETREAT_LOCKS = {}
+_MINIAPP_RECEIPT = ContextVar("tianxing_miniapp_receipt", default=None)
+
+
+def _tianxing_transport_available(identity_id):
+    return get_identity_enabled(identity_id) or tianjige_transport.available(identity_id)
+
+
+def _miniapp_receipt_matches(op_id, command, account_id, context):
+    receipt = _MINIAPP_RECEIPT.get()
+    return bool(
+        receipt and context is receipt and op_id and receipt.get("op_id") == op_id
+        and receipt.get("command") == command
+        and receipt.get("send_as_id") == get_current_identity_id()
+        and receipt.get("account_id") == account_id == get_identity_account(get_current_identity_id())
+    )
+
+
+def _apply_tianxing_miniapp_reply(result):
+    receipt = result.get("receipt")
+    if not result.get("terminal") or not isinstance(receipt, dict):
+        return False
+    if not tianjige_transport.receipt_matches(
+        receipt, identity_id=get_current_identity_id(), account_id=get_identity_account(get_current_identity_id()),
+        op_id=receipt.get("op_id"), command=receipt.get("command"), started_at=receipt.get("started_at"),
+    ):
+        return False
+    token = _MINIAPP_RECEIPT.set(receipt)
+    before = {key: copy.deepcopy(state.get(key)) for key in ("tianxing_observation", "tianxing_timeline_state")}
+    try:
+        handled = apply_tianxing_passive(
+            result["message"], now=receipt["started_at"], reply_context=receipt,
+        )
+        if handled and save_state() is not False:
+            return True
+        for key, value in before.items():
+            state[key] = value
+        return False
+    except Exception:
+        for key, value in before.items():
+            state[key] = value
+        raise
+    finally:
+        _MINIAPP_RECEIPT.reset(token)
 
 
 @dataclass(frozen=True, eq=False)
@@ -186,7 +231,7 @@ class _TianxingOperation:
         if not (
             self.configuration_is_current()
             and get_global_enabled()
-            and get_identity_enabled(self.identity_id)
+            and _tianxing_transport_available(self.identity_id)
             and self.identity.get("tianxing_enabled")
             and is_module_available("天星宗", self.identity_id)
             and not is_tianxing_automation_paused(self.current_time(), self.identity.get("tianxing_observation"))
@@ -2442,6 +2487,8 @@ def _tianxing_effect_evidence_is_newer(observed, effect, now, reply_context, par
         floor = max(float(observed.get(key) or 0) for key in (
             "last_observed_at", f"{field}_set_at", "prediction_consumed_at",
         ))
+        if reply_context is _MINIAPP_RECEIPT.get() and reply_context:
+            return reply_context.get("command") == CMD_TIANXING_PANEL and reply_context["started_at"] >= floor
         return float(query.get("dispatch_at") or 0) > 0 and query["dispatch_at"] >= floor
     previous_at, dirty = _parse_observation_float(previous.get("at"))
     if dirty:
@@ -3207,6 +3254,7 @@ def _clear_tianxing_auto_pending(observed):
     observed["auto_pending_chat_id"] = 0
     observed["auto_pending_sent_at"] = 0
     observed["auto_pending_due_at"] = 0
+    observed["auto_pending_transport"] = ""
 
 
 def _defer_tianxing_auto_plan_for_phaseful_summary(observed, now, plan):
@@ -3296,6 +3344,8 @@ def _find_tianxing_operation_receipt(*, op_id, command, account_id, started_at, 
 
 
 def _adopt_tianxing_auto_receipt(observed, now):
+    if observed.get("auto_pending_transport") == "miniapp":
+        return False
     if not observed.get("auto_pending_action") or observed.get("auto_pending_msg_id"):
         return False
     receipt = _find_tianxing_operation_receipt(
@@ -3330,6 +3380,11 @@ def _auto_pending_matches_parsed(observed, parsed, now, *, reply_context=None):
     expected = _TIANXING_AUTO_PENDING_ACTIONS.get(action, "")
     if not expected or str((parsed or {}).get("action") or "").strip() != expected:
         return False
+    if observed.get("auto_pending_transport") == "miniapp" and _miniapp_receipt_matches(
+        observed.get("auto_pending_op_id"), observed.get("auto_pending_command"),
+        observed.get("auto_pending_account_id"), reply_context,
+    ):
+        return _tianxing_auto_result_matches(action, parsed, observed["auto_pending_command"])
     sent_at, dirty = _parse_observation_float((observed or {}).get("auto_pending_sent_at"))
     if dirty or isinstance(observed.get("auto_pending_sent_at"), bool) or sent_at <= 0 or int(now) < int(sent_at):
         return False
@@ -4885,12 +4940,57 @@ def _auto_lock():
 async def _run_tianxing_auto_locked(now, scheduler):
     now = float(now if now is not None else time.time())
     operation = _TianxingOperation.capture(now)
-    if operation is None or not get_global_enabled() or not get_identity_enabled(operation.identity_id):
+    if operation is None or not get_global_enabled() or not _tianxing_transport_available(operation.identity_id):
         return dict(_cancelled_tianxing_operation_result(), active=False)
     async with _auto_lock():
         if not operation.configuration_is_current():
             return dict(_cancelled_tianxing_operation_result(), active=False)
+        if await _recover_tianxing_miniapp_auto_pending(now, operation):
+            return {"active": True, "phase": "miniapp_calibration", "changed": True, "reason": "天机阁只读校准本轮已处理。"}
         return await scheduler(now, operation=operation)
+
+
+async def _recover_tianxing_miniapp_auto_pending(now, operation):
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    action = observed.get("auto_pending_action")
+    if (observed.get("auto_pending_transport") != "miniapp" or action not in {"predict", "change_fate", "set_star"}
+            or observed["auto_pending_due_at"] > now or not operation.is_current()):
+        return False
+    command = observed["auto_pending_command"]
+    arg = command.split(maxsplit=1)[1] if len(command.split(maxsplit=1)) == 2 else ""
+    target = {"action": action, "arg": arg, "command": command}
+    observed["auto_pending_due_at"] = now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC
+    observed["auto_next_time"] = observed["auto_pending_due_at"]
+    state["tianxing_observation"] = observed
+    if save_state() is False:
+        return True
+    expected = copy.deepcopy(observed)
+    timeline = copy.deepcopy(state.get("tianxing_timeline_state"))
+
+    def current():
+        return (operation.is_current() and operation.identity.get("tianxing_observation") == expected
+                and operation.identity.get("tianxing_timeline_state") == timeline)
+
+    result = await tianjige_transport.execute(
+        operation.identity_id, CMD_TIANXING_PANEL, op_id=f"tianxing-calibration-{uuid4().hex}", operation_check=current,
+    )
+    if not current() or not result.get("terminal"):
+        return True
+    at = result["receipt"]["started_at"]
+    parsed = parse_tianxing_text(result["message"], now=at)
+    if (not isinstance(parsed, dict) or not _tianxing_auto_result_matches("panel", parsed, CMD_TIANXING_PANEL)
+            or not _timeline_step_is_confirmed(target, parsed, at)
+            or (action == "set_star" and get_day_key(expected["auto_pending_sent_at"]) != get_day_key(at))):
+        return True
+    _clear_tianxing_auto_pending(observed)
+    state["tianxing_observation"] = observed
+    try:
+        if not _apply_tianxing_miniapp_reply(result):
+            state["tianxing_observation"] = expected
+    except Exception:
+        state["tianxing_observation"] = expected
+        raise
+    return True
 
 
 def _timeline_plan_id(plan, now):
@@ -5034,6 +5134,8 @@ def _activate_timeline_step(timeline, index, now):
 
 def _adopt_tianxing_timeline_receipt(timeline, now):
     step = dict(timeline.get("active_step") or {})
+    if step.get("send_transport") == "miniapp":
+        return False
     if not isinstance(step.get("status"), str) or step["status"] not in {"sending", "sent_waiting_ack", "ack_timeout"} or step.get("send_msg_id"):
         return False
     queued_at, dirty = _parse_observation_float(step.get("queued_at"))
@@ -5069,6 +5171,18 @@ def _tianxing_timeline_reply_kind(step, parsed, now, *, reply_context):
         prefix = CMD_TIANXING_PREDICT if action == "predict" else CMD_TIANXING_CHANGE_FATE
         if _route_arg_from_command(command, prefix) != step.get("arg"):
             return ""
+    if step.get("send_transport") == "miniapp":
+        if _miniapp_receipt_matches(step.get("send_op_id"), command, step.get("send_account_id"), reply_context):
+            return "direct" if _tianxing_auto_result_matches(action, parsed, command) else ""
+        active = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))["active_step"]
+        if (action in {"predict", "change_fate", "set_star"}
+                and active.get("send_transport") == "miniapp"
+                and _miniapp_receipt_matches(active.get("send_op_id"), CMD_TIANXING_PANEL, step.get("send_account_id"), reply_context)
+                and reply_context["started_at"] >= float(step.get("queued_at") or 0) > 0
+                and _tianxing_auto_result_matches("panel", parsed, CMD_TIANXING_PANEL)
+                and (action != "set_star" or get_day_key(step["queued_at"]) == get_day_key(now))):
+            return "panel"
+        return ""
     receipt = {
         "account_id": step.get("send_account_id"), "msg_id": step.get("send_msg_id"),
         "chat_id": step.get("send_chat_id"), "started_at": step.get("send_started_at"),
@@ -5726,6 +5840,8 @@ async def _send_tianxing_timeline_step(timeline, step, now, config, *, operation
     step["send_chat_id"] = 0
     step["send_account_id"] = operation.account_id
     step["send_op_id"] = f"tianxing-timeline-{action}-{uuid4().hex}"
+    use_miniapp = tianjige_transport.available(operation.identity_id)
+    step["send_transport"] = "miniapp" if use_miniapp else "telegram"
     step["ack_due_at"] = float(now + int(config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC))
     timeline["phase"] = "sending"
     timeline["last_error"] = ""
@@ -5781,6 +5897,42 @@ async def _send_tianxing_timeline_step(timeline, step, now, config, *, operation
 
     send_timeout = _effective_tianxing_timeline_send_timeout(config)
     send_error = ""
+    if use_miniapp:
+        observed_before_http = copy.deepcopy(operation.identity.get("tianxing_observation"))
+
+        def miniapp_allowed():
+            return send_allowed() and operation.identity.get("tianxing_observation") == observed_before_http
+
+        try:
+            result = await tianjige_transport.execute(
+                operation.identity_id, plan["command"], op_id=step["send_op_id"], operation_check=miniapp_allowed,
+            )
+        except (asyncio.CancelledError, Exception):
+            current = current_send()
+            if current is not None:
+                expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
+                commit(_mark_tianxing_timeline_send_unknown(
+                    current, current["active_step"], operation.current_time(), config,
+                    reason="天机阁请求中断，等待查盘校准；不重发、不转群命令。",
+                ))
+            raise
+        current = current_send()
+        if current is None:
+            return None
+        expected_state = copy.deepcopy(operation.identity.get("tianxing_timeline_state"))
+        if result.get("terminal") and miniapp_allowed() and _apply_tianxing_miniapp_reply(result):
+            projected = normalize_tianxing_timeline_state(operation.identity.get("tianxing_timeline_state"))
+            if projected["active_step"].get("status") != "sending":
+                return projected
+        if result.get("action_dispatched") is False:
+            return commit(_defer_tianxing_timeline_blocked_send(
+                current, current["active_step"], operation.current_time(), reason="天机阁尚未发送，稍后重试。",
+                retry_at=operation.current_time() + TIANXING_TIMELINE_BLOCKED_RETRY_SEC, event="miniapp_unsent",
+            ))
+        return commit(_mark_tianxing_timeline_send_unknown(
+            current, current["active_step"], operation.current_time(), config,
+            reason="天机阁结果未确认，等待查盘校准；不重发、不转群命令。",
+        ))
     try:
         msg = await send_game_command(
             plan["command"],
@@ -6291,6 +6443,8 @@ async def run_tianxing_timeline_scheduler(now, *, windows=None, config=None, hor
     windows = copy.deepcopy(windows)
     config = normalize_tianxing_auto_config(config if config is not None else operation.identity.get("tianxing_auto_config"))
     async with _timeline_lock():
+        if await _recover_tianxing_miniapp_auto_pending(now, operation):
+            return {"phase": "miniapp_calibration", "changed": True, "reason": "天机阁只读校准本轮已处理。"}
         return await _run_tianxing_timeline_scheduler_unlocked(
             now, windows=windows, config=config, horizon_hours=horizon_hours, operation=operation,
         )
@@ -8657,6 +8811,8 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=
         return False
 
     _note_tianxing_auto_pending(observed, now, plan, config)
+    use_miniapp = tianjige_transport.available(operation.identity_id)
+    observed["auto_pending_transport"] = "miniapp" if use_miniapp else "telegram"
     state["tianxing_observation"] = observed
     expected = copy.deepcopy(observed)
     if save_state() is False:
@@ -8680,6 +8836,26 @@ async def _execute_tianxing_auto_plan(plan, observed, config, now, *, operation=
     send_error = ""
     cancelled = False
     locally_unsent = not send_allowed()
+    if use_miniapp and not locally_unsent:
+        try:
+            result = await tianjige_transport.execute(
+                operation.identity_id, plan["command"], op_id=expected["auto_pending_op_id"], operation_check=send_allowed,
+            )
+        except (asyncio.CancelledError, Exception):
+            # The persisted operation remains unresolved, including across restart.
+            raise
+        if not operation.owns_identity() or operation.identity.get("tianxing_observation") != expected:
+            return False
+        if result.get("terminal") and operation.is_current() and _apply_tianxing_miniapp_reply(result):
+            return not normalize_tianxing_observation(state.get("tianxing_observation"))["auto_pending_action"]
+        observed = normalize_tianxing_observation(expected)
+        if result.get("action_dispatched") is False:
+            _clear_tianxing_auto_pending(observed)
+        observed["auto_last_error"] = "天机阁回包未确认，等待状态核对；不转群命令。"
+        observed["auto_next_time"] = operation.current_time() + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC
+        state["tianxing_observation"] = observed
+        save_state()
+        return False
     msg = None
     if not locally_unsent:
         try:
@@ -8828,6 +9004,16 @@ async def execute_tianxing_manual_action(action="panel", arg="", *, send_as_id=N
         plan = build_tianxing_manual_plan(action, arg, now=now)
     if not plan.get("allowed"):
         return False, plan.get("reason") or "天星宗动作未允许", plan
+    identity_id = int(send_as_id or get_current_identity_id())
+    if tianjige_transport.available(identity_id):
+        with use_identity(identity_id):
+            async with _auto_lock():
+                if _tianxing_timeline_mutation_pending(state.get("tianxing_timeline_state")):
+                    return False, "天星时间线仍有未确认操作，请先等待状态核对。", plan
+                observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+                config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+                confirmed = await _execute_tianxing_auto_plan(dict(plan, arg=arg), observed, config, now)
+                return confirmed, ("天机阁回包已确认" if confirmed else "天机阁操作未确认，未补发群命令"), plan
     msg = await send_game_command(
         plan["command"],
         track=True,

@@ -382,6 +382,13 @@
           return '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-fishing-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '><span>' + esc(item.label || item.identity_id) + '</span></label>';
         }).join('') + '</div>'
       : '<span class="miniapp-empty">暂无频道身份候选</span>';
+    var concubineCandidates = Array.isArray(automation.cave_public_concubine_candidates) ? automation.cave_public_concubine_candidates : [];
+    var concubineCandidateHtml = concubineCandidates.length
+      ? '<div class="miniapp-candidate-list">' + concubineCandidates.map(function (item) {
+          var partner = item.partner ? ' · ' + item.partner : '';
+          return '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-concubine-candidate="' + esc(item.identity_id) + '"' + (item.auto_enabled ? ' checked' : '') + '><span>' + esc(item.label || item.identity_id) + esc(partner) + '</span></label>';
+        }).join('') + '</div>'
+      : '<span class="miniapp-empty">暂无侍妾模块候选</span>';
     var tiantiCandidates = Array.isArray(automation.cave_public_tianti_status_candidates) ? automation.cave_public_tianti_status_candidates : [];
     var tiantiCandidateHtml = tiantiCandidates.length
       ? '<div class="miniapp-candidate-list">' + tiantiCandidates.map(function (item) {
@@ -406,6 +413,7 @@
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="trial"' + (automation.cave_public_trial_enabled ? ' checked' : '') + '><span>天机试炼</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="fate_cards"' + (automation.cave_public_fate_cards_enabled ? ' checked' : '') + '><span>天机命脉</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="fishing"' + (automation.cave_public_fishing_enabled ? ' checked' : '') + '><span>频道钓鱼</span></label>'
+      + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="concubine"' + (automation.cave_public_concubine_enabled ? ' checked' : '') + '><span>侍妾宝阁传输</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="stargazer"' + (automation.cave_public_stargazer_enabled ? ' checked' : '') + '><span>观星台</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="yuanying"' + (automation.cave_public_yuanying_enabled ? ' checked' : '') + '><span>元婴</span></label>'
       + '<label class="miniapp-cave-switch"><input type="checkbox" data-cave-public-switch="tianti_status"' + (automation.cave_public_tianti_status_enabled ? ' checked' : '') + '><span>天阶状态</span></label>'
@@ -416,6 +424,8 @@
       + '</select></label>'
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>频道钓鱼白名单</strong><span>仅走公共入口，不发送群命令</span></div>'
       + fishingCandidateHtml
+      + '<div class="miniapp-score-title miniapp-subsection-title"><strong>侍妾宝阁白名单</strong><span>只切换传输，业务开关仍按角色设置</span></div>'
+      + concubineCandidateHtml
       + '<div class="miniapp-score-title miniapp-subsection-title"><strong>天阶状态白名单</strong><span>只读校准，不自动触发登阶</span></div>'
       + tiantiCandidateHtml
       + '<div class="miniapp-cave-batch-status">'
@@ -771,10 +781,14 @@
     var delayInput = panel && panel.querySelector('[data-cave-public-delay="1"]');
     var fateChoiceInput = panel && panel.querySelector('[data-cave-public-fate-choice="1"]');
     var fishingIdentityIds = [];
+    var concubineIdentityIds = [];
     var tiantiStatusIdentityIds = [];
     if (panel) {
       panel.querySelectorAll('[data-cave-public-fishing-candidate]').forEach(function (input) {
         if (input.checked) fishingIdentityIds.push(input.getAttribute('data-cave-public-fishing-candidate'));
+      });
+      panel.querySelectorAll('[data-cave-public-concubine-candidate]').forEach(function (input) {
+        if (input.checked) concubineIdentityIds.push(input.getAttribute('data-cave-public-concubine-candidate'));
       });
       panel.querySelectorAll('[data-cave-public-tianti-candidate]').forEach(function (input) {
         if (input.checked) tiantiStatusIdentityIds.push(input.getAttribute('data-cave-public-tianti-candidate'));
@@ -790,6 +804,8 @@
       fate_cards_choice_key: fateChoiceInput ? fateChoiceInput.value : 'accept',
       fishing_enabled: enabled('fishing'),
       fishing_identity_ids: fishingIdentityIds,
+      concubine_enabled: enabled('concubine'),
+      concubine_identity_ids: concubineIdentityIds,
       stargazer_enabled: enabled('stargazer'),
       yuanying_enabled: enabled('yuanying'),
       tianti_status_enabled: enabled('tianti_status'),

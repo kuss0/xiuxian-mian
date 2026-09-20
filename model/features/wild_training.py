@@ -45,6 +45,7 @@ from .cave_treasure_runtime import (
     run_cave_public_wild_training,
 )
 from .miniapp_common import MiniAppFlowCancelled, MiniAppIdentityOwner
+from . import tianjige_transport, tianxing
 from .tianxing import (
     _has_fresh_change_evidence,
     _has_fresh_prediction_evidence,
@@ -340,7 +341,8 @@ def _defer_frozen_tianxing_route(now, preflight):
     if preflight.get("route_allowed") or not state.get("tianxing_enabled"):
         return False
     identity_id = int(get_current_identity_id() or 0)
-    if get_identity_enabled(identity_id) or not is_cave_public_identity_available(identity_id):
+    if (get_identity_enabled(identity_id) or tianjige_transport.available(identity_id)
+            or not is_cave_public_identity_available(identity_id)):
         return False
     _schedule_retry(now)
     _schedule_tianxing_prepare_retry(now)
@@ -383,15 +385,23 @@ async def _send_tianxing_panel_calibration(now, reason, *, operation=None):
         save_state()
         return False
     try:
-        msg = await send_game_command(
-            CMD_TIANXING_PANEL,
-            track=True,
-            priority="reactive",
-            source_module="天星宗",
-            op_id=f"wild-training-panel-calibration-{int(now)}",
-            queue_timeout=WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC,
-            operation_check=operation.is_current,
-        )
+        if tianjige_transport.available(get_current_identity_id()):
+            observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+            config = tianxing.normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+            msg = await tianxing._execute_tianxing_auto_plan(
+                {"action": "panel", "command": CMD_TIANXING_PANEL}, observed, config, now,
+                operation=tianxing._TianxingOperation.capture(now, parent_check=operation.is_current),
+            )
+        else:
+            msg = await send_game_command(
+                CMD_TIANXING_PANEL,
+                track=True,
+                priority="reactive",
+                source_module="天星宗",
+                op_id=f"wild-training-panel-calibration-{int(now)}",
+                queue_timeout=WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC,
+                operation_check=operation.is_current,
+            )
     except asyncio.CancelledError:
         raise
     if not operation.is_current():

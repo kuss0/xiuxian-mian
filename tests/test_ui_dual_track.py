@@ -151,6 +151,9 @@ def test_miniapp_ui_is_readonly_status_with_manual_probe():
     assert "miniapp.state_records" in script
     assert "运行概览" in script
     assert "公共入口" in script
+    assert "data-cave-public-switch=\"concubine\"" in script
+    assert "data-cave-public-concubine-candidate" in script
+    assert "concubine_identity_ids" in script
     assert "玩法状态" in script
     assert "诊断" in script
     assert "data-world-boss-window-skip" in script

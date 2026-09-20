@@ -543,6 +543,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 "fate_cards_choice_key": "hide",
                 "fishing_enabled": True,
                 "fishing_identity_ids": [3820064579, "3765328695", "bad"],
+                "concubine_enabled": True,
+                "concubine_identity_ids": [3820064579, "3765328695", "bad"],
                 "tianti_status_enabled": True,
                 "tianti_status_identity_ids": [1002, "1001", "bad"],
                 "delay_sec": 7,
@@ -560,6 +562,8 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("hide", automation["cave_public_fate_cards_choice_key"])
         self.assertTrue(automation["cave_public_fishing_enabled"])
         self.assertEqual([3765328695, 3820064579], automation["cave_public_fishing_identity_ids"])
+        self.assertTrue(automation["cave_public_concubine_enabled"])
+        self.assertEqual([3765328695, 3820064579], automation["cave_public_concubine_identity_ids"])
         self.assertTrue(automation["cave_public_tianti_status_enabled"])
         self.assertEqual([1001, 1002], automation["cave_public_tianti_status_identity_ids"])
         self.assertEqual(10, automation["cave_public_delay_sec"])
@@ -580,6 +584,26 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(candidates))
         self.assertEqual(identity_id, candidates[0]["identity_id"])
         self.assertFalse(candidates[0]["climb_enabled"])
+
+    def test_concubine_public_candidate_is_explicitly_allowlisted(self):
+        identity_id = 1001
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_name"] = "南宫婉·月影"
+        state_module.set_miniapp_auto_config({
+            "cave_public_concubine_enabled": False,
+            "cave_public_concubine_identity_ids": [identity_id],
+        })
+        with patch.object(ui, "get_identity_ids", return_value=[identity_id]), \
+                patch.object(ui, "is_cave_public_identity_available", return_value=True):
+            automation = ui.get_miniapp_status_snapshot()["automation"]
+
+        self.assertFalse(automation["cave_public_concubine_enabled"])
+        self.assertEqual([identity_id], automation["cave_public_concubine_identity_ids"])
+        self.assertEqual(1, len(automation["cave_public_concubine_candidates"]))
+        self.assertEqual("南宫婉·月影", automation["cave_public_concubine_candidates"][0]["partner"])
+        self.assertTrue(automation["cave_public_concubine_candidates"][0]["auto_enabled"])
 
     async def test_cave_public_config_rejects_unsupported_fate_choice_before_save(self):
         with patch.object(ui, "save_state", return_value=True) as save_mock:
