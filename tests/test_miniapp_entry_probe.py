@@ -1581,6 +1581,10 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                     ],
                     config["trial_daily_wave2_last_steps"],
                 )
+                self.assertGreater(
+                    config["trial_daily_wave2_last_retry_at"],
+                    config["trial_daily_wave2_last_run_at"],
+                )
                 should_fail.clear()
                 resume = ui._trial_daily_batch_resume_state(context)
                 await ui._run_cave_public_entry_batch(
@@ -1680,6 +1684,7 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(1, config["trial_daily_wave1_last_completed"])
                 self.assertEqual(1, config["trial_daily_wave1_last_succeeded"])
                 self.assertEqual(0, config["trial_daily_wave1_last_failed"])
+                self.assertEqual(0, config["trial_daily_wave1_last_retry_at"])
                 self.assertEqual(
                     [{"identity_id": 1001, "action": "trial"},
                      {"identity_id": 1002, "action": "trial"},
@@ -1893,6 +1898,90 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("paused-batch", result["batch_id"])
         self.assertEqual([1001, 1002], start_mock.await_args.args[0]["send_as_ids"])
         self.assertEqual("wave1", start_mock.await_args.kwargs["trial_daily_context"]["wave_key"])
+
+    async def test_miniapp_daily_scheduler_holds_failed_wave_until_persisted_retry_deadline(self):
+        now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+            "cave_public_trial_enabled": True,
+            "trial_daily_wave2_last_batch_id": "held-batch",
+            "trial_daily_wave2_last_status": "retry_pending",
+            "trial_daily_wave2_last_progress_day": "2026-07-07",
+            "trial_daily_wave2_last_retry_at": now + 1800,
+            "trial_daily_wave2_last_steps": [
+                {"identity_id": 1003, "action": "trial"},
+            ],
+        }
+        try:
+            ui._cave_public_batch_state["running"] = False
+            with patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock()) as start_mock, \
+                    patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=AsyncMock(return_value={"started": False})):
+                first = await ui.run_miniapp_daily_scheduler(now)
+                # Process-local batch state can be lost on restart; the persisted deadline still holds.
+                ui._cave_public_batch_state["running"] = False
+                second = await ui.run_miniapp_daily_scheduler(now + 60)
+                # Pre-deploy retry records derive the same deadline from their durable last-run time.
+                legacy = state_module._meta_state["miniapp_auto_config"]
+                legacy.pop("trial_daily_wave2_last_retry_at", None)
+                legacy["trial_daily_wave2_last_run_at"] = now
+                legacy["trial_daily_wave2_last_result"] = "完整执行 1/1，成功 0，失败 1"
+                third = await ui.run_miniapp_daily_scheduler(now + 120)
+
+            self.assertEqual("trial_retry_hold", first["reason"])
+            self.assertEqual("trial_retry_hold", second["reason"])
+            self.assertEqual("trial_retry_hold", third["reason"])
+            self.assertEqual(now + 1800, second["retry_at"])
+            self.assertEqual(now + 1800, third["retry_at"])
+            start_mock.assert_not_awaited()
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
+
+    async def test_trial_daily_retry_resumes_only_failed_steps_after_deadline(self):
+        now = datetime(2026, 7, 7, 9, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        state_module._meta_state["miniapp_auto_config"] = {
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+            "cave_public_trial_enabled": True,
+            "trial_daily_wave1_last_batch_id": "failed-only-batch",
+            "trial_daily_wave1_last_status": "retry_pending",
+            "trial_daily_wave1_last_progress_day": "2026-07-07",
+            "trial_daily_wave1_last_retry_at": now - 1,
+            "trial_daily_wave1_last_steps": [
+                {"identity_id": 1002, "action": "trial"},
+            ],
+        }
+        context = {"wave_key": "wave1", "wave_label": "第一批", "day_key": "2026-07-07"}
+        scheduled = []
+
+        def capture_task(coro):
+            scheduled.append(coro)
+            coro.close()
+
+        try:
+            ui._cave_public_batch_state["running"] = False
+            with patch.object(ui.time, "time", return_value=now), \
+                    patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002]), \
+                    patch.object(ui, "_fire_and_forget", side_effect=capture_task):
+                ok, _message, extra = await ui.ui_start_cave_public_entry_batch({
+                    "send_as_ids": [1001, 1002],
+                    "actions": ["trial"],
+                    "delay_sec": 20,
+                }, trial_daily_context=context)
+
+            self.assertTrue(ok)
+            self.assertTrue(extra["resumed"])
+            self.assertEqual(
+                [{"identity_id": 1002, "action": "trial"}],
+                extra["batch_steps"],
+            )
+            self.assertEqual(1, len(scheduled))
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
 
     async def test_miniapp_daily_scheduler_starts_public_tree_once_and_persists_running(self):
         state_module.ensure_identity_registered(1001)
