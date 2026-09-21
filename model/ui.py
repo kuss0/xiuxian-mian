@@ -437,6 +437,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave1_last_batch_id": "",
     "trial_daily_wave1_last_run_at": 0,
     "trial_daily_wave1_last_retry_at": 0,
+    "trial_daily_wave1_last_retry_reason": "",
     "trial_daily_wave1_last_result": "",
     "trial_daily_wave1_last_status": "",
     "trial_daily_wave1_last_progress_day": "",
@@ -450,6 +451,7 @@ MINIAPP_AUTO_CONFIG_DEFAULT = {
     "trial_daily_wave2_last_batch_id": "",
     "trial_daily_wave2_last_run_at": 0,
     "trial_daily_wave2_last_retry_at": 0,
+    "trial_daily_wave2_last_retry_reason": "",
     "trial_daily_wave2_last_result": "",
     "trial_daily_wave2_last_status": "",
     "trial_daily_wave2_last_progress_day": "",
@@ -720,11 +722,13 @@ def normalize_miniapp_auto_config(config=None):
         "trial_daily_wave1_last_batch_id",
         "trial_daily_wave1_last_result",
         "trial_daily_wave1_last_status",
+        "trial_daily_wave1_last_retry_reason",
         "trial_daily_wave1_last_progress_day",
         "trial_daily_wave2_last_run_day",
         "trial_daily_wave2_last_batch_id",
         "trial_daily_wave2_last_result",
         "trial_daily_wave2_last_status",
+        "trial_daily_wave2_last_retry_reason",
         "trial_daily_wave2_last_progress_day",
     ):
         result[key] = str(result.get(key) or "")
@@ -833,6 +837,29 @@ def _trial_daily_effective_retry_at(config, wave_key):
     return last_run_at + TRIAL_DAILY_RETRY_BACKOFF_SEC if last_run_at > 0 else 0.0
 
 
+def _trial_daily_wave_recovery_hold(config, wave_key, day_key):
+    prefix = f"trial_daily_{wave_key}_last_"
+    if str(config.get(f"{prefix}status") or "") != "retry_pending":
+        return False
+    if str(config.get(f"{prefix}progress_day") or "") != str(day_key or ""):
+        return False
+    reason = str(config.get(f"{prefix}retry_reason") or "").strip().lower()
+    if "operation_pending" in reason or "outcome_unknown" in reason:
+        return True
+    for item in config.get(f"{prefix}steps") or ():
+        if not isinstance(item, dict) or str(item.get("action") or "").strip().lower() != "trial":
+            continue
+        try:
+            identity_state = get_identity_state(int(item.get("identity_id") or 0))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        operation = identity_state.get("trial_operation") if isinstance(identity_state, dict) else {}
+        checkpoint = operation.get("checkpoint") if isinstance(operation, dict) else {}
+        if isinstance(checkpoint, dict) and isinstance(checkpoint.get("pending"), dict) and checkpoint["pending"]:
+            return True
+    return False
+
+
 def _trial_daily_wave_for_now(config, local_now):
     current_minute = int(local_now.hour) * 60 + int(local_now.minute)
     today = local_now.strftime("%Y-%m-%d")
@@ -843,12 +870,14 @@ def _trial_daily_wave_for_now(config, local_now):
             continue
         wave_key = str(wave["key"])
         retry_at = _trial_daily_effective_retry_at(config, wave_key)
+        recovery_hold = _trial_daily_wave_recovery_hold(config, wave_key, today)
         return {
             **wave,
             "done_today": config.get(f"trial_daily_{wave_key}_last_run_day") == today,
             "last_status": config.get(f"trial_daily_{wave_key}_last_status") or "",
             "retry_at": retry_at,
-            "retry_due": retry_at <= local_now.timestamp(),
+            "retry_due": not recovery_hold and retry_at <= local_now.timestamp(),
+            "recovery_hold": recovery_hold,
         }
     return None
 
@@ -864,13 +893,15 @@ def _trial_daily_retry_wave_for_today(config, today, now=None):
             and str(config.get(f"trial_daily_{wave_key}_last_run_day") or "") != today
         ):
             retry_at = _trial_daily_effective_retry_at(config, wave_key)
+            recovery_hold = _trial_daily_wave_recovery_hold(config, wave_key, today)
             return {
                 **wave,
                 "done_today": False,
                 "last_status": "retry_pending",
                 "resume_pending": True,
                 "retry_at": retry_at,
-                "retry_due": retry_at <= now,
+                "retry_due": not recovery_hold and retry_at <= now,
+                "recovery_hold": recovery_hold,
             }
     return None
 
@@ -902,6 +933,8 @@ def get_miniapp_auto_config_snapshot(now=None):
             "last_result": config.get(f"trial_daily_{wave_key}_last_result") or "",
             "last_status": config.get(f"trial_daily_{wave_key}_last_status") or "",
             "last_retry_at": _trial_daily_effective_retry_at(config, wave_key),
+            "last_retry_reason": str(config.get(f"trial_daily_{wave_key}_last_retry_reason") or ""),
+            "recovery_hold": _trial_daily_wave_recovery_hold(config, wave_key, today),
             "last_cursor": int(config.get(f"trial_daily_{wave_key}_last_cursor", 0) or 0),
             "last_completed": int(config.get(f"trial_daily_{wave_key}_last_completed", 0) or 0),
             "last_succeeded": int(config.get(f"trial_daily_{wave_key}_last_succeeded", 0) or 0),
@@ -8373,6 +8406,7 @@ def _persist_trial_daily_batch_state(
     steps=None,
     outcomes=None,
     retry_at=None,
+    retry_reason=None,
 ):
     context = _normalize_trial_daily_batch_context(context)
     if not context:
@@ -8390,8 +8424,11 @@ def _persist_trial_daily_batch_state(
     prefix = f"trial_daily_{wave_key}_last_"
     if status in {"running", "completed"}:
         config[f"{prefix}retry_at"] = 0
+        config[f"{prefix}retry_reason"] = ""
     elif retry_at is not None:
         config[f"{prefix}retry_at"] = max(0.0, float(retry_at or 0))
+    if status == "retry_pending" and retry_reason is not None:
+        config[f"{prefix}retry_reason"] = str(retry_reason or "")[:120]
     config[f"{prefix}progress_day"] = context["day_key"]
     if cursor is not None:
         config[f"{prefix}cursor"] = max(0, int(cursor or 0))
@@ -8436,6 +8473,8 @@ def _trial_daily_retry_hold(context, now=None):
         return {}
     if str(config.get(f"{prefix}progress_day") or "") != context["day_key"]:
         return {}
+    if _trial_daily_wave_recovery_hold(config, context["wave_key"], context["day_key"]):
+        return {"recovery_hold": True, "retry_at": 0, "retry_after_sec": 0}
     retry_at = _trial_daily_effective_retry_at(config, context["wave_key"])
     now = float(now or time.time())
     if retry_at <= now:
@@ -8557,6 +8596,7 @@ async def _run_cave_public_entry_batch(
         repeated_fail_key = ""
         repeated_fail_count = 0
         failed_steps = []
+        trial_recovery_hold_reasons = []
         for index, (identity_id, action) in enumerate(steps[resume_cursor:], start=resume_cursor + 1):
             next_cursor = index - 1
             display = get_identity_display_name(identity_id)
@@ -8588,6 +8628,7 @@ async def _run_cave_public_entry_batch(
                     steps=steps,
                     outcomes=outcomes,
                     retry_at=0,
+                    retry_reason="",
                 )
                 await send_audit_log(
                     f"⏸️ 洞府公共入口批次遇到{pause_reason}，已完成 {completed}/{total}；"
@@ -8604,6 +8645,11 @@ async def _run_cave_public_entry_batch(
             else:
                 failed += 1
                 failed_steps.append((identity_id, action))
+                if action == "trial" and isinstance(extra, dict):
+                    trial_status = str(extra.get("status") or "").strip().lower()
+                    trial_error = str(extra.get("error") or "").strip().lower()
+                    if trial_status == "operation_pending" or "outcome_unknown" in trial_error:
+                        trial_recovery_hold_reasons.append(trial_error or trial_status)
             completed = index
             next_cursor = index
             _set_cave_public_batch_state(
@@ -8639,6 +8685,7 @@ async def _run_cave_public_entry_batch(
                     steps=steps,
                     outcomes=outcomes,
                     retry_at=time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC,
+                    retry_reason="",
                 )
                 await send_audit_log(
                     f"🧯 洞府公共入口上游异常，串行批次已在 {index}/{total} 中止；"
@@ -8681,6 +8728,7 @@ async def _run_cave_public_entry_batch(
                     steps=steps,
                     outcomes=outcomes,
                     retry_at=retry_at,
+                    retry_reason="",
                 )
                 await send_audit_log(
                     f"🧯 洞府天机试炼连续 {repeated_fail_count} 个身份返回外府入口不可用，"
@@ -8707,6 +8755,7 @@ async def _run_cave_public_entry_batch(
             steps=steps,
             outcomes=outcomes,
             retry_at=time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC,
+            retry_reason="",
         )
         await send_audit_log(
             f"🧩 洞府公共入口串行批次中止：batch={batch_id}｜{message}",
@@ -8719,11 +8768,17 @@ async def _run_cave_public_entry_batch(
     _set_cave_public_batch_state(running=False, finished_at=time.time(), current="")
     completion_result = f"完整执行 {total}/{total}，成功 {succeeded}，失败 {failed}"
     if trial_daily_context and failed_steps:
-        retry_at = time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC
-        retry_result = (
-            f"{completion_result}；未标记完成，{fmt_abs_ts(retry_at)} 后仅重试失败步骤 "
-            f"{len(failed_steps)} 个"
-        )
+        recovery_hold_reason = next(iter(trial_recovery_hold_reasons), "")
+        retry_at = 0 if recovery_hold_reason else time.time() + TRIAL_DAILY_RETRY_BACKOFF_SEC
+        if recovery_hold_reason:
+            retry_result = (
+                f"{completion_result}；未知结果保留，本日冻结失败步骤 {len(failed_steps)} 个"
+            )
+        else:
+            retry_result = (
+                f"{completion_result}；未标记完成，{fmt_abs_ts(retry_at)} 后仅重试失败步骤 "
+                f"{len(failed_steps)} 个"
+            )
         _set_cave_public_batch_state(last_result=retry_result)
         _persist_trial_daily_batch_state(
             trial_daily_context,
@@ -8737,14 +8792,24 @@ async def _run_cave_public_entry_batch(
             steps=failed_steps,
             outcomes={},
             retry_at=retry_at,
+            retry_reason=recovery_hold_reason,
         )
-        await send_audit_log(
-            f"🧩 洞府天机试炼批次未标记完成：{completion_result}；"
-            f"下次仅重试失败步骤 {len(failed_steps)} 个，已成功步骤不重跑。",
-            scope="global",
-            priority="normal",
-            limit=320,
-        )
+        if recovery_hold_reason:
+            await send_audit_log(
+                f"🧊 洞府天机试炼未知结果已冻结：{completion_result}；"
+                f"本日不再重跑失败步骤 {len(failed_steps)} 个，已成功步骤不重跑。",
+                scope="global",
+                priority="normal",
+                limit=320,
+            )
+        else:
+            await send_audit_log(
+                f"🧩 洞府天机试炼批次未标记完成：{completion_result}；"
+                f"下次仅重试失败步骤 {len(failed_steps)} 个，已成功步骤不重跑。",
+                scope="global",
+                priority="normal",
+                limit=320,
+            )
         return
     _persist_trial_daily_batch_state(
         trial_daily_context,
@@ -9790,7 +9855,7 @@ async def run_miniapp_daily_scheduler(now):
     if active_wave and not active_wave.get("done_today") and not active_wave.get("retry_due", True):
         return {
             "started": False,
-            "reason": "trial_retry_hold",
+            "reason": "trial_recovery_hold" if active_wave.get("recovery_hold") else "trial_retry_hold",
             "wave": wave_key,
             "retry_at": float(active_wave.get("retry_at") or 0),
         }

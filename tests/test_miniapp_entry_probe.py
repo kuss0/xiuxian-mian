@@ -1610,6 +1610,49 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)
 
+    async def test_trial_daily_unknown_operation_freezes_failed_step_for_the_day(self):
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        context = {"wave_key": "wave2", "wave_label": "第二批", "day_key": "2026-07-07"}
+
+        async def run_entry(_identity_id, _action, _url):
+            return False, "天机试炼本地恢复：MiniApp operation_pending｜trial_previous_outcome_unknown", {
+                "status": "operation_pending",
+                "error": "trial_previous_outcome_unknown",
+                "persistence_only": True,
+            }
+
+        try:
+            with patch.object(ui.time, "time", return_value=now), \
+                    patch.object(ui, "get_identity_display_name", return_value="角色1002"), \
+                    patch.object(ui, "ui_run_cave_public_entry", new=run_entry), \
+                    patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                    patch.object(ui, "save_state", return_value=True):
+                await ui._run_cave_public_entry_batch(
+                    "trial-wave2-unknown",
+                    "https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999",
+                    [1002],
+                    ["trial"],
+                    0,
+                    trial_daily_context=context,
+                )
+
+            config = ui.normalize_miniapp_auto_config()
+            self.assertEqual("retry_pending", config["trial_daily_wave2_last_status"])
+            self.assertEqual(0, config["trial_daily_wave2_last_retry_at"])
+            self.assertEqual(
+                "trial_previous_outcome_unknown",
+                config["trial_daily_wave2_last_retry_reason"],
+            )
+            self.assertTrue(ui._trial_daily_retry_hold(context, now=now + 60)["recovery_hold"])
+            self.assertTrue(any(
+                "未知结果已冻结" in str(call.args[0])
+                for call in audit_mock.await_args_list
+            ))
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
+
     async def test_trial_daily_batch_upstream_abort_remains_retryable(self):
         batch_snapshot = dict(ui._cave_public_batch_state)
 
@@ -1936,6 +1979,53 @@ class MiniAppEntryProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 1800, second["retry_at"])
             self.assertEqual(now + 1800, third["retry_at"])
             start_mock.assert_not_awaited()
+        finally:
+            ui._cave_public_batch_state.clear()
+            ui._cave_public_batch_state.update(batch_snapshot)
+
+    async def test_miniapp_daily_scheduler_migrates_unknown_operation_to_daily_recovery_hold(self):
+        now = datetime(2026, 7, 7, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        next_day = datetime(2026, 7, 8, 5, 30, tzinfo=ui.TZ_LOCAL).timestamp()
+        batch_snapshot = dict(ui._cave_public_batch_state)
+        state_module.ensure_identity_registered(1003)
+        state_module.get_identity_state(1003)["trial_operation"] = {
+            "checkpoint": {"phase": "complete", "pending": {"action": "finish"}},
+        }
+        state_module._meta_state["miniapp_auto_config"] = {
+            "trial_daily_enabled": True,
+            "trial_daily_scheduler_confirmed": True,
+            "cave_public_entry_urls": ["https://t.me/fanrenxiuxian_bot?startapp=df_SECRET999"],
+            "cave_public_trial_enabled": True,
+            "trial_daily_wave2_last_batch_id": "legacy-unknown-batch",
+            "trial_daily_wave2_last_status": "retry_pending",
+            "trial_daily_wave2_last_progress_day": "2026-07-07",
+            "trial_daily_wave2_last_run_at": now - 3600,
+            "trial_daily_wave2_last_retry_at": now - 1,
+            "trial_daily_wave2_last_steps": [
+                {"identity_id": 1003, "action": "trial"},
+            ],
+        }
+        try:
+            ui._cave_public_batch_state["running"] = False
+            with patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock()) as start_mock, \
+                    patch.object(ui, "_run_tree_miniapp_daily_scheduler", new=AsyncMock(return_value={"started": False})):
+                first = await ui.run_miniapp_daily_scheduler(now)
+                second = await ui.run_miniapp_daily_scheduler(now + 60)
+
+            self.assertEqual("trial_recovery_hold", first["reason"])
+            self.assertEqual("trial_recovery_hold", second["reason"])
+            start_mock.assert_not_awaited()
+
+            with patch.object(ui, "_normalize_cave_public_batch_identity_ids", return_value=[1001, 1002, 1003, 1004]), \
+                    patch.object(ui, "ui_start_cave_public_entry_batch", new=AsyncMock(return_value=(True, "ok", {
+                        "batch_id": "next-day-batch",
+                    }))) as next_day_start, \
+                    patch.object(ui, "save_state", return_value=True):
+                resumed = await ui.run_miniapp_daily_scheduler(next_day)
+
+            self.assertTrue(resumed["started"])
+            self.assertEqual("wave2", resumed["wave"])
+            next_day_start.assert_awaited_once()
         finally:
             ui._cave_public_batch_state.clear()
             ui._cave_public_batch_state.update(batch_snapshot)
